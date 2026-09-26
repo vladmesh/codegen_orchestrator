@@ -179,6 +179,16 @@ async def my_node(state: dict) -> dict:
 | `llm_channel_ready` | info / warning | Startup, once per channel of an agent's chain: can it answer? | `agent`, `channel`, `model`, `position`, `status` (`ready` or a failure class), `reason`, `cli_version`, `timeout_s` |
 | `llm_channel_used` | info | A channel of an agent's LLM channel chain answered a model call | `agent`, `channel`, `model`, `position`, `duration_s` |
 | `llm_channel_failed` | warning | A channel failed the call; the chain tried the next one | `agent`, `channel`, `model`, `position`, `failure_class`, `reason`, `duration_s` |
+| `llm_degraded_note_added` | info | The PO's call reached openrouter after codex and claude failed it; the emergency note was appended | `agent`, `position` |
+| `llm_alert_sent` | info | An LLM operator alert reached at least one administrator; its dedup key is set | `kind`, `subject`, `delivery`, `realert_window_hours`, `agent`, `channel` |
+| `llm_alert_failed` | error | An LLM operator alert reached nobody, raised or timed out; the key stays unset | `kind`, `subject`, `delivery` or `error_type`, `agent`, `channel` |
+| `llm_alert_deduplicated` | debug | The alert's key is set: sent within the re-alert window | `kind`, `subject` |
+| `llm_alert_dedup_unreadable` / `llm_alert_dedup_unrecorded` | warning | Redis failed reading / writing the dedup key; the alert is sent anyway | `kind`, `subject`, `error_type` |
+| `llm_alert_rearmed` / `llm_alert_rearm_failed` | info / warning | The low-balance alert was re-armed (balance back above threshold) | `kind`, `subject` |
+| `llm_alert_config_missing` / `llm_alert_config_invalid` / `llm_alert_config_unreadable` | warning | An `llm.*` alert config key fell back to its default | `key`, `default` |
+| `openrouter_balance` | info | One successful OpenRouter balance read | `balance_usd`, `threshold_usd`, `below_threshold`, `alert_sent`, `alert_outcome` |
+| `openrouter_balance_read_failed` | warning | The balance read failed; a 401/402/403 is alerted | `reason`, `failure_class`, `alert_outcome` |
+| `openrouter_balance_check_idle` / `openrouter_balance_check_started` | info | The balance check has no OpenRouter key and stops / runs | `missing_env` |
 | `architect_job_success` / `architect_job_failed` | info / error | Planning attempt finished | `llm_channels` (answering channels), `llm_channel_failures` (`channel:failure_class`) |
 
 ### Provisioner

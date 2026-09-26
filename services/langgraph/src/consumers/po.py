@@ -58,7 +58,7 @@ from ..agents.po.graph import create_po_graph
 from ..agents.po.tools_shared import init_po_clients
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
-from ..llm import ChannelChainModel, LLMAgent, build_agent_llm, load_channel_chain
+from ..llm import ChannelChainModel, LLMAgent, LLMAlerts, build_agent_llm, load_channel_chain
 
 logger = structlog.get_logger(__name__)
 
@@ -86,13 +86,19 @@ class POLLMs:
     summarizer: ChannelChainModel
 
 
-async def load_po_llms(settings: Settings) -> POLLMs:
-    """Both chains from agent configuration; an invalid stored chain raises here."""
+async def load_po_llms(settings: Settings, alerts: LLMAlerts | None = None) -> POLLMs:
+    """Both chains from agent configuration; an invalid stored chain raises here.
+
+    Both report to ``alerts``, the process's shared sender when the caller has one.
+    """
+    alerts = alerts or LLMAlerts.from_settings(settings)
     po_chain = await load_channel_chain(api_client, LLMAgent.PO)
     summarizer_chain = await load_channel_chain(api_client, LLMAgent.PO_SUMMARIZER)
     return POLLMs(
-        po=build_agent_llm(LLMAgent.PO, po_chain, settings),
-        summarizer=build_agent_llm(LLMAgent.PO_SUMMARIZER, summarizer_chain, settings),
+        po=build_agent_llm(LLMAgent.PO, po_chain, settings, alerts=alerts),
+        summarizer=build_agent_llm(
+            LLMAgent.PO_SUMMARIZER, summarizer_chain, settings, alerts=alerts
+        ),
     )
 
 

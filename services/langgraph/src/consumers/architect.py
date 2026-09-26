@@ -57,6 +57,7 @@ from ..config.settings import Settings, get_settings
 from ..llm import (
     InvalidChannelChainError,
     LLMAgent,
+    LLMAlerts,
     LLMChannelsExhausted,
     build_agent_llm,
     channel_usage,
@@ -978,7 +979,10 @@ async def _plan(
             return early_result
 
         reset_task_chain()
-        graph = create_architect_graph(build_agent_llm(LLMAgent.ARCHITECT, channels, settings))
+        alerts = LLMAlerts.from_settings(settings, redis=redis.redis)
+        graph = create_architect_graph(
+            build_agent_llm(LLMAgent.ARCHITECT, channels, settings, alerts=alerts)
+        )
 
         if msg.is_reopen:
             user_content = (

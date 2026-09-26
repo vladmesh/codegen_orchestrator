@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-26
 
+- Administrators hear of an LLM channel 402, both subscriptions down (the PO then tells users capacity is out) and
+  an OpenRouter balance below `llm.openrouter_balance_alert_usd`, deduplicated in Redis per channel or agent.
+
 - A failed Architect planning is a story state (`stories.planning`, `planning_failed`): retried with backoff up to
   `supervisor.story_max_architect_retries`, parked at once when no retry can help, re-run by `retry-planning`.
 - `stories.planning` is the durable record that planning is owed: `retry-planning` only writes it due now and the

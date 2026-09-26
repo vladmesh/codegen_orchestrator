@@ -298,6 +298,21 @@
   category: llm
   description: "Max tokens in the summary itself"
 
+- key: llm.alert_realert_window_hours
+  value: 6
+  category: llm
+  description: "Hours before one LLM-channel operator alert (402, subscriptions down, low OpenRouter balance) may repeat for the same channel or agent"
+
+- key: llm.openrouter_balance_alert_usd
+  value: 20
+  category: llm
+  description: "OpenRouter balance in USD below which the operator is alerted"
+
+- key: llm.openrouter_balance_check_interval_minutes
+  value: 30
+  category: llm
+  description: "Minutes between two OpenRouter balance reads of the langgraph process"
+
 - key: llm.task_default_max_iterations
   value: 3
   category: llm

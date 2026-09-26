@@ -255,6 +255,29 @@ while you wait. The architect's claim voids the failed attempt's unadmitted
 tasks, so nothing of the failed plan is dispatched. Any other state is refused
 with 422 and changes nothing. Do not PATCH the status or run SQL.
 
+## LLM channel alerts: what they mean and what to do
+
+Administrators get these from the langgraph and architect processes. Each repeats at most once per
+`llm.alert_realert_window_hours` (default 6) per channel or agent; clear the Redis key
+`llm:alert:<kind>:<subject>` to hear one again sooner.
+
+- **`LLM channel <channel> refused <agent> (payment_required)`** — the provider answered 402. The
+  chain moved the call on, so work continues on the next channel while money lasts there. Top up or
+  fix billing for that channel. From `openrouter_balance_check` with `unauthorized` or `forbidden`,
+  the balance read itself was refused (OpenRouter documents `/credits` as needing a management
+  key): the balance is not being watched until the key can read it.
+- **`Subscription channels down, <agent> running on OpenRouter (codex=…, claude=…)`** — both
+  subscription CLIs failed one call and OpenRouter answered it. Every call now spends OpenRouter
+  money, and the PO tells users that engineering capacity is temporarily unavailable. Restore a
+  subscription: log the profile back in (see "Log in the production subscription executor
+  profiles"), set `CLAUDE_CODE_OAUTH_TOKEN`, or wait out the usage limit the class names.
+  `llm_channel_failed` logs carry each channel's reason.
+- **`OpenRouter balance is X USD, below the Y USD alert threshold`** — top up OpenRouter credits;
+  when it runs out the last channel fails with 402 and planning parks. The next read above the
+  threshold re-arms the alert. Read the latest balance from the `openrouter_balance` log event.
+  Tune the threshold and cadence with `llm.openrouter_balance_alert_usd` and
+  `llm.openrouter_balance_check_interval_minutes`.
+
 ## Reconcile managed deploy targets
 
 Provisioning success has one internal commit point:

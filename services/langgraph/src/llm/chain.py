@@ -12,6 +12,11 @@ Every answered call logs `llm_channel_used`; every skipped channel logs
 `llm_channel_failed`. The answering channel is also in the returned message's
 `response_metadata["llm_channel"]`, and in the collector `channel_usage()`
 opens, which is how a consumer names the channels one planning attempt used.
+
+A chain given `alerts` reports every failure and every answer to it
+(`alerts.py` decides what the operator hears). A chain given a `degraded_note`
+appends it, as one system message, to the call it sends to `openrouter` after
+`codex` and `claude` both failed that same call.
 """
 
 from __future__ import annotations
@@ -26,12 +31,13 @@ from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 import structlog
 
 from shared.contracts.dto.llm_channel import LLMChannel
 
+from .alerts import LLMAlerts, subscriptions_down
 from .errors import ChannelAttempt, ChannelFailure, ChannelFailureClass, LLMChannelsExhausted
 
 logger = structlog.get_logger(__name__)
@@ -95,6 +101,8 @@ class ChannelChainModel(BaseChatModel):
 
     agent: str
     slots: list[ChannelSlot]
+    alerts: LLMAlerts | None = None
+    degraded_note: str | None = None
     bound_tools: list[Any] | None = None
     bind_tools_kwargs: dict[str, Any] = {}
 
@@ -152,8 +160,16 @@ class ChannelChainModel(BaseChatModel):
         usage = _usage.get()
         for position, slot in enumerate(self.slots, start=1):
             started = time.monotonic()
+            call_messages = messages
+            if (
+                self.degraded_note is not None
+                and slot.channel is LLMChannel.OPENROUTER
+                and subscriptions_down(attempts)
+            ):
+                call_messages = [*messages, SystemMessage(content=self.degraded_note)]
+                logger.info("llm_degraded_note_added", agent=self.agent, position=position)
             try:
-                message = await self._call(slot, messages, stop, kwargs)
+                message = await self._call(slot, call_messages, stop, kwargs)
             except ChannelFailure as failure:
                 attempt = ChannelAttempt(slot.channel, failure.failure_class, failure.reason)
                 attempts.append(attempt)
@@ -169,6 +185,8 @@ class ChannelChainModel(BaseChatModel):
                     reason=failure.reason,
                     duration_s=round(time.monotonic() - started, 3),
                 )
+                if self.alerts is not None:
+                    self.alerts.channel_failed(self.agent, attempt)
                 continue
             duration = round(time.monotonic() - started, 3)
             logger.info(
@@ -181,6 +199,8 @@ class ChannelChainModel(BaseChatModel):
             )
             if usage is not None:
                 usage.answered.append(slot.channel)
+            if self.alerts is not None:
+                self.alerts.call_answered(self.agent, slot.channel, attempts)
             message.response_metadata = {
                 **message.response_metadata,
                 "llm_channel": slot.channel.value,

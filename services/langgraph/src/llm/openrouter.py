@@ -4,21 +4,30 @@ This is the only module in langgraph that constructs `ChatOpenAI` or reads the
 OpenRouter env (`*_LLM_MODEL`, `*_LLM_BASE_URL`, `*_LLM_API_KEY`,
 `SUMMARIZATION_MODEL`). A missing value is this channel's missing-credential
 failure, not a reason for the agent to refuse to run: the chain moves on.
+
+It also owns the scheduled OpenRouter balance check the `langgraph` process
+runs (`run_openrouter_balance_check`), since that check reads the same key.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+import httpx
 from langchain_openai import ChatOpenAI
 import openai
+import structlog
 
 from shared.contracts.dto.llm_channel import LLMChannel, LLMChannelConfig
 
 from ..config.agent_llm_env import AGENT_LLM_ENV, missing_llm_env
+from .alerts import AlertOutcome, LLMAlertKind, LLMAlerts
 from .chain import DEFAULT_CHANNEL_TIMEOUT_SECONDS, ChannelSlot
-from .errors import ChannelFailure, ChannelFailureClass, classify_error_text
+from .errors import ChannelFailure, ChannelFailureClass, classify_error_text, short_reason
 from .vocab import LLMAgent
+
+logger = structlog.get_logger(__name__)
 
 _STATUS_CLASSES = {
     401: ChannelFailureClass.UNAUTHORIZED,
@@ -101,3 +110,122 @@ def classify_openrouter_error(
         failure_class = _STATUS_CLASSES.get(status, ChannelFailureClass.SERVER_ERROR)
         return ChannelFailure(failure_class, reason)
     return None
+
+
+# --- the scheduled balance check ---------------------------------------------
+
+#: `GET <base_url>/credits`, documented at
+#: https://openrouter.ai/docs/api-reference/get-credits (checked 2026-09-26):
+#: `{"data": {"total_credits": <USD purchased>, "total_usage": <USD used>}}`.
+#: The docs mark it "Management key required"; the check sends the PO's
+#: OpenRouter key, and a 401/403 it gets back is alerted like a 402.
+CREDITS_PATH = "/credits"
+BALANCE_THRESHOLD_KEY = "llm.openrouter_balance_alert_usd"
+DEFAULT_BALANCE_THRESHOLD_USD = 20.0
+BALANCE_INTERVAL_KEY = "llm.openrouter_balance_check_interval_minutes"
+DEFAULT_BALANCE_INTERVAL_MINUTES = 30.0
+BALANCE_READ_TIMEOUT_SECONDS = 15.0
+#: The agent name the balance check's alerts carry.
+BALANCE_CHECK_AGENT = "openrouter_balance_check"
+_BALANCE_SUBJECT = LLMChannel.OPENROUTER.value
+#: The account balance is one per key; the langgraph process holds the PO's.
+_BALANCE_ENV_GROUP = "po"
+
+
+class BalanceReadError(Exception):
+    """The balance could not be read; ``failure`` is set when the provider refused the key."""
+
+    def __init__(self, reason: str, failure: ChannelFailure | None = None) -> None:
+        self.reason = reason
+        self.failure = failure
+        super().__init__(reason)
+
+
+async def read_openrouter_balance(client: httpx.AsyncClient, base_url: str, api_key: str) -> float:
+    """``total_credits - total_usage`` in USD, or `BalanceReadError`."""
+    url = base_url.rstrip("/") + CREDITS_PATH
+    try:
+        response = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise BalanceReadError(f"request failed: {type(exc).__name__}") from None
+    if response.status_code != httpx.codes.OK:
+        reason = short_reason(f"HTTP {response.status_code}: {response.text}", secrets=(api_key,))
+        refused = _STATUS_CLASSES.get(response.status_code)
+        if refused is ChannelFailureClass.RATE_LIMITED:
+            refused = None
+        raise BalanceReadError(reason, ChannelFailure(refused, reason) if refused else None)
+    try:
+        data = response.json()["data"]
+        return float(data["total_credits"]) - float(data["total_usage"])
+    except (KeyError, TypeError, ValueError):
+        raise BalanceReadError("unexpected response shape") from None
+
+
+async def check_openrouter_balance(
+    alerts: LLMAlerts, client: httpx.AsyncClient, base_url: str, api_key: str
+) -> None:
+    """Read the balance once and alert, or re-arm the alert. Never raises."""
+    try:
+        balance = await read_openrouter_balance(client, base_url, api_key)
+    except BalanceReadError as exc:
+        outcome = None
+        if exc.failure is not None:
+            outcome = await alerts.provider_refused(
+                LLMChannel.OPENROUTER,
+                BALANCE_CHECK_AGENT,
+                exc.failure.failure_class,
+                exc.failure.reason,
+            )
+        logger.warning(
+            "openrouter_balance_read_failed",
+            reason=exc.reason,
+            failure_class=None if exc.failure is None else exc.failure.failure_class.value,
+            alert_outcome=None if outcome is None else outcome.value,
+        )
+        return
+    threshold = await alerts.config_number(BALANCE_THRESHOLD_KEY, DEFAULT_BALANCE_THRESHOLD_USD)
+    outcome = None
+    if balance < threshold:
+        outcome = await alerts.alert(
+            LLMAlertKind.OPENROUTER_LOW_BALANCE,
+            _BALANCE_SUBJECT,
+            f"OpenRouter balance is {balance:.2f} USD, below the {threshold:.2f} USD "
+            "alert threshold. Top up OpenRouter credits before the fallback channel stops.",
+            level="warning",
+        )
+    else:
+        await alerts.rearm(LLMAlertKind.OPENROUTER_LOW_BALANCE, _BALANCE_SUBJECT)
+    logger.info(
+        "openrouter_balance",
+        balance_usd=round(balance, 2),
+        threshold_usd=threshold,
+        below_threshold=balance < threshold,
+        alert_sent=outcome is AlertOutcome.SENT,
+        alert_outcome=None if outcome is None else outcome.value,
+    )
+
+
+async def run_openrouter_balance_check(settings: Any, alerts: LLMAlerts) -> None:
+    """Check the OpenRouter balance every N minutes; idle when no key is configured."""
+    _, base_url_env, key_env = AGENT_LLM_ENV[_BALANCE_ENV_GROUP]
+    base_url = getattr(settings, base_url_env.lower())
+    api_key = getattr(settings, key_env.lower())
+    if not base_url or not api_key:
+        logger.info(
+            "openrouter_balance_check_idle",
+            missing_env=[
+                name for name in (base_url_env, key_env) if not getattr(settings, name.lower())
+            ],
+        )
+        return
+    logger.info("openrouter_balance_check_started")
+    async with httpx.AsyncClient(timeout=BALANCE_READ_TIMEOUT_SECONDS) as client:
+        while True:
+            try:
+                await check_openrouter_balance(alerts, client, base_url, api_key)
+            except Exception as exc:  # noqa: BLE001 - one bad round never ends the schedule
+                logger.error("openrouter_balance_check_failed", error_type=type(exc).__name__)
+            minutes = await alerts.config_number(
+                BALANCE_INTERVAL_KEY, DEFAULT_BALANCE_INTERVAL_MINUTES
+            )
+            await asyncio.sleep(minutes * 60)

@@ -110,6 +110,25 @@ every channel failed, `LLMChannelsExhausted` names each channel and its failure 
 `response_metadata["llm_channel"]`; the Architect's `architect_job_success` / `architect_job_failed`
 name the channels its planning attempt used and the failures it skipped.
 
+**Operator alerts** (`src/llm/alerts.py`): the chain reports every failure and answer to one alert
+module, which sends to administrators in a bounded background task and never touches the call.
+A `payment_required` (402) on any channel of any agent alerts once per channel; one call that
+failed both `codex` and `claude` and was answered by `openrouter` alerts "subscription channels
+down, <agent> running on OpenRouter" once per agent. The langgraph process also reads the
+OpenRouter balance (`GET <PO_LLM_BASE_URL>/credits`, `total_credits - total_usage`) every
+`llm.openrouter_balance_check_interval_minutes` and alerts below `llm.openrouter_balance_alert_usd`,
+re-armed once the balance is back above it; a 401/402/403 on that read is alerted like a refused
+channel, and without an OpenRouter key the check logs `openrouter_balance_check_idle` and stops.
+Dedup is a Redis key `llm:alert:<kind>:<channel or agent>` shared by langgraph and architect,
+set only after an administrator accepted the alert, with `llm.alert_realert_window_hours` as TTL.
+A missing or unreadable config key falls back to its documented default with a warning.
+
+**Degraded mode**: when the PO's call reaches `openrouter` after `codex` and `claude` both failed
+it, the chain appends `PO_SUBSCRIPTIONS_DOWN_NOTE` (`src/llm/agent.py`) as a system message to
+that call only: answer normally, keep collecting requirements, tell the user once that
+engineering capacity is temporarily unavailable, promise no timeline. The PO summarizer and the
+Architect get no note; no note is added when a subscription channel answered.
+
 ---
 
 

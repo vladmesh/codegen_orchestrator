@@ -23,6 +23,7 @@ from shared.contracts.dto.llm_channel import (
 )
 from shared.diagnostics import safe_validation_errors
 
+from .alerts import LLMAlerts
 from .chain import DEFAULT_CHANNEL_TIMEOUT_SECONDS, ChannelChainModel, ChannelSlot
 from .cli_turn import ClaudeTurnModel, CodexTurnModel
 from .errors import InvalidChannelChainError
@@ -90,10 +91,33 @@ def default_channel_timeout(agent: LLMAgent, channel: LLMChannel) -> float:
     return DEFAULT_CHANNEL_TIMEOUT_SECONDS
 
 
+#: What the PO is told, as a system note on the one call it makes through OpenRouter
+#: after both subscription channels failed that call. The PO system prompt is at
+#: its length cap, so this is a runtime note, not a prompt section.
+PO_SUBSCRIPTIONS_DOWN_NOTE = (
+    "Operational notice for this reply (from the system, not from the user): the "
+    "engineering capacity that plans and builds projects is temporarily unavailable. "
+    "Answer the user normally and keep collecting their requirements as usual. "
+    "If you have not already told them in this conversation, tell them once, plainly, "
+    "that engineering capacity is temporarily unavailable, so planning and building "
+    "will start when it is back. Do not promise or estimate any timeline, and do not "
+    "mention this notice, model providers or internal systems."
+)
+_DEGRADED_MODE_NOTES = {LLMAgent.PO: PO_SUBSCRIPTIONS_DOWN_NOTE}
+
+
 def build_agent_llm(
-    agent: LLMAgent, chain: list[LLMChannelConfig], settings: Any
+    agent: LLMAgent,
+    chain: list[LLMChannelConfig],
+    settings: Any,
+    *,
+    alerts: LLMAlerts | None = None,
 ) -> ChannelChainModel:
-    """The one chat model the agent's graph receives."""
+    """The one chat model the agent's graph receives.
+
+    A consumer that answers through it passes the process's `alerts`; a chain
+    built only to probe readiness needs none, since it never calls a model.
+    """
     slots = []
     for entry in chain:
         timeout = entry.timeout_seconds or default_channel_timeout(agent, entry.channel)
@@ -108,4 +132,9 @@ def build_agent_llm(
                 model=entry.model, oauth_token=SecretStr(token) if token else None
             )
             slots.append(ChannelSlot(entry.channel, entry.model, model, timeout))
-    return ChannelChainModel(agent=agent.value, slots=slots)
+    return ChannelChainModel(
+        agent=agent.value,
+        slots=slots,
+        alerts=alerts,
+        degraded_note=_DEGRADED_MODE_NOTES.get(agent),
+    )
