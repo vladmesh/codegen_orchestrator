@@ -6455,6 +6455,9 @@ def cleanup_owned_capability_work(ctx: dict) -> None:
             "capability_message",
             f"{message.stream}/{message.message_id}",
             groups=list(message.groups),
+            project_id=message.project_id,
+            run_id=message.run_id,
+            task_id=message.task_id,
         )
         ctx["manifest"].write(
             ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"

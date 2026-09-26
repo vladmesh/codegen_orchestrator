@@ -33,6 +33,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   connection, never a POST, so a poll no longer dies on `Server disconnected without sending a response`.
 - Live run cleanup removes the scheduler's `story:stage_notice:<id>` markers and set membership of its own stories
   before the residue proof, so an aborted run no longer fails `prove_nothing_left` on them.
+- Live capability-stream cleanup rescans until clean (up to 6 scans, 2 s apart), logging and recording owned entries the
+  platform publishes during teardown, e.g. the temporary-access revoke; only lasting residue fails the run.
 
 ## 2026-09-25
 

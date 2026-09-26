@@ -11,7 +11,12 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from capability_cleanup import cleanup_owned_capability_messages
+from capability_cleanup import (
+    SETTLE_PAUSE_SECONDS,
+    SETTLE_ROUNDS,
+    CapabilityMessage,
+    cleanup_owned_capability_messages,
+)
 import conftest as live_conftest
 from conftest import create_test_project_context
 from db_teardown_fake import FakeDatabase
@@ -2425,6 +2430,7 @@ def test_capability_cleanup_removes_only_owned_queued_and_pending_entries():
 
 def test_capability_cleanup_fails_closed_when_owned_residue_cannot_be_deleted():
     calls = 0
+    pauses = []
 
     def command(*args):
         nonlocal calls
@@ -2433,10 +2439,112 @@ def test_capability_cleanup_fails_closed_when_owned_residue_cannot_be_deleted():
             return '[{"stream":"qa:queue","id":"3-0","groups":["qa-consumers"]}]'
         return "0"
 
-    with pytest.raises(CleanupError, match="capability stream residue"):
-        cleanup_owned_capability_messages("project-1", {"run-1"}, command=command)
+    with pytest.raises(CleanupError, match="capability stream residue remains: qa:queue/3-0"):
+        cleanup_owned_capability_messages(
+            "project-1", {"run-1"}, command=command, sleep=pauses.append
+        )
 
-    assert calls == 2
+    assert calls == 1 + SETTLE_ROUNDS
+    assert pauses == [SETTLE_PAUSE_SECONDS] * (SETTLE_ROUNDS - 1)
+
+
+def test_capability_cleanup_settle_budget_is_bounded():
+    assert 10 <= SETTLE_PAUSE_SECONDS * (SETTLE_ROUNDS - 1) <= 15
+
+
+def test_capability_cleanup_converges_when_the_platform_publishes_an_owned_entry_late():
+    """The scheduler's temporary-access revoke lands on deploy:queue after the first pass."""
+    commands = []
+    pauses = []
+    discovered = []
+    scans = iter(
+        [
+            '[{"stream":"qa:queue","id":"1-0","groups":["qa-consumers"],"project_id":"project-1"}]',
+            '[{"stream":"deploy:queue","id":"1790423069761-0","groups":["capability-workers"],'
+            '"project_id":"project-1","run_id":"temporary-access-revoke-332e697b2580"}]',
+            "[]",
+        ]
+    )
+
+    def command(*args):
+        commands.append(args)
+        return next(scans) if args[0] == "EVAL" else "1"
+
+    residue = cleanup_owned_capability_messages(
+        "project-1",
+        {"run-1"},
+        command=command,
+        on_discovered=discovered.append,
+        sleep=pauses.append,
+    )
+
+    assert residue == []
+    assert [message.message_id for message in discovered] == ["1-0", "1790423069761-0"]
+    assert discovered[1] == CapabilityMessage(
+        stream="deploy:queue",
+        message_id="1790423069761-0",
+        groups=("capability-workers",),
+        project_id="project-1",
+        run_id="temporary-access-revoke-332e697b2580",
+    )
+    late = commands.index(("XACK", "deploy:queue", "capability-workers", "1790423069761-0"))
+    assert commands[late + 1] == ("XDEL", "deploy:queue", "1790423069761-0")
+    assert sum(call[0] == "EVAL" for call in commands) == 3
+    assert pauses == [SETTLE_PAUSE_SECONDS]
+
+
+def test_capability_cleanup_logs_an_entry_published_during_cleanup():
+    scans = iter(
+        [
+            "[]",
+            '[{"stream":"deploy:queue","id":"9-0","groups":{},'
+            '"project_id":"project-1","run_id":"temporary-access-revoke-1"}]',
+            "[]",
+        ]
+    )
+
+    def command(*args):
+        return next(scans) if args[0] == "EVAL" else "1"
+
+    with structlog.testing.capture_logs() as logs:
+        cleanup_owned_capability_messages(
+            "project-1", {"run-1"}, command=command, sleep=lambda _: None
+        )
+
+    assert logs == [
+        {
+            "event": "live_capability_message_published_during_cleanup",
+            "log_level": "warning",
+            "stream": "deploy:queue",
+            "message_id": "9-0",
+            "project_id": "project-1",
+            "run_id": "temporary-access-revoke-1",
+            "task_id": None,
+            "settle_round": 1,
+        }
+    ]
+
+
+def test_capability_cleanup_clean_first_pass_scans_once_more_and_never_waits():
+    evals = 0
+
+    def command(*args):
+        nonlocal evals
+        if args[0] == "EVAL":
+            evals += 1
+            if evals == 1:
+                return '[{"stream":"engineering:queue","id":"1-0","groups":["capability-workers"]}]'
+            return "[]"
+        return "1"
+
+    def no_wait(seconds):
+        pytest.fail(f"a clean first pass must not wait ({seconds}s)")
+
+    assert (
+        cleanup_owned_capability_messages("project-1", {"run-1"}, command=command, sleep=no_wait)
+        == []
+    )
+    assert evals == 2
 
 
 @pytest.mark.asyncio
