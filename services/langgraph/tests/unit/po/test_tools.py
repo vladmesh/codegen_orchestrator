@@ -1760,7 +1760,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 21
+        expected_count = 22
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1777,6 +1777,7 @@ class TestGetAllTools:
             "teardown_project",
             "present_product_brief",
             "confirm_product_brief",
+            "show_full_brief",
             "create_story",
             "list_stories",
             "reopen_story",

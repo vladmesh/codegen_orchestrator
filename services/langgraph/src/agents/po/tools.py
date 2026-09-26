@@ -174,6 +174,7 @@ def get_all_tools() -> list:
         tools_projects.validate_telegram_token,
         tools_briefs.present_product_brief,
         tools_briefs.confirm_product_brief,
+        tools_briefs.show_full_brief,
         tools_stories.create_story,
         tools_stories.list_stories,
         tools_stories.reopen_story,

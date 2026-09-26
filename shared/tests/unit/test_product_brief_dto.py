@@ -10,6 +10,7 @@ attempt fence — is proved against a real database in
 from pydantic import ValidationError
 import pytest
 
+from shared.contracts.dto import product_brief as dto
 from shared.contracts.dto.engineering_dispatch import (
     OVERRIDABLE_REFUSALS,
     EngineeringDispatchRefusal,
@@ -343,6 +344,110 @@ class TestProposedContentCarriesTheUsersWording:
             ProductBriefConfirm(
                 request_id="po-brief-confirm:brief-1",
                 content=_proposed(must_requirements=[{"id": "r1", "text": "one"}]),
+            )
+
+
+def _requirements(count: int) -> list[dict]:
+    return [{"id": f"r{i}", "text": f"Thing {i}", "user_wording": "do it"} for i in range(count)]
+
+
+class TestProposalsAreCapped:
+    """A proposal is capped in every count and text; a stored revision is not.
+
+    The caps keep the brief's full form far below the 20k-character brief that
+    broke the 2026-09-25 canary. They sit on the write shape only, so a revision
+    stored before them still loads for reading.
+    """
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"must_requirements": _requirements(dto.MAX_MUST_REQUIREMENTS + 1)},
+            {"summary": "s" * (dto.MAX_SUMMARY_LENGTH + 1)},
+            {
+                "must_requirements": [
+                    {
+                        "id": "r1",
+                        "text": "t" * (dto.MAX_REQUIREMENT_TEXT_LENGTH + 1),
+                        "user_wording": "x",
+                    }
+                ]
+            },
+            {
+                "must_requirements": [
+                    {
+                        "id": "r1",
+                        "text": "t",
+                        "user_wording": "w" * (dto.MAX_USER_WORDING_LENGTH + 1),
+                    }
+                ]
+            },
+            {
+                "usage_examples": [
+                    {"requirement_id": "r1", "user_sends": "hi", "product_answers": "ok"}
+                ]
+                * (dto.MAX_USAGE_EXAMPLES + 1)
+            },
+            {
+                "usage_examples": [
+                    {
+                        "requirement_id": "r1",
+                        "user_sends": "u" * (dto.MAX_USER_SENDS_LENGTH + 1),
+                        "product_answers": "ok",
+                    }
+                ]
+            },
+            {
+                "usage_examples": [
+                    {
+                        "requirement_id": "r1",
+                        "user_sends": "hi",
+                        "product_answers": "a" * (dto.MAX_PRODUCT_ANSWERS_LENGTH + 1),
+                    }
+                ]
+            },
+            {"limitations": ["one"] * (dto.MAX_LIMITATIONS + 1)},
+            {"limitations": ["l" * (dto.MAX_LIMITATION_LENGTH + 1)]},
+            {
+                "initial_settings": [
+                    {"key": f"k.s{i}", "value": i, "description": "d"}
+                    for i in range(dto.MAX_INITIAL_SETTINGS + 1)
+                ]
+            },
+            {
+                "initial_settings": [
+                    {
+                        "key": "k.s",
+                        "value": 1,
+                        "description": "d" * (dto.MAX_SETTING_DESCRIPTION_LENGTH + 1),
+                    }
+                ]
+            },
+        ],
+    )
+    def test_a_proposal_over_a_cap_is_refused_and_a_stored_one_still_loads(self, overrides):
+        with pytest.raises(ValidationError):
+            ProposedProductBriefContent.model_validate(_proposed(**overrides))
+        stored = ProductBriefContent.model_validate(_proposed(**overrides))
+        assert stored.must_requirements
+
+    def test_a_proposal_at_every_cap_is_accepted(self):
+        content = ProposedProductBriefContent.model_validate(
+            _proposed(
+                summary="s" * dto.MAX_SUMMARY_LENGTH,
+                must_requirements=_requirements(dto.MAX_MUST_REQUIREMENTS),
+                limitations=["l" * dto.MAX_LIMITATION_LENGTH] * dto.MAX_LIMITATIONS,
+            )
+        )
+        assert len(content.must_requirements) == dto.MAX_MUST_REQUIREMENTS
+
+    def test_a_title_over_the_cap_opens_no_revision(self):
+        with pytest.raises(ValidationError):
+            ProductBriefCreate(
+                project_id="11111111-1111-4111-8111-111111111111",
+                title="T" * (dto.MAX_BRIEF_TITLE_LENGTH + 1),
+                content=ProposedProductBriefContent.model_validate(_proposed()),
+                request_id="po-brief:x",
             )
 
 

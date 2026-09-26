@@ -436,11 +436,55 @@ sends and what the product answers), `limitations` (plain-language sentences),
 All default on the read shape, so a brief stored before them still parses. The
 write shape requires a language and a description on every setting, and refuses a
 usage example naming an unknown requirement id and a user-facing requirement with
-no example. `present_product_brief` renders the user-facing message from a
-per-language label table (`ru`, `en`; any other language falls back to `en`),
-shows settings only by their description, and keeps the brief id in the PO-facing
-prefix. A stored revision lacking these fields cannot be confirmed; the PO is told
-to present a correction.
+no example. The user-facing text comes from a per-language label table (`ru`,
+`en`; any other language falls back to `en`), shows settings only by their
+description, and keeps the brief id in the PO-facing prefix. A stored revision
+lacking these fields cannot be confirmed; the PO is told to present a correction.
+
+**A brief has two forms, both pure functions of the stored title and content**
+(`shared/product_brief_text.py`), both Telegram HTML with every user or model text
+escaped by `html.escape(..., quote=False)`:
+
+- *Short form* (`render_brief_message`) — the one confirmation message the user
+  signs: title and summary, then bold sections *what you get*, *how you will use
+  it*, *limitations*, *settings* in the user's language, each omitted when empty,
+  and the answer line. Each requirement's wording and each usage example appear
+  once; no revision or requirement id, no "your words" quote, no provenance, no
+  filler. Its length, in UTF-16 units as Telegram counts it, is at most
+  `BRIEF_MESSAGE_BUDGET` (3500).
+- *Full form* (`render_full_brief_sections`) — every section at full length, with
+  the user's own words under each requirement, as a list of sections: heading,
+  what you get, how you will use it, limitations, settings (empty ones omitted).
+  The PO's `show_full_brief(brief_id)` joins them with `MESSAGE_BREAK` and is a
+  `return_direct` tool, so its text is the turn's answer and each section is its
+  own Telegram message; a section over the bot's limit is cut by the bot's
+  splitter. The admin API returns the same sections from
+  `GET /api/product-briefs/{id}/full` as `ProductBriefFullText`
+  (`brief_id`, `revision`, `language`, `sections: list[str]`).
+
+**Over the budget, the product is staged, and nothing is written.**
+`present_product_brief` renders the short form from the *proposed* title and
+content before it creates a revision or writes the `product_brief_id` pointer.
+Over `BRIEF_MESSAGE_BUDGET` it creates and writes nothing and returns a refusal
+naming the measured length and the budget and telling the PO to split the product
+into stages — the requirements for a first story in this brief, the rest in a
+later one — never to shorten the wording. An open revision stored before the
+budget whose short form does not fit is not re-sent; the PO is told to present
+its first stage with `corrects_brief_id`. A brief that fits keeps the fingerprint
+creation key and the "send the returned message unchanged" rule.
+
+**A proposal is capped; a stored revision is not.** The write shapes
+(`ProposedProductBriefContent`, `ProposedMustRequirement`, `ProposedUsageExample`,
+`ProposedInitialSetting`, `ProductBriefCreate.title`) cap every count and text:
+title 100, summary 400, at most 8 must-requirements (text 200, `user_wording`
+250 — a longer quote goes to `wording_reference`), 10 usage examples (sends 150,
+answers 200), 5 limitations (200 each), 6 initial settings (description 150). At
+every cap the full form stays under `FULL_BRIEF_CEILING` (12,000 characters as
+the user reads them; pinned in `shared/tests/unit/test_product_brief_text.py`),
+far below the 20k brief that broke the 2026-09-25 canary. The read shapes keep
+their looser limits, so a revision stored before the caps still loads and reads
+in full; confirming one is refused like any other over-cap echo, and the PO
+presents a correction.
 
 **A brief carries typed initial settings, and never a secret.**
 `ProductBriefContent.initial_settings` is an ordered list of `InitialSetting` —
@@ -640,7 +684,7 @@ postmortem evidence.
 
 **The producer of the confirmed brief is the PO consumer.**
 `present_product_brief` opens the revision and returns the exact text the user is
-shown; `confirm_product_brief` freezes it by echoing that content back.
+shown (the short form, after a PO-only "Product Brief revision N (id: …)" line); `confirm_product_brief` freezes it by echoing that content back.
 Recovering the presentation across a PO restart is what the project config key
 `product_brief_id` is for — it points at the revision presented and not yet
 spent, because until a brief is bound to a story no route finds it from the
