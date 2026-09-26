@@ -190,16 +190,21 @@ async def _queue_due_planning_retries(
     stories: list[StoryDTO],
     now: datetime,
 ) -> int:
-    """Re-queue planning for every story whose failed attempt is due a retry.
+    """Re-queue planning for every story whose `planning` record owes a due retry.
 
-    The guaranteed publisher of every planning the story's `planning` record
-    owes: a failed attempt's retry, whose bound, count and backoff the API
-    decided when it recorded the failure, and an operator's `retry-planning`,
-    due at once. This only waits out `next_attempt_at` and publishes once per
-    record. A story in
-    `created` is left to the stuck-story retry above, which already re-queues it.
+    The guaranteed publisher of every planning the record owes: a failed
+    attempt's retry, whose bound, count and backoff the API decided when it
+    recorded the failure, and an operator's `retry-planning`, due at once. A
+    story in `created` is left to the stuck-story retry above, which already
+    re-queues it.
+
+    The row is what is owed; the Redis key is only a throttle. It is checked
+    first and set only after `XADD` returned, so a failed recipient lookup or
+    publish leaves nothing behind and the next tick publishes again. A publish
+    whose outcome is unknown may be repeated; the architect settles the
+    duplicate (not due, a live rival's claim, or a plan already in place). One
+    story's failure is logged and the loop goes on with the others.
     """
-    redis = redis_client._redis
     queued = 0
     for story in stories:
         planning = story.planning
@@ -207,35 +212,53 @@ async def _queue_due_planning_retries(
             continue
         if planning.next_attempt_at is None or planning.next_attempt_at > now:
             continue
-        # The same once-per-record guard `retry-planning` takes when it publishes
-        # right away, so one record is published once. It expires after
-        # `supervisor.story_retry_ttl`, so a message that was lost is re-sent.
-        key = planning_retry_queued_key(story.id, planning)
-        if not await redis.set(key, 1, nx=True, ex=_story_retry_ttl()):
-            continue
-        project_id = str(story.project_id)
-        recipient = await resolve_project_recipient(
-            api_client, project_id, event="story_planning_retry", story_id=story.id
-        )
-        await redis_client.publish_message(
-            ARCHITECT_QUEUE,
-            ArchitectMessage(
+        try:
+            queued += await _publish_due_planning_retry(api_client, redis_client, story)
+        except Exception as exc:
+            logger.error(
+                "story_planning_retry_publish_failed",
                 story_id=story.id,
-                project_id=project_id,
-                telegram_chat_id=recipient.telegram_chat_id,
-                is_reopen=planning.reopen,
-                user_report=story.user_report if planning.reopen else None,
-            ),
-        )
-        logger.warning(
-            "story_planning_retry_queued",
-            story_id=story.id,
-            retry_attempt=planning.failed_attempts,
-            max_retries=planning.max_retries,
-            last_failure=None if planning.last_failure is None else planning.last_failure.detail,
-        )
-        queued += 1
+                retry_attempt=planning.failed_attempts,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
     return queued
+
+
+async def _publish_due_planning_retry(
+    api_client: SchedulerAPIClient, redis_client: RedisStreamClient, story: StoryDTO
+) -> int:
+    """Publish one due record's architect job unless it was published within the TTL."""
+    planning = story.planning
+    redis = redis_client._redis
+    # The same throttle `retry-planning` sets after its own publish. It expires
+    # after `supervisor.story_retry_ttl`, so a message that was lost is re-sent.
+    key = planning_retry_queued_key(story.id, planning)
+    if await redis.exists(key):
+        return 0
+    project_id = str(story.project_id)
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="story_planning_retry", story_id=story.id
+    )
+    await redis_client.publish_message(
+        ARCHITECT_QUEUE,
+        ArchitectMessage(
+            story_id=story.id,
+            project_id=project_id,
+            telegram_chat_id=recipient.telegram_chat_id,
+            is_reopen=planning.reopen,
+            user_report=story.user_report if planning.reopen else None,
+        ),
+    )
+    await redis.set(key, 1, ex=_story_retry_ttl())
+    logger.warning(
+        "story_planning_retry_queued",
+        story_id=story.id,
+        retry_attempt=planning.failed_attempts,
+        max_retries=planning.max_retries,
+        last_failure=None if planning.last_failure is None else planning.last_failure.detail,
+    )
+    return 1
 
 
 def _planning_attempt_is_live(brief: ProductBriefRead, now: datetime) -> bool:

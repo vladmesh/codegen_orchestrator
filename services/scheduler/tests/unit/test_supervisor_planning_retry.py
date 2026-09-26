@@ -54,8 +54,10 @@ def _story(story_id: str, status: str, planning: StoryPlanning | None, **kwargs)
 
 
 class _FakeAPI:
-    def __init__(self, stories) -> None:
+    def __init__(self, stories, project_failures: int = 0) -> None:
         self._stories = stories
+        #: How many project reads answer 503 first: a transient recipient lookup failure.
+        self._project_failures = project_failures
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -66,6 +68,9 @@ class _FakeAPI:
                 json=[s.model_dump(mode="json") for s in self._stories if s.status == status],
             )
         if path == f"/api/projects/{PROJECT_ID}":
+            if self._project_failures:
+                self._project_failures -= 1
+                return httpx.Response(503, json={"detail": "API restarting"})
             return httpx.Response(200, json=_make_project().model_dump(mode="json"))
         if path == "/api/users/1":
             user = UserDTO(id=1, telegram_id=4242, created_at=datetime.now(UTC))
@@ -78,12 +83,13 @@ def api_factory(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("API_BASE_URL", "http://api.test")
 
-    def build(stories):
+    def build(stories, project_failures: int = 0):
         from src.clients.api import SchedulerAPIClient
 
+        fake = _FakeAPI(stories, project_failures)
         client = SchedulerAPIClient()
         client._client = httpx.AsyncClient(
-            base_url="http://api.test", transport=httpx.MockTransport(_FakeAPI(stories).handle)
+            base_url="http://api.test", transport=httpx.MockTransport(fake.handle)
         )
         return client
 
@@ -206,3 +212,90 @@ async def supervise_stuck_stories_now(api, redis_client):
     from src.tasks.supervisor import supervise_stuck_stories
 
     return await supervise_stuck_stories(api, redis_client)
+
+
+def _due(story_id: str):
+    return _story(
+        story_id,
+        "in_progress",
+        _planning(StoryPlanningState.RETRYING, due_in=timedelta(seconds=-1)),
+    )
+
+
+def _failing_publish(redis_client: RedisStreamClient, *, failures: int, story_id: str | None):
+    """`XADD` raises for the first `failures` publishes (of one story, if named)."""
+    publish = redis_client.publish_message
+    left = {"failures": failures}
+
+    async def flaky(stream, message):
+        if left["failures"] and (story_id is None or message.story_id == story_id):
+            left["failures"] -= 1
+            raise ConnectionError("XADD failed")
+        return await publish(stream, message)
+
+    redis_client.publish_message = flaky
+
+
+@pytest.mark.asyncio
+async def test_a_failed_recipient_lookup_leaves_no_guard_and_the_next_tick_publishes(
+    api_factory, redis_client
+):
+    story = _due("story-lookup")
+    api = api_factory([story], project_failures=1)
+
+    first = await supervise_stuck_stories_now(api, redis_client)
+
+    assert first == {"retried": 0, "failed": 0}
+    assert await _architect_messages(redis_client) == []
+    assert not await redis_client._redis.exists(planning_retry_queued_key(story.id, story.planning))
+
+    second = await supervise_stuck_stories_now(api, redis_client)
+
+    assert second == {"retried": 1, "failed": 0}
+    assert [m["story_id"] for m in await _architect_messages(redis_client)] == ["story-lookup"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_publish_leaves_no_guard_and_the_next_tick_publishes(
+    api_factory, redis_client
+):
+    story = _due("story-xadd")
+    api = api_factory([story])
+    _failing_publish(redis_client, failures=1, story_id=None)
+
+    first = await supervise_stuck_stories_now(api, redis_client)
+
+    assert first == {"retried": 0, "failed": 0}
+    assert not await redis_client._redis.exists(planning_retry_queued_key(story.id, story.planning))
+
+    second = await supervise_stuck_stories_now(api, redis_client)
+
+    assert second == {"retried": 1, "failed": 0}
+    assert [m["story_id"] for m in await _architect_messages(redis_client)] == ["story-xadd"]
+    # Published now, so the throttle holds the next tick back.
+    assert await supervise_stuck_stories_now(api, redis_client) == {"retried": 0, "failed": 0}
+
+
+@pytest.mark.asyncio
+async def test_one_story_that_fails_to_publish_does_not_stop_the_others(api_factory, redis_client):
+    api = api_factory([_due("story-broken"), _due("story-fine")])
+    _failing_publish(redis_client, failures=1, story_id="story-broken")
+
+    result = await supervise_stuck_stories_now(api, redis_client)
+
+    assert result == {"retried": 1, "failed": 0}
+    assert [m["story_id"] for m in await _architect_messages(redis_client)] == ["story-fine"]
+
+
+@pytest.mark.asyncio
+async def test_a_guard_without_a_retrying_row_publishes_nothing(api_factory, redis_client):
+    """The row wins over Redis: a planned story is owed nothing, whatever keys remain."""
+    story = _due("story-planned")
+    await redis_client._redis.set("story:planning_retry_queued:story-planned:0", 1)
+    planned = story.model_copy(
+        update={"planning": story.planning.model_copy(update={"state": StoryPlanningState.PLANNED})}
+    )
+    api = api_factory([planned])
+
+    assert await supervise_stuck_stories_now(api, redis_client) == {"retried": 0, "failed": 0}
+    assert await _architect_messages(redis_client) == []

@@ -14,6 +14,7 @@ are the decisions production makes, not a double's call list.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,6 +25,7 @@ from shared.contracts.dto.product_brief import ProductBriefPlanningAttemptOutcom
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.story_planning import (
+    StoryPlanning,
     StoryPlanningOutcome,
     StoryPlanningReport,
     StoryPlanningState,
@@ -80,7 +82,9 @@ class _PlanningAPI:
         self.tasks = list(tasks)
         self.brief = brief
         self.reports: list = []
+        #: Claims that took the plan, and claims answered `in_progress` for a live rival.
         self.claims = 0
+        self.rival_claims = 0
         self.transitions: list[str] = []
 
     # --- reads before planning ---
@@ -109,7 +113,15 @@ class _PlanningAPI:
         return self.brief
 
     async def claim_planning_attempt(self, brief_id):
-        """The API's claim: a new attempt id, and the superseded plan voided."""
+        """The API's claim: a live rival's attempt is left alone; otherwise a new
+        attempt id, and the superseded plan voided."""
+        if self.brief.planning_attempt_is_live(datetime.now(UTC)):
+            self.rival_claims += 1
+            return make_planning_attempt(
+                story_id=STORY_ID,
+                outcome=ProductBriefPlanningAttemptOutcome.IN_PROGRESS,
+                planning_attempt_id=self.brief.planning_attempt_id,
+            )
         self.claims += 1
         superseded = self.brief.planning_attempt_id
         new_id = f"plan-{self.claims}"
@@ -191,7 +203,8 @@ class _PlanningAPI:
 def _graph(*outcomes):
     """A graph whose runs raise or answer in order; an answer names its channel.
 
-    A callable outcome is run as the planning itself, and may raise.
+    A callable outcome is run as the planning itself, and may raise; an async
+    one is awaited, so another job can arrive while this one is planning.
     """
     graph = MagicMock()
     runs = list(outcomes)
@@ -200,6 +213,8 @@ def _graph(*outcomes):
         outcome = runs.pop(0)
         if callable(outcome):
             outcome = outcome()
+        if inspect.isawaitable(outcome):
+            outcome = await outcome
         if isinstance(outcome, BaseException):
             raise outcome
         _usage.get().answered.append(outcome)
@@ -460,6 +475,62 @@ async def test_a_success_without_a_brief_survives_one_failed_report():
     assert len(calls) == 2
     assert api.story.planning.state is StoryPlanningState.PLANNED
     assert api.story.planning.channels == ["claude"]
+
+
+def _due_retry() -> StoryPlanning:
+    """A `retrying` record whose time has come, as the supervisor publishes it."""
+    return failed_record(
+        None,
+        StoryPlanningReport(
+            outcome=StoryPlanningOutcome.FAILED,
+            failure=StoryFailure(
+                code=StoryFailureCode.PLANNING_FAILED, source="architect", detail="timeout"
+            ),
+        ),
+        max_retries=MAX_RETRIES,
+        now=datetime.now(UTC) - timedelta(hours=1),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_during_the_live_run_is_settled_by_the_rivals_claim():
+    """Two messages for one due record: the second arrives while the first plans."""
+    from src.consumers.architect import process_architect_job
+
+    api = _PlanningAPI(brief=_brief(), status=StoryStatus.IN_PROGRESS, planning=_due_retry())
+    duplicate: dict = {}
+
+    async def plan_while_the_duplicate_arrives():
+        duplicate["result"] = await process_architect_job(_job(), AsyncMock())
+        return LLMChannel.CODEX
+
+    graph = _graph(plan_while_the_duplicate_arrives)
+
+    first = await _run(api, graph)
+
+    assert first["status"] == "success"
+    assert duplicate["result"]["status"] == "skipped"
+    assert duplicate["result"]["reason"] == "another architect owns this Product Brief plan"
+    assert graph.ainvoke.await_count == 1
+    assert (api.claims, api.rival_claims) == (1, 1)
+    assert api.story.planning.state is StoryPlanningState.PLANNED
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_after_a_recorded_failure_is_settled_as_not_due():
+    """Two messages for one due record: the second arrives after the first failed."""
+    api = _PlanningAPI(brief=_brief(), status=StoryStatus.IN_PROGRESS, planning=_due_retry())
+    graph = _graph(RuntimeError("LLM timeout"), LLMChannel.CODEX)
+
+    first = await _run(api, graph)
+    second = await _run(api, graph)
+
+    assert first["planning"] == "retrying"
+    assert second["reason"] == "planning retry not due"
+    assert graph.ainvoke.await_count == 1
+    assert (api.claims, api.rival_claims) == (1, 0)
+    assert len(api.reports) == 1
+    assert api.story.planning.failed_attempts == 2
 
 
 # --- what counts as "already decomposed" ---------------------------------------

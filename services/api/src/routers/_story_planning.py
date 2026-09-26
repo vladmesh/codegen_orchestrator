@@ -215,35 +215,28 @@ async def _publish_owed_planning(
     db: AsyncSession,
     redis: RedisStreamClient,
 ) -> bool:
-    """Publish the architect job the committed record owes, once. Best effort.
+    """Publish the architect job the committed record owes, now. Best effort.
 
-    Takes the same once-per-record guard the supervisor takes, so the two never
-    both publish this record. A failure after the guard was taken gives it back,
-    and any failure is logged and left to the supervisor: the record on the row
-    is what is owed, and it is already committed.
+    The record on the row is what is owed, and it is already committed; the
+    supervisor publishes it whenever this does not. So every failure is logged
+    and left to it. The supervisor's throttle is set only after the publish
+    returned, so a failure here leaves nothing that could hold the supervisor
+    back; a duplicate the supervisor may still send is settled by the architect.
     """
-    key = planning_retry_queued_key(story.id, planning)
     try:
         telegram_chat_id = await resolve_project_chat_id(
             db, story.project_id, event="story_planning_retried", story_id=story.id
         )
-        if not await redis.redis.set(key, 1, nx=True, ex=guard_ttl):
-            return False
-        try:
-            await redis.publish_message(
-                ARCHITECT_QUEUE,
-                ArchitectMessage(
-                    story_id=story.id,
-                    project_id=str(story.project_id),
-                    telegram_chat_id=telegram_chat_id,
-                    is_reopen=planning.reopen,
-                    user_report=story.user_report if planning.reopen else None,
-                ),
-            )
-        except Exception:
-            with suppress(Exception):
-                await redis.redis.delete(key)
-            raise
+        await redis.publish_message(
+            ARCHITECT_QUEUE,
+            ArchitectMessage(
+                story_id=story.id,
+                project_id=str(story.project_id),
+                telegram_chat_id=telegram_chat_id,
+                is_reopen=planning.reopen,
+                user_report=story.user_report if planning.reopen else None,
+            ),
+        )
     except Exception as exc:
         logger.warning(
             "story_planning_retry_left_to_supervisor",
@@ -252,4 +245,7 @@ async def _publish_owed_planning(
             error_type=type(exc).__name__,
         )
         return False
+    with suppress(Exception):
+        # Only saves the supervisor a duplicate; losing it costs nothing more.
+        await redis.redis.set(planning_retry_queued_key(story.id, planning), 1, ex=guard_ttl)
     return True

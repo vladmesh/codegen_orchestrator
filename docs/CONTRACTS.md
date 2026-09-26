@@ -1016,10 +1016,13 @@ same transaction makes the `human-review` stop with the `StoryFailure` and both 
 `planning_failed` stop, else 422: one transaction clears the stop, lands on `in_progress` and writes
 `retrying` due now with `failed_attempts` 0. The scheduler supervisor is the guaranteed publisher of
 every due `retrying` record; `retry-planning` also publishes right after its commit as a best-effort
-accelerator and answers 200 even when that fails. Both take the once-per-record Redis guard
-`planning_retry_queued_key` (TTL `supervisor.story_retry_ttl`), so one record is published once. The
-architect settles a job for a `retrying` record that is not yet due without planning
-(`architect_planning_not_due`), so a redelivered entry cannot skip the backoff or spend the budget.
+accelerator and answers 200 even when that fails. The Redis key `planning_retry_queued_key` (TTL
+`supervisor.story_retry_ttl`) is a throttle, never a lock: both publishers set it only after `XADD`
+returned, the supervisor checks it before publishing, and a failed lookup or publish leaves none, so
+the next tick publishes again (a per-story failure is logged as `story_planning_retry_publish_failed`
+and the tick goes on). The row wins over Redis. A duplicate message is harmless by construction: the
+architect settles a job whose `retrying` record is not yet due (`architect_planning_not_due`), a
+claim that finds a live rival settles, and a plan already in place is skipped.
 A successful brief-backed plan records `planned` with its channels in the `admit` transaction
 (`ProductBriefAdmissionCommand.channels` / `channel_failures`); a plan without a brief reports
 `succeeded` to `planning-outcome`, retried briefly, and logs `architect_planning_outcome_unrecorded`
