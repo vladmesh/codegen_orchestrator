@@ -32,10 +32,13 @@ class TestBuildQAPrompt:
         assert "cannot write to the application" in prompt
 
     def test_prompt_never_offers_a_shell_or_a_second_target(self):
-        """The rules must match the calls: the shell reaches nothing, one deployment."""
+        """The rules must match the sandbox: the target URL and Telegram, one deployment."""
         prompt = build_qa_prompt("- GET /health returns 200", "https://api.example.com")
+        flat = " ".join(prompt.split())
 
-        assert "You have a shell, and it reaches nothing" in prompt
+        assert "You have a shell in a sandbox" in prompt
+        assert "a script you write reaches exactly two places" in flat
+        assert "Nothing else — the fleet, the internet, another port" in flat
         assert "exactly one deployment" in prompt
         # Nothing from the on-target runtime survives in the prompt.
         assert "claude" not in prompt.lower()
@@ -100,7 +103,10 @@ class TestBuildQAPrompt:
         # by the runtime and reachable only through one tool.
         assert "TELETHON_SESSION" not in prompt
         assert "StringSession" not in prompt
-        assert "never hold the account's credentials" in prompt
+        # A probe of its own gets the account only as the file the CLI writes.
+        assert "`qa telegram_identity` writes for your Telethon client; never print that file" in (
+            " ".join(prompt.split())
+        )
 
     def test_bot_prompt_forbids_reporting_telegram_checks_as_blocked(self):
         prompt = build_qa_prompt(
@@ -120,9 +126,10 @@ class TestBuildQAPrompt:
 
         assert '"cause": "product" | "qa_capability" | "qa_access"' in prompt
         assert "Every failed check carries a `cause`" in prompt
-        assert "HTTP write" in prompt and "photo upload" in prompt
-        assert "needs a photo, file or other media sent to the bot is one of these" in prompt
-        assert "fails with cause `qa_capability`" in prompt
+        flat = " ".join(prompt.split())
+        assert '`qa_capability` — the criterion needs an action "What you can check" does' in flat
+        assert "photo upload" not in prompt
+        assert "fails with cause `qa_capability`" in flat
         assert "fails with cause `qa_access`" in prompt
         assert prompt.count("it is never a product failure") == 2
 

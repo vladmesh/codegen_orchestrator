@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-26
+
+- QA capabilities live in one catalogue (`shared/contracts/qa_capabilities.py`) that renders the Architect, PO brief and
+  QA executor guidance and the pre-QA HTTP-write set; Telegram media, location, contact, reply and edit are now checkable.
+
 ## 2026-09-25
 
 - Passed QA runs keep their exit-0 probes in a per-project library (cap 50), offered to later runs with platform seeds

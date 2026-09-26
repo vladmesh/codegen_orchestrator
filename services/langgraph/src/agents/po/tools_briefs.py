@@ -53,6 +53,7 @@ from shared.contracts.dto.product_brief import (
     ProposedProductBriefContent,
 )
 
+from ...prompts.qa_capabilities import render_brief_capabilities
 from .tools_shared import _get_api, _user_headers
 
 logger = structlog.get_logger(__name__)
@@ -274,7 +275,6 @@ def _presented(brief: ProductBriefRead, prefix: str) -> str:
     return f"Product Brief revision {brief.revision} (id: {brief.id}). {prefix}\n\n{_render(brief)}"
 
 
-@tool
 async def present_product_brief(
     project_id: str,
     title: str,
@@ -316,11 +316,7 @@ async def present_product_brief(
             Add `"user_facing": false` only for a requirement the user never
             interacts with (internal, or scheduled with nothing the user sends);
             every other requirement is user-facing and needs a usage example.
-            Word the text as something QA can check: a read-only HTTP GET, a
-            Telegram text message and its reply, an inline button press, or a
-            declared scheduled behaviour and its observable. A behaviour that
-            needs a write or an upload is stated by its observable after the
-            fact (a GET or a bot reply), never as a POST or an upload step.
+            __QA_CAPABILITIES__
             Give either `user_wording` (what the user actually wrote) or
             `wording_reference` (where they wrote it) — exactly one, never both,
             never neither.
@@ -460,6 +456,14 @@ async def present_product_brief(
         corrects_brief_id=corrects_brief_id,
     )
     return _presented(brief, "Send this to the user exactly as it stands and wait for an answer:")
+
+
+# The must-requirement wording rule is the QA capability catalogue's, rendered
+# into the docstring before `@tool` reads it as the description the PO sees.
+present_product_brief.__doc__ = present_product_brief.__doc__.replace(
+    "            __QA_CAPABILITIES__", render_brief_capabilities(indent=" " * 12)
+)
+present_product_brief = tool(present_product_brief)
 
 
 async def _refuse_settings_that_are_secrets(

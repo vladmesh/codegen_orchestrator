@@ -260,8 +260,9 @@ class QAFailedCheckCause(StrEnum):
     """Closed set of reasons one QA check failed.
 
     Only `product` is evidence about the product and may reach an engineering
-    fix task. `qa_capability` is a criterion QA has no tool for (an HTTP write,
-    a photo upload); `qa_access` is the product refusing the QA identity.
+    fix task. `qa_capability` is a criterion QA has no tool for, or one it never
+    performs (`shared.contracts.qa_capabilities`); `qa_access` is the product
+    refusing the QA identity.
     """
 
     PRODUCT = "product"

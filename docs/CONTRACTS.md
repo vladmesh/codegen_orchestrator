@@ -1440,6 +1440,34 @@ as `executor_transcript` and `probe_runs`; QA Run, attempt and executor-result
 records omit a transcript locator, and qa-worker deletes `worker:{id}:output`
 when the run ends so a session cannot survive in the broker stream.
 
+### The QA capability catalogue
+
+What central QA can do is declared once, in `shared/contracts/qa_capabilities.py`.
+`QA_ACTIONS` are typed entries: platform (`telegram`, `http`, `web`, `job`), action,
+route (`tool` — a fixed `qa` call; `sandbox_probe` — a script the executor writes and
+runs through `qa probe`; `library_seed` — a ready probe under `/workspace/qa-library`)
+and one line of prompt wording; `criterion: false` marks an executor-only read that no
+criterion is written through. Telegram offers what a user account sends through Telethon:
+text (`telegram_probe`), an inline button (`telegram_click_button`), a location (the
+`telegram/location` seed), and a contact, photo/file/media, reply or edit through a
+probe. `QA_NEVER` declares, each with its reason, what QA never performs: an HTTP POST,
+PUT, PATCH or DELETE to the product's API (policy), a direct read or write of the
+product's stored data or state, and anything outside the run's deployment and Telegram.
+
+A sandbox platform is offered only while the `qa_sandbox` image capability installs its
+tooling: `QA_SANDBOX_TOOLING` names the package (`telegram` → `telethon`, `web` →
+`playwright`, not installed), a worker-manager unit test pins it against
+`CAPABILITY_INSTALL_MAP["QA_SANDBOX"]`, and `qa_actions()` is the one filter. Every
+`tool` call is on `QA_PROBE_USAGE`, and the CLI's other calls are `QA_RUNTIME_CALLS`.
+
+Consumers read the catalogue, never a list of their own: the Architect's "What QA Can
+Check", the PO `present_product_brief` must-requirement guidance (rendered into the
+docstring before `@tool` reads it) and the QA executor's "What you can check" come from
+one renderer each in `services/langgraph/src/prompts/qa_capabilities.py`; the pre-QA
+filter takes its withheld HTTP methods from `http_write_methods()`. A tripwire test
+renders each consumer's text and fails when a catalogue wording or a retired phrase
+appears outside the generated block.
+
 ### The QA probe library
 
 A project's library (`qa_probes`) is unique on project, platform and name and
@@ -1857,7 +1885,8 @@ product; `qa_target_profile_stale` is operator-recheckable.
 
 Every failed check in an executor verdict carries a `cause`, and the runner refuses
 one without it or outside `QAFailedCheckCause`: `product`, `qa_capability` (no QA
-tool for the criterion, such as an HTTP write or a photo upload) or `qa_access`
+action for the criterion in the capability catalogue, or one QA never performs, such as
+an HTTP write) or `qa_access`
 (the product refused the QA identity). A verdict whose top-level `pass` disagrees
 with its checks (true with any failed check, false with none) is refused the same
 way. A stored `QAFailedCheck` without a cause
@@ -1881,6 +1910,7 @@ check. The prompt forbids the form for an acceptance-criterion check.
 | queue messages and results | `shared/contracts/queues/` |
 | shared Redis topology and client semantics | `shared/queues.py`, `shared/redis/client.py` |
 | shared run, recipient, worker, and env invariants | `shared/contracts/` |
+| what central QA can check, and never does | `shared/contracts/qa_capabilities.py` |
 | API-only request/response composition | `services/api/src/schemas/` |
 | REST route ownership | `services/api/src/routers/` |
 | LangGraph consumers | `services/langgraph/src/consumers/` |
