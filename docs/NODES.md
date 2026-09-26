@@ -60,10 +60,13 @@ read from its `agent_configs` record (id `architect`, `po`, `po_summarizer`; fie
 
 **Channels**:
 - `codex` — one model turn as one `codex exec` on the file-backed ChatGPT profile `LLM_CODEX_HOME`
-  (`--ephemeral --ignore-user-config --skip-git-repo-check --sandbox read-only`), serialized by the
-  profile's advisory lock `.codegen-codex.lock`, the same lock the worker wrapper holds.
+  (`--ephemeral --ignore-user-config --skip-git-repo-check --sandbox read-only -c
+  cli_auth_credentials_store="file"`), serialized by the profile's advisory lock
+  `.codegen-codex.lock`, the same lock the worker wrapper holds. In the containers the profile is
+  the Codex workers' own `HOST_CODEX_HOME`, and the CLI runs as its owner
+  ([coding-agents.md](coding-agents.md#dedicated-chatgpt-session-profile)).
 - `claude` — one model turn as one `claude -p --output-format json --json-schema … --tools ""
-  --no-session-persistence` on `CLAUDE_CODE_OAUTH_TOKEN`.
+  --no-session-persistence` on `CLAUDE_CODE_OAUTH_TOKEN`, run as `nobody` when the service is root.
 - `openrouter` — the existing `ChatOpenAI` on `ARCHITECT_LLM_*` / `PO_LLM_*` (the summarizer on
   `SUMMARIZATION_MODEL`, else `PO_LLM_MODEL`, over the PO's endpoint and key). `src/llm/openrouter.py`
   is the only module that builds `ChatOpenAI` or reads that env.
@@ -72,14 +75,18 @@ A CLI turn gets the serialized conversation (system, human, AI with tool calls, 
 bound tools' names, descriptions and argument schemas on **stdin**, never argv, and is held to the
 output schema `{content, tool_calls: [{name, arguments_json}]}`. Arguments are parsed and validated
 against the bound tool's schema and become `tool_calls` with generated ids. The process runs in an
-empty temporary directory with no tools of its own and an environment of HOME, PATH, locale and its
-own credential variable only — never an API key, Redis or database URL of langgraph.
+empty temporary directory with no tools of its own and an environment of PATH, locale, its own
+credential variable and a HOME of its own that is deleted with the call — never an API key, Redis
+or database URL of langgraph. The langgraph image installs both CLIs at the worker images' pins and
+its build fails if an installed version differs from the pin or lacks a flag the adapter passes
+(`src/llm/cli_contract.py`).
 
 **Configuration**: `llm_channels` is a list of `{channel, model?, timeout_seconds?}`
 (`shared/contracts/dto/llm_channel.py`); the API refuses an empty list, an unknown channel or a
 duplicate. No record or `null` means the default chain `codex, claude, openrouter`. `model` unset
 means the CLI's own default model, or the agent's env model for `openrouter`; `timeout_seconds`
-unset means 600 s for one model turn. A stored chain that does not validate stops the consumer at
+unset means 600 s for one model turn, except the `codex` and `claude` channels of the PO and the PO
+summarizer: a user waits on those turns, so a subscription CLI gets 180 s before the turn moves on. A stored chain that does not validate stops the consumer at
 startup with `invalid_llm_channel_chain`. An agent is refused (Architect) or disabled (PO) only
 when no channel of its chain is configured — no `LLM_CODEX_HOME`, no `CLAUDE_CODE_OAUTH_TOKEN`, no
 complete OpenRouter env for the channels it names; otherwise a missing credential is that
@@ -93,6 +100,10 @@ classes move the same call to the next channel: `unauthorized` (401), `payment_r
 unbound tool, or arguments failing the tool's schema, after one corrective re-ask on the same
 channel). Anything else — a bug, a provider 400, cancellation — propagates without switching. When
 every channel failed, `LLMChannelsExhausted` names each channel and its failure class.
+
+**Readiness**: at startup each agent logs `llm_channel_ready` per channel of its chain — `agent`,
+`channel`, `status` (`ready` or the failure class a call would hit first), `reason`,
+`cli_version` — without calling a model or running a CLI against a credential.
 
 **Recording**: `llm_channel_used` and `llm_channel_failed` per call (see
 [LOGGING.md](LOGGING.md#langgraph-worker)); the answering channel is in the returned message's

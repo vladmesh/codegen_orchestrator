@@ -42,6 +42,7 @@ from ..llm import (
     build_agent_llm,
     channel_usage,
     load_channel_chain,
+    log_channel_readiness,
     unconfigured_channel_env,
 )
 from ..llm.chain import ChannelUsage
@@ -824,11 +825,16 @@ def _channel_failures(usage: ChannelUsage) -> list[str]:
 
 
 async def _startup_channel_chain() -> list[LLMChannelConfig]:
-    """The Architect's chain as configured now; an invalid stored chain raises here."""
+    """The Architect's chain as configured now, each channel's readiness logged.
+
+    An invalid stored chain raises here.
+    """
     try:
-        return await load_channel_chain(api_client, LLMAgent.ARCHITECT)
+        chain = await load_channel_chain(api_client, LLMAgent.ARCHITECT)
     finally:
         await api_client.close()
+    await log_channel_readiness(build_agent_llm(LLMAgent.ARCHITECT, chain, get_settings()))
+    return chain
 
 
 def main():

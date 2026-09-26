@@ -27,6 +27,8 @@
 #
 # Secret paths (SSH key, GitHub App PEM, HOST_CLAUDE_DIR, HOST_CODEX_HOME)
 # are controlled via env vars in .env — see docs/DEPLOY.md for required values.
+# HOST_CODEX_HOME has three consumers: the Codex workers, and the codex LLM channel
+# of langgraph (PO, summarizer) and architect, all under one .codegen-codex.lock.
 #
 # Image code only: docker-compose.yml bind-mounts the checkout's source
 # (services/<svc>/src, shared, api's migrations and scripts, infra-service's
@@ -44,6 +46,8 @@ x-logging: &default-logging
     max-file: "5"
 
 x-github-app-key: &github-app-key ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
+# The Codex workers' profile, shared read-write with the heads' codex LLM channel.
+x-llm-codex-home: &llm-codex-home ${HOST_CODEX_HOME:-./secrets/codex-unconfigured}:/llm-codex-home
 
 services:
   api:
@@ -74,11 +78,13 @@ services:
     logging: *default-logging
     volumes: !override
       - *github-app-key
+      - *llm-codex-home
     mem_limit: 1536m
 
   architect:
     logging: *default-logging
-    volumes: !reset []
+    volumes: !override
+      - *llm-codex-home
 
   engineering-worker:
     logging: *default-logging

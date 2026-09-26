@@ -41,9 +41,13 @@ NOT_SOURCE = ("infra", "secrets")
 #: The runtime mounts production needs, by service and container path — named here so
 #: that dropping one from the base file and the overlay together still fails.
 GITHUB_APP_KEY = "/app/keys/github_app.pem"
+#: The Codex workers' profile, as the codex LLM channel of the heads mounts it.
+LLM_CODEX_HOME = "/llm-codex-home"
+LLM_CHANNEL_HEADS = ("langgraph", "architect")
 REQUIRED_RUNTIME_MOUNTS = {
     "api": {GITHUB_APP_KEY},
-    "langgraph": {GITHUB_APP_KEY},
+    "langgraph": {GITHUB_APP_KEY, LLM_CODEX_HOME},
+    "architect": {LLM_CODEX_HOME},
     "engineering-worker": {GITHUB_APP_KEY},
     "deploy-worker": {GITHUB_APP_KEY},
     "scheduler-pipeline": {GITHUB_APP_KEY},
@@ -209,6 +213,43 @@ def test_the_github_app_key_stays_read_only_in_production(stacks):
             if volume["target"] == GITHUB_APP_KEY
         ]
         assert key["read_only"] is True, service
+
+
+@pytest.mark.parametrize("files", [BASE, PROD, STAND], ids=["dev", "prod", "stand"])
+def test_the_heads_share_the_codex_workers_profile_read_write(stacks, files):
+    """One bundle, three consumers: the heads mount the very directory the workers get.
+
+    Worker-manager reads that directory at /host-codex and mounts the same host path
+    into Codex workers; the heads' codex channel must refresh that file, not a copy.
+    """
+    config, _project_dir = stacks[files]
+    (profile,) = [
+        volume["source"]
+        for volume in config["services"]["worker-manager"]["volumes"]
+        if volume["target"] == "/host-codex"
+    ]
+    for head in LLM_CHANNEL_HEADS:
+        service = config["services"][head]
+        (mount,) = [volume for volume in service["volumes"] if volume["target"] == LLM_CODEX_HOME]
+        assert (mount["type"], mount["source"]) == ("bind", profile), head
+        assert not mount.get("read_only", False), head
+        assert service["environment"]["LLM_CODEX_HOME"] == LLM_CODEX_HOME, head
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in service["environment"], head
+
+
+def test_without_a_codex_profile_the_heads_leave_the_codex_channel_unconfigured(tmp_path):
+    """No HOST_CODEX_HOME: LLM_CODEX_HOME renders empty, so the channel counts as unset."""
+    env_file = tmp_path / ".env"
+    shutil.copy(ROOT / ".env.example", env_file)
+    command = ["docker", "compose", "--project-directory", str(tmp_path)]
+    command += ["--env-file", str(env_file), "-f", str(ROOT / "docker-compose.yml")]
+    result = subprocess.run(
+        [*command, "config", "--format", "json"], check=True, capture_output=True, text=True
+    )
+    config = json.loads(result.stdout)
+
+    for head in LLM_CHANNEL_HEADS:
+        assert config["services"][head]["environment"]["LLM_CODEX_HOME"] == "", head
 
 
 def test_development_keeps_its_source_mounts_and_local_builds(stacks):

@@ -19,7 +19,10 @@
   one (for `vlad:165536:65536` that is `166535:166535`, e.g. `docker run --rm -u 0 -v "$HOST_CLAUDE_DIR":/p
   --entrypoint chown worker-base-claude:latest -R 1000:1000 /p`). Owned by the host user itself, the
   profile is root inside the container, the wrapper exits on "CLAUDE_CONFIG_DIR is not writable" and
-  every developer worker dies during `checkout_branch`
+  every developer worker dies during `checkout_branch`. The same `HOST_CODEX_HOME` is also mounted
+  read-write into `langgraph` and `architect` for their `codex` LLM channel; they run the Codex CLI as
+  the profile's owner, so this one ownership serves all three consumers. A root-owned profile is
+  refused there too (`llm_channel_ready` … `missing_credential`)
 - Git clone: `git clone <repo> /opt/codegen_orchestrator`
 - Ports 80/443 open (Caddy handles TLS)
 
@@ -336,9 +339,23 @@ that channel: with one var empty the channel fails as a missing credential and t
 Only an agent with no configured channel at all (nor `LLM_CODEX_HOME`, nor
 `CLAUDE_CODE_OAUTH_TOKEN`, nor its OpenRouter triple) is refused or disabled.
 `services/langgraph/src/config/agent_llm_env.py` is the single source of truth for the groups.
-The subscription channels read `LLM_CODEX_HOME` and `CLAUDE_CODE_OAUTH_TOKEN`; until the langgraph
-image carries the CLIs and those credentials, both fail as `binary_missing`/`missing_credential`
-and calls land on openrouter.
+The subscription channels need no setting of their own in production:
+
+- `codex`: the langgraph image carries the Codex CLI at the Codex worker image's pin. Compose mounts
+  `HOST_CODEX_HOME` — the very profile the Codex workers use, never a copy — read-write at
+  `/llm-codex-home` in `langgraph` and `architect` and sets `LLM_CODEX_HOME` to it; with
+  `HOST_CODEX_HOME` unset, `LLM_CODEX_HOME` renders empty and the channel is unconfigured. The CLI
+  runs as the profile owner under the workers' `.codegen-codex.lock` (see
+  [coding-agents.md](coding-agents.md#dedicated-chatgpt-session-profile)).
+- `claude`: the image carries Claude Code at the Claude worker image's pin. The deploy writes the
+  optional `CLAUDE_CODE_OAUTH_TOKEN` environment secret (a `claude setup-token` subscription token)
+  into `.env`, and compose passes it to `langgraph` and `architect`; empty, the channel is
+  unconfigured. The CLI runs as `nobody` with a fresh temporary HOME per call.
+
+Each agent logs `llm_channel_ready` once per channel at startup (see
+[LOGGING.md](LOGGING.md#langgraph-worker)): `status` is `ready` or the failure class a call would
+hit first, with its `reason` and the installed `cli_version`. That log is the readback of a
+deploy: `docker compose logs langgraph architect | grep llm_channel_ready`.
 
 ### GitHub Integration
 
@@ -415,7 +432,8 @@ would otherwise sign dashboard tokens with a known key.
 |--------|-------------|
 | `FACTORY_API_KEY` | Factory.ai API key |
 | `HOST_CLAUDE_DIR` | Path to `.claude` directory on prod server |
-| `HOST_CODEX_HOME` | Path to the dedicated file-backed Codex profile described in `docs/coding-agents.md` |
+| `HOST_CODEX_HOME` | Path to the dedicated file-backed Codex profile described in `docs/coding-agents.md`; also the `codex` LLM channel of `langgraph` and `architect` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Optional. Claude subscription token for the `claude` LLM channel of `langgraph` and `architect` (not for workers) |
 
 `DEFAULT_AGENT_TYPE` is required and has no default. It is policy rather than a credential, so it
 is a GitHub Environment **variable** (`vars.DEFAULT_AGENT_TYPE`), set on every contour this workflow
