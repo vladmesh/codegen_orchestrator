@@ -4,6 +4,7 @@ Handles:
 - Provisioner triggers (server provisioning)
 - Worker events (engineering/deploy queue triggers)
 - PO ReactAgent consumer (unless no channel of its LLM channel chain is configured)
+- The scheduled OpenRouter balance check (idle without an OpenRouter key)
 
 Note: Engineering and Deploy queues are consumed by dedicated consumers:
 - engineering-worker (services/langgraph/src/consumers/engineering.py)
@@ -21,11 +22,13 @@ from .clients.api import api_client
 from .config.settings import get_settings
 from .llm import (
     LLMAgent,
+    LLMAlerts,
     build_agent_llm,
     load_channel_chain,
     log_channel_readiness,
     unconfigured_channel_env,
 )
+from .llm.openrouter import run_openrouter_balance_check
 from .provisioner import listen_provisioner_triggers
 from .worker_events import listen_worker_events
 
@@ -51,10 +54,12 @@ async def _po_missing_env() -> list[str]:
 async def run_worker() -> None:
     """Run the LangGraph worker loop."""
     po_missing = await _po_missing_env()
+    settings = get_settings()
+    # One alert sender for every chain of this process and the balance check.
+    alerts = LLMAlerts.from_settings(settings)
     summarization_config = None
     po_llms = None
     if not po_missing:
-        settings = get_settings()
         if not settings.checkpoint_database_url:
             raise RuntimeError(
                 "CHECKPOINT_DATABASE_URL is required when the PO consumer is enabled; "
@@ -67,11 +72,12 @@ async def run_worker() -> None:
         from .consumers.po import load_po_llms, load_summarization_config
 
         summarization_config = load_summarization_config(settings.api_base_url)
-        po_llms = await load_po_llms(settings)
+        po_llms = await load_po_llms(settings, alerts)
 
     tasks = [
         listen_provisioner_triggers(),
         listen_worker_events(),
+        run_openrouter_balance_check(settings, alerts),
     ]
 
     if po_missing:

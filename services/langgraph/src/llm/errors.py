@@ -89,6 +89,16 @@ def classify_error_text(text: str) -> ChannelFailureClass:
     return ChannelFailureClass.NONZERO_EXIT
 
 
+def error_text_status(text: str) -> int | None:
+    """The HTTP status a CLI or provider error text names, if it names one.
+
+    Independent of `classify_error_text`: a 402 whose text says "insufficient
+    credits" is classified `quota_exhausted`, and it is still a 402.
+    """
+    status = _STATUS.search(text)
+    return int(status.group(1)) if status else None
+
+
 def short_reason(text: object, *, secrets: tuple[str, ...] = ()) -> str:
     """A bounded, redacted, single-line reason safe for a log field."""
     line = " ".join(redact_diagnostic(text, secrets=secrets).split())
@@ -96,10 +106,17 @@ def short_reason(text: object, *, secrets: tuple[str, ...] = ()) -> str:
 
 
 class ChannelFailure(Exception):  # noqa: N818 - a failure outcome, raised to switch channels
-    """One channel could not answer this call; the chain tries the next one."""
+    """One channel could not answer this call; the chain tries the next one.
 
-    def __init__(self, failure_class: ChannelFailureClass, reason: str) -> None:
+    ``http_status`` is the provider's HTTP status when the channel knows it — the
+    OpenRouter response, or a status the CLI's error output names — else ``None``.
+    """
+
+    def __init__(
+        self, failure_class: ChannelFailureClass, reason: str, *, http_status: int | None = None
+    ) -> None:
         self.failure_class = failure_class
+        self.http_status = http_status
         self.reason = short_reason(reason)
         super().__init__(f"{failure_class.value}: {self.reason}")
 
@@ -111,6 +128,7 @@ class ChannelAttempt:
     channel: LLMChannel
     failure_class: ChannelFailureClass
     reason: str
+    http_status: int | None = None
 
 
 class LLMChannelsExhausted(RuntimeError):  # noqa: N818 - named by the card and its consumers

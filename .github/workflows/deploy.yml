@@ -277,6 +277,9 @@ jobs:
           # subscription OAuth token). Optional: empty leaves that channel unconfigured.
           # The codex channel uses HOST_CODEX_HOME below, the Codex workers' profile.
           CLAUDE_CODE_OAUTH_TOKEN=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The OpenRouter balance check of langgraph (OpenRouter documents /credits as
+          # needing a management key). Optional: empty, the check uses PO_LLM_API_KEY.
+          OPENROUTER_MANAGEMENT_KEY=${{ secrets.OPENROUTER_MANAGEMENT_KEY }}
 
           # Summarization model selection; numeric tuning is seeded as system config below.
           SUMMARIZATION_MODEL=${{ secrets.SUMMARIZATION_MODEL }}
