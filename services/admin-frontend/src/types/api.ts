@@ -655,6 +655,15 @@ export interface ExecutorDiagnosticConfirmation {
   expires_at: string
 }
 
+// Ordered LLM channel chain of an LLM-backed agent (null = codex, claude, openrouter)
+export type LLMChannel = 'codex' | 'claude' | 'openrouter'
+
+export interface LLMChannelConfig {
+  channel: LLMChannel
+  model?: string | null
+  timeout_seconds?: number | null
+}
+
 // Agent configuration (prompts, model settings)
 export interface AgentConfig {
   id: string
@@ -667,6 +676,7 @@ export interface AgentConfig {
   model_identifier?: string
   openrouter_site_url?: string | null
   openrouter_app_name?: string | null
+  llm_channels?: LLMChannelConfig[] | null
   version: number
   created_at: string
   updated_at?: string | null
@@ -682,4 +692,5 @@ export interface AgentConfigUpdate {
   model_identifier?: string | null
   openrouter_site_url?: string | null
   openrouter_app_name?: string | null
+  llm_channels?: LLMChannelConfig[] | null
 }

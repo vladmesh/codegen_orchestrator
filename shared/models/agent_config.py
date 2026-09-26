@@ -1,6 +1,6 @@
 """Agent configuration model for storing prompts in database."""
 
-from sqlalchemy import Boolean, Float, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -35,6 +35,10 @@ class AgentConfig(Base):
     )
     openrouter_site_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     openrouter_app_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Ordered LLM channel chain (`shared.contracts.dto.llm_channel.LLMChannelChain`).
+    # NULL means the default chain: codex, claude, openrouter.
+    llm_channels: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Enable/disable agent
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

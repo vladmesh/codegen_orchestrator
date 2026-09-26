@@ -7,7 +7,7 @@ builds, with a scripted model, and read what the user would be sent.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
@@ -34,8 +34,7 @@ async def _turn(api: _API, calls: list[dict], *, then: str = "re-typed text") ->
         turns=[AIMessage(content="", tool_calls=calls), AIMessage(content=then)]
     )
     config = {"configurable": {"thread_id": "po-full-brief-alone", "telegram_chat_id": "42"}}
-    with patch("src.agents.po.graph.ChatOpenAI", return_value=model):
-        graph = await create_po_graph(model="scripted", base_url="http://llm.invalid", api_key="x")
+    graph = await create_po_graph(llm=model, summarization_llm=model)
     state = await graph.ainvoke(
         {"messages": [HumanMessage(content="Show me the whole brief and confirm it")]},
         config=config,

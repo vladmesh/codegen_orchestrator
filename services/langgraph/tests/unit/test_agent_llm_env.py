@@ -6,11 +6,12 @@ queue, so drift between the three has to fail in tests instead.
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from structlog.testing import capture_logs
 
+from shared.contracts.dto.llm_channel import LLMChannel, LLMChannelConfig
 from shared.queues import PO_INPUT_QUEUE
 from src.config.agent_llm_env import AGENT_LLM_ENV, missing_llm_env
 from src.config.settings import Settings
@@ -78,6 +79,16 @@ class TestEnvExampleDocumentsGroups:
 
 
 class TestArchitectStartupGuard:
+    """A chain of openrouter alone cannot run without its env; `main()` refuses it."""
+
+    @pytest.fixture(autouse=True)
+    def _openrouter_only_chain(self):
+        from src.consumers import architect
+
+        chain = [LLMChannelConfig(channel=LLMChannel.OPENROUTER)]
+        with patch.object(architect, "load_channel_chain", AsyncMock(return_value=chain)):
+            yield
+
     def test_refuses_to_start_without_config(self):
         from src.consumers import architect
 

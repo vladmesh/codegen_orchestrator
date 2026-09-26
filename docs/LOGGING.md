@@ -176,6 +176,9 @@ async def my_node(state: dict) -> dict:
 | `service_deployment_record_created` | info | Deployment recorded | `service_name` |
 | `unknown_tool_called` | warning | Unknown tool requested | `tool_name` |
 | `conversation_history_cleared` | info | Thread history cleared | — |
+| `llm_channel_used` | info | A channel of an agent's LLM channel chain answered a model call | `agent`, `channel`, `model`, `position`, `duration_s` |
+| `llm_channel_failed` | warning | A channel failed the call; the chain tried the next one | `agent`, `channel`, `model`, `position`, `failure_class`, `reason`, `duration_s` |
+| `architect_job_success` / `architect_job_failed` | info / error | Planning attempt finished | `llm_channels` (answering channels), `llm_channel_failures` (`channel:failure_class`) |
 
 ### Provisioner
 

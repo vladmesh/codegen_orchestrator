@@ -204,6 +204,7 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 
 **Key Features:**
 - **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
+- **LLM channel chain**: the Architect, the PO and the PO summarizer answer through an ordered chain of channels from `agent_configs.llm_channels` (default `codex`, `claude`, `openrouter`); a channel failure moves the same call to the next channel. See [NODES.md](docs/NODES.md#-llm-channel-chain-architect-po-po-summarizer)
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
 - **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (the PR poller merges on green)

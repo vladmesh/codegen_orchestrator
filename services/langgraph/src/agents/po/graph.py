@@ -1,15 +1,16 @@
 """PO ReactAgent graph.
 
-Creates a LangGraph ReactAgent with PO tools, ChatOpenAI (OpenRouter-compatible),
-PostgreSQL or MemorySaver checkpointer, and conversation summarization.
+Creates a LangGraph ReactAgent with PO tools, the PO's LLM channel chain,
+PostgreSQL or MemorySaver checkpointer, and conversation summarization on the
+PO summarizer's own channel chain.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
@@ -97,30 +98,18 @@ def show_full_brief_alone(state: POState) -> dict:
 
 
 def _create_summarization_hook(
-    llm: ChatOpenAI,
-    summarization_model: str | None,
-    base_url: str,
-    api_key: str,
+    summarization_llm: BaseChatModel,
     max_tokens: int,
     trigger_tokens: int,
     max_summary_tokens: int,
 ) -> SummarizationNode:
-    """Create SummarizationNode for pre_model_hook.
+    """Create SummarizationNode for pre_model_hook on the summarizer's channel chain.
 
-    Uses a separate cheap model for summarization if configured,
-    otherwise falls back to the main LLM.
+    The summary budget is bound as `max_tokens`; a channel that takes a token
+    limit (openrouter) sends it, a CLI turn has no such parameter.
     """
-    if summarization_model:
-        summary_llm = ChatOpenAI(
-            model=summarization_model,
-            base_url=base_url,
-            api_key=api_key,
-        ).bind(max_tokens=max_summary_tokens)
-    else:
-        summary_llm = llm.bind(max_tokens=max_summary_tokens)
-
     return SummarizationNode(
-        model=summary_llm,
+        model=summarization_llm.bind(max_tokens=max_summary_tokens),
         max_tokens=max_tokens,
         max_tokens_before_summary=trigger_tokens,
         max_summary_tokens=max_summary_tokens,
@@ -153,11 +142,9 @@ async def _create_postgres_checkpointer(checkpoint_database_url: str) -> BaseChe
 
 
 async def create_po_graph(
-    model: str,
-    base_url: str,
-    api_key: str,
+    llm: BaseChatModel,
+    summarization_llm: BaseChatModel,
     checkpoint_database_url: str | None = None,
-    summarization_model: str | None = None,
     summarization_max_tokens: int = 50_000,
     summarization_trigger_tokens: int = 60_000,
     summarization_max_summary_tokens: int = 2_000,
@@ -165,23 +152,14 @@ async def create_po_graph(
     """Create and compile the PO ReactAgent graph.
 
     Args:
-        model: LLM model name (e.g. "openai/gpt-5.6-sol").
-        base_url: LLM API base URL (e.g. "https://openrouter.ai/api/v1").
-        api_key: LLM API key.
+        llm: The PO's LLM channel chain (`src.llm.build_agent_llm`).
+        summarization_llm: The PO summarizer's LLM channel chain.
         checkpoint_database_url: PostgreSQL URL for persistent checkpointer.
             Falls back to MemorySaver if not provided.
-        summarization_model: Separate model for summarization (e.g. "anthropic/claude-haiku-4-5").
-            Falls back to main model if not provided.
         summarization_max_tokens: Token budget after summarization.
         summarization_trigger_tokens: Threshold to trigger summarization.
         summarization_max_summary_tokens: Max tokens for the summary itself.
     """
-    llm = ChatOpenAI(
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
-    )
-
     if checkpoint_database_url:
         checkpointer = await _create_postgres_checkpointer(checkpoint_database_url)
     else:
@@ -189,10 +167,7 @@ async def create_po_graph(
         checkpointer = MemorySaver()
 
     summarization_hook = _create_summarization_hook(
-        llm=llm,
-        summarization_model=summarization_model,
-        base_url=base_url,
-        api_key=api_key,
+        summarization_llm=summarization_llm,
         max_tokens=summarization_max_tokens,
         trigger_tokens=summarization_trigger_tokens,
         max_summary_tokens=summarization_max_summary_tokens,

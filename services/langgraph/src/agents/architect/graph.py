@@ -6,7 +6,7 @@ Uses MemorySaver only (one-shot sessions, no persistent checkpointing needed).
 
 from __future__ import annotations
 
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import create_react_agent
 import structlog
@@ -18,24 +18,12 @@ from .tools import get_architect_tools
 logger = structlog.get_logger(__name__)
 
 
-def create_architect_graph(
-    model: str,
-    base_url: str,
-    api_key: str,
-) -> CompiledStateGraph:
+def create_architect_graph(llm: BaseChatModel) -> CompiledStateGraph:
     """Create and compile the Architect ReactAgent graph.
 
     Args:
-        model: LLM model name (e.g. "openai/gpt-5.6-sol").
-        base_url: LLM API base URL (e.g. "https://openrouter.ai/api/v1").
-        api_key: LLM API key.
+        llm: The Architect's LLM channel chain (`src.llm.build_agent_llm`).
     """
-    llm = ChatOpenAI(
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
-    )
-
     return create_react_agent(
         model=llm,
         tools=get_architect_tools(),

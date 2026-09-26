@@ -42,12 +42,21 @@ class Settings(BaseSettings):
     # When set, workers use this URL instead of api.anthropic.com
     anthropic_base_url: str | None = None
 
-    # Optional: PO ReactAgent LLM config (all three required to enable PO consumer)
+    # Subscription channels of the Architect/PO LLM channel chain (src/llm). A
+    # missing value is that channel's missing-credential failure: the chain moves
+    # on to its next channel, it does not stop the agent.
+    # A file-backed Codex ChatGPT profile directory (auth.json inside).
+    llm_codex_home: str | None = None
+    # A Claude subscription OAuth token (`claude setup-token`).
+    claude_code_oauth_token: str | None = None
+
+    # OpenRouter channel of the chain (src/llm/openrouter.py is their only reader).
+    # PO ReactAgent: model, base URL, key.
     po_llm_model: str | None = None
     po_llm_base_url: str | None = None
     po_llm_api_key: str | None = None
 
-    # Optional: Architect ReactAgent LLM config
+    # Architect ReactAgent: model, base URL, key.
     architect_llm_model: str | None = None
     architect_llm_base_url: str | None = None
     architect_llm_api_key: str | None = None
@@ -70,7 +79,7 @@ class Settings(BaseSettings):
     # Summarization model selection is process configuration. The numeric tuning
     # values are operational system configs and are intentionally absent here so
     # production has one source of truth for them.
-    summarization_model: str | None = None  # None = use po_llm_model
+    summarization_model: str | None = None  # None = use po_llm_model (openrouter channel)
 
 
 @lru_cache

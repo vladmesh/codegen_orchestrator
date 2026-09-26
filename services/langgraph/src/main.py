@@ -3,7 +3,7 @@
 Handles:
 - Provisioner triggers (server provisioning)
 - Worker events (engineering/deploy queue triggers)
-- PO ReactAgent consumer (if PO_LLM_* env vars are set)
+- PO ReactAgent consumer (unless its channel chain is openrouter only and PO_LLM_* is unset)
 
 Note: Engineering and Deploy queues are consumed by dedicated consumers:
 - engineering-worker (services/langgraph/src/consumers/engineering.py)
@@ -17,23 +17,34 @@ import structlog
 from shared.log_config import setup_logging
 from shared.queues import PO_INPUT_QUEUE
 
-from .config.agent_llm_env import missing_llm_env
+from .clients.api import api_client
 from .config.settings import get_settings
+from .llm import LLMAgent, load_channel_chain, openrouter_only_missing_env
 from .provisioner import listen_provisioner_triggers
 from .worker_events import listen_worker_events
 
 logger = structlog.get_logger(__name__)
 
 
-def _po_missing_env() -> list[str]:
-    """PO ReactAgent env vars that are not configured."""
-    return missing_llm_env("po", get_settings())
+async def _po_missing_env() -> list[str]:
+    """OpenRouter env the PO cannot run without: only a chain of nothing but openrouter has any.
+
+    Reads both PO chains from agent configuration, so an invalid stored chain
+    stops the service here with `InvalidChannelChainError`.
+    """
+    settings = get_settings()
+    missing: list[str] = []
+    for agent in (LLMAgent.PO, LLMAgent.PO_SUMMARIZER):
+        chain = await load_channel_chain(api_client, agent)
+        missing += openrouter_only_missing_env(agent, chain, settings)
+    return list(dict.fromkeys(missing))
 
 
 async def run_worker() -> None:
     """Run the LangGraph worker loop."""
-    po_missing = _po_missing_env()
+    po_missing = await _po_missing_env()
     summarization_config = None
+    po_llms = None
     if not po_missing:
         settings = get_settings()
         if not settings.checkpoint_database_url:
@@ -45,9 +56,10 @@ async def run_worker() -> None:
         # Validate every PO-only startup dependency before unrelated background
         # loops begin. Operational summarization tuning is required system config;
         # an unavailable/malformed source is not an env-fallback mode.
-        from .consumers.po import load_summarization_config
+        from .consumers.po import load_po_llms, load_summarization_config
 
         summarization_config = load_summarization_config(settings.api_base_url)
+        po_llms = await load_po_llms(settings)
 
     tasks = [
         listen_provisioner_triggers(),
@@ -71,7 +83,7 @@ async def run_worker() -> None:
         await poller_client.connect()
 
         logger.info("po_consumer_enabled")
-        tasks.append(run_po_consumer(summarization_config=summarization_config))
+        tasks.append(run_po_consumer(summarization_config=summarization_config, llms=po_llms))
         tasks.append(run_reminder_poller(poller_client))
 
     await asyncio.gather(*tasks)

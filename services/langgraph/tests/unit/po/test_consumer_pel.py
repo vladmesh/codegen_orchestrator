@@ -27,7 +27,7 @@ import os
 import socket
 import time
 import types
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from fakeredis import aioredis
 from langchain_core.messages import AIMessage
@@ -182,6 +182,9 @@ async def po_run(fake_redis, po_graph, monkeypatch):
     monkeypatch.setattr(client, "close", _close)
     monkeypatch.setattr(po_consumer, "RedisStreamClient", lambda **_kwargs: client)
     monkeypatch.setattr(po_consumer, "create_po_graph", AsyncMock(return_value=po_graph))
+    # The LLM channel chains come from the API's agent configuration; the stub
+    # graph never calls a model.
+    monkeypatch.setattr(po_consumer, "load_po_llms", AsyncMock(return_value=MagicMock()))
     monkeypatch.setattr(po_consumer, "init_po_clients", lambda *_a, **_kw: None)
     monkeypatch.setattr(po_consumer.api_client, "close", AsyncMock())
     monkeypatch.setattr(
