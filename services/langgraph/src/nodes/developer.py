@@ -18,6 +18,7 @@ from shared.contracts.dto.engineering_attempt import FactoryResultEvidence
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.queues.worker import AgentType, WorkerOwnership
+from shared.contracts.worker_turn import AttemptTurnMetadata
 
 from ..clients.api import api_client
 from ..clients.worker_spawner import StoryWorkerBinding, request_spawn, send_task_to_worker
@@ -32,6 +33,7 @@ from .developer_tasks import (
     format_story_context,
     get_task_title,
 )
+from .developer_turn import plan_turn
 
 logger = structlog.get_logger()
 
@@ -206,8 +208,19 @@ class DeveloperNode(FunctionalNode):
         github_client = GitHubAppClient()
         access_token = await github_client.get_repo_scoped_token(owner, repo_name)
 
+        branch = state.get("branch")
+        pre_attempt_head = await self._pre_attempt_head(
+            github_client=github_client,
+            owner=owner,
+            repo_name=repo_name,
+            branch=branch,
+            state=state,
+            ownership=ownership,
+        )
+        turn = await plan_turn(state, api_client)
+
         # Build comprehensive task message for Claude
-        task_message = build_task_message(
+        task_message = turn.preamble + build_task_message(
             project_name=project_name,
             description=project_description,
             modules=modules,
@@ -221,7 +234,6 @@ class DeveloperNode(FunctionalNode):
         )
 
         task_title = get_task_title(action, project_name)
-        branch = state.get("branch")
         story = StoryWorkerBinding(story_id=state.get("story_id"), branch=branch)
 
         # Spawn or reuse worker
@@ -241,6 +253,7 @@ class DeveloperNode(FunctionalNode):
             state=state,
             spawn_kwargs=spawn_kwargs,
             project_name=project_name,
+            clear_session=turn.clear_session,
         )
 
         unpushed = await self._unpushed_commit_error(
@@ -268,6 +281,7 @@ class DeveloperNode(FunctionalNode):
             owner=owner,
             repo_name=repo_name,
             branch=branch,
+            pre_attempt_head=pre_attempt_head,
             worker_result=worker_result,
         )
         if no_new_commit:
@@ -276,6 +290,7 @@ class DeveloperNode(FunctionalNode):
                 project_name=project_name,
                 branch=branch,
                 commit_sha=worker_result.commit_sha,
+                pre_attempt_head=pre_attempt_head,
             )
             return {
                 "messages": [AIMessage(content=no_new_commit)],
@@ -316,41 +331,87 @@ class DeveloperNode(FunctionalNode):
         )
 
     @staticmethod
+    async def _pre_attempt_head(
+        *,
+        github_client: GitHubAppClient,
+        owner: str,
+        repo_name: str,
+        branch: str | None,
+        state: dict,
+        ownership: WorkerOwnership,
+    ) -> str | None:
+        """The story branch head this attempt starts from, recorded on the attempt.
+
+        It is read from GitHub before the turn is sent — the branch head, or the
+        default branch head when the story branch does not exist yet, which is
+        what the worker branches from — and written to the attempt's
+        `run_metadata` once. A reclaimed attempt reads it back from there: its
+        adopted turn may already have pushed, and a head read now would be the
+        worker's own commit.
+
+        Only a story branch has one: work on the default branch itself is
+        expected to land there, and a run without a branch has no base.
+        """
+        if not branch:
+            return None
+        attempt_turn = state.get("attempt_turn")
+        if attempt_turn is not None and attempt_turn.pre_attempt_head_sha:
+            return attempt_turn.pre_attempt_head_sha
+        default_branch = (await github_client.get_repo(owner, repo_name)).default_branch
+        if branch == default_branch:
+            return None
+        head = await github_client.get_ref_sha(owner, repo_name, f"heads/{branch}")
+        if head is None:
+            head = await github_client.get_ref_sha(owner, repo_name, f"heads/{default_branch}")
+        if head is None:
+            raise RuntimeError(
+                f"{owner}/{repo_name} has neither {branch} nor {default_branch}: "
+                "no head to judge this attempt against"
+            )
+        await api_client.patch(
+            f"runs/{ownership.attempt_id}",
+            json={"run_metadata": AttemptTurnMetadata(pre_attempt_head_sha=head).as_run_metadata()},
+        )
+        logger.info(
+            "developer_pre_attempt_head_recorded",
+            attempt_id=ownership.attempt_id,
+            branch=branch,
+            pre_attempt_head=head,
+        )
+        return head
+
+    @staticmethod
     async def _no_new_commit_error(
         *,
         github_client: GitHubAppClient,
         owner: str,
         repo_name: str,
         branch: str | None,
+        pre_attempt_head: str | None,
         worker_result,
     ) -> str | None:
-        """Message describing a commit that is no new work, or None when it is new.
+        """Message describing a result that changed nothing, or None when it is new work.
 
-        A worker can finish reporting a SHA it never created: the branch base it
-        started from, or the commit already deployed for this story when a repair
-        run changed nothing. Both are commits that already live on the default
-        branch, and neither is a result. Accepting one publishes a deploy of an
-        already-deployed SHA and leaves the story waiting for a pull request
-        GitHub refuses with 422 "No commits between", so the run fails here.
-
-        Only a story branch is judged: work on the default branch itself is
-        expected to land there, and a run without a branch has no base to be
-        compared against.
+        The one acceptance rule for a worker success on a story branch: the
+        reported commit must add a file change over the head the attempt started
+        from. The head itself, anything behind it — the branch base, a commit
+        already deployed, an earlier task's commit — and commits that net out to
+        no change are all no result. Accepting one records a task done that
+        nobody did, or publishes a deploy of an already-deployed SHA and leaves
+        the story waiting for a pull request GitHub refuses with 422 "No commits
+        between".
         """
-        if not (worker_result.success and worker_result.commit_sha and branch):
+        if not (worker_result.success and worker_result.commit_sha and pre_attempt_head):
             return None
-        default_branch = (await github_client.get_repo(owner, repo_name)).default_branch
-        if branch == default_branch:
-            return None
-        already_on_default = await github_client.branch_contains_commit(
-            owner, repo_name, default_branch, worker_result.commit_sha
-        )
-        if not already_on_default:
+        commit_sha = worker_result.commit_sha
+        if commit_sha != pre_attempt_head and await github_client.commit_adds_changes(
+            owner, repo_name, pre_attempt_head, commit_sha
+        ):
             return None
         return (
-            f"Worker reported commit {worker_result.commit_sha} but it is no new commit on "
-            f"{branch}: it is already on {default_branch}, so it is the branch base or a "
-            "commit that has already been deployed. Nothing was produced to merge or deploy."
+            f"Worker reported commit {commit_sha} but it is no new commit on {branch}: it "
+            f"adds no change over {pre_attempt_head}, the head this attempt started from. "
+            "Nothing was produced to merge or deploy."
         )
 
     async def _get_worker_result(
@@ -359,6 +420,7 @@ class DeveloperNode(FunctionalNode):
         state: dict,
         spawn_kwargs: dict,
         project_name: str,
+        clear_session: bool,
     ):
         """Reuse existing worker or spawn a fresh one."""
         existing_worker_id = state.get("worker_id")
@@ -367,12 +429,14 @@ class DeveloperNode(FunctionalNode):
                 "developer_reuse_worker",
                 worker_id=existing_worker_id,
                 project_name=project_name,
+                clear_session=clear_session,
             )
             worker_result = await send_task_to_worker(
                 worker_id=existing_worker_id,
                 task_content=spawn_kwargs["task_content"],
                 timeout_seconds=Timeouts.WORKER_SPAWN,
                 ownership=spawn_kwargs["ownership"],
+                clear_session=clear_session,
                 story_md=spawn_kwargs["story_md"],
                 branch=spawn_kwargs["story"].branch,
                 turn_metadata=state.get("attempt_turn"),

@@ -486,6 +486,30 @@ def test_the_scripted_developer_gets_one_change_set_per_task_its_parser_accepts(
         assert "What to deliver:" in description, name
 
 
+def test_every_scripted_task_adds_a_file_so_it_never_meets_the_no_change_rule(
+    change_sets, extension_change_set, runner_script, tmp_path
+):
+    """`mega-noop` is untouched by the rule that a success must change the branch.
+
+    The developer node fails a worker success whose commit adds no file change
+    over the head the attempt started from. Each scripted task's change set
+    creates a file, and the runner's `create` refuses a path that already
+    exists, so a scripted task either adds a file — its commit always carries a
+    change, whatever the head was — or fails as itself. It cannot succeed empty.
+    """
+    for name, description in _descriptions(change_sets, extension_change_set, "noop").items():
+        operations = runner_script["parse_change_set"](description)
+        created = [(op, path, content) for op, path, content in operations if op == "create"]
+        assert created, name
+
+        workspace = tmp_path / name
+        target = workspace / created[0][1]
+        target.parent.mkdir(parents=True)
+        target.write_text("already on the branch\n")
+        with pytest.raises(runner_script["ChangeSetTargetExists"]):
+            runner_script["apply_change_set"](created[:1], str(workspace))
+
+
 @pytest.mark.parametrize("developer", ["claude", "codex"])
 def test_a_model_developer_gets_the_contract_in_prose_and_no_change_set(
     change_sets, extension_change_set, runner_script, developer

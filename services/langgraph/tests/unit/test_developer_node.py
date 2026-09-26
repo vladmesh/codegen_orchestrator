@@ -778,7 +778,8 @@ class TestBranchPassing:
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_branch_passed_to_request_spawn(self, mock_github_cls, mock_api, mock_spawn):
         """branch from state is forwarded to request_spawn."""
-        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
+        _stub_story_github(mock_github_cls)
+        mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
@@ -806,8 +807,9 @@ class TestBranchPassing:
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_story_id_passed_to_request_spawn(self, mock_github_cls, mock_api, mock_spawn):
         """The registry key is the consumer's story id, not a parsed branch."""
-        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
-        mock_github_cls.return_value.branch_contains_commit = AsyncMock(return_value=True)
+        _stub_story_github(mock_github_cls)
+        mock_api.patch = AsyncMock()
+        mock_api.list_story_engineering_runs = AsyncMock(return_value=[])
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
@@ -859,7 +861,8 @@ class TestBranchPassing:
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_branch_passed_to_send_task_to_worker(self, mock_github_cls, mock_api, mock_send):
         """When reusing a worker, branch is passed to send_task_to_worker."""
-        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
+        _stub_story_github(mock_github_cls)
+        mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_send.return_value = SpawnResult(
@@ -891,28 +894,70 @@ def test_reported_model_reads_claude_json_before_stderr() -> None:
     assert DeveloperNode._reported_model(output) == "claude-sonnet-4-20250514"
 
 
-class TestNoNewCommitOnStoryBranch:
-    """A DONE result must carry a commit that is new on the story branch.
+class _CommitGraph:
+    """A repository on GitHub as a commit graph, for the no-new-commit rule.
 
-    The repository these tests model: `main` holds `deployed-head` and then
-    `main-head`; `story/story-1` branches off `main-head` and may carry its own
-    `new-1`. A worker can report any of the three, and only the last is work.
+    `main` holds `deployed-head` and then `main-head`. `task-1-head` is an
+    earlier task's commit on the story branch. `new-1` and `empty-1` are what a
+    worker may push on top of the head its attempt started from: the first
+    changes files, the second is an empty commit.
     """
 
-    @staticmethod
-    def _github(mock_github_cls):
+    def __init__(self, *, story_head: str | None) -> None:
+        start = story_head or "main-head"
+        self.commits = {
+            "deployed-head": (None, True),
+            "main-head": ("deployed-head", True),
+            "task-1-head": ("main-head", True),
+            "new-1": (start, True),
+            "empty-1": (start, False),
+        }
+        self.refs = {"heads/main": "main-head"}
+        if story_head:
+            self.refs["heads/story/story-1"] = story_head
+
+    def _ancestry(self, sha: str) -> set[str]:
+        seen = set()
+        while sha is not None:
+            seen.add(sha)
+            sha = self.commits[sha][0]
+        return seen
+
+    def install(self, mock_github_cls):
         client = mock_github_cls.return_value
         client.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         client.get_repo = AsyncMock(return_value=SimpleNamespace(default_branch="main"))
 
-        on_main = {"deployed-head", "main-head"}
-        on_story = on_main | {"new-1"}
+        async def get_ref_sha(owner, repo, ref):
+            return self.refs.get(ref)
 
         async def branch_contains_commit(owner, repo, branch, sha):
-            return sha in (on_main if branch == "main" else on_story)
+            # The worker's push landed: every reported commit is on origin.
+            return sha in self.commits
 
+        async def commit_adds_changes(owner, repo, base_sha, head_sha):
+            ahead = self._ancestry(head_sha) - self._ancestry(base_sha)
+            return any(self.commits[sha][1] for sha in ahead)
+
+        client.get_ref_sha = AsyncMock(side_effect=get_ref_sha)
         client.branch_contains_commit = AsyncMock(side_effect=branch_contains_commit)
+        client.commit_adds_changes = AsyncMock(side_effect=commit_adds_changes)
         return client
+
+
+def _stub_story_github(mock_github_cls):
+    """A fresh story branch on which the worker pushed `abc123`, a commit of its own."""
+    graph = _CommitGraph(story_head=None)
+    graph.commits["abc123"] = ("main-head", True)
+    return graph.install(mock_github_cls)
+
+
+class TestNoNewCommitOnStoryBranch:
+    """A DONE result must add a change over the head its attempt started from.
+
+    That head is recorded on the attempt before the turn is sent: the story
+    branch head, or the default branch head when the branch is still to be made.
+    """
 
     @staticmethod
     def _story_state():
@@ -922,29 +967,41 @@ class TestNoNewCommitOnStoryBranch:
         state["description"] = "Repair the deploy"
         return state
 
+    @staticmethod
+    def _api(mock_api):
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_api.patch = AsyncMock()
+
+    @staticmethod
+    def _reports(sha: str) -> SpawnResult:
+        return SpawnResult(
+            request_id="req-1", success=True, exit_code=0, output="Done", commit_sha=sha
+        )
+
+    @staticmethod
+    def _recorded_head(mock_api) -> str:
+        (path,), kwargs = mock_api.patch.await_args
+        assert path == "runs/eng-1"
+        return kwargs["json"]["run_metadata"]["pre_attempt_head_sha"]
+
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_commit_equal_to_the_branch_base_fails_the_run(
+    async def test_the_pre_attempt_head_itself_fails_the_run(
         self, mock_github_cls, mock_api, mock_spawn
     ):
-        """The commit the branch started from is not a result of this run."""
-        self._github(mock_github_cls)
-        mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
-        mock_spawn.return_value = SpawnResult(
-            request_id="req-1",
-            success=True,
-            exit_code=0,
-            output="Nothing needed changing",
-            commit_sha="main-head",
-        )
+        """The 2026-09-26 case: the second task reported the first task's commit."""
+        _CommitGraph(story_head="task-1-head").install(mock_github_cls)
+        self._api(mock_api)
+        mock_spawn.return_value = self._reports("task-1-head")
 
         from src.nodes.developer import DeveloperNode
 
         result = await DeveloperNode().run(self._story_state())
 
+        assert self._recorded_head(mock_api) == "task-1-head"
         assert result["engineering_status"] == EngineeringStatus.FAILED
         assert result["failure_reason"] is EngineeringFailureReason.NO_NEW_COMMIT
         assert any("no new commit" in error for error in result["errors"])
@@ -954,45 +1011,12 @@ class TestNoNewCommitOnStoryBranch:
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_commit_equal_to_the_deployed_head_fails_the_run(
+    async def test_a_new_commit_over_the_pre_attempt_head_succeeds(
         self, mock_github_cls, mock_api, mock_spawn
     ):
-        """The stand case: a repair run reports the SHA already deployed."""
-        self._github(mock_github_cls)
-        mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
-        mock_spawn.return_value = SpawnResult(
-            request_id="req-1",
-            success=True,
-            exit_code=0,
-            output="Deploy looks fine to me",
-            commit_sha="deployed-head",
-        )
-
-        from src.nodes.developer import DeveloperNode
-
-        result = await DeveloperNode().run(self._story_state())
-
-        assert result["engineering_status"] == EngineeringStatus.FAILED
-        assert result["failure_reason"] is EngineeringFailureReason.NO_NEW_COMMIT
-        assert any("no new commit" in error for error in result["errors"])
-
-    @pytest.mark.asyncio
-    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
-    @patch("src.nodes.developer.api_client")
-    @patch("src.nodes.developer.GitHubAppClient")
-    async def test_a_commit_of_its_own_still_succeeds(self, mock_github_cls, mock_api, mock_spawn):
-        """A commit that exists only on the story branch is the ordinary success."""
-        self._github(mock_github_cls)
-        mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
-        mock_spawn.return_value = SpawnResult(
-            request_id="req-1",
-            success=True,
-            exit_code=0,
-            output="Fixed the failing service",
-            commit_sha="new-1",
-        )
+        _CommitGraph(story_head="task-1-head").install(mock_github_cls)
+        self._api(mock_api)
+        mock_spawn.return_value = self._reports("new-1")
 
         from src.nodes.developer import DeveloperNode
 
@@ -1001,3 +1025,116 @@ class TestNoNewCommitOnStoryBranch:
         assert result["engineering_status"] == EngineeringStatus.DONE
         assert result["commit_sha"] == "new-1"
         assert "failure_reason" not in result
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_an_empty_diff_over_the_pre_attempt_head_fails_the_run(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """A commit ahead of the head that changes no file is still nothing."""
+        _CommitGraph(story_head="task-1-head").install(mock_github_cls)
+        self._api(mock_api)
+        mock_spawn.return_value = self._reports("empty-1")
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(self._story_state())
+
+        assert result["engineering_status"] == EngineeringStatus.FAILED
+        assert result["failure_reason"] is EngineeringFailureReason.NO_NEW_COMMIT
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_an_earlier_commit_behind_the_pre_attempt_head_fails_the_run(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """What the default-branch guard caught — a deployed head — is behind the head too."""
+        _CommitGraph(story_head="task-1-head").install(mock_github_cls)
+        self._api(mock_api)
+        mock_spawn.return_value = self._reports("deployed-head")
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(self._story_state())
+
+        assert result["engineering_status"] == EngineeringStatus.FAILED
+        assert result["failure_reason"] is EngineeringFailureReason.NO_NEW_COMMIT
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reported", "status"),
+        [
+            ("new-1", EngineeringStatus.DONE),
+            ("main-head", EngineeringStatus.FAILED),
+            ("deployed-head", EngineeringStatus.FAILED),
+        ],
+        ids=["own-commit", "branch-base", "deployed-head"],
+    )
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_the_first_attempt_on_a_fresh_branch_is_judged_against_the_default_head(
+        self, mock_github_cls, mock_api, mock_spawn, reported, status
+    ):
+        """No story branch yet: the worker branches from the default head, so that is the base."""
+        _CommitGraph(story_head=None).install(mock_github_cls)
+        self._api(mock_api)
+        mock_spawn.return_value = self._reports(reported)
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(self._story_state())
+
+        assert self._recorded_head(mock_api) == "main-head"
+        assert result["engineering_status"] == status
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_a_reclaimed_attempt_is_judged_against_its_recorded_head(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """The adopted turn has already pushed; the branch head now is its own commit."""
+        from shared.contracts.worker_turn import AttemptTurnMetadata
+
+        graph = _CommitGraph(story_head="task-1-head")
+        graph.refs["heads/story/story-1"] = "new-1"
+        github = graph.install(mock_github_cls)
+        self._api(mock_api)
+        mock_spawn.return_value = self._reports("new-1")
+        state = self._story_state()
+        state["attempt_turn"] = AttemptTurnMetadata(pre_attempt_head_sha="task-1-head")
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(state)
+
+        assert result["engineering_status"] == EngineeringStatus.DONE
+        github.get_ref_sha.assert_not_awaited()
+        mock_api.patch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_work_on_the_default_branch_is_not_judged(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        github = _CommitGraph(story_head=None).install(mock_github_cls)
+        self._api(mock_api)
+        mock_spawn.return_value = self._reports("main-head")
+        state = self._story_state()
+        state["branch"] = "main"
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(state)
+
+        assert result["engineering_status"] == EngineeringStatus.DONE
+        github.commit_adds_changes.assert_not_awaited()
+        mock_api.patch.assert_not_awaited()

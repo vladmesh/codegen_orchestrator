@@ -343,6 +343,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "engineering_status": EngineeringStatus.IDLE,
             "branch": branch,
             "story_id": story_id,
+            "planning_task_id": planning_task_id,
             "worker_report": None,
             "worker_observability": None,
             "gave_up_reason": None,

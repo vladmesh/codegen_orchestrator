@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-26
 
+- An engineering success whose commit adds no change over the story branch head recorded before the attempt fails
+  `no_new_commit` and retries as a task iteration, so a no-op is never `done`; the default-branch guard folds into it.
+- A reused story worker handed another task, or a retry after a no-change attempt, gets `clear_session` and a TASK.md
+  naming the task, so it no longer resumes the previous task's conversation and reports that task's commit.
 - QA capabilities live in one catalogue (`shared/contracts/qa_capabilities.py`) that renders the Architect, PO brief and
   QA executor guidance and the pre-QA HTTP-write set; Telegram media, location, contact, reply and edit are now checkable.
 - A check QA cannot run is recorded as unverified, not failed: the verdict comes from the checks that ran, so a

@@ -70,6 +70,11 @@ class AttemptTurnMetadata(BaseModel):
     stop_reason: str | None = None
     worker_state: str | None = None
     execution: EngineeringExecutionEvidence | None = None
+    # The story branch head as it stood before this attempt's turn was sent, or
+    # the default branch head when the branch did not exist yet. Written once by
+    # the developer node, so a reclaimed attempt that adopts an already-pushed
+    # turn is still judged against where it started, not against its own push.
+    pre_attempt_head_sha: str | None = Field(default=None, min_length=1)
 
     def as_run_metadata(self) -> dict[str, Any]:
         return self.model_dump(mode="json", exclude_none=True)

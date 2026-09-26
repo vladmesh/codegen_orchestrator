@@ -1396,24 +1396,59 @@ problem, never a successful or engineering-fix verdict.
 
 ### An engineering result carries a new commit or it failed
 
-A DONE engineering result is only a result when its commit is new work on the
-story branch. `services/langgraph/src/nodes/developer.py::_no_new_commit_error`
-verifies the worker-reported SHA against GitHub next to the unpushed-commit
-check, and refuses one that is already reachable from the repository default
-branch — the branch's base, and every commit already deployed for the story,
-live there. Such an attempt becomes a failed Run carrying
+A DONE engineering result is only a result when its commit changes something on
+the story branch. Before the turn is sent, the developer node
+(`services/langgraph/src/nodes/developer.py::_pre_attempt_head`) records on the
+attempt's `run_metadata` the head the attempt starts from,
+`AttemptTurnMetadata.pre_attempt_head_sha`: the story branch head, or the
+default branch head when the branch does not exist yet. It is written once; a
+reclaimed attempt that adopts an already-pushed turn is judged against the
+recorded value, never a head read after the push. Work on the default branch
+itself and runs without a branch record none and are not judged.
+
+`_no_new_commit_error` is the one acceptance rule, next to the unpushed-commit
+check: a worker success whose reported commit equals that head, or adds no file
+change over it (`shared.clients.github` `commit_adds_changes`: nothing ahead of
+the head, or commits that net out to no file change), is a failed Run carrying
 `EngineeringRunResult.failure_reason = no_new_commit`
 (`shared/contracts/dto/run_result.py::EngineeringFailureReason`), distinct from
-the missing-SHA failure "Developer completed but no commit was made". No deploy
-is published for it, and the story leaves `in_progress` for human review with
-the reason on its `quarantine_reason`, because no pull request can ever be
-opened for a branch that carries no commit of its own — GitHub answers that
-request 422 "No commits between". `complete_stories` classifies that same
-refusal through `shared.clients.github.NoCommitsBetweenError` and parks the
-story instead of retrying it every tick; other PR-creation errors stay transient.
+the missing-SHA failure "Developer completed but no commit was made". The branch
+base, a commit already deployed and an earlier task's commit are all at or
+behind the head, so the former default-branch guard is this same check. No
+deploy is published for it.
+
+A planning task's attempt that fails this way is an ordinary failed iteration:
+the task goes to `failed`, the supervisor retries it while `current_iteration <
+max_iterations` and escalates it to human review after that, so it is never
+`done`. A taskless attempt (a deploy repair) has no iteration loop: its story
+leaves `in_progress` for human review with the reason on its
+`quarantine_reason`, because no pull request can ever be opened for a branch
+that carries no commit of its own — GitHub answers that request 422 "No commits
+between". `complete_stories` classifies that same refusal through
+`shared.clients.github.NoCommitsBetweenError` and parks the story instead of
+retrying it every tick; other PR-creation errors stay transient.
 The manifest-repair follow-up deploy Run that an accepted engineering result
 creates names its story, so every story-scoped reader of deploy Runs — the live
 follow-up wait included — can observe it at all.
+
+### A reused story worker's turn names its task
+
+A story keeps one worker across its tasks, and a reused worker resumes its CLI
+session unless the turn carries `clear_session`
+(`services/langgraph/src/clients/worker_spawner.py::send_task_to_worker`). For a
+planning task's attempt, `services/langgraph/src/nodes/developer_turn.py::plan_turn`
+reads the story's engineering Runs — each records its `task_id` and the
+`run_metadata.worker_id` that ran it — and:
+
+- sends `clear_session=True` with a TASK.md that opens by naming the task (id and
+  title) and saying that earlier tasks in the story are finished and are not this
+  task's result, when the reused worker's last turn worked on another task or on
+  none on record;
+- sends `clear_session=True` with a TASK.md that says the previous attempt at
+  this task made no changes, when that attempt failed `no_new_commit` (a fresh
+  worker gets the same text; it has no session to clear);
+- otherwise keeps today's turn: a retry of the same task after any other failure
+  resumes its session, and a taskless attempt is sent unchanged.
 
 ### A deploy that placed nothing says so
 

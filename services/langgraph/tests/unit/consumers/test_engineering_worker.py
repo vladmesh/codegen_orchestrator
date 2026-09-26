@@ -1222,3 +1222,41 @@ class TestNoNewCommitFailure:
         assert mock_api.patch.await_args_list[0].kwargs["json"]["result"]["failure_reason"] is None
         assert len(mock_api.patch.await_args_list) == 1
         mock_api.transition_story.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_task_attempt_without_changes_fails_the_task_for_its_retry(
+        self, mock_redis, mock_api
+    ):
+        """A planned task's no-op attempt is a failed iteration, not a parked story.
+
+        The task goes to FAILED, which the supervisor retries while iterations
+        remain and escalates to human review after them; the story stays put.
+        """
+        from shared.contracts.dto.run_result import EngineeringFailureReason
+        from src.consumers.engineering import _fail_job
+
+        mock_api.transition_story = AsyncMock()
+
+        await _fail_job(
+            "eng-1aad6877db11",
+            "Worker reported commit 6cd0558a but it is no new commit on story/story-1",
+            "task-c4f82b78",
+            redis=mock_redis,
+            story_id="story-1",
+            failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
+            project_id="project-1",
+            telegram_chat_id="777",
+        )
+
+        run_patch = mock_api.patch.await_args_list[0]
+        assert run_patch.args[0] == "runs/eng-1aad6877db11"
+        assert run_patch.kwargs["json"]["result"]["engineering_status"] == "failed"
+        assert run_patch.kwargs["json"]["result"]["failure_reason"] == "no_new_commit"
+        mock_api.post.assert_any_await(
+            "tasks/task-c4f82b78/transition",
+            params={"to_status": "failed"},
+            json={"actor": "engineering-worker"},
+        )
+        assert not any(call.args[0] == "stories/story-1" for call in mock_api.patch.await_args_list)
+        mock_api.transition_story.assert_not_awaited()
+        mock_redis.publish_flat.assert_not_awaited()

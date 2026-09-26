@@ -84,6 +84,10 @@ class EngineeringState(TypedDict):
     # Durable story identity supplied by the consumer for worker registration.
     story_id: str | None
 
+    # The planning task this attempt works on, None for a taskless repair. The
+    # developer node compares it with the task a reused worker last worked on.
+    planning_task_id: str | None
+
     # Engineering result
     engineering_status: str  # EngineeringStatus: idle | done | gave_up | failed
     commit_sha: str | None
@@ -96,8 +100,9 @@ class EngineeringState(TypedDict):
     execution: EngineeringExecutionEvidence | None
 
     # The classification of a failure the pipeline routes on rather than only
-    # logs — currently a DONE-looking result that carried no new commit. It
-    # travels to the consumer, which records it on the Run and parks the story.
+    # logs — currently a DONE-looking result that changed nothing over the head
+    # the attempt started from. It travels to the consumer, which records it on
+    # the Run; a task's attempt then retries, a taskless one parks the story.
     failure_reason: EngineeringFailureReason | None
 
     # Why the worker's turn ended without a result, and the limit it was
