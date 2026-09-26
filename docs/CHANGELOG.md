@@ -19,6 +19,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   once, no ids or fillers; the full form is `show_full_brief` and `GET /api/product-briefs/{id}/full`, one section each.
 - An over-budget brief opens no revision and writes no pointer; the PO stages the product instead of squeezing it, and
   proposals are capped in counts and lengths so the worst-case full form stays under 12k characters.
+- `telegram_probe`/`telegram_click_button` are proven injection-safe by running their scripts on hostile values, and
+  without a proven identity they return the missing-credentials blocker and start no child process.
+- `show_full_brief` answers a fixed apology in the brief's language on any read failure, and the PO graph refuses the
+  other calls of its turn, so the user gets the full brief or the apology, never another tool's result.
 
 ## 2026-09-25
 

@@ -22,6 +22,7 @@ from shared.contracts.queues.po import MESSAGE_BREAK
 from shared.product_brief_text import (
     BRIEF_MESSAGE_BUDGET,
     brief_message_length,
+    full_brief_unavailable,
     render_brief_message,
     render_full_brief_sections,
 )
@@ -719,13 +720,72 @@ class TestShowingTheFullBrief:
         assert show_full_brief.return_direct is True
 
     @pytest.mark.asyncio
-    async def test_an_unknown_brief_says_so(self, stream_client):
+    async def test_an_unknown_brief_is_the_fixed_apology_without_its_id(self, stream_client):
+        """The result is the user's reply: it names no id and no error."""
         api = _API()
         _install(api, stream_client)
 
         text = await show_full_brief.ainvoke({"brief_id": "brief-9"}, config=_config())
 
-        assert text == "No Product Brief brief-9 exists."
+        assert text == full_brief_unavailable(None) == LABELS["en"]["full_brief_unavailable"]
+        assert "brief-9" not in text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            httpx.HTTPStatusError(
+                f"Server error '500 Internal Server Error' for url 'http://api/product-briefs/{BRIEF_ID}'",
+                request=httpx.Request("GET", f"http://api/product-briefs/{BRIEF_ID}"),
+                response=httpx.Response(500),
+            ),
+            httpx.ConnectError(f"connection refused while reading {BRIEF_ID}"),
+        ],
+        ids=["http-status", "transport"],
+    )
+    async def test_an_http_failure_is_the_fixed_apology(self, stream_client, failure):
+        api = _API(briefs={BRIEF_ID: _brief()})
+        _install(api, stream_client)
+        failing = _response({})
+        if isinstance(failure, httpx.HTTPStatusError):
+            failing.raise_for_status.side_effect = failure
+            api.get_raw = AsyncMock(return_value=failing)
+        else:
+            api.get_raw = AsyncMock(side_effect=failure)
+
+        text = await show_full_brief.ainvoke({"brief_id": BRIEF_ID}, config=_config())
+
+        assert text == LABELS["en"]["full_brief_unavailable"]
+        assert BRIEF_ID not in text
+        assert "500" not in text
+        assert "refused" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_brief_that_does_not_validate_is_the_apology_in_its_language(
+        self, stream_client
+    ):
+        broken = _brief(content={**_stored_content(), "language": "ru"})
+        broken["revision"] = "not a revision"
+        api = _API(briefs={BRIEF_ID: broken})
+        _install(api, stream_client)
+
+        text = await show_full_brief.ainvoke({"brief_id": BRIEF_ID}, config=_config())
+
+        assert text == LABELS["ru"]["full_brief_unavailable"]
+        assert "revision" not in text
+        assert "validation" not in text.lower()
+        assert BRIEF_ID not in text
+
+    @pytest.mark.asyncio
+    async def test_a_language_without_a_table_gets_the_english_apology(self, stream_client):
+        broken = _brief(content={**_stored_content(), "language": "de"})
+        del broken["title"]
+        api = _API(briefs={BRIEF_ID: broken})
+        _install(api, stream_client)
+
+        text = await show_full_brief.ainvoke({"brief_id": BRIEF_ID}, config=_config())
+
+        assert text == LABELS["en"]["full_brief_unavailable"]
 
 
 class TestTheCreationKey:
