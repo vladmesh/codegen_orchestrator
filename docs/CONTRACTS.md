@@ -816,6 +816,11 @@ The PO prompt's "Story Events & Reminders" lists the events PO receives, each an
 known time), `story_waiting_user_secret` and `story_requirements_returned`. A unit test
 holds the listed set inside the vocabulary the consumer routes.
 
+A `story_stage` event carries `stage`, `waiting_on`, `wait_estimate`, `stage_notice` and
+`stage_notice_step`: 0 for `entered` and only for it, `n` for the `n`-th `still_there` of the stay.
+The PO consumer tells each step of a stay at most once and nothing about an unchanged story in
+between (`consumers/po_story_gate.py`).
+
 PO streams use the flat-field codec from `queues/po.py`. The proactive listener
 acks only after successful delivery or terminal delivery exhaustion. Its PEL
 delivery count survives a restart; exhaustion is alerted and is not retried as

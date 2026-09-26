@@ -196,7 +196,8 @@ class StoryStageNoticeKind(StrEnum):
 
     #: The story was seen in this stage for the first time.
     ENTERED = "entered"
-    #: The story is still in the stage a quiet interval after the last notice.
+    #: The story is still in the stage at its next escalation step: one quiet
+    #: interval after entering it, then 2, 4, 8... intervals, capped per gap.
     STILL_THERE = "still_there"
 
 

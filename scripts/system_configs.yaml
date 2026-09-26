@@ -187,7 +187,12 @@
 - key: supervisor.stage_notice_quiet_minutes
   value: 60
   category: supervisor
-  description: "Minutes a story may stay in one in-work stage after its last stage notice before its owner is told again that it is still there (measured from that notice, kept in Redis)"
+  description: "Minutes a story may stay in one in-work stage after entering it before its owner is first told it is still there; later reminders fall at 2, 4, 8... times this after the entry (measured from the last notice, kept in Redis)"
+
+- key: supervisor.stage_notice_max_interval_minutes
+  value: 1440
+  category: supervisor
+  description: "Longest gap between two 'still there' stage notices of one stay: the doubling reminder schedule stops growing here (never read as shorter than supervisor.stage_notice_quiet_minutes)"
 
 - key: supervisor.temporary_access_ttl_minutes
   value: 60
@@ -297,6 +302,12 @@
   value: 2000
   category: llm
   description: "Max tokens in the summary itself"
+
+# --- po ---
+- key: po.story_proactive_daily_cap
+  value: 6
+  category: po
+  description: "Most proactive PO messages about one story one chat receives per UTC day from reminders and stage notices; terminal outcome notices are not counted or capped"
 
 - key: llm.alert_realert_window_hours
   value: 6

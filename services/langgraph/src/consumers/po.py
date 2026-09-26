@@ -31,6 +31,7 @@ delivery count grows.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 import os
 import socket
@@ -59,6 +60,7 @@ from ..agents.po.tools_shared import init_po_clients
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
 from ..llm import ChannelChainModel, LLMAgent, LLMAlerts, build_agent_llm, load_channel_chain
+from .po_story_gate import DAILY_CAP_CONFIG_KEY, ProactiveStoryGate
 
 logger = structlog.get_logger(__name__)
 
@@ -116,6 +118,32 @@ def load_summarization_config(api_base_url: str) -> SummarizationConfig:
         trigger_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[1]),
         max_summary_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[2]),
     )
+
+
+def load_story_gate_cap(api_base_url: str) -> Callable[[], int]:
+    """The live reader of ``po.story_proactive_daily_cap``; a missing key fails startup.
+
+    Read per gated turn through the store's cache, so an operator's change
+    applies without a restart.
+    """
+    config = ConfigStore(api_base_url)
+    config.validate_required([DAILY_CAP_CONFIG_KEY])
+    return lambda: config.get_int(DAILY_CAP_CONFIG_KEY)
+
+
+#: The one gate every proactive reply about a story passes (``po_story_gate``).
+_story_gate: ProactiveStoryGate | None = None
+
+
+def init_story_gate(gate: ProactiveStoryGate) -> None:
+    global _story_gate  # noqa: PLW0603 — one per process, like the PO tool clients
+    _story_gate = gate
+
+
+def _get_story_gate() -> ProactiveStoryGate:
+    if _story_gate is None:
+        raise RuntimeError("PO story gate is not initialized")
+    return _story_gate
 
 
 # The identity of this process inside the consumer group. The PID alone is not
@@ -205,6 +233,7 @@ async def _consume_po_input(
 async def run_po_consumer(
     summarization_config: SummarizationConfig | None = None,
     llms: POLLMs | None = None,
+    story_gate_cap: Callable[[], int] | None = None,
 ) -> None:
     """Main loop: read po:input, invoke PO graph, write po:response:*."""
     settings = get_settings()
@@ -212,10 +241,12 @@ async def run_po_consumer(
         settings.api_base_url
     )
     effective_llms = llms or await load_po_llms(settings)
+    effective_story_gate_cap = story_gate_cap or load_story_gate_cap(settings.api_base_url)
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()
 
     init_po_clients(api_client, client)
+    init_story_gate(ProactiveStoryGate(client, api_client, effective_story_gate_cap))
 
     graph = await create_po_graph(
         llm=effective_llms.po,
@@ -465,8 +496,15 @@ async def _handle_message(
     elif response_text:
         # No request_id (reminder, system event) — forward to user via proactive
         # stream, carrying the identifiers the transport needs if delivery fails.
-        proactive = proactive_from_input(data, response_text, telegram_chat_id)
-        await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+        # A reply about a story goes only if it tells a change or a new
+        # escalation step (`po_story_gate`); the turn itself has already run.
+        gate = _get_story_gate()
+        decision = await gate.decide(telegram_chat_id, data)
+        if decision.send:
+            proactive = proactive_from_input(data, response_text, telegram_chat_id)
+            await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+            # Only after the publish: a failed one must leave the change untold.
+            await gate.record_told(telegram_chat_id, decision)
 
     logger.info(
         "po_message_handled",

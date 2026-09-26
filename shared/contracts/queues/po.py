@@ -71,6 +71,10 @@ class POSystemEvent(RejectsLegacyRecipientField):
     waiting_on: StoryWaitingOn | None = None
     wait_estimate: StoryWaitEstimate | None = None
     stage_notice: StoryStageNoticeKind | None = None
+    #: The notice's escalation step within the story's stay in ``stage``: 0 for
+    #: ``entered``, ``n`` for the ``n``-th ``still_there``. PO tells each step
+    #: at most once (``stage_notices`` module docstring).
+    stage_notice_step: int | None = Field(default=None, ge=0)
     #: What the QA run that settled the story checked and could not: the names
     #: of the checks that passed and every unverified check with its reason.
     #: Carried as structured facts, JSON-encoded in its one flat field, so PO
@@ -86,14 +90,21 @@ class POSystemEvent(RejectsLegacyRecipientField):
 
     @model_validator(mode="after")
     def _stage_fields_belong_to_stage_notices(self) -> POSystemEvent:
-        stage_fields = (self.stage, self.waiting_on, self.wait_estimate, self.stage_notice)
+        stage_fields = (
+            self.stage,
+            self.waiting_on,
+            self.wait_estimate,
+            self.stage_notice,
+            self.stage_notice_step,
+        )
         if self.event is not OwnerNotificationEvent.STORY_STAGE:
             if any(field is not None for field in stage_fields):
                 raise ValueError(f"stage fields are carried by story_stage only, not {self.event}")
             return self
         if any(field is None for field in stage_fields):
             raise ValueError(
-                "story_stage carries stage, waiting_on, wait_estimate and stage_notice"
+                "story_stage carries stage, waiting_on, wait_estimate, stage_notice "
+                "and stage_notice_step"
             )
         if self.stage not in STAGE_NOTICE_STATUSES:
             raise ValueError(f"{self.stage} is not a stage a story is in work in")
@@ -101,6 +112,8 @@ class POSystemEvent(RejectsLegacyRecipientField):
             raise ValueError(
                 f"{self.stage} waits on {WAITING_ON_BY_STATUS[self.stage]}, not {self.waiting_on}"
             )
+        if (self.stage_notice is StoryStageNoticeKind.ENTERED) != (self.stage_notice_step == 0):
+            raise ValueError("step 0 is the entered notice, and only it")
         if not self.story_id:
             raise ValueError("story_stage names its story")
         return self
