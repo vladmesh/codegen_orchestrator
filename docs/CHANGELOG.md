@@ -13,6 +13,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   kept as a project verification gap (`GET /api/projects/{id}/verification-gaps`).
 - The Architect rewrites or returns a must-requirement QA cannot check (`not automatically verifiable:` reason), and
   PO tells the user what QA could not check and records their answer on the story (`unverified_decisions`).
+- The bot sends every user-bound text through `send_text`: split on `MESSAGE_BREAK` and under 4000 units as valid
+  HTML, retries resume at the failed chunk, and errors reply a fixed apology, never "Message is too long".
 
 ## 2026-09-25
 

@@ -19,6 +19,7 @@ exercised directly.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from enum import StrEnum
 
 import structlog
@@ -31,6 +32,7 @@ from shared.contracts.recipient import (
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
 from shared.redis.client import RedisStreamClient, StreamMessage
+from shared.telegram_text import split_telegram_text
 
 logger = structlog.get_logger()
 
@@ -57,12 +59,33 @@ class ProactiveOutcome(StrEnum):
     REJECTED = "rejected"
 
 
-async def send_message_to_chat(bot, chat_id: int, text: str) -> None:
-    """Send text to a Telegram chat, falling back to plain text on markup errors."""
-    try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-    except Exception:
-        await bot.send_message(chat_id=chat_id, text=text)
+@dataclass
+class SendProgress:
+    """How many chunks of one text Telegram has already accepted.
+
+    Passed again to ``send_text`` for the same text, it makes the next call
+    resume from the first chunk not yet accepted instead of starting over.
+    """
+
+    sent: int = 0
+
+
+async def send_text(bot, chat_id: int, text: str, progress: SendProgress | None = None) -> None:
+    """Send user-bound text to a Telegram chat: the one way the bot does it.
+
+    The text is cut by ``split_telegram_text`` (on ``MESSAGE_BREAK``, then under
+    Telegram's limit, each chunk well-formed HTML) and the chunks are sent in
+    order. Each chunk is tried as HTML and, if Telegram refuses that, as plain
+    text. A chunk refused both ways raises, and ``progress`` still counts the
+    chunks sent before it.
+    """
+    progress = progress if progress is not None else SendProgress()
+    for chunk in split_telegram_text(text)[progress.sent :]:
+        try:
+            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
+        except Exception:
+            await bot.send_message(chat_id=chat_id, text=chunk)
+        progress.sent += 1
 
 
 async def attempt_proactive_delivery(bot, proactive: POProactiveMessage) -> str | None:
@@ -75,14 +98,19 @@ async def attempt_proactive_delivery(bot, proactive: POProactiveMessage) -> str 
     """
     chat_id = int(proactive.telegram_chat_id)
     last_error: Exception | None = None
+    # Shared by the attempts below, so a retry resumes at the chunk that failed
+    # and the user never gets an accepted chunk twice. It lives only as long as
+    # this delivery: an entry redelivered after the bot died starts over.
+    progress = SendProgress()
 
     for attempt in range(1, PROACTIVE_MAX_ATTEMPTS + 1):
         try:
-            await send_message_to_chat(bot, chat_id, proactive.text)
+            await send_text(bot, chat_id, proactive.text, progress)
             logger.info(
                 "proactive_message_sent",
                 telegram_chat_id=chat_id,
                 attempts=attempt,
+                chunks=progress.sent,
                 text_length=len(proactive.text),
             )
             return None
@@ -94,6 +122,7 @@ async def attempt_proactive_delivery(bot, proactive: POProactiveMessage) -> str 
                 telegram_chat_id=chat_id,
                 attempt=attempt,
                 max_attempts=PROACTIVE_MAX_ATTEMPTS,
+                chunks_sent=progress.sent,
             )
             if attempt < PROACTIVE_MAX_ATTEMPTS:
                 await asyncio.sleep(PROACTIVE_RETRY_DELAY_S * attempt)

@@ -124,6 +124,13 @@ POInputMessage = Annotated[
 
 # --- PO Output messages ---
 
+# Where a text PO sends the user (``POResponse.text``, ``POProactiveMessage.text``)
+# must start a new Telegram message. The bot splits on it before anything else
+# and never shows it. ASCII RS (record separator): a control character, so it
+# cannot occur in prose and a model does not emit it by accident; only code puts
+# it into a text.
+MESSAGE_BREAK = "\x1e"
+
 
 class POResponse(RejectsLegacyRecipientField):
     """Synchronous PO response (po:response:{request_id})."""
