@@ -67,6 +67,10 @@ Both must pass.
 | packages (worker-wrapper) | 9 files | — | 3 files | — |
 
 `make test-unit` runs the suites listed in `ALL_SUITES` (`scripts/test-unit-local.sh`).
+Every test in them runs under a 90 s `pytest-timeout` bound (`--timeout-method=thread`), so a hang
+fails that suite in minutes instead of reaching the CI step timeout silently: it prints
+`Timeout: <node id>`, the stacks of the pending asyncio tasks (`scripts/unit_test_timeout.py`) and
+every thread's stack. A test that needs longer carries its own `@pytest.mark.timeout`.
 
 ## The CI gate covers the tree, not a list
 
