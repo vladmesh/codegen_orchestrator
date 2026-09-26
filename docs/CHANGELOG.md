@@ -23,6 +23,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   without a proven identity they return the missing-credentials blocker and start no child process.
 - `show_full_brief` answers a fixed apology in the brief's language on any read failure, and the PO graph refuses the
   other calls of its turn, so the user gets the full brief or the apology, never another tool's result.
+- `mega-live`'s bot also answers a native Telegram location, and `test_qa_passed` requires QA to prove it with a retained
+  sandbox probe (passed, not unverified); `mega-noop` renders byte-for-byte as before, pinned offline.
 
 ## 2026-09-25
 

@@ -28,7 +28,10 @@ change set encodes by construction and the product's own CI enforces, such as
 where an ``APIRouter()`` may live. The ``codegen-change-set`` block is appended
 to that prose **only** when the developer is the scripted runner (``noop``),
 which has nothing to read but the block. Each description has one builder, and
-the fence is that builder's only branch.
+the fence is that builder's only branch, with one exception: a model's bot task
+also asks for the live-only location behaviour (``level1_location_criterion``),
+which exists so the real QA executor proves its Telegram sandbox, and which the
+scripted runner is never asked for.
 
 Written against the pin, not against a remembered tree
 ------------------------------------------------------
@@ -81,6 +84,24 @@ LEVEL1_EXTENSION_ENDPOINT_PATH = "/level1/extension"
 #: ``[a-z0-9_]{1,32}`` in a command name, so the marker travels in the
 #: description beside it rather than in the name.
 LEVEL1_COMMAND = "level1"
+
+# ── The live-only location behaviour ─────────────────────────────────────
+#
+# Under `mega-live` only, the bot also answers a native Telegram location with
+# its coordinates, so the real QA executor proves its sandbox end to end: it has
+# to send that location as the QA account with a probe (the `telegram/location`
+# library seed or its own script). The scripted runner is never asked for it, so
+# nothing `mega-noop` renders mentions it.
+#
+# The coordinates QA sends are fixed, and chosen so that neither rounded value is
+# a substring of the value sent: 55.75588 rounds to 55.7559 and 37.61738 to
+# 37.6174. A probe that prints what it sent therefore never shows the rounded
+# pair, and only the bot's reply can.
+LEVEL1_LOCATION_LATITUDE = "55.75588"
+LEVEL1_LOCATION_LONGITUDE = "37.61738"
+#: What the bot answers them with: each coordinate rounded to 4 decimals.
+LEVEL1_LOCATION_REPLY_LATITUDE = f"{float(LEVEL1_LOCATION_LATITUDE):.4f}"
+LEVEL1_LOCATION_REPLY_LONGITUDE = f"{float(LEVEL1_LOCATION_LONGITUDE):.4f}"
 
 BACKEND_MANIFEST = "services/backend/manifest.yaml"
 #: Where the endpoint module goes. The kit's own gate
@@ -144,37 +165,67 @@ def backend_acceptance_criteria(marker: str) -> str:
     )
 
 
-def bot_acceptance_criteria(marker: str) -> str:
+def level1_location_criterion() -> str:
+    """The live-only location behaviour, as the one prose line QA judges it by.
+
+    The same line is the bot task's last criterion and the last line of the
+    first story's QA checklist, so the developer is asked for exactly what QA
+    then checks. It names a *native* location, so a text message carrying the
+    numbers is not the check, and it fixes the coordinates, so the run can tell
+    the bot's reply apart from a probe echoing what it sent.
+    """
+    return (
+        "- When the QA account sends the deployed bot a native Telegram location at latitude "
+        f"{LEVEL1_LOCATION_LATITUDE}, longitude {LEVEL1_LOCATION_LONGITUDE}, the bot answers "
+        f'with a text message containing "{LEVEL1_LOCATION_REPLY_LATITUDE}" and '
+        f'"{LEVEL1_LOCATION_REPLY_LONGITUDE}", that location\'s latitude and longitude rounded '
+        "to 4 decimals."
+    )
+
+
+def bot_acceptance_criteria(marker: str, *, agent_type: str) -> str:
     """What QA checks the bot task by, on the running deployment.
 
     The brief's `level1_command` requirement: the command answers with this
     run's marker, and the running bot publishes that command to Telegram. Same
-    per-run marker discipline as `backend_acceptance_criteria`.
+    per-run marker discipline as `backend_acceptance_criteria`. A model is also
+    asked for the live-only location behaviour (`level1_location_criterion`);
+    the scripted runner is not, so its criteria stay what they always were.
     """
-    return (
+    criteria = (
         f"- The deployed bot answers the command /{LEVEL1_COMMAND} with exactly "
         f'"level-1 marker: {marker}".\n'
         f"- The command menu the running bot publishes to Telegram lists /{LEVEL1_COMMAND} "
         f'with the description "{level1_command_description(marker)}".'
     )
+    if agent_type != SCRIPTED_DEVELOPER:
+        criteria += f"\n{level1_location_criterion()}"
+    return criteria
+
+
+def _level1_backend_qa_criteria(marker: str) -> str:
+    """The seeded health check, then the first story's backend observations."""
+    return f"{BASELINE_ACCEPTANCE_CRITERIA}\n{backend_acceptance_criteria(marker)}"
 
 
 def level1_qa_criteria(marker: str) -> str:
     """The repository checklist a real QA executor judges the first story by.
 
     Written through the repository update the Architect uses, at the story's
-    plan admission, when the developer is a model. It is the accumulated
-    regression checklist QA runs (`shared.contracts.acceptance`): the seeded
-    health check, then the backend observations of the first story — this run's
-    marker on `GET /level1/marker` and the `level1_marker` setting registered on
-    the deployment. They are prose on purpose, so no line collapses into a
+    plan admission, only when the developer is a model: a scripted run has no
+    executor to hand it to. It is the accumulated regression checklist QA runs
+    (`shared.contracts.acceptance`): the seeded health check, the backend
+    observations of the first story — this run's marker on `GET /level1/marker`
+    and the `level1_marker` setting registered on the deployment — and the bot's
+    location behaviour, which QA verifies as the QA account with a probe it runs
+    in its sandbox. They are prose on purpose, so no line collapses into a
     health-only check QA would decide without an executor.
 
-    The bot's criteria are not here. Judging a Telegram command needs a Telegram
-    identity the QA executor is not given on the stand; they stay in the task's
-    TASK.md and in the suite's own probe of the command menu.
+    The /level1 command and its menu are not here: they stay in the task's
+    TASK.md and in the suite's own probe of the command menu, as they did before
+    the stand's QA executor was given the QA Telegram identity.
     """
-    return f"{BASELINE_ACCEPTANCE_CRITERIA}\n{backend_acceptance_criteria(marker)}"
+    return f"{_level1_backend_qa_criteria(marker)}\n{level1_location_criterion()}"
 
 
 def level1_extension_qa_criteria(marker: str, extension_marker: str) -> str:
@@ -182,10 +233,13 @@ def level1_extension_qa_criteria(marker: str, extension_marker: str) -> str:
 
     Accumulated, because the repository's criteria are the product's regression
     checklist: the first story's endpoint and setting must still answer beside
-    the extension endpoint and the second setting.
+    the extension endpoint and the second setting. The first story's location
+    line is left out: the extension story is not where the QA sandbox is
+    proven, and it asks QA nothing it did not ask before that proof existed.
     """
     return (
-        f"{level1_qa_criteria(marker)}\n{extension_acceptance_criteria(marker, extension_marker)}"
+        f"{_level1_backend_qa_criteria(marker)}\n"
+        f"{extension_acceptance_criteria(marker, extension_marker)}"
     )
 
 
@@ -245,9 +299,27 @@ def backend_contract(marker: str) -> str:
     )
 
 
-def bot_contract(marker: str) -> str:
-    """What the second task delivers: the bot command and its published menu."""
+def _location_contract() -> str:
+    """The live-only location deliverable, in words a model can build from."""
+    return (
+        "- The bot answers a native Telegram location message (one that carries "
+        "`message.location`) with a text reply `location: <latitude>, <longitude>`, each "
+        'coordinate rounded to 4 decimals (`f"{value:.4f}"`). Register it with '
+        "`MessageHandler(filters.LOCATION, ...)` beside the handlers the bot already has, "
+        f"so a location sent at latitude {LEVEL1_LOCATION_LATITUDE}, longitude "
+        f"{LEVEL1_LOCATION_LONGITUDE} is answered with "
+        f'"location: {LEVEL1_LOCATION_REPLY_LATITUDE}, {LEVEL1_LOCATION_REPLY_LONGITUDE}".\n'
+    )
+
+
+def bot_contract(marker: str, *, agent_type: str) -> str:
+    """What the second task delivers: the bot command and its published menu.
+
+    A model is also asked for the live-only location behaviour; the scripted
+    runner's change set carries none, so its contract does not mention it.
+    """
     existing = ", ".join(f'/{name} "{description}"' for name, description in BOT_EXISTING_COMMANDS)
+    location = _location_contract() if agent_type != SCRIPTED_DEVELOPER else ""
     return (
         "What to deliver:\n"
         f"- The bot service (`services/tg_bot`) answers the command /{LEVEL1_COMMAND} with "
@@ -256,7 +328,8 @@ def bot_contract(marker: str) -> str:
         "- When the bot starts, it publishes its command menu to Telegram with "
         "`setMyCommands` (`application.bot.set_my_commands`). The menu lists "
         f'/{LEVEL1_COMMAND} with the description "{level1_command_description(marker)}", '
-        f"beside the commands the bot already offers: {existing}.\n\n"
+        f"beside the commands the bot already offers: {existing}.\n"
+        f"{location}\n"
         "Rules of this product's kit, which its own CI and pre-push hooks enforce:\n"
         f"- Keep `post_init` in `{BOT_MAIN}` with its exact signature and body: the kit's own "
         "unit test calls it directly with a mock application. Publish the menu from a new "
@@ -534,7 +607,7 @@ class Level1ChangeSets:
     def bot_task_description(self, *, agent_type: str) -> str:
         return _task_description(
             f"Add the /{LEVEL1_COMMAND} Telegram command and publish the bot's command menu.",
-            bot_contract(self.marker),
+            bot_contract(self.marker, agent_type=agent_type),
             self.bot,
             agent_type=agent_type,
         )
@@ -543,9 +616,9 @@ class Level1ChangeSets:
         """What the first task's `TASK.md` has to quote, word for word."""
         return backend_acceptance_criteria(self.marker)
 
-    def bot_acceptance_criteria(self) -> str:
+    def bot_acceptance_criteria(self, *, agent_type: str) -> str:
         """What the second task's `TASK.md` has to quote, word for word."""
-        return bot_acceptance_criteria(self.marker)
+        return bot_acceptance_criteria(self.marker, agent_type=agent_type)
 
 
 def _task_description(

@@ -7,6 +7,7 @@ tests drive that whole chain offline: the runner's own `main` builds the child
 environment, and `create_level1_bot_project` creates the project under it.
 """
 
+import hashlib
 import json
 
 import httpx
@@ -198,15 +199,140 @@ def test_the_live_qa_criteria_need_an_executor_and_carry_this_run_s_markers(monk
 
     first = level1_change_set.level1_qa_criteria("e2e-aaaaaaaaaaaa")
     second = level1_change_set.level1_extension_qa_criteria("e2e-aaaaaaaaaaaa", "e2e-bbbbbbbbbbbb")
+    location = level1_change_set.level1_location_criterion()
 
     assert parse_health_only_criteria(first) is None
     assert parse_health_only_criteria(second) is None
     assert "e2e-aaaaaaaaaaaa" in first and "/level1/marker" in first
     assert "level1_marker" in first
-    # The extension's checklist is the first story's, then its own.
-    assert second.startswith(first)
+    # The first story's checklist ends with the location line the QA executor
+    # proves its Telegram sandbox with.
+    assert first.endswith(f"\n{location}")
+    # The extension's checklist is the first story's backend checklist, then its
+    # own: the location proof is the first story's, and story 2 is not re-asked.
+    assert second.startswith(first.removesuffix(f"\n{location}") + "\n")
+    assert location not in second
     assert "e2e-bbbbbbbbbbbb" in second and "/level1/extension" in second
     assert "level1_extension_marker" in second
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("developer", ["claude", "codex"])
+async def test_a_live_run_asks_its_developer_and_its_qa_for_the_location_behaviour(
+    tmp_path, monkeypatch, developer
+):
+    """`mega-live` carries the location behaviour in the bot task and in QA's checklist."""
+    import level1_change_set
+
+    monkeypatch.setenv("LIVE_WORKER_AGENT_TYPE", developer)
+    monkeypatch.setenv("LIVE_LLM_QA", "1")
+    monkeypatch.setenv("LIVE_QA_AGENT_TYPE", "claude")
+
+    ctx, _ = await _create_level1_project(monkeypatch, tmp_path)
+
+    location = level1_change_set.level1_location_criterion()
+    assert ctx["followup_task_criteria"].endswith(f"\n{location}")
+    assert "MessageHandler(filters.LOCATION" in ctx["followup_task_description"]
+    assert ctx["level1_qa_criteria"].endswith(f"\n{location}")
+    # The backend task and the extension story are not asked for it.
+    assert location not in ctx["task_criteria"]
+    assert "filters.LOCATION" not in ctx["task_description"]
+    assert location not in ctx["level1_extension_plan"]["task_criteria"]
+    assert location not in ctx["level1_extension_plan"]["qa_criteria"]
+    assert "filters.LOCATION" not in ctx["level1_extension_plan"]["task_description"]
+    # The brief does not have to carry it: the bot task already covers
+    # `level1_command`, so the coverage admission holds without a new requirement.
+    assert ctx["level1_brief"].requirement_ids == ["level1_command", "level1_setting"]
+
+
+#: What main rendered for `mega-noop` before the live-only location behaviour
+#: existed: the brief (both stories' documents), every task description with its
+#: change-set block replaced by a placeholder, and every task's criteria, for the
+#: markers below. The change-set blocks themselves are pinned by
+#: `tests/unit/test_level1_change_set.py` against the kit render.
+NOOP_RENDERING_DIGEST = "621e93be004fdfe9ae9353b731d6633bc517108176eb0f8117512e743eb57eca"
+
+
+def _noop_rendering(marker: str, extension_marker: str) -> dict:
+    import level1_brief
+    import level1_change_set
+
+    from scripts.template_pin import TEMPLATE_PIN
+
+    template = (TEMPLATE_PIN.source, TEMPLATE_PIN.ref)
+    sets = level1_change_set.build_level1_change_sets(marker, template)
+    extension = level1_change_set.build_level1_extension_change_set(
+        marker, extension_marker, template
+    )
+
+    def prose(description: str, operations) -> str:
+        block = level1_change_set.render_change_set(operations)
+        assert description.count(block) == 1
+        return description.replace(block, "<change-set>")
+
+    return {
+        "brief": level1_brief.build_level1_brief(marker).present_arguments("p"),
+        "ext_draft": level1_brief.build_level1_extension_brief(
+            marker, extension_marker, draft=True
+        ).present_arguments("p"),
+        "ext": level1_brief.build_level1_extension_brief(
+            marker, extension_marker
+        ).present_arguments("p"),
+        "backend_description": prose(
+            sets.backend_task_description(agent_type="noop"), sets.backend
+        ),
+        "bot_description": prose(sets.bot_task_description(agent_type="noop"), sets.bot),
+        "backend_criteria": sets.backend_acceptance_criteria(),
+        "bot_criteria": sets.bot_acceptance_criteria(agent_type="noop"),
+        "ext_description": prose(
+            extension.task_description(agent_type="noop"), extension.operations
+        ),
+        "ext_criteria": extension.acceptance_criteria(),
+    }
+
+
+def test_mega_noop_renders_byte_for_byte_what_main_rendered():
+    """The location behaviour is live-only: `mega-noop`'s contract is main's, unchanged."""
+    rendering = _noop_rendering("e2e-aaaaaaaaaaaa", "e2e-bbbbbbbbbbbb")
+    encoded = json.dumps(rendering, ensure_ascii=False, sort_keys=True).encode()
+
+    assert hashlib.sha256(encoded).hexdigest() == NOOP_RENDERING_DIGEST
+
+
+@pytest.mark.asyncio
+async def test_no_mega_noop_artifact_mentions_the_location_behaviour(tmp_path, monkeypatch):
+    """Created as `mega-noop` creates it: no location line, no location handler, no QA list."""
+    import level1_change_set
+
+    monkeypatch.delenv("LIVE_WORKER_AGENT_TYPE", raising=False)
+    monkeypatch.delenv("LIVE_LLM_QA", raising=False)
+    monkeypatch.delenv("LIVE_QA_AGENT_TYPE", raising=False)
+
+    ctx, _ = await _create_level1_project(monkeypatch, tmp_path)
+
+    assert ctx["agent_type"] == "noop"
+    # Deterministic QA: no repository checklist is written for either story.
+    assert ctx["level1_qa_criteria"] is None
+    assert ctx["level1_extension_plan"]["qa_criteria"] is None
+    rendered = json.dumps(
+        {
+            "brief": ctx["level1_brief"].present_arguments(ctx["project_id"]),
+            "task_description": ctx["task_description"],
+            "task_criteria": ctx["task_criteria"],
+            "followup_task_description": ctx["followup_task_description"],
+            "followup_task_criteria": ctx["followup_task_criteria"],
+            "extension_plan": ctx["level1_extension_plan"],
+        },
+        ensure_ascii=False,
+    )
+    for fragment in (
+        level1_change_set.level1_location_criterion(),
+        level1_change_set.LEVEL1_LOCATION_LATITUDE,
+        level1_change_set.LEVEL1_LOCATION_REPLY_LATITUDE,
+        "filters.LOCATION",
+        "location:",
+    ):
+        assert fragment not in rendered
 
 
 @pytest.mark.asyncio
