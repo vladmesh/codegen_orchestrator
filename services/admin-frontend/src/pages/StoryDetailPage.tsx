@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
 import type { Story, Task } from '@/types/api'
 import { requestStoryQaRecheck } from './storyRecheck'
+import { planningRetryTarget, requestPlanningRetry } from './storyPlanningRetry'
 import {
   infrastructureRetryTarget,
   requestInfrastructureRetry,
@@ -56,6 +57,14 @@ export function StoryDetailPage() {
     },
   })
 
+  const retryPlanningMutation = useMutation({
+    mutationFn: () => requestPlanningRetry(api, id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['story', id] })
+      queryClient.invalidateQueries({ queryKey: ['tasks', 'story', id] })
+    },
+  })
+
   const retryInfrastructureMutation = useMutation({
     mutationFn: (target: NonNullable<ReturnType<typeof infrastructureRetryTarget>>) =>
       requestInfrastructureRetry(api, id!, target),
@@ -68,6 +77,7 @@ export function StoryDetailPage() {
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>
   if (!story) return <p className="text-muted-foreground">Story not found</p>
   const infrastructureRetry = infrastructureRetryTarget(story, tasks ?? [])
+  const planningRetry = planningRetryTarget(story)
 
   return (
     <div className="space-y-6">
@@ -128,6 +138,15 @@ export function StoryDetailPage() {
               </div>
             </div>
           )}
+          {planningRetry && (
+            <ConfirmButton
+              label="Retry planning"
+              confirmText="Clear the planning failure and send this story to the architect again?"
+              pendingLabel="Retrying..."
+              onConfirm={() => retryPlanningMutation.mutate()}
+              isPending={retryPlanningMutation.isPending}
+            />
+          )}
           {infrastructureRetry && (
             <ConfirmButton
               label="Retry infrastructure attempt"
@@ -139,6 +158,23 @@ export function StoryDetailPage() {
           )}
         </div>
       </div>
+
+      {planningRetry && (
+        <Card className="border-orange-800">
+          <h2 className="mb-2 text-sm font-medium text-orange-300">Planning failed</h2>
+          <p className="text-sm text-foreground">{planningRetry.detail}</p>
+          {planningRetry.failedAttempts !== null && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              failed attempts: {planningRetry.failedAttempts}
+            </p>
+          )}
+          {retryPlanningMutation.isError && (
+            <p className="mt-2 text-sm text-red-400">
+              Retry failed: {retryPlanningMutation.error.message}
+            </p>
+          )}
+        </Card>
+      )}
 
       {infrastructureRetry && (
         <Card className="border-orange-800">

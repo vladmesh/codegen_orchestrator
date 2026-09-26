@@ -47,6 +47,7 @@ def _make_story(**overrides):
         "unverified_decisions": [],
         "reopened_at": None,
         "owner_notification": None,
+        "planning": None,
         "created_at": now,
         "updated_at": now,
     }

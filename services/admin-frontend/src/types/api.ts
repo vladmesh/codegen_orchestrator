@@ -44,8 +44,30 @@ export interface Story {
   unverified_decisions?: StoryUnverifiedDecision[]
   reopened_at?: string | null
   pr_number?: number | null
+  planning?: StoryPlanning | null
   created_at: string
   updated_at?: string | null
+}
+
+export interface StoryFailure {
+  reason?: 'story_failure'
+  code: 'scaffold_failed' | 'scaffold_timeout' | 'planning_failed'
+  source: string
+  detail: string
+  observed_at?: string
+}
+
+export interface StoryPlanning {
+  channels?: string[]
+  channel_failures?: string[]
+  state: 'planned' | 'retrying' | 'parked'
+  failed_attempts: number
+  max_retries?: number | null
+  next_attempt_at?: string | null
+  last_failure?: StoryFailure | null
+  planning_attempt_id?: string | null
+  reopen?: boolean
+  recorded_at: string
 }
 
 export type StoryType = 'product' | 'technical'

@@ -32,7 +32,7 @@ shapes only; a revision stored before them still parses through the read shape.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 import re
 from typing import Annotated, Any
@@ -46,6 +46,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from shared.contracts.dto.story_planning import PlanningChannels
 
 #: How long an architect's claim survives without a heartbeat. A claim whose
 #: heartbeat is older than this is stale and may be taken over; a fresher one
@@ -457,6 +459,20 @@ class ProductBriefRead(BaseModel):
     planning_attempt_active: bool
     planning_attempt_heartbeat_at: datetime | None = None
 
+    def planning_attempt_is_live(self, now: datetime) -> bool:
+        """Is an architect still proving it owns this brief's incomplete plan?
+
+        The question the API asks of the row before it hands a claim to a second
+        architect, asked of the row the API returned: an active attempt whose
+        heartbeat is within `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`.
+        """
+        if not self.planning_attempt_active or self.planning_attempt_heartbeat_at is None:
+            return False
+        heartbeat = self.planning_attempt_heartbeat_at
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=UTC)
+        return heartbeat >= now - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
+
 
 class ProductBriefFullText(BaseModel):
     """The full form of one revision, as `GET /product-briefs/{id}/full` returns it.
@@ -512,6 +528,19 @@ class ProductBriefPlanningAttemptCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     planning_attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class ProductBriefAdmissionCommand(ProductBriefPlanningAttemptCommand, PlanningChannels):
+    """The body of `admit`: the attempt, and the LLM channels that planned it.
+
+    The admission that releases the plan records the story's `planned` outcome
+    with these channels in the same transaction, so a released plan always
+    says which channel planned it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reopen: bool = False
 
 
 #: How a `returned_reason` starts when the requirement was returned because no

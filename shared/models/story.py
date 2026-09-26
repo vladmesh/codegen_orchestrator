@@ -62,3 +62,7 @@ class Story(Base):
     # The durable completion notice owed when this story reaches COMPLETED.
     owner_notification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How the architect's last planning attempt ended (`StoryPlanning`): which
+    # LLM channels planned it, or the failure, retry count and next retry time.
+    # Written only by `POST /stories/{id}/planning-outcome` and `retry-planning`.
+    planning: Mapped[dict | None] = mapped_column(JSON, nullable=True)

@@ -8,9 +8,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from http import HTTPStatus
 import json
 import uuid
 
+import httpx
 import structlog
 
 from shared.contracts.dto.llm_channel import LLMChannelConfig
@@ -24,8 +27,23 @@ from shared.contracts.dto.product_brief import (
     UsageExample,
 )
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
-from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.story_failure import SCAFFOLD_ERROR_KEY, StoryFailure, StoryFailureCode
+from shared.contracts.dto.story import StoryDTO, StoryStatus
+from shared.contracts.dto.story_failure import (
+    SCAFFOLD_ERROR_KEY,
+    StoryFailure,
+    StoryFailureCode,
+    in_work_cycle,
+)
+from shared.contracts.dto.story_planning import (
+    PLANNING_CHANNEL_LIST_LIMIT,
+    PlanningChannels,
+    StoryPlanning,
+    StoryPlanningOutcome,
+    StoryPlanningReport,
+    StoryPlanningState,
+    planning_is_due,
+)
+from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
@@ -39,10 +57,12 @@ from ..config.settings import Settings, get_settings
 from ..llm import (
     InvalidChannelChainError,
     LLMAgent,
+    LLMChannelsExhausted,
     build_agent_llm,
     channel_usage,
     load_channel_chain,
     log_channel_readiness,
+    retry_cannot_fix,
     unconfigured_channel_env,
 )
 from ..llm.chain import ChannelUsage
@@ -61,6 +81,11 @@ SCAFFOLD_WAIT_MAX = 300  # max wait time (5 min)
 #: hand this architect's plan to a second one while it is still planning.
 PLANNING_HEARTBEAT_INTERVAL = PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS / 3
 
+#: How often, and how far apart, a success without a brief is reported before
+#: the error log becomes its record. Small: the plan already stands.
+PLANNING_OUTCOME_ATTEMPTS = 3
+PLANNING_OUTCOME_RETRY_DELAY = 1.0
+
 
 class ReturnedRequirementsNoticeError(RuntimeError):
     """The owner could not be told which requirements the admitted plan returned.
@@ -68,6 +93,16 @@ class ReturnedRequirementsNoticeError(RuntimeError):
     Raised out of the job on purpose: the queue entry stays unacknowledged, the
     consumer reclaims it once it is idle, and the replay publishes the notice
     again — through the already-decomposed skip or the `ALREADY_ADMITTED` claim.
+    """
+
+
+class PlanningFailureUnrecordedError(RuntimeError):
+    """A failed planning attempt could not be recorded on its story.
+
+    Raised out of the job on purpose, like `ReturnedRequirementsNoticeError`:
+    the story would otherwise stay in_progress with a released attempt and
+    nothing scheduled. The entry stays unacknowledged, the consumer reclaims it
+    once it is idle, and the replay plans again.
     """
 
 
@@ -136,10 +171,9 @@ async def _release_planning_attempt(attempt: _PlanningAttempt, log) -> None:
     back incomplete. Nothing is released by this: `finish` gives up ownership,
     and only `admit` ever crosses the boundary. Failing to give it up is not
     worth failing the job over — the claim goes stale on its own within
-    `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`, and a story left behind an
-    incomplete plan needs an operator either way, because
-    `supervise_stuck_stories` scans `StoryStatus.CREATED` only — so it is logged
-    rather than raised over whatever went wrong first.
+    `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`, and what happens to the story
+    next is decided by the planning outcome recorded after this — so it is
+    logged rather than raised over whatever went wrong first.
     """
     try:
         await api_client.finish_planning_attempt(attempt.brief_id, attempt.planning_attempt_id)
@@ -219,7 +253,9 @@ async def _claim_planning_attempt(
             raise RuntimeError(f"unexpected planning claim outcome: {claim.outcome}")
 
 
-async def _admit_plan(attempt: _PlanningAttempt, log) -> dict | None:
+async def _admit_plan(
+    attempt: _PlanningAttempt, msg: ArchitectMessage, usage: ChannelUsage, log
+) -> dict | None:
     """Cross the boundary once, and report the refusal when it is refused.
 
     Called exactly once per owned plan, after the graph has returned. `None`
@@ -229,7 +265,10 @@ async def _admit_plan(attempt: _PlanningAttempt, log) -> dict | None:
     are missing.
     """
     admission = await api_client.admit_product_brief_coverage(
-        attempt.brief_id, attempt.planning_attempt_id
+        attempt.brief_id,
+        attempt.planning_attempt_id,
+        channels=_channel_report(usage),
+        reopen=msg.is_reopen,
     )
     if admission.outcome is ProductBriefAdmissionOutcome.INCOMPLETE:
         # The plan is the evidence, not the LLM's account of it. A run that
@@ -390,22 +429,194 @@ async def _notify_returned_requirements_of_plan(
     )
 
 
+def _is_plan_task(task: TaskDTO, story: StoryDTO, brief: ProductBriefRead | None) -> bool:
+    """Whether this task is part of a real plan of the story's current work cycle.
+
+    A cancelled task is never a plan, and neither is a closed task from before
+    a reopen. For a brief-backed story a plan is what the boundary released
+    (`dispatch_admitted`) or what a live attempt is still building; the
+    unadmitted leftovers of a released or voided attempt are neither — they are
+    exactly what the next claim voids.
+    """
+    if task.status == TaskStatus.CANCELLED:
+        return False
+    if not in_work_cycle(task.created_at, story.reopened_at, task.status):
+        return False
+    if brief is None or task.dispatch_admitted:
+        return True
+    return (
+        task.planning_attempt_id is not None
+        and task.planning_attempt_id == brief.planning_attempt_id
+        and brief.planning_attempt_is_live(datetime.now(UTC))
+    )
+
+
 async def _skip_already_decomposed(
-    msg: ArchitectMessage, story_status: StoryStatus, redis: RedisStreamClient, log
+    msg: ArchitectMessage, story: StoryDTO, redis: RedisStreamClient, log
 ) -> dict | None:
-    """The skip result for an in-progress story that already has tasks, else `None`.
+    """The skip result for an in-progress story that already has a plan, else `None`.
+
+    Tasks alone are not a plan: a failed attempt leaves its unadmitted tasks
+    behind, and skipping on them left story-92b433c8 in_progress with nothing
+    being built. Such a story falls through to the claim, which voids them.
 
     The replay of a job whose notice failed after admission lands here: the
     story already moved on, but the owner is still owed the notice.
     """
-    if story_status != StoryStatus.IN_PROGRESS:
+    if story.status != StoryStatus.IN_PROGRESS:
         return None
-    existing_tasks = await api_client.get_tasks_by_story(msg.story_id)
-    if not existing_tasks:
+    tasks = await api_client.get_tasks_by_story(msg.story_id)
+    if not tasks:
         return None
-    log.info("architect_skipping_already_decomposed", task_count=len(existing_tasks))
-    await _notify_returned_requirements_of_admitted_brief(msg, redis, log)
+    brief = await api_client.get_product_brief_by_story(msg.story_id)
+    plan = [task for task in tasks if _is_plan_task(task, story, brief)]
+    if not plan:
+        log.info("architect_unplanned_leftovers_not_a_plan", task_count=len(tasks))
+        return None
+    log.info("architect_skipping_already_decomposed", task_count=len(plan))
+    if any(task.dispatch_admitted for task in plan):
+        await _settle_stale_retry(msg, story, log)
+    if brief is not None:
+        await _notify_returned_requirements_of_admitted_brief(msg, redis, log, brief)
     return live_work_settled({"status": "skipped", "reason": "already decomposed"})
+
+
+async def _settle_stale_retry(msg: ArchitectMessage, story: StoryDTO, log) -> None:
+    """A released plan is a planned story, whatever retry the story still shows.
+
+    Only reachable when a run planned the story but could not record it, so the
+    supervisor re-queued a retry that finds the plan in place.
+    """
+    if story.planning is None or story.planning.state is not StoryPlanningState.RETRYING:
+        return
+    report = StoryPlanningReport(outcome=StoryPlanningOutcome.SUCCEEDED, reopen=msg.is_reopen)
+    try:
+        await api_client.record_planning_outcome(msg.story_id, report)
+    except Exception as e:
+        log.warning("architect_stale_planning_retry_unsettled", error=str(e))
+
+
+def _channel_report(usage: ChannelUsage) -> PlanningChannels:
+    """The channels of one attempt, bounded for the story record."""
+    return PlanningChannels(
+        channels=usage.channels()[:PLANNING_CHANNEL_LIST_LIMIT],
+        channel_failures=list(dict.fromkeys(_channel_failures(usage)))[
+            :PLANNING_CHANNEL_LIST_LIMIT
+        ],
+    )
+
+
+def _planning_failure_detail(error: BaseException | str, usage: ChannelUsage) -> str:
+    """The error class and, for an LLM failure, each channel with its failure class.
+
+    The channels come first, so the bound on the detail never cuts them off.
+    """
+    answered = usage.channels()
+    if isinstance(error, LLMChannelsExhausted):
+        detail = "LLMChannelsExhausted: every LLM channel failed: " + ", ".join(
+            f"{attempt.channel.value}:{attempt.failure_class.value}" for attempt in error.attempts
+        )
+        if answered:
+            detail += f" (channels that answered earlier calls: {', '.join(answered)})"
+        return detail
+    head = error if isinstance(error, str) else f"{type(error).__name__}: {error}"
+    failed = ", ".join(dict.fromkeys(_channel_failures(usage))) or "none"
+    return f"[LLM channels answered: {', '.join(answered) or 'none'}; failed: {failed}] {head}"
+
+
+async def _report_planning_failure(  # noqa: PLR0913 — one attempt's whole outcome
+    msg: ArchitectMessage,
+    error: BaseException | str,
+    *,
+    retriable: bool,
+    usage: ChannelUsage,
+    planning: _PlanningAttempt | None,
+    log,
+) -> StoryPlanning | None:
+    """Record the failed attempt on the story; the API decides retry or park.
+
+    `None` when the API refused because the story already left planning — a
+    stale report, nothing to retry. Any other refusal raises
+    `PlanningFailureUnrecordedError`, so the job is replayed rather than the
+    story left in_progress with nothing scheduled.
+    """
+    report = StoryPlanningReport(
+        outcome=StoryPlanningOutcome.FAILED,
+        failure=StoryFailure(
+            code=StoryFailureCode.PLANNING_FAILED,
+            source="architect",
+            detail=_planning_failure_detail(error, usage),
+        ),
+        retriable=retriable,
+        planning_attempt_id=None if planning is None else planning.planning_attempt_id,
+        reopen=msg.is_reopen,
+        **_channel_report(usage).model_dump(),
+    )
+    try:
+        recorded = await api_client.record_planning_outcome(msg.story_id, report)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == HTTPStatus.CONFLICT:
+            log.info("architect_planning_failure_stale", detail=e.response.text)
+            return None
+        log.error("architect_planning_failure_unrecorded", error=str(e))
+        raise PlanningFailureUnrecordedError(str(e)) from e
+    except Exception as e:
+        log.error("architect_planning_failure_unrecorded", error=str(e))
+        raise PlanningFailureUnrecordedError(str(e)) from e
+    log.warning(
+        "architect_planning_failure_recorded",
+        planning_state=recorded.state.value,
+        failed_attempts=recorded.failed_attempts,
+        max_retries=recorded.max_retries,
+        next_attempt_at=recorded.next_attempt_at,
+        retriable=retriable,
+    )
+    return recorded
+
+
+async def _report_planning_success(
+    msg: ArchitectMessage, usage: ChannelUsage, planning: _PlanningAttempt | None, log
+) -> None:
+    """Record which channels planned a story that has no Product Brief attempt.
+
+    A brief-backed plan needs nothing here: its admission recorded the channels
+    in the same transaction as the release. Without one there is no such
+    transaction, so the outcome call is tried a few times; if the API stays
+    unavailable, the error event carrying the channels is the record. The plan
+    stands either way and is never replayed for this.
+    """
+    if planning is not None:
+        return
+    channels = _channel_report(usage)
+    report = StoryPlanningReport(
+        outcome=StoryPlanningOutcome.SUCCEEDED, reopen=msg.is_reopen, **channels.model_dump()
+    )
+    for attempt in range(1, PLANNING_OUTCOME_ATTEMPTS + 1):
+        try:
+            await api_client.record_planning_outcome(msg.story_id, report)
+            return
+        except Exception as e:
+            error = e
+            if attempt < PLANNING_OUTCOME_ATTEMPTS:
+                await asyncio.sleep(PLANNING_OUTCOME_RETRY_DELAY * attempt)
+    log.error(
+        "architect_planning_outcome_unrecorded",
+        outcome=StoryPlanningOutcome.SUCCEEDED.value,
+        llm_channels=channels.channels,
+        llm_channel_failures=channels.channel_failures,
+        attempts=PLANNING_OUTCOME_ATTEMPTS,
+        error=str(error),
+    )
+
+
+def _failed_result(error: str, recorded: StoryPlanning | None) -> dict:
+    return live_work_settled(
+        {
+            "status": "failed",
+            "error": error,
+            "planning": None if recorded is None else recorded.state.value,
+        }
+    )
 
 
 def _planning_state(attempt: _PlanningAttempt | None) -> dict:
@@ -684,9 +895,20 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         log.info("architect_skipping_deploying_story", status=story_status)
         return live_work_settled({"status": "skipped", "reason": f"story already {story_status}"})
 
-    # Skip if already in_progress with tasks (duplicate message from supervisor retry)
+    # A failed attempt owes its retry at `next_attempt_at`, and only then. A
+    # redelivered or duplicate entry arriving earlier settles without planning,
+    # so it can neither skip the backoff nor spend the retry budget.
+    if not planning_is_due(story.planning, datetime.now(UTC)):
+        log.info(
+            "architect_planning_not_due",
+            next_attempt_at=story.planning.next_attempt_at,
+            failed_attempts=story.planning.failed_attempts,
+        )
+        return live_work_settled({"status": "skipped", "reason": "planning retry not due"})
+
+    # Skip if already in_progress with a plan (duplicate message from supervisor retry)
     # But never skip reopened stories — they need re-decomposition
-    skipped = await _skip_already_decomposed(msg, story_status, redis, log)
+    skipped = await _skip_already_decomposed(msg, story, redis, log)
     if skipped is not None:
         return skipped
 
@@ -711,19 +933,31 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
     settings = get_settings()
 
-    try:
-        channels = await load_channel_chain(api_client, LLMAgent.ARCHITECT)
-    except InvalidChannelChainError as exc:
-        log.error("architect_llm_not_configured", error=str(exc))
-        return live_work_unsettled({"status": "failed", "error": str(exc)})
-    missing_env = unconfigured_channel_env(LLMAgent.ARCHITECT, channels, settings)
-    if missing_env:
-        log.error("architect_llm_not_configured", missing_env=missing_env)
-        return live_work_unsettled(
-            {"status": "failed", "error": f"{', '.join(missing_env)} not set"}
-        )
-
     with channel_usage() as usage:
+        # A chain the Architect cannot run on is a planning failure no retry
+        # clears: an operator has to fix the configuration first.
+        try:
+            channels = await load_channel_chain(api_client, LLMAgent.ARCHITECT)
+        except InvalidChannelChainError as exc:
+            log.error("architect_llm_not_configured", error=str(exc))
+            recorded = await _report_planning_failure(
+                msg, exc, retriable=False, usage=usage, planning=None, log=log
+            )
+            return _failed_result(str(exc), recorded)
+        missing_env = unconfigured_channel_env(LLMAgent.ARCHITECT, channels, settings)
+        if missing_env:
+            log.error("architect_llm_not_configured", missing_env=missing_env)
+            error = f"{', '.join(missing_env)} not set"
+            recorded = await _report_planning_failure(
+                msg,
+                f"LLM channel chain not configured: {error}",
+                retriable=False,
+                usage=usage,
+                planning=None,
+                log=log,
+            )
+            return _failed_result(error, recorded)
+
         return await _plan(msg, redis, story_status, channels, settings, usage, log)
 
 
@@ -778,8 +1012,18 @@ async def _plan(
             result = await graph.ainvoke(initial_state, config=config)
 
         if planning is not None:
-            refusal = await _admit_plan(planning, log)
+            refusal = await _admit_plan(planning, msg, usage, log)
             if refusal is not None:
+                # An incomplete plan is a failed attempt like any other: the
+                # next run may dispose of what this one left undisposed.
+                await _report_planning_failure(
+                    msg,
+                    f"ProductBriefCoverageIncomplete: {refusal['error']}",
+                    retriable=True,
+                    usage=usage,
+                    planning=planning,
+                    log=log,
+                )
                 return refusal
 
         # Transition reopened stories to in_progress so dispatcher can pick up tasks
@@ -789,6 +1033,8 @@ async def _plan(
                 log.info("architect_reopened_story_started")
             except Exception as e:
                 log.warning("architect_reopened_story_start_failed", error=str(e))
+
+        await _report_planning_success(msg, usage, planning, log)
 
         # Last, after the story moved on: a failure here is replayed, and the
         # replay must not find a plan that is still waiting to start.
@@ -802,9 +1048,10 @@ async def _plan(
         )
         return live_work_settled({"status": "success"})
 
-    except ReturnedRequirementsNoticeError:
+    except (ReturnedRequirementsNoticeError, PlanningFailureUnrecordedError):
         # The plan is admitted and nothing is released again; only the notice is
-        # owed. Leaving the entry unacknowledged is what replays it.
+        # owed. Or the failure could not be written on the story. Either way,
+        # leaving the entry unacknowledged is what replays it.
         raise
     except Exception as e:
         log.error(
@@ -817,7 +1064,11 @@ async def _plan(
         )
         if planning is not None:
             await _release_planning_attempt(planning, log)
-        return live_work_unsettled({"status": "failed", "error": str(e)})
+        # Released first, so a retry the API schedules finds the plan free.
+        recorded = await _report_planning_failure(
+            msg, e, retriable=not retry_cannot_fix(e), usage=usage, planning=planning, log=log
+        )
+        return _failed_result(str(e), recorded)
 
 
 def _channel_failures(usage: ChannelUsage) -> list[str]:

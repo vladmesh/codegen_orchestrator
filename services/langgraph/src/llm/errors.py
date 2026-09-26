@@ -129,6 +129,34 @@ class LLMChannelsExhausted(RuntimeError):  # noqa: N818 - named by the card and 
         super().__init__(f"every LLM channel of {agent} failed: {summary}")
 
 
+#: Failures another try minutes later does not clear: a refused payment, a bad
+#: or missing credential, an exhausted quota, a CLI that is not installed. An
+#: operator has to act before the channel can answer again.
+UNRETRIABLE_FAILURE_CLASSES = frozenset(
+    {
+        ChannelFailureClass.PAYMENT_REQUIRED,
+        ChannelFailureClass.UNAUTHORIZED,
+        ChannelFailureClass.FORBIDDEN,
+        ChannelFailureClass.QUOTA_EXHAUSTED,
+        ChannelFailureClass.MISSING_CREDENTIAL,
+        ChannelFailureClass.BINARY_MISSING,
+    }
+)
+
+
+def retry_cannot_fix(exc: BaseException) -> bool:
+    """Whether retrying the call that raised ``exc`` is pointless.
+
+    Only when every channel of the chain failed, and each with a class in
+    ``UNRETRIABLE_FAILURE_CLASSES``. One channel that was merely rate-limited,
+    overloaded or slow may answer next time, and any other error is treated as
+    transient: a retry is bounded, a wrong "never" is not.
+    """
+    if not isinstance(exc, LLMChannelsExhausted) or not exc.attempts:
+        return False
+    return all(attempt.failure_class in UNRETRIABLE_FAILURE_CLASSES for attempt in exc.attempts)
+
+
 class InvalidChannelChainError(RuntimeError):
     """An agent's stored ``llm_channels`` is not a chain it can run on."""
 

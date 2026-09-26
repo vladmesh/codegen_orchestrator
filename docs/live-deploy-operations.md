@@ -220,6 +220,41 @@ new attempt id and one new notice; retry again after fixing the cause. Never edi
 `project.config` by hand to clear `scaffold_error`. When several stories of the
 project were parked, each keeps its own park and needs its own retry.
 
+## Re-run a failed planning (`planning_failed`)
+
+When the architect cannot plan a story, the story says so: `planning.state` is
+`retrying` (with `failed_attempts`, `max_retries`, `next_attempt_at` and
+`last_failure`) while the platform retries on its own, and `parked` once the
+retries run out or the failure is one no retry clears — every LLM channel
+refused payment, credentials or quota. A parked story is in
+`waiting_human_review` with a `planning_failed` `quarantine_reason`; the owner
+and administrators were each told once. The detail names the error class and,
+for an LLM failure, each channel with its class, for example
+`LLMChannelsExhausted: every LLM channel failed: codex:rate_limited,
+claude:missing_credential, openrouter:payment_required`.
+
+Fix the cause first (top up the provider, log a subscription back in, repair
+the channel chain in `agent_configs`). Then click `Retry planning` on the admin
+story detail page, or call the API as a resolved administrator:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  --request POST \
+  --header "X-Internal-Key: ${INTERNAL_API_KEY}" \
+  --header "X-Telegram-ID: ${ADMIN_TELEGRAM_ID}" \
+  --header 'Content-Type: application/json' \
+  --data '{"actor":"operator"}' \
+  "${API_BASE_URL}/api/stories/${STORY_ID}/retry-planning"
+```
+
+The response is the story in `in_progress` with no `quarantine_reason` and
+`planning.state` `retrying`, due now, with `failed_attempts` 0: the re-run is
+owed on the story, and planning is queued within a minute, on the scheduler's
+next cycle — the action itself publishes nothing, so do not call it again
+while you wait. The architect's claim voids the failed attempt's unadmitted
+tasks, so nothing of the failed plan is dispatched. Any other state is refused
+with 422 and changes nothing. Do not PATCH the status or run SQL.
+
 ## Reconcile managed deploy targets
 
 Provisioning success has one internal commit point:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -25,16 +25,14 @@ from shared.contracts.dto.lifecycle_wait import (
     TaskResourceResumeDisposition,
     TaskResourceWaitCommand,
 )
-from shared.contracts.dto.product_brief import (
-    PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
-    ProductBriefRead,
-)
+from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     EngineeringRunResult,
 )
-from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story import StoryDTO, StoryStatus
+from shared.contracts.dto.story_planning import StoryPlanningState, planning_retry_queued_key
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -100,6 +98,10 @@ async def supervise_stuck_stories(
     tasks is somebody else's business.
 
     Retry counts are persisted in Redis so they survive scheduler restarts.
+
+    It also re-queues planning of an in-progress or reopened story whose last
+    planning attempt failed and is due a retry (`_queue_due_planning_retries`);
+    those re-queues count as 'retried' too.
 
     Returns dict with 'retried' and 'failed' counts.
     """
@@ -175,26 +177,97 @@ async def supervise_stuck_stories(
         )
         retried += 1
 
-    return {"retried": retried, "failed": failed}
+    reopened = await api_client.get_stories_by_status(StoryStatus.REOPENED)
+    planning_retried = await _queue_due_planning_retries(
+        api_client, redis_client, [*active_stories, *reopened], now
+    )
+    return {"retried": retried + planning_retried, "failed": failed}
+
+
+async def _queue_due_planning_retries(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    stories: list[StoryDTO],
+    now: datetime,
+) -> int:
+    """Re-queue planning for every story whose `planning` record owes a due retry.
+
+    The one publisher of every planning the record owes: a failed attempt's
+    retry, whose bound, count and backoff the API decided when it recorded the
+    failure, and an operator's `retry-planning`, due at once, which publishes
+    nothing itself. It runs in the single sequential dispatcher loop, so no two
+    publishers race. A story in `created` is left to the stuck-story retry
+    above, which already re-queues it.
+
+    The row is what is owed; the Redis key is only a throttle that stops later
+    ticks re-publishing while the planning run is in flight. It is checked
+    first and set only after `XADD` returned, so a failed recipient lookup or
+    publish leaves nothing behind and the next tick publishes again. One
+    story's failure is logged and the loop goes on with the others.
+    """
+    queued = 0
+    for story in stories:
+        planning = story.planning
+        if planning is None or planning.state is not StoryPlanningState.RETRYING:
+            continue
+        if planning.next_attempt_at is None or planning.next_attempt_at > now:
+            continue
+        try:
+            queued += await _publish_due_planning_retry(api_client, redis_client, story)
+        except Exception as exc:
+            logger.error(
+                "story_planning_retry_publish_failed",
+                story_id=story.id,
+                retry_attempt=planning.failed_attempts,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+    return queued
+
+
+async def _publish_due_planning_retry(
+    api_client: SchedulerAPIClient, redis_client: RedisStreamClient, story: StoryDTO
+) -> int:
+    """Publish one due record's architect job unless it was published within the TTL."""
+    planning = story.planning
+    redis = redis_client._redis
+    # Set below once this record was published. It expires after
+    # `supervisor.story_retry_ttl`, so a message that was lost is re-sent.
+    key = planning_retry_queued_key(story.id, planning)
+    if await redis.exists(key):
+        return 0
+    project_id = str(story.project_id)
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="story_planning_retry", story_id=story.id
+    )
+    await redis_client.publish_message(
+        ARCHITECT_QUEUE,
+        ArchitectMessage(
+            story_id=story.id,
+            project_id=project_id,
+            telegram_chat_id=recipient.telegram_chat_id,
+            is_reopen=planning.reopen,
+            user_report=story.user_report if planning.reopen else None,
+        ),
+    )
+    await redis.set(key, 1, ex=_story_retry_ttl())
+    logger.warning(
+        "story_planning_retry_queued",
+        story_id=story.id,
+        retry_attempt=planning.failed_attempts,
+        max_retries=planning.max_retries,
+        last_failure=None if planning.last_failure is None else planning.last_failure.detail,
+    )
+    return 1
 
 
 def _planning_attempt_is_live(brief: ProductBriefRead, now: datetime) -> bool:
     """Is an architect still proving it owns this brief's incomplete plan?
 
-    The same question `services/api/.../_product_brief_helpers.py` asks of the
-    row before it hands a claim to a second architect, asked here of the row the
-    API returned and against the one timeout the brief contract declares. It is
-    a read: nothing here takes the claim, and a brief whose owner is alive is
-    simply left to it.
+    A read, asked through the brief contract's own rule: nothing here takes the
+    claim, and a brief whose owner is alive is simply left to it.
     """
-    if not brief.planning_attempt_active:
-        return False
-    heartbeat = brief.planning_attempt_heartbeat_at
-    if heartbeat is None:
-        return False
-    if heartbeat.tzinfo is None:
-        heartbeat = heartbeat.replace(tzinfo=UTC)
-    return heartbeat >= now - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
+    return brief.planning_attempt_is_live(now)
 
 
 async def _plan_is_abandoned_unadmitted(

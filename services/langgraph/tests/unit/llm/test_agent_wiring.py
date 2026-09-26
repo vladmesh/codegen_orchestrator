@@ -7,6 +7,7 @@ the Architect's job log names the channels its planning attempt used.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from langchain_core.messages import HumanMessage
@@ -14,6 +15,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.story_planning import StoryPlanning, StoryPlanningState
 from shared.contracts.queues.architect import ArchitectMessage
 from src.agents.po.graph import create_po_graph
 from src.llm import InvalidChannelChainError
@@ -52,6 +54,12 @@ def _architect_api(configs: _Configs) -> MagicMock:
     api.get_tasks_by_story = AsyncMock(return_value=[])
     api.transition_story = AsyncMock()
     api.get_product_brief_by_story = AsyncMock(return_value=None)
+    # Every planning attempt reports its outcome on the story.
+    api.record_planning_outcome = AsyncMock(
+        return_value=StoryPlanning(
+            state=StoryPlanningState.PARKED, failed_attempts=1, recorded_at=datetime.now(UTC)
+        )
+    )
     return api
 
 

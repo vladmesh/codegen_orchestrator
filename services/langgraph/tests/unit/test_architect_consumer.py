@@ -20,6 +20,11 @@ from shared.contracts.dto.product_brief import (
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailureCode
+from shared.contracts.dto.story_planning import (
+    PlanningChannels,
+    StoryPlanning,
+    StoryPlanningState,
+)
 from shared.contracts.queues.architect import ArchitectMessage
 from tests.unit.factories import (
     make_admission,
@@ -38,6 +43,11 @@ _CREATED_STORY = make_story(id="story-abc", status="created")
 
 
 _OPENROUTER_ONLY_CONFIG = {"id": "architect", "llm_channels": [{"channel": "openrouter"}]}
+
+
+def _recorded_planning(state: StoryPlanningState = StoryPlanningState.RETRYING) -> StoryPlanning:
+    """What `POST /stories/{id}/planning-outcome` answers with, reduced to the record."""
+    return StoryPlanning(state=state, failed_attempts=1, recorded_at="2026-09-26T00:00:00Z")
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +71,8 @@ def _mock_api_get_project():
         # The Architect's stored channel chain: openrouter alone, the chain these
         # tests were written against (`ARCHITECT_LLM_*` is then required).
         mock_api.get_agent_config = AsyncMock(return_value=_OPENROUTER_ONLY_CONFIG)
+        # Every planning attempt reports its outcome on the story.
+        mock_api.record_planning_outcome = AsyncMock(return_value=_recorded_planning())
         yield mock_api
 
 
@@ -495,7 +507,9 @@ class TestProductBriefPlanning:
         assert "req-1" in user_msg and "req-2" in user_msg
         assert "record_requirement_coverage" in user_msg
         api.claim_planning_attempt.assert_awaited_once_with("brief-1")
-        api.admit_product_brief_coverage.assert_awaited_once_with("brief-1", "plan-1")
+        api.admit_product_brief_coverage.assert_awaited_once_with(
+            "brief-1", "plan-1", channels=PlanningChannels(), reopen=False
+        )
 
     @pytest.mark.asyncio
     async def test_rival_owner_plans_nothing(
@@ -674,7 +688,9 @@ class TestProductBriefPlanning:
         assert result["status"] == "incomplete"
         assert result["missing_requirement_ids"] == ["req-2"]
         assert "req-2" in result["error"]
-        api.admit_product_brief_coverage.assert_awaited_once_with("brief-1", "plan-1")
+        api.admit_product_brief_coverage.assert_awaited_once_with(
+            "brief-1", "plan-1", channels=PlanningChannels(), reopen=True
+        )
         # The story is not moved on by this consumer, and nothing is admitted twice.
         api.transition_story.assert_not_called()
 
@@ -699,6 +715,7 @@ class _FakeBriefBoundary:
         self.tasks: dict[str, dict] = {}
         self.admit_calls = 0
         self.released: list[str] = []
+        self.planning_reports: list = []
 
     # --- the story/project reads the consumer does before planning ---
 
@@ -719,6 +736,10 @@ class _FakeBriefBoundary:
 
     async def get_primary_repository(self, project_id):
         return None
+
+    async def record_planning_outcome(self, story_id, report):
+        self.planning_reports.append(report)
+        return _recorded_planning()
 
     # --- the boundary ---
 
@@ -790,7 +811,7 @@ class _FakeBriefBoundary:
             )
         ]
 
-    async def admit_product_brief_coverage(self, brief_id, planning_attempt_id):
+    async def admit_product_brief_coverage(self, brief_id, planning_attempt_id, **_channels):
         self.admit_calls += 1
         must = {r.id for r in self.brief.content.must_requirements}
         covered = {
