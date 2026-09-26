@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -25,16 +25,14 @@ from shared.contracts.dto.lifecycle_wait import (
     TaskResourceResumeDisposition,
     TaskResourceWaitCommand,
 )
-from shared.contracts.dto.product_brief import (
-    PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
-    ProductBriefRead,
-)
+from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     EngineeringRunResult,
 )
-from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story import StoryDTO, StoryStatus
+from shared.contracts.dto.story_planning import StoryPlanningState
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -73,6 +71,12 @@ logger = structlog.get_logger(__name__)
 
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
 
+#: Set once the retry after a story's n-th failed planning attempt is queued.
+#: Only a publish guard: the retry count itself is `StoryPlanning.failed_attempts`
+#: on the story row. It expires after `supervisor.story_retry_ttl`, so a retry
+#: whose message was lost is queued once more rather than never.
+PLANNING_RETRY_QUEUED_KEY_PREFIX = "story:planning_retry_queued:"
+
 
 def _story_stuck_threshold() -> int:
     return startup.get_config().get_int("supervisor.story_stuck_threshold_minutes")
@@ -100,6 +104,10 @@ async def supervise_stuck_stories(
     tasks is somebody else's business.
 
     Retry counts are persisted in Redis so they survive scheduler restarts.
+
+    It also re-queues planning of an in-progress or reopened story whose last
+    planning attempt failed and is due a retry (`_queue_due_planning_retries`);
+    those re-queues count as 'retried' too.
 
     Returns dict with 'retried' and 'failed' counts.
     """
@@ -175,26 +183,69 @@ async def supervise_stuck_stories(
         )
         retried += 1
 
-    return {"retried": retried, "failed": failed}
+    reopened = await api_client.get_stories_by_status(StoryStatus.REOPENED)
+    planning_retried = await _queue_due_planning_retries(
+        api_client, redis_client, [*active_stories, *reopened], now
+    )
+    return {"retried": retried + planning_retried, "failed": failed}
+
+
+async def _queue_due_planning_retries(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    stories: list[StoryDTO],
+    now: datetime,
+) -> int:
+    """Re-queue planning for every story whose failed attempt is due a retry.
+
+    The API decided the retry when it recorded the failure — bound, count and
+    backoff are on the story's `planning` record — so this only waits out
+    `next_attempt_at` and publishes once per failed attempt. A story in
+    `created` is left to the stuck-story retry above, which already re-queues it.
+    """
+    redis = redis_client._redis
+    queued = 0
+    for story in stories:
+        planning = story.planning
+        if planning is None or planning.state is not StoryPlanningState.RETRYING:
+            continue
+        if planning.next_attempt_at is None or planning.next_attempt_at > now:
+            continue
+        key = f"{PLANNING_RETRY_QUEUED_KEY_PREFIX}{story.id}:{planning.failed_attempts}"
+        if not await redis.set(key, 1, nx=True, ex=_story_retry_ttl()):
+            continue
+        project_id = str(story.project_id)
+        recipient = await resolve_project_recipient(
+            api_client, project_id, event="story_planning_retry", story_id=story.id
+        )
+        await redis_client.publish_message(
+            ARCHITECT_QUEUE,
+            ArchitectMessage(
+                story_id=story.id,
+                project_id=project_id,
+                telegram_chat_id=recipient.telegram_chat_id,
+                is_reopen=planning.reopen,
+                user_report=story.user_report if planning.reopen else None,
+            ),
+        )
+        logger.warning(
+            "story_planning_retry_queued",
+            story_id=story.id,
+            retry_attempt=planning.failed_attempts,
+            max_retries=planning.max_retries,
+            last_failure=None if planning.last_failure is None else planning.last_failure.detail,
+        )
+        queued += 1
+    return queued
 
 
 def _planning_attempt_is_live(brief: ProductBriefRead, now: datetime) -> bool:
     """Is an architect still proving it owns this brief's incomplete plan?
 
-    The same question `services/api/.../_product_brief_helpers.py` asks of the
-    row before it hands a claim to a second architect, asked here of the row the
-    API returned and against the one timeout the brief contract declares. It is
-    a read: nothing here takes the claim, and a brief whose owner is alive is
-    simply left to it.
+    A read, asked through the brief contract's own rule: nothing here takes the
+    claim, and a brief whose owner is alive is simply left to it.
     """
-    if not brief.planning_attempt_active:
-        return False
-    heartbeat = brief.planning_attempt_heartbeat_at
-    if heartbeat is None:
-        return False
-    if heartbeat.tzinfo is None:
-        heartbeat = heartbeat.replace(tzinfo=UTC)
-    return heartbeat >= now - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
+    return brief.planning_attempt_is_live(now)
 
 
 async def _plan_is_abandoned_unadmitted(

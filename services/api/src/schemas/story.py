@@ -24,6 +24,7 @@ from shared.contracts.dto.story import (
     StoryWaitingOn,
 )
 from shared.contracts.dto.story_failure import StoryFailure
+from shared.contracts.dto.story_planning import StoryPlanning
 
 __all__ = [
     "StoryCreate",
@@ -76,6 +77,9 @@ class StoryRead(TimestampedDTO):
     unverified_decisions: list[StoryUnverifiedDecision] = Field(default_factory=list)
     reopened_at: datetime | None = None
     pr_number: int | None = None
+    # How the last planning attempt ended: channels that planned it, or the
+    # failure and whether the platform is still retrying.
+    planning: StoryPlanning | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

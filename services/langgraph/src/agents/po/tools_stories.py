@@ -359,6 +359,10 @@ async def create_story(
 async def list_stories(project_id: str, *, config: RunnableConfig) -> str:
     """List all stories for a project.
 
+    A story whose planning failed carries `PROBLEM:` on its line: it is not
+    being built, whatever its status says. Report it as a problem the platform
+    is handling, never as "in progress, no errors".
+
     Args:
         project_id: Project ID.
     """
@@ -373,7 +377,10 @@ async def list_stories(project_id: str, *, config: RunnableConfig) -> str:
 
     lines = []
     for s in stories:
-        lines.append(f"- [{s['status']}] {s['title']} (ID: {s['id']}, type: {s.get('type', '?')})")
+        line = f"- [{s['status']}] {s['title']} (ID: {s['id']}, type: {s.get('type', '?')})"
+        if problem := _planning_problem(s):
+            line += f" — PROBLEM: {problem}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -441,8 +448,35 @@ def _minutes_since(timestamp: str | None) -> float | None:
     return (datetime.now(UTC) - moment).total_seconds() / 60
 
 
+def _planning_problem(story: dict) -> str | None:
+    """A failed planning of this story, in plain words, or None.
+
+    Read off the story itself, so it is there even when diagnostics are not.
+    """
+    planning = story.get("planning") or {}
+    failure = (planning.get("last_failure") or {}).get("detail", "no recorded cause")
+    if planning.get("state") == "retrying":
+        attempts = planning.get("failed_attempts")
+        bound = planning.get("max_retries")
+        return (
+            f"planning the work failed ({attempts} of {bound} automatic retries used); "
+            "a problem the platform is handling: it is retrying it automatically, and "
+            f"nothing has been built yet. Last cause: {failure}"
+        )
+    if story.get("status") == "waiting_human_review" and planning.get("state") == "parked":
+        return (
+            "planning the work failed and could not be retried automatically: a problem "
+            "the platform is handling, but work is stopped until an operator re-runs "
+            f"planning, and nothing has been built yet. Cause: {failure}"
+        )
+    return None
+
+
 def _problem(story: dict, diagnostics: dict | None) -> str | None:
     """What stops or threatens this story, in one line the PO must relay, or None."""
+    planning = _planning_problem(story)
+    if planning is not None:
+        return planning
     if diagnostics is None:
         return None
     failure = diagnostics.get("failure")
@@ -484,9 +518,13 @@ async def get_story(story_id: str, *, config: RunnableConfig) -> str:
     """Get story details including linked tasks, their statuses, and runs.
 
     The result carries `problem` when something stops or threatens the story
-    (a recorded failure, a project repository that could not be created, a
-    stop, or `in_progress` with no task). When `problem` is set, work is NOT
-    going normally: tell the user so, with the cause.
+    (a recorded failure, a failed planning the platform is retrying or has
+    stopped, a project repository that could not be created, a stop, or
+    `in_progress` with no task). When `problem` is set, work is NOT going
+    normally: tell the user so, with the cause — never "in progress, no errors".
+    A failed planning is a problem the platform is handling: report it as one —
+    it retries on its own, or waits for an operator to re-run planning — and
+    say nothing has been built yet.
 
     Args:
         story_id: Story ID (e.g. story-abc12345).

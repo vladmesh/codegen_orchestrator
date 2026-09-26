@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-26
 
+- A failed Architect planning is a story state (`stories.planning`, `planning_failed`): retried with backoff up to
+  `supervisor.story_max_architect_retries`, parked at once when no retry can help, re-run by `retry-planning`.
+- The "already decomposed" skip counts only admitted tasks or a live attempt's, never cancelled ones or a failed
+  attempt's leftovers, so a re-queue reaches the claim; the PO reports a failed planning as a problem.
 - The langgraph image carries Codex and Claude Code at the worker pins, so the codex and claude channels answer in
   langgraph and architect: codex on the workers' own profile, run as its owner under the shared lock.
 - Each agent logs `llm_channel_ready` per channel at startup, and a PO or summarizer turn gives a subscription CLI

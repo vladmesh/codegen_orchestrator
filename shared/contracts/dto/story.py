@@ -8,6 +8,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.story_planning import StoryPlanning
 
 
 class StoryType(StrEnum):
@@ -234,6 +235,8 @@ class StoryDTO(TimestampedDTO):
     unverified_decisions: "list[StoryUnverifiedDecision]" = Field(default_factory=list)
     reopened_at: datetime | None = None
     pr_number: int | None = None
+    # How the last planning attempt ended; paired with ``StoryRead.planning``.
+    planning: StoryPlanning | None = None
 
 
 # --- Request DTOs ---

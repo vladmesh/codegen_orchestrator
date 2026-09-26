@@ -20,6 +20,7 @@ from shared.contracts.dto.product_brief import (
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailureCode
+from shared.contracts.dto.story_planning import StoryPlanning, StoryPlanningState
 from shared.contracts.queues.architect import ArchitectMessage
 from tests.unit.factories import (
     make_admission,
@@ -38,6 +39,11 @@ _CREATED_STORY = make_story(id="story-abc", status="created")
 
 
 _OPENROUTER_ONLY_CONFIG = {"id": "architect", "llm_channels": [{"channel": "openrouter"}]}
+
+
+def _recorded_planning(state: StoryPlanningState = StoryPlanningState.RETRYING) -> StoryPlanning:
+    """What `POST /stories/{id}/planning-outcome` answers with, reduced to the record."""
+    return StoryPlanning(state=state, failed_attempts=1, recorded_at="2026-09-26T00:00:00Z")
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +67,8 @@ def _mock_api_get_project():
         # The Architect's stored channel chain: openrouter alone, the chain these
         # tests were written against (`ARCHITECT_LLM_*` is then required).
         mock_api.get_agent_config = AsyncMock(return_value=_OPENROUTER_ONLY_CONFIG)
+        # Every planning attempt reports its outcome on the story.
+        mock_api.record_planning_outcome = AsyncMock(return_value=_recorded_planning())
         yield mock_api
 
 
@@ -699,6 +707,7 @@ class _FakeBriefBoundary:
         self.tasks: dict[str, dict] = {}
         self.admit_calls = 0
         self.released: list[str] = []
+        self.planning_reports: list = []
 
     # --- the story/project reads the consumer does before planning ---
 
@@ -719,6 +728,10 @@ class _FakeBriefBoundary:
 
     async def get_primary_repository(self, project_id):
         return None
+
+    async def record_planning_outcome(self, story_id, report):
+        self.planning_reports.append(report)
+        return _recorded_planning()
 
     # --- the boundary ---
 

@@ -998,6 +998,25 @@ work-cycle task count, the last failed Runs and task stop events, and the newest
 lines naming the story or project — named fields only, redacted, at most
 `STORY_DIAGNOSTIC_LOG_LIMIT`; an unreadable log store is `logs_unavailable`, never an error.
 
+**A failed planning attempt is a story state.** The architect reports every planning attempt to
+`POST /api/stories/{id}/planning-outcome` (`StoryPlanningReport` → `StoryRead`, internal or admin,
+`shared/contracts/dto/story_planning.py`). The locked row keeps the outcome in `stories.planning`
+(`StoryPlanning`, on `StoryRead.planning`): `planned` names the LLM channels that answered and the
+ones that failed (`channel:failure_class`) and the Product Brief attempt; a failure carries a
+`planning_failed` `StoryFailure` (source `architect`, redacted detail naming the error class and,
+for `LLMChannelsExhausted`, every channel with its class). A retriable failure within
+`supervisor.story_max_architect_retries` is `retrying` with `failed_attempts` and `next_attempt_at`
+(60 s, doubling) and leaves the status alone; the supervisor re-queues one `ArchitectMessage` per
+attempt once it is due. A failure past the bound, or `retriable=false` (every channel failed with
+payment_required, unauthorized, forbidden, quota_exhausted, missing_credential or binary_missing,
+or the chain cannot run), is `parked`: the same transaction makes the `human-review` stop with the
+`StoryFailure` and both owed notices (a `reopened` or `created` story passes through `in_progress`).
+A failure reported for a story outside `created`/`in_progress`/`reopened` is a 409 and writes
+nothing. `POST /api/stories/{id}/retry-planning` (internal or admin, optional `AdminAction`) is
+valid only for `waiting_human_review` with a `planning_failed` stop, else 422: it clears the stop
+and the planning record (the retry count), lands on `in_progress` and publishes one
+`ArchitectMessage` (`is_reopen` as the failed run had it).
+
 The state-age watchdog's ending, `POST /api/stories/{id}/expire-state-wait`
 (`StateWaitExpiryCommand` → `StateWaitExpiryRead`, `shared/contracts/dto/state_wait.py`), moves a
 Story one hop only if the locked rows still show the expected status and anchor

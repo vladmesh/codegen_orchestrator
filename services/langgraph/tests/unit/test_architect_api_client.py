@@ -14,6 +14,11 @@ from shared.contracts.dto.product_brief import (
 )
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+from shared.contracts.dto.story_planning import (
+    StoryPlanningOutcome,
+    StoryPlanningReport,
+    StoryPlanningState,
+)
 
 
 @pytest.fixture
@@ -164,6 +169,36 @@ class TestTransitionStory:
         failure = StoryFailure(code=StoryFailureCode.SCAFFOLD_FAILED, source="a", detail="d")
         with pytest.raises(ValueError, match="not a stopping story action"):
             await api_client.stop_story("story-abc", "start", failure, actor="architect")
+
+    @pytest.mark.asyncio
+    async def test_record_planning_outcome_posts_the_report_and_returns_the_record(
+        self, api_client, mock_httpx_client
+    ):
+        planning = {
+            "state": "retrying",
+            "failed_attempts": 1,
+            "max_retries": 3,
+            "next_attempt_at": _NOW,
+            "recorded_at": _NOW,
+        }
+        mock_httpx_client.request.return_value = _ok_response(
+            _story_dict(status="in_progress", planning=planning)
+        )
+        report = StoryPlanningReport(
+            outcome=StoryPlanningOutcome.FAILED,
+            failure=StoryFailure(
+                code=StoryFailureCode.PLANNING_FAILED, source="architect", detail="timeout"
+            ),
+            channel_failures=["codex:timeout"],
+        )
+
+        recorded = await api_client.record_planning_outcome("story-abc", report)
+
+        assert recorded.state is StoryPlanningState.RETRYING
+        call = mock_httpx_client.request.call_args
+        assert call.args[:2] == ("POST", "/api/stories/story-abc/planning-outcome")
+        assert call.kwargs["json"]["failure"]["code"] == "planning_failed"
+        assert call.kwargs["json"]["channel_failures"] == ["codex:timeout"]
 
 
 def _brief_dict(**overrides):

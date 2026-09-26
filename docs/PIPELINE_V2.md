@@ -139,7 +139,13 @@ provisioning incident path.
    - Strict linear chain: each task `blocked_by` the previous
    - Does NOT specify implementation details — worker has AGENTS.md
 6. Transitions story to `in_progress` immediately on pickup (prevents supervisor from re-publishing the same story every 30s)
-7. Skips stories already decomposed (IN_PROGRESS + has tasks)
+7. Skips stories already decomposed: IN_PROGRESS with a plan in the current work cycle — admitted
+   tasks, the tasks of a live Product Brief attempt, or (no brief) any task that is not cancelled.
+   A failed attempt's unadmitted leftovers are not a plan: the run reaches the claim, which voids them.
+8. Reports the attempt's outcome on the story (`POST /stories/{id}/planning-outcome`): the channels
+   that planned it, or a `planning_failed` failure the API turns into a bounded retry with backoff
+   (re-queued by the supervisor) or a park in `waiting_human_review`, which an operator re-runs with
+   `POST /stories/{id}/retry-planning` — see `docs/live-deploy-operations.md`.
 
 **When the story is backed by a confirmed Product Brief**, steps 1–5 happen
 inside a claimed planning attempt:

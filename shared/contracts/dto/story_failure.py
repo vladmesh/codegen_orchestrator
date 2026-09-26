@@ -53,6 +53,10 @@ class StoryFailureCode(StrEnum):
     #: The architect waited for the scaffold for its whole window and the project
     #: never left ``draft``, with no recorded error to explain it.
     SCAFFOLD_TIMEOUT = "scaffold_timeout"
+    #: The architect could not plan the story: its retries ran out, or it hit a
+    #: failure no retry can clear. The detail names the error class and, for
+    #: an LLM failure, each channel with its failure class.
+    PLANNING_FAILED = "planning_failed"
 
 
 class StoryFailure(BaseModel):
@@ -82,6 +86,10 @@ _OWNER_WORDS: dict[StoryFailureCode, str] = {
     StoryFailureCode.SCAFFOLD_TIMEOUT: (
         "Work on this change stopped before it began: preparing the project's code "
         "repository did not finish in time, so nothing was built."
+    ),
+    StoryFailureCode.PLANNING_FAILED: (
+        "Work on this change stopped before it began: the platform could not plan the "
+        "work, so nothing was built."
     ),
 }
 

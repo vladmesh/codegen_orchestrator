@@ -65,6 +65,7 @@ from ._story_helpers import (
     _record_qa_routing,
     _record_story_failure,
 )
+from ._story_planning import planning_router
 from .applications import _make_deploy_run_id
 
 logger = structlog.get_logger()
@@ -74,6 +75,7 @@ router = APIRouter(prefix="/stories", tags=["stories"])
 # are served under the same /stories prefix as the single-hop actions here.
 router.include_router(action_router)
 router.include_router(diagnostics_router)
+router.include_router(planning_router)
 
 _DEFAULT_COMPLETION_NOTIFICATION_TEXT = (
     "The story is finished. Tell the user the good news that their product is ready."

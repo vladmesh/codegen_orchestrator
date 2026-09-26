@@ -34,6 +34,7 @@ from shared.contracts.dto.run import RunDTO, RunType
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.story_failure import StoryFailure
+from shared.contracts.dto.story_planning import StoryPlanning, StoryPlanningReport
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.telegram import BotLiveness
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
@@ -415,6 +416,20 @@ class LanggraphAPIClient(InternalAPIClient):
             json={"actor": actor, "failure": failure.model_dump(mode="json")},
         )
         return StoryDTO.model_validate(resp.json())
+
+    async def record_planning_outcome(
+        self, story_id: str, report: StoryPlanningReport
+    ) -> StoryPlanning:
+        """Report one planning attempt; the API answers with what the story does next."""
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/planning-outcome",
+            json=report.model_dump(mode="json"),
+        )
+        planning = StoryDTO.model_validate(resp.json()).planning
+        if planning is None:
+            raise RuntimeError(f"planning outcome of {story_id} came back unrecorded")
+        return planning
 
     # --- Phase 4: Project methods ---
 

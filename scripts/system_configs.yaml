@@ -122,7 +122,7 @@
 - key: supervisor.story_max_architect_retries
   value: 3
   category: supervisor
-  description: "Max architect retry attempts for stuck stories"
+  description: "Max architect retry attempts for stuck stories and for failed planning attempts"
 
 - key: supervisor.story_retry_ttl
   value: 3600

@@ -87,6 +87,13 @@ action_router = APIRouter()
 #: (`fail` → `reopen` → `start`) in `pr_poller._record_ci_failure`.
 RETRY_AFTER_CI_FAILURE = "retry-after-ci-failure"
 
+#: Parking a story whose planning failed before the architect ever moved it to
+#: in_progress — a reopen, which the architect starts only once it has planned,
+#: or a story whose start was refused. `waiting_human_review` is reachable from
+#: in_progress only, so the park passes through it on the same locked row.
+#: Applied by `POST /stories/{id}/planning-outcome`, not an endpoint of its own.
+PARK_UNSTARTED_PLANNING_FAILURE = "park-unstarted-planning-failure"
+
 #: Every composite Story move the platform performs, as the ordered chain of
 #: hops it applies.  Nothing outside this table walks a Story through more than
 #: one status; a new composite is a new entry here plus its endpoint below.
@@ -95,6 +102,10 @@ COMPOSITE_CHAINS: dict[str, tuple[StoryStatus, ...]] = {
         StoryStatus.FAILED,
         StoryStatus.REOPENED,
         StoryStatus.IN_PROGRESS,
+    ),
+    PARK_UNSTARTED_PLANNING_FAILURE: (
+        StoryStatus.IN_PROGRESS,
+        StoryStatus.WAITING_HUMAN_REVIEW,
     ),
 }
 

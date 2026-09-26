@@ -32,7 +32,7 @@ shapes only; a revision stored before them still parses through the read shape.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 import re
 from typing import Annotated, Any
@@ -456,6 +456,20 @@ class ProductBriefRead(BaseModel):
     planning_attempt_id: str | None = None
     planning_attempt_active: bool
     planning_attempt_heartbeat_at: datetime | None = None
+
+    def planning_attempt_is_live(self, now: datetime) -> bool:
+        """Is an architect still proving it owns this brief's incomplete plan?
+
+        The question the API asks of the row before it hands a claim to a second
+        architect, asked of the row the API returned: an active attempt whose
+        heartbeat is within `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`.
+        """
+        if not self.planning_attempt_active or self.planning_attempt_heartbeat_at is None:
+            return False
+        heartbeat = self.planning_attempt_heartbeat_at
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=UTC)
+        return heartbeat >= now - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
 
 
 class ProductBriefFullText(BaseModel):
