@@ -182,7 +182,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error("callback_handler_failed", data=data, error=str(e), exc_info=True)
         await query.edit_message_text(
-            f"⚠️ Ошибка: {escape_markdown(str(e))}",
+            "⚠️ Не удалось выполнить действие\\. Попробуйте позже\\.",
             reply_markup=back_to_menu_keyboard(),
             parse_mode="MarkdownV2",
         )

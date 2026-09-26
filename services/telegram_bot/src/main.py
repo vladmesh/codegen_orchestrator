@@ -43,7 +43,7 @@ from .notifications import ProvisionerNotifier  # noqa: E402
 from .proactive import (  # noqa: E402
     PROACTIVE_RECLAIM_IDLE_MS,
     process_proactive_entry,
-    send_message_to_chat,
+    send_text,
 )
 
 logger = structlog.get_logger()
@@ -64,6 +64,9 @@ def get_stream_client() -> RedisStreamClient:
 # PO response settings
 PO_RESPONSE_TIMEOUT_S = 60
 TYPING_INTERVAL_S = 5
+# What the user sees when their message could not be answered. Fixed on purpose:
+# exception text is for the logs, never for the chat.
+MESSAGE_FAILED_REPLY = "Не удалось обработать сообщение. Попробуйте позже."
 
 
 async def _post_rag_message(payload: dict) -> None:
@@ -387,10 +390,10 @@ async def handle_message(update: Update, context) -> None:
         await update.message.reply_text("Таймаут ожидания ответа. Попробуйте позже.")
     except RuntimeError as e:
         logger.error("po_response_error", error=str(e), user_id=user_id)
-        await update.message.reply_text(f"Ошибка: {e!s}")
+        await update.message.reply_text(MESSAGE_FAILED_REPLY)
     except Exception as e:
         logger.error("message_handling_failed", error=str(e), user_id=user_id)
-        await update.message.reply_text(f"Ошибка: {e!s}")
+        await update.message.reply_text(MESSAGE_FAILED_REPLY)
 
 
 class ProactiveListener:
@@ -442,8 +445,8 @@ class ProactiveListener:
 
 
 async def _send_response_to_user(app: Application, telegram_chat_id: int, text: str) -> None:
-    """Send response text to Telegram user with markdown fallback."""
-    await send_message_to_chat(app.bot, telegram_chat_id, text)
+    """Send PO's reply to the Telegram user."""
+    await send_text(app.bot, telegram_chat_id, text)
     logger.info("worker_response_sent", telegram_chat_id=telegram_chat_id, text_length=len(text))
 
 

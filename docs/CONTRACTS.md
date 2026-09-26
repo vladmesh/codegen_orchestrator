@@ -770,6 +770,18 @@ acks only after successful delivery or terminal delivery exhaustion. Its PEL
 delivery count survives a restart; exhaustion is alerted and is not retried as
 an endlessly valid message.
 
+Every text the bot sends a user on the reply and proactive paths goes through one
+function, `send_text` in `services/telegram_bot/src/proactive.py`. It splits on
+`MESSAGE_BREAK` (`queues/po.py`, ASCII RS `\x1e`): a producer that wants a new Telegram
+message puts it into `POResponse.text` or `POProactiveMessage.text`, never inside an
+open HTML tag, and the bot drops it and any empty part. A part over
+`SAFE_MESSAGE_LENGTH` (4000 UTF-16 units of HTML source, `shared/telegram_text.py`) is
+cut at the last paragraph, then line, then word boundary that fits, never inside a tag
+or entity; tags open at a cut are closed and reopened, so every chunk is valid HTML.
+Chunks go in order, each HTML first and plain text if refused. A proactive retry
+resumes at the chunk that failed (`SendProgress`, kept per delivery). A failed reply
+gets a fixed apology, never exception text.
+
 ### Worker command and turn rules
 
 Canonical sources: `shared/contracts/queues/worker.py`,
