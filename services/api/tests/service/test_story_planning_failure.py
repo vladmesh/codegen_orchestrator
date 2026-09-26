@@ -112,7 +112,7 @@ async def test_a_success_records_which_channels_planned_the_story(
 
 
 @pytest.mark.asyncio
-async def test_retry_planning_owes_a_parked_story_to_the_architect_and_publishes_it_once(
+async def test_retry_planning_owes_a_parked_story_to_the_architect_and_publishes_nothing(
     async_client: AsyncClient, redis_client: Redis, _tasks_project
 ):
     story_id = await _started_story(async_client, _tasks_project)
@@ -132,8 +132,8 @@ async def test_retry_planning_owes_a_parked_story_to_the_architect_and_publishes
     assert body["planning"]["failed_attempts"] == 0
     assert body["planning"]["next_attempt_at"] is not None
     assert body["planning"]["last_failure"]["detail"] == CAUSE
-    [message] = await _architect_messages(redis_client, story_id)
-    assert message["is_reopen"] is False
+    # The supervisor is the one publisher of the record; this action queues nothing.
+    assert await _architect_messages(redis_client, story_id) == []
 
     # The count starts again: the next failure is the first of a fresh bound.
     again = await _report(async_client, story_id)

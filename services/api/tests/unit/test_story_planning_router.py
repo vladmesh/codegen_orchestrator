@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from http import HTTPStatus
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from fakeredis import aioredis
@@ -21,14 +21,10 @@ import pytest
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_planning import (
     PLANNING_MAX_RETRIES_CONFIG_KEY,
-    PLANNING_RETRY_GUARD_TTL_CONFIG_KEY,
     StoryPlanning,
     StoryPlanningState,
-    planning_retry_queued_key,
 )
-from shared.contracts.queues.architect import ArchitectMessage
 from shared.models import Story, SystemConfig
-from shared.queues import ARCHITECT_QUEUE
 from src.database import get_async_session
 from src.dependencies import get_redis_client
 from src.main import app
@@ -62,14 +58,10 @@ def _session(story: Story, max_retries: int = 3) -> AsyncMock:
     result.scalar_one_or_none.return_value = story
     session.execute = AsyncMock(return_value=result)
 
-    configs = {
-        PLANNING_MAX_RETRIES_CONFIG_KEY: max_retries,
-        PLANNING_RETRY_GUARD_TTL_CONFIG_KEY: 3600,
-    }
-
     async def get(model, key, **_kwargs):
         assert model is SystemConfig
-        return SystemConfig(key=key, value=configs[key], category="supervisor")
+        assert key == PLANNING_MAX_RETRIES_CONFIG_KEY
+        return SystemConfig(key=key, value=max_retries, category="supervisor")
 
     session.get = get
     session.refresh = AsyncMock()
@@ -89,7 +81,7 @@ def _cleanup_overrides():
 
 @pytest.fixture
 def redis():
-    """The stream client the API holds, over fakeredis for the publish guard."""
+    """The stream client the API holds, over fakeredis, to prove nothing touches it."""
     client = AsyncMock()
     client.redis = aioredis.FakeRedis(decode_responses=True)
     app.dependency_overrides[get_redis_client] = lambda: client
@@ -239,16 +231,19 @@ async def _parked_story() -> Story:
     return story
 
 
-async def _retry(story: Story, recipient: AsyncMock | None = None):
-    with patch(
-        "src.routers._story_planning.resolve_project_chat_id",
-        recipient or AsyncMock(return_value="4242"),
-    ):
-        return await _post(f"/api/stories/{story.id}/retry-planning", {"actor": "admin"})
+async def _retry(story: Story):
+    return await _post(f"/api/stories/{story.id}/retry-planning", {"actor": "admin"})
 
 
-def _owes_planning_now(body: dict) -> StoryPlanning:
-    """The re-run is owed on the row: `retrying`, due now, count reset, reason kept."""
+@pytest.mark.asyncio
+async def test_retry_planning_writes_the_due_record_and_publishes_nothing(redis):
+    """The record is the whole handoff; the supervisor is the one publisher."""
+    story = await _parked_story()
+
+    resp = await _retry(story)
+
+    assert resp.status_code == HTTPStatus.OK, resp.text
+    body = resp.json()
     assert body["status"] == "in_progress"
     assert body["waiting_on"] == "none"
     assert body["quarantine_reason"] is None
@@ -258,56 +253,9 @@ def _owes_planning_now(body: dict) -> StoryPlanning:
     assert planning.next_attempt_at <= datetime.now(UTC)
     assert planning.last_failure.detail == CAUSE
     assert planning.reopen is True
-    return planning
-
-
-@pytest.mark.asyncio
-async def test_retry_planning_owes_planning_on_the_row_and_publishes_it_once(redis):
-    story = await _parked_story()
-
-    resp = await _retry(story)
-
-    assert resp.status_code == HTTPStatus.OK, resp.text
-    planning = _owes_planning_now(resp.json())
-    redis.publish_message.assert_awaited_once()
-    queue, message = redis.publish_message.await_args.args
-    assert queue == ARCHITECT_QUEUE
-    assert isinstance(message, ArchitectMessage)
-    assert (message.story_id, message.project_id, message.telegram_chat_id) == (
-        story.id,
-        str(PROJECT_ID),
-        "4242",
-    )
-    assert (message.is_reopen, message.user_report) == (True, "still broken")
-    # The supervisor's guard for this record is taken, so it will not publish it again.
-    assert await redis.redis.exists(planning_retry_queued_key(story.id, planning))
-
-
-@pytest.mark.asyncio
-async def test_retry_planning_with_redis_down_still_owes_the_run_to_the_supervisor(redis):
-    story = await _parked_story()
-    redis.publish_message.side_effect = ConnectionError("redis unavailable")
-
-    resp = await _retry(story)
-
-    assert resp.status_code == HTTPStatus.OK, resp.text
-    planning = _owes_planning_now(resp.json())
-    # The guard is given back, so the supervisor's next tick publishes the record.
-    assert not await redis.redis.exists(planning_retry_queued_key(story.id, planning))
-
-
-@pytest.mark.asyncio
-async def test_retry_planning_whose_recipient_cannot_be_resolved_leaves_it_to_the_supervisor(
-    redis,
-):
-    story = await _parked_story()
-
-    resp = await _retry(story, AsyncMock(side_effect=RuntimeError("project has no owner")))
-
-    assert resp.status_code == HTTPStatus.OK, resp.text
-    planning = _owes_planning_now(resp.json())
+    # Nothing published, and no Redis key: not even the supervisor's throttle.
     redis.publish_message.assert_not_awaited()
-    assert not await redis.redis.exists(planning_retry_queued_key(story.id, planning))
+    assert await redis.redis.keys("*") == []
 
 
 @pytest.mark.asyncio

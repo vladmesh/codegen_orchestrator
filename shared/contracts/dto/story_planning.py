@@ -13,7 +13,7 @@ story read as work in progress with no error for as long as anybody asked.
   planned it, so "which channel planned this story" needs no log search;
 * ``retrying`` — planning is owed: an attempt failed with a failure another try
   may clear, or an operator re-ran a parked planning. The scheduler supervisor
-  is the guaranteed publisher: it re-queues planning once ``next_attempt_at``
+  is its one publisher: it re-queues planning once ``next_attempt_at``
   passes, and the architect settles a job that arrives before then without
   planning, so a redelivered entry cannot bypass the backoff;
 * ``parked`` — the retries ran out, or the failure is one no retry can clear;
@@ -42,13 +42,11 @@ from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 #: many times the platform re-runs the architect on its own.
 PLANNING_MAX_RETRIES_CONFIG_KEY = "supervisor.story_max_architect_retries"
 
-#: How long the once-per-record publish guard lives. After it expires a retry
-#: whose message was lost is published again rather than never.
-PLANNING_RETRY_GUARD_TTL_CONFIG_KEY = "supervisor.story_retry_ttl"
-
-#: Set by whoever publishes the architect job a ``retrying`` record owes — the
-#: supervisor, or the operator action's immediate publish — so one record is
-#: published once. Only a guard: what is owed is the record on the story row.
+#: Set by the scheduler supervisor — the one publisher of the architect job a
+#: ``retrying`` record owes — after it published that job, so later ticks do not
+#: publish it again while the planning run is in flight. A throttle, never a
+#: lock: what is owed is the record on the story row, and the key expires after
+#: ``supervisor.story_retry_ttl`` so a lost message is published again.
 PLANNING_RETRY_QUEUED_KEY_PREFIX = "story:planning_retry_queued:"
 
 #: The first retry waits this long; every further one waits twice the previous.
@@ -228,7 +226,7 @@ def planning_is_due(planning: StoryPlanning | None, now: datetime) -> bool:
 
 
 def planning_retry_queued_key(story_id: str, planning: StoryPlanning) -> str:
-    """The publish guard of one ``retrying`` record: one key per record written."""
+    """The publish throttle of one ``retrying`` record: one key per record written."""
     if planning.next_attempt_at is None:
         raise ValueError("only a retrying record with next_attempt_at is published")
     stamp = int(planning.next_attempt_at.timestamp() * 1_000_000)

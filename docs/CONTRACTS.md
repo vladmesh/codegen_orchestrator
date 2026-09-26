@@ -1014,19 +1014,26 @@ same transaction makes the `human-review` stop with the `StoryFailure` and both 
 `created`/`in_progress`/`reopened` is a 409 and writes nothing. `POST /api/stories/{id}/retry-planning`
 (internal or admin, optional `AdminAction`) is valid only for `waiting_human_review` with a
 `planning_failed` stop, else 422: one transaction clears the stop, lands on `in_progress` and writes
-`retrying` due now with `failed_attempts` 0. The scheduler supervisor is the guaranteed publisher of
-every due `retrying` record; `retry-planning` also publishes right after its commit as a best-effort
-accelerator and answers 200 even when that fails. The Redis key `planning_retry_queued_key` (TTL
-`supervisor.story_retry_ttl`) is a throttle, never a lock: both publishers set it only after `XADD`
-returned, the supervisor checks it before publishing, and a failed lookup or publish leaves none, so
-the next tick publishes again (a per-story failure is logged as `story_planning_retry_publish_failed`
-and the tick goes on). The row wins over Redis. A duplicate message is harmless by construction: the
-architect settles a job whose `retrying` record is not yet due (`architect_planning_not_due`), a
-claim that finds a live rival settles, and a plan already in place is skipped.
+`retrying` due now with `failed_attempts` 0, and nothing is published. The scheduler supervisor
+(`supervise_stuck_stories`, one sequential loop in `scheduler-pipeline`) is the one publisher of an
+`ArchitectMessage` for a `retrying` record, so an operator's re-run is queued within one cycle. The
+Redis key `planning_retry_queued_key` (TTL `supervisor.story_retry_ttl`) is its throttle, never a
+lock: it is checked first and set only after `XADD` returned, so a failed lookup or publish leaves
+none and the next tick publishes again (a per-story failure is logged as
+`story_planning_retry_publish_failed` and the tick goes on). The row wins over Redis. The architect
+settles a job whose `retrying` record is not yet due (`architect_planning_not_due`), a claim that
+finds a live rival, and a plan already in place.
 A successful brief-backed plan records `planned` with its channels in the `admit` transaction
 (`ProductBriefAdmissionCommand.channels` / `channel_failures`); a plan without a brief reports
 `succeeded` to `planning-outcome`, retried briefly, and logs `architect_planning_outcome_unrecorded`
 with the channels when the API stays unavailable.
+
+*Accepted residuals (observer decisions on card codegen-orchestrator-1387).* A successful plan
+without a Product Brief made while the API is unavailable for all three outcome writes keeps its
+channels only in the `architect_planning_outcome_unrecorded` log event. An `XADD` that raises after
+Redis wrote the entry sets no throttle, so the next tick may publish the same record again: a
+brief-backed story's claim settles that duplicate, and for a story without a brief a second planning
+run is possible in this Redis-fault corner only.
 
 The state-age watchdog's ending, `POST /api/stories/{id}/expire-state-wait`
 (`StateWaitExpiryCommand` → `StateWaitExpiryRead`, `shared/contracts/dto/state_wait.py`), moves a

@@ -194,10 +194,10 @@ async def test_an_operator_retry_the_api_could_not_publish_is_published_here(
 
 
 @pytest.mark.asyncio
-async def test_a_record_the_operator_action_already_published_is_not_published_again(
+async def test_a_record_published_on_an_earlier_tick_is_not_published_again(
     api_factory, redis_client
 ):
-    """The accelerator took the record's guard; the supervisor finds it taken."""
+    """The throttle an earlier tick set after its publish holds while the run is in flight."""
     owed = operator_retry_record(None, max_retries=3, now=datetime.now(UTC))
     await redis_client._redis.set(planning_retry_queued_key("story-published", owed), 1)
     api = api_factory([_story("story-published", "in_progress", owed)])

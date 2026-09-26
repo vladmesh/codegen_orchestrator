@@ -11,13 +11,11 @@ stop `POST /stories/{id}/human-review` makes, in the same transaction.
 `POST /stories/{id}/retry-planning` is the operator's re-run of a parked
 planning failure. In one transaction it clears the stop, returns the story to
 in_progress and writes the planning record as `retrying`, due now, with the
-count reset: from then on planning is owed durably, and the scheduler's
-supervisor publishes it like any other due retry. Publishing right after the
-commit only saves a tick; when it cannot, the request still succeeds and the
-supervisor publishes. No SQL, no status patch.
+count reset. It publishes nothing: the scheduler's supervisor is the one
+publisher of a `retrying` record and queues it on its next cycle, so no second
+publisher can race it. No SQL, no status patch.
 """
 
-from contextlib import suppress
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,7 +31,6 @@ from shared.contracts.dto.story_failure import (
 )
 from shared.contracts.dto.story_planning import (
     PLANNING_MAX_RETRIES_CONFIG_KEY,
-    PLANNING_RETRY_GUARD_TTL_CONFIG_KEY,
     StoryPlanning,
     StoryPlanningOutcome,
     StoryPlanningReport,
@@ -41,19 +38,14 @@ from shared.contracts.dto.story_planning import (
     failed_record,
     operator_retry_record,
     planned_record,
-    planning_retry_queued_key,
 )
-from shared.contracts.queues.architect import ArchitectMessage
 from shared.models import SystemConfig
 from shared.models.story import Story
-from shared.queues import ARCHITECT_QUEUE
-from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_internal_or_admin_actor, get_redis_client, require_internal_or_admin
+from ..dependencies import get_internal_or_admin_actor, require_internal_or_admin
 from ..schemas.actions import AdminAction
 from ..schemas.story import StoryRead
-from ._recipients import resolve_project_chat_id
 from ._story_actions import COMPOSITE_CHAINS, PARK_UNSTARTED_PLANNING_FAILURE, _apply_chain
 from ._story_helpers import _do_transition, _get_story_for_update, _record_story_failure
 
@@ -160,7 +152,6 @@ async def retry_story_planning(
     story_id: str,
     body: AdminAction | None = None,
     db: AsyncSession = Depends(get_async_session),
-    redis: RedisStreamClient = Depends(get_redis_client),
     actor: str = Depends(get_internal_or_admin_actor),
 ) -> StoryRead:
     """Re-run planning for a story parked by a planning failure.
@@ -168,11 +159,11 @@ async def retry_story_planning(
     Valid only for a story in `waiting_human_review` whose recorded stop is a
     `planning_failed` `StoryFailure`; anything else is refused with 422. One
     transaction clears the stop, lands on in_progress and writes `retrying`
-    due now with the count reset, so the re-run is owed on the row before
-    anything is published. The response is that story either way: published
-    now, or left to the supervisor's next tick when the immediate publish
-    fails. The architect's claim voids the failed attempt's unadmitted tasks,
-    so nothing of the failed plan survives into the new one.
+    due now with the count reset. That record is the whole handoff: this
+    action publishes nothing and touches no Redis key, and the scheduler's
+    supervisor, the one publisher of a `retrying` record, queues the architect
+    on its next cycle. The architect's claim voids the failed attempt's
+    unadmitted tasks, so nothing of the failed plan survives into the new one.
     """
     body = body or AdminAction()
     story = await _get_story_for_update(story_id, db)
@@ -184,7 +175,6 @@ async def retry_story_planning(
                 f"planning_failed reason; story {story.id} is '{story.status}'"
             ),
         )
-    guard_ttl = await _config_int(db, PLANNING_RETRY_GUARD_TTL_CONFIG_KEY)
     planning = operator_retry_record(
         _recorded_planning(story),
         max_retries=await _config_int(db, PLANNING_MAX_RETRIES_CONFIG_KEY),
@@ -195,57 +185,12 @@ async def retry_story_planning(
     _do_transition(story, StoryStatus.IN_PROGRESS)
     await db.commit()
     await db.refresh(story)
-
-    published = await _publish_owed_planning(story, planning, guard_ttl, db, redis)
     logger.info(
         "story_planning_retried",
         story_id=story.id,
         actor=actor,
         requested_by=body.actor,
         is_reopen=planning.reopen,
-        published=published,
+        next_attempt_at=planning.next_attempt_at,
     )
     return StoryRead.model_validate(story, from_attributes=True)
-
-
-async def _publish_owed_planning(
-    story: Story,
-    planning: StoryPlanning,
-    guard_ttl: int,
-    db: AsyncSession,
-    redis: RedisStreamClient,
-) -> bool:
-    """Publish the architect job the committed record owes, now. Best effort.
-
-    The record on the row is what is owed, and it is already committed; the
-    supervisor publishes it whenever this does not. So every failure is logged
-    and left to it. The supervisor's throttle is set only after the publish
-    returned, so a failure here leaves nothing that could hold the supervisor
-    back; a duplicate the supervisor may still send is settled by the architect.
-    """
-    try:
-        telegram_chat_id = await resolve_project_chat_id(
-            db, story.project_id, event="story_planning_retried", story_id=story.id
-        )
-        await redis.publish_message(
-            ARCHITECT_QUEUE,
-            ArchitectMessage(
-                story_id=story.id,
-                project_id=str(story.project_id),
-                telegram_chat_id=telegram_chat_id,
-                is_reopen=planning.reopen,
-                user_report=story.user_report if planning.reopen else None,
-            ),
-        )
-    except Exception as exc:
-        logger.warning(
-            "story_planning_retry_left_to_supervisor",
-            story_id=story.id,
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-        return False
-    with suppress(Exception):
-        # Only saves the supervisor a duplicate; losing it costs nothing more.
-        await redis.redis.set(planning_retry_queued_key(story.id, planning), 1, ex=guard_ttl)
-    return True

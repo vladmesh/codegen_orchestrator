@@ -192,17 +192,17 @@ async def _queue_due_planning_retries(
 ) -> int:
     """Re-queue planning for every story whose `planning` record owes a due retry.
 
-    The guaranteed publisher of every planning the record owes: a failed
-    attempt's retry, whose bound, count and backoff the API decided when it
-    recorded the failure, and an operator's `retry-planning`, due at once. A
-    story in `created` is left to the stuck-story retry above, which already
-    re-queues it.
+    The one publisher of every planning the record owes: a failed attempt's
+    retry, whose bound, count and backoff the API decided when it recorded the
+    failure, and an operator's `retry-planning`, due at once, which publishes
+    nothing itself. It runs in the single sequential dispatcher loop, so no two
+    publishers race. A story in `created` is left to the stuck-story retry
+    above, which already re-queues it.
 
-    The row is what is owed; the Redis key is only a throttle. It is checked
+    The row is what is owed; the Redis key is only a throttle that stops later
+    ticks re-publishing while the planning run is in flight. It is checked
     first and set only after `XADD` returned, so a failed recipient lookup or
-    publish leaves nothing behind and the next tick publishes again. A publish
-    whose outcome is unknown may be repeated; the architect settles the
-    duplicate (not due, a live rival's claim, or a plan already in place). One
+    publish leaves nothing behind and the next tick publishes again. One
     story's failure is logged and the loop goes on with the others.
     """
     queued = 0
@@ -231,8 +231,8 @@ async def _publish_due_planning_retry(
     """Publish one due record's architect job unless it was published within the TTL."""
     planning = story.planning
     redis = redis_client._redis
-    # The same throttle `retry-planning` sets after its own publish. It expires
-    # after `supervisor.story_retry_ttl`, so a message that was lost is re-sent.
+    # Set below once this record was published. It expires after
+    # `supervisor.story_retry_ttl`, so a message that was lost is re-sent.
     key = planning_retry_queued_key(story.id, planning)
     if await redis.exists(key):
         return 0
