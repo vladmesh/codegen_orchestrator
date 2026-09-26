@@ -45,11 +45,13 @@ def _engineering_message() -> dict:
 
 
 async def _github_reporting_a_deployed_head():
-    """A repository whose default branch already carries the reported commit."""
+    """A story branch whose head, before the repair started, is the deployed commit."""
     client = AsyncMock()
     client.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
     client.get_repo = AsyncMock(return_value=SimpleNamespace(default_branch="main"))
+    client.get_ref_sha = AsyncMock(return_value=_DEPLOYED_HEAD)
     client.branch_contains_commit = AsyncMock(return_value=True)
+    client.commit_adds_changes = AsyncMock(return_value=False)
     return client
 
 

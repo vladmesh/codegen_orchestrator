@@ -48,12 +48,12 @@ class AllocationFailureReason(StrEnum):
 class EngineeringFailureReason(StrEnum):
     """Stable classifications for an engineering run that produced nothing usable."""
 
-    # The worker reported a commit that is not new work on the story branch: it
-    # is already on the repository default branch, which is where the branch's
-    # base and every already-deployed commit live. Nothing can be merged or
-    # deployed from such a run, and the story PR GitHub would refuse with 422
-    # "No commits between" can never be opened, so the run is failed here with
-    # its own name instead of being accepted as a success that stalls later.
+    # The worker reported success, but its commit adds no file change over the
+    # story branch head the attempt started from (`pre_attempt_head_sha` on the
+    # attempt): it is that head, a commit behind it — the branch base, an
+    # already-deployed commit, an earlier task's commit — or commits that net out
+    # to nothing. Nothing was produced, so the run is failed with its own name
+    # instead of being accepted as a success nobody did.
     NO_NEW_COMMIT = "no_new_commit"
 
 

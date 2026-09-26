@@ -220,7 +220,7 @@ async def _park_story_without_new_commit(
     project_id: str,
     telegram_chat_id: str,
 ) -> None:
-    """Take a story whose engineering produced no new commit out of the retry set.
+    """Take a story whose taskless engineering produced no new commit out of the retry set.
 
     The story is not defective and nothing about it is transient: no PR can be
     opened for a branch that carries no commit of its own, so leaving it
@@ -324,7 +324,14 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
     )
     if planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
-    if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT and story_id:
+    # A task's attempt that changed nothing is an ordinary failed iteration: the
+    # task is FAILED above and the supervisor retries it, with a fresh session,
+    # until its iteration budget runs out. A taskless repair has no such loop.
+    if (
+        failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
+        and story_id
+        and not planning_task_id
+    ):
         await _park_story_without_new_commit(
             story_id,
             task_id,

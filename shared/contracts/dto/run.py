@@ -78,6 +78,8 @@ class RunDTO(TimestampedDTO):
     type: RunType
     status: RunStatus
     story_id: str | None = None
+    # The planning task this run works on; engineering attempts carry it.
+    task_id: str | None = None
     spec: str | None = None
     run_metadata: dict[str, Any] = Field(default_factory=dict)
     result: RunResult | None = None

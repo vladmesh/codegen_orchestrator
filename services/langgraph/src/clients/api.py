@@ -30,7 +30,7 @@ from shared.contracts.dto.qa_verification import (
     QAVerificationGapsRecorded,
 )
 from shared.contracts.dto.repository import RepositoryDTO
-from shared.contracts.dto.run import RunDTO
+from shared.contracts.dto.run import RunDTO, RunType
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.story_failure import StoryFailure
@@ -147,6 +147,13 @@ class LanggraphAPIClient(InternalAPIClient):
     async def get_run(self, run_id: str) -> RunDTO:
         data = await self._get_json(f"runs/{run_id}")
         return RunDTO.model_validate(data)
+
+    async def list_story_engineering_runs(self, story_id: str) -> list[RunDTO]:
+        """Every engineering attempt of one story, newest first."""
+        data = await self._get_json(
+            "runs/", params={"story_id": story_id, "run_type": RunType.ENGINEERING.value}
+        )
+        return [RunDTO.model_validate(run) for run in data]
 
     async def get_users_grant_intent(self, project_id: str, intent_id: str) -> GrantIntent:
         data = await self._get_json(f"projects/{project_id}/users/grant-intents/{intent_id}")
