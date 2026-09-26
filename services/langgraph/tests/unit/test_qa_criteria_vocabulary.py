@@ -1,10 +1,10 @@
 """A criterion outside QA's vocabulary is marked before QA and reported, never checked.
 
-QA reads HTTP GET routes, sends Telegram text, presses inline buttons and fires
-declared jobs. On 2026-09-15 the architect wrote `POST /api/transactions` and a
-receipt photo upload as criteria, and QA failed them against any code. Only the
-HTTP write is withheld before QA; an upload reaches the executor, which reports
-it with its own `qa_capability` cause.
+What QA can and never does is the capability catalogue's. On 2026-09-15 the
+architect wrote `POST /api/transactions` and a receipt photo upload as criteria,
+and QA failed them against any code. Only the HTTP write — the catalogue's
+"never" entry — is withheld before QA. A photo, a location or a contact sent to
+the bot reaches the executor, which sends it as the QA user from its sandbox.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import pytest
 from shared.contracts.dto.run_result import QAFailedCheck, QAFailedCheckCause
 from src.agents.qa.acceptance import prepare_central_qa_criteria
 from src.consumers._qa_runner import QAResult, apply_unverifiable_criteria
+from src.prompts.qa import build_qa_prompt
 
 POST_ITEM = "- POST /api/transactions with an amount returns 201"
 PHOTO_ITEM = "- Receipt photo → OCR extracts the total and the bot records the expense"
@@ -69,9 +70,8 @@ def test_a_line_is_withheld_only_when_it_certainly_needs_an_http_write(line, wit
 class TestTheSeptember15CriteriaSet:
     """Only the POST item is withheld; the receipt photo item goes to the executor.
 
-    The photo item is not recognised before QA. It relies on the executor's own
-    `qa_capability` cause: the executor cannot send a photo, so it fails that
-    check with that cause instead of a product failure.
+    The photo item is not recognised before QA: the executor sends the photo as
+    the QA user through a probe of its own.
     """
 
     def test_only_the_post_item_is_marked_not_verifiable(self):
@@ -96,6 +96,33 @@ class TestTheSeptember15CriteriaSet:
         prepared = prepare_central_qa_criteria(SEPT_15_CRITERIA)
 
         assert prepared.criteria.splitlines() == [PHOTO_ITEM, TEXT_ITEM, BUTTON_ITEM, GET_ITEM]
+
+
+LOCATION_ITEM = "- Telegram: sending a location replies with the nearest shop (requirement near)"
+SEND_PHOTO_ITEM = "- Telegram: send a photo of a receipt; the bot replies with its total"
+CONTACT_ITEM = "- Telegram: sharing a contact replies that the contact was saved"
+
+
+class TestASandboxActionReachesTheExecutor:
+    """A Telegram location, photo or contact is a check QA performs, never withheld."""
+
+    @pytest.mark.parametrize("line", (LOCATION_ITEM, SEND_PHOTO_ITEM, CONTACT_ITEM))
+    def test_it_is_not_withheld(self, line):
+        prepared = prepare_central_qa_criteria(line)
+
+        assert prepared.adjustments == ()
+        assert prepared.criteria == line
+
+    def test_it_is_in_the_prompt_the_executor_is_given(self):
+        criteria = "\n".join((POST_ITEM, LOCATION_ITEM, SEND_PHOTO_ITEM, CONTACT_ITEM))
+        prepared = prepare_central_qa_criteria(criteria)
+
+        prompt = build_qa_prompt(prepared.criteria, "https://shop.example.com", "shop_bot")
+
+        for line in (LOCATION_ITEM, SEND_PHOTO_ITEM, CONTACT_ITEM):
+            assert line in prompt
+        assert POST_ITEM not in prompt
+        assert [a.original for a in prepared.unverifiable] == [POST_ITEM]
 
 
 class TestWhatIsOutsideTheVocabulary:

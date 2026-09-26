@@ -476,10 +476,11 @@ def _usage_briefing(attempt: _PlanningAttempt) -> str:
         f"{listed}\n"
         "Plan exactly these uses. Turn every usage example of a requirement you plan into "
         "its own acceptance criterion stated through what QA can do and ending with "
-        "(requirement <id>); an upload example is checked through its observable or marked "
-        "not QA-verifiable, never dropped. When a requirement's examples and the limitations "
-        "leave an input undefined, return that requirement with returned_reason naming the "
-        "undefined input instead of planning a narrower version. Every task states that the "
+        '(requirement <id>); an example whose sending "What QA Can Check" does not name is '
+        "checked through its observable or marked not QA-verifiable, never dropped. When a "
+        "requirement's examples and the limitations leave an input undefined, return that "
+        "requirement with returned_reason naming the undefined input instead of planning a "
+        "narrower version. Every task states that the "
         "product never stores input it does not recognize as a different kind of record: it "
         "asks the user back what they meant."
     )

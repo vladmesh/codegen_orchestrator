@@ -2,8 +2,11 @@
 
 Exploratory QA is performed by exactly one executor: a central ephemeral coding
 agent on the management host (see ``clients/qa_worker`` and
-``consumers/_qa_runner``). It reaches the deployment through one closed set of
-calls, over the run's capability endpoint, and this prompt is what it is given.
+``consumers/_qa_runner``). It reaches the deployment's host through the `qa`
+CLI, over the run's capability endpoint, and the deployed URL and Telegram
+through its own probes; this prompt is what it is given. What it can check, and
+what it never does, is rendered from the QA capability catalogue
+(``shared.contracts.qa_capabilities``), never listed here.
 
 The rules themselves are unchanged from the on-target Claude Code run they
 replaced: test the running application, never read implementation for evidence,
@@ -24,6 +27,8 @@ from collections.abc import Sequence
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.qa_probe_cli import QA_PROBE_LIBRARY_PATH, QA_PROBE_NAME, QA_PROBE_USAGE
+
+from ..qa_capabilities import render_executor_capabilities
 
 __all__ = [
     "QA_TEST_TELEGRAM_ID",
@@ -54,11 +59,11 @@ _SETTINGS_POLICY = """\
 _PROBE_SECTION = f"""\
 ## Your tools
 
-You have a shell, and it reaches nothing. This container holds no SSH key, no
-server address, no Telegram session and no credential of any kind. The single
-command below is your whole reach into the deployment; it posts a named call to
-the QA runtime on the management host, which performs it against the one
-deployment this run is bound to and prints the JSON answer.
+You have a shell in a sandbox. This container holds no SSH key, no server
+address and no platform credential. The command below is your route to the
+deployment's host; it posts a named call to the QA runtime on the management
+host, which performs it against the one deployment this run is bound to and
+prints the JSON answer.
 
 ```
 {QA_PROBE_USAGE}
@@ -78,12 +83,13 @@ deployment this run is bound to and prints the JSON answer.
   this run, so firing the same name again re-reads the same single execution
   rather than causing a second one. `{QA_PROBE_NAME} job_evidence <name>` reads
   that record back.
-- There is no other way to reach the application, so do not spend the run
-  looking for one. This container is on a network with no route to the
-  deployment, to the fleet or to the internet: curl, a script you write and any
-  package you install all reach nothing. The runner also scans everything this
-  run produced for a direct write and blocks the run when it finds one,
-  whatever the verdict said.
+- Beyond these calls, a script you write reaches exactly two places, through
+  the run's proxy (`$HTTPS_PROXY`): the deployed public URL, for GETs only, and
+  Telegram, as the QA account. Run every such script through
+  `{QA_PROBE_NAME} probe`. Nothing else — the fleet, the internet, another port
+  of the deployment host — is reachable, so do not spend the run looking for
+  another way. The runner also scans everything this run produced for a direct
+  write and blocks the run when it finds one, whatever the verdict said.
 - Your workspace is a scratch directory that is destroyed with this container.
   Nothing you write there is delivered anywhere; the report and the result are
   delivered by `{QA_PROBE_NAME} report` and `{QA_PROBE_NAME} finish`.
@@ -103,15 +109,16 @@ def _bot_section(bot_username: str) -> str:
   and callback data returned by the probe. It returns the callback answer and
   every resulting bot reply, plus post-press evidence for the clicked message
   so an edit-in-place is observable.
-- You never hold the account's credentials, and there is no other way to reach Telegram.
+- A probe of your own reaches the bot as the same account through the file
+  `{QA_PROBE_NAME} telegram_identity` writes for your Telethon client; never print that file.
 - Every Telegram check is either pass or fail, decided by sending the message.
   "Blocked", "skipped" and "cannot test" are not allowed results: if you have not
   sent the message, you have no result to report. Do not substitute code reading.
   The one exception is a call that answers `not_applicable`: the transport
   refused the input before it reached the bot, so report that check in the
   not-applicable form, never as failed (see "Not applicable").
-  A check that needs a photo upload or another action the calls above cannot
-  send fails with cause `qa_capability`, and a bot that refuses the QA account
+  A check that needs an action "What you can check" does not name fails with
+  cause `qa_capability`, and a bot that refuses the QA account
   fails with cause `qa_access`; neither is a product failure.
 - If either Telegram call returns an error, stop testing and submit no product
   failure for it. The runtime records this as a non-product blocker.
@@ -241,10 +248,9 @@ Every failed check carries a `cause`, and a passed check carries none. A result
 with a failed check that has no cause, or any other cause, is rejected.
 - `product` — you performed the check and the application answered wrongly.
   Only this cause is a product failure.
-- `qa_capability` — the criterion needs an action your tools cannot perform,
-  for example an HTTP write (POST, PUT, DELETE) or a photo upload. A criterion
-  that needs a photo, file or other media sent to the bot is one of these. Report
-  the check as failed with this cause; it is never a product failure.
+- `qa_capability` — the criterion needs an action "What you can check" does
+  not name, or one it says you never perform. Report the check as failed with
+  this cause; it is never a product failure.
 - `qa_access` — the product refused the QA identity: a private bot that does not
   answer the QA account, an endpoint answering 401 or 403 to QA. Report the
   check as failed with this cause; it is never a product failure.
@@ -348,6 +354,7 @@ CRITICAL RULES:
 - URL: {deployed_url}
 {bot_section}{_established_section(established_facts)}
 {_PROBE_SECTION}{_DISPATCH_RULE}
+{render_executor_capabilities(telegram=bot_username is not None)}
 ## Checklist
 1. Health endpoint responds with 200
 2. Every check from acceptance criteria — execute and verify; for a value that
