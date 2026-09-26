@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-27
+
+- [hotfix] `LLMAlerts.drain` no longer busy-loops on an alert whose done callback is still queued (the unit
+  hang on main); every unit test has a 90 s timeout that names a hanging test and its asyncio tasks.
+
 ## 2026-09-26
 
 - Administrators hear of an LLM channel 402, both subscriptions down (the PO then tells users capacity is out) and

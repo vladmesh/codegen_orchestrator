@@ -52,6 +52,18 @@ CLEAN_ENV=(
     DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test"
 )
 
+# Every unit test is bounded, so a hang fails in minutes with the test's node id,
+# its pending asyncio tasks and every thread's stack (scripts/unit_test_timeout.py)
+# instead of running into the CI step timeout with no output. The thread method
+# works when the event loop itself is stuck. A test that legitimately needs longer
+# carries its own `@pytest.mark.timeout`, which takes precedence over this default.
+UNIT_TEST_TIMEOUT_SECONDS=90
+TIMEOUT_ARGS=(
+    -p scripts.unit_test_timeout
+    --timeout="$UNIT_TEST_TIMEOUT_SECONDS"
+    --timeout-method=thread
+)
+
 # --- Serial mode (original behavior, verbose) ---
 
 run_tests_serial() {
@@ -73,7 +85,7 @@ run_tests_serial() {
     local workdir="${pythonpath:-$ROOT}"
     if (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${extra_args[@]}") 2>&1; then
+       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${extra_args[@]}") 2>&1; then
         PASSED+=("$label")
     else
         FAILED+=("$label")
@@ -103,7 +115,7 @@ run_tests_parallel() {
     local rc=0
     (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" --tb=short -q "${extra_args[@]}") \
+       python -m pytest "$ROOT/$test_dir" --tb=short -q "${TIMEOUT_ARGS[@]}" "${extra_args[@]}") \
        > "$LOGDIR/$label.log" 2>&1 || rc=$?
     echo "$rc" > "$LOGDIR/$label.rc"
 }

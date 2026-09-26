@@ -350,6 +350,11 @@ class LLMAlerts:
 
     @staticmethod
     async def drain() -> None:
-        """Wait for every scheduled alert of this process (tests, shutdown)."""
-        while _pending:
-            await asyncio.gather(*list(_pending), return_exceptions=True)
+        """Wait for every scheduled alert of this process (tests, shutdown).
+
+        Only unfinished alerts are awaited: a finished one stays in `_pending`
+        until its done callback runs on the loop, and gathering only finished
+        tasks completes without yielding, so that callback would never run.
+        """
+        while unfinished := [task for task in _pending if not task.done()]:
+            await asyncio.gather(*unfinished, return_exceptions=True)

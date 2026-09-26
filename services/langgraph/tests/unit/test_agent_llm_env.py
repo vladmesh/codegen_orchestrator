@@ -129,13 +129,16 @@ class TestPoStartupSignal:
         """The operator greps for the stream named here, so it must be po:input."""
         from src import main
 
-        async def _idle():
+        async def _idle(*_):
             return None
 
+        # The real settings are read here, so the balance loop is stubbed too: an
+        # OpenRouter key reaching them (a local .env) would otherwise never return.
         with (
             patch.object(main, "_po_missing_env", return_value=["PO_LLM_API_KEY"]),
             patch.object(main, "listen_provisioner_triggers", _idle),
             patch.object(main, "listen_worker_events", _idle),
+            patch.object(main, "run_openrouter_balance_check", _idle),
             capture_logs() as logs,
         ):
             await main.run_worker()

@@ -531,6 +531,25 @@ class TestAlertingNeverFailsTheCall:
         assert failed["error_type"] == "TimeoutError"
         assert not await redis.exists(alert_key(LLMAlertKind.PAYMENT_REQUIRED, "codex"))
 
+    @pytest.mark.timeout(10)
+    async def test_drain_returns_when_an_alert_ended_but_its_callback_has_not_run(self):
+        """A finished alert whose done callback is still queued must not spin `drain`.
+
+        The caller can resume in the same loop turn its last alert ended in, before
+        that alert's callback leaves the pending set. Before the fix, `drain` then
+        busy-looped on the finished task forever without yielding to the loop.
+        """
+
+        async def sent() -> AlertOutcome:
+            return AlertOutcome.SENT
+
+        LLMAlerts._schedule(sent())
+        # The alert runs and ends in the next loop turn, and this task resumes in
+        # that same turn, ahead of the alert's done callback.
+        await asyncio.sleep(0)
+
+        await LLMAlerts.drain()
+
 
 # --- the scheduled balance check -------------------------------------------------
 
