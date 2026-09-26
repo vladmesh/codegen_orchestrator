@@ -11,7 +11,11 @@ import respx
 
 from shared.contracts.acceptance import HealthCriterion
 from shared.contracts.dto.run_result import QABlockerCategory
-from src.consumers._qa_runner import parse_qa_result, run_health_checks
+from src.consumers._qa_runner import (
+    parse_qa_result,
+    run_health_checks,
+    settle_unverified_checks,
+)
 from src.prompts.qa import build_qa_prompt
 
 
@@ -253,7 +257,7 @@ class TestParseQAResult:
         assert result.blocker is None
         assert result.checks[0]["cause"] == cause
 
-    @pytest.mark.parametrize("cause", ["qa_capability", "qa_access", "product"])
+    @pytest.mark.parametrize("cause", ["qa_access", "product"])
     def test_a_passing_verdict_with_a_failed_check_is_invalid_and_never_passes(self, cause):
         raw = json.dumps(
             {
@@ -277,6 +281,35 @@ class TestParseQAResult:
         assert result.checks == []
         assert result.blocker is not None
         assert result.blocker.category == QABlockerCategory.UNKNOWN
+
+    @pytest.mark.parametrize("executor_pass", [True, False])
+    def test_a_verdict_whose_only_failures_qa_could_not_run_is_accepted(self, executor_pass):
+        """`qa_capability` is neither failure nor pass: the executor's `pass` may say either."""
+        raw = json.dumps(
+            {
+                "pass": executor_pass,
+                "checks": [
+                    {"name": "health", "pass": True, "detail": "200"},
+                    {
+                        "name": "create transaction",
+                        "pass": False,
+                        "detail": "no tool for POST /api/transactions",
+                        "cause": "qa_capability",
+                    },
+                ],
+                "summary": "everything QA could test works",
+            }
+        )
+
+        result = settle_unverified_checks(parse_qa_result(raw))
+
+        assert result.blocker is None
+        assert result.passed is True
+        assert result.checks == [{"name": "health", "pass": True, "detail": "200"}]
+        [unverified] = result.unverified_checks
+        assert unverified.name == "create transaction"
+        assert unverified.reason == "no tool for POST /api/transactions"
+        assert unverified.origin.value == "executor"
 
     def test_a_failing_verdict_with_every_check_passed_is_invalid(self):
         raw = json.dumps(

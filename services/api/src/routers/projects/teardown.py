@@ -35,6 +35,7 @@ from shared.models import (
     Story,
     Task,
     TaskEvent,
+    VerificationGap,
 )
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
 from shared.redis.client import RedisStreamClient
@@ -333,6 +334,7 @@ async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> No
     await db.execute(delete(Story).where(Story.project_id == project_id))
     await db.execute(delete(Brainstorm).where(Brainstorm.project_id == project_id))
     await db.execute(delete(QAProbe).where(QAProbe.project_id == project_id))
+    await db.execute(delete(VerificationGap).where(VerificationGap.project_id == project_id))
 
     for model in (AnalyticsHourly, AnalyticsDaily, AnalyticsKnownUsers):
         await db.execute(delete(model).where(model.project_id == project_id))

@@ -193,6 +193,7 @@ async def test_terminal_qa_writers_send_explicit_executor_fact(outcome):
         else:
             await _handle_qa_fail(
                 run_id="qa-1",
+                project_id="project-1",
                 attempts=attempts,
                 qa_attempt=2 if outcome == "exhausted" else 1,
                 qa_result=QAResult(

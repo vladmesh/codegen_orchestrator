@@ -49,6 +49,9 @@ from .handoff import _execute_qa_handoff
 
 logger = structlog.get_logger(__name__)
 MAX_QA_LOOPS = 2  # max QA→Engineering cycles before story is marked failed
+#: The QA outcomes that are a verdict on the product. The owner event a story
+#: ends on after one carries what that run checked and could not.
+_PRODUCT_VERDICTS = frozenset({QAOutcome.FAILED, QAOutcome.EXHAUSTED})
 
 
 def _qa_failure_limit() -> int:
@@ -148,15 +151,22 @@ async def supervise_testing_stories(
                 )
                 failed += 1
             elif not _product_failures(run.result):
-                # Every failure lacked a QA tool or QA access: nothing about the
-                # product was judged, so no fix attempt is spent on it.
+                # No product check failed, so no fix attempt is spent. A product
+                # that refused the QA identity is a harness blocker. A check QA
+                # had no tool for never reaches here: the QA runner records it as
+                # unverified and settles the run on the checks it did run, so
+                # only a result stored before that is quarantined untyped.
                 await _quarantine_unverified_application(
                     api_client,
                     redis_client,
                     story_id,
                     project_id,
                     run,
-                    _with_unverifiable_checks_blocker(run.result),
+                    (
+                        _with_unverifiable_checks_blocker(run.result)
+                        if _access_failures(run.result)
+                        else run.result
+                    ),
                     log,
                 )
                 failed += 1
@@ -299,6 +309,9 @@ async def _quarantine_unverified_application(
         story_id=story_id,
         project_id=project_id,
         terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        qa_verification=(
+            result.verification_facts(run.id) if result.qa_outcome in _PRODUCT_VERDICTS else None
+        ),
         log=log,
     )
     await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION, qa_run_id=run.id)
@@ -337,13 +350,9 @@ def _harness_repair(category: QABlockerCategory, story_id: str) -> str:
     """What an administrator does about a parked harness blocker."""
     recheck = f"POST /api/stories/{story_id}/recheck-qa"
     if category is QABlockerCategory.QA_CHECKS_UNVERIFIABLE:
-        # A recheck runs the same QA with the same tools, so it cannot close a
-        # capability gap; it only helps once refused access has been repaired.
-        return (
-            "A qa_capability check needs a human decision on its criterion: accept it or "
-            "change it, because a recheck runs the same QA tools and fails the same way. "
-            f"A qa_access check needs the refused access repaired first; only then {recheck}."
-        )
+        # Only a product refusing the QA identity is typed this way; a recheck
+        # helps once that access has been repaired.
+        return f"A qa_access check needs the refused access repaired first; only then {recheck}."
     return f"Repair the target (managed-target reconciliation), then {recheck}."
 
 
@@ -352,16 +361,25 @@ def _product_failures(result: QARunResult) -> list[QAFailedCheck]:
     return [check for check in result.failed_checks if check.cause is QAFailedCheckCause.PRODUCT]
 
 
-def _unverified_failures(result: QARunResult) -> list[QAFailedCheck]:
-    """Failed checks QA had no tool or no access for; evidence, never instructions."""
+def _non_product_failures(result: QARunResult) -> list[QAFailedCheck]:
+    """Failed checks that do not judge the product; evidence, never instructions."""
     return [
         check for check in result.failed_checks if check.cause is not QAFailedCheckCause.PRODUCT
     ]
 
 
+def _access_failures(result: QARunResult) -> list[QAFailedCheck]:
+    """Failed checks the product refused the QA identity for."""
+    return [check for check in result.failed_checks if check.cause is QAFailedCheckCause.QA_ACCESS]
+
+
 def _with_unverifiable_checks_blocker(result: QARunResult) -> QARunResult:
-    """Type a failure with no product check as the blocker it is."""
-    checks = _unverified_failures(result)
+    """Type a failure whose only non-product checks were refused QA access as a blocker.
+
+    Only `qa_access` checks are named: a check QA had no tool for is unverified,
+    not a harness problem, and never makes this blocker.
+    """
+    checks = _access_failures(result)
     blocker = QABlocker(
         category=QABlockerCategory.QA_CHECKS_UNVERIFIABLE,
         attempted="judge the product from the QA executor's failed checks",
@@ -413,9 +431,9 @@ async def _handle_qa_failed(
     result = run.result
     summary = result.summary or "QA testing failed"
     failed_checks = _product_failures(result)
-    unverified_checks = _unverified_failures(result)
+    non_product_checks = _non_product_failures(result)
     qa_summary = summary
-    if unverified_checks:
+    if non_product_checks or result.unverified_checks:
         # The executor's summary speaks for every failure, including the ones
         # that are not about the product, so it cannot word or sign the fix.
         summary = "QA found product failures: " + "; ".join(c.name for c in failed_checks)
@@ -441,10 +459,15 @@ async def _handle_qa_failed(
         "summary": summary,
         "failed_checks": _product_check_evidence(failed_checks),
     }
-    if unverified_checks:
+    if non_product_checks or result.unverified_checks:
         evidence["qa_summary"] = qa_summary
+    if non_product_checks:
+        evidence["non_product_failures"] = [
+            check.model_dump(mode="json") for check in non_product_checks
+        ]
+    if result.unverified_checks:
         evidence["unverified_checks"] = [
-            check.model_dump(mode="json") for check in unverified_checks
+            check.model_dump(mode="json") for check in result.unverified_checks
         ]
 
     if attempt > _qa_failure_limit() or total_attempt > _qa_fix_limit():
@@ -467,6 +490,7 @@ async def _handle_qa_failed(
             story_id=story_id,
             project_id=project_id,
             terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            qa_verification=result.verification_facts(qa_run_id),
             log=log,
         )
         await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION, qa_run_id=run.id)

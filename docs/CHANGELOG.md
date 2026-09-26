@@ -7,6 +7,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - QA capabilities live in one catalogue (`shared/contracts/qa_capabilities.py`) that renders the Architect, PO brief and
   QA executor guidance and the pre-QA HTTP-write set; Telegram media, location, contact, reply and edit are now checkable.
+- A check QA cannot run is recorded as unverified, not failed: the verdict comes from the checks that ran, so a
+  capability gap no longer quarantines the product or parks the story.
+- The settling owner event carries `qa_verification` (passed and unverified checks), and each unverified check is
+  kept as a project verification gap (`GET /api/projects/{id}/verification-gaps`).
 
 ## 2026-09-25
 

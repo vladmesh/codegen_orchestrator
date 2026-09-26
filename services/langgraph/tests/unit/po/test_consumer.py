@@ -392,6 +392,43 @@ class TestProcessMessage:
         mock_client.redis.xack.assert_called_once_with("po:input", "po-consumer", "msg-1")
 
     @pytest.mark.asyncio
+    async def test_the_settling_events_qa_facts_reach_the_po_consumer(
+        self, mock_graph, mock_client
+    ):
+        """The structured payload survives the flat `po:input` hop into the consumer."""
+        from shared.contracts.dto.qa_verification import QAVerificationFacts
+        from shared.contracts.queues.po import to_flat_fields
+        from shared.redis.client import validate_tolerating_additions
+
+        facts = QAVerificationFacts(
+            qa_run_id="qa-1",
+            passed_checks=["GET /health returns 200"],
+            unverified_checks=[
+                {"name": "POST /api/transactions", "reason": "needs a write", "origin": "withheld"}
+            ],
+        )
+        published = to_flat_fields(
+            POSystemEvent(
+                event=OwnerNotificationEvent.STORY_COMPLETED,
+                text="done",
+                telegram_chat_id="u1",
+                story_id="story-1",
+                qa_verification=facts,
+            )
+        )
+        # What `consume_typed` does with a flat entry before handing it over.
+        message, dropped = validate_tolerating_additions(TypeAdapter(POInputMessage), published)
+
+        with patch("src.consumers.po._handle_message", new_callable=AsyncMock) as handle:
+            await _process_message(
+                mock_graph, mock_client, asyncio.Semaphore(1), {}, "msg-1", message
+            )
+
+        assert dropped == []
+        data = handle.await_args.args[3]
+        assert QAVerificationFacts.model_validate(data["qa_verification"]) == facts
+
+    @pytest.mark.asyncio
     async def test_acks_message_on_error(self, mock_graph, mock_client):
         mock_graph.ainvoke.side_effect = RuntimeError("LLM API down")
         sem = asyncio.Semaphore(10)

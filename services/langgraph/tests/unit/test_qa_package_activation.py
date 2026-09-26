@@ -52,6 +52,7 @@ from src.consumers._qa_runner import (
     run_package_acceptance_checks,
     run_package_activation_checks,
     scheduled_behaviour_facts,
+    settle_unverified_checks,
 )
 from src.consumers._qa_target import (
     QACapabilities,
@@ -747,15 +748,20 @@ class TestEveryDeclaredBehaviourGetsItsOwnRow:
         assert result.passed is True
         assert [check["name"] for check in result.checks] == [connection_check_name("reminders")]
 
-    def test_a_criteria_set_that_names_no_package_behaviour_fails_one_row(self):
-        result = apply_package_acceptance(
-            QAResult(passed=True, checks=[]), _acceptance(), FakeWorkspace()
+    def test_a_criteria_set_that_names_no_package_behaviour_leaves_one_row_unverified(self):
+        result = settle_unverified_checks(
+            apply_package_acceptance(
+                QAResult(passed=True, checks=[]), _acceptance(), FakeWorkspace()
+            )
         )
 
-        assert result.passed is False
-        [failed] = [check for check in result.checks if not check["pass"]]
-        assert failed["name"] == behaviour_check_name("reminders")
-        assert "no FIRE JOB" in failed["detail"]
+        # Nothing to fire is a gap in what QA could check, not a product failure.
+        assert result.passed is True
+        assert not [check for check in result.checks if not check["pass"]]
+        [unverified] = result.unverified_checks
+        assert unverified.name == behaviour_check_name("reminders")
+        assert unverified.origin.value == "package"
+        assert "no FIRE JOB" in unverified.reason
 
     def test_a_deployment_with_no_jobs_capability_says_so(self):
         result = apply_package_acceptance(

@@ -97,6 +97,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotificationAttemptClaim,
     OwnerNotificationState,
 )
+from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
@@ -220,6 +221,7 @@ async def owe_owner_notification(
     project_id: str,
     terminal_status: StoryStatus,
     task_id: str | None = None,
+    qa_verification: QAVerificationFacts | None = None,
     log: structlog.stdlib.BoundLogger,
 ) -> OwnerNotification:
     """Write down that the owner is owed this message. Call before the transition.
@@ -256,6 +258,7 @@ async def owe_owner_notification(
         task_id=task_id,
         state=OwnerNotificationState.OWED,
         owed_at=datetime.now(UTC),
+        qa_verification=qa_verification,
     )
     await _write_record(api_client, run.id, record)
     log.info(
@@ -872,6 +875,7 @@ async def _deliver_to_owner(
             telegram_chat_id=recipient.telegram_chat_id,
             owner_user_id=recipient.owner_user_id,
             project_id=record.project_id,
+            qa_verification=record.qa_verification,
         )
         await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
     except Exception as exc:

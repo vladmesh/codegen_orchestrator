@@ -1888,19 +1888,53 @@ one without it or outside `QAFailedCheckCause`: `product`, `qa_capability` (no Q
 action for the criterion in the capability catalogue, or one QA never performs, such as
 an HTTP write) or `qa_access`
 (the product refused the QA identity). A verdict whose top-level `pass` disagrees
-with its checks (true with any failed check, false with none) is refused the same
-way. A stored `QAFailedCheck` without a cause
-reads as `product`. The supervisor puts only `product` checks into a fix task's
-description and fingerprint and records the rest as `unverified_checks` evidence;
-a FAILED run with no `product` check parks as `qa_checks_unverifiable`, a
-`QA_HARNESS_BLOCKERS` member that is operator-recheckable.
+with its product and access checks (true with one failed, false with none) is
+refused the same way; when its only failures are `qa_capability`, either `pass` is
+accepted. A stored `QAFailedCheck` without a cause reads as `product`.
+
+**Unverified checks.** A `qa_capability` check is neither a failure nor a pass. The
+runner's `settle_unverified_checks` (`services/langgraph/src/consumers/_qa_runner.py`)
+is the one place that decides it: every such check, whatever its origin — `executor`,
+an ungrounded `not_applicable` check, a criterion `withheld` before the executor ran
+(`agents/qa/acceptance.py`), or a kit `package` row with nothing to exercise it — is
+removed from the checks and written to `QARunResult.unverified_checks` as
+`{name, reason, origin}` (`shared/contracts/dto/qa_verification.py`). The verdict is
+what the remaining checks say: all pass → `passed` (possibly with a non-empty
+`unverified_checks`), any product or access failure → `failed`. `QARunResult` also
+records `passed_checks`, the names of the checks that ran and passed. The runner
+never settles a Run with `qa_capability` in `failed_checks`.
+
+The supervisor puts only `product` checks into a fix task's description and
+fingerprint; the task's `qa_failure` evidence carries `unverified_checks` and the
+other failed checks as `non_product_failures`. A FAILED run with no `product` check
+and a `qa_access` one parks as `qa_checks_unverifiable`, a `QA_HARNESS_BLOCKERS`
+member that is operator-recheckable; that blocker names only `qa_access` checks and is
+never produced for a capability gap, so the "platform's test environment" wording is
+reachable only from a real harness blocker.
+
+**The settling owner event carries the facts.** `OwnerNotification.qa_verification`
+and `POSystemEvent.qa_verification` are a `QAVerificationFacts`
+(`{qa_run_id, passed_checks, unverified_checks}`), JSON-encoded in its one flat
+`po:input` field. The API's completion transaction sets it on `story_completed` from
+the passed QA run the completion names; the supervisor sets it on the
+`story_quarantined` record of a FAILED or EXHAUSTED verdict. It is `None` on every
+other ending. The fix-task route owes no owner event, so it carries none.
+
+**Verification gaps.** After a Run settles as `passed`, `failed` or `exhausted` with
+unverified checks, the QA consumer asks `POST /api/projects/{id}/verification-gaps/from-run`
+(QA runtime only) to write them in the `verification_gaps` table, read off the settled
+Run itself: what (`name`), why (`reason`), `origin`, `story_id`, `run_id` and
+`created_at`. It is idempotent per (project, run, check name) and refuses a blocked,
+errored or unsettled Run. A write failure is logged and never changes the verdict.
+`GET /api/projects/{id}/verification-gaps` (internal or admin) lists them oldest first.
 
 A verdict check may instead be `{"name", "not_applicable": true, "detail"}`, with no
 `pass` or `cause`: an input the transport refused, such as an empty Telegram
 message. It never counts toward `pass` and is never a failed check, but the runner
 keeps it only when paired with a distinct refusal this run's workspace recorded
-(`QAWorkspace.transport_refusals`); an unpaired one becomes a failed `qa_capability`
-check. The prompt forbids the form for an acceptance-criterion check.
+(`QAWorkspace.transport_refusals`); an unpaired one becomes a `qa_capability` check,
+recorded as unverified with origin `not_applicable`. The prompt forbids the form for
+an acceptance-criterion check.
 
 ## Source map
 

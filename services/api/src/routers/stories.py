@@ -17,8 +17,9 @@ from shared.contracts.dto.owner_notification import (
 )
 from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
+from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QARunResult
 from shared.contracts.dto.story import (
     StoryRecheck,
     StoryRecheckMode,
@@ -449,11 +450,32 @@ async def _completion_notification_text(
     )
 
 
+async def _completing_qa_verification(
+    qa_run_id: str | None, db: AsyncSession
+) -> QAVerificationFacts | None:
+    """What the passed QA run completing this story checked and could not.
+
+    ``None`` when no QA verdict completes it: an operator acceptance, or a
+    completion that names no QA run. The run was already checked to be this
+    story's terminal QA verdict by `_record_qa_routing`.
+    """
+    if qa_run_id is None:
+        return None
+    run = await db.get(Run, qa_run_id)
+    if run is None or not isinstance(run.result, dict):
+        return None
+    result = QARunResult.model_validate(run.result)
+    if result.qa_outcome != QAOutcome.PASSED:
+        return None
+    return result.verification_facts(run.id)
+
+
 async def _owe_completed_story_notification(
     story: Story,
     db: AsyncSession,
     *,
     acceptance: StoryAcceptance | None = None,
+    qa_run_id: str | None = None,
 ) -> None:
     """Attach the completion obligation to the story in its transition transaction."""
     story.owner_notification = OwnerNotification(
@@ -464,6 +486,9 @@ async def _owe_completed_story_notification(
         terminal_status=StoryStatus.COMPLETED,
         state=OwnerNotificationState.OWED,
         owed_at=datetime.now(UTC),
+        qa_verification=(
+            None if acceptance is not None else await _completing_qa_verification(qa_run_id, db)
+        ),
     ).model_dump(mode="json")
 
 
@@ -472,9 +497,10 @@ async def _complete_story(
     db: AsyncSession,
     *,
     acceptance: StoryAcceptance | None = None,
+    qa_run_id: str | None = None,
 ) -> StoryRead:
     """The one completion transaction used by ordinary and accepted-result routes."""
-    await _owe_completed_story_notification(story, db, acceptance=acceptance)
+    await _owe_completed_story_notification(story, db, acceptance=acceptance, qa_run_id=qa_run_id)
     _do_transition(story, StoryStatus.COMPLETED)
     if acceptance is not None:
         story.operator_acceptance = acceptance.model_dump(mode="json")
@@ -720,7 +746,7 @@ async def complete_story(
         )
     await _record_qa_routing(story, body.qa_run_id, StoryStatus.COMPLETED, db)
     logger.info("story_completed", story_id=story.id, actor=body.actor)
-    return await _complete_story(story, db)
+    return await _complete_story(story, db, qa_run_id=body.qa_run_id)
 
 
 @router.post("/{story_id}/accept-result", response_model=StoryRead)

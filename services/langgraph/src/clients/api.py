@@ -25,6 +25,10 @@ from shared.contracts.dto.qa_probe_library import (
     QAProbeLibraryStored,
     QAProbeLibraryStoreFromRun,
 )
+from shared.contracts.dto.qa_verification import (
+    QAVerificationGapsFromRun,
+    QAVerificationGapsRecorded,
+)
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.server import ServerDTO
@@ -440,6 +444,18 @@ class LanggraphAPIClient(InternalAPIClient):
         return QAProbeLibraryStored.model_validate(
             await self._post_json(
                 f"projects/{project_id}/qa-probes/from-run", json=body.model_dump(mode="json")
+            )
+        )
+
+    async def record_verification_gaps_from_run(
+        self, project_id: str, run_id: str
+    ) -> QAVerificationGapsRecorded:
+        """Write a settled QA Run's unverified checks on its project as verification gaps."""
+        body = QAVerificationGapsFromRun(run_id=run_id)
+        return QAVerificationGapsRecorded.model_validate(
+            await self._post_json(
+                f"projects/{project_id}/verification-gaps/from-run",
+                json=body.model_dump(mode="json"),
             )
         )
 

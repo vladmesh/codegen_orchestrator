@@ -1898,7 +1898,8 @@ class TestSuperviseTestingStories:
 
     @pytest.mark.asyncio
     async def test_a_mixed_failure_fixes_only_the_product_checks(self, api_client, redis_client):
-        """Capability and access failures are evidence on the fix task, never its instructions."""
+        """Unverified checks and access failures are evidence on the fix task, never its
+        instructions."""
         from shared.contracts.dto.run_result import QAFailedCheck
         from src.tasks.supervisor import supervise_testing_stories
         from src.tasks.supervisor.qa import _qa_failure_fingerprint
@@ -1915,12 +1916,14 @@ class TestSuperviseTestingStories:
                 "summary": "weather 404, no tool for POST /api/transactions, no access to bot",
                 "failed_checks": [
                     {"name": "weather", "detail": "404", "cause": "product"},
+                    {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
+                ],
+                "unverified_checks": [
                     {
                         "name": "create transaction",
-                        "detail": "no tool for POST /api/transactions",
-                        "cause": "qa_capability",
-                    },
-                    {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
+                        "reason": "no tool for POST /api/transactions",
+                        "origin": "executor",
+                    }
                 ],
             },
         )
@@ -1942,13 +1945,15 @@ class TestSuperviseTestingStories:
             evidence["summary"], [QAFailedCheck(name="weather", detail="404")]
         )
         assert "POST /api/transactions" not in evidence["summary"]
+        assert evidence["non_product_failures"] == [
+            {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
+        ]
         assert evidence["unverified_checks"] == [
             {
                 "name": "create transaction",
-                "detail": "no tool for POST /api/transactions",
-                "cause": "qa_capability",
+                "reason": "no tool for POST /api/transactions",
+                "origin": "executor",
             },
-            {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
         ]
         api_client.stop_application.assert_not_called()
         api_client.transition_story.assert_awaited_once_with("story-1", "start", qa_run_id="qa-1")
@@ -1956,13 +1961,18 @@ class TestSuperviseTestingStories:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "causes",
-        [("qa_capability",), ("qa_access",), ("qa_capability", "qa_access")],
+        [("qa_access",), ("qa_access", "qa_access")],
         ids="+".join,
     )
     async def test_a_failure_with_no_product_check_parks_without_a_fix_attempt(
         self, api_client, redis_client, causes
     ):
-        """No product judgement exists: park for an administrator, spend no fix, blame nothing."""
+        """No product judgement exists: park for an administrator, spend no fix, blame nothing.
+
+        Only a refused QA identity reaches this route: a check QA had no tool for
+        is unverified and settles the run on the checks that ran (see
+        `TestAQACapabilityGapIsNeverQuarantined`).
+        """
         from unittest.mock import AsyncMock, patch
 
         from shared.contracts.dto.run_result import QA_HARNESS_BLOCKERS, QABlockerCategory
@@ -2014,7 +2024,7 @@ class TestSuperviseTestingStories:
         assert "qa_checks_unverifiable" in message
         assert "/api/stories/story-1/recheck-qa" in message
         assert "managed-target reconciliation" not in message
-        assert "qa_capability check needs a human decision on its criterion" in message
+        assert "qa_capability" not in message
         assert "qa_access check needs the refused access repaired first" in message
 
     @pytest.mark.asyncio
@@ -3316,3 +3326,234 @@ class TestSettingsSeedFailureRouting:
         assert result["retried"] == 1
         api_client.fail_story.assert_not_awaited()
         redis_client._redis.incr.assert_awaited_once_with("deploy:retries:story-1")
+
+
+_UNVERIFIED = {
+    "name": "criterion not verifiable by QA: - POST /api/transactions returns 201",
+    "reason": "this criterion needs an action outside QA's tools (http_write)",
+    "origin": "withheld",
+}
+_PLATFORM_TEXT = "platform's test environment"
+
+
+def _published_events(redis_client) -> list[dict]:
+    return [call.args[1] for call in redis_client.publish_flat.await_args_list]
+
+
+def _owed_records(api_client) -> list[dict]:
+    """Every owner-notification record the supervisor wrote on a Run."""
+    return [
+        call.args[1]["run_metadata"]["owner_notification"]
+        for call in api_client.update_run.await_args_list
+        if "owner_notification" in call.args[1].get("run_metadata", {})
+    ]
+
+
+class TestAQACapabilityGapIsNeverQuarantined:
+    """A check QA could not run is unverified: the verdict is the checks that ran.
+
+    One row per settled shape the QA runner writes, and what the supervisor
+    does with it: only a refused QA identity (`qa_access`) is a harness blocker.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("result", "expected"),
+        [
+            pytest.param(
+                {
+                    "qa_outcome": QAOutcome.PASSED.value,
+                    "deployed_url": "https://example.com",
+                    "passed_checks": ["GET /health returns 200"],
+                    "unverified_checks": [_UNVERIFIED],
+                },
+                "completed",
+                id="only-unverified-passes",
+            ),
+            pytest.param(
+                {
+                    "qa_outcome": QAOutcome.FAILED.value,
+                    "summary": "weather 404",
+                    "failed_checks": [{"name": "weather", "detail": "404", "cause": "product"}],
+                    "passed_checks": ["GET /health returns 200"],
+                    "unverified_checks": [_UNVERIFIED],
+                },
+                "fix_task",
+                id="unverified-and-product-failure-fixes",
+            ),
+            pytest.param(
+                {
+                    "qa_outcome": QAOutcome.FAILED.value,
+                    "summary": "bot ignores QA",
+                    "failed_checks": [
+                        {"name": "bot /start", "detail": "no reply", "cause": "qa_access"}
+                    ],
+                },
+                "harness",
+                id="qa-access-stays-a-harness-blocker",
+            ),
+        ],
+    )
+    async def test_what_the_supervisor_does_with_each_settled_shape(
+        self, api_client, redis_client, result, expected
+    ):
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={QA_HANDOFF_KEY: _qa_handoff_plan(), "application_id": 42},
+            result=result,
+        )
+        api_client.get_tasks_by_story.return_value = []
+        api_client.transition_story.return_value = {}
+
+        with patch("src.tasks.supervisor.qa.notify_admins_best_effort", new_callable=AsyncMock):
+            await supervise_testing_stories(api_client, redis_client)
+
+        events = [event["event"] for event in _published_events(redis_client)]
+        written = repr(api_client.update_story.await_args_list) + repr(_owed_records(api_client))
+        if expected == "harness":
+            api_client.stop_application.assert_awaited_once_with(42)
+            reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
+            assert reason["blocker"]["category"] == "qa_checks_unverifiable"
+            assert _PLATFORM_TEXT in written
+            return
+        # A capability gap never stops the bot, parks the story or blames the platform.
+        api_client.stop_application.assert_not_called()
+        assert OwnerNotificationEvent.STORY_QUARANTINED.value not in events
+        assert not _owed_records(api_client)
+        assert _PLATFORM_TEXT not in written
+        assert "qa_checks_unverifiable" not in written
+        if expected == "completed":
+            api_client.transition_story.assert_called_once_with(
+                "story-1", "complete", qa_run_id="qa-1"
+            )
+            api_client.create_task.assert_not_called()
+        else:
+            task = api_client.create_task.await_args.args[0]
+            assert "POST /api/transactions" not in task["description"]
+            assert task["failure_metadata"]["qa_failure"]["unverified_checks"] == [_UNVERIFIED]
+            api_client.transition_story.assert_awaited_once_with(
+                "story-1", "start", qa_run_id="qa-1"
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_capability_only_failure_is_not_typed_a_harness_blocker(
+        self, api_client, redis_client
+    ):
+        """A result stored before unverified existed is not worded as a platform problem."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "could not test",
+                "failed_checks": [
+                    {"name": "upload", "detail": "no tool", "cause": "qa_capability"}
+                ],
+            },
+        )
+
+        with patch(
+            "src.tasks.supervisor.qa.notify_admins_best_effort", new_callable=AsyncMock
+        ) as admins:
+            await supervise_testing_stories(api_client, redis_client)
+
+        reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
+        assert "blocker" not in reason
+        record = _owed_records(api_client)[0]
+        assert _PLATFORM_TEXT not in record["text"]
+        admins.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_story_completed_event_carries_the_checks_that_ran_and_the_unverified(
+        self, api_client, redis_client
+    ):
+        """The completion record's facts reach `po:input` as one structured field."""
+        from shared.contracts.dto.qa_verification import QAVerificationFacts
+        from shared.contracts.queues.po import POSystemEvent, from_flat_fields
+        from src.tasks.supervisor import supervise_testing_stories
+
+        facts = QAVerificationFacts(
+            qa_run_id="qa-1",
+            passed_checks=["GET /health returns 200"],
+            unverified_checks=[_UNVERIFIED],
+        )
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={QA_HANDOFF_KEY: _qa_handoff_plan()},
+            result={
+                "qa_outcome": QAOutcome.PASSED.value,
+                "passed_checks": facts.passed_checks,
+                "unverified_checks": [_UNVERIFIED],
+            },
+        )
+        api_client.get_story.return_value = _make_story(id="story-1", status="completed")
+        api_client.get_story_owner_notification.return_value = (
+            api_client.get_story_owner_notification.return_value.model_copy(
+                update={"qa_verification": facts}
+            )
+        )
+
+        await supervise_testing_stories(api_client, redis_client)
+
+        [fields] = [
+            event
+            for event in _published_events(redis_client)
+            if event["event"] == OwnerNotificationEvent.STORY_COMPLETED.value
+        ]
+        event = from_flat_fields(fields, POSystemEvent)
+        assert event.qa_verification == facts
+
+    @pytest.mark.asyncio
+    async def test_the_quarantine_after_exhausted_fixes_carries_the_unverified_checks(
+        self, api_client, redis_client
+    ):
+        """A product-failure ending tells PO what QA did and did not check, too."""
+        from shared.contracts.queues.po import POSystemEvent, from_flat_fields
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.EXHAUSTED.value,
+                "summary": "Still broken after 2 attempts",
+                "failed_checks": [{"name": "weather", "detail": "404", "cause": "product"}],
+                "passed_checks": ["GET /health returns 200"],
+                "unverified_checks": [_UNVERIFIED],
+            },
+        )
+
+        await supervise_testing_stories(api_client, redis_client)
+
+        # Owed first, then settled by its delivery: every write carries the facts.
+        record = _owed_records(api_client)[0]
+        assert record["event"] == OwnerNotificationEvent.STORY_QUARANTINED.value
+        assert record["qa_verification"] == {
+            "qa_run_id": "qa-1",
+            "passed_checks": ["GET /health returns 200"],
+            "unverified_checks": [_UNVERIFIED],
+        }
+        event = from_flat_fields(redis_client.publish_flat.await_args.args[1], POSystemEvent)
+        assert [check.name for check in event.qa_verification.unverified_checks] == [
+            _UNVERIFIED["name"]
+        ]

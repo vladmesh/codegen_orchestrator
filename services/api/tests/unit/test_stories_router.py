@@ -1113,3 +1113,84 @@ async def test_test_story_invalid_from_created():
         resp = await client.post("/api/stories/story-abc/test")
 
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_a_qa_completion_owes_the_checks_that_ran_and_the_unverified_ones():
+    """The story_completed record carries the completing run's facts, structured."""
+    unverified = {
+        "name": "criterion not verifiable by QA: - POST /api/transactions returns 201",
+        "reason": "needs an HTTP write",
+        "origin": "withheld",
+    }
+    story = _make_story(id="story-abc", status="testing")
+    qa_run = MagicMock(
+        id="qa-abc",
+        type="qa",
+        story_id="story-abc",
+        status="completed",
+        result={
+            "qa_outcome": "passed",
+            "passed_checks": ["GET /health returns 200"],
+            "unverified_checks": [unverified],
+        },
+        run_metadata={
+            QA_HANDOFF_KEY: QAHandoffPlan(
+                qa_message=QAMessage(
+                    story_id="story-abc",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    initiating_run_id="deploy-abc",
+                    telegram_chat_id="1",
+                    deployed_url="https://verified.example.com",
+                    application_id=42,
+                    acceptance_criteria="works",
+                    run_id="qa-abc",
+                )
+            ).model_dump(mode="json")
+        },
+    )
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = qa_run
+    application_result = MagicMock()
+    application_result.scalar_one_or_none.return_value = "running"
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result, application_result]
+    session.get = AsyncMock(return_value=qa_run)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/complete", json={"qa_run_id": "qa-abc"})
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.owner_notification["event"] == "story_completed"
+    assert story.owner_notification["qa_verification"] == {
+        "qa_run_id": "qa-abc",
+        "passed_checks": ["GET /health returns 200"],
+        "unverified_checks": [unverified],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_completion_no_qa_run_names_carries_no_qa_facts():
+    story = _make_story(id="story-abc", status="in_progress")
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = None
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result]
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/complete")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.owner_notification["qa_verification"] is None
