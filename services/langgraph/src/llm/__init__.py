@@ -1,6 +1,6 @@
 """The LLM channel chain the Architect, the PO and the PO summarizer answer through."""
 
-from .agent import build_agent_llm, load_channel_chain, openrouter_only_missing_env
+from .agent import build_agent_llm, load_channel_chain, unconfigured_channel_env
 from .chain import ChannelChainModel, channel_usage
 from .errors import (
     ChannelFailure,
@@ -20,5 +20,5 @@ __all__ = [
     "build_agent_llm",
     "channel_usage",
     "load_channel_chain",
-    "openrouter_only_missing_env",
+    "unconfigured_channel_env",
 ]

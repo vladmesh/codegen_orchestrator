@@ -20,6 +20,8 @@ from src.llm import InvalidChannelChainError
 from tests.unit.factories import make_project, make_story
 from tests.unit.llm.fake_cli import turn
 
+_NO_SUBSCRIPTION_ENV = {"llm_codex_home": None, "claude_code_oauth_token": None}
+
 _NO_OPENROUTER_ENV = {
     "architect_llm_model": None,
     "architect_llm_base_url": None,
@@ -148,6 +150,46 @@ class TestArchitectConsumer:
 
         start_worker.assert_called_once()
 
+    def test_main_refuses_to_start_when_no_channel_of_the_chain_is_configured(self, channels):
+        """The default chain with no credential at all could only exhaust every channel."""
+        from src.consumers import architect
+
+        settings = channels.settings(**_NO_OPENROUTER_ENV, **_NO_SUBSCRIPTION_ENV)
+        with (
+            patch.object(architect, "api_client", MagicMock(**{"close": AsyncMock()})) as api,
+            patch.object(architect, "get_settings", return_value=settings),
+            patch.object(architect, "start_worker") as start_worker,
+        ):
+            api.get_agent_config = _Configs().get_agent_config
+            with pytest.raises(RuntimeError, match="architect_llm_not_configured") as refused:
+                architect.main()
+
+        start_worker.assert_not_called()
+        for name in ("LLM_CODEX_HOME", "CLAUDE_CODE_OAUTH_TOKEN", "ARCHITECT_LLM_API_KEY"):
+            assert name in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "configured",
+        [
+            {"claude_code_oauth_token": None},
+            {"llm_codex_home": None},
+        ],
+        ids=["codex-only", "claude-only"],
+    )
+    def test_one_configured_channel_is_enough_to_start(self, channels, configured):
+        from src.consumers import architect
+
+        settings = channels.settings(**_NO_OPENROUTER_ENV, **configured)
+        with (
+            patch.object(architect, "api_client", MagicMock(**{"close": AsyncMock()})) as api,
+            patch.object(architect, "get_settings", return_value=settings),
+            patch.object(architect, "start_worker") as start_worker,
+        ):
+            api.get_agent_config = _Configs().get_agent_config
+            architect.main()
+
+        start_worker.assert_called_once()
+
 
 class TestPoStartup:
     @pytest.mark.parametrize(
@@ -180,6 +222,48 @@ class TestPoStartup:
             assert await main._po_missing_env() == missing
 
         assert configs.asked == ["po", "po_summarizer"]
+
+    async def test_no_configured_channel_keeps_the_po_disabled(self, channels):
+        """A deployment with no LLM credential at all (the service-test stack) keeps PO off."""
+        from src import main
+
+        settings = channels.settings(**_NO_OPENROUTER_ENV, **_NO_SUBSCRIPTION_ENV)
+        with (
+            patch.object(main, "api_client", _Configs()),
+            patch.object(main, "get_settings", return_value=settings),
+        ):
+            missing = await main._po_missing_env()
+
+        assert missing == [
+            "LLM_CODEX_HOME",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "PO_LLM_MODEL",
+            "PO_LLM_BASE_URL",
+            "PO_LLM_API_KEY",
+        ]
+
+    async def test_the_disabled_po_never_needs_a_checkpoint_database(self, channels):
+        """No configured channel: run_worker logs po_consumer_disabled instead of refusing."""
+        from src import main
+
+        settings = channels.settings(
+            **_NO_OPENROUTER_ENV, **_NO_SUBSCRIPTION_ENV, checkpoint_database_url=None
+        )
+
+        async def _idle():
+            return None
+
+        with (
+            patch.object(main, "api_client", _Configs()),
+            patch.object(main, "get_settings", return_value=settings),
+            patch.object(main, "listen_provisioner_triggers", _idle),
+            patch.object(main, "listen_worker_events", _idle),
+            capture_logs() as logs,
+        ):
+            await main.run_worker()
+
+        [disabled] = [log for log in logs if log["event"] == "po_consumer_disabled"]
+        assert "LLM_CODEX_HOME" in disabled["missing_env"]
 
     async def test_an_invalid_stored_po_chain_stops_the_service(self, channels):
         from src import main

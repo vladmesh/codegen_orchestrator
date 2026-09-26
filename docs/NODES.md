@@ -80,8 +80,10 @@ own credential variable only — never an API key, Redis or database URL of lang
 duplicate. No record or `null` means the default chain `codex, claude, openrouter`. `model` unset
 means the CLI's own default model, or the agent's env model for `openrouter`; `timeout_seconds`
 unset means 600 s for one model turn. A stored chain that does not validate stops the consumer at
-startup with `invalid_llm_channel_chain`. OpenRouter env blocks an agent only when its chain is
-openrouter alone; otherwise a missing key is that channel's failure.
+startup with `invalid_llm_channel_chain`. An agent is refused (Architect) or disabled (PO) only
+when no channel of its chain is configured — no `LLM_CODEX_HOME`, no `CLAUDE_CODE_OAUTH_TOKEN`, no
+complete OpenRouter env for the channels it names; otherwise a missing credential is that
+channel's failure and the chain moves on.
 
 **Switching**: a call tries the channels in order and returns the first answer. These failure
 classes move the same call to the next channel: `unauthorized` (401), `payment_required` (402),

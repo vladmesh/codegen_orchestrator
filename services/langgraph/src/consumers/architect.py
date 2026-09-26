@@ -42,7 +42,7 @@ from ..llm import (
     build_agent_llm,
     channel_usage,
     load_channel_chain,
-    openrouter_only_missing_env,
+    unconfigured_channel_env,
 )
 from ..llm.chain import ChannelUsage
 from ._base import start_worker, validate_queued_message
@@ -715,7 +715,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     except InvalidChannelChainError as exc:
         log.error("architect_llm_not_configured", error=str(exc))
         return live_work_unsettled({"status": "failed", "error": str(exc)})
-    missing_env = openrouter_only_missing_env(LLMAgent.ARCHITECT, channels, settings)
+    missing_env = unconfigured_channel_env(LLMAgent.ARCHITECT, channels, settings)
     if missing_env:
         log.error("architect_llm_not_configured", missing_env=missing_env)
         return live_work_unsettled(
@@ -835,17 +835,17 @@ def main():
     """Entry point for running as module.
 
     Refuses to start on an invalid stored channel chain (`InvalidChannelChainError`),
-    and on a chain of nothing but openrouter without its env: a consumer that
+    and on a chain with no configured channel: a consumer that
     reads stories only to fail them one by one is harder to spot than a
     container that never comes up.
     """
     chain = asyncio.run(_startup_channel_chain())
-    missing_env = openrouter_only_missing_env(LLMAgent.ARCHITECT, chain, get_settings())
+    missing_env = unconfigured_channel_env(LLMAgent.ARCHITECT, chain, get_settings())
     if missing_env:
         raise RuntimeError(
             f"architect_llm_not_configured: {', '.join(missing_env)} not set. "
-            "The Architect's channel chain is openrouter only and cannot decompose "
-            "stories without them. "
+            "No channel of the Architect's LLM channel chain is configured, so it "
+            "cannot decompose stories. "
             "Set them in .env (see .env.example)."
         )
 

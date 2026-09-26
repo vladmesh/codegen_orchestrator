@@ -6,7 +6,7 @@ groups in `.env.example`, and the test that keeps those two in sync.
 
 A group is required by the agent's openrouter channel: without every var of it
 that channel fails as a missing credential and the chain moves on. Only an
-agent whose chain is openrouter alone cannot run without it (see `src/llm`).
+agent with no configured channel at all cannot run (see `src/llm`).
 Exploratory QA has no group here — it is performed by the assigned subscription
 coding agent and never by an LLM this service holds a key for.
 """

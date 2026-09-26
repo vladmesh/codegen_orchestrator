@@ -333,7 +333,8 @@ The `PO_LLM_*` and `ARCHITECT_LLM_*` triples configure the `openrouter` channel 
 LLM channel chain (default `codex`, `claude`, `openrouter`; see
 [NODES.md](NODES.md#-llm-channel-chain-architect-po-po-summarizer)). A triple is all-or-nothing for
 that channel: with one var empty the channel fails as a missing credential and the chain moves on.
-Only an agent whose chain is openrouter alone refuses to start without it.
+Only an agent with no configured channel at all (nor `LLM_CODEX_HOME`, nor
+`CLAUDE_CODE_OAUTH_TOKEN`, nor its OpenRouter triple) is refused or disabled.
 `services/langgraph/src/config/agent_llm_env.py` is the single source of truth for the groups.
 The subscription channels read `LLM_CODEX_HOME` and `CLAUDE_CODE_OAUTH_TOKEN`; until the langgraph
 image carries the CLIs and those credentials, both fail as `binary_missing`/`missing_credential`

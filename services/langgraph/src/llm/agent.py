@@ -51,18 +51,28 @@ async def load_channel_chain(api: Any, agent: LLMAgent) -> list[LLMChannelConfig
         raise InvalidChannelChainError(agent.value, f"does not validate: {details}") from None
 
 
-def openrouter_only_missing_env(
+def unconfigured_channel_env(
     agent: LLMAgent, chain: list[LLMChannelConfig], settings: Any
 ) -> list[str]:
-    """OpenRouter env a chain of nothing but openrouter cannot run without.
+    """Env the agent cannot run without: empty once any channel of its chain is configured.
 
-    A chain with any other channel runs without it: the missing key is then only
-    that channel's missing-credential failure.
+    A chain with one configured channel runs; every other channel's missing
+    credential is only that channel's failure. A chain with none configured
+    (no `LLM_CODEX_HOME`, no `CLAUDE_CODE_OAUTH_TOKEN`, no complete OpenRouter
+    env) could only ever raise `LLMChannelsExhausted`, so it names all of them.
     """
-    if any(entry.channel is not LLMChannel.OPENROUTER for entry in chain):
-        return []
-    [entry] = chain
-    return openrouter_missing_env(agent, settings, model=entry.model)
+    missing: list[str] = []
+    for entry in chain:
+        if entry.channel is LLMChannel.CODEX:
+            lacking = [] if settings.llm_codex_home else ["LLM_CODEX_HOME"]
+        elif entry.channel is LLMChannel.CLAUDE:
+            lacking = [] if settings.claude_code_oauth_token else ["CLAUDE_CODE_OAUTH_TOKEN"]
+        else:
+            lacking = openrouter_missing_env(agent, settings, model=entry.model)
+        if not lacking:
+            return []
+        missing += lacking
+    return list(dict.fromkeys(missing))
 
 
 def build_agent_llm(

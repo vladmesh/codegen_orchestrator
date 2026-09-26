@@ -3,7 +3,7 @@
 Handles:
 - Provisioner triggers (server provisioning)
 - Worker events (engineering/deploy queue triggers)
-- PO ReactAgent consumer (unless its channel chain is openrouter only and PO_LLM_* is unset)
+- PO ReactAgent consumer (unless no channel of its LLM channel chain is configured)
 
 Note: Engineering and Deploy queues are consumed by dedicated consumers:
 - engineering-worker (services/langgraph/src/consumers/engineering.py)
@@ -19,7 +19,7 @@ from shared.queues import PO_INPUT_QUEUE
 
 from .clients.api import api_client
 from .config.settings import get_settings
-from .llm import LLMAgent, load_channel_chain, openrouter_only_missing_env
+from .llm import LLMAgent, load_channel_chain, unconfigured_channel_env
 from .provisioner import listen_provisioner_triggers
 from .worker_events import listen_worker_events
 
@@ -27,7 +27,7 @@ logger = structlog.get_logger(__name__)
 
 
 async def _po_missing_env() -> list[str]:
-    """OpenRouter env the PO cannot run without: only a chain of nothing but openrouter has any.
+    """LLM env the PO cannot run without: none once a channel of each of its chains is configured.
 
     Reads both PO chains from agent configuration, so an invalid stored chain
     stops the service here with `InvalidChannelChainError`.
@@ -36,7 +36,7 @@ async def _po_missing_env() -> list[str]:
     missing: list[str] = []
     for agent in (LLMAgent.PO, LLMAgent.PO_SUMMARIZER):
         chain = await load_channel_chain(api_client, agent)
-        missing += openrouter_only_missing_env(agent, chain, settings)
+        missing += unconfigured_channel_env(agent, chain, settings)
     return list(dict.fromkeys(missing))
 
 
