@@ -14,12 +14,12 @@ import secrets
 import subprocess
 import uuid
 
-import httpx
 from live_harness import OwnershipManifest, cleanup_guard, resolve_repo_root
 import live_timeouts
 from pipeline_helpers import (
     api_client_as_internal_service,
     api_client_as_test_user,
+    api_client_without_credentials,
     cleanup_all,
     require_internal_api_key,
 )
@@ -155,7 +155,7 @@ async def api_no_auth():
     client 401. To reach an internal endpoint without naming a user, use
     `api_internal` or `pipeline_helpers.api_client_as_unscoped_observer`.
     """
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    async with api_client_without_credentials() as client:
         yield client
 
 

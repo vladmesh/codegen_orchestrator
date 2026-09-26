@@ -874,11 +874,80 @@ def api_client_as_unscoped_observer(**kwargs) -> httpx.AsyncClient:
     return client
 
 
+def api_client_without_credentials(**kwargs) -> httpx.AsyncClient:
+    """Carries no credential at all — for /health, which needs none.
+
+    Not one of the four authenticated kinds: every route under /api answers
+    this client 401. It is built here only so it shares the one transport.
+    """
+    return _api_client({}, **kwargs)
+
+
 def _api_client(headers: dict[str, str], **kwargs) -> httpx.AsyncClient:
     """One httpx client for the live stack; the caller's factory picks the identity."""
     kwargs.setdefault("base_url", API_URL)
     kwargs.setdefault("timeout", 10)
+    kwargs.setdefault("transport", api_transport())
     return httpx.AsyncClient(headers=headers, **kwargs)
+
+
+# ── API transport: no request on a connection the server already dropped ──
+#
+# The API is uvicorn with its default keep-alive, which closes a connection idle
+# for 5 s — and every wait in this harness polls on an interval of 3 or 5 s. A
+# pooled connection the server closes at the instant the client reuses it answers
+# `RemoteProtocolError: Server disconnected without sending a response`, which is
+# how the free `mega-noop` run 36218333606 went red with the API alive and
+# serving the same client in the same seconds. Two settings, one place:
+#
+# * The client forgets an idle connection after `API_KEEPALIVE_EXPIRY_SECONDS`,
+#   well below the server's 5 s, so a poll never picks up a connection the server
+#   may be closing. This is what removes the race, for every method.
+# * A connection the server drops anyway (a restart, a proxy) is retried once on
+#   a fresh connection — for a safe method only. A POST that lost its connection
+#   may already have been applied, so it is raised, never sent a second time.
+
+#: uvicorn's default `timeout_keep_alive`; `services/api/entrypoint.sh` sets none.
+API_SERVER_KEEPALIVE_SECONDS = 5
+#: How long the client keeps an idle connection: under the server's keep-alive by
+#: a margin no scheduling jitter on a loaded stand closes, and long enough that a
+#: burst of calls still shares one connection.
+API_KEEPALIVE_EXPIRY_SECONDS = 1.0
+#: The methods that change nothing on the server, so sending one twice is safe.
+RETRYABLE_API_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+#: The two ways a connection the server has already dropped fails a request.
+DROPPED_CONNECTION_ERRORS = (httpx.RemoteProtocolError, httpx.ReadError)
+
+
+class SafeMethodRetryTransport(httpx.AsyncBaseTransport):
+    """Send a safe request once more on a fresh connection if its connection died."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            return await self._inner.handle_async_request(request)
+        except DROPPED_CONNECTION_ERRORS as exc:
+            if request.method not in RETRYABLE_API_METHODS:
+                raise
+            logger.warning(
+                "api connection dropped, retrying a safe request once",
+                method=request.method,
+                url=str(request.url),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def api_transport() -> httpx.AsyncBaseTransport:
+    """The transport every live API client uses; see the section comment."""
+    return SafeMethodRetryTransport(
+        httpx.AsyncHTTPTransport(limits=httpx.Limits(keepalive_expiry=API_KEEPALIVE_EXPIRY_SECONDS))
+    )
 
 
 @asynccontextmanager
@@ -7100,6 +7169,40 @@ def release_project_fences(ctx: dict) -> None:
     _redis_command("SREM", "workspace:active_projects", str(project_id))
 
 
+#: The scheduler's stage-notice marker, one per story in work, and the set that
+#: lists every marked story (`services/scheduler/src/tasks/supervisor/
+#: stage_notices.py`). Restated because the harness does not import the
+#: scheduler; `test_stage_notice_cleanup` pins both against the sweep's own constants.
+STAGE_NOTICE_KEY_PREFIX = "story:stage_notice:"
+STAGE_NOTICE_MARKED_STORIES_KEY = "story:stage_notice_marked"
+
+
+def release_story_stage_notices(ctx: dict) -> None:
+    """Drop the stage-notice marker of every story this run owns.
+
+    The sweep deletes a marker only when it finds the story out of work, and a
+    story of a run that aborted mid-stage never gets there: its rows are gone
+    with the project, and the next sweep would forget it only after the residue
+    proof had already named `story:stage_notice:<id>` — as it did on run
+    36218333606. So the run takes them back itself, after the database teardown
+    has removed the stories the sweep could mark again, and reads back that
+    neither the marker nor the set membership is left.
+    """
+    story_ids = list(run_inventory(ctx).story_ids)
+    if not story_ids:
+        return
+    keys = [f"{STAGE_NOTICE_KEY_PREFIX}{story_id}" for story_id in story_ids]
+    _redis_command("UNLINK", *keys)
+    _redis_command("SREM", STAGE_NOTICE_MARKED_STORIES_KEY, *story_ids)
+    left = int(_redis_command("EXISTS", *keys))
+    marked = _redis_command("SMISMEMBER", STAGE_NOTICE_MARKED_STORIES_KEY, *story_ids).split()
+    if left or any(flag != "0" for flag in marked):
+        raise CleanupError(
+            f"stage-notice markers of stories {story_ids} survived removal: "
+            f"{left} key(s) left, membership {marked}"
+        )
+
+
 async def cleanup_and_prove(
     api_internal: httpx.AsyncClient,
     api_observer: httpx.AsyncClient | None,
@@ -7116,6 +7219,7 @@ async def cleanup_and_prove(
     of a real installation.
     """
     database = await cleanup_all(api_internal, api_observer, ctx)
+    release_story_stage_notices(ctx)
     release_project_fences(ctx)
     remove_run_po_checkpoints(ctx)
     prove_nothing_left(ctx, database)

@@ -25,6 +25,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   other calls of its turn, so the user gets the full brief or the apology, never another tool's result.
 - `mega-live`'s bot also answers a native Telegram location, and `test_qa_passed` requires QA to prove it with a retained
   sandbox probe (passed, not unverified); `mega-noop` renders byte-for-byte as before, pinned offline.
+- Live API clients drop idle connections after 1 s (uvicorn keeps 5 s) and retry a GET/HEAD/OPTIONS once on a dropped
+  connection, never a POST, so a poll no longer dies on `Server disconnected without sending a response`.
+- Live run cleanup removes the scheduler's `story:stage_notice:<id>` markers and set membership of its own stories
+  before the residue proof, so an aborted run no longer fails `prove_nothing_left` on them.
 
 ## 2026-09-25
 
