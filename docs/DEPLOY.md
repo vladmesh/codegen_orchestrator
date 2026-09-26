@@ -357,6 +357,15 @@ Each agent logs `llm_channel_ready` once per channel at startup (see
 hit first, with its `reason` and the installed `cli_version`. That log is the readback of a
 deploy: `docker compose logs langgraph architect | grep llm_channel_ready`.
 
+The `langgraph` process also reads the OpenRouter balance (`GET <PO_LLM_BASE_URL>/credits`) on a
+schedule and alerts administrators below `llm.openrouter_balance_alert_usd`. OpenRouter documents
+that endpoint as needing a management key: the deploy writes the optional
+`OPENROUTER_MANAGEMENT_KEY` environment secret into `.env`, and compose passes it to `langgraph`
+only. Empty, the check sends `PO_LLM_API_KEY`. The readback is `docker compose logs langgraph |
+grep -E 'openrouter_balance'`: `openrouter_balance_check_started` names the `key_source`, then
+either `openrouter_balance` (the balance and whether an alert was sent) or
+`openrouter_balance_read_failed` with a 401/403, alerted as "set OPENROUTER_MANAGEMENT_KEY".
+
 ### GitHub Integration
 
 | Secret | Description |
@@ -434,6 +443,7 @@ would otherwise sign dashboard tokens with a known key.
 | `HOST_CLAUDE_DIR` | Path to `.claude` directory on prod server |
 | `HOST_CODEX_HOME` | Path to the dedicated file-backed Codex profile described in `docs/coding-agents.md`; also the `codex` LLM channel of `langgraph` and `architect` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Optional. Claude subscription token for the `claude` LLM channel of `langgraph` and `architect` (not for workers) |
+| `OPENROUTER_MANAGEMENT_KEY` | Optional. OpenRouter management key for the `langgraph` balance check (`GET /credits`); empty, the check uses `PO_LLM_API_KEY` |
 
 `DEFAULT_AGENT_TYPE` is required and has no default. It is policy rather than a credential, so it
 is a GitHub Environment **variable** (`vars.DEFAULT_AGENT_TYPE`), set on every contour this workflow

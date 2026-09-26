@@ -61,6 +61,7 @@ class Channels:
             "po_llm_base_url": "https://openrouter.test/api/v1",
             "po_llm_api_key": OPENROUTER_KEY,
             "summarization_model": None,
+            "openrouter_management_key": None,
         }
         values.update(overrides)
         return SimpleNamespace(**values)

@@ -6,7 +6,8 @@ OpenRouter env (`*_LLM_MODEL`, `*_LLM_BASE_URL`, `*_LLM_API_KEY`,
 failure, not a reason for the agent to refuse to run: the chain moves on.
 
 It also owns the scheduled OpenRouter balance check the `langgraph` process
-runs (`run_openrouter_balance_check`), since that check reads the same key.
+runs (`run_openrouter_balance_check`), since that check reads the same key, or
+the optional `OPENROUTER_MANAGEMENT_KEY`, which nothing else reads.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import structlog
 from shared.contracts.dto.llm_channel import LLMChannel, LLMChannelConfig
 
 from ..config.agent_llm_env import AGENT_LLM_ENV, missing_llm_env
-from .alerts import AlertOutcome, LLMAlertKind, LLMAlerts
+from .alerts import REFUSAL_KINDS, AlertOutcome, LLMAlertKind, LLMAlerts
 from .chain import DEFAULT_CHANNEL_TIMEOUT_SECONDS, ChannelSlot
 from .errors import ChannelFailure, ChannelFailureClass, classify_error_text, short_reason
 from .vocab import LLMAgent
@@ -106,9 +107,9 @@ def classify_openrouter_error(
     reason = f"HTTP {status}: {message}"
     if status in _STATUS_CLASSES or status >= 500:  # noqa: PLR2004
         if classify_error_text(message) is ChannelFailureClass.QUOTA_EXHAUSTED:
-            return ChannelFailure(ChannelFailureClass.QUOTA_EXHAUSTED, reason)
+            return ChannelFailure(ChannelFailureClass.QUOTA_EXHAUSTED, reason, http_status=status)
         failure_class = _STATUS_CLASSES.get(status, ChannelFailureClass.SERVER_ERROR)
-        return ChannelFailure(failure_class, reason)
+        return ChannelFailure(failure_class, reason, http_status=status)
     return None
 
 
@@ -117,8 +118,9 @@ def classify_openrouter_error(
 #: `GET <base_url>/credits`, documented at
 #: https://openrouter.ai/docs/api-reference/get-credits (checked 2026-09-26):
 #: `{"data": {"total_credits": <USD purchased>, "total_usage": <USD used>}}`.
-#: The docs mark it "Management key required"; the check sends the PO's
-#: OpenRouter key, and a 401/403 it gets back is alerted like a 402.
+#: The docs mark it "Management key required": the check sends
+#: `OPENROUTER_MANAGEMENT_KEY` when it is set, otherwise the PO's inference key,
+#: and a 401/402/403 it gets back is alerted like a refused channel.
 CREDITS_PATH = "/credits"
 BALANCE_THRESHOLD_KEY = "llm.openrouter_balance_alert_usd"
 DEFAULT_BALANCE_THRESHOLD_USD = 20.0
@@ -128,8 +130,13 @@ BALANCE_READ_TIMEOUT_SECONDS = 15.0
 #: The agent name the balance check's alerts carry.
 BALANCE_CHECK_AGENT = "openrouter_balance_check"
 _BALANCE_SUBJECT = LLMChannel.OPENROUTER.value
-#: The account balance is one per key; the langgraph process holds the PO's.
+#: The endpoint and inference key the check falls back on are the PO's, which
+#: the langgraph process holds.
 _BALANCE_ENV_GROUP = "po"
+MANAGEMENT_KEY_ENV = "OPENROUTER_MANAGEMENT_KEY"
+_REFUSED_READ_FIX = (
+    f"The balance read needs an OpenRouter management key: set {MANAGEMENT_KEY_ENV} to a valid one."
+)
 
 
 class BalanceReadError(Exception):
@@ -153,7 +160,10 @@ async def read_openrouter_balance(client: httpx.AsyncClient, base_url: str, api_
         refused = _STATUS_CLASSES.get(response.status_code)
         if refused is ChannelFailureClass.RATE_LIMITED:
             refused = None
-        raise BalanceReadError(reason, ChannelFailure(refused, reason) if refused else None)
+        failure = (
+            ChannelFailure(refused, reason, http_status=response.status_code) if refused else None
+        )
+        raise BalanceReadError(reason, failure)
     try:
         data = response.json()["data"]
         return float(data["total_credits"]) - float(data["total_usage"])
@@ -170,11 +180,13 @@ async def check_openrouter_balance(
     except BalanceReadError as exc:
         outcome = None
         if exc.failure is not None:
+            payment = exc.failure.failure_class is ChannelFailureClass.PAYMENT_REQUIRED
             outcome = await alerts.provider_refused(
                 LLMChannel.OPENROUTER,
                 BALANCE_CHECK_AGENT,
-                exc.failure.failure_class,
+                REFUSAL_KINDS[exc.failure.failure_class],
                 exc.failure.reason,
+                fix=None if payment else _REFUSED_READ_FIX,
             )
         logger.warning(
             "openrouter_balance_read_failed",
@@ -206,10 +218,15 @@ async def check_openrouter_balance(
 
 
 async def run_openrouter_balance_check(settings: Any, alerts: LLMAlerts) -> None:
-    """Check the OpenRouter balance every N minutes; idle when no key is configured."""
+    """Check the OpenRouter balance every N minutes; idle when no key is configured.
+
+    The key is `OPENROUTER_MANAGEMENT_KEY` when set (an empty value is unset),
+    otherwise the PO's inference key; the endpoint is always `PO_LLM_BASE_URL`.
+    """
     _, base_url_env, key_env = AGENT_LLM_ENV[_BALANCE_ENV_GROUP]
     base_url = getattr(settings, base_url_env.lower())
-    api_key = getattr(settings, key_env.lower())
+    management_key = settings.openrouter_management_key
+    api_key = management_key or getattr(settings, key_env.lower())
     if not base_url or not api_key:
         logger.info(
             "openrouter_balance_check_idle",
@@ -218,7 +235,10 @@ async def run_openrouter_balance_check(settings: Any, alerts: LLMAlerts) -> None
             ],
         )
         return
-    logger.info("openrouter_balance_check_started")
+    logger.info(
+        "openrouter_balance_check_started",
+        key_source="management" if management_key else "po_inference",
+    )
     async with httpx.AsyncClient(timeout=BALANCE_READ_TIMEOUT_SECONDS) as client:
         while True:
             try:

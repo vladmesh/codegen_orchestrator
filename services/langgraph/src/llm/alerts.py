@@ -28,6 +28,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from enum import StrEnum
 from functools import cache
+from http import HTTPStatus
 import math
 from typing import Any
 
@@ -168,11 +169,26 @@ class LLMAlerts:
     # --- what the chain reports ---------------------------------------------
 
     def channel_failed(self, agent: str, attempt: ChannelAttempt) -> None:
-        """Schedule the payment alert for a 402; every other failure is not alerted."""
-        if attempt.failure_class is not ChannelFailureClass.PAYMENT_REQUIRED:
+        """Schedule the payment alert for a 402; every other failure is not alerted.
+
+        The trigger is the provider's HTTP 402, whatever class its text earned: a
+        402 saying "insufficient credits" is `quota_exhausted` for routing and
+        retry, and still a payment alert. A subscription usage limit without a
+        402 is not one; the degraded alert covers both subscriptions running out.
+        """
+        if (
+            attempt.failure_class is not ChannelFailureClass.PAYMENT_REQUIRED
+            and attempt.http_status != HTTPStatus.PAYMENT_REQUIRED
+        ):
             return
         self._schedule(
-            self.provider_refused(attempt.channel, agent, attempt.failure_class, attempt.reason)
+            self.provider_refused(
+                attempt.channel,
+                agent,
+                LLMAlertKind.PAYMENT_REQUIRED,
+                attempt.reason,
+                failure_class=attempt.failure_class.value,
+            )
         )
 
     def call_answered(
@@ -200,17 +216,25 @@ class LLMAlerts:
         self,
         channel: LLMChannel,
         agent: str,
-        failure_class: ChannelFailureClass,
+        kind: LLMAlertKind,
         reason: str,
+        *,
+        fix: str | None = None,
+        **context: str,
     ) -> AlertOutcome:
         """Alert that a provider refused a channel (402, or 401/403 on the balance read)."""
-        kind = REFUSAL_KINDS[failure_class]
         message = (
-            f"LLM channel {channel.value} refused {agent} ({failure_class.value}): {reason}. "
-            f"Check the {channel.value} account billing and credentials."
+            f"LLM channel {channel.value} refused {agent} ({kind.value}): {reason}. "
+            f"{fix or f'Check the {channel.value} account billing and credentials.'}"
         )
         return await self.alert(
-            kind, channel.value, message, level="error", agent=agent, channel=channel.value
+            kind,
+            channel.value,
+            message,
+            level="error",
+            agent=agent,
+            channel=channel.value,
+            **context,
         )
 
     async def alert(

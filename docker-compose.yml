@@ -71,6 +71,9 @@ services:
       # subscription token. LLM_CODEX_HOME stays empty while HOST_CODEX_HOME is unset.
       LLM_CODEX_HOME: ${HOST_CODEX_HOME:+/llm-codex-home}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # Optional OpenRouter management key for the balance check (src/llm/openrouter.py);
+      # empty, the check reads the balance with PO_LLM_API_KEY. langgraph only.
+      OPENROUTER_MANAGEMENT_KEY: ${OPENROUTER_MANAGEMENT_KEY:-}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: langgraph

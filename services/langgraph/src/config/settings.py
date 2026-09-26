@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # A Claude subscription OAuth token (`claude setup-token`).
     claude_code_oauth_token: str | None = None
 
+    # Optional OpenRouter management key for the langgraph balance check
+    # (src/llm/openrouter.py is its only reader); unset or empty, the check sends
+    # po_llm_api_key.
+    openrouter_management_key: str | None = None
+
     # OpenRouter channel of the chain (src/llm/openrouter.py is their only reader).
     # PO ReactAgent: model, base URL, key.
     po_llm_model: str | None = None

@@ -261,11 +261,13 @@ Administrators get these from the langgraph and architect processes. Each repeat
 `llm.alert_realert_window_hours` (default 6) per channel or agent; clear the Redis key
 `llm:alert:<kind>:<subject>` to hear one again sooner.
 
-- **`LLM channel <channel> refused <agent> (payment_required)`** — the provider answered 402. The
-  chain moved the call on, so work continues on the next channel while money lasts there. Top up or
-  fix billing for that channel. From `openrouter_balance_check` with `unauthorized` or `forbidden`,
-  the balance read itself was refused (OpenRouter documents `/credits` as needing a management
-  key): the balance is not being watched until the key can read it.
+- **`LLM channel <channel> refused <agent> (payment_required)`** — the provider answered 402
+  (whatever its text; "insufficient credits" included). The chain moved the call on, so work
+  continues on the next channel while money lasts there. Top up or fix billing for that channel.
+- **`LLM channel openrouter refused openrouter_balance_check (unauthorized|forbidden)`** — the
+  balance read itself was refused; OpenRouter documents `/credits` as needing a management key.
+  The balance is not watched until it can be read: set the `OPENROUTER_MANAGEMENT_KEY` environment
+  secret to an OpenRouter management key and redeploy (see [DEPLOY.md](DEPLOY.md)).
 - **`Subscription channels down, <agent> running on OpenRouter (codex=…, claude=…)`** — both
   subscription CLIs failed one call and OpenRouter answered it. Every call now spends OpenRouter
   money, and the PO tells users that engineering capacity is temporarily unavailable. Restore a

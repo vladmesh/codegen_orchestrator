@@ -112,10 +112,13 @@ name the channels its planning attempt used and the failures it skipped.
 
 **Operator alerts** (`src/llm/alerts.py`): the chain reports every failure and answer to one alert
 module, which sends to administrators in a bounded background task and never touches the call.
-A `payment_required` (402) on any channel of any agent alerts once per channel; one call that
+A provider 402 on any channel of any agent alerts once per channel, whatever class its text
+earned (a 402 saying "insufficient credits" is `quota_exhausted` for routing and retry, and still
+a payment alert; `ChannelFailure.http_status` carries the status); one call that
 failed both `codex` and `claude` and was answered by `openrouter` alerts "subscription channels
 down, <agent> running on OpenRouter" once per agent. The langgraph process also reads the
-OpenRouter balance (`GET <PO_LLM_BASE_URL>/credits`, `total_credits - total_usage`) every
+OpenRouter balance (`GET <PO_LLM_BASE_URL>/credits`, `total_credits - total_usage`, with the
+optional `OPENROUTER_MANAGEMENT_KEY`, else `PO_LLM_API_KEY`) every
 `llm.openrouter_balance_check_interval_minutes` and alerts below `llm.openrouter_balance_alert_usd`,
 re-armed once the balance is back above it; a 401/402/403 on that read is alerted like a refused
 channel, and without an OpenRouter key the check logs `openrouter_balance_check_idle` and stops.

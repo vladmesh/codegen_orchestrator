@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
+import re
 
 from fakeredis import FakeServer
 from fakeredis.aioredis import FakeRedis
@@ -35,6 +37,15 @@ from tests.unit.llm.conftest import OPENROUTER_KEY
 DEFAULT = ("codex", "claude", "openrouter")
 SIX_HOURS = 6 * 3600
 PAYMENT_402 = {"exit": 1, "stderr": "ERROR: unexpected status 402 Payment Required"}
+INSUFFICIENT_CREDITS = "User has insufficient credits to complete this request"
+#: A 402 whose text names exhausted credits: classified `quota_exhausted`, still a 402.
+CREDITS_402 = {
+    "codex": {
+        "exit": 1,
+        "stderr": f"ERROR: unexpected status 402 Payment Required: {INSUFFICIENT_CREDITS}",
+    },
+    "claude": {"exit": 1, "stderr": f'API Error: 402 {{"error": "{INSUFFICIENT_CREDITS}"}}'},
+}
 UNAUTHORIZED_401 = {"exit": 1, "stderr": "ERROR: unexpected status 401 Unauthorized"}
 
 
@@ -155,6 +166,65 @@ class TestPaymentRequiredAlert:
             failing,
             "architect",
         )
+
+    @pytest.mark.parametrize(
+        ("failing", "chain"),
+        [
+            ("codex", ("codex", "claude")),
+            ("claude", ("claude", "openrouter")),
+            ("openrouter", ("openrouter", "codex")),
+        ],
+    )
+    async def test_a_402_classified_quota_exhausted_still_alerts_once(
+        self, channels, redis, failing, chain
+    ):
+        if failing == "openrouter":
+            channels.openrouter.outcomes = [_status_error(402, INSUFFICIENT_CREDITS)]
+        else:
+            getattr(channels, failing).script(CREDITS_402[failing])
+        admins = _Admins()
+        llm = build_agent_llm(
+            LLMAgent.PO, _chain(*chain), channels.settings(), alerts=_alerts(redis, admins)
+        )
+
+        with capture_logs() as logs:
+            first = await _ask(llm)
+            second = await _ask(llm)
+
+        # Routing and retry keep the class the text earned.
+        failed = [log for log in logs if log["event"] == "llm_channel_failed"]
+        assert [(log["failure_class"], log["http_status"]) for log in failed] == [
+            ("quota_exhausted", 402),
+            ("quota_exhausted", 402),
+        ]
+        assert first.response_metadata["llm_channel"] == chain[1]
+        assert second.response_metadata["llm_channel"] == chain[1]
+        [(message, _)] = admins.messages
+        assert f"LLM channel {failing} refused po (payment_required)" in message
+        assert INSUFFICIENT_CREDITS in message
+        assert await redis.exists(alert_key(LLMAlertKind.PAYMENT_REQUIRED, failing))
+        [sent] = [log for log in logs if log["event"] == "llm_alert_sent"]
+        assert sent["failure_class"] == "quota_exhausted"
+
+    async def test_a_usage_limit_without_a_402_is_no_payment_alert(self, channels, redis):
+        channels.codex.script(
+            {"exit": 1, "stderr": "You've hit your usage limit. Try again in 3 days."}
+        )
+        admins = _Admins()
+        llm = build_agent_llm(
+            LLMAgent.PO,
+            _chain("codex", "claude"),
+            channels.settings(),
+            alerts=_alerts(redis, admins),
+        )
+
+        with capture_logs() as logs:
+            answer = await _ask(llm)
+
+        assert answer.response_metadata["llm_channel"] == "claude"
+        [failed] = [log for log in logs if log["event"] == "llm_channel_failed"]
+        assert (failed["failure_class"], failed["http_status"]) == ("quota_exhausted", None)
+        assert admins.messages == []
 
     async def test_the_reason_is_redacted_and_bounded(self, channels, redis):
         channels.openrouter.outcomes = [
@@ -465,6 +535,8 @@ class TestAlertingNeverFailsTheCall:
 # --- the scheduled balance check -------------------------------------------------
 
 BASE_URL = "https://openrouter.test/api/v1"
+#: The real client class, kept before a test patches the module attribute.
+_AsyncClient = httpx.AsyncClient
 
 
 class _Credits:
@@ -487,7 +559,7 @@ class _Credits:
         return httpx.Response(200, json=body)
 
     def client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=httpx.MockTransport(self))
+        return _AsyncClient(transport=httpx.MockTransport(self))
 
 
 async def _check(credits: _Credits, alerts: LLMAlerts) -> list[dict]:
@@ -589,6 +661,8 @@ class TestBalanceCheck:
         [(message, _)] = admins.messages
         assert f"LLM channel openrouter refused openrouter_balance_check ({kind})" in message
         assert OPENROUTER_KEY not in message
+        # A refused key names its fix; a 402 is a top-up, not a key problem.
+        assert ("set OPENROUTER_MANAGEMENT_KEY" in message) is (kind != "payment_required")
         assert await redis.exists(alert_key(LLMAlertKind(kind), "openrouter"))
 
     async def test_a_402_on_the_read_shares_the_channel_402_dedup(self, redis):
@@ -597,7 +671,7 @@ class TestBalanceCheck:
         outcome = await alerts.provider_refused(
             LLMChannel.OPENROUTER,
             "po",
-            alerts_module.ChannelFailureClass.PAYMENT_REQUIRED,
+            LLMAlertKind.PAYMENT_REQUIRED,
             "HTTP 402: Payment Required",
         )
         assert outcome is AlertOutcome.SENT
@@ -607,6 +681,41 @@ class TestBalanceCheck:
         [failed] = [log for log in logs if log["event"] == "openrouter_balance_read_failed"]
         assert failed["alert_outcome"] == "deduplicated"
         assert len(admins.messages) == 1
+
+    @pytest.mark.parametrize(
+        ("management_key", "sent_key", "key_source"),
+        [
+            ("sk-or-mgmt-secret", "sk-or-mgmt-secret", "management"),
+            ("", OPENROUTER_KEY, "po_inference"),
+            (None, OPENROUTER_KEY, "po_inference"),
+        ],
+    )
+    async def test_the_management_key_is_sent_when_set(
+        self, redis, channels, monkeypatch, management_key, sent_key, key_source
+    ):
+        from src.llm import openrouter
+
+        credits = _Credits(credits=50, usage=10)
+        monkeypatch.setattr(openrouter.httpx, "AsyncClient", lambda **_: credits.client())
+
+        class _Stop(Exception):
+            pass
+
+        async def stop(_seconds):
+            raise _Stop
+
+        monkeypatch.setattr(openrouter, "asyncio", type("_Asyncio", (), {"sleep": stop}))
+        settings = channels.settings(openrouter_management_key=management_key)
+
+        with capture_logs() as logs, pytest.raises(_Stop):
+            await run_openrouter_balance_check(settings, _alerts(redis, _Admins()))
+
+        [request] = credits.requests
+        assert request.headers["Authorization"] == f"Bearer {sent_key}"
+        [started] = [log for log in logs if log["event"] == "openrouter_balance_check_started"]
+        assert started["key_source"] == key_source
+        assert _balance_log(logs)["balance_usd"] == 40.0  # noqa: PLR2004
+        assert "sk-or-mgmt-secret" not in json.dumps(logs)
 
     async def test_no_key_logs_once_and_stays_idle(self, redis, channels):
         admins = _Admins()
@@ -620,3 +729,15 @@ class TestBalanceCheck:
         [idle] = [log for log in logs if log["event"] == "openrouter_balance_check_idle"]
         assert idle["missing_env"] == ["PO_LLM_API_KEY"]
         assert admins.messages == []
+
+
+def test_the_management_key_is_read_only_in_the_openrouter_channel_module():
+    src = Path(__file__).resolve().parents[3] / "src"
+    readers = sorted(
+        str(path.relative_to(src))
+        for path in src.rglob("*.py")
+        if re.search(r"openrouter_management_key|OPENROUTER_MANAGEMENT_KEY", path.read_text())
+    )
+
+    # settings.py declares the field.
+    assert readers == ["config/settings.py", "llm/openrouter.py"]

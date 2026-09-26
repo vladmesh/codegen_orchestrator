@@ -62,7 +62,13 @@ from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 from shared.contracts.dto.llm_channel import LLMChannel
 
-from .errors import ChannelFailure, ChannelFailureClass, classify_error_text, short_reason
+from .errors import (
+    ChannelFailure,
+    ChannelFailureClass,
+    classify_error_text,
+    error_text_status,
+    short_reason,
+)
 
 #: The fixed answer shape both CLIs are held to.
 TURN_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -478,12 +484,14 @@ class CliTurnChatModel(BaseChatModel):
                 raise ChannelFailure(
                     classify_error_text(tail),
                     f"exit {returncode}: {_redacted(tail, secrets)[-_REASON_TAIL:]}",
+                    http_status=error_text_status(tail),
                 )
             reported = self._reported_error(stdout)
             if reported is not None:
                 raise ChannelFailure(
                     classify_error_text(reported[-_ERROR_TAIL:]),
                     _redacted(reported, secrets)[-_REASON_TAIL:],
+                    http_status=error_text_status(reported[-_ERROR_TAIL:]),
                 )
             try:
                 return self._answer(stdout, io_dir)

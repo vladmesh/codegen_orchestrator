@@ -171,7 +171,9 @@ class ChannelChainModel(BaseChatModel):
             try:
                 message = await self._call(slot, call_messages, stop, kwargs)
             except ChannelFailure as failure:
-                attempt = ChannelAttempt(slot.channel, failure.failure_class, failure.reason)
+                attempt = ChannelAttempt(
+                    slot.channel, failure.failure_class, failure.reason, failure.http_status
+                )
                 attempts.append(attempt)
                 if usage is not None:
                     usage.failed.append(attempt)
@@ -182,6 +184,7 @@ class ChannelChainModel(BaseChatModel):
                     model=slot.model_name,
                     position=position,
                     failure_class=failure.failure_class.value,
+                    http_status=failure.http_status,
                     reason=failure.reason,
                     duration_s=round(time.monotonic() - started, 3),
                 )
