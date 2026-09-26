@@ -31,6 +31,7 @@ from .task import Task, TaskEvent
 from .temporary_access_grant import TemporaryAccessGrant
 from .user import User
 from .users_grant_intent import UsersGrantIntent
+from .verification_gap import VerificationGap
 from .work_admission_audit import WorkAdmissionAudit
 
 __all__ = [
@@ -65,6 +66,7 @@ __all__ = [
     "APIKey",
     "User",
     "UsersGrantIntent",
+    "VerificationGap",
     "WorkAdmissionAudit",
     "Incident",
     "IncidentStatus",

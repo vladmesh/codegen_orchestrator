@@ -16,10 +16,12 @@ addresses a user through the removed ``user_id`` field is rejected — see
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.dto.story import (
     STAGE_NOTICE_STATUSES,
     WAITING_ON_BY_STATUS,
@@ -69,6 +71,18 @@ class POSystemEvent(RejectsLegacyRecipientField):
     waiting_on: StoryWaitingOn | None = None
     wait_estimate: StoryWaitEstimate | None = None
     stage_notice: StoryStageNoticeKind | None = None
+    #: What the QA run that settled the story checked and could not: the names
+    #: of the checks that passed and every unverified check with its reason.
+    #: Carried as structured facts, JSON-encoded in its one flat field, so PO
+    #: can tell the user honestly without parsing words. Set only on the event
+    #: that settles a story on a QA verdict.
+    qa_verification: QAVerificationFacts | None = None
+
+    @field_validator("qa_verification", mode="before")
+    @classmethod
+    def _decode_flat_qa_verification(cls, value: object) -> object:
+        # A flat stream field is a string; `to_flat_fields` wrote it as JSON.
+        return json.loads(value) if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _stage_fields_belong_to_stage_notices(self) -> POSystemEvent:
@@ -168,9 +182,17 @@ def proactive_from_input(source: dict, text: str, telegram_chat_id: str) -> POPr
 
 
 def to_flat_fields(model: BaseModel) -> dict[str, str]:
-    """Convert a Pydantic model to flat string key-value pairs for XADD."""
+    """Convert a Pydantic model to flat string key-value pairs for XADD.
+
+    A structured field (an object or a list) is written as JSON, the one form
+    its model decodes back.
+    """
     data = model.model_dump(mode="json")
-    return {k: str(v) for k, v in data.items() if v is not None and v != ""}
+    return {
+        k: json.dumps(v, separators=(",", ":")) if isinstance(v, dict | list) else str(v)
+        for k, v in data.items()
+        if v is not None and v != ""
+    }
 
 
 def from_flat_fields(fields: dict[str, str], model_type: type[BaseModel]) -> BaseModel:

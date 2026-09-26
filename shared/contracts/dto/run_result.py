@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+from shared.contracts.dto.qa_verification import QAUnverifiedCheck, QAVerificationFacts
 from shared.contracts.dto.settings_seed import (
     SETTINGS_SEED_CONVERGENT_FAILURES,
     SettingSeedOutcome,
@@ -263,6 +264,11 @@ class QAFailedCheckCause(StrEnum):
     fix task. `qa_capability` is a criterion QA has no tool for, or one it never
     performs (`shared.contracts.qa_capabilities`); `qa_access` is the product
     refusing the QA identity.
+
+    `qa_capability` is the executor's word for a check it could not run. The QA
+    runner never settles a Run with one in `failed_checks`: it records it as
+    unverified (`QARunResult.unverified_checks`). A stored result written before
+    that still reads as it was written.
     """
 
     PRODUCT = "product"
@@ -335,9 +341,10 @@ class QABlockerCategory(StrEnum):
     # taken back while the run was still using it.
     QA_ACCESS_GRANT_FAILED = "qa_access_grant_failed"
     QA_ACCESS_EXPIRED = "qa_access_expired"
-    # QA ran and every failed check was a criterion it had no tool for or a
-    # product refusing the QA identity. No product judgement exists, so no fix
-    # attempt may be spent on it.
+    # QA ran and every failed check was the product refusing the QA identity
+    # (`qa_access`). No product judgement exists, so no fix attempt may be spent
+    # on it. A check QA had no tool for is never this: it is unverified
+    # (`QARunResult.unverified_checks`) and does not block the story.
     QA_CHECKS_UNVERIFIABLE = "qa_checks_unverifiable"
     UNKNOWN = "unknown"
 
@@ -549,6 +556,13 @@ class QARunResult(BaseModel):
     qa_outcome: QAOutcome
     summary: str | None = None
     failed_checks: list[QAFailedCheck] = Field(default_factory=list)
+    #: The names of the checks this run performed and passed. Empty on a result
+    #: written before it was recorded, and on a blocked run.
+    passed_checks: list[str] = Field(default_factory=list)
+    #: Checks QA could not run (cause `qa_capability`), taken out of the verdict
+    #: by the QA runner: never a failure, never a pass. A run whose only other
+    #: checks passed is `passed` with these listed.
+    unverified_checks: list[QAUnverifiedCheck] = Field(default_factory=list)
     report: str | None = None
     qa_attempt: int | None = None
     deployed_url: str | None = None
@@ -585,6 +599,14 @@ class QARunResult(BaseModel):
     #: Readers state which writer settled the Run without one; they do not
     #: conclude silence from it.
     executor_transcript: str | None = None
+
+    def verification_facts(self, qa_run_id: str) -> QAVerificationFacts:
+        """What this run checked and could not, as the settling owner event carries it."""
+        return QAVerificationFacts(
+            qa_run_id=qa_run_id,
+            passed_checks=list(self.passed_checks),
+            unverified_checks=list(self.unverified_checks),
+        )
 
     @model_validator(mode="after")
     def _outcome_matches_state_traces(self) -> QARunResult:

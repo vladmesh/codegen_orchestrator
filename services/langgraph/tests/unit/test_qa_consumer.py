@@ -1600,3 +1600,139 @@ class TestProbeLibrary:
             await process_qa_job(qa_message_data, mock_redis)
 
         library_api.store_qa_probes_from_run.assert_not_awaited()
+
+
+_POST_ITEM = "- POST /api/transactions returns 201"
+_PASSED = {"name": "health", "pass": True, "detail": "200"}
+_PRODUCT_FAILURE = {"name": "weather", "pass": False, "detail": "404", "cause": "product"}
+
+
+def _settled_verdict(origin: str, *, product_failure: bool):
+    """What the QA runner hands the consumer for one origin of an unverified check."""
+    from src.agents.qa.acceptance import prepare_central_qa_criteria
+    from src.consumers._qa_runner import (
+        apply_unverifiable_criteria,
+        parse_qa_result,
+        settle_unverified_checks,
+    )
+
+    checks = [_PASSED, *([_PRODUCT_FAILURE] if product_failure else [])]
+    if origin == "executor":
+        checks.append(
+            {"name": "upload receipt", "pass": False, "detail": "no tool", "cause": "qa_capability"}
+        )
+    elif origin == "not_applicable":
+        checks.append({"name": "empty message", "not_applicable": True, "detail": "cannot send"})
+    raw = json.dumps({"pass": not product_failure, "checks": checks, "summary": "QA ran"})
+    withheld = prepare_central_qa_criteria(_POST_ITEM).unverifiable if origin == "withheld" else ()
+    return settle_unverified_checks(apply_unverifiable_criteria(parse_qa_result(raw), withheld))
+
+
+class TestAnUnverifiedCheckSettlesOnTheChecksThatRan:
+    """Every origin × outcome: the Run records the gap, and the project gets it."""
+
+    PROJECT = "116c9678-5872-4ce5-8332-9a267ab27604"
+
+    @pytest.fixture
+    def gaps_api(self, mock_api_client, qa_message_data):
+        from shared.contracts.dto.qa_verification import QAVerificationGapsRecorded
+
+        qa_message_data["project_id"] = self.PROJECT
+        mock_api_client.record_verification_gaps_from_run = AsyncMock(
+            return_value=QAVerificationGapsRecorded(recorded=["x"])
+        )
+        return mock_api_client
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("origin", ["executor", "not_applicable", "withheld"])
+    @pytest.mark.parametrize(
+        ("product_failure", "status", "outcome"),
+        [(False, "passed", QAOutcome.PASSED), (True, "qa_failed", QAOutcome.FAILED)],
+        ids=["only-unverified", "with-product-failure"],
+    )
+    async def test_the_run_and_the_project_record_it(  # noqa: PLR0913 — one table row, each part named
+        self, gaps_api, mock_redis, qa_message_data, origin, product_failure, status, outcome
+    ):
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _settled_verdict(origin, product_failure=product_failure)
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == status
+        run_result = gaps_api.patch.call_args.kwargs["json"]["result"]
+        assert run_result["qa_outcome"] == outcome.value
+        [unverified] = run_result["unverified_checks"]
+        assert unverified["origin"] == origin
+        assert unverified["reason"]
+        # Never a pass, never a failure.
+        assert unverified["name"] not in run_result["passed_checks"]
+        assert [check["name"] for check in run_result["failed_checks"]] == (
+            ["weather"] if product_failure else []
+        )
+        assert run_result["passed_checks"] == ["health"]
+        gaps_api.record_verification_gaps_from_run.assert_awaited_once_with(
+            self.PROJECT, "qa-run-1"
+        )
+        gaps_api.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_gap_write_failure_is_logged_and_the_verdict_stands(
+        self, gaps_api, mock_redis, qa_message_data
+    ):
+        gaps_api.record_verification_gaps_from_run.side_effect = httpx.ConnectError("api down")
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _settled_verdict("withheld", product_failure=False)
+            with patch("src.consumers.qa.logger") as log:
+                result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        run_result = gaps_api.patch.call_args.kwargs["json"]["result"]
+        assert run_result["qa_outcome"] == QAOutcome.PASSED.value
+        assert "qa_verification_gaps_write_failed" in [
+            call.args[0] for call in log.warning.call_args_list
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_checked_everything_writes_no_gaps(
+        self, gaps_api, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[_PASSED], summary="ok")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        gaps_api.record_verification_gaps_from_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_qa_access_stays_a_failed_check_and_is_not_a_gap(
+        self, gaps_api, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import parse_qa_result, settle_unverified_checks
+
+        raw = json.dumps(
+            {
+                "pass": False,
+                "checks": [
+                    _PASSED,
+                    {
+                        "name": "bot /start",
+                        "pass": False,
+                        "detail": "no reply",
+                        "cause": "qa_access",
+                    },
+                ],
+                "summary": "bot ignores QA",
+            }
+        )
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = settle_unverified_checks(parse_qa_result(raw))
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_failed"
+        run_result = gaps_api.patch.call_args.kwargs["json"]["result"]
+        assert run_result["failed_checks"] == [
+            {"name": "bot /start", "detail": "no reply", "cause": "qa_access"}
+        ]
+        assert run_result["unverified_checks"] == []
+        gaps_api.record_verification_gaps_from_run.assert_not_called()

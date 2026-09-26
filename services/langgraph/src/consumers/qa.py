@@ -25,6 +25,7 @@ from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentCreate, IncidentType
 from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
+from shared.contracts.dto.qa_verification import QAUnverifiedCheck
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import (
     QABlocker,
@@ -830,10 +831,13 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 probe_library=qa_result.probe_library,
                 executor_transcript=qa_result.executor_evidence,
                 executor_attempt=qa_result.executor_attempt,
+                passed_checks=_passed_check_names(qa_result),
+                unverified_checks=qa_result.unverified_checks,
             )
         else:
             return await _handle_qa_fail(
                 run_id=run_id,
+                project_id=msg.project_id,
                 attempts=attempts,
                 qa_attempt=msg.qa_attempt,
                 qa_result=qa_result,
@@ -880,6 +884,8 @@ async def _handle_qa_pass(  # noqa: PLR0913 — one settled pass, each part name
     probe_library: QAProbeLibraryOffer | None = None,
     executor_transcript: str | None = None,
     executor_attempt: EngineeringAttemptLedgerInput | None = None,
+    passed_checks: list[str] | None = None,
+    unverified_checks: list[QAUnverifiedCheck] | None = None,
 ) -> dict:
     """Handle QA pass — store PASSED outcome in run, then its probes in the library."""
     settled = await _update_run(
@@ -895,11 +901,45 @@ async def _handle_qa_pass(  # noqa: PLR0913 — one settled pass, each part name
         probe_library=probe_library,
         executor_transcript=executor_transcript,
         executor_attempt=executor_attempt,
+        passed_checks=passed_checks or [],
+        unverified_checks=unverified_checks or [],
     )
     logger.info("qa_passed", run_id=run_id)
+    if settled and unverified_checks:
+        await _record_verification_gaps(project_id=project_id, run_id=run_id)
     if settled and any(probe.exit_status == 0 for probe in probe_runs or []):
         await _store_passed_probes(project_id=project_id, run_id=run_id)
     return live_work_settled({"status": "passed"})
+
+
+def _passed_check_names(qa_result: QAResult) -> list[str]:
+    """The checks this run performed and passed, by name."""
+    return [check["name"] for check in qa_result.checks if check.get("pass") is True]
+
+
+async def _record_verification_gaps(*, project_id: str, run_id: str) -> None:
+    """Write this settled Run's unverified checks on its project.
+
+    The API reads them off the settled Run itself. The verdict and the Run are
+    already written: a failure here is logged and changes neither.
+    """
+    try:
+        recorded = await api_client.record_verification_gaps_from_run(project_id, run_id)
+    except Exception as exc:
+        logger.warning(
+            "qa_verification_gaps_write_failed",
+            project_id=project_id,
+            run_id=run_id,
+            error=str(exc),
+        )
+        return
+    logger.info(
+        "qa_verification_gaps_recorded",
+        project_id=project_id,
+        run_id=run_id,
+        recorded=recorded.recorded,
+        already_recorded=recorded.already_recorded,
+    )
 
 
 async def _store_passed_probes(*, project_id: str, run_id: str) -> None:
@@ -961,6 +1001,7 @@ async def _handle_qa_blocked(
 async def _handle_qa_fail(
     *,
     run_id: str,
+    project_id: str,
     attempts: QAExecutorAttempts,
     qa_attempt: int,
     qa_result: QAResult,
@@ -985,13 +1026,15 @@ async def _handle_qa_fail(
             attempt=qa_attempt,
             max_loops=MAX_QA_LOOPS,
         )
-        await _update_run(
+        settled = await _update_run(
             run_id,
             attempts,
             RunStatus.COMPLETED,
             QAOutcome.EXHAUSTED,
             summary=qa_result.summary,
             failed_checks=failed_checks,
+            passed_checks=_passed_check_names(qa_result),
+            unverified_checks=qa_result.unverified_checks,
             qa_attempt=qa_attempt,
             report=qa_result.report,
             state_changes=qa_result.state_changes,
@@ -1001,15 +1044,19 @@ async def _handle_qa_fail(
             executor_transcript=qa_result.executor_evidence,
             executor_attempt=qa_result.executor_attempt,
         )
+        if settled and qa_result.unverified_checks:
+            await _record_verification_gaps(project_id=project_id, run_id=run_id)
         return live_work_settled({"status": "qa_exhausted"})
 
-    await _update_run(
+    settled = await _update_run(
         run_id,
         attempts,
         RunStatus.COMPLETED,
         QAOutcome.FAILED,
         summary=qa_result.summary,
         failed_checks=failed_checks,
+        passed_checks=_passed_check_names(qa_result),
+        unverified_checks=qa_result.unverified_checks,
         qa_attempt=qa_attempt,
         report=qa_result.report,
         state_changes=qa_result.state_changes,
@@ -1019,6 +1066,8 @@ async def _handle_qa_fail(
         executor_transcript=qa_result.executor_evidence,
         executor_attempt=qa_result.executor_attempt,
     )
+    if settled and qa_result.unverified_checks:
+        await _record_verification_gaps(project_id=project_id, run_id=run_id)
 
     logger.info(
         "qa_failed",

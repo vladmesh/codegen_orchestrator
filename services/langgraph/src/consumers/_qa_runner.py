@@ -26,6 +26,7 @@ from shared.contracts.dto.engineering_attempt import (
 )
 from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
+from shared.contracts.dto.qa_verification import QAUnverifiedCheck, QAUnverifiedOrigin
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
@@ -264,6 +265,9 @@ class QAResult:
     # The probe library the consumer offered this run's executor, set by the
     # consumer that prepared it and carried to the Run as `probe_library`.
     probe_library: QAProbeLibraryOffer | None = None
+    # Checks QA could not run, taken out of `checks` by `settle_unverified_checks`
+    # and carried to the Run as `unverified_checks`.
+    unverified_checks: list[QAUnverifiedCheck] = field(default_factory=list)
     # The executor's own account of the run, scanned with runner-owned evidence
     # for forbidden writes and carried across the Run boundary
     # (`QARunResult.executor_transcript`) because it exists nowhere else once the
@@ -328,6 +332,10 @@ def _block_forbidden_application_write(qa_result: QAResult, write: str) -> QARes
     return qa_result
 
 
+#: The runner's own mark on a `qa_capability` check it produced, naming where it
+#: arose. An executor check never carries it (its fields are exact), so a
+#: `qa_capability` check without it is the executor's own.
+_ORIGIN = "origin"
 _PASSED_CHECK_FIELDS = frozenset({"name", "pass", "detail"})
 _FAILED_CHECK_FIELDS = _PASSED_CHECK_FIELDS | {"cause"}
 #: A check the transport could not carry: no `pass`, no `cause`. It counts toward
@@ -381,8 +389,8 @@ def _ground_not_applicable_checks(
     not-applicable check, in order, is paired with a distinct transport refusal
     this run's workspace recorded (today, `telegram_probe` refusing an empty
     message), and the refusal it rests on is written onto the check. A check
-    left without one is what it would have been before this form existed: a
-    failed check QA had no tool for, cause `qa_capability`. The pairing is by
+    left without one is a check QA had no tool for, cause `qa_capability`, which
+    `settle_unverified_checks` records as unverified. The pairing is by
     count, not by check: the prompt forbids the form for an acceptance-criterion
     check, and the refusal itself is persisted on the run as Telegram evidence.
     """
@@ -411,6 +419,7 @@ def _ground_not_applicable_checks(
                     f"for it: {check['detail']}"
                 ),
                 "cause": QAFailedCheckCause.QA_CAPABILITY.value,
+                _ORIGIN: QAUnverifiedOrigin.NOT_APPLICABLE.value,
             }
         )
     return grounded
@@ -440,14 +449,21 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
         if shape_error:
             return _invalid_qa_payload(raw, shape_error)
 
-    # A verdict passes only if every check passed. A failure QA had no tool or
-    # no access for is still a failure, and it is parked only when `pass` says so.
-    # A not-applicable check is not a failure; whether it stays one is decided by
-    # the runner's own evidence (`_ground_not_applicable_checks`), not here.
-    any_check_failed = any(check.get("pass") is False for check in data["checks"])
-    if data["pass"] is any_check_failed:
+    # `pass` is false exactly when a product or access check failed. A check QA
+    # had no tool for (`qa_capability`) is neither a failure nor a pass: the
+    # runner records it as unverified and decides the verdict from the checks
+    # that ran (`settle_unverified_checks`), so the executor's `pass` may say
+    # either when those are its only failures. A not-applicable check is not a
+    # failure; whether it stays one is decided by the runner's own evidence
+    # (`_ground_not_applicable_checks`), not here.
+    failed_causes = {check["cause"] for check in data["checks"] if check.get("pass") is False}
+    judged_failure = bool(failed_causes - {QAFailedCheckCause.QA_CAPABILITY.value})
+    if failed_causes and not judged_failure:
+        return None
+    if data["pass"] is judged_failure:
         return _invalid_qa_payload(
-            raw, "pass must be false exactly when a check failed, whatever its cause"
+            raw,
+            "pass must be false exactly when a product or qa_access check failed",
         )
 
     return None
@@ -460,7 +476,8 @@ def parse_qa_result(
 
     `transport_refusals` are the inputs this run's runtime refused because the
     transport cannot carry them; only they ground a not-applicable check. With
-    none, every not-applicable check is a failed `qa_capability` check.
+    none, every not-applicable check is a `qa_capability` check, which
+    `settle_unverified_checks` later records as unverified.
     """
     if not raw or not raw.strip():
         return QAResult(
@@ -1184,7 +1201,11 @@ def apply_package_acceptance(
             _behaviour_row(package, criterion, acceptance, workspace, qa_result.checks)
             for criterion in declared
         )
-    failed = [row for row in rows if not row["pass"]]
+    for row in rows:
+        if row.get("cause") == QAFailedCheckCause.QA_CAPABILITY.value:
+            # Nothing to exercise the behaviour with: unverified, not failed.
+            row[_ORIGIN] = QAUnverifiedOrigin.PACKAGE.value
+    failed = [row for row in rows if not row["pass"] and _ORIGIN not in row]
     qa_result.checks = [*rows, *qa_result.checks]
     if not failed:
         return qa_result
@@ -1200,12 +1221,12 @@ def apply_package_acceptance(
 def apply_unverifiable_criteria(
     qa_result: QAResult, unverifiable: Sequence[CriteriaAdjustment]
 ) -> QAResult:
-    """Report every criterion QA was not handed as a failed `qa_capability` check.
+    """Report every criterion QA was not handed as a `qa_capability` check.
 
     The executor never saw these lines, so its verdict says nothing about them;
-    a run that carried one cannot pass as if it had been checked. The cause
-    keeps each one out of any fix task: the supervisor parks a run whose only
-    failures are these, and fixes only the product failures of a mixed run.
+    a run that carried one cannot pass as if it had been checked, and it cannot
+    fail as if the product had been. `settle_unverified_checks` records each one
+    as unverified, with origin `withheld`.
     """
     if not unverifiable:
         return qa_result
@@ -1220,15 +1241,58 @@ def apply_unverifiable_criteria(
                 "not checked; restate it through an observable QA can read"
             ),
             "cause": QAFailedCheckCause.QA_CAPABILITY.value,
+            _ORIGIN: QAUnverifiedOrigin.WITHHELD.value,
         }
         for adjustment in unverifiable
     ]
-    already_failed = not qa_result.passed
     qa_result.checks = [*qa_result.checks, *rows]
-    qa_result.passed = False
-    unchecked = f"{len(rows)} criterion line(s) were not verifiable by QA and were not checked"
-    qa_result.summary = f"{qa_result.summary}; {unchecked}" if already_failed else unchecked
     logger.info("qa_unverifiable_criteria_reported", criteria=[row["name"] for row in rows])
+    return qa_result
+
+
+def settle_unverified_checks(qa_result: QAResult) -> QAResult:
+    """The one place a check QA could not run leaves the verdict.
+
+    Every `qa_capability` check, wherever it arose — the executor's own, an
+    ungrounded not-applicable one, a criterion withheld before the executor
+    ran, a package row with nothing to exercise it — is taken out of `checks`
+    and recorded in `unverified_checks` with its origin. It is never a failure
+    and never a pass. The verdict is then what the remaining checks say: every
+    one passed, `passed`; any product or access failure, not. A blocker already
+    on the result keeps it unpassed whatever the checks say.
+    """
+    unverified: list[QAUnverifiedCheck] = []
+    kept: list[dict] = []
+    for check in qa_result.checks:
+        if (
+            check.get("pass") is False
+            and check.get("cause") == QAFailedCheckCause.QA_CAPABILITY.value
+        ):
+            unverified.append(
+                QAUnverifiedCheck(
+                    name=check["name"],
+                    reason=check["detail"],
+                    origin=check.get(_ORIGIN, QAUnverifiedOrigin.EXECUTOR.value),
+                )
+            )
+        else:
+            kept.append(check)
+    if not unverified:
+        return qa_result
+    qa_result.checks = kept
+    qa_result.unverified_checks = [*qa_result.unverified_checks, *unverified]
+    qa_result.passed = qa_result.blocker is None and not any(
+        check.get("pass") is False for check in kept
+    )
+    note = f"{len(unverified)} check(s) QA could not perform, recorded as unverified: " + "; ".join(
+        check.name for check in unverified
+    )
+    qa_result.summary = f"{qa_result.summary}; {note}" if qa_result.summary else note
+    logger.info(
+        "qa_checks_unverified",
+        passed=qa_result.passed,
+        unverified=[{"name": check.name, "origin": check.origin.value} for check in unverified],
+    )
     return qa_result
 
 
@@ -1460,18 +1524,20 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             probe_library=probe_library,
         )
         if executor_run is not None:
-            return apply_unverifiable_criteria(
-                apply_package_acceptance(
-                    _apply_probe_runs(
-                        _apply_telegram_probe_evidence(
-                            _verdict_of(workspace, service, timeout, said), workspace
+            return settle_unverified_checks(
+                apply_unverifiable_criteria(
+                    apply_package_acceptance(
+                        _apply_probe_runs(
+                            _apply_telegram_probe_evidence(
+                                _verdict_of(workspace, service, timeout, said), workspace
+                            ),
+                            workspace,
                         ),
+                        acceptance,
                         workspace,
                     ),
-                    acceptance,
-                    workspace,
-                ),
-                prepared_criteria.unverifiable,
+                    prepared_criteria.unverifiable,
+                )
             )
     finally:
         await service.stop()

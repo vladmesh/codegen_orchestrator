@@ -45,6 +45,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.vocab import NON_DURABLE_OWNER_EVENTS, OwnerNotificationEvent
@@ -144,6 +145,10 @@ class OwnerNotification(BaseModel):
     admin_state: OwnerNotificationState | None = None
     admin_attempts: int = Field(default=0, ge=0)
     admin_detail: str | None = None
+    #: What the QA run that settled the story checked and could not, carried to
+    #: PO as structured facts beside the words. `None` on every ending no QA
+    #: verdict settled, and on every record written before this field existed.
+    qa_verification: QAVerificationFacts | None = None
 
     @model_validator(mode="after")
     def _event_is_durable(self) -> OwnerNotification:

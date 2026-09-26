@@ -489,3 +489,46 @@ class TestSuccessMeansEveryConfirmedSettingArrived:
         )
 
         assert result.settings_seed[0].written is True
+
+
+class TestUnverifiedChecks:
+    """A check QA could not run is its own state on the result, not a failed check."""
+
+    UNVERIFIED = {"name": "upload receipt", "reason": "no tool to upload", "origin": "executor"}
+
+    def test_a_passed_result_carries_its_unverified_checks_and_the_checks_that_ran(self):
+        result = QARunResult.model_validate(
+            {
+                "qa_outcome": "passed",
+                "passed_checks": ["GET /health returns 200"],
+                "unverified_checks": [self.UNVERIFIED],
+            }
+        )
+
+        facts = result.verification_facts("qa-1")
+
+        assert facts.qa_run_id == "qa-1"
+        assert facts.passed_checks == ["GET /health returns 200"]
+        assert [check.model_dump(mode="json") for check in facts.unverified_checks] == [
+            self.UNVERIFIED
+        ]
+        assert result.failed_checks == []
+
+    def test_a_result_written_before_them_reads_as_empty(self):
+        result = QARunResult.model_validate({"qa_outcome": "passed"})
+
+        assert result.passed_checks == []
+        assert result.unverified_checks == []
+
+    @pytest.mark.parametrize(
+        "check",
+        [
+            {"name": "", "reason": "r", "origin": "executor"},
+            {"name": "n", "reason": "", "origin": "executor"},
+            {"name": "n", "reason": "r", "origin": "guessed"},
+            {"name": "n", "reason": "r", "origin": "executor", "cause": "qa_capability"},
+        ],
+    )
+    def test_an_unverified_check_is_exactly_name_reason_and_origin(self, check):
+        with pytest.raises(ValidationError):
+            QARunResult.model_validate({"qa_outcome": "passed", "unverified_checks": [check]})

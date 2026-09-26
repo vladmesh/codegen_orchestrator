@@ -11,9 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from shared.contracts.dto.run_result import QAFailedCheck, QAFailedCheckCause
+from shared.contracts.dto.qa_verification import QAUnverifiedOrigin
+from shared.contracts.dto.run_result import QAFailedCheckCause
 from src.agents.qa.acceptance import prepare_central_qa_criteria
-from src.consumers._qa_runner import QAResult, apply_unverifiable_criteria
+from src.consumers._qa_runner import (
+    QAResult,
+    apply_unverifiable_criteria,
+    settle_unverified_checks,
+)
 from src.prompts.qa import build_qa_prompt
 
 POST_ITEM = "- POST /api/transactions with an amount returns 201"
@@ -87,10 +92,22 @@ class TestTheSeptember15CriteriaSet:
 
         result = apply_unverifiable_criteria(QAResult(passed=True, checks=[]), unverifiable)
 
-        assert result.passed is False
         [check] = result.checks
         assert check["cause"] == QAFailedCheckCause.QA_CAPABILITY.value
         assert POST_ITEM.lstrip("- ") in check["name"]
+
+    def test_the_post_item_settles_as_unverified_with_origin_withheld(self):
+        unverifiable = prepare_central_qa_criteria(SEPT_15_CRITERIA).unverifiable
+
+        result = settle_unverified_checks(
+            apply_unverifiable_criteria(QAResult(passed=True, checks=[]), unverifiable)
+        )
+
+        assert result.checks == []
+        [check] = result.unverified_checks
+        assert check.origin is QAUnverifiedOrigin.WITHHELD
+        assert POST_ITEM.lstrip("- ") in check.name
+        assert "http_write" in check.reason
 
     def test_the_photo_telegram_and_get_items_are_handed_to_the_executor(self):
         prepared = prepare_central_qa_criteria(SEPT_15_CRITERIA)
@@ -168,24 +185,20 @@ class TestWhatIsOutsideTheVocabulary:
 
 
 class TestAnUnverifiableCriterionInTheRunResult:
-    def test_a_run_that_only_carried_unverifiable_criteria_does_not_pass(self):
+    def test_a_run_whose_other_checks_passed_passes_with_the_criterion_unverified(self):
         unverifiable = prepare_central_qa_criteria(SEPT_15_CRITERIA).unverifiable
         verdict = QAResult(
             passed=True, checks=[{"name": "text reply", "pass": True, "detail": "ok"}]
         )
 
-        result = apply_unverifiable_criteria(verdict, unverifiable)
+        result = settle_unverified_checks(apply_unverifiable_criteria(verdict, unverifiable))
 
-        assert result.passed is False
-        # Mapped the way the QA consumer stores a failed check on the run.
-        failed = [
-            QAFailedCheck.model_validate({k: check[k] for k in ("name", "detail", "cause")})
-            for check in result.checks
-            if not check["pass"]
-        ]
-        assert [check.cause for check in failed] == [QAFailedCheckCause.QA_CAPABILITY]
-        assert POST_ITEM.lstrip("- ") in failed[0].name
-        assert "not verifiable" in result.summary
+        assert result.passed is True
+        # Never counted as a pass: only the check that ran is in `checks`.
+        assert result.checks == [{"name": "text reply", "pass": True, "detail": "ok"}]
+        [unverified] = result.unverified_checks
+        assert POST_ITEM.lstrip("- ") in unverified.name
+        assert "recorded as unverified" in result.summary
 
     def test_a_product_failure_keeps_its_cause_and_its_summary(self):
         unverifiable = prepare_central_qa_criteria(POST_ITEM).unverifiable
@@ -195,9 +208,11 @@ class TestAnUnverifiableCriterionInTheRunResult:
             summary="the list route is missing",
         )
 
-        result = apply_unverifiable_criteria(verdict, unverifiable)
+        result = settle_unverified_checks(apply_unverifiable_criteria(verdict, unverifiable))
 
-        assert [check["cause"] for check in result.checks] == ["product", "qa_capability"]
+        assert result.passed is False
+        assert [check["cause"] for check in result.checks] == ["product"]
+        assert [check.origin for check in result.unverified_checks] == [QAUnverifiedOrigin.WITHHELD]
         assert result.summary.startswith("the list route is missing; ")
 
     def test_a_run_with_nothing_unverifiable_is_returned_unchanged(self):
