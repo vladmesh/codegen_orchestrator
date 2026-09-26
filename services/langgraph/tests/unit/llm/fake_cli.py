@@ -22,6 +22,11 @@ from pathlib import Path
 
 base = Path({base!r})
 spec = json.loads((base / "spec.json").read_text())
+if sys.argv[1:] == ["--version"]:
+    with (base / "version_calls.jsonl").open("a") as log:
+        log.write(json.dumps({{"env": dict(os.environ), "cwd": os.getcwd()}}) + "\\n")
+    print(spec.get("version", "fake-cli 0.0.0"))
+    sys.exit(0)
 calls = base / "calls.jsonl"
 index = sum(1 for _ in calls.open()) if calls.exists() else 0
 stdin = sys.stdin.read()
@@ -33,6 +38,7 @@ with calls.open("a") as log:
         "stdin": stdin,
         "cwd": os.getcwd(),
         "cwd_listing": sorted(os.listdir(".")),
+        "home_writable": os.access(os.environ.get("HOME", "/nonexistent"), os.W_OK),
     }}) + "\\n")
 responses = spec["responses"]
 response = responses[min(index, len(responses) - 1)]
@@ -79,15 +85,24 @@ class FakeCli:
     kind: str
     base: Path
 
-    def script(self, *responses: dict) -> FakeCli:
-        (self.base / "spec.json").write_text(
-            json.dumps({"kind": self.kind, "responses": list(responses)})
-        )
+    def script(self, *responses: dict, version: str | None = None) -> FakeCli:
+        spec: dict[str, Any] = {"kind": self.kind, "responses": list(responses)}
+        if version is not None:
+            spec["version"] = version
+        (self.base / "spec.json").write_text(json.dumps(spec))
         return self
 
     @property
     def calls(self) -> list[dict]:
-        path = self.base / "calls.jsonl"
+        return self._read("calls.jsonl")
+
+    @property
+    def version_calls(self) -> list[dict]:
+        """`--version` invocations, which answer the version and are not model turns."""
+        return self._read("version_calls.jsonl")
+
+    def _read(self, name: str) -> list[dict]:
+        path = self.base / name
         if not path.exists():
             return []
         return [json.loads(line) for line in path.read_text().splitlines()]

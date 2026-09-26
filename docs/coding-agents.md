@@ -88,6 +88,22 @@ host-session command, intentionally serializing workers that share one profile
 so simultaneous refreshes cannot corrupt `auth.json`. Claude, Factory, and
 noop workers do not receive this mount.
 
+The profile has three consumers under that one lock: the Codex workers, and the
+`codex` LLM channel of the `langgraph` (PO, PO summarizer) and `architect`
+containers ([NODES.md](NODES.md#-llm-channel-chain-architect-po-po-summarizer)).
+Compose mounts the same `HOST_CODEX_HOME` read-write into both at
+`/llm-codex-home`. Their `codex exec` holds `.codegen-codex.lock` exclusively
+for the whole call, exactly as the wrapper does, and runs as the profile
+directory's owner rather than as the container's root, so a refresh leaves an
+`auth.json` the workers can still read; a lock these containers create is
+handed to that owner before it appears. They hold the profile to the rules
+above and refuse it (`missing_credential`, with the reason) when the directory
+is not `0700`, is owned by root, lacks a `0600` `auth.json` owned by the same
+user, or lacks a `0600` `config.toml` with `cli_auth_credentials_store =
+"file"`. They never copy it and run the same pinned CLI version as the workers,
+because one profile written by two versions could end in an `auth.json` one of
+them cannot load.
+
 Worker-manager also reads this profile passively for executor diagnostics: token
 presence, the access token's `exp` claim, a refresh-token `exp` only when that
 token is a JWT, and `last_refresh`. It never runs Codex against the profile or a

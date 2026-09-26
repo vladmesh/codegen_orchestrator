@@ -19,7 +19,13 @@ from shared.queues import PO_INPUT_QUEUE
 
 from .clients.api import api_client
 from .config.settings import get_settings
-from .llm import LLMAgent, load_channel_chain, unconfigured_channel_env
+from .llm import (
+    LLMAgent,
+    build_agent_llm,
+    load_channel_chain,
+    log_channel_readiness,
+    unconfigured_channel_env,
+)
 from .provisioner import listen_provisioner_triggers
 from .worker_events import listen_worker_events
 
@@ -30,12 +36,14 @@ async def _po_missing_env() -> list[str]:
     """LLM env the PO cannot run without: none once a channel of each of its chains is configured.
 
     Reads both PO chains from agent configuration, so an invalid stored chain
-    stops the service here with `InvalidChannelChainError`.
+    stops the service here with `InvalidChannelChainError`, and logs each
+    channel's readiness (`llm_channel_ready`).
     """
     settings = get_settings()
     missing: list[str] = []
     for agent in (LLMAgent.PO, LLMAgent.PO_SUMMARIZER):
         chain = await load_channel_chain(api_client, agent)
+        await log_channel_readiness(build_agent_llm(agent, chain, settings))
         missing += unconfigured_channel_env(agent, chain, settings)
     return list(dict.fromkeys(missing))
 

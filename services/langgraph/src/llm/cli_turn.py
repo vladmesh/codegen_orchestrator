@@ -10,11 +10,16 @@ tool's own schema. The answer becomes an `AIMessage` with generated tool-call
 ids, or plain content.
 
 The process runs in an empty temporary directory with no tools of its own and a
-minimal environment: HOME, PATH, locale and its own credential variable. No API
-key, Redis or database URL of this process ever reaches it. Codex invocations
-against one `CODEX_HOME` are serialized by the profile's advisory lock, the same
-`.codegen-codex.lock` the worker wrapper holds, so two refreshes can never
-rewrite `auth.json` at once.
+minimal environment: PATH, locale, its own credential variable and a HOME of its
+own that is deleted with the call, so nothing persists between calls. No API
+key, Redis or database URL of this process ever reaches it. It never runs as
+root: `codex` runs as the owner of the profile directory, so a token refresh
+leaves `auth.json` owned by the uid the Codex workers read it as; `claude` runs
+as `nobody`. Codex invocations against one `CODEX_HOME` are serialized by the
+profile's advisory lock, the same `.codegen-codex.lock` the worker wrapper and
+worker-manager's profile reader use, so two refreshes can never rewrite
+`auth.json` at once. The profile is used in place and never copied: a copy that
+refreshes rotates the refresh token and breaks the original.
 
 Everything that stops a channel from answering raises `ChannelFailure`. Output
 that is not schema-valid, names an unbound tool or carries arguments that fail
@@ -27,13 +32,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 import fcntl
 import json
 import os
 from pathlib import Path
+import pwd
 import shutil
 import signal
+import stat
 import tempfile
+import tomllib
 from typing import Any
 import uuid
 
@@ -53,7 +62,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 from shared.contracts.dto.llm_channel import LLMChannel
 
-from .errors import ChannelFailure, ChannelFailureClass, classify_error_text
+from .errors import ChannelFailure, ChannelFailureClass, classify_error_text, short_reason
 
 #: The fixed answer shape both CLIs are held to.
 TURN_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -92,6 +101,16 @@ CHILD_ENV_ALLOWLIST = (
 #: The advisory lock `worker_wrapper.wrapper.codex_profile_lock` holds for a Codex turn.
 CODEX_PROFILE_LOCK_NAME = ".codegen-codex.lock"
 _LOCK_POLL_SECONDS = 0.1
+
+#: The modes worker-manager requires of a Codex profile (`codex_auth.py`).
+_PRIVATE_DIRECTORY_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
+
+#: Who a `claude` child runs as when this process is root: it owns no file of its own.
+CLAUDE_CHILD_USER = "nobody"
+
+#: How long `--version` may take in the startup readiness probe.
+_VERSION_PROBE_SECONDS = 30.0
 
 #: How much of a rejected answer goes back to the model with the corrective re-ask.
 _REJECTED_ANSWER_ECHO = 4000
@@ -262,6 +281,42 @@ def child_env(credentials: dict[str, str]) -> dict[str, str]:
     return env
 
 
+@dataclass(frozen=True)
+class ChildUser:
+    """The uid and gid a CLI child runs as.
+
+    Only root switches: it runs the child as this user with no supplementary
+    groups (root's own would otherwise be inherited) and hands it the call's
+    temporary files. Any other process may only run a child as itself.
+    """
+
+    uid: int
+    gid: int
+
+    @classmethod
+    def switchable(cls, uid: int, gid: int, what: str) -> ChildUser:
+        """This user, or `ChannelFailure(MISSING_CREDENTIAL)` when this process cannot be it."""
+        euid = os.geteuid()
+        if euid not in (0, uid):
+            raise ChannelFailure(
+                ChannelFailureClass.MISSING_CREDENTIAL,
+                f"{what} is owned by uid {uid}; this process runs as uid {euid} "
+                "and cannot run the CLI as that uid",
+            )
+        return cls(uid, gid)
+
+    def popen_kwargs(self) -> dict[str, Any]:
+        if os.geteuid() != 0:
+            return {}
+        return {"user": self.uid, "group": self.gid, "extra_groups": []}
+
+    def own(self, *paths: Path) -> None:
+        if os.geteuid() != 0:
+            return
+        for path in paths:
+            os.chown(path, self.uid, self.gid)
+
+
 class CliTurnChatModel(BaseChatModel):
     """Shared turn loop; subclasses name the command line and read the result."""
 
@@ -286,6 +341,14 @@ class CliTurnChatModel(BaseChatModel):
         """This CLI's credential variables, or `ChannelFailure(MISSING_CREDENTIAL)`."""
         raise NotImplementedError
 
+    def _child_user(self) -> ChildUser:
+        """Who the CLI runs as, or `ChannelFailure(MISSING_CREDENTIAL)`."""
+        raise NotImplementedError
+
+    def _settings_env(self) -> dict[str, str]:
+        """Fixed, non-secret variables this CLI needs besides its credential."""
+        return {}
+
     def _command(self, executable: str, workdir: Path, io_dir: Path) -> list[str]:
         raise NotImplementedError
 
@@ -298,8 +361,57 @@ class CliTurnChatModel(BaseChatModel):
         return None
 
     @asynccontextmanager
-    async def _serialized(self) -> AsyncIterator[None]:
+    async def _serialized(self, child: ChildUser) -> AsyncIterator[None]:
         yield
+
+    # --- readiness -----------------------------------------------------------
+
+    async def readiness(self) -> tuple[ChannelFailure | None, str | None]:
+        """Whether a call could start now, and the installed CLI's version.
+
+        Checks what a call checks before it starts the CLI — credential,
+        profile, child user, binary — and runs `--version` in a throwaway HOME
+        with no credential, so the probe never touches a profile.
+        """
+        failure: ChannelFailure | None = None
+        try:
+            self._child_user()
+            self._credentials()
+        except ChannelFailure as exc:
+            failure = exc
+        version, probe_failure = await self._version()
+        return failure or probe_failure, version
+
+    async def _version(self) -> tuple[str | None, ChannelFailure | None]:
+        path = os.environ.get("PATH", "")
+        executable = shutil.which(self.binary, path=path)
+        if executable is None:
+            return None, ChannelFailure(
+                ChannelFailureClass.BINARY_MISSING, f"{self.binary} is not on PATH"
+            )
+        with tempfile.TemporaryDirectory(prefix=f"llm-{self.channel.value}-version-") as home:
+            try:
+                returncode, stdout, stderr = await asyncio.wait_for(
+                    _communicate(
+                        [executable, "--version"],
+                        b"",
+                        cwd=Path(home),
+                        env={"PATH": path, "HOME": home},
+                    ),
+                    _VERSION_PROBE_SECONDS,
+                )
+            except (TimeoutError, OSError) as exc:
+                return None, ChannelFailure(
+                    ChannelFailureClass.NONZERO_EXIT, f"{self.binary} --version: {exc!r}"
+                )
+        lines = stdout.decode(errors="replace").strip().splitlines()
+        if returncode != 0 or not lines:
+            return None, ChannelFailure(
+                ChannelFailureClass.NONZERO_EXIT,
+                f"{self.binary} --version exit {returncode}: "
+                f"{stderr.decode(errors='replace')[-_REASON_TAIL:]}",
+            )
+        return short_reason(lines[0]), None
 
     # --- the turn ------------------------------------------------------------
 
@@ -335,6 +447,7 @@ class CliTurnChatModel(BaseChatModel):
 
     async def _run(self, prompt: str) -> Any:
         """One CLI invocation: the answer object, `InvalidTurn`, or `ChannelFailure`."""
+        child = self._child_user()
         credentials = self._credentials()
         env = child_env(credentials)
         executable = shutil.which(self.binary, path=env.get("PATH", ""))
@@ -345,12 +458,16 @@ class CliTurnChatModel(BaseChatModel):
         with tempfile.TemporaryDirectory(prefix=f"llm-{self.channel.value}-") as root:
             workdir = Path(root, "work")
             io_dir = Path(root, "io")
-            workdir.mkdir()
-            io_dir.mkdir()
+            home = Path(root, "home")
+            for directory in (workdir, io_dir, home):
+                directory.mkdir()
+            env.update(self._settings_env())
+            env["HOME"] = str(home)
             command = self._command(executable, workdir, io_dir)
-            async with self._serialized():
+            child.own(Path(root), workdir, io_dir, home, *io_dir.iterdir())
+            async with self._serialized(child):
                 returncode, stdout, stderr = await _communicate(
-                    command, prompt.encode(), cwd=workdir, env=env
+                    command, prompt.encode(), cwd=workdir, env=env, child=child
                 )
             secrets = tuple(credentials.values())
             if returncode != 0:
@@ -383,7 +500,12 @@ def _redacted(text: str, secrets: tuple[str, ...]) -> str:
 
 
 async def _communicate(
-    command: list[str], stdin: bytes, *, cwd: Path, env: dict[str, str]
+    command: list[str],
+    stdin: bytes,
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    child: ChildUser | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Run to completion; a cancelled call (the chain's deadline) kills the process group."""
     process = await asyncio.create_subprocess_exec(
@@ -394,6 +516,7 @@ async def _communicate(
         cwd=cwd,
         env=env,
         start_new_session=True,
+        **(child.popen_kwargs() if child is not None else {}),
     )
     try:
         stdout, stderr = await process.communicate(stdin)
@@ -414,29 +537,104 @@ def _json_object(text: str, what: str) -> Any:
         raise InvalidTurn(f"{what} is not JSON", rejected=text) from None
 
 
+def _unsuitable(reason: str) -> ChannelFailure:
+    return ChannelFailure(ChannelFailureClass.MISSING_CREDENTIAL, reason)
+
+
+def codex_profile_owner(codex_home: str | None) -> ChildUser:
+    """The owner of a usable Codex profile, or why the profile is unusable.
+
+    The profile is the one the Codex workers mount (`HOST_CODEX_HOME`), held to
+    worker-manager's rules: a directory of mode 0700, a non-empty `auth.json`
+    and a `config.toml` of mode 0600 that sets `cli_auth_credentials_store =
+    "file"`. Beyond those, its owner must not be root and must own `auth.json`:
+    the CLI runs as that owner, so a refresh writes a file the workers can read.
+    Nothing here reads the tokens.
+    """
+    if not codex_home:
+        raise _unsuitable("LLM_CODEX_HOME is not set")
+    profile = Path(codex_home)
+    try:
+        directory = profile.stat()
+    except OSError:
+        raise _unsuitable("LLM_CODEX_HOME is not an existing directory") from None
+    if not stat.S_ISDIR(directory.st_mode):
+        raise _unsuitable("LLM_CODEX_HOME is not an existing directory")
+    if stat.S_IMODE(directory.st_mode) != _PRIVATE_DIRECTORY_MODE:
+        raise _unsuitable("LLM_CODEX_HOME must have mode 0700")
+    if directory.st_uid == 0:
+        raise _unsuitable("LLM_CODEX_HOME is owned by root, not by the Codex worker user")
+    try:
+        auth = (profile / "auth.json").stat()
+    except OSError:
+        auth = None
+    if auth is None or not stat.S_ISREG(auth.st_mode) or auth.st_size == 0:
+        raise _unsuitable("LLM_CODEX_HOME has no non-empty auth.json")
+    if stat.S_IMODE(auth.st_mode) != _PRIVATE_FILE_MODE:
+        raise _unsuitable("LLM_CODEX_HOME auth.json must have mode 0600")
+    if (auth.st_uid, auth.st_gid) != (directory.st_uid, directory.st_gid):
+        raise _unsuitable("LLM_CODEX_HOME auth.json is not owned by the profile's owner")
+    _require_file_store(profile / "config.toml")
+    return ChildUser.switchable(directory.st_uid, directory.st_gid, "LLM_CODEX_HOME")
+
+
+def _require_file_store(config_path: Path) -> None:
+    try:
+        config = config_path.stat()
+    except OSError:
+        config = None
+    if config is None or not stat.S_ISREG(config.st_mode):
+        raise _unsuitable("LLM_CODEX_HOME has no config.toml")
+    if stat.S_IMODE(config.st_mode) != _PRIVATE_FILE_MODE:
+        raise _unsuitable("LLM_CODEX_HOME config.toml must have mode 0600")
+    try:
+        settings = tomllib.loads(config_path.read_text())
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        raise _unsuitable("LLM_CODEX_HOME config.toml is unreadable or invalid TOML") from None
+    if settings.get("cli_auth_credentials_store") != "file":
+        raise _unsuitable('LLM_CODEX_HOME config.toml must set cli_auth_credentials_store = "file"')
+
+
+def open_codex_profile_lock(profile: Path, owner: ChildUser) -> int:
+    """A descriptor on the profile's `.codegen-codex.lock`, created owned by `owner`.
+
+    The wrapper chmods the lock before every Codex turn, which fails on a file
+    it does not own. So a lock this process creates is made under a private
+    name, handed to the profile owner, and only then linked into place: no
+    worker ever sees a root-owned lock inode.
+    """
+    lock_path = profile / CODEX_PROFILE_LOCK_NAME
+    with suppress(FileNotFoundError):
+        return os.open(lock_path, os.O_RDWR)
+    staging = profile / f"{CODEX_PROFILE_LOCK_NAME}.{uuid.uuid4().hex}"
+    descriptor = os.open(staging, os.O_RDWR | os.O_CREAT | os.O_EXCL, _PRIVATE_FILE_MODE)
+    try:
+        owner.own(staging)
+        os.link(staging, lock_path)
+    except FileExistsError:
+        os.close(descriptor)
+        descriptor = os.open(lock_path, os.O_RDWR)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    finally:
+        os.unlink(staging)
+    return descriptor
+
+
 class CodexTurnModel(CliTurnChatModel):
-    """`codex exec` on a file-backed ChatGPT profile (`LLM_CODEX_HOME`)."""
+    """`codex exec` on the workers' file-backed ChatGPT profile (`LLM_CODEX_HOME`)."""
 
     channel: LLMChannel = LLMChannel.CODEX
     binary: str = "codex"
     codex_home: str | None = None
 
-    def _profile(self) -> Path:
-        if not self.codex_home:
-            raise ChannelFailure(
-                ChannelFailureClass.MISSING_CREDENTIAL, "LLM_CODEX_HOME is not set"
-            )
-        profile = Path(self.codex_home)
-        auth = profile / "auth.json"
-        if not profile.is_dir() or not auth.is_file() or auth.stat().st_size == 0:
-            raise ChannelFailure(
-                ChannelFailureClass.MISSING_CREDENTIAL,
-                "LLM_CODEX_HOME has no non-empty auth.json",
-            )
-        return profile
+    def _child_user(self) -> ChildUser:
+        return codex_profile_owner(self.codex_home)
 
     def _credentials(self) -> dict[str, str]:
-        return {"CODEX_HOME": str(self._profile())}
+        # `_child_user` has already held the profile to its rules.
+        return {"CODEX_HOME": str(self.codex_home)}
 
     def _command(self, executable: str, workdir: Path, io_dir: Path) -> list[str]:
         schema = io_dir / "output-schema.json"
@@ -449,6 +647,9 @@ class CodexTurnModel(CliTurnChatModel):
             "--skip-git-repo-check",
             "--sandbox",
             "read-only",
+            # config.toml is ignored above; the profile's credential store is not a choice.
+            "-c",
+            'cli_auth_credentials_store="file"',
             "--color",
             "never",
             "--cd",
@@ -469,10 +670,9 @@ class CodexTurnModel(CliTurnChatModel):
         return _json_object(answer.read_text(), "the final message")
 
     @asynccontextmanager
-    async def _serialized(self) -> AsyncIterator[None]:
+    async def _serialized(self, child: ChildUser) -> AsyncIterator[None]:
         """Hold the profile's exclusive lock; the wait counts against the call's deadline."""
-        lock_path = self._profile() / CODEX_PROFILE_LOCK_NAME
-        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        descriptor = open_codex_profile_lock(Path(str(self.codex_home)), child)
         try:
             while True:
                 try:
@@ -502,6 +702,19 @@ class ClaudeTurnModel(CliTurnChatModel):
                 ChannelFailureClass.MISSING_CREDENTIAL, "CLAUDE_CODE_OAUTH_TOKEN is not set"
             )
         return {"CLAUDE_CODE_OAUTH_TOKEN": token}
+
+    def _child_user(self) -> ChildUser:
+        if os.geteuid() != 0:
+            return ChildUser(os.geteuid(), os.getegid())
+        try:
+            user = pwd.getpwnam(CLAUDE_CHILD_USER)
+        except KeyError:
+            raise _unsuitable(f"no {CLAUDE_CHILD_USER} user to run claude as") from None
+        return ChildUser(user.pw_uid, user.pw_gid)
+
+    def _settings_env(self) -> dict[str, str]:
+        # Its HOME is new on every call; an updater would download itself into each one.
+        return {"DISABLE_AUTOUPDATER": "1"}
 
     def _command(self, executable: str, workdir: Path, io_dir: Path) -> list[str]:
         command = [

@@ -68,12 +68,23 @@ class Channels:
 
 @pytest.fixture
 def channels(tmp_path, monkeypatch):
-    """Fake `codex` and `claude` first on PATH, a logged-in Codex profile, a fake OpenRouter."""
+    """Fake `codex` and `claude` first on PATH, a logged-in Codex profile, a fake OpenRouter.
+
+    The profile is shaped the way worker-manager requires a Codex worker
+    profile to be: a 0700 directory, a 0600 `auth.json`, and a 0600
+    `config.toml` that keeps credentials in the file.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir(mode=0o700)
-    (codex_home / "auth.json").write_text('{"tokens": {"access_token": "a"}}')
+    codex_home.chmod(0o700)
+    for name, text in (
+        ("auth.json", '{"tokens": {"access_token": "a"}}'),
+        ("config.toml", 'cli_auth_credentials_store = "file"\n'),
+    ):
+        (codex_home / name).write_text(text)
+        (codex_home / name).chmod(0o600)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
     openrouter = FakeOpenRouterModel(outcomes=["answer from openrouter"], seen=[], bound=[])
     with patch("src.llm.openrouter.ChatOpenAI", return_value=openrouter):

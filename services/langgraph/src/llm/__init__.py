@@ -8,17 +8,20 @@ from .errors import (
     InvalidChannelChainError,
     LLMChannelsExhausted,
 )
+from .readiness import ChannelReadiness, log_channel_readiness
 from .vocab import LLMAgent
 
 __all__ = [
     "ChannelChainModel",
     "ChannelFailure",
     "ChannelFailureClass",
+    "ChannelReadiness",
     "InvalidChannelChainError",
     "LLMAgent",
     "LLMChannelsExhausted",
     "build_agent_llm",
     "channel_usage",
     "load_channel_chain",
+    "log_channel_readiness",
     "unconfigured_channel_env",
 ]

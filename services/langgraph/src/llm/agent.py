@@ -75,13 +75,28 @@ def unconfigured_channel_env(
     return list(dict.fromkeys(missing))
 
 
+#: A PO turn is one a user is waiting on. A subscription CLI that has not answered in
+#: three minutes gives the turn to the next channel rather than hold the user for the
+#: full planning budget; OpenRouter, the last channel, keeps the service default.
+USER_FACING_CLI_TIMEOUT_SECONDS = 180.0
+_USER_FACING_AGENTS = (LLMAgent.PO, LLMAgent.PO_SUMMARIZER)
+_CLI_CHANNELS = (LLMChannel.CODEX, LLMChannel.CLAUDE)
+
+
+def default_channel_timeout(agent: LLMAgent, channel: LLMChannel) -> float:
+    """A channel's timeout when its chain entry names none."""
+    if agent in _USER_FACING_AGENTS and channel in _CLI_CHANNELS:
+        return USER_FACING_CLI_TIMEOUT_SECONDS
+    return DEFAULT_CHANNEL_TIMEOUT_SECONDS
+
+
 def build_agent_llm(
     agent: LLMAgent, chain: list[LLMChannelConfig], settings: Any
 ) -> ChannelChainModel:
     """The one chat model the agent's graph receives."""
     slots = []
     for entry in chain:
-        timeout = entry.timeout_seconds or DEFAULT_CHANNEL_TIMEOUT_SECONDS
+        timeout = entry.timeout_seconds or default_channel_timeout(agent, entry.channel)
         if entry.channel is LLMChannel.OPENROUTER:
             slots.append(openrouter_slot(agent, entry, settings))
         elif entry.channel is LLMChannel.CODEX:

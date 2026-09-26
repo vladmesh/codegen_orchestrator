@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-26
 
+- The langgraph image carries Codex and Claude Code at the worker pins, so the codex and claude channels answer in
+  langgraph and architect: codex on the workers' own profile, run as its owner under the shared lock.
+- Each agent logs `llm_channel_ready` per channel at startup, and a PO or summarizer turn gives a subscription CLI
+  180 s before moving on; the deploy writes the optional `CLAUDE_CODE_OAUTH_TOKEN` secret.
 - The Architect, PO and PO summarizer answer through a per-agent LLM channel chain (`agent_configs.llm_channels`,
   default codex → claude → openrouter); a channel failure moves the same call on and every call logs its channel.
 - An engineering success whose commit adds no change over the story branch head recorded before the attempt fails

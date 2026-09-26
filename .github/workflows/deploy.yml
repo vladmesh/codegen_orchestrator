@@ -273,6 +273,10 @@ jobs:
           ARCHITECT_LLM_MODEL=${{ secrets.ARCHITECT_LLM_MODEL }}
           ARCHITECT_LLM_BASE_URL=${{ secrets.ARCHITECT_LLM_BASE_URL }}
           ARCHITECT_LLM_API_KEY=${{ secrets.ARCHITECT_LLM_API_KEY }}
+          # The claude channel of the PO and Architect LLM channel chains (a Claude
+          # subscription OAuth token). Optional: empty leaves that channel unconfigured.
+          # The codex channel uses HOST_CODEX_HOME below, the Codex workers' profile.
+          CLAUDE_CODE_OAUTH_TOKEN=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
           # Summarization model selection; numeric tuning is seeded as system config below.
           SUMMARIZATION_MODEL=${{ secrets.SUMMARIZATION_MODEL }}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
+import os
 from pathlib import Path
 import re
 
@@ -517,6 +518,10 @@ class TestCliTurn:
         assert env["LANG"] == "C.UTF-8"
         assert "sk-leak" not in json.dumps(env) and OPENROUTER_KEY not in json.dumps(env)
         assert call["cwd_listing"] == []
+        # Its own HOME, writable by it and gone with the call: nothing persists between calls.
+        assert env["HOME"] != os.environ.get("HOME")
+        assert call["home_writable"]
+        assert not Path(env["HOME"]).exists()
         argv = call["argv"]
         if cli == "codex":
             assert set(env) - {"CODEX_HOME", "PWD", "LC_CTYPE"} <= {"HOME", "PATH", "LANG"}
@@ -531,8 +536,10 @@ class TestCliTurn:
                 "HOME",
                 "PATH",
                 "LANG",
+                "DISABLE_AUTOUPDATER",
             }
             assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "claude-oauth-test-token"  # noqa: S105
+            assert env["DISABLE_AUTOUPDATER"] == "1"
             assert argv[argv.index("--tools") + 1] == ""
             assert "--no-session-persistence" in argv
             assert json.loads(argv[argv.index("--json-schema") + 1])["required"] == [

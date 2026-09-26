@@ -1877,7 +1877,7 @@ def test_the_qa_worker_env_file_reaches_the_stand_beside_its_env_and_is_never_rs
     assert "--exclude .stand-qa-worker.env" in bootstrap
 
 
-def _render_stand_stack(project_dir: Path, qa_worker_env: str | None) -> dict:
+def _render_stand_stack(project_dir: Path, qa_worker_env: str | None, extra_env: str = "") -> dict:
     """The stand stack as compose resolves it, from a stand .env without the session."""
     root = WORKFLOW.parents[2]
     env_file = project_dir / ".env"
@@ -1885,6 +1885,7 @@ def _render_stand_stack(project_dir: Path, qa_worker_env: str | None) -> dict:
     env_file.write_text(
         "\n".join(line for line in example if not line.startswith("TELETHON_"))
         + "\nLOKI_URL=http://loki:3100\nHOST_CODEX_HOME=/opt/secrets/codex-stand\n"
+        + extra_env
     )
     if qa_worker_env is not None:
         (project_dir / ".qa-worker.env").write_text(qa_worker_env)
@@ -1896,6 +1897,37 @@ def _render_stand_stack(project_dir: Path, qa_worker_env: str | None) -> dict:
         [*command, "config", "--format", "json"], check=True, capture_output=True, text=True
     )
     return json.loads(result.stdout)
+
+
+def test_the_llm_channel_heads_get_the_stand_codex_profile_and_claude_token(tmp_path):
+    """langgraph and architect answer through codex and claude on the stand's own credentials.
+
+    Both arrive through names the rendered stand .env already carries (HOST_CODEX_HOME,
+    STAND_CLAUDE_CODE_OAUTH_TOKEN), so the refreshed-profile write-back covers the
+    heads' refreshes too: they write the same /opt/secrets/stand-codex the workers do.
+    """
+    render = _render_script(_steps()["Render protected dynamic configuration"])
+    for name in ("HOST_CODEX_HOME", "STAND_CLAUDE_CODE_OAUTH_TOKEN"):
+        assert f'"{name}"' in render
+    token = "stand-claude-" + "t" * 20
+
+    config = _render_stand_stack(tmp_path, None, f"STAND_CLAUDE_CODE_OAUTH_TOKEN={token}\n")
+
+    for head in ("langgraph", "architect"):
+        service = config["services"][head]
+        assert service["environment"]["CLAUDE_CODE_OAUTH_TOKEN"] == token, head
+        assert service["environment"]["LLM_CODEX_HOME"] == "/llm-codex-home", head
+        (mount,) = [v for v in service["volumes"] if v["target"] == "/llm-codex-home"]
+        assert mount["source"] == "/opt/secrets/codex-stand", head
+        assert not mount.get("read_only", False), head
+    # The name Claude Code reads is set for the two heads only; the stand .env, which
+    # every service reads, keeps the token under its stand name.
+    holders = {
+        name
+        for name, service in config["services"].items()
+        if "CLAUDE_CODE_OAUTH_TOKEN" in (service.get("environment") or {})
+    }
+    assert holders == {"langgraph", "architect"}
 
 
 def _telethon_by_service(config: dict) -> dict[str, dict[str, str]]:

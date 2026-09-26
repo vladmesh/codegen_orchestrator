@@ -20,6 +20,18 @@ services:
       - ${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}:${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}
       - ${HOST_CODEX_HOME}:/host-codex:ro
 
+  # The heads' claude LLM channel runs on the stand's Claude token, the one
+  # worker-manager hands Claude workers. The rendered .env keeps it under its stand
+  # name; only these two services get it under the name Claude Code reads. The Codex
+  # profile reaches both through the base file's HOST_CODEX_HOME mount.
+  langgraph:
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: ${STAND_CLAUDE_CODE_OAUTH_TOKEN:-}
+
+  architect:
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: ${STAND_CLAUDE_CODE_OAUTH_TOKEN:-}
+
   # The stand has no PO bot and must not borrow production's. Two long-polling
   # clients on one token steal each other's updates, which would make the
   # production bot lose messages — and the live pipeline never talks to this
