@@ -40,6 +40,7 @@ from shared.contracts.dto.product_brief import (
     ProductBriefAdmissionRead,
     ProductBriefConfirm,
     ProductBriefCreate,
+    ProductBriefFullText,
     ProductBriefPlanningAttemptCommand,
     ProductBriefPlanningAttemptOutcome,
     ProductBriefPlanningAttemptRead,
@@ -49,6 +50,7 @@ from shared.contracts.dto.product_brief import (
     RequirementCoverageRead,
 )
 from shared.models import ProductBrief, Project, RequirementCoverage, Story, Task
+from shared.product_brief_text import render_full_brief_sections
 
 from ..database import get_async_session
 from ..dependencies import _optional_bearer_scheme, is_internal_service
@@ -361,6 +363,25 @@ async def get_product_brief(
         )
     await _authorize(brief.project_id, x_telegram_id, db, internal, credentials)
     return ProductBriefRead.model_validate(brief, from_attributes=True)
+
+
+@router.get("/{brief_id}/full", response_model=ProductBriefFullText)
+async def get_product_brief_full_text(
+    brief_id: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+) -> ProductBriefFullText:
+    """The revision's full form, one section per item — the text the PO's
+    `show_full_brief` sends the user, before it joins the sections."""
+    read = await get_product_brief(brief_id, x_telegram_id, db, internal, credentials)
+    return ProductBriefFullText(
+        brief_id=read.id,
+        revision=read.revision,
+        language=read.content.language,
+        sections=render_full_brief_sections(read.title, read.content),
+    )
 
 
 # --- one live architect per incomplete plan -----------------------------------

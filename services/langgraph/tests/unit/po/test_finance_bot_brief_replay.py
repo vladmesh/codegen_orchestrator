@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
 
 from shared.contracts.dto.product_brief import ProductBriefContent
+from shared.contracts.queues.po import MESSAGE_BREAK
 from src.agents.po.graph import create_po_graph
 from src.agents.po.tools_shared import init_po_clients
 from tests.unit.po.finance_bot_replay import (
@@ -25,7 +26,7 @@ from tests.unit.po.finance_bot_replay import (
     ocr_trade_off_is_named,
     user_message,
 )
-from tests.unit.po.test_tools_briefs import _API, PROJECT_ID
+from tests.unit.po.test_tools_briefs import _API, BRIEF_ID, PROJECT_ID, _brief
 from tests.unit.test_architect_graph import _ScriptedToolCallingModel
 
 _WORDING = "Расходы и доходы записывать обычным текстом"
@@ -111,8 +112,8 @@ async def test_the_replayed_dialogue_presents_a_brief_with_income_form_and_ocr_t
 
     (presented,) = [m for m in state["messages"] if isinstance(m, ToolMessage)]
     shown = presented.content.split("\n\n", maxsplit=1)[1]
-    assert "[income-text]\n  Вы отправляете: текст «зарплата 80000»" in shown
-    assert "Ограничения и выбранные компромиссы:\n- Чеки распознаются бесплатным" in shown
+    assert "• Вы отправляете: текст «зарплата 80000»" in shown
+    assert "<b>Ограничения</b>\n• Чеки распознаются бесплатным" in shown
     assert "telegram:chat=" not in shown
 
 
@@ -187,3 +188,32 @@ def test_a_vague_income_limitation_does_not_decide_free_text_income(limitation):
 )
 def test_an_explicit_refusal_of_free_text_income_decides_it(limitation):
     assert income_by_free_text_is_decided(_brief_with_limitation(limitation))
+
+
+@pytest.mark.asyncio
+async def test_the_full_brief_is_the_turns_answer_with_its_message_breaks():
+    """`show_full_brief` ends the turn, so its breaks reach the bot as written.
+
+    The consumer sends the last message of the turn. A model asked to relay a
+    text with control characters in it would not reproduce them; the tool's own
+    result, returned directly, does.
+    """
+    api = _API(briefs={BRIEF_ID: _brief()})
+    init_po_clients(api, AsyncMock())
+    show = {"name": "show_full_brief", "args": {"brief_id": BRIEF_ID}, "id": "call-full-1"}
+    model = _ScriptedToolCallingModel(
+        turns=[AIMessage(content="", tool_calls=[show]), AIMessage(content="re-typed text")]
+    )
+    config = {"configurable": {"thread_id": "po-full-brief", "telegram_chat_id": TELEGRAM_CHAT_ID}}
+    with patch("src.agents.po.graph.ChatOpenAI", return_value=model):
+        graph = await create_po_graph(model="scripted", base_url="http://llm.invalid", api_key="x")
+
+    state = await graph.ainvoke(
+        {"messages": [HumanMessage(content="Show me the whole brief")]}, config=config
+    )
+
+    last = state["messages"][-1]
+    assert isinstance(last, ToolMessage)
+    assert last.name == "show_full_brief"
+    assert MESSAGE_BREAK in last.content
+    assert last.content.split(MESSAGE_BREAK)[1].startswith("<b>What you get</b>")

@@ -16,13 +16,22 @@ import httpx
 import pytest
 
 from shared.clients.internal_api import InternalAPIClient
+from shared.contracts.dto import product_brief as dto
 from shared.contracts.dto.product_brief import ProposedProductBriefContent
+from shared.contracts.queues.po import MESSAGE_BREAK
+from shared.product_brief_text import (
+    BRIEF_MESSAGE_BUDGET,
+    brief_message_length,
+    render_brief_message,
+    render_full_brief_sections,
+)
 from src.agents.po.tools_briefs import (
     LABELS,
     PRODUCT_BRIEF_POINTER_KEY,
     _creation_request_id,
     confirm_product_brief,
     present_product_brief,
+    show_full_brief,
 )
 from src.agents.po.tools_shared import init_po_clients
 
@@ -223,7 +232,7 @@ def _user_part(message: str) -> str:
 class TestPresenting:
     @pytest.mark.asyncio
     async def test_one_message_carries_the_whole_confirmation(self, stream_client):
-        """Summary, every requirement with its identity and wording, the settings."""
+        """Summary, every requirement once, its usage, the limitations and settings."""
         api = _API()
         _install(api, stream_client)
 
@@ -238,29 +247,34 @@ class TestPresenting:
             limitations=["Recipes are only saved from text, not from photos"],
         )
 
-        assert "A bot that keeps recipes" in message
-        assert "[r1] It stores a recipe" in message
-        assert 'your words: "I want to save my recipes"' in message
-        # Where the user said it is shown in words; the audit pointer is not.
-        assert "[r2] It suggests a recipe every morning\n  said earlier in our conversation" in (
-            message
+        shown = _user_part(message)
+        assert shown.startswith("<b>Recipe bot</b>\nA bot that keeps recipes\n\n")
+        assert (
+            "<b>What you get</b>\n• It stores a recipe\n• It suggests a recipe every morning"
+            in shown
         )
-        assert "telegram:chat=42:message=17" not in message
-        assert "How you will use it:\n[r1]\n  You send: the text: pancakes" in message
-        assert "Limitations and chosen trade-offs:\n- Recipes are only saved from text" in message
+        # The short form carries no ids and no provenance: the stored revision does.
+        assert "[r1]" not in shown
+        assert "I want to save my recipes" not in shown
+        assert "telegram:chat=42:message=17" not in shown
+        assert "<b>How you will use it</b>\n• You send: the text: pancakes" in shown
+        assert "<b>Limitations</b>\n• Recipes are only saved from text" in shown
         # The setting is shown by what it means, never by its key.
-        assert "Initial settings:\n- Recipes are written in Russian" in message
-        assert "recipes.default_language" not in message
-        assert message.rstrip().endswith("yes / correct me")
+        assert "<b>Settings</b>\n• Recipes are written in Russian" in shown
+        assert "recipes.default_language" not in shown
+        assert shown.endswith("\n\nyes / correct me")
 
     @pytest.mark.asyncio
-    async def test_an_unchosen_value_is_shown_as_not_specified(self, stream_client):
+    async def test_an_empty_section_is_omitted_rather_than_filled(self, stream_client):
+        """The old "not specified" filler read as a question the user had to answer."""
         api = _API()
         _install(api, stream_client)
 
         message = await _present()
 
-        assert "Initial settings:\n- not specified" in message
+        assert "<b>Settings</b>" not in message
+        assert "<b>Limitations</b>" not in message
+        assert "not specified" not in message
 
     @pytest.mark.asyncio
     async def test_a_russian_brief_is_shown_in_russian_only(self, stream_client):
@@ -305,12 +319,12 @@ class TestPresenting:
         )
 
         shown = _user_part(message)
-        assert "Как вы будете пользоваться:" in shown
-        assert "[income]\n  Вы отправляете: команду /income 50000 зарплата" in shown
+        assert "<b>Как вы будете пользоваться</b>" in shown
+        assert "• Вы отправляете: команду /income 50000 зарплата" in shown
         assert "  Продукт отвечает: Записал доход 50 000 ₽" in shown
-        assert "[backup]\n  работает без ваших сообщений" in shown
-        assert "Ограничения и выбранные компромиссы:\n- Доход вводится только" in shown
-        assert "- Чеки распознаются бесплатным способом" in shown
+        assert "• Раз в сутки сохраняет резервную копию — работает без ваших сообщений" in shown
+        assert "<b>Ограничения</b>\n• Доход вводится только" in shown
+        assert "<b>Настройки</b>\n• Чеки распознаются бесплатным способом" in shown
         assert "ocr.method" not in shown
         assert "(product)" not in shown
         assert " = " not in shown
@@ -348,7 +362,7 @@ class TestPresenting:
         )
 
         shown = _user_part(message)
-        assert "[expense] Записывает расход\n  сказано раньше в нашей переписке\n" in shown
+        assert "• Записывает расход\n" in shown
         assert "telegram:chat=42:message=17" not in shown
         assert "chat=" not in shown
         # The reference itself is kept for the architect, in the stored revision.
@@ -362,7 +376,7 @@ class TestPresenting:
 
         message = await _present(language="de")
 
-        assert "How you will use it:" in message
+        assert "<b>How you will use it</b>" in message
         assert message.rstrip().endswith(LABELS["en"]["answer"])
 
     @pytest.mark.asyncio
@@ -407,8 +421,9 @@ class TestPresenting:
         message = await _present()
 
         assert api.posts == []
-        assert "[r1] It stores a recipe" in message
-        assert 'recipes.default_language (product) = "ru"' in message
+        assert "• It stores a recipe" in message
+        # A setting stored before descriptions existed has only its key to show.
+        assert '• recipes.default_language = "ru"' in message
         assert message.rstrip().endswith("yes / correct me")
 
     @pytest.mark.asyncio
@@ -553,6 +568,164 @@ class TestPresenting:
         assert "No Product Brief was presented" in message
         assert "opened concurrently" in message
         assert api.project_config == {}
+
+
+def _payload_of_length(target: int) -> dict:
+    """A proposal within every cap whose confirmation message is `target` long.
+
+    The padding is ASCII in texts the short form shows once each, so every
+    character added is one character of the message.
+    """
+    count = dto.MAX_MUST_REQUIREMENTS
+    payload = {
+        "title": "Recipe bot",
+        "summary": "A bot",
+        "must_requirements": [
+            {"id": f"r{i}", "text": f"Thing {i}", "user_wording": "do it"} for i in range(count)
+        ],
+        "language": "en",
+        "usage_examples": [
+            {"requirement_id": f"r{i}", "user_sends": f"send {i}", "product_answers": f"ok {i}"}
+            for i in range(count)
+        ],
+    }
+
+    def length() -> int:
+        content = ProposedProductBriefContent.model_validate(
+            {k: v for k, v in payload.items() if k != "title"}
+        )
+        return brief_message_length(render_brief_message(payload["title"], content))
+
+    slots = [(r, "text", dto.MAX_REQUIREMENT_TEXT_LENGTH) for r in payload["must_requirements"]]
+    slots += [(e, "user_sends", dto.MAX_USER_SENDS_LENGTH) for e in payload["usage_examples"]]
+    slots += [
+        (e, "product_answers", dto.MAX_PRODUCT_ANSWERS_LENGTH) for e in payload["usage_examples"]
+    ]
+    missing = target - length()
+    for holder, field, cap in slots:
+        grow = min(missing, cap - len(holder[field]))
+        holder[field] += "x" * grow
+        missing -= grow
+    assert length() == target
+    return payload
+
+
+class TestTheBudget:
+    """The confirmation is one message, measured before anything is written."""
+
+    @pytest.mark.asyncio
+    async def test_a_brief_exactly_at_the_budget_is_presented(self, stream_client):
+        api = _API()
+        _install(api, stream_client)
+
+        message = await _present(**_payload_of_length(BRIEF_MESSAGE_BUDGET))
+
+        assert len(api.posts) == 1
+        assert api.project_config[PRODUCT_BRIEF_POINTER_KEY] == "brief-1"
+        assert brief_message_length(_user_part(message)) == BRIEF_MESSAGE_BUDGET
+
+    @pytest.mark.asyncio
+    async def test_one_character_over_the_budget_opens_nothing(self, stream_client):
+        api = _API()
+        _install(api, stream_client)
+
+        message = await _present(**_payload_of_length(BRIEF_MESSAGE_BUDGET + 1))
+
+        assert api.posts == []
+        assert api.patches == []
+        assert api.project_config == {}
+        assert "No Product Brief was presented and nothing was changed" in message
+        assert f"{BRIEF_MESSAGE_BUDGET + 1} characters" in message
+        assert f"budget of {BRIEF_MESSAGE_BUDGET}" in message
+        assert "Split the product into stages" in message
+        assert "never shorten" in message
+
+    @pytest.mark.asyncio
+    async def test_the_canary_sized_brief_is_refused_with_no_write(self, stream_client):
+        """2026-09-25: a ~20k brief, the pointer written, the send failing, a loop."""
+        api = _API()
+        _install(api, stream_client)
+        requirements = [
+            {"id": f"r{i}", "text": f"Requirement {i} " + "x" * 900, "user_wording": "y" * 900}
+            for i in range(11)
+        ]
+        examples = [
+            {"requirement_id": f"r{i}", "user_sends": "s" * 100, "product_answers": "a" * 100}
+            for i in range(11)
+        ]
+        content_size = sum(len(r["text"]) + len(r["user_wording"]) for r in requirements) + sum(
+            len(e["user_sends"]) + len(e["product_answers"]) for e in examples
+        )
+        assert content_size > 20_000
+
+        message = await _present(must_requirements=requirements, usage_examples=examples)
+
+        assert api.posts == []
+        assert api.patches == []
+        assert "No Product Brief was presented" in message
+        assert "stage the product" in message
+
+    @pytest.mark.asyncio
+    async def test_a_stored_revision_over_the_budget_is_staged_not_resent(self, stream_client):
+        """A revision opened before the budget cannot be sent; it is corrected."""
+        big = _stored_content(summary="s" * 4000)
+        api = _API(
+            project_config={PRODUCT_BRIEF_POINTER_KEY: BRIEF_ID},
+            briefs={BRIEF_ID: _brief(content=big)},
+        )
+        _install(api, stream_client)
+
+        message = await _present()
+
+        assert api.posts == []
+        assert api.patches == []
+        assert "Split the product into stages" in message
+        assert f"corrects_brief_id='{BRIEF_ID}'" in message
+        assert "s" * 4000 not in message
+
+    def test_the_documented_caps_are_the_contract_caps(self):
+        description = " ".join(present_product_brief.description.split())
+        assert (
+            f"at most {dto.MAX_MUST_REQUIREMENTS} must-requirements, "
+            f"{dto.MAX_USAGE_EXAMPLES} usage examples, {dto.MAX_LIMITATIONS} limitations "
+            f"and {dto.MAX_INITIAL_SETTINGS} settings"
+        ) in description
+
+
+class TestShowingTheFullBrief:
+    @pytest.mark.asyncio
+    async def test_the_full_form_goes_to_the_user_one_section_per_message(self, stream_client):
+        api = _API(briefs={BRIEF_ID: _brief()})
+        _install(api, stream_client)
+
+        text = await show_full_brief.ainvoke({"brief_id": BRIEF_ID}, config=_config())
+
+        sections = text.split(MESSAGE_BREAK)
+        assert sections == render_full_brief_sections(
+            "Recipe bot", ProposedProductBriefContent.model_validate(_stored_content())
+        )
+        assert sections[0].startswith("<b>Recipe bot</b>")
+        assert sections[1].startswith("<b>What you get</b>")
+        assert "your words: «I want to save my recipes»" in sections[1]
+        assert sections[2].startswith("<b>How you will use it</b>")
+        # Nothing only the PO needs: the text reaches the user as it stands.
+        assert BRIEF_ID not in text
+        assert "revision" not in text
+        assert api.posts == []
+        assert api.patches == []
+
+    def test_its_text_ends_the_turn_and_reaches_the_user_unchanged(self):
+        """The PO would not reproduce a control character; the graph passes it on."""
+        assert show_full_brief.return_direct is True
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_brief_says_so(self, stream_client):
+        api = _API()
+        _install(api, stream_client)
+
+        text = await show_full_brief.ainvoke({"brief_id": "brief-9"}, config=_config())
+
+        assert text == "No Product Brief brief-9 exists."
 
 
 class TestTheCreationKey:

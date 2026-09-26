@@ -15,6 +15,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   PO tells the user what QA could not check and records their answer on the story (`unverified_decisions`).
 - The bot sends every user-bound text through `send_text`: split on `MESSAGE_BREAK` and under 4000 units as valid
   HTML, retries resume at the failed chunk, and errors reply a fixed apology, never "Message is too long".
+- The Product Brief the user signs is one short message (≤ `BRIEF_MESSAGE_BUDGET` 3500): bold sections, each wording
+  once, no ids or fillers; the full form is `show_full_brief` and `GET /api/product-briefs/{id}/full`, one section each.
+- An over-budget brief opens no revision and writes no pointer; the PO stages the product instead of squeezing it, and
+  proposals are capped in counts and lengths so the worst-case full form stays under 12k characters.
 
 ## 2026-09-25
 
