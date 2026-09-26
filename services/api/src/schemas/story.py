@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.owner_notification import OwnerNotification
@@ -18,6 +18,8 @@ from shared.contracts.dto.story import (
     StoryRecheck,
     StoryStatus,
     StoryType,
+    StoryUnverifiedDecision,
+    StoryUnverifiedDecisionCreate,
     StoryUpdate,
     StoryWaitingOn,
 )
@@ -35,6 +37,8 @@ __all__ = [
     "StoryStopTransition",
     "StoryTransition",
     "StoryType",
+    "StoryUnverifiedDecision",
+    "StoryUnverifiedDecisionCreate",
     "StoryUpdate",
     "StoryWaitingOn",
 ]
@@ -69,6 +73,7 @@ class StoryRead(TimestampedDTO):
     generated_product_timeline: dict[str, Any] | None = None
     operator_acceptance: StoryAcceptance | None = None
     operator_recheck: StoryRecheck | None = None
+    unverified_decisions: list[StoryUnverifiedDecision] = Field(default_factory=list)
     reopened_at: datetime | None = None
     pr_number: int | None = None
 

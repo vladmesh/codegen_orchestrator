@@ -41,6 +41,7 @@ export interface Story {
   generated_product_timeline?: Record<string, unknown> | null
   operator_acceptance?: StoryAcceptance | null
   operator_recheck?: StoryRecheck | null
+  unverified_decisions?: StoryUnverifiedDecision[]
   reopened_at?: string | null
   pr_number?: number | null
   created_at: string
@@ -87,6 +88,14 @@ export interface StoryRecheck {
   application_id: number
   run_id: string
   rechecked_quarantine_reason: Record<string, unknown>
+}
+
+export interface StoryUnverifiedDecision {
+  decision: 'accept_unverified' | 'change_requirement'
+  check_names: string[]
+  qa_run_id: string
+  decided_at: string
+  recorded_by: string
 }
 
 export interface Task {

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import textwrap
 
+from shared.contracts.dto.product_brief import NOT_AUTOMATICALLY_VERIFIABLE_PREFIX
 from shared.contracts.qa_capabilities import (
     QA_NEVER,
     QAAction,
@@ -65,7 +66,27 @@ the fact — a GET that exposes the stored record, or the bot's reply — and ne
 as that step. Write "GET /api/transactions lists the recorded transaction", not \
 "POST /api/transactions returns 201"; the platform marks a criterion that needs \
 an HTTP write as not verifiable and QA never checks it.
+
+{_render_unverifiable_requirement_rule()}
 """
+
+
+def _render_unverifiable_requirement_rule() -> str:
+    """What the Architect does with a must-requirement no action above can check."""
+    return f"""\
+**A must-requirement QA cannot check is rewritten or returned at planning time.** \
+When the only usage example of a must-requirement — or every one of them — needs \
+an action this list does not name, or one QA never performs, a criterion written \
+as that step is never checked. Two outcomes, in this order:
+
+- **Rewrite the check into an observable QA can check**: the example's effect, \
+read afterwards through one of the actions above, in the example's words.
+- **Return the requirement** when no such observable exists, with \
+`record_requirement_coverage(requirement_id=..., returned_reason=...)`, and start \
+the reason with `{NOT_AUTOMATICALLY_VERIFIABLE_PREFIX}` followed by what QA would \
+need, e.g. "{NOT_AUTOMATICALLY_VERIFIABLE_PREFIX} QA would need to read the email \
+the product sends to the user". The user is told and decides; its examples get \
+no criterion."""
 
 
 def render_brief_capabilities(indent: str) -> str:

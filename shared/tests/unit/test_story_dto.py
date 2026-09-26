@@ -12,6 +12,8 @@ from shared.contracts.dto.story import (
     StoryDTO,
     StoryStatus,
     StoryType,
+    StoryUnverifiedDecisionCreate,
+    StoryUnverifiedDecisionKind,
     StoryUpdate,
     StoryWaitingOn,
 )
@@ -164,3 +166,30 @@ class TestStoryUpdate:
         update = StoryUpdate()
         data = update.model_dump(exclude_unset=True)
         assert data == {}
+
+
+class TestStoryUnverifiedDecisionCreate:
+    """The user's answer names a decision and at least one distinct, non-blank check."""
+
+    def test_an_answer_keeps_its_decision_and_trimmed_names(self):
+        answer = StoryUnverifiedDecisionCreate(
+            decision="change_requirement", check_names=["  email arrives "], recorded_by="po"
+        )
+
+        assert answer.decision is StoryUnverifiedDecisionKind.CHANGE_REQUIREMENT
+        assert answer.check_names == ["email arrives"]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"decision": "rerun", "check_names": ["a"], "recorded_by": "po"},
+            {"decision": "accept_unverified", "check_names": [], "recorded_by": "po"},
+            {"decision": "accept_unverified", "check_names": [" "], "recorded_by": "po"},
+            {"decision": "accept_unverified", "check_names": ["a", "a "], "recorded_by": "po"},
+            {"decision": "accept_unverified", "check_names": ["a"], "recorded_by": ""},
+            {"decision": "accept_unverified", "check_names": ["a"]},
+        ],
+    )
+    def test_a_malformed_answer_is_refused(self, body):
+        with pytest.raises(ValidationError):
+            StoryUnverifiedDecisionCreate.model_validate(body)

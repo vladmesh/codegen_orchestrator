@@ -133,6 +133,69 @@ class TestHandleMessage:
         assert delivered.args[1]["telegram_chat_id"] == "user-1"
 
     @pytest.mark.asyncio
+    async def test_the_settling_events_qa_facts_are_rendered_as_names_and_reasons(
+        self, mock_graph, mock_client
+    ):
+        """What QA checked and could not reach the model readable, never as raw JSON."""
+        notification = POSystemEvent(
+            event=OwnerNotificationEvent.STORY_QUARANTINED,
+            text="QA failed on a product check; a person decides.",
+            story_id="story-1",
+            project_id="project-1",
+            telegram_chat_id="user-1",
+            qa_verification={
+                "qa_run_id": "qa-run-7",
+                "passed_checks": ["Telegram: /start replies with a welcome", "GET /health"],
+                "unverified_checks": [
+                    {
+                        "name": "Telegram: the reminder email reaches the user",
+                        "reason": "needs an email inbox",
+                        "origin": "executor",
+                    },
+                    {
+                        "name": "POST /api/expenses returns 201",
+                        "reason": "needs an HTTP write",
+                        "origin": "withheld",
+                    },
+                ],
+            },
+        )
+        message = TypeAdapter(POInputMessage).validate_python(notification.model_dump(mode="json"))
+
+        await _handle_message(mock_graph, mock_client, "user-1", message.model_dump(mode="json"))
+
+        content = mock_graph.ainvoke.call_args[0][0]["messages"][0].content
+        assert content.endswith(
+            "QA failed on a product check; a person decides.\n"
+            "What QA checked:\n"
+            "- Telegram: /start replies with a welcome\n"
+            "- GET /health\n"
+            "What QA could not check:\n"
+            "- Telegram: the reminder email reaches the user — why: needs an email inbox\n"
+            "- POST /api/expenses returns 201 — why: needs an HTTP write"
+        )
+        assert content.startswith("[system: system_event:story_quarantined]")
+        assert "qa-run-7" not in content and "{" not in content
+        assert "withheld" not in content and "executor" not in content
+
+    @pytest.mark.asyncio
+    async def test_an_event_without_qa_facts_renders_none(self, mock_graph, mock_client):
+        notification = POSystemEvent(
+            event=OwnerNotificationEvent.STORY_COMPLETED,
+            text="The story is finished.",
+            story_id="story-1",
+            telegram_chat_id="user-1",
+        )
+
+        await _handle_message(
+            mock_graph, mock_client, "user-1", notification.model_dump(mode="json")
+        )
+
+        content = mock_graph.ainvoke.call_args[0][0]["messages"][0].content
+        assert content.endswith("The story is finished.")
+        assert "What QA" not in content
+
+    @pytest.mark.asyncio
     async def test_budget_denial_quarantine_event_is_routable_and_deliverable(
         self, mock_graph, mock_client
     ):

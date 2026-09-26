@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   capability gap no longer quarantines the product or parks the story.
 - The settling owner event carries `qa_verification` (passed and unverified checks), and each unverified check is
   kept as a project verification gap (`GET /api/projects/{id}/verification-gaps`).
+- The Architect rewrites or returns a must-requirement QA cannot check (`not automatically verifiable:` reason), and
+  PO tells the user what QA could not check and records their answer on the story (`unverified_decisions`).
 
 ## 2026-09-25
 

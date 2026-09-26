@@ -759,6 +759,12 @@ an unresolved recipient. `DeployMessage` requires exactly one of an address or
 an `unaddressed_reason`. Legacy ambiguous `user_id` payloads are rejected,
 quarantined to DLQ, and alerted rather than silently becoming unaddressable.
 
+The PO prompt's "Story Events & Reminders" lists the events PO receives, each an
+`OwnerNotificationEvent`: `story_completed`, `story_failed`, `story_blocked`,
+`story_quarantined` (worded as `story_blocked`: work is stopped, a person decides, no
+known time), `story_waiting_user_secret` and `story_requirements_returned`. A unit test
+holds the listed set inside the vocabulary the consumer routes.
+
 PO streams use the flat-field codec from `queues/po.py`. The proactive listener
 acks only after successful delivery or terminal delivery exhaustion. Its PEL
 delivery count survives a restart; exhaustion is alerted and is not retried as
@@ -885,7 +891,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 
 | Surface / model family | Canonical source | API exposure / owner | Non-type invariant |
 |---|---|---|---|
-| Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py`, `routers/_story_helpers.py`, `routers/_story_actions.py` | status and `waiting_on` are written only by a transition, together on one locked row; `StoryUpdate` refuses both; App-authenticated generated-product evidence, owner notifications and QA handoff are durable story lifecycle state |
+| Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py`, `routers/_story_helpers.py`, `routers/_story_actions.py` | status and `waiting_on` are written only by a transition, together on one locked row; `StoryUpdate` refuses both; App-authenticated generated-product evidence, owner notifications and QA handoff are durable story lifecycle state; `unverified_decisions` is append-only |
 | Task create/update/event/status | `shared/contracts/dto/task.py` | `schemas/task.py`, `routers/tasks.py` | scheduler dispatches only durable eligible task state |
 | Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | confirmed content is immutable; one live planning attempt; one idempotent admission releases that attempt's tasks |
 | Task action requests | `services/api/src/schemas/actions.py` | `routers/_task_actions.py` | actions use admission and do not bypass paid-run ownership |
@@ -1468,6 +1474,17 @@ filter takes its withheld HTTP methods from `http_write_methods()`. A tripwire t
 renders each consumer's text and fails when a catalogue wording or a retired phrase
 appears outside the generated block.
 
+**A must-requirement QA cannot check is settled at planning time.** The Architect's
+"What QA Can Check" ends with the rule, rendered beside the catalogue's lists: when the
+only usage example of a must-requirement (or every one) needs an action the catalogue
+does not name or lists under never, the Architect rewrites the check into an observable
+QA can check, or returns the requirement with
+`record_requirement_coverage(requirement_id=..., returned_reason=...)` whose reason starts
+with `NOT_AUTOMATICALLY_VERIFIABLE_PREFIX` (`"not automatically verifiable:"`,
+`shared/contracts/dto/product_brief.py`) followed by what QA would need. Such a return is
+an ordinary return: the admitted plan's `story_requirements_returned` carries the reason
+to PO like any other.
+
 ### The QA probe library
 
 A project's library (`qa_probes`) is unique on project, platform and name and
@@ -1919,6 +1936,25 @@ and `POSystemEvent.qa_verification` are a `QAVerificationFacts`
 the passed QA run the completion names; the supervisor sets it on the
 `story_quarantined` record of a FAILED or EXHAUSTED verdict. It is `None` on every
 other ending. The fix-task route owes no owner event, so it carries none.
+
+**PO tells the user, and keeps the answer.** The PO consumer renders the facts under the
+event's text as "What QA checked:" and "What QA could not check:" lines, each check's
+name and reason, without the run id, the origin or JSON (`render_qa_verification`,
+`services/langgraph/src/consumers/po.py`). When unverified checks are listed, the PO
+prompt asks for one message in the user's language that says what was checked, what
+could not be and why in plain words, and asks the user to accept it unchecked or change
+the requirement. The PO tool `record_unverified_decision(story_id, decision, check_names)`
+records the answer with `POST /api/stories/{id}/unverified-decisions`
+(`StoryUnverifiedDecisionCreate`: `decision` is `accept_unverified` or
+`change_requirement`, the check names, `recorded_by`). The API appends a
+`StoryUnverifiedDecision` (`decision`, `check_names`, `qa_run_id`, `decided_at`,
+`recorded_by`) to `stories.unverified_decisions` under the story row lock; an earlier
+answer is never rewritten. `qa_run_id` is not sent: it is the story's last QA run with
+`qa_routed_at`, and a check name that run did not leave unverified is refused (422), as
+is a story with no routed run (409). The record changes nothing else — no status, no
+reopen, no rerun. `change_requirement` is followed up by PO as a corrected brief
+confirmed as its own story. `StoryRead`/`StoryDTO.unverified_decisions` return every
+answer, oldest first, to `get_story` and the admin story detail.
 
 **Verification gaps.** After a Run settles as `passed`, `failed` or `exhausted` with
 unverified checks, the QA consumer asks `POST /api/projects/{id}/verification-gaps/from-run`

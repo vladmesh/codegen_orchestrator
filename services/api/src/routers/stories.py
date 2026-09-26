@@ -50,6 +50,8 @@ from ..schemas.story import (
     StoryReopen,
     StoryStopTransition,
     StoryTransition,
+    StoryUnverifiedDecision,
+    StoryUnverifiedDecisionCreate,
     StoryUpdate,
 )
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
@@ -165,6 +167,7 @@ async def create_story(
         priority=body.priority,
         blocked_by_story_id=body.blocked_by_story_id,
         created_by=body.created_by,
+        unverified_decisions=[],
         created_at=now,
         updated_at=now,
     )
@@ -318,6 +321,76 @@ async def update_story(
     await db.refresh(story)
 
     logger.info("story_updated", story_id=story.id, fields=list(update_data.keys()))
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+async def _last_routed_qa_run(story: Story, db: AsyncSession) -> Run | None:
+    """The last QA run whose verdict this story routed: the one its owner was told about."""
+    return (
+        (
+            await db.execute(
+                select(Run)
+                .where(
+                    Run.story_id == story.id,
+                    Run.type == RunType.QA.value,
+                    Run.qa_routed_at.is_not(None),
+                )
+                .order_by(Run.qa_routed_at.desc(), Run.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+@router.post("/{story_id}/unverified-decisions", response_model=StoryRead)
+async def record_unverified_decision(
+    story_id: str,
+    body: StoryUnverifiedDecisionCreate,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    """Append the user's answer to the checks QA could not run on this story.
+
+    The answer is to the last QA run the story routed, and names only checks
+    that run left unverified. It is recorded and nothing else: no status
+    changes, and nothing is reopened or rerun.
+    """
+    story = await _get_story_for_update(story_id, db)
+    run = await _last_routed_qa_run(story, db)
+    if run is None or not isinstance(run.result, dict):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"story {story_id} has no settled QA run whose unverified checks to answer",
+        )
+    unverified = [check.name for check in QARunResult.model_validate(run.result).unverified_checks]
+    unknown = [name for name in body.check_names if name not in unverified]
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"QA run {run.id} left no unverified check named {unknown}; "
+                f"its unverified checks are {unverified}"
+            ),
+        )
+    decision = StoryUnverifiedDecision(
+        decision=body.decision,
+        check_names=body.check_names,
+        qa_run_id=run.id,
+        decided_at=datetime.now(UTC),
+        recorded_by=body.recorded_by,
+    )
+    # A new list, so the JSON column is written; the earlier answers stay as they were.
+    story.unverified_decisions = [*story.unverified_decisions, decision.model_dump(mode="json")]
+    await db.commit()
+    await db.refresh(story)
+    logger.info(
+        "story_unverified_decision_recorded",
+        story_id=story.id,
+        decision=decision.decision,
+        qa_run_id=run.id,
+        check_names=decision.check_names,
+    )
     return StoryRead.model_validate(story, from_attributes=True)
 
 

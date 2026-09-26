@@ -230,6 +230,8 @@ class StoryDTO(TimestampedDTO):
     generated_product_timeline: dict[str, Any] | None = None
     operator_acceptance: "StoryAcceptance | None" = None
     operator_recheck: "StoryRecheck | None" = None
+    # The user's answers to the checks QA could not run, oldest first.
+    unverified_decisions: "list[StoryUnverifiedDecision]" = Field(default_factory=list)
     reopened_at: datetime | None = None
     pr_number: int | None = None
 
@@ -336,3 +338,51 @@ class StoryRecheck(BaseModel):
     application_id: int
     run_id: str
     rechecked_quarantine_reason: dict[str, Any]
+
+
+class StoryUnverifiedDecisionKind(StrEnum):
+    """What the user chose for checks QA could not run on their story."""
+
+    #: The user accepts the result without those checks.
+    ACCEPT_UNVERIFIED = "accept_unverified"
+    #: The user wants the requirement changed. PO follows it up as a corrected
+    #: brief confirmed as its own story; the answer reopens and reruns nothing.
+    CHANGE_REQUIREMENT = "change_requirement"
+
+
+class StoryUnverifiedDecisionCreate(BaseModel):
+    """The user's answer to unverified checks, as PO records it on the story.
+
+    The QA run it answers is not sent: the API reads it off the story, as the
+    last QA run whose verdict the story routed, and refuses a check name that
+    run did not leave unverified.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: StoryUnverifiedDecisionKind
+    check_names: list[str] = Field(min_length=1)
+    recorded_by: str = Field(min_length=1)
+
+    @field_validator("check_names")
+    @classmethod
+    def _names_are_distinct_and_not_blank(cls, value: list[str]) -> list[str]:
+        names = [name.strip() for name in value]
+        if any(not name for name in names):
+            raise ValueError("a check name must not be blank")
+        if len(set(names)) != len(names):
+            raise ValueError("each check is named once")
+        return names
+
+
+class StoryUnverifiedDecision(BaseModel):
+    """One recorded answer. The story keeps every one: a later answer is appended."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: StoryUnverifiedDecisionKind
+    check_names: list[str]
+    #: The settled QA run whose unverified checks this answers.
+    qa_run_id: str
+    decided_at: datetime
+    recorded_by: str

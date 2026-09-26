@@ -346,3 +346,41 @@ class TestDecompositionPhilosophyIsReconciled:
         assert rule in prompt
         tail = prompt[prompt.find(rule) : prompt.find(rule) + 400]
         assert "Naming the capability shape is not over-specification" in tail
+
+
+class TestQAUncheckableRequirementRule:
+    """A must-requirement QA cannot check is rewritten or returned while it is planned."""
+
+    def test_the_prefix_is_the_one_fixed_form_of_the_reason(self):
+        from shared.contracts.dto.product_brief import NOT_AUTOMATICALLY_VERIFIABLE_PREFIX
+
+        assert NOT_AUTOMATICALLY_VERIFIABLE_PREFIX == "not automatically verifiable:"
+
+    def test_the_rule_is_rendered_inside_what_qa_can_check(self):
+        from src.prompts.qa_capabilities import render_architect_capabilities
+
+        section = " ".join(render_architect_capabilities().split())
+        rule = section[section.index("**A must-requirement QA cannot check") :]
+
+        assert rule == (
+            "**A must-requirement QA cannot check is rewritten or returned at planning "
+            "time.** When the only usage example of a must-requirement — or every one of "
+            "them — needs an action this list does not name, or one QA never performs, a "
+            "criterion written as that step is never checked. Two outcomes, in this order: "
+            "- **Rewrite the check into an observable QA can check**: the example's effect, "
+            "read afterwards through one of the actions above, in the example's words. "
+            "- **Return the requirement** when no such observable exists, with "
+            "`record_requirement_coverage(requirement_id=..., returned_reason=...)`, and "
+            "start the reason with `not automatically verifiable:` followed by what QA "
+            'would need, e.g. "not automatically verifiable: QA would need to read the '
+            'email the product sends to the user". The user is told and decides; its '
+            "examples get no criterion."
+        )
+        assert " ".join(SYSTEM_PROMPT.split()).count(rule) == 1
+
+    def test_the_usage_examples_marker_defers_to_the_rule(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert (
+            "A requirement none of whose examples QA can check is rewritten or returned "
+            'as "What QA Can Check" says, never only marked.'
+        ) in prompt

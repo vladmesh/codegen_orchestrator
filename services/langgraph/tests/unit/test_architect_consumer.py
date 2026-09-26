@@ -1276,6 +1276,31 @@ class TestReturnedRequirementsNotice:
         assert "req-1" not in text and "stale reason" not in text
 
     @pytest.mark.asyncio
+    async def test_a_requirement_qa_cannot_check_is_returned_like_any_other(
+        self, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        from shared.contracts.dto.product_brief import NOT_AUTOMATICALLY_VERIFIABLE_PREFIX
+
+        reason = (
+            f"{NOT_AUTOMATICALLY_VERIFIABLE_PREFIX} QA would need to read the email the "
+            "product sends to the user"
+        )
+        self._admitting(
+            _mock_api_get_project,
+            _coverage(("req-1", "plan-1", "task-1", None), ("req-2", "plan-1", None, reason)),
+        )
+        redis = _FakeRedis()
+
+        result = await self._run(valid_job_data, redis)
+
+        assert result["status"] == "success"
+        [event] = _returned_events(redis)
+        assert event["story_id"] == "story-abc"
+        assert "- req-2: It must list cities" in event["text"]
+        assert f"reason: {reason}" in event["text"]
+        assert "req-1" not in event["text"]
+
+    @pytest.mark.asyncio
     async def test_nothing_returned_publishes_nothing(
         self, valid_job_data, _mock_api_get_project, _llm_configured
     ):
