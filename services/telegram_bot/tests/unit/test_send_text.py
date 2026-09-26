@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+import importlib.util
+from pathlib import Path
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -286,3 +288,18 @@ class TestNoRawErrorText:
 
         update.message.reply_text.assert_awaited_once_with(bot_main.MESSAGE_FAILED_REPLY)
         assert "too long" not in bot_main.MESSAGE_FAILED_REPLY
+
+
+def test_delivery_module_loads_by_path():
+    """The backend integration suite loads proactive.py by path, outside ``sys.modules``.
+
+    It does so to keep its own ``src`` package apart from the bot's; the module
+    has to stay loadable that way, and ``send_text`` has to work from it.
+    """
+    path = Path(__file__).resolve().parents[2] / "src" / "proactive.py"
+    spec = importlib.util.spec_from_file_location("telegram_bot_proactive_by_path", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.SendProgress().sent == 0
+    assert callable(module.send_text)

@@ -19,7 +19,6 @@ exercised directly.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from enum import StrEnum
 
 import structlog
@@ -59,15 +58,18 @@ class ProactiveOutcome(StrEnum):
     REJECTED = "rejected"
 
 
-@dataclass
 class SendProgress:
     """How many chunks of one text Telegram has already accepted.
 
     Passed again to ``send_text`` for the same text, it makes the next call
     resume from the first chunk not yet accepted instead of starting over.
+
+    A plain class, not a dataclass: the integration suite loads this module by
+    path without registering it in ``sys.modules``, where ``@dataclass`` fails.
     """
 
-    sent: int = 0
+    def __init__(self) -> None:
+        self.sent = 0
 
 
 async def send_text(bot, chat_id: int, text: str, progress: SendProgress | None = None) -> None:
