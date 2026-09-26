@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.llm_channel import LLMChannelConfig
 from shared.models import AgentConfig
 
 from ..database import get_async_session
@@ -15,6 +16,13 @@ router = APIRouter(
     tags=["agent-configs"],
     dependencies=[Depends(require_internal_or_admin)],
 )
+
+
+def _stored_channels(chain: list[LLMChannelConfig] | None) -> list[dict] | None:
+    """The validated chain as the JSON the column holds (``None`` = default chain)."""
+    if chain is None:
+        return None
+    return [entry.model_dump(mode="json", exclude_none=True) for entry in chain]
 
 
 @router.post("/", response_model=AgentConfigRead, status_code=status.HTTP_201_CREATED)
@@ -40,6 +48,7 @@ async def create_agent_config(
         model_identifier=config_in.model_identifier,
         openrouter_site_url=config_in.openrouter_site_url,
         openrouter_app_name=config_in.openrouter_app_name,
+        llm_channels=_stored_channels(config_in.llm_channels),
         is_active=config_in.is_active,
     )
     db.add(config)
@@ -93,6 +102,8 @@ async def update_agent_config(
 
     # Apply updates
     update_data = updates.model_dump(exclude_unset=True)
+    if "llm_channels" in update_data:
+        update_data["llm_channels"] = _stored_channels(updates.llm_channels)
 
     # Validate model_identifier if it's being updated
     if "model_identifier" in update_data and "llm_provider" in update_data:

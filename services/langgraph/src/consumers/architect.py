@@ -13,6 +13,7 @@ import uuid
 
 import structlog
 
+from shared.contracts.dto.llm_channel import LLMChannelConfig
 from shared.contracts.dto.product_brief import (
     PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
     InitialSetting,
@@ -34,8 +35,16 @@ from shared.redis import RedisStreamClient
 from ..agents.architect.graph import create_architect_graph
 from ..agents.architect.tools import reset_task_chain
 from ..clients.api import api_client
-from ..config.agent_llm_env import missing_llm_env
-from ..config.settings import get_settings
+from ..config.settings import Settings, get_settings
+from ..llm import (
+    InvalidChannelChainError,
+    LLMAgent,
+    build_agent_llm,
+    channel_usage,
+    load_channel_chain,
+    unconfigured_channel_env,
+)
+from ..llm.chain import ChannelUsage
 from ._base import start_worker, validate_queued_message
 from ._events import publish_story_event
 from ._live_work import live_work_settled, live_work_unsettled
@@ -701,13 +710,32 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
     settings = get_settings()
 
-    missing_env = missing_llm_env("architect", settings)
+    try:
+        channels = await load_channel_chain(api_client, LLMAgent.ARCHITECT)
+    except InvalidChannelChainError as exc:
+        log.error("architect_llm_not_configured", error=str(exc))
+        return live_work_unsettled({"status": "failed", "error": str(exc)})
+    missing_env = unconfigured_channel_env(LLMAgent.ARCHITECT, channels, settings)
     if missing_env:
         log.error("architect_llm_not_configured", missing_env=missing_env)
         return live_work_unsettled(
             {"status": "failed", "error": f"{', '.join(missing_env)} not set"}
         )
 
+    with channel_usage() as usage:
+        return await _plan(msg, redis, story_status, channels, settings, usage, log)
+
+
+async def _plan(
+    msg: ArchitectMessage,
+    redis: RedisStreamClient,
+    story_status: StoryStatus,
+    channels: list[LLMChannelConfig],
+    settings: Settings,
+    usage: ChannelUsage,
+    log,
+) -> dict:
+    """Run the Architect graph over the story; `usage` names the LLM channels it used."""
     planning: _PlanningAttempt | None = None
     try:
         planning, early_result = await _claim_planning_attempt(msg, redis, log)
@@ -715,11 +743,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             return early_result
 
         reset_task_chain()
-        graph = create_architect_graph(
-            model=settings.architect_llm_model,
-            base_url=settings.architect_llm_base_url,
-            api_key=settings.architect_llm_api_key,
-        )
+        graph = create_architect_graph(build_agent_llm(LLMAgent.ARCHITECT, channels, settings))
 
         if msg.is_reopen:
             user_content = (
@@ -772,6 +796,8 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         log.info(
             "architect_job_success",
             message_count=len(result.get("messages", [])),
+            llm_channels=usage.channels(),
+            llm_channel_failures=_channel_failures(usage),
         )
         return live_work_settled({"status": "success"})
 
@@ -784,6 +810,8 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             "architect_job_failed",
             error=str(e),
             error_type=type(e).__name__,
+            llm_channels=usage.channels(),
+            llm_channel_failures=_channel_failures(usage),
             exc_info=True,
         )
         if planning is not None:
@@ -791,17 +819,33 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         return live_work_unsettled({"status": "failed", "error": str(e)})
 
 
+def _channel_failures(usage: ChannelUsage) -> list[str]:
+    return [f"{attempt.channel.value}:{attempt.failure_class.value}" for attempt in usage.failed]
+
+
+async def _startup_channel_chain() -> list[LLMChannelConfig]:
+    """The Architect's chain as configured now; an invalid stored chain raises here."""
+    try:
+        return await load_channel_chain(api_client, LLMAgent.ARCHITECT)
+    finally:
+        await api_client.close()
+
+
 def main():
     """Entry point for running as module.
 
-    Refuses to start without LLM config: a consumer that reads stories only to
-    fail them one by one is harder to spot than a container that never comes up.
+    Refuses to start on an invalid stored channel chain (`InvalidChannelChainError`),
+    and on a chain with no configured channel: a consumer that
+    reads stories only to fail them one by one is harder to spot than a
+    container that never comes up.
     """
-    missing_env = missing_llm_env("architect", get_settings())
+    chain = asyncio.run(_startup_channel_chain())
+    missing_env = unconfigured_channel_env(LLMAgent.ARCHITECT, chain, get_settings())
     if missing_env:
         raise RuntimeError(
             f"architect_llm_not_configured: {', '.join(missing_env)} not set. "
-            "The Architect agent cannot decompose stories without them. "
+            "No channel of the Architect's LLM channel chain is configured, so it "
+            "cannot decompose stories. "
             "Set them in .env (see .env.example)."
         )
 

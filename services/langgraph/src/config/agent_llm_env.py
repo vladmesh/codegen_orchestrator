@@ -1,12 +1,14 @@
-"""Env vars each LLM-backed ReactAgent reads, all of which it needs.
+"""OpenRouter env each LLM-backed ReactAgent's openrouter channel reads.
 
-Single source of truth for three consumers: the startup checks in `main.py` and
-`consumers/architect.py`, the documented groups in `.env.example`, and the test
-that keeps those two in sync.
+Single source of truth for three consumers: the openrouter channel
+(`src/llm/openrouter.py`, the only reader of these values), the documented
+groups in `.env.example`, and the test that keeps those two in sync.
 
-Every group is a requirement: the agent runs only when every var in its group
-has a value. Exploratory QA has no group here — it is performed by the assigned
-subscription coding agent and never by an LLM this service holds a key for.
+A group is required by the agent's openrouter channel: without every var of it
+that channel fails as a missing credential and the chain moves on. Only an
+agent with no configured channel at all cannot run (see `src/llm`).
+Exploratory QA has no group here — it is performed by the assigned subscription
+coding agent and never by an LLM this service holds a key for.
 """
 
 from __future__ import annotations

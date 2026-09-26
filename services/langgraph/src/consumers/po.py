@@ -57,7 +57,8 @@ from shared.redis import RedisStreamClient
 from ..agents.po.graph import create_po_graph
 from ..agents.po.tools_shared import init_po_clients
 from ..clients.api import api_client
-from ..config.settings import get_settings
+from ..config.settings import Settings, get_settings
+from ..llm import ChannelChainModel, LLMAgent, build_agent_llm, load_channel_chain
 
 logger = structlog.get_logger(__name__)
 
@@ -75,6 +76,24 @@ class SummarizationConfig:
     max_tokens: int
     trigger_tokens: int
     max_summary_tokens: int
+
+
+@dataclass(frozen=True)
+class POLLMs:
+    """The PO's channel chain and the PO summarizer's, as the graph receives them."""
+
+    po: ChannelChainModel
+    summarizer: ChannelChainModel
+
+
+async def load_po_llms(settings: Settings) -> POLLMs:
+    """Both chains from agent configuration; an invalid stored chain raises here."""
+    po_chain = await load_channel_chain(api_client, LLMAgent.PO)
+    summarizer_chain = await load_channel_chain(api_client, LLMAgent.PO_SUMMARIZER)
+    return POLLMs(
+        po=build_agent_llm(LLMAgent.PO, po_chain, settings),
+        summarizer=build_agent_llm(LLMAgent.PO_SUMMARIZER, summarizer_chain, settings),
+    )
 
 
 def load_summarization_config(api_base_url: str) -> SummarizationConfig:
@@ -179,30 +198,31 @@ async def _consume_po_input(
 
 async def run_po_consumer(
     summarization_config: SummarizationConfig | None = None,
+    llms: POLLMs | None = None,
 ) -> None:
     """Main loop: read po:input, invoke PO graph, write po:response:*."""
     settings = get_settings()
     effective_summarization = summarization_config or load_summarization_config(
         settings.api_base_url
     )
+    effective_llms = llms or await load_po_llms(settings)
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()
 
     init_po_clients(api_client, client)
 
     graph = await create_po_graph(
-        model=settings.po_llm_model,
-        base_url=settings.po_llm_base_url,
-        api_key=settings.po_llm_api_key,
+        llm=effective_llms.po,
+        summarization_llm=effective_llms.summarizer,
         checkpoint_database_url=settings.checkpoint_database_url,
-        summarization_model=settings.summarization_model,
         summarization_max_tokens=effective_summarization.max_tokens,
         summarization_trigger_tokens=effective_summarization.trigger_tokens,
         summarization_max_summary_tokens=effective_summarization.max_summary_tokens,
     )
+    logger.info("po_llm_channels_configured", channels=effective_llms.po.describe())
     logger.info(
         "po_summarization_configured",
-        model=settings.summarization_model or settings.po_llm_model,
+        channels=effective_llms.summarizer.describe(),
         max_tokens=effective_summarization.max_tokens,
         trigger_tokens=effective_summarization.trigger_tokens,
         max_summary_tokens=effective_summarization.max_summary_tokens,

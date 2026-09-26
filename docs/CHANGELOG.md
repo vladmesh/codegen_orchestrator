@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-26
 
+- The Architect, PO and PO summarizer answer through a per-agent LLM channel chain (`agent_configs.llm_channels`,
+  default codex → claude → openrouter); a channel failure moves the same call on and every call logs its channel.
 - An engineering success whose commit adds no change over the story branch head recorded before the attempt fails
   `no_new_commit` and retries as a task iteration, so a no-op is never `done`; the default-branch guard folds into it.
 - A reused story worker handed another task, or a retry after a no-change attempt, gets `clear_session` and a TASK.md

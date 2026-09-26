@@ -10,6 +10,8 @@ Every agent is a LangGraph node with its own set of tools and its own specializa
 
 **Implementation**: LangGraph `create_react_agent` in `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container. Conversation state is persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); without `CHECKPOINT_DATABASE_URL` it uses in-memory `MemorySaver`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) into a running summary in `state["context"]`.
 
+**Model**: the PO and its summarizer each answer through their own [LLM channel chain](#-llm-channel-chain-architect-po-po-summarizer) (`po`, `po_summarizer`).
+
 **Tools** (`src/agents/po/tools.py`):
 - `create_project`, `list_projects`, `get_project`: project management through the API
 - `set_project_secret`: storing secrets. Bot tokens are refused server-side (422) — the API only takes them through the validator.
@@ -46,6 +48,56 @@ incomplete cost coverage without exposing reservation internals.
 **Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). All PO streams use Pydantic contracts from `shared.contracts.queues.po` (`POInputMessage`, `POResponse`, `POProactiveMessage`) with flat-field serialization (`to_flat_fields()` / `from_flat_fields()`). PO Consumer has PEL recovery via `XAUTOCLAIM` on startup. Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
 
 **Output**: actions through tools, messages to the user through Telegram
+
+---
+
+## 🔀 LLM channel chain (Architect, PO, PO summarizer)
+
+The Architect, the PO and the PO summarizer do not hold one provider's model. Each gets one chat
+model, `ChannelChainModel` (`services/langgraph/src/llm/`), built from an ordered **channel chain**
+read from its `agent_configs` record (id `architect`, `po`, `po_summarizer`; field `llm_channels`).
+`create_react_agent` and the PO `SummarizationNode` receive that model and nothing else.
+
+**Channels**:
+- `codex` — one model turn as one `codex exec` on the file-backed ChatGPT profile `LLM_CODEX_HOME`
+  (`--ephemeral --ignore-user-config --skip-git-repo-check --sandbox read-only`), serialized by the
+  profile's advisory lock `.codegen-codex.lock`, the same lock the worker wrapper holds.
+- `claude` — one model turn as one `claude -p --output-format json --json-schema … --tools ""
+  --no-session-persistence` on `CLAUDE_CODE_OAUTH_TOKEN`.
+- `openrouter` — the existing `ChatOpenAI` on `ARCHITECT_LLM_*` / `PO_LLM_*` (the summarizer on
+  `SUMMARIZATION_MODEL`, else `PO_LLM_MODEL`, over the PO's endpoint and key). `src/llm/openrouter.py`
+  is the only module that builds `ChatOpenAI` or reads that env.
+
+A CLI turn gets the serialized conversation (system, human, AI with tool calls, tool results) and the
+bound tools' names, descriptions and argument schemas on **stdin**, never argv, and is held to the
+output schema `{content, tool_calls: [{name, arguments_json}]}`. Arguments are parsed and validated
+against the bound tool's schema and become `tool_calls` with generated ids. The process runs in an
+empty temporary directory with no tools of its own and an environment of HOME, PATH, locale and its
+own credential variable only — never an API key, Redis or database URL of langgraph.
+
+**Configuration**: `llm_channels` is a list of `{channel, model?, timeout_seconds?}`
+(`shared/contracts/dto/llm_channel.py`); the API refuses an empty list, an unknown channel or a
+duplicate. No record or `null` means the default chain `codex, claude, openrouter`. `model` unset
+means the CLI's own default model, or the agent's env model for `openrouter`; `timeout_seconds`
+unset means 600 s for one model turn. A stored chain that does not validate stops the consumer at
+startup with `invalid_llm_channel_chain`. An agent is refused (Architect) or disabled (PO) only
+when no channel of its chain is configured — no `LLM_CODEX_HOME`, no `CLAUDE_CODE_OAUTH_TOKEN`, no
+complete OpenRouter env for the channels it names; otherwise a missing credential is that
+channel's failure and the chain moves on.
+
+**Switching**: a call tries the channels in order and returns the first answer. These failure
+classes move the same call to the next channel: `unauthorized` (401), `payment_required` (402),
+`forbidden` (403), `rate_limited` (429), `server_error` (5xx), `unreachable` (no connection),
+`quota_exhausted` (usage limit or credits), `timeout` (the channel's deadline, lock wait included),
+`missing_credential`, `binary_missing`, `nonzero_exit` and `invalid_output` (not schema-valid, an
+unbound tool, or arguments failing the tool's schema, after one corrective re-ask on the same
+channel). Anything else — a bug, a provider 400, cancellation — propagates without switching. When
+every channel failed, `LLMChannelsExhausted` names each channel and its failure class.
+
+**Recording**: `llm_channel_used` and `llm_channel_failed` per call (see
+[LOGGING.md](LOGGING.md#langgraph-worker)); the answering channel is in the returned message's
+`response_metadata["llm_channel"]`; the Architect's `architect_job_success` / `architect_job_failed`
+name the channels its planning attempt used and the failures it skipped.
 
 ---
 

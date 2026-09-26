@@ -329,10 +329,16 @@ Numeric PO summarization tuning is not environment or secret configuration. Prod
 `llm.summarization_max_summary_tokens` from required system config seeded by
 `scripts/system_configs.yaml`.
 
-The `PO_LLM_*` and `ARCHITECT_LLM_*` triples are all-or-nothing: an agent starts only when
-every var of its group carries a value, so leaving one of the three empty silently keeps that
-agent out of the pipeline. `services/langgraph/src/config/agent_llm_env.py` is the single source
-of truth for the groups.
+The `PO_LLM_*` and `ARCHITECT_LLM_*` triples configure the `openrouter` channel of each agent's
+LLM channel chain (default `codex`, `claude`, `openrouter`; see
+[NODES.md](NODES.md#-llm-channel-chain-architect-po-po-summarizer)). A triple is all-or-nothing for
+that channel: with one var empty the channel fails as a missing credential and the chain moves on.
+Only an agent with no configured channel at all (nor `LLM_CODEX_HOME`, nor
+`CLAUDE_CODE_OAUTH_TOKEN`, nor its OpenRouter triple) is refused or disabled.
+`services/langgraph/src/config/agent_llm_env.py` is the single source of truth for the groups.
+The subscription channels read `LLM_CODEX_HOME` and `CLAUDE_CODE_OAUTH_TOKEN`; until the langgraph
+image carries the CLIs and those credentials, both fail as `binary_missing`/`missing_credential`
+and calls land on openrouter.
 
 ### GitHub Integration
 

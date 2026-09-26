@@ -10,7 +10,7 @@ applies to a live model.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
@@ -97,8 +97,7 @@ async def test_the_replayed_dialogue_presents_a_brief_with_income_form_and_ocr_t
     model = _ScriptedToolCallingModel(turns=list(_SCRIPT))
     config = {"configurable": {"thread_id": "po-finance-bot", "telegram_chat_id": TELEGRAM_CHAT_ID}}
 
-    with patch("src.agents.po.graph.ChatOpenAI", return_value=model):
-        graph = await create_po_graph(model="scripted", base_url="http://llm.invalid", api_key="x")
+    graph = await create_po_graph(llm=model, summarization_llm=model)
     for index, text in enumerate(USER_MESSAGES):
         state = await graph.ainvoke(
             {"messages": [HumanMessage(content=user_message(index, text, PROJECT_ID))]},
@@ -205,8 +204,7 @@ async def test_the_full_brief_is_the_turns_answer_with_its_message_breaks():
         turns=[AIMessage(content="", tool_calls=[show]), AIMessage(content="re-typed text")]
     )
     config = {"configurable": {"thread_id": "po-full-brief", "telegram_chat_id": TELEGRAM_CHAT_ID}}
-    with patch("src.agents.po.graph.ChatOpenAI", return_value=model):
-        graph = await create_po_graph(model="scripted", base_url="http://llm.invalid", api_key="x")
+    graph = await create_po_graph(llm=model, summarization_llm=model)
 
     state = await graph.ainvoke(
         {"messages": [HumanMessage(content="Show me the whole brief")]}, config=config

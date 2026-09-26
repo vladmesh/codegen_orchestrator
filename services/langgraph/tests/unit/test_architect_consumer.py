@@ -37,6 +37,9 @@ _ACTIVE_PROJECT = make_project(status=ProjectStatus.ACTIVE, config={})
 _CREATED_STORY = make_story(id="story-abc", status="created")
 
 
+_OPENROUTER_ONLY_CONFIG = {"id": "architect", "llm_channels": [{"channel": "openrouter"}]}
+
+
 @pytest.fixture(autouse=True)
 def _mock_api_get_project():
     """All tests get a pre-scaffolded (ACTIVE) project and CREATED story by default."""
@@ -55,6 +58,9 @@ def _mock_api_get_project():
         mock_api.finish_planning_attempt = AsyncMock()
         mock_api.admit_product_brief_coverage = AsyncMock()
         mock_api.list_requirement_coverage = AsyncMock(return_value=[])
+        # The Architect's stored channel chain: openrouter alone, the chain these
+        # tests were written against (`ARCHITECT_LLM_*` is then required).
+        mock_api.get_agent_config = AsyncMock(return_value=_OPENROUTER_ONLY_CONFIG)
         yield mock_api
 
 
@@ -695,6 +701,9 @@ class _FakeBriefBoundary:
         self.released: list[str] = []
 
     # --- the story/project reads the consumer does before planning ---
+
+    async def get_agent_config(self, agent_id):
+        return _OPENROUTER_ONLY_CONFIG
 
     async def get_story(self, story_id):
         return make_story(id=story_id, status="created")
