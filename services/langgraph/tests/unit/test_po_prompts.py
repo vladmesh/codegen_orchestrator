@@ -202,6 +202,48 @@ class TestSystemPrompt:
         assert "confirm a corrected brief for it as its own story" in bullet
         assert "Never call it built, tested or under review" in bullet
 
+    def test_a_quarantined_story_is_listed_with_the_blocked_wording(self):
+        events = _section("## Story Events & Reminders")
+        listed_part = events.split("These are the ONLY events you receive.")[0]
+        assert re.search(r"^- `story_quarantined` —", listed_part, flags=re.MULTILINE)
+        bullet = events[events.index("- `story_quarantined`") :]
+        bullet = " ".join(bullet[: bullet.index("\n- ")].split())
+        assert bullet == (
+            "- `story_quarantined` — as `story_blocked`: work is stopped, a person decides, "
+            "there is no known time."
+        )
+
+    def test_unverified_checks_get_one_honest_message_and_a_recorded_answer(self):
+        events = " ".join(_section("## Story Events & Reminders").split())
+        rule = events[events.index("**Checks QA could not run.**") :]
+        rule = rule[: rule.index("These are the ONLY events you receive.")].strip()
+        assert rule == (
+            "**Checks QA could not run.** When `story_completed` or `story_quarantined` lists "
+            '"What QA could not check", send ONE message in the user\'s language, with the '
+            "event's news: (1) what was checked, briefly; (2) what could not be checked and "
+            "why, in plain words, no ids or jargon; (3) ask them to choose: accept it "
+            "unchecked, or change the requirement. Never call it tested. Record the answer "
+            "with `record_unverified_decision`."
+        )
+
+    def test_the_rule_reads_the_headings_the_consumer_renders(self):
+        from src.consumers.po import render_qa_verification
+
+        rendered = render_qa_verification(
+            {
+                "qa_run_id": "qa-1",
+                "passed_checks": ["a"],
+                "unverified_checks": [{"name": "b", "reason": "c", "origin": "executor"}],
+            }
+        )
+        assert "What QA could not check:" in rendered
+        assert '"What QA could not check"' in SYSTEM_PROMPT
+
+    def test_the_answer_tool_named_in_the_prompt_exists(self):
+        from src.agents.po.tools import get_all_tools
+
+        assert "record_unverified_decision" in {tool.name for tool in get_all_tools()}
+
     def test_a_completed_bot_is_explained_with_its_usage_instructions(self):
         events = _section("## Story Events & Reminders")
         bullet = events[events.index("- `story_completed`") :]
@@ -222,6 +264,7 @@ class TestSystemPrompt:
         assert "No task/deploy/infra notifications." in only
         listed = re.findall(r"^- `([a-z_]+)` —", listed_part, flags=re.MULTILINE)
         assert "story_requirements_returned" in listed
+        assert "story_quarantined" in listed
         assert set(listed) <= {event.value for event in OwnerNotificationEvent}
 
     def test_a_problem_is_reported_with_its_cause_not_as_progress(self):

@@ -86,7 +86,9 @@ names that sending, the criterion states it as QA sends it and expects the \
 answer the example shows. Where it names none, check it through its observable \
 after the fact where the product exposes one (a GET that lists the record it \
 created), or write its criterion with the marker \
-`not QA-verifiable: needs <what QA cannot do>`. The examples of a requirement you return get \
+`not QA-verifiable: needs <what QA cannot do>`. A requirement none of whose examples \
+QA can check is rewritten or returned as "What QA Can Check" says, never only \
+marked. The examples of a requirement you return get \
 no criterion: nothing builds them until the user answers, and a check of unbuilt \
 behaviour makes QA red on a working product.
 

@@ -36,6 +36,7 @@ from src.agents.po.tools_stories import (
     get_story,
     get_story_diagnostics,
     list_stories,
+    record_unverified_decision,
     reopen_story,
 )
 
@@ -1759,7 +1760,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 20
+        expected_count = 21
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1780,6 +1781,7 @@ class TestGetAllTools:
             "list_stories",
             "reopen_story",
             "get_story",
+            "record_unverified_decision",
             "get_story_diagnostics",
             "get_run_status",
             "get_budget_balance",
@@ -1834,3 +1836,115 @@ class TestGetBudgetBalance:
 
         assert "unknown_cost_attempt_count=2" in result
         assert "incomplete_coverage=true" in result
+
+
+class TestRecordUnverifiedDecision:
+    """The user's answer about unverified checks is written on the story, and only that."""
+
+    CHECK = "Telegram: the reminder email reaches the user"
+
+    def _recorded(self, *decisions: str) -> MagicMock:
+        return _make_response(
+            {
+                "id": "story-1",
+                "unverified_decisions": [
+                    {
+                        "decision": decision,
+                        "check_names": [self.CHECK],
+                        "qa_run_id": "qa-1",
+                        "decided_at": "2026-09-26T10:00:00Z",
+                        "recorded_by": "po",
+                    }
+                    for decision in decisions
+                ],
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_acceptance_is_posted_to_the_story_as_the_user(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.post_raw.return_value = self._recorded("accept_unverified")
+
+        result = await record_unverified_decision.ainvoke(
+            {
+                "story_id": "story-1",
+                "decision": "accept_unverified",
+                "check_names": [self.CHECK],
+            },
+            config=_make_config("user-7"),
+        )
+
+        mock_api_client.post_raw.assert_awaited_once_with(
+            "stories/story-1/unverified-decisions",
+            json={
+                "decision": "accept_unverified",
+                "check_names": [self.CHECK],
+                "recorded_by": "po",
+            },
+            headers={"X-Telegram-ID": "user-7"},
+        )
+        assert "accept these checks as unverified" in result
+        mock_stream_client.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_change_points_to_a_corrected_brief_and_starts_nothing(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.post_raw.return_value = self._recorded(
+            "accept_unverified", "change_requirement"
+        )
+
+        result = await record_unverified_decision.ainvoke(
+            {
+                "story_id": "story-1",
+                "decision": "change_requirement",
+                "check_names": [self.CHECK],
+            },
+            config=_make_config(),
+        )
+
+        assert "Nothing is reopened or rerun by it" in result
+        assert "confirm a corrected brief" in result
+        assert "present_product_brief" in result and "create_story" in result
+        # One write, to the answer record; no reopen, no architect job.
+        assert mock_api_client.post_raw.await_count == 1
+        mock_stream_client.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_comes_back_with_its_reason(self, mock_api_client):
+        mock_api_client.post_raw.return_value = _make_response(
+            {"detail": "QA run qa-1 left no unverified check named ['invented']"},
+            status_code=422,
+        )
+
+        result = await record_unverified_decision.ainvoke(
+            {
+                "story_id": "story-1",
+                "decision": "accept_unverified",
+                "check_names": ["invented"],
+            },
+            config=_make_config(),
+        )
+
+        assert result.startswith("The answer was not recorded:")
+        assert "invented" in result
+
+    @pytest.mark.asyncio
+    async def test_an_answer_naming_no_check_is_not_sent(self, mock_api_client):
+        result = await record_unverified_decision.ainvoke(
+            {"story_id": "story-1", "decision": "accept_unverified", "check_names": []},
+            config=_make_config(),
+        )
+
+        assert result.startswith("The answer was not recorded:")
+        mock_api_client.post_raw.assert_not_awaited()
+
+    def test_the_model_sees_the_two_decisions(self):
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        schema = convert_to_openai_tool(record_unverified_decision)["function"]["parameters"]
+        assert schema["properties"]["decision"]["enum"] == [
+            "accept_unverified",
+            "change_requirement",
+        ]

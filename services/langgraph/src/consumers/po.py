@@ -40,6 +40,7 @@ from pydantic import TypeAdapter
 import structlog
 
 from shared.config_store import ConfigStore
+from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.queues.po import (
     POInputMessage,
     POResponse,
@@ -314,6 +315,23 @@ async def _repair_orphan_tool_calls(graph, thread_id: str) -> int:
     return len(orphan_calls)
 
 
+def render_qa_verification(facts: dict) -> str:
+    """A settling event's QA facts as the PO model reads them: names and reasons, no JSON.
+
+    The run id and each check's origin are left out: neither is something the
+    user is told, and the answer's run is read off the story when it is recorded.
+    """
+    verification = QAVerificationFacts.model_validate(facts)
+    lines = ["What QA checked:"]
+    lines += [f"- {name}" for name in verification.passed_checks] or ["- (nothing)"]
+    if verification.unverified_checks:
+        lines.append("What QA could not check:")
+        lines += [
+            f"- {check.name} — why: {check.reason}" for check in verification.unverified_checks
+        ]
+    return "\n".join(lines)
+
+
 async def _handle_message(
     graph, client: RedisStreamClient, telegram_chat_id: str, data: dict
 ) -> None:
@@ -363,6 +381,8 @@ async def _handle_message(
     if msg_type != "user_message":
         tag = f"{msg_type}:{event}" if event else msg_type
         formatted = f"[system: {tag}] {formatted}"
+        if data.get("qa_verification"):
+            formatted = f"{formatted}\n{render_qa_verification(data['qa_verification'])}"
     else:
         # Inject user context so PO knows who it's talking to
         context_line = f"[context: telegram_chat_id={telegram_chat_id}, user_name={user_name}]"

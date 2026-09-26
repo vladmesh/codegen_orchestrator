@@ -131,6 +131,8 @@ An entity in PostgreSQL that tracks one asynchronous engineering, deploy, or QA 
 A QA check QA had no tool to run (cause `qa_capability`). It is neither a failure nor a pass: the QA runner
 records it on the Run as `unverified_checks` (`{name, reason, origin}`) and decides the verdict from the checks
 that ran. Each unverified check of a settled Run is also kept on its project as a **verification gap**.
+The user's answer to them — accept unverified, or change the requirement — is an **unverified decision**,
+appended to the story's `unverified_decisions`.
 
 **Do not confuse with:** a `qa_access` failure (the product refused the QA identity), which stays a harness blocker.
 

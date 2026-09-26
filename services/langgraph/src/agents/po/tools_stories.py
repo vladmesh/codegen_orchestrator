@@ -8,11 +8,16 @@ import json
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.product_brief import ProductBriefRead, ProductBriefStoryBind
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.dto.story import StoryType
+from shared.contracts.dto.story import (
+    StoryType,
+    StoryUnverifiedDecisionCreate,
+    StoryUnverifiedDecisionKind,
+)
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
 
@@ -526,6 +531,76 @@ async def get_story(story_id: str, *, config: RunnableConfig) -> str:
         "problem": _problem(story, diagnostics),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+#: What the tool answers after each decision is recorded, so the next move is
+#: the one this decision asks for and nothing is started by the answer itself.
+_AFTER_DECISION = {
+    StoryUnverifiedDecisionKind.ACCEPT_UNVERIFIED: (
+        "The user's answer is recorded: they accept these checks as unverified. "
+        "Nothing else changes."
+    ),
+    StoryUnverifiedDecisionKind.CHANGE_REQUIREMENT: (
+        "The user's answer is recorded: they want the requirement changed. Nothing is "
+        "reopened or rerun by it. Settle the change as a follow-up feature: agree the "
+        "corrected requirement with the user, worded as something QA can check, confirm a "
+        "corrected brief for it (present_product_brief, then confirm_product_brief) and "
+        "create it as its own story with create_story."
+    ),
+}
+
+
+@tool
+async def record_unverified_decision(
+    story_id: str,
+    decision: StoryUnverifiedDecisionKind,
+    check_names: list[str],
+    *,
+    config: RunnableConfig,
+) -> str:
+    """Record the user's answer about checks QA could not run on their story.
+
+    Call it once the user has answered the message about a `story_completed` or
+    `story_quarantined` event whose QA left checks unverified. The answer is
+    added to the story's record; an earlier answer is kept, never replaced.
+    Recording it reopens and reruns nothing.
+
+    Args:
+        story_id: Story ID the event named (e.g. story-abc12345).
+        decision: `accept_unverified` — the user accepts the result without those
+            checks; `change_requirement` — the user wants the requirement changed,
+            which you follow up as a corrected brief confirmed as its own story.
+        check_names: The names of the unverified checks the answer is about,
+            exactly as the event listed them.
+    """
+    try:
+        body = StoryUnverifiedDecisionCreate(
+            decision=decision, check_names=check_names, recorded_by="po"
+        )
+    except ValidationError as invalid:
+        return f"The answer was not recorded: {invalid}"
+    response = await _get_api().post_raw(
+        f"stories/{story_id}/unverified-decisions",
+        json=body.model_dump(mode="json"),
+        headers=_user_headers(config),
+    )
+    if not response.is_success:
+        detail = _detail_of(response)
+        logger.warning(
+            "po_unverified_decision_refused",
+            story_id=story_id,
+            status=response.status_code,
+            detail=detail,
+        )
+        return f"The answer was not recorded: {detail}"
+    recorded = response.json()["unverified_decisions"][-1]
+    logger.info(
+        "po_unverified_decision_recorded",
+        story_id=story_id,
+        decision=body.decision,
+        qa_run_id=recorded["qa_run_id"],
+    )
+    return _AFTER_DECISION[body.decision]
 
 
 @tool

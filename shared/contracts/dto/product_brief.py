@@ -444,6 +444,13 @@ class ProductBriefPlanningAttemptCommand(BaseModel):
     planning_attempt_id: str = Field(min_length=1, max_length=128)
 
 
+#: How a `returned_reason` starts when the requirement was returned because no
+#: check QA can perform observes it: the Architect's rule for a must-requirement
+#: whose only usage needs an action QA does not have. What follows it names what
+#: QA would need. A reason is free text otherwise; this is its one fixed form.
+NOT_AUTOMATICALLY_VERIFIABLE_PREFIX = "not automatically verifiable:"
+
+
 class RequirementCoverageCreate(BaseModel):
     """How the architect disposed of one must-requirement.
 

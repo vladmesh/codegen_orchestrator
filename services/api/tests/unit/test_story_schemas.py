@@ -83,6 +83,7 @@ class TestStoryRead:
         mock.generated_product_timeline = None
         mock.operator_acceptance = None
         mock.operator_recheck = None
+        mock.unverified_decisions = []
         mock.reopened_at = None
         mock.owner_notification = None
         mock.created_at = now
@@ -120,6 +121,7 @@ class TestStoryRead:
         mock.generated_product_timeline = None
         mock.operator_acceptance = None
         mock.operator_recheck = None
+        mock.unverified_decisions = []
         mock.reopened_at = None
         mock.owner_notification = None
         mock.created_at = now

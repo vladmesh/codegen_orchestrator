@@ -44,6 +44,7 @@ def _make_story(**overrides):
         "generated_product_timeline": None,
         "operator_acceptance": None,
         "operator_recheck": None,
+        "unverified_decisions": [],
         "reopened_at": None,
         "owner_notification": None,
         "created_at": now,
@@ -1194,3 +1195,128 @@ async def test_a_completion_no_qa_run_names_carries_no_qa_facts():
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert story.owner_notification["qa_verification"] is None
+
+
+# --- The user's answer to unverified checks ---
+
+_UNVERIFIED = {
+    "name": "Telegram: a reminder email arrives",
+    "reason": "needs an email inbox",
+    "origin": "executor",
+}
+
+
+def _answering_session(story, qa_run):
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = qa_run
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result]
+    _override_session(session)
+    return session
+
+
+def _routed_qa_run(**result):
+    return MagicMock(
+        id="qa-abc",
+        result={"qa_outcome": "passed", "passed_checks": ["GET /health returns 200"], **result},
+    )
+
+
+async def _answer(body: dict):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        return await client.post("/api/stories/story-abc/unverified-decisions", json=body)
+
+
+@pytest.mark.asyncio
+async def test_an_answer_is_recorded_against_the_last_routed_qa_run():
+    story = _make_story(id="story-abc", status="completed")
+    session = _answering_session(story, _routed_qa_run(unverified_checks=[_UNVERIFIED]))
+
+    resp = await _answer(
+        {
+            "decision": "accept_unverified",
+            "check_names": [_UNVERIFIED["name"]],
+            "recorded_by": "po",
+        }
+    )
+
+    assert resp.status_code == HTTPStatus.OK
+    [recorded] = resp.json()["unverified_decisions"]
+    assert recorded["decision"] == "accept_unverified"
+    assert recorded["check_names"] == [_UNVERIFIED["name"]]
+    assert recorded["qa_run_id"] == "qa-abc"
+    assert recorded["recorded_by"] == "po"
+    assert recorded["decided_at"]
+    # Recorded and nothing else: the story stays where it was.
+    assert story.status == "completed"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_later_answer_is_appended_never_written_over():
+    earlier = {
+        "decision": "change_requirement",
+        "check_names": [_UNVERIFIED["name"]],
+        "qa_run_id": "qa-abc",
+        "decided_at": "2026-09-25T10:00:00Z",
+        "recorded_by": "po",
+    }
+    story = _make_story(id="story-abc", status="completed", unverified_decisions=[earlier])
+    _answering_session(story, _routed_qa_run(unverified_checks=[_UNVERIFIED]))
+
+    resp = await _answer(
+        {
+            "decision": "accept_unverified",
+            "check_names": [_UNVERIFIED["name"]],
+            "recorded_by": "po",
+        }
+    )
+
+    assert resp.status_code == HTTPStatus.OK
+    decisions = resp.json()["unverified_decisions"]
+    assert [d["decision"] for d in decisions] == ["change_requirement", "accept_unverified"]
+    assert decisions[0]["decided_at"].startswith("2026-09-25T10:00:00")
+
+
+@pytest.mark.asyncio
+async def test_a_check_the_run_did_not_leave_unverified_is_refused():
+    story = _make_story(id="story-abc", status="completed")
+    session = _answering_session(story, _routed_qa_run(unverified_checks=[_UNVERIFIED]))
+
+    resp = await _answer(
+        {"decision": "accept_unverified", "check_names": ["invented"], "recorded_by": "po"}
+    )
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "invented" in resp.json()["detail"]
+    assert story.unverified_decisions == []
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_story_without_a_routed_qa_run_has_nothing_to_answer():
+    story = _make_story(id="story-abc", status="in_progress")
+    session = _answering_session(story, None)
+
+    resp = await _answer(
+        {"decision": "accept_unverified", "check_names": ["anything"], "recorded_by": "po"}
+    )
+
+    assert resp.status_code == HTTPStatus.CONFLICT
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_decision_is_refused_before_the_story_is_read():
+    session = _mock_session()
+    _override_session(session)
+
+    resp = await _answer({"decision": "rerun", "check_names": ["x"], "recorded_by": "po"})
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    session.execute.assert_not_awaited()

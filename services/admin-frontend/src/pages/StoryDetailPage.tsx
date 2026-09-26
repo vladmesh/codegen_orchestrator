@@ -229,6 +229,25 @@ export function StoryDetailPage() {
         </Card>
       )}
 
+      {(story.unverified_decisions ?? []).length > 0 && (
+        <Card>
+          <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+            User answers on unverified checks
+          </h2>
+          <ul className="space-y-2">
+            {(story.unverified_decisions ?? []).map((answer) => (
+              <li key={`${answer.qa_run_id}-${answer.decided_at}`} className="text-sm">
+                <span className="text-foreground">{answer.decision}</span>
+                <span className="text-muted-foreground"> — {answer.check_names.join('; ')}</span>
+                <p className="text-xs text-muted-foreground">
+                  QA run {answer.qa_run_id}, {answer.recorded_by} at {formatDate(answer.decided_at)}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
       {/* Tasks */}
       <Card>
         <h2 className="mb-4 text-sm font-medium text-muted-foreground">
