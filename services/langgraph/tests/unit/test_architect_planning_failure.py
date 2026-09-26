@@ -17,15 +17,18 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from shared.contracts.dto.llm_channel import LLMChannel
 from shared.contracts.dto.product_brief import ProductBriefPlanningAttemptOutcome
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.story_failure import StoryFailureCode
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.story_planning import (
     StoryPlanningOutcome,
+    StoryPlanningReport,
     StoryPlanningState,
     failed_record,
+    operator_retry_record,
     planned_record,
 )
 from shared.contracts.queues.architect import ArchitectMessage
@@ -135,12 +138,31 @@ class _PlanningAPI:
             planning_attempt_id=planning_attempt_id,
         )
 
-    async def admit_product_brief_coverage(self, brief_id, planning_attempt_id):
-        self.brief = self.brief.model_copy(update={"coverage_admitted_at": datetime.now(UTC)})
+    async def admit_product_brief_coverage(
+        self, brief_id, planning_attempt_id, *, channels, reopen=False
+    ):
+        """The release and the story's `planned` record, one transaction as in the API."""
+        now = datetime.now(UTC)
+        self.brief = self.brief.model_copy(update={"coverage_admitted_at": now})
+        planning = planned_record(
+            channels, planning_attempt_id=planning_attempt_id, reopen=reopen, now=now
+        )
+        self.story = self.story.model_copy(update={"planning": planning})
         return make_admission(story_id=STORY_ID)
 
     async def list_requirement_coverage(self, brief_id):
         return []
+
+    def come_due(self) -> None:
+        """The backoff is over: what the supervisor waits out before it re-queues."""
+        planning = self.story.planning
+        self.story = self.story.model_copy(
+            update={
+                "planning": planning.model_copy(
+                    update={"next_attempt_at": datetime.now(UTC) - timedelta(seconds=1)}
+                )
+            }
+        )
 
     # --- the outcome, decided as `POST /stories/{id}/planning-outcome` decides it ---
 
@@ -148,7 +170,12 @@ class _PlanningAPI:
         self.reports.append(report)
         now = datetime.now(UTC)
         if report.outcome is StoryPlanningOutcome.SUCCEEDED:
-            planning = planned_record(report, now)
+            planning = planned_record(
+                report,
+                planning_attempt_id=report.planning_attempt_id,
+                reopen=report.reopen,
+                now=now,
+            )
         else:
             planning = failed_record(self.story.planning, report, max_retries=MAX_RETRIES, now=now)
         update = {"planning": planning}
@@ -251,7 +278,8 @@ async def test_transient_failure_is_retried_and_the_retry_plans_the_story():
         "claude:missing_credential, openrouter:payment_required"
     )
 
-    # The supervisor's re-queue: the same story, still in_progress, planned again.
+    # The supervisor's re-queue once the backoff is over: planned again.
+    api.come_due()
     succeeded = await _run(api, graph)
 
     assert succeeded["status"] == "success"
@@ -273,6 +301,7 @@ async def test_transient_failures_past_the_bound_park_the_story():
         assert result["planning"] == "retrying"
         assert api.story.planning.failed_attempts == attempt
         assert api.story.status is StoryStatus.IN_PROGRESS
+        api.come_due()
 
     parked = await _run(api, graph)
 
@@ -326,6 +355,111 @@ async def test_an_unrecorded_failure_is_replayed_not_swallowed():
 
     with pytest.raises(PlanningFailureUnrecordedError):
         await _run(api, _graph(RuntimeError("LLM timeout")))
+
+
+@pytest.mark.asyncio
+async def test_a_redelivered_entry_after_a_reported_failure_waits_out_the_backoff():
+    """The worker reported the failure and died before the ACK; the entry comes back."""
+    api = _PlanningAPI(brief=_brief())
+    graph = _graph(RuntimeError("LLM timeout"), LLMChannel.CODEX)
+
+    await _run(api, graph)
+    redelivered = await _run(api, graph)
+
+    assert redelivered == {
+        "status": "skipped",
+        "reason": "planning retry not due",
+        "_live_work_settled": True,
+    }
+    # Neither the claim nor the graph ran, and the retry budget is untouched.
+    assert api.claims == 1
+    assert graph.ainvoke.await_count == 1
+    assert len(api.reports) == 1
+    assert api.story.planning.failed_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_an_operator_retry_is_due_at_once_and_plans_over_the_leftovers():
+    """`retry-planning` wrote `retrying` due now with the count reset; the job plans."""
+    parked = failed_record(
+        None,
+        StoryPlanningReport(
+            outcome=StoryPlanningOutcome.FAILED,
+            failure=StoryFailure(
+                code=StoryFailureCode.PLANNING_FAILED, source="architect", detail="402"
+            ),
+            retriable=False,
+        ),
+        max_retries=MAX_RETRIES,
+        now=datetime.now(UTC),
+    )
+    api = _PlanningAPI(
+        brief=_brief(planning_attempt_id="plan-old", planning_attempt_active=False),
+        tasks=[_leftover("task-1")],
+        status=StoryStatus.IN_PROGRESS,
+        planning=operator_retry_record(parked, max_retries=MAX_RETRIES, now=datetime.now(UTC)),
+    )
+
+    result = await _run(api, _graph(LLMChannel.CODEX))
+
+    assert result["status"] == "success"
+    assert api.claims == 1
+    assert api.story.planning.state is StoryPlanningState.PLANNED
+
+
+@pytest.mark.asyncio
+async def test_a_brief_backed_plan_records_its_channels_with_the_admission():
+    """No separate call can lose them: the admission is the record."""
+    api = _PlanningAPI(brief=_brief())
+    api.record_planning_outcome = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await _run(api, _graph(LLMChannel.CODEX))
+
+    assert result["status"] == "success"
+    api.record_planning_outcome.assert_not_awaited()
+    assert api.story.planning.state is StoryPlanningState.PLANNED
+    assert api.story.planning.channels == ["codex"]
+    assert api.story.planning.planning_attempt_id == "plan-1"
+
+
+@pytest.mark.asyncio
+async def test_a_success_without_a_brief_is_retried_then_logged_with_its_channels():
+    api = _PlanningAPI()
+    api.record_planning_outcome = AsyncMock(side_effect=RuntimeError("API down"))
+
+    with (
+        patch("src.consumers.architect.PLANNING_OUTCOME_RETRY_DELAY", 0),
+        capture_logs() as logs,
+    ):
+        result = await _run(api, _graph(LLMChannel.CLAUDE))
+
+    assert result["status"] == "success"
+    assert api.record_planning_outcome.await_count == 3
+    [unrecorded] = [e for e in logs if e["event"] == "architect_planning_outcome_unrecorded"]
+    assert unrecorded["log_level"] == "error"
+    assert unrecorded["llm_channels"] == ["claude"]
+
+
+@pytest.mark.asyncio
+async def test_a_success_without_a_brief_survives_one_failed_report():
+    api = _PlanningAPI()
+    record = api.record_planning_outcome
+    calls = []
+
+    async def flaky(story_id, report):
+        calls.append(report)
+        if len(calls) == 1:
+            raise RuntimeError("blip")
+        return await record(story_id, report)
+
+    api.record_planning_outcome = flaky
+    with patch("src.consumers.architect.PLANNING_OUTCOME_RETRY_DELAY", 0):
+        result = await _run(api, _graph(LLMChannel.CLAUDE))
+
+    assert result["status"] == "success"
+    assert len(calls) == 2
+    assert api.story.planning.state is StoryPlanningState.PLANNED
+    assert api.story.planning.channels == ["claude"]
 
 
 # --- what counts as "already decomposed" ---------------------------------------

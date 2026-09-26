@@ -18,7 +18,12 @@ import httpx
 import pytest
 
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
-from shared.contracts.dto.story_planning import StoryPlanning, StoryPlanningState
+from shared.contracts.dto.story_planning import (
+    StoryPlanning,
+    StoryPlanningState,
+    operator_retry_record,
+    planning_retry_queued_key,
+)
 from shared.contracts.dto.user import UserDTO
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
@@ -161,3 +166,43 @@ async def test_a_reopen_is_retried_as_a_reopen(api_factory, redis_client):
     assert message["story_id"] == "story-reopen"
     assert message["is_reopen"] is True
     assert message["user_report"] == "still broken"
+
+
+@pytest.mark.asyncio
+async def test_an_operator_retry_the_api_could_not_publish_is_published_here(
+    api_factory, redis_client
+):
+    """`retry-planning` committed `retrying` due now, and its own publish failed."""
+    owed = operator_retry_record(
+        _planning(StoryPlanningState.PARKED, due_in=timedelta(0)),
+        max_retries=3,
+        now=datetime.now(UTC),
+    )
+    api = api_factory([_story("story-operator", "in_progress", owed)])
+
+    result = await supervise_stuck_stories_now(api, redis_client)
+
+    assert result == {"retried": 1, "failed": 0}
+    [message] = await _architect_messages(redis_client)
+    assert message["story_id"] == "story-operator"
+
+
+@pytest.mark.asyncio
+async def test_a_record_the_operator_action_already_published_is_not_published_again(
+    api_factory, redis_client
+):
+    """The accelerator took the record's guard; the supervisor finds it taken."""
+    owed = operator_retry_record(None, max_retries=3, now=datetime.now(UTC))
+    await redis_client._redis.set(planning_retry_queued_key("story-published", owed), 1)
+    api = api_factory([_story("story-published", "in_progress", owed)])
+
+    result = await supervise_stuck_stories_now(api, redis_client)
+
+    assert result == {"retried": 0, "failed": 0}
+    assert await _architect_messages(redis_client) == []
+
+
+async def supervise_stuck_stories_now(api, redis_client):
+    from src.tasks.supervisor import supervise_stuck_stories
+
+    return await supervise_stuck_stories(api, redis_client)

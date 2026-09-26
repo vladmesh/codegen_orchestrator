@@ -11,12 +11,17 @@ story read as work in progress with no error for as long as anybody asked.
 
 * ``planned`` — the attempt succeeded; the record names the LLM channels that
   planned it, so "which channel planned this story" needs no log search;
-* ``retrying`` — the attempt failed with a failure another try may clear; the
-  scheduler supervisor re-queues planning once ``next_attempt_at`` passes;
+* ``retrying`` — planning is owed: an attempt failed with a failure another try
+  may clear, or an operator re-ran a parked planning. The scheduler supervisor
+  is the guaranteed publisher: it re-queues planning once ``next_attempt_at``
+  passes, and the architect settles a job that arrives before then without
+  planning, so a redelivered entry cannot bypass the backoff;
 * ``parked`` — the retries ran out, or the failure is one no retry can clear;
   the same write moved the story to ``waiting_human_review`` with a
   ``planning_failed`` ``StoryFailure`` and owed the owner and admin notices.
-  ``POST /stories/{id}/retry-planning`` is the operator's way back.
+  ``POST /stories/{id}/retry-planning`` is the operator's way back: in one
+  transaction it clears the stop and writes ``retrying``, due at once, with the
+  count reset.
 
 ``failed_attempts`` is the durable retry count: it lives on the story row, so
 neither a scheduler restart nor a lost Redis key resets it.
@@ -36,6 +41,15 @@ from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 #: the supervisor applies to a story stuck in ``created``: one number says how
 #: many times the platform re-runs the architect on its own.
 PLANNING_MAX_RETRIES_CONFIG_KEY = "supervisor.story_max_architect_retries"
+
+#: How long the once-per-record publish guard lives. After it expires a retry
+#: whose message was lost is published again rather than never.
+PLANNING_RETRY_GUARD_TTL_CONFIG_KEY = "supervisor.story_retry_ttl"
+
+#: Set by whoever publishes the architect job a ``retrying`` record owes — the
+#: supervisor, or the operator action's immediate publish — so one record is
+#: published once. Only a guard: what is owed is the record on the story row.
+PLANNING_RETRY_QUEUED_KEY_PREFIX = "story:planning_retry_queued:"
 
 #: The first retry waits this long; every further one waits twice the previous.
 #: With the default bound of 3 that is 1, 2 and 4 minutes — long enough for a
@@ -73,7 +87,7 @@ class StoryPlanningOutcome(StrEnum):
 _ChannelEntry = Annotated[str, Field(min_length=1, max_length=64)]
 
 
-class _PlanningChannels(BaseModel):
+class PlanningChannels(BaseModel):
     """The LLM channels one planning attempt used, as `ChannelUsage` reported them."""
 
     #: Channels that answered, in order of first use (``codex``, ``openrouter``).
@@ -86,7 +100,7 @@ class _PlanningChannels(BaseModel):
     )
 
 
-class StoryPlanningReport(_PlanningChannels):
+class StoryPlanningReport(PlanningChannels):
     """The body of ``POST /stories/{id}/planning-outcome``: one attempt's outcome."""
 
     model_config = ConfigDict(extra="forbid")
@@ -115,7 +129,7 @@ class StoryPlanningReport(_PlanningChannels):
         return self
 
 
-class StoryPlanning(_PlanningChannels):
+class StoryPlanning(PlanningChannels):
     """The outcome of the story's last planning attempt, as ``stories.planning`` holds it."""
 
     model_config = ConfigDict(extra="forbid")
@@ -134,16 +148,22 @@ class StoryPlanning(_PlanningChannels):
     recorded_at: datetime
 
 
-def planned_record(report: StoryPlanningReport, now: datetime) -> StoryPlanning:
+def planned_record(
+    channels: PlanningChannels,
+    *,
+    planning_attempt_id: str | None,
+    reopen: bool,
+    now: datetime,
+) -> StoryPlanning:
     """The record a successful attempt leaves: the channels that planned the story."""
     return StoryPlanning(
         state=StoryPlanningState.PLANNED,
         failed_attempts=0,
-        planning_attempt_id=report.planning_attempt_id,
-        reopen=report.reopen,
+        planning_attempt_id=planning_attempt_id,
+        reopen=reopen,
         recorded_at=now,
-        channels=report.channels,
-        channel_failures=report.channel_failures,
+        channels=channels.channels,
+        channel_failures=channels.channel_failures,
     )
 
 
@@ -178,3 +198,38 @@ def failed_record(
         channels=report.channels,
         channel_failures=report.channel_failures,
     )
+
+
+def operator_retry_record(
+    parked: StoryPlanning | None, *, max_retries: int, now: datetime
+) -> StoryPlanning:
+    """The record an operator's re-run leaves: planning owed at once, count reset.
+
+    The parked failure stays as ``last_failure``, so the story still says what
+    went wrong until the re-run plans it.
+    """
+    return StoryPlanning(
+        state=StoryPlanningState.RETRYING,
+        failed_attempts=0,
+        max_retries=max_retries,
+        next_attempt_at=now,
+        last_failure=None if parked is None else parked.last_failure,
+        planning_attempt_id=None,
+        reopen=parked is not None and parked.reopen,
+        recorded_at=now,
+    )
+
+
+def planning_is_due(planning: StoryPlanning | None, now: datetime) -> bool:
+    """Whether an architect job may plan now. False only for a retry not yet due."""
+    if planning is None or planning.state is not StoryPlanningState.RETRYING:
+        return True
+    return planning.next_attempt_at is None or planning.next_attempt_at <= now
+
+
+def planning_retry_queued_key(story_id: str, planning: StoryPlanning) -> str:
+    """The publish guard of one ``retrying`` record: one key per record written."""
+    if planning.next_attempt_at is None:
+        raise ValueError("only a retrying record with next_attempt_at is published")
+    stamp = int(planning.next_attempt_at.timestamp() * 1_000_000)
+    return f"{PLANNING_RETRY_QUEUED_KEY_PREFIX}{story_id}:{stamp}"

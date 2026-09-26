@@ -32,7 +32,7 @@ from shared.contracts.dto.run_result import (
     EngineeringRunResult,
 )
 from shared.contracts.dto.story import StoryDTO, StoryStatus
-from shared.contracts.dto.story_planning import StoryPlanningState
+from shared.contracts.dto.story_planning import StoryPlanningState, planning_retry_queued_key
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -70,12 +70,6 @@ from .common import (
 logger = structlog.get_logger(__name__)
 
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
-
-#: Set once the retry after a story's n-th failed planning attempt is queued.
-#: Only a publish guard: the retry count itself is `StoryPlanning.failed_attempts`
-#: on the story row. It expires after `supervisor.story_retry_ttl`, so a retry
-#: whose message was lost is queued once more rather than never.
-PLANNING_RETRY_QUEUED_KEY_PREFIX = "story:planning_retry_queued:"
 
 
 def _story_stuck_threshold() -> int:
@@ -198,9 +192,11 @@ async def _queue_due_planning_retries(
 ) -> int:
     """Re-queue planning for every story whose failed attempt is due a retry.
 
-    The API decided the retry when it recorded the failure — bound, count and
-    backoff are on the story's `planning` record — so this only waits out
-    `next_attempt_at` and publishes once per failed attempt. A story in
+    The guaranteed publisher of every planning the story's `planning` record
+    owes: a failed attempt's retry, whose bound, count and backoff the API
+    decided when it recorded the failure, and an operator's `retry-planning`,
+    due at once. This only waits out `next_attempt_at` and publishes once per
+    record. A story in
     `created` is left to the stuck-story retry above, which already re-queues it.
     """
     redis = redis_client._redis
@@ -211,7 +207,10 @@ async def _queue_due_planning_retries(
             continue
         if planning.next_attempt_at is None or planning.next_attempt_at > now:
             continue
-        key = f"{PLANNING_RETRY_QUEUED_KEY_PREFIX}{story.id}:{planning.failed_attempts}"
+        # The same once-per-record guard `retry-planning` takes when it publishes
+        # right away, so one record is published once. It expires after
+        # `supervisor.story_retry_ttl`, so a message that was lost is re-sent.
+        key = planning_retry_queued_key(story.id, planning)
         if not await redis.set(key, 1, nx=True, ex=_story_retry_ttl()):
             continue
         project_id = str(story.project_id)

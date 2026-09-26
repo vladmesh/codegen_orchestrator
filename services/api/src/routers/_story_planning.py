@@ -9,10 +9,15 @@ or one no retry clears, parks the story in `waiting_human_review` with its
 stop `POST /stories/{id}/human-review` makes, in the same transaction.
 
 `POST /stories/{id}/retry-planning` is the operator's re-run of a parked
-planning failure: it clears the failure and the retry count, returns the story
-to in_progress and queues the architect once. No SQL, no status patch.
+planning failure. In one transaction it clears the stop, returns the story to
+in_progress and writes the planning record as `retrying`, due now, with the
+count reset: from then on planning is owed durably, and the scheduler's
+supervisor publishes it like any other due retry. Publishing right after the
+commit only saves a tick; when it cannot, the request still succeeds and the
+supervisor publishes. No SQL, no status patch.
 """
 
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -28,12 +33,15 @@ from shared.contracts.dto.story_failure import (
 )
 from shared.contracts.dto.story_planning import (
     PLANNING_MAX_RETRIES_CONFIG_KEY,
+    PLANNING_RETRY_GUARD_TTL_CONFIG_KEY,
     StoryPlanning,
     StoryPlanningOutcome,
     StoryPlanningReport,
     StoryPlanningState,
     failed_record,
+    operator_retry_record,
     planned_record,
+    planning_retry_queued_key,
 )
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.models import SystemConfig
@@ -77,10 +85,10 @@ def planning_failure_of(story: Story) -> StoryFailure | None:
     return failure if failure.code is StoryFailureCode.PLANNING_FAILED else None
 
 
-async def _max_planning_retries(db: AsyncSession) -> int:
-    row = await db.get(SystemConfig, PLANNING_MAX_RETRIES_CONFIG_KEY)
+async def _config_int(db: AsyncSession, key: str) -> int:
+    row = await db.get(SystemConfig, key)
     if row is None:
-        raise RuntimeError(f"Missing system config: {PLANNING_MAX_RETRIES_CONFIG_KEY}")
+        raise RuntimeError(f"Missing system config: {key}")
     return int(row.value)
 
 
@@ -109,7 +117,12 @@ async def record_planning_outcome(
     story = await _get_story_for_update(story_id, db)
     now = datetime.now(UTC)
     if report.outcome is StoryPlanningOutcome.SUCCEEDED:
-        planning = planned_record(report, now)
+        planning = planned_record(
+            report,
+            planning_attempt_id=report.planning_attempt_id,
+            reopen=report.reopen,
+            now=now,
+        )
     else:
         if story.status not in _PLANNING_STATUSES:
             raise HTTPException(
@@ -119,7 +132,7 @@ async def record_planning_outcome(
         planning = failed_record(
             _recorded_planning(story),
             report,
-            max_retries=await _max_planning_retries(db),
+            max_retries=await _config_int(db, PLANNING_MAX_RETRIES_CONFIG_KEY),
             now=now,
         )
         if planning.state is StoryPlanningState.PARKED:
@@ -153,11 +166,13 @@ async def retry_story_planning(
     """Re-run planning for a story parked by a planning failure.
 
     Valid only for a story in `waiting_human_review` whose recorded stop is a
-    `planning_failed` `StoryFailure`; anything else is refused with 422. In one
-    transaction the failure and the retry count are cleared and the story
-    returns to in_progress; then one `ArchitectMessage` is published. The
-    architect's claim voids the failed attempt's unadmitted tasks, so nothing
-    of the failed plan survives into the new one.
+    `planning_failed` `StoryFailure`; anything else is refused with 422. One
+    transaction clears the stop, lands on in_progress and writes `retrying`
+    due now with the count reset, so the re-run is owed on the row before
+    anything is published. The response is that story either way: published
+    now, or left to the supervisor's next tick when the immediate publish
+    fails. The architect's claim voids the failed attempt's unadmitted tasks,
+    so nothing of the failed plan survives into the new one.
     """
     body = body or AdminAction()
     story = await _get_story_for_update(story_id, db)
@@ -169,29 +184,72 @@ async def retry_story_planning(
                 f"planning_failed reason; story {story.id} is '{story.status}'"
             ),
         )
-    previous = _recorded_planning(story)
-    reopen = previous is not None and previous.reopen
+    guard_ttl = await _config_int(db, PLANNING_RETRY_GUARD_TTL_CONFIG_KEY)
+    planning = operator_retry_record(
+        _recorded_planning(story),
+        max_retries=await _config_int(db, PLANNING_MAX_RETRIES_CONFIG_KEY),
+        now=datetime.now(UTC),
+    )
     story.quarantine_reason = None
-    story.planning = None
+    story.planning = planning.model_dump(mode="json")
     _do_transition(story, StoryStatus.IN_PROGRESS)
     await db.commit()
     await db.refresh(story)
 
-    msg = ArchitectMessage(
-        story_id=story.id,
-        project_id=str(story.project_id),
-        telegram_chat_id=await resolve_project_chat_id(
-            db, story.project_id, event="story_planning_retried", story_id=story.id
-        ),
-        is_reopen=reopen,
-        user_report=story.user_report if reopen else None,
-    )
-    await redis.publish_message(ARCHITECT_QUEUE, msg)
+    published = await _publish_owed_planning(story, planning, guard_ttl, db, redis)
     logger.info(
         "story_planning_retried",
         story_id=story.id,
         actor=actor,
         requested_by=body.actor,
-        is_reopen=reopen,
+        is_reopen=planning.reopen,
+        published=published,
     )
     return StoryRead.model_validate(story, from_attributes=True)
+
+
+async def _publish_owed_planning(
+    story: Story,
+    planning: StoryPlanning,
+    guard_ttl: int,
+    db: AsyncSession,
+    redis: RedisStreamClient,
+) -> bool:
+    """Publish the architect job the committed record owes, once. Best effort.
+
+    Takes the same once-per-record guard the supervisor takes, so the two never
+    both publish this record. A failure after the guard was taken gives it back,
+    and any failure is logged and left to the supervisor: the record on the row
+    is what is owed, and it is already committed.
+    """
+    key = planning_retry_queued_key(story.id, planning)
+    try:
+        telegram_chat_id = await resolve_project_chat_id(
+            db, story.project_id, event="story_planning_retried", story_id=story.id
+        )
+        if not await redis.redis.set(key, 1, nx=True, ex=guard_ttl):
+            return False
+        try:
+            await redis.publish_message(
+                ARCHITECT_QUEUE,
+                ArchitectMessage(
+                    story_id=story.id,
+                    project_id=str(story.project_id),
+                    telegram_chat_id=telegram_chat_id,
+                    is_reopen=planning.reopen,
+                    user_report=story.user_report if planning.reopen else None,
+                ),
+            )
+        except Exception:
+            with suppress(Exception):
+                await redis.redis.delete(key)
+            raise
+    except Exception as exc:
+        logger.warning(
+            "story_planning_retry_left_to_supervisor",
+            story_id=story.id,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return False
+    return True

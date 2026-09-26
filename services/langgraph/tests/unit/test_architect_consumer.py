@@ -20,7 +20,11 @@ from shared.contracts.dto.product_brief import (
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailureCode
-from shared.contracts.dto.story_planning import StoryPlanning, StoryPlanningState
+from shared.contracts.dto.story_planning import (
+    PlanningChannels,
+    StoryPlanning,
+    StoryPlanningState,
+)
 from shared.contracts.queues.architect import ArchitectMessage
 from tests.unit.factories import (
     make_admission,
@@ -503,7 +507,9 @@ class TestProductBriefPlanning:
         assert "req-1" in user_msg and "req-2" in user_msg
         assert "record_requirement_coverage" in user_msg
         api.claim_planning_attempt.assert_awaited_once_with("brief-1")
-        api.admit_product_brief_coverage.assert_awaited_once_with("brief-1", "plan-1")
+        api.admit_product_brief_coverage.assert_awaited_once_with(
+            "brief-1", "plan-1", channels=PlanningChannels(), reopen=False
+        )
 
     @pytest.mark.asyncio
     async def test_rival_owner_plans_nothing(
@@ -682,7 +688,9 @@ class TestProductBriefPlanning:
         assert result["status"] == "incomplete"
         assert result["missing_requirement_ids"] == ["req-2"]
         assert "req-2" in result["error"]
-        api.admit_product_brief_coverage.assert_awaited_once_with("brief-1", "plan-1")
+        api.admit_product_brief_coverage.assert_awaited_once_with(
+            "brief-1", "plan-1", channels=PlanningChannels(), reopen=True
+        )
         # The story is not moved on by this consumer, and nothing is admitted twice.
         api.transition_story.assert_not_called()
 
@@ -803,7 +811,7 @@ class _FakeBriefBoundary:
             )
         ]
 
-    async def admit_product_brief_coverage(self, brief_id, planning_attempt_id):
+    async def admit_product_brief_coverage(self, brief_id, planning_attempt_id, **_channels):
         self.admit_calls += 1
         must = {r.id for r in self.brief.content.must_requirements}
         covered = {

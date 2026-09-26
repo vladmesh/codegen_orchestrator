@@ -112,7 +112,7 @@ async def test_a_success_records_which_channels_planned_the_story(
 
 
 @pytest.mark.asyncio
-async def test_retry_planning_returns_a_parked_story_to_the_architect_once(
+async def test_retry_planning_owes_a_parked_story_to_the_architect_and_publishes_it_once(
     async_client: AsyncClient, redis_client: Redis, _tasks_project
 ):
     story_id = await _started_story(async_client, _tasks_project)
@@ -127,7 +127,11 @@ async def test_retry_planning_returns_a_parked_story_to_the_architect_once(
     assert body["status"] == StoryStatus.IN_PROGRESS
     assert body["waiting_on"] == "none"
     assert body["quarantine_reason"] is None
-    assert body["planning"] is None
+    # The re-run is owed on the row, due now, count reset, reason kept.
+    assert body["planning"]["state"] == "retrying"
+    assert body["planning"]["failed_attempts"] == 0
+    assert body["planning"]["next_attempt_at"] is not None
+    assert body["planning"]["last_failure"]["detail"] == CAUSE
     [message] = await _architect_messages(redis_client, story_id)
     assert message["is_reopen"] is False
 

@@ -12,6 +12,7 @@ from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
 from shared.contracts.dto.product_brief import (
+    ProductBriefAdmissionCommand,
     ProductBriefAdmissionRead,
     ProductBriefPlanningAttemptCommand,
     ProductBriefPlanningAttemptRead,
@@ -34,7 +35,11 @@ from shared.contracts.dto.run import RunDTO, RunType
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.story_failure import StoryFailure
-from shared.contracts.dto.story_planning import StoryPlanning, StoryPlanningReport
+from shared.contracts.dto.story_planning import (
+    PlanningChannels,
+    StoryPlanning,
+    StoryPlanningReport,
+)
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.telegram import BotLiveness
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
@@ -367,10 +372,24 @@ class LanggraphAPIClient(InternalAPIClient):
         return [RequirementCoverageRead.model_validate(row) for row in resp.json()]
 
     async def admit_product_brief_coverage(
-        self, brief_id: str, planning_attempt_id: str
+        self,
+        brief_id: str,
+        planning_attempt_id: str,
+        *,
+        channels: PlanningChannels,
+        reopen: bool = False,
     ) -> ProductBriefAdmissionRead:
-        """Cross the coverage-to-dispatch boundary once. The API releases, not us."""
-        command = ProductBriefPlanningAttemptCommand(planning_attempt_id=planning_attempt_id)
+        """Cross the coverage-to-dispatch boundary once. The API releases, not us.
+
+        The channels that planned the story ride on the admission, which records
+        them on the story in the same transaction as the release.
+        """
+        command = ProductBriefAdmissionCommand(
+            planning_attempt_id=planning_attempt_id,
+            channels=channels.channels,
+            channel_failures=channels.channel_failures,
+            reopen=reopen,
+        )
         resp = await self.request(
             "POST",
             f"product-briefs/{brief_id}/admit",

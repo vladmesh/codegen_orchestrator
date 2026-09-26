@@ -247,11 +247,15 @@ curl --fail-with-body --silent --show-error \
   "${API_BASE_URL}/api/stories/${STORY_ID}/retry-planning"
 ```
 
-The response is the story in `in_progress` with no `quarantine_reason` and no
-`planning` record: the failure and the retry count are cleared, and one
-architect job is queued. The architect's claim voids the failed attempt's
-unadmitted tasks, so nothing of the failed plan is dispatched. Any other state
-is refused with 422 and changes nothing. Do not PATCH the status or run SQL.
+The response is the story in `in_progress` with no `quarantine_reason` and
+`planning.state` `retrying`, due now, with `failed_attempts` 0: the re-run is
+owed on the story before anything is published. The action publishes the
+architect job right away; if Redis or the owner lookup fails at that moment it
+still answers 200 (the API logs `story_planning_retry_left_to_supervisor`), and
+the scheduler's next tick publishes it. Do not call it again for that. The
+architect's claim voids the failed attempt's unadmitted tasks, so nothing of the
+failed plan is dispatched. Any other state is refused with 422 and changes
+nothing. Do not PATCH the status or run SQL.
 
 ## Reconcile managed deploy targets
 

@@ -898,3 +898,31 @@ async def test_the_claim_and_the_voiding_are_one_transaction(
     voided = await db_session.get(Task, stranded)
     await db_session.refresh(voided)
     assert voided.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_the_admission_records_which_channels_planned_the_story(async_client: AsyncClient):
+    """The release and the story's `planned` outcome with its channels are one transaction."""
+    project_id = await _project(async_client, await _owner(async_client))
+    brief_id, story_id, attempt = await _planned_brief(async_client, project_id)
+    task_id = await _planned_task(async_client, project_id, story_id, attempt)
+    for requirement_id in ("r1", "r2"):
+        covered = await _cover(async_client, brief_id, requirement_id, attempt, task_id=task_id)
+        assert covered.status_code == HTTPStatus.OK, covered.text
+
+    admitted = await async_client.post(
+        f"{BRIEFS_URL}/{brief_id}/admit",
+        json={
+            "planning_attempt_id": attempt,
+            "channels": ["codex"],
+            "channel_failures": ["claude:rate_limited"],
+        },
+    )
+
+    assert admitted.status_code == HTTPStatus.OK, admitted.text
+    assert admitted.json()["outcome"] == ProductBriefAdmissionOutcome.ADMITTED
+    planning = (await async_client.get(f"/api/stories/{story_id}")).json()["planning"]
+    assert planning["state"] == "planned"
+    assert planning["channels"] == ["codex"]
+    assert planning["channel_failures"] == ["claude:rate_limited"]
+    assert planning["planning_attempt_id"] == attempt

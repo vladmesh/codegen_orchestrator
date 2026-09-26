@@ -36,10 +36,12 @@ from shared.contracts.dto.story_failure import (
 )
 from shared.contracts.dto.story_planning import (
     PLANNING_CHANNEL_LIST_LIMIT,
+    PlanningChannels,
     StoryPlanning,
     StoryPlanningOutcome,
     StoryPlanningReport,
     StoryPlanningState,
+    planning_is_due,
 )
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -78,6 +80,11 @@ SCAFFOLD_WAIT_MAX = 300  # max wait time (5 min)
 #: single lost heartbeat — a slow API call, one retryable failure — does not
 #: hand this architect's plan to a second one while it is still planning.
 PLANNING_HEARTBEAT_INTERVAL = PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS / 3
+
+#: How often, and how far apart, a success without a brief is reported before
+#: the error log becomes its record. Small: the plan already stands.
+PLANNING_OUTCOME_ATTEMPTS = 3
+PLANNING_OUTCOME_RETRY_DELAY = 1.0
 
 
 class ReturnedRequirementsNoticeError(RuntimeError):
@@ -246,7 +253,9 @@ async def _claim_planning_attempt(
             raise RuntimeError(f"unexpected planning claim outcome: {claim.outcome}")
 
 
-async def _admit_plan(attempt: _PlanningAttempt, log) -> dict | None:
+async def _admit_plan(
+    attempt: _PlanningAttempt, msg: ArchitectMessage, usage: ChannelUsage, log
+) -> dict | None:
     """Cross the boundary once, and report the refusal when it is refused.
 
     Called exactly once per owned plan, after the graph has returned. `None`
@@ -256,7 +265,10 @@ async def _admit_plan(attempt: _PlanningAttempt, log) -> dict | None:
     are missing.
     """
     admission = await api_client.admit_product_brief_coverage(
-        attempt.brief_id, attempt.planning_attempt_id
+        attempt.brief_id,
+        attempt.planning_attempt_id,
+        channels=_channel_report(usage),
+        reopen=msg.is_reopen,
     )
     if admission.outcome is ProductBriefAdmissionOutcome.INCOMPLETE:
         # The plan is the evidence, not the LLM's account of it. A run that
@@ -484,14 +496,14 @@ async def _settle_stale_retry(msg: ArchitectMessage, story: StoryDTO, log) -> No
         log.warning("architect_stale_planning_retry_unsettled", error=str(e))
 
 
-def _channel_report(usage: ChannelUsage) -> dict[str, list[str]]:
+def _channel_report(usage: ChannelUsage) -> PlanningChannels:
     """The channels of one attempt, bounded for the story record."""
-    return {
-        "channels": usage.channels()[:PLANNING_CHANNEL_LIST_LIMIT],
-        "channel_failures": list(dict.fromkeys(_channel_failures(usage)))[
+    return PlanningChannels(
+        channels=usage.channels()[:PLANNING_CHANNEL_LIST_LIMIT],
+        channel_failures=list(dict.fromkeys(_channel_failures(usage)))[
             :PLANNING_CHANNEL_LIST_LIMIT
         ],
-    }
+    )
 
 
 def _planning_failure_detail(error: BaseException | str, usage: ChannelUsage) -> str:
@@ -538,7 +550,7 @@ async def _report_planning_failure(  # noqa: PLR0913 — one attempt's whole out
         retriable=retriable,
         planning_attempt_id=None if planning is None else planning.planning_attempt_id,
         reopen=msg.is_reopen,
-        **_channel_report(usage),
+        **_channel_report(usage).model_dump(),
     )
     try:
         recorded = await api_client.record_planning_outcome(msg.story_id, report)
@@ -565,17 +577,36 @@ async def _report_planning_failure(  # noqa: PLR0913 — one attempt's whole out
 async def _report_planning_success(
     msg: ArchitectMessage, usage: ChannelUsage, planning: _PlanningAttempt | None, log
 ) -> None:
-    """Record which channels planned the story. Logged, never raised: the plan stands."""
+    """Record which channels planned a story that has no Product Brief attempt.
+
+    A brief-backed plan needs nothing here: its admission recorded the channels
+    in the same transaction as the release. Without one there is no such
+    transaction, so the outcome call is tried a few times; if the API stays
+    unavailable, the error event carrying the channels is the record. The plan
+    stands either way and is never replayed for this.
+    """
+    if planning is not None:
+        return
+    channels = _channel_report(usage)
     report = StoryPlanningReport(
-        outcome=StoryPlanningOutcome.SUCCEEDED,
-        planning_attempt_id=None if planning is None else planning.planning_attempt_id,
-        reopen=msg.is_reopen,
-        **_channel_report(usage),
+        outcome=StoryPlanningOutcome.SUCCEEDED, reopen=msg.is_reopen, **channels.model_dump()
     )
-    try:
-        await api_client.record_planning_outcome(msg.story_id, report)
-    except Exception as e:
-        log.warning("architect_planning_success_unrecorded", error=str(e))
+    for attempt in range(1, PLANNING_OUTCOME_ATTEMPTS + 1):
+        try:
+            await api_client.record_planning_outcome(msg.story_id, report)
+            return
+        except Exception as e:
+            error = e
+            if attempt < PLANNING_OUTCOME_ATTEMPTS:
+                await asyncio.sleep(PLANNING_OUTCOME_RETRY_DELAY * attempt)
+    log.error(
+        "architect_planning_outcome_unrecorded",
+        outcome=StoryPlanningOutcome.SUCCEEDED.value,
+        llm_channels=channels.channels,
+        llm_channel_failures=channels.channel_failures,
+        attempts=PLANNING_OUTCOME_ATTEMPTS,
+        error=str(error),
+    )
 
 
 def _failed_result(error: str, recorded: StoryPlanning | None) -> dict:
@@ -864,6 +895,17 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         log.info("architect_skipping_deploying_story", status=story_status)
         return live_work_settled({"status": "skipped", "reason": f"story already {story_status}"})
 
+    # A failed attempt owes its retry at `next_attempt_at`, and only then. A
+    # redelivered or duplicate entry arriving earlier settles without planning,
+    # so it can neither skip the backoff nor spend the retry budget.
+    if not planning_is_due(story.planning, datetime.now(UTC)):
+        log.info(
+            "architect_planning_not_due",
+            next_attempt_at=story.planning.next_attempt_at,
+            failed_attempts=story.planning.failed_attempts,
+        )
+        return live_work_settled({"status": "skipped", "reason": "planning retry not due"})
+
     # Skip if already in_progress with a plan (duplicate message from supervisor retry)
     # But never skip reopened stories — they need re-decomposition
     skipped = await _skip_already_decomposed(msg, story, redis, log)
@@ -970,7 +1012,7 @@ async def _plan(
             result = await graph.ainvoke(initial_state, config=config)
 
         if planning is not None:
-            refusal = await _admit_plan(planning, log)
+            refusal = await _admit_plan(planning, msg, usage, log)
             if refusal is not None:
                 # An incomplete plan is a failed attempt like any other: the
                 # next run may dispose of what this one left undisposed.

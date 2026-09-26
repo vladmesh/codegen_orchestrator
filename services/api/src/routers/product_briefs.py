@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.contracts.dto.product_brief import (
+    ProductBriefAdmissionCommand,
     ProductBriefAdmissionOutcome,
     ProductBriefAdmissionRead,
     ProductBriefConfirm,
@@ -49,6 +50,7 @@ from shared.contracts.dto.product_brief import (
     RequirementCoverageCreate,
     RequirementCoverageRead,
 )
+from shared.contracts.dto.story_planning import planned_record
 from shared.models import ProductBrief, Project, RequirementCoverage, Story, Task
 from shared.product_brief_text import render_full_brief_sections
 
@@ -595,7 +597,7 @@ async def list_requirement_coverage(
 @router.post("/{brief_id}/admit", response_model=ProductBriefAdmissionRead)
 async def admit_product_brief_coverage(
     brief_id: str,
-    body: ProductBriefPlanningAttemptCommand,
+    body: ProductBriefAdmissionCommand,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     internal: bool = Depends(is_internal_service),
@@ -608,6 +610,10 @@ async def admit_product_brief_coverage(
     first call closed the attempt it presented, so demanding an active attempt
     would turn the retry of a succeeded call into an error. Everything that
     changes state is behind the attempt check.
+
+    The admission that releases the plan also records the story's `planned`
+    outcome with the LLM channels the command names, in the same transaction:
+    a released plan always says which channel planned it.
     """
     brief = await load_brief_for_update(brief_id, db)
     await _authorize(brief.project_id, x_telegram_id, db, internal, credentials)
@@ -690,6 +696,13 @@ async def admit_product_brief_coverage(
     brief.coverage_admitted_at = datetime.now(UTC)
     # The plan is complete, so nobody owns an incomplete plan any more.
     brief.planning_attempt_active = False
+    story = await db.get(Story, story_id)
+    story.planning = planned_record(
+        body,
+        planning_attempt_id=brief.planning_attempt_id,
+        reopen=body.reopen,
+        now=brief.coverage_admitted_at,
+    ).model_dump(mode="json")
     await db.commit()
     await db.refresh(brief)
     logger.info(
