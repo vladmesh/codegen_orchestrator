@@ -170,22 +170,61 @@ def _remote_tools(session: QATargetSession, record, refuse, observe) -> dict:
     }
 
 
+def missing_telethon_credentials(identity_refusal: str | None = None) -> QABlocker:
+    """The refusal of a bot run that holds no proven QA Telegram identity.
+
+    The same blocker whether the run preflight names it or a Telegram tool
+    meets it: credentials this run's identity proof refused are missing
+    credentials, and the reason says so.
+    """
+    return QABlocker(
+        category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
+        attempted="validate QA Telethon credentials",
+        sent="TELETHON_API_ID, TELETHON_API_HASH, TELETHON_SESSION in the QA runtime",
+        received=(
+            f"the QA Telegram session failed this run's identity proof: {identity_refusal}"
+            if identity_refusal
+            else "the QA runtime has no Telegram QA account configured"
+        ),
+    )
+
+
 class _TelegramCapability:
-    """One run's Telegram operations and the callback data they made visible."""
+    """One run's Telegram operations and the callback data they made visible.
+
+    The scripts these operations run are platform-written: every value in them
+    is a JSON literal (`shared.telegram_bot_probe`), never source. They run only
+    with this run's proven QA identity; a run whose proof was refused holds no
+    `telethon_env`, and each operation answers the missing-credentials refusal
+    without starting a child process.
+    """
 
     def __init__(
         self,
         *,
         bot_username: str,
         workspace: QAWorkspace,
-        telethon_env: dict[str, str],
+        telethon_env: dict[str, str] | None,
+        identity_refusal: str | None = None,
         probe_runner: Callable[..., object],
     ) -> None:
         self._bot_username = bot_username
         self._workspace = workspace
         self._telethon_env = telethon_env
+        self._identity_refusal = identity_refusal
         self._run_probe = probe_runner
         self._visible_callbacks: dict[tuple[int, str], str] = {}
+
+    def _without_identity(self, tool: str, *, action: str, attempted: str, sent: str) -> dict:
+        """No proven identity: the refusal, recorded as this run's blocker, and nothing run."""
+        blocker = missing_telethon_credentials(self._identity_refusal)
+        evidence = QATelegramProbeEvidence(
+            action=action, attempted=attempted, sent=sent, delivered=False, error=blocker.received
+        )
+        logger.info("qa_tool_refused", tool=tool, reason=blocker.category.value)
+        self._workspace.record_telegram_probe(evidence, blocker)
+        self._workspace.record(tool, attempted, f"refused: {blocker.received}")
+        return {**evidence.model_dump(mode="json"), "blocker": blocker.category.value}
 
     def _record_evidence(self, tool: str, evidence: QATelegramProbeEvidence) -> dict:
         """Persist runner-owned evidence and fail closed on Telegram errors."""
@@ -293,6 +332,14 @@ class _TelegramCapability:
                 ),
             }
 
+        # The empty-message answer above runs nothing; everything past here does.
+        if not self._telethon_env:
+            return self._without_identity(
+                "telegram_probe",
+                action="message",
+                attempted=f"send {message!r} to @{self._bot_username}",
+                sent=message,
+            )
         run: ProbeRun = await self._run_probe(
             build_bot_message_script(self._bot_username, message),
             env=self._telethon_env,
@@ -310,6 +357,13 @@ class _TelegramCapability:
         """Invoke exactly one inline button a prior reply made visible in this run."""
         button_text = self._visible_callbacks.get((message_id, callback_data))
         sent = f"message_id={message_id} callback_data={callback_data}"
+        if not self._telethon_env:
+            return self._without_identity(
+                "telegram_click_button",
+                action="callback",
+                attempted="press a callback requested by the executor",
+                sent=sent,
+            )
         if button_text is None:
             error = "the callback is not from an inline button visible in this run's bot replies"
             logger.info("qa_tool_refused", tool="telegram_click_button", error=error)
@@ -512,6 +566,7 @@ def build_qa_callables(
     session: QATargetSession,
     workspace: QAWorkspace,
     telethon_env: dict[str, str] | None = None,
+    telegram_identity_refusal: str | None = None,
     probe_runner: Callable[..., object] | None = None,
     jobs: QAJobsCapability | None = None,
     jobs_client_factory: Callable[[str], GeneratedServiceJobsClient] | None = None,
@@ -527,7 +582,11 @@ def build_qa_callables(
         session: the run's single target. Every remote call goes through it.
         workspace: the run's scratch directory; holds the report and the trace.
         telethon_env: QA account credentials, present only when the deployment
-            has a bot to talk to. No executor ever sees them.
+            has a bot to talk to and this run proved the QA identity. No
+            executor ever sees them. Without them a bot target's Telegram
+            calls answer the missing-credentials refusal and run nothing.
+        telegram_identity_refusal: why this run's identity proof refused the
+            session, when it did; named in that refusal.
         probe_runner: override for the Telegram child process, for tests.
         jobs: the run's scheduled-behaviour capability, present only when this
             run's criteria named a behaviour and the deployment holds the
@@ -563,12 +622,11 @@ def build_qa_callables(
         callables["fire_job"] = jobs_capability.fire_job
         callables["job_evidence"] = jobs_capability.job_evidence
     if capabilities.bot_username:
-        if not telethon_env:
-            raise ValueError("a bot target needs the QA account's Telethon credentials")
         telegram = _TelegramCapability(
             bot_username=capabilities.bot_username,
             workspace=workspace,
             telethon_env=telethon_env,
+            identity_refusal=telegram_identity_refusal,
             probe_runner=probe_runner or run_probe_script,
         )
         callables["telegram_probe"] = telegram.telegram_probe

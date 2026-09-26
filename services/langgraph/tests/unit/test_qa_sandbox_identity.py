@@ -32,8 +32,10 @@ from shared.contracts.queues.worker import (
 from shared.contracts.vocab import AgentType
 from shared.qa_probe_cli import QA_PROBE_SCRIPT, TELEGRAM_IDENTITY_CALL
 from src.agents.qa.capability_service import QACapabilityService
+from src.agents.qa.tools import build_qa_callables
 from src.clients.qa_worker import QAExecutorUnavailable, run_qa_executor
 from src.consumers._qa_runner import QARuntimeConfig, preflight_bot_access
+from src.consumers._qa_target import QACapabilities, QATarget, QATargetSession
 from src.consumers._qa_telegram_identity import (
     REDACTED,
     handed_over_secrets,
@@ -41,6 +43,7 @@ from src.consumers._qa_telegram_identity import (
     prove_sandbox_telegram_identity,
     redact,
 )
+from src.consumers._qa_workspace import qa_workspace
 
 SESSION = "1BQANOTEuMTA4LjU2LjE-sandbox-session-value"
 API_HASH = "0123456789abcdef0123456789abcdef"
@@ -159,6 +162,69 @@ class TestTheIdentityIsProvenForEveryRun:
 
         assert blocker.category is QABlockerCategory.MISSING_TELETHON_CREDENTIALS
         assert "telethon_session_unauthorized" in blocker.received
+
+    async def test_a_refused_session_leaves_the_fixed_telegram_tools_refusing_and_idle(
+        self, tmp_path, monkeypatch
+    ):
+        """`telegram_probe` and `telegram_click_button` answer the same refusal and run nothing.
+
+        No probe runner is injected: the tools hold the production
+        `run_probe_script`, and the one way it starts a child is patched to fail.
+        """
+        withdrawn = await prove_sandbox_telegram_identity(
+            RUNTIME, client_factory=lambda _e: FakeClient(authorized=False)
+        )
+        children: list[tuple] = []
+
+        async def no_child_process(*argv, **kwargs):
+            children.append(argv)
+            raise AssertionError("a Telegram tool started a child process without an identity")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", no_child_process)
+        capabilities = QACapabilities(
+            deployed_url="http://1.2.3.4:8000",
+            physical_root="/srv/deployments/product",
+            containers=frozenset({"product-backend-1"}),
+            loopback_ports=frozenset({8000}),
+            bot_username="product_bot",
+        )
+        target = QATarget(
+            server_ip="1.2.3.4",
+            ssh_user="root",
+            qa_ssh_user="qa-observer",
+            server_handle="vps-1",
+            project_name="product",
+            deployed_url="http://1.2.3.4:8000",
+            allocated_ports=frozenset({8000}),
+            bot_username="product_bot",
+        )
+        refusal = withdrawn.telegram_identity_refusal.describe()
+        preflight = await preflight_bot_access(
+            bot_username="product_bot",
+            telethon_env=withdrawn.telethon_env,
+            identity_refusal=withdrawn.telegram_identity_refusal,
+        )
+
+        with qa_workspace(root=str(tmp_path)) as workspace:
+            calls = build_qa_callables(
+                session=QATargetSession(target, SimpleNamespace(), capabilities),
+                workspace=workspace,
+                telethon_env=withdrawn.telethon_env,
+                telegram_identity_refusal=refusal,
+            )
+            probe = await calls["telegram_probe"]("/start")
+            click = await calls["telegram_click_button"](7, "ZGV0YWlscw==")
+
+            assert workspace.telegram_probe_blocker == preflight
+            assert [one.delivered for one in workspace.telegram_probe_evidence] == [False, False]
+
+        assert children == []
+        for answer in (probe, click):
+            assert answer["blocker"] == QABlockerCategory.MISSING_TELETHON_CREDENTIALS.value
+            assert answer["delivered"] is False
+            assert answer["error"] == preflight.received
+            assert "telethon_session_unauthorized" in answer["error"]
+            assert SESSION not in json.dumps(answer)
 
 
 @pytest.fixture

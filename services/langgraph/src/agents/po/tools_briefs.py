@@ -13,7 +13,8 @@ of its own:
   back to the server, which refuses anything but a byte-for-byte match.
 
 A third, `show_full_brief`, reads a revision back in its full form for a user
-who asks for it (`shared.product_brief_text`).
+who asks for it (`shared.product_brief_text`). Its result is the user's reply,
+so a read that fails is a fixed apology in the brief's language, never the error.
 
 **What the user is shown fits one message, or nothing is opened.** The
 confirmation is the brief's short form, and it is measured against
@@ -67,6 +68,7 @@ from shared.product_brief_text import (
     BRIEF_MESSAGE_BUDGET,
     LABELS,
     brief_message_length,
+    full_brief_unavailable,
     render_brief_message,
     render_full_brief,
 )
@@ -533,6 +535,13 @@ async def confirm_product_brief(project_id: str, brief_id: str, *, config: Runna
     )
 
 
+def _stated_language(payload: object) -> str | None:
+    """The language a brief payload names, read without trusting its shape."""
+    content = payload.get("content") if isinstance(payload, dict) else None
+    language = content.get("language") if isinstance(content, dict) else None
+    return language if isinstance(language, str) else None
+
+
 @tool(return_direct=True)
 async def show_full_brief(brief_id: str, *, config: RunnableConfig) -> str:
     """Show the user the full text of a Product Brief, when they ask for it.
@@ -545,11 +554,30 @@ async def show_full_brief(brief_id: str, *, config: RunnableConfig) -> str:
     Args:
         brief_id: The brief id `present_product_brief` returned.
     """
-    brief = await _load_brief(brief_id, _user_headers(config))
-    if brief is None:
-        return f"No Product Brief {brief_id} exists."
+    # The result is the user's reply (`return_direct`), so nothing that fails
+    # here may reach them as it failed: a missing brief, an HTTP error or a
+    # payload that does not validate all become one fixed apology, in the
+    # brief's language when the payload got far enough to name it.
+    language = None
+    try:
+        response = await _get_api().get_raw(
+            f"product-briefs/{brief_id}", headers=_user_headers(config)
+        )
+        response.raise_for_status()
+        payload = response.json()
+        language = _stated_language(payload)
+        brief = ProductBriefRead.model_validate(payload)
+        text = render_full_brief(brief.title, brief.content)
+    except Exception as failure:  # noqa: BLE001 — every read failure is the same apology
+        logger.warning(
+            "po_product_brief_full_unavailable",
+            brief_id=brief_id,
+            error_type=type(failure).__name__,
+            error=str(failure),
+        )
+        return full_brief_unavailable(language)
     logger.info("po_product_brief_full_shown", brief_id=brief.id, revision=brief.revision)
-    return render_full_brief(brief.title, brief.content)
+    return text
 
 
 __all__ = [

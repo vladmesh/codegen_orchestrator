@@ -52,6 +52,9 @@ LABELS: dict[str, dict[str, str]] = {
         "your_words": "your words",
         "said_in": "said earlier in our conversation",
         "answer": "yes / correct me",
+        "full_brief_unavailable": (
+            "Sorry, I could not open the full brief right now. Please ask me again in a minute."
+        ),
     },
     "ru": {
         "what_you_get": "Что вы получите",
@@ -64,6 +67,10 @@ LABELS: dict[str, dict[str, str]] = {
         "your_words": "ваши слова",
         "said_in": "сказано раньше в нашей переписке",
         "answer": "да / поправить",
+        "full_brief_unavailable": (
+            "Извините, сейчас не получилось открыть полный бриф. Попросите меня ещё раз "
+            "через минуту."
+        ),
     },
 }
 
@@ -182,11 +189,21 @@ def render_full_brief(title: str, content: ProductBriefContent) -> str:
     return MESSAGE_BREAK.join(render_full_brief_sections(title, content))
 
 
+def full_brief_unavailable(language: str | None) -> str:
+    """The fixed reply when the full form cannot be read: no error text, no id.
+
+    It is what the user reads in place of the full form, so it says only that
+    the brief could not be opened, in the brief's language or `en`.
+    """
+    return labels_for(language)["full_brief_unavailable"]
+
+
 __all__ = [
     "BRIEF_MESSAGE_BUDGET",
     "FULL_BRIEF_CEILING",
     "LABELS",
     "brief_message_length",
+    "full_brief_unavailable",
     "labels_for",
     "render_brief_message",
     "render_full_brief",

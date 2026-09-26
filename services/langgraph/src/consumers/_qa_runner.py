@@ -64,7 +64,11 @@ from ..agents.qa.packages import (
     parse_job_owners,
     parse_listed_packages,
 )
-from ..agents.qa.tools import QAJobsCapability, build_qa_callables
+from ..agents.qa.tools import (
+    QAJobsCapability,
+    build_qa_callables,
+    missing_telethon_credentials,
+)
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
 from ..prompts.qa import build_qa_instructions, build_qa_prompt
 from ._qa_target import (
@@ -1380,16 +1384,8 @@ async def preflight_bot_access(
     refused are missing credentials too, and the blocker says why.
     """
     if not telethon_env:
-        return QABlocker(
-            category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
-            attempted="validate QA Telethon credentials",
-            sent="TELETHON_API_ID, TELETHON_API_HASH, TELETHON_SESSION in the QA runtime",
-            received=(
-                f"the QA Telegram session failed this run's identity proof: "
-                f"{identity_refusal.describe()}"
-                if identity_refusal
-                else "the QA runtime has no Telegram QA account configured"
-            ),
+        return missing_telethon_credentials(
+            identity_refusal.describe() if identity_refusal else None
         )
     probe = await run_probe_script(
         build_access_probe_script(bot_username),
@@ -1474,6 +1470,11 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         session=session,
         workspace=workspace,
         telethon_env=runtime.telethon_env,
+        telegram_identity_refusal=(
+            runtime.telegram_identity_refusal.describe()
+            if runtime.telegram_identity_refusal
+            else None
+        ),
         jobs=jobs,
     )
     secrets = handed_over_secrets(runtime)

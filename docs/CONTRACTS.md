@@ -461,6 +461,13 @@ escaped by `html.escape(..., quote=False)`:
   splitter. The admin API returns the same sections from
   `GET /api/product-briefs/{id}/full` as `ProductBriefFullText`
   (`brief_id`, `revision`, `language`, `sections: list[str]`).
+- *`show_full_brief` failure rule* — its result is always the full form or one
+  fixed apology (`full_brief_unavailable`: the brief's language, else `en`; no
+  error text, no id), whatever failed in the read. In a turn where the model calls
+  it beside other tools, the PO graph's `post_model_hook` answers every other call
+  with a short `Not run:` tool error before the tool node runs, so the brief is the
+  turn's last message and nothing else ran; unusable arguments answer every call
+  of the turn the same way and the model gets another step.
 
 **Over the budget, the product is staged, and nothing is written.**
 `present_product_brief` renders the short form from the *proposed* title and
@@ -1669,6 +1676,12 @@ executor by the capability endpoint (`telegram_identity`) only after the run
 proved it; the outcome is `Run.run_metadata.qa_telegram_identity`
 (`handed_over`, and on refusal `reason`/`detail`). Failure to establish
 that boundary is a typed infrastructure outcome, not a product verdict.
+The fixed Telegram tools `telegram_probe` and `telegram_click_button` stay
+platform tools in qa-worker (sprint:1464 option B), not routed through the run's
+proxy: their child scripts are platform-written with every input a JSON literal
+(proven by executing them with hostile values), and they run only with the
+proven identity — without it each returns the `missing_telethon_credentials`
+blocker preflight uses and starts no child process.
 
 QA parses criteria before it resolves exploratory-only resources. Deterministic
 probe inability, unavailable target runtime, bot liveness failures, access
