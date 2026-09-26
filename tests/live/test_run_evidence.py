@@ -2902,6 +2902,49 @@ def test_a_run_admitted_under_the_requested_executor_agrees(codex_docker, tmp_pa
     assert cell["executor_selected"]["value"] == "claude"
 
 
+def test_the_qa_cell_carries_the_probes_the_executor_ran_in_its_sandbox(codex_docker, tmp_path):
+    """`mega-live`'s location proof, as the paid run's artifact shows it.
+
+    The QA Run record in the artifact carries the retained probe records — the
+    source the executor ran and the output it got back — beside the checks that
+    passed and the ones QA could not verify, so a reader can see the probe that
+    proved the location check without the stand.
+    """
+    collector = collector_for(codex_docker)
+    collector.capture()
+    probe = {
+        "id": "probe-1",
+        "platform": "telegram",
+        "name": "location",
+        "source": "from telethon.tl.types import InputGeoPoint\n",
+        "arguments": ["@mega_e2e_codegen_bot", "55.75588", "37.61738"],
+        "stdout": '{"replies": [{"text": "location: 55.7559, 37.6174"}]}\n',
+        "stderr": "",
+        "exit_status": 0,
+        "duration_ms": 15000,
+    }
+    run = {
+        **_qa_run_admitted_under("claude"),
+        "result": {
+            **QA_BLOCKED_RUN["result"],
+            "qa_outcome": QAOutcome.PASSED.value,
+            "blocker": None,
+            "passed_checks": ["bot answers a native location"],
+            "unverified_checks": [],
+            "probe_runs": [probe],
+        },
+    }
+
+    record = build_artifact(
+        qa_stage_ctx(collector, qa_run=run, qa_run_record=run_evidence.qa_run_facts(run)),
+        root=tmp_path,
+    )["qa"]["run_record"]["value"]
+
+    assert record["probe_runs"] == [probe]
+    assert record["passed_checks"] == ["bot answers a native location"]
+    assert record["unverified_checks"] == []
+
+
 def test_a_run_with_no_persisted_decision_says_so_instead_of_repeating_the_request(
     codex_docker, tmp_path
 ):

@@ -1366,7 +1366,7 @@ async def create_level1_bot_project(
     # the change sets and the brief, so the three cannot drift apart and a
     # document left over from another run cannot satisfy the verbatim check.
     ctx["task_criteria"] = change_sets.backend_acceptance_criteria()
-    ctx["followup_task_criteria"] = change_sets.bot_acceptance_criteria()
+    ctx["followup_task_criteria"] = change_sets.bot_acceptance_criteria(agent_type=agent_type)
     ctx["product_bot_token"] = token
     # Everything the second story is built from, held until the first story has
     # completed. It is a plan, not state: nothing in it is read while the first

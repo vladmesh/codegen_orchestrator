@@ -2284,6 +2284,14 @@ def qa_run_facts(run: dict) -> dict:
         "executor_decision": (run.get("run_metadata") or {}).get(EXECUTOR_DECISION_METADATA_KEY),
         "deployed_url": result.get("deployed_url"),
         "failed_checks": result.get("failed_checks") or [],
+        # What the executor checked and could not, and the probes it ran in its
+        # sandbox, as the runner retained them: source, arguments, output and
+        # exit status. `mega-live`'s location proof is read from these, so the
+        # artifact of a paid run shows the probe that proved it (or did not).
+        "passed_checks": result.get("passed_checks") or [],
+        "unverified_checks": result.get("unverified_checks") or [],
+        "probe_runs": result.get("probe_runs"),
+        "probe_library": result.get("probe_library"),
         "blocker": (
             {
                 "category": blocker.get("category"),

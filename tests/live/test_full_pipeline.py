@@ -44,6 +44,7 @@ from level1_change_set import (
     LEVEL1_EXTENSION_SETTING_KEY,
     LEVEL1_SETTING_KEY,
 )
+from level1_location_proof import location_proof_mismatches
 from level1_second_story import (
     DEPLOY_PATH_OWNER_GRANT,
     DEPLOY_PATH_PR_POLLER,
@@ -793,6 +794,18 @@ def _qa_executor_mismatches(story: dict, *, requested: str | None) -> list[str]:
     return []
 
 
+def _location_proof_mismatches(story: dict) -> list[str]:
+    """Why one story's terminal QA Run does not prove the QA sandbox's location check.
+
+    Read from the QA Run record the suite recorded inside the QA wait — the
+    record the evidence artifact carries — never from what the harness watched.
+    """
+    record = story.get("qa_run_record")
+    if not record:
+        return [f"no QA Run record: {story.get('qa_run_record_error')}"]
+    return location_proof_mismatches(record)
+
+
 def _no_probe(pipeline: dict, name: str) -> str:
     """Why a deployed-product probe is missing — a failure, never a skip.
 
@@ -1106,7 +1119,10 @@ class TestFullPipeline:
 
         Live, it also has to have been judged by the executor the run asked for,
         against the criteria the story's plan admission wrote — and those were
-        not health-only, so QA could not have passed without starting it.
+        not health-only, so QA could not have passed without starting it. And
+        the executor has to have proven the location check as the QA account,
+        with a probe it ran in its sandbox that the Run retained: that is what
+        makes a `mega-live` pass the end-to-end proof of the QA sandbox.
         """
         assert pipeline.get("qa_result") == {
             "run_id": pipeline["qa_result"]["run_id"],
@@ -1118,6 +1134,10 @@ class TestFullPipeline:
             assert (
                 _qa_executor_mismatches(pipeline, requested=pipeline.get("qa_agent_type_requested"))
                 == []
+            )
+            location = _location_proof_mismatches(pipeline)
+            assert location == [], "the QA sandbox's location proof is missing:\n" + "\n".join(
+                location
             )
 
     async def test_story_completed_and_owner_notification_delivered(self, pipeline):

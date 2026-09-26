@@ -514,6 +514,12 @@ def test_a_model_developer_gets_the_contract_in_prose_and_no_change_set(
     assert module.level1_command_description(sets.marker) in bot
     assert "setMyCommands" in bot
     assert "post_init" in bot
+    # Story 1, live only: the location handler and the reply it answers with.
+    assert "MessageHandler(filters.LOCATION" in bot
+    assert (
+        f'"location: {module.LEVEL1_LOCATION_REPLY_LATITUDE}, '
+        f'{module.LEVEL1_LOCATION_REPLY_LONGITUDE}"'
+    ) in bot
     # Story 2: the second endpoint, both markers, the second setting, story 1 kept.
     assert f"GET {module.LEVEL1_EXTENSION_ENDPOINT_PATH}" in extension_text
     assert '"base_marker"' in extension_text
@@ -527,20 +533,35 @@ def test_a_model_developer_gets_the_contract_in_prose_and_no_change_set(
         assert "framework.enforce_spec_compliance" in description
 
 
-def test_the_acceptance_criteria_do_not_depend_on_the_developer(change_sets, extension_change_set):
-    """TASK.md quotes the same criteria whoever develops: only the fence differs."""
+def test_the_acceptance_criteria_differ_by_developer_only_in_the_live_location_line(
+    change_sets, extension_change_set
+):
+    """TASK.md quotes the same criteria whoever develops, but for one live-only line.
+
+    Only the fence differs between the scripted and the modelled descriptions,
+    except that a model's bot task also asks for the location behaviour the real
+    QA executor proves its Telegram sandbox with. The scripted runner is never
+    asked for it: its criteria and its prose are exactly what they were.
+    """
     module, sets = change_sets
     _, extension = extension_change_set
+    location = module.level1_location_criterion()
 
     assert sets.backend_acceptance_criteria() == module.backend_acceptance_criteria(sets.marker)
-    assert sets.bot_acceptance_criteria() == module.bot_acceptance_criteria(sets.marker)
+    scripted_bot = sets.bot_acceptance_criteria(agent_type="noop")
+    assert scripted_bot == module.bot_acceptance_criteria(sets.marker, agent_type="noop")
+    assert location not in scripted_bot
+    for developer in ("claude", "codex"):
+        assert sets.bot_acceptance_criteria(agent_type=developer) == f"{scripted_bot}\n{location}"
     assert extension.acceptance_criteria() == module.extension_acceptance_criteria(
         sets.marker, extension.extension_marker
     )
     scripted = _descriptions(change_sets, extension_change_set, "noop")
     modelled = _descriptions(change_sets, extension_change_set, "claude")
+    location_contract = module._location_contract()
+    assert location_contract in modelled["bot"]
     for name, description in modelled.items():
-        assert scripted[name].startswith(description), name
+        assert scripted[name].startswith(description.replace(location_contract, "")), name
 
 
 def test_the_live_qa_criteria_are_not_health_only_and_carry_the_run_s_markers(
@@ -561,6 +582,10 @@ def test_the_live_qa_criteria_are_not_health_only_and_carry_the_run_s_markers(
     assert module.LEVEL1_EXTENSION_SETTING_KEY in second
     # Story 2's checklist still asks for story 1's endpoint.
     assert module.backend_acceptance_criteria(sets.marker) in second
+    # Story 1's checklist ends with the live-only location line, the one the QA
+    # executor proves its Telegram sandbox with; story 2 does not re-ask it.
+    assert first.endswith(f"\n{module.level1_location_criterion()}")
+    assert module.level1_location_criterion() not in second
 
 
 def test_a_template_other_than_the_pin_is_refused(change_sets):
