@@ -6,7 +6,7 @@
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO and the Architect read a compact rendering of the same source on every turn.
 
-Derived from the kit `gh:vladmesh/codegen-product-kit@0.6.2` (commit `9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914`). The pinned `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
+Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
 
 Code it was read from:
 
@@ -152,7 +152,7 @@ Why: Postgres and Redis get host ports allocated, but production compose publish
 
 Workaround: Expose what is needed through backend endpoints.
 
-## Kit at 0.6.2
+## Kit at 9a4acfd8b75f
 
 Modules:
 

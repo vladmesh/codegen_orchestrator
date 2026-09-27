@@ -7,6 +7,7 @@ secret kind the code gains fails these tests, naming it, until the manifest list
 
 from __future__ import annotations
 
+import re
 from typing import get_args
 
 from langchain_core.messages import SystemMessage
@@ -102,6 +103,14 @@ def coverage_gaps(manifest: CapabilityManifest) -> list[str]:
     ]
 
 
+def _pinned_kit_commit() -> str:
+    """The commit the vendored render of the pinned release resolves the kit tooling to."""
+    repository = TEMPLATE_PIN.source.rsplit("/", 1)[-1]
+    project = (TEMPLATE_PIN.fixture_path() / "pyproject.toml").read_text()
+    [commit] = re.findall(rf"{re.escape(repository)}\.git@([0-9a-f]{{40}})", project)
+    return commit
+
+
 def _pinned_kit_production_derived_keys() -> set[str]:
     keys = set()
     for path in TEMPLATE_PIN.fixture_path().rglob("env.contract.yaml"):
@@ -163,7 +172,7 @@ class TestTheManifestCoversTheCode:
     def test_the_kit_is_the_pinned_template(self):
         kit = load_manifest().derived_from.kit
 
-        assert (kit.source, kit.ref) == (TEMPLATE_PIN.source, TEMPLATE_PIN.ref)
+        assert (kit.source, kit.commit) == (TEMPLATE_PIN.source, _pinned_kit_commit())
 
     def test_every_derived_key_the_pinned_kit_deploys_is_computed_or_named_as_not(self):
         not_resolved = {entry.key for entry in load_manifest().kit_derived_keys_not_resolved}

@@ -1,5 +1,5 @@
 ## Platform capabilities (manifest v1, draft)
-What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@0.6.2.
+What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@9a4acfd8b75f.
 Can:
 - Telegram bot (long polling): A Telegram bot people chat with; it fetches new messages itself, so it needs no web address.
 - Backend at http://<server IP>:<port>: A web API other programs can call over plain http at the server's address and a port.

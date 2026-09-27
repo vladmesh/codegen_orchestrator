@@ -16,11 +16,13 @@ review: owner read-through pending
 derived_from:
   kit:
     source: gh:vladmesh/codegen-product-kit
-    ref: "0.6.2"
+    # The commit the pinned release resolves to. The release tag itself is written down only
+    # in `scripts/system_configs.yaml` (`scheduler.service_template_ref`); a test ties this
+    # commit to the vendored render of that pin, so moving the pin fails until it is updated.
     commit: 9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914
     note: >-
-      The pinned `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an
-      admitted Copier source, but no new product is scaffolded from it.
+      The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is
+      still an admitted Copier source, but no new product is scaffolded from it.
   code:
     - services/langgraph/src/subgraphs/devops/deployer.py
     - services/langgraph/src/subgraphs/devops/secret_resolver.py

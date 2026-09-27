@@ -33,7 +33,6 @@ class _Model(BaseModel):
 
 class KitSource(_Model):
     source: str = Field(min_length=1)
-    ref: str = Field(min_length=1)
     commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     note: str = Field(min_length=1)
 
@@ -121,8 +120,9 @@ def _status_line(manifest: CapabilityManifest) -> str:
 
 
 def _kit_ref(manifest: CapabilityManifest) -> str:
+    """The kit as source and short commit; the release tag lives only in the pin's seed."""
     kit = manifest.derived_from.kit
-    return f"{kit.source}@{kit.ref}"
+    return f"{kit.source}@{kit.commit[:12]}"
 
 
 def render_document(manifest: CapabilityManifest) -> str:
@@ -140,7 +140,7 @@ def render_document(manifest: CapabilityManifest) -> str:
         "workaround where one exists. The PO and the Architect read a compact rendering of the "
         "same source on every turn.",
         "",
-        f"Derived from the kit `{_kit_ref(manifest)}` (commit `{kit.commit}`). {kit.note}",
+        f"Derived from the kit `{kit.source}` at commit `{kit.commit}`. {kit.note}",
         "",
         "Code it was read from:",
         "",
@@ -156,7 +156,7 @@ def render_document(manifest: CapabilityManifest) -> str:
         lines += [f"### {item.name}", "", item.plain, "", f"Why: {item.why}", ""]
         if item.workaround:
             lines += [f"Workaround: {item.workaround}", ""]
-    lines += [f"## Kit at {kit.ref}", "", "Modules:", ""]
+    lines += [f"## Kit at {kit.commit[:12]}", "", "Modules:", ""]
     lines += [f"- `{module.name}`: {module.plain}" for module in manifest.kit.modules]
     lines += ["", "Core contracts every backend carries:", ""]
     lines += [f"- {core.name}: {core.plain}" for core in manifest.kit.core]
