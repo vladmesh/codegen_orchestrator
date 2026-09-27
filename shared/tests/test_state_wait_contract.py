@@ -203,3 +203,13 @@ def test_a_planless_in_progress_wait_is_anchored_on_the_story_row_and_its_tasks(
 
     moved_on = still.model_copy(update={"status": StoryStatus.PR_REVIEW})
     assert command.mismatch(moved_on).reason is StateWaitSkipReason.STATUS_MOVED
+
+
+def test_a_reason_stored_before_the_mass_sweep_mark_reads_as_not_one():
+    command = _command(StoryStatus.DEPLOYING, StateWaitEnding.PARK, run_id="deploy-1")
+    stored = command.reason.model_dump(mode="json")
+    del stored["mass_sweep"]
+    assert StateWaitExpiryReason.model_validate(stored).mass_sweep is False
+    # A repeat of a mass-sweep ending is the same wait as the one first ended.
+    marked = command.reason.model_copy(update={"mass_sweep": True})
+    assert marked.names_same_wait(stored)

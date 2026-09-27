@@ -7,7 +7,14 @@ from src.agents.po.tools_briefs import present_product_brief
 from src.agents.po.tools_stories import create_story
 from src.prompts.po import SYSTEM_PROMPT
 
-MAX_PROMPT_LENGTH = 15000
+MAX_PROMPT_LENGTH = 16000
+#: The one wording that forbids softening a stopped story (sprint 1468 DoD4).
+NO_SOFTENING = (
+    'Never say "tested", "standard check/procedure" or "a specialist is checking/reviewing".'
+)
+#: The softening words: never in a positive instruction, only in a prohibition.
+_SOFTENING = re.compile(r"\btested\b|\bstandard\b|\bspecialist\b|\broutine\b", re.IGNORECASE)
+_PROHIBITION = re.compile(r"\b(never|not|no)\b", re.IGNORECASE)
 
 
 def _section(heading: str) -> str:
@@ -208,14 +215,9 @@ class TestSystemPrompt:
         assert "Record it in `limitations`" in SYSTEM_PROMPT
 
     def test_a_stopped_story_is_reported_honestly(self):
-        events = _section("## Story Events & Reminders")
+        events = " ".join(_section("## Story Events & Reminders").split())
         assert "work is stopped, a person is needed, there is no known time" in events
-        assert (
-            "Do NOT call it tested, finished, standard, a routine procedure or a specialist check"
-        ) in events
-        assert "do NOT say someone is checking or reviewing it, unless a tool result says so" in (
-            events
-        )
+        assert "Never call it finished or routine. " + NO_SOFTENING in events
         assert "`waiting_human_review` — blocked → say work is stopped, a person is needed" in (
             events
         )
@@ -239,7 +241,7 @@ class TestSystemPrompt:
         bullet = " ".join(bullet[: bullet.index("\n- ")].split())
         assert bullet == (
             "- `story_quarantined` — as `story_blocked`: work is stopped, a person decides, "
-            "there is no known time."
+            f"there is no known time. {NO_SOFTENING}"
         )
 
     def test_unverified_checks_get_one_honest_message_and_a_recorded_answer(self):
@@ -413,3 +415,55 @@ def test_deferred_notices_are_explicit_and_do_not_change_facts():
         "Nothing expires",
     ):
         assert instruction in section
+
+
+def _bullets(section: str) -> list[str]:
+    """Each ``- `` bullet of a section; the prompt's line continuations already joined it."""
+    return [" ".join(b.split()) for b in re.findall(r"^- .*$", section, flags=re.MULTILINE)]
+
+
+def _tells_a_stopped_story(text: str) -> bool:
+    return bool(re.search(r"\bstopped\b|\bblocked\b|story_blocked|story_quarantined|defer", text))
+
+
+class TestNoSoftening:
+    """A blocked or stopped story is told as stopped; its facts are never softened."""
+
+    def test_every_instruction_telling_a_stop_forbids_softening(self):
+        events = _section("## Story Events & Reminders")
+        told_by_bullet = [b for b in _bullets(events) if _tells_a_stopped_story(b)]
+        heads = [b.split(" — ")[0] for b in told_by_bullet]
+        assert heads == [
+            "- `story_blocked`",
+            "- `story_quarantined`",
+            "- `story_impossible_capacity` / `task_impossible_capacity`",
+            "- `waiting_human_review`",
+        ]
+        for bullet in told_by_bullet:
+            assert NO_SOFTENING in bullet, bullet
+        for heading in ("## Reporting a Problem Honestly", "## Deferred Notices"):
+            assert NO_SOFTENING in " ".join(_section(heading).split()), heading
+
+    def test_the_softening_words_appear_only_in_prohibitions(self):
+        lines = SYSTEM_PROMPT.splitlines()
+        sentences = [
+            sentence for line in lines for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z*`\"])", line)
+        ]
+        using = [s for s in sentences if _SOFTENING.search(s)]
+        assert using, "the prohibitions themselves name the words"
+        for sentence in using:
+            assert _PROHIBITION.search(sentence), sentence
+
+    def test_a_mass_sweep_stop_is_a_late_notice_told_by_its_dates(self):
+        from src.agents.po.situation import MASS_SWEEP_MARK
+
+        section = " ".join(_section("## Reporting a Problem Honestly").split())
+        assert f'A status "{MASS_SWEEP_MARK}" is a late notice after a platform outage' in section
+        assert "tell it with its dates, never as a fresh failure of the user's product" in section
+
+    def test_the_snapshot_fact_is_the_wording_the_prompt_asks_for(self):
+        from src.agents.po.situation import STOPPED_FACT
+
+        assert STOPPED_FACT == "stopped, a person is needed, no known deadline"
+        for word in ("tested", "standard", "specialist", "checking", "reviewing"):
+            assert word not in STOPPED_FACT

@@ -1,5 +1,6 @@
 """PO decisions about durable notices and their single publication check."""
 
+from http import HTTPStatus
 import json
 from typing import Literal
 
@@ -60,6 +61,9 @@ async def _settle(story_id: str, command: OwnerNoticeSettlement) -> str:
     response = await _get_api().post_raw(
         f"stories/{story_id}/owner-notifications/settlement", json=command.model_dump(mode="json")
     )
+    if response.status_code == HTTPStatus.GONE:
+        # Settled, but the record left before its admin copy could be marked sent.
+        return f"Notice recorded as {command.told_state}. {response.json()['detail']}."
     if not response.is_success:
         return f"Notice was not settled: {response.json()['detail']}"
     return f"Notice recorded as {command.told_state}."
@@ -161,16 +165,40 @@ async def notice_may_publish(api: InternalAPIClient, data: dict) -> bool:
         return True
     try:
         notices = await read_notices(api, data["story_id"])
-        return any(
-            n.source == reference.source
-            and n.source_id == reference.source_id
-            and n.owed_at == reference.owed_at
-            and n.notification.told_state is None
-            for n in notices
-        )
     except Exception as exc:
         logger.warning("po_owner_notice_read_failed", story_id=data["story_id"], error=str(exc))
         raise OwnerNoticeReadUnknown(data["story_id"]) from exc
+    record = next(
+        (
+            n.notification
+            for n in notices
+            if n.source == reference.source
+            and n.source_id == reference.source_id
+            and n.owed_at == reference.owed_at
+        ),
+        None,
+    )
+    log = logger.bind(
+        story_id=data["story_id"],
+        po_event=data.get("event"),
+        source=reference.source,
+        source_id=reference.source_id,
+        owed_at=reference.owed_at.isoformat(),
+    )
+    if record is None:
+        # A newer obligation on the same Run or Story replaced the record while
+        # the turn ran; that newer record's own event is the one to tell.
+        log.info("po_reply_withheld_notice_replaced")
+        return False
+    if record.told_state is not None:
+        log.info(
+            "po_reply_withheld_notice_settled",
+            told_state=record.told_state,
+            suppressed_by=record.suppressed_by,
+            suppressed_reason=record.suppressed_reason,
+        )
+        return False
+    return True
 
 
 async def record_notice_told(api: InternalAPIClient, data: dict) -> None:

@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- A state-age pass that ends more waits than `supervisor.state_age_mass_park_threshold` marks each
+  `mass_sweep` and sends admins one message; the PO snapshot tells it as a late notice after downtime.
+- A stopped story is told as "stopped, a person is needed, no known deadline"; the PO prompt forbids
+  "tested", "standard check/procedure" and "a specialist is checking" wherever it tells a stop.
+- The PO publish point logs a reply withheld for a replaced or settled notice; a notice record gone
+  before its admin copy is marked sent answers 410, not 500.
 - PO can defer owner notices with a reason and an admin copy, retrieve them until told or closed,
   and record telling separately from queue delivery.
 

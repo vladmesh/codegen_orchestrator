@@ -155,12 +155,30 @@ async def settle_owner_notice(
             await db.refresh(story)
             notices, runs = await _story_notices(story, db, lock=True)
             current = next(
-                n.notification
-                for n in notices
-                if n.source == command.source
-                and n.source_id == command.source_id
-                and n.owed_at == command.owed_at
+                (
+                    n.notification
+                    for n in notices
+                    if n.source == command.source
+                    and n.source_id == command.source_id
+                    and n.owed_at == command.owed_at
+                ),
+                None,
             )
+            if current is None:
+                # The deferral committed and the copy went out, but the record
+                # it belongs to is gone: nothing is left to mark delivered.
+                logger.warning(
+                    "owner_notice_admin_copy_record_gone",
+                    story_id=story_id,
+                    source=command.source,
+                    source_id=command.source_id,
+                    owed_at=command.owed_at.isoformat(),
+                )
+                raise HTTPException(
+                    410,
+                    "The notice was deferred and its administrator copy sent, but its record "
+                    "is gone, so the copy's delivery was not recorded",
+                )
             if current.admin_text == settled.admin_text:
                 current = current.model_copy(
                     update={"admin_state": OwnerNotificationState.DELIVERED}

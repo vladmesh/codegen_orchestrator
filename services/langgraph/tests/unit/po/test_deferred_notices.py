@@ -77,6 +77,8 @@ class NoticeAPI:
         self.writes = []
         self.fail_write = False
         self.fail_read = False
+        #: The record leaves after the settlement commits and its admin copy is sent.
+        self.gone_after_settlement = False
 
     def addressed(self):
         return AddressedOwnerNotice(
@@ -121,6 +123,10 @@ class NoticeAPI:
                 if command.told_state == "closed":
                     fields["closed_reason"] = command.reason
             self.notice = self.notice.model_copy(update=fields)
+            if self.gone_after_settlement:
+                return httpx.Response(
+                    410, json={"detail": "The notice was deferred, but its record is gone"}
+                )
             return httpx.Response(200, json=self.notice.model_dump(mode="json"))
         return await self.base._handle(request)
 
@@ -333,3 +339,57 @@ async def test_resolving_told_requires_a_user_turn(world):
     )
     assert "user turn" in answer
     assert world[0].writes == []
+
+
+async def test_a_reply_withheld_for_a_settled_notice_is_logged(world):
+    ledger, stream = world
+    ledger.notice = ledger.notice.model_copy(
+        update={
+            "told_state": "suppressed",
+            "suppressed_by": "admin",
+            "suppressed_reason": "Wait",
+            "suppressed_at": datetime.now(UTC),
+        }
+    )
+    with capture_logs() as logs:
+        await po._handle_message(graph(AIMessage(content="Hold")), stream, CHAT, ledger.event())
+    stream.publish_flat.assert_not_called()
+    [withheld] = [log for log in logs if log["event"] == "po_reply_withheld_notice_settled"]
+    assert (withheld["story_id"], withheld["told_state"]) == (STORY, "suppressed")
+    assert (withheld["suppressed_by"], withheld["suppressed_reason"]) == ("admin", "Wait")
+    assert withheld["source"] == ledger.source
+
+
+async def test_a_reply_withheld_for_a_replaced_record_is_logged(world):
+    """A newer obligation replaced the record during the turn; its own event is told."""
+    ledger, stream = world
+    event = ledger.event()
+    replaced_at = ledger.notice.owed_at
+    ledger.notice = ledger.notice.model_copy(update={"owed_at": datetime.now(UTC)})
+    with capture_logs() as logs:
+        await po._handle_message(graph(AIMessage(content="Old news")), stream, CHAT, event)
+    stream.publish_flat.assert_not_called()
+    assert ledger.writes == []
+    [withheld] = [log for log in logs if log["event"] == "po_reply_withheld_notice_replaced"]
+    assert withheld["story_id"] == STORY
+    assert withheld["owed_at"] == replaced_at.isoformat()
+    assert withheld["po_event"] == "story_blocked"
+
+
+async def test_a_settlement_whose_record_left_afterwards_is_reported_as_settled(world):
+    ledger, _stream = world
+    ledger.gone_after_settlement = True
+    answer = await tools_notices._settle(
+        STORY,
+        OwnerNoticeSettlement(
+            source=ledger.source,
+            source_id=ledger.source_id,
+            owed_at=ledger.notice.owed_at,
+            told_state="suppressed",
+            reason="small",
+            suppressed_by="po",
+        ),
+    )
+    assert answer == (
+        "Notice recorded as suppressed. The notice was deferred, but its record is gone."
+    )

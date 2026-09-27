@@ -491,11 +491,34 @@ def configured_bound_minutes(status: StoryStatus) -> int | None:
     return None
 
 
+#: Above this many endings in one pass the pass is a mass sweep after downtime.
+MASS_PARK_THRESHOLD_KEY = "supervisor.state_age_mass_park_threshold"
+
+
+@dataclass(frozen=True)
+class _ExpiredWait:
+    """One wait this pass found past its bound, still to be ended."""
+
+    story: StoryDTO
+    bound: StateAgeBound
+    anchor: _Anchor
+    age_minutes: float
+    threshold_minutes: int
+    log: structlog.stdlib.BoundLogger
+
+
 async def supervise_state_age_bounds(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
     """Apply every state age bound once, and end the waits that are over.
+
+    The pass first collects every expired wait across all bounds, then ends
+    them. When there are more to end than ``supervisor.state_age_mass_park_threshold``
+    the platform was down and many waits expired at once: every ending then
+    records ``mass_sweep`` in its typed reason, and the administrators get one
+    message for the pass instead of one per story. There is no age cutoff: each
+    owner is still told, and the PO tells the event by its dates.
 
     A wait is ended only through the API's compare-and-set: the story must still
     be in the status this pass read, with the anchor its age was measured from.
@@ -506,12 +529,41 @@ async def supervise_state_age_bounds(
     Returns the number of stories parked and failed by the bounds this pass, and
     of expired waits skipped because the story had moved on.
     """
-    counts = {"parked": 0, "failed": 0, "skipped": 0}
     sweep = _Sweep(api_client=api_client, redis_client=redis_client, github=GitHubAppClient())
+    expired = await _collect_expired_waits(sweep)
+    mass_threshold = startup.get_config().get_int(MASS_PARK_THRESHOLD_KEY)
+    mass_sweep = len(expired) > mass_threshold
 
+    counts = {"parked": 0, "failed": 0, "skipped": 0}
+    ended: list[_ExpiredWait] = []
+    for wait in expired:
+        # One story's ending must not stop the others: they are unrelated
+        # work, and a sweep that dies on the first broken story leaves every
+        # later one waiting exactly as long as the failure lasts.
+        try:
+            disposition = await _end_expired_wait(
+                api_client, redis_client, sweep=sweep, wait=wait, mass_sweep=mass_sweep
+            )
+        except Exception:
+            wait.log.exception("state_age_bound_ending_failed")
+            continue
+        if disposition is StateWaitExpiryDisposition.SKIPPED:
+            counts["skipped"] += 1
+        elif disposition is StateWaitExpiryDisposition.EXPIRED:
+            counts["parked" if wait.bound.ending is StateWaitEnding.PARK else "failed"] += 1
+            ended.append(wait)
+
+    if mass_sweep and ended:
+        await _notify_admins_of_mass_sweep(ended, found=len(expired), threshold=mass_threshold)
+    return counts
+
+
+async def _collect_expired_waits(sweep: _Sweep) -> list[_ExpiredWait]:
+    """Every wait past its bound, across all bounds, read before any is ended."""
+    expired: list[_ExpiredWait] = []
     for bound in STATE_AGE_BOUNDS:
         threshold = _threshold_minutes(bound)
-        for story in await api_client.get_stories_by_status(bound.status):
+        for story in await sweep.api_client.get_stories_by_status(bound.status):
             log = logger.bind(
                 story_id=story.id,
                 project_id=str(story.project_id),
@@ -529,14 +581,8 @@ async def supervise_state_age_bounds(
             age = _age_minutes(anchor.at)
             if age < threshold:
                 continue
-            # One story's ending must not stop the others: they are unrelated
-            # work, and a sweep that dies on the first broken story leaves every
-            # later one waiting exactly as long as the failure lasts.
-            try:
-                disposition = await _end_expired_wait(
-                    api_client,
-                    redis_client,
-                    sweep=sweep,
+            expired.append(
+                _ExpiredWait(
                     story=story,
                     bound=bound,
                     anchor=anchor,
@@ -544,15 +590,36 @@ async def supervise_state_age_bounds(
                     threshold_minutes=threshold,
                     log=log,
                 )
-            except Exception:
-                log.exception("state_age_bound_ending_failed")
-                continue
-            if disposition is StateWaitExpiryDisposition.SKIPPED:
-                counts["skipped"] += 1
-            elif disposition is StateWaitExpiryDisposition.EXPIRED:
-                counts["parked" if bound.ending is StateWaitEnding.PARK else "failed"] += 1
+            )
+    return expired
 
-    return counts
+
+async def _notify_admins_of_mass_sweep(
+    ended: list[_ExpiredWait], *, found: int, threshold: int
+) -> None:
+    """One administrator message for a pass that ended more waits than the threshold.
+
+    It counts what this pass actually ended; a wait that was skipped because
+    its story moved on is not in it.
+    """
+    lines = [
+        f"- {wait.story.id}: {wait.bound.status.value}, waited {round(wait.age_minutes, 1)} "
+        f"minutes, {TERMINAL_STATUS_BY_ENDING[wait.bound.ending].value}"
+        for wait in ended
+    ]
+    logger.error(
+        "state_age_bound_mass_sweep",
+        ended=len(ended),
+        expired=found,
+        threshold=threshold,
+        story_ids=[wait.story.id for wait in ended],
+    )
+    await notify_admins_best_effort(
+        f"Mass sweep after downtime: one state-age pass found {found} expired waits, more than "
+        f"the threshold of {threshold}, and stopped {len(ended)} stories. Each owner is owed a "
+        "notice marked as a late one after an outage:\n" + "\n".join(lines),
+        level="error",
+    )
 
 
 def _log_skip(
@@ -572,17 +639,13 @@ def _log_skip(
     )
 
 
-async def _end_expired_wait(  # noqa: PLR0913 — one ending's evidence, each part named
+async def _end_expired_wait(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
     *,
     sweep: _Sweep,
-    story: StoryDTO,
-    bound: StateAgeBound,
-    anchor: _Anchor,
-    age_minutes: float,
-    threshold_minutes: int,
-    log: structlog.stdlib.BoundLogger,
+    wait: _ExpiredWait,
+    mass_sweep: bool,
 ) -> StateWaitExpiryDisposition:
     """End the wait if it is still the one that expired; then tell the owner.
 
@@ -596,7 +659,12 @@ async def _end_expired_wait(  # noqa: PLR0913 — one ending's evidence, each pa
     The transition is what makes this idempotent: an expired story leaves the
     status this watchdog scans, and a repeat of an ending that already committed
     is answered `already_ended`, with nothing owed a second time.
+
+    In a mass sweep the reason says so, and the pass's single administrator
+    message replaces the per-story one.
     """
+    story, bound, anchor, log = wait.story, wait.bound, wait.anchor, wait.log
+    threshold_minutes = wait.threshold_minutes
     project_id = str(story.project_id)
     reason = StateWaitExpiryReason(
         status=bound.status,
@@ -605,8 +673,9 @@ async def _end_expired_wait(  # noqa: PLR0913 — one ending's evidence, each pa
         threshold_minutes=threshold_minutes,
         anchor=bound.anchor,
         anchor_at=anchor.at.isoformat(),
-        age_minutes=round(age_minutes, 1),
+        age_minutes=round(wait.age_minutes, 1),
         ending=bound.ending,
+        mass_sweep=mass_sweep,
     )
     owed = new_story_owner_notification(
         story.id,
@@ -642,6 +711,8 @@ async def _end_expired_wait(  # noqa: PLR0913 — one ending's evidence, each pa
     await deliver_owed_notification(
         api_client, redis_client, story.id, owed, log, story_record=True
     )
+    if mass_sweep:
+        return ended.disposition
     await notify_admins_best_effort(
         f"Story {story.id} waited in {bound.status.value} for "
         f"{reason.age_minutes} minutes, past the {threshold_minutes}-minute bound measured "

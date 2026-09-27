@@ -207,3 +207,27 @@ async def test_secret_refusal_and_nonempty_reason(async_client, notice_source, a
     response = await async_client.post(endpoint(source), json=command(source, reason=" "))
     assert response.status_code == 422
     admins.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_record_gone_before_the_copy_is_marked_is_a_clean_error(
+    async_client, notice_source, db_session, monkeypatch
+):
+    """The deferral committed and the copy was sent; then the source row lost the record."""
+    source = notice_source
+
+    async def deliver_then_lose_the_record(*args, **kwargs):
+        if source["source"] == "run":
+            await db_session.delete(await db_session.get(Run, source["source_id"]))
+        else:
+            story = await db_session.get(Story, source["story_id"])
+            story.owner_notification = None
+        await db_session.commit()
+        return AdminDeliveryResult(configured=1, succeeded=1)
+
+    monkeypatch.setattr(routes, "deliver_to_admins", deliver_then_lose_the_record)
+
+    result = await async_client.post(endpoint(source), json=command(source))
+
+    assert result.status_code == 410, result.text
+    assert "deferred and its administrator copy sent" in result.json()["detail"]

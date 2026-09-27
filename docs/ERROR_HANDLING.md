@@ -75,6 +75,13 @@ then delivery and the administrator notice. Each default's provenance is recorde
 against the timing it was derived from. The transition is what makes it idempotent: an expired story leaves the
 status the watchdog scans, and a repeat of a committed ending is a typed `already_ended` no-op.
 
+One pass collects every expired wait across all bounds before it ends any. When there are more to
+end than `supervisor.state_age_mass_park_threshold` (default 3) the platform was down and many waits
+expired at once: each ending records `mass_sweep: true` in its reason, every owner is still told, and
+the administrators get one message for the pass naming the stories it actually ended (id, status,
+age) instead of one per story. There is no age cutoff; the PO snapshot marks such a story "stopped
+in a mass sweep after downtime" and the PO tells it by its dates, as a late notice after an outage.
+
 The ending is a compare-and-set, `POST /api/stories/{id}/expire-state-wait`: on the locked rows the
 status must be the one the watchdog read and the anchor the one its age was measured from (the same
 latest QUEUED/RUNNING Run; the same delivered ask on the same deploy Run, with its secrets still
