@@ -2945,6 +2945,72 @@ def test_the_qa_cell_carries_the_probes_the_executor_ran_in_its_sandbox(codex_do
     assert record["unverified_checks"] == []
 
 
+def test_the_qa_cell_records_which_kind_of_refusal_the_location_proof_accepted(
+    codex_docker, tmp_path
+):
+    """Run 36309935451's out-of-range check, accepted on the seed's argument refusal.
+
+    The artifact says so beside the Run record, so a green location proof that
+    excused a not-applicable check shows which refusal excused it.
+    """
+    collector = collector_for(codex_docker)
+    collector.capture()
+    message = "LAT must be within [-90, 90], got '999'"
+    refused = {
+        "id": "probe-2",
+        "platform": "telegram",
+        "name": "location",
+        "source": "from telethon.tl.types import InputGeoPoint\n",
+        "arguments": ["@mega_e2e_codegen_bot", "999", "37.61738", "5"],
+        "stdout": "",
+        "stderr": f"location probe refused: {message}\n",
+        "exit_status": 2,
+        "duration_ms": 106,
+    }
+    run = {
+        **_qa_run_admitted_under("claude"),
+        "result": {
+            **QA_BLOCKED_RUN["result"],
+            "qa_outcome": QAOutcome.PASSED.value,
+            "blocker": None,
+            "passed_checks": ["Telegram location reply matches rounded coordinates"],
+            "unverified_checks": [
+                {
+                    "name": "Telegram location with out-of-range latitude",
+                    "reason": f'probe-2 refused before sending: "{message}"',
+                    "origin": "not_applicable",
+                }
+            ],
+            "probe_runs": [refused],
+        },
+    }
+
+    cell = build_artifact(
+        qa_stage_ctx(collector, qa_run=run, qa_run_record=run_evidence.qa_run_facts(run)),
+        root=tmp_path,
+    )["qa"]
+
+    assert cell["location_refusals_accepted"] == [
+        {
+            "check": "Telegram location with out-of-range latitude",
+            "refusal": "argument",
+            "probe_id": "probe-2",
+            "invalid_value": "999",
+            "exit_status": 2,
+            "message": message,
+        }
+    ]
+
+
+def test_a_qa_cell_with_no_run_record_accepted_no_location_refusal(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    cell = build_artifact(qa_stage_ctx(collector), root=tmp_path)["qa"]
+
+    assert cell["location_refusals_accepted"] == []
+
+
 def test_a_run_with_no_persisted_decision_says_so_instead_of_repeating_the_request(
     codex_docker, tmp_path
 ):

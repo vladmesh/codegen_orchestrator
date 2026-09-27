@@ -21,7 +21,12 @@ from level1_change_set import (
     LEVEL1_LOCATION_REPLY_LONGITUDE,
     level1_location_criterion,
 )
-from level1_location_proof import location_probe_runs, location_proof_mismatches
+from level1_location_proof import (
+    LocationRefusal,
+    accepted_location_refusals,
+    location_probe_runs,
+    location_proof_mismatches,
+)
 import pipeline_helpers
 import pytest
 from run_evidence import qa_run_facts
@@ -333,3 +338,175 @@ def test_the_qa_run_evidence_retains_the_probe_records():
     assert record["probe_library"] == expected["probe_library"]
     # And the live assertion judges exactly that retained record.
     assert location_proof_mismatches(record) == []
+
+
+# ── The one accepted not-applicable check: the seed's own argument refusal ──
+
+OUT_OF_RANGE_CHECK = "Telegram location with out-of-range latitude"
+SEED_REFUSAL = "LAT must be within [-90, 90], got '999'"
+#: The reason the QA runner wrote on run 36309935451, around the executor's detail.
+OUT_OF_RANGE_REASON = (
+    "reported not applicable, but this run recorded no transport refusal for it: "
+    f'probe-2 refused before sending: "{SEED_REFUSAL}" '
+    "(exit 2, argument refused before reaching the bot)"
+)
+
+
+def _refused_probe(**overrides) -> dict:
+    """The seed refusing a latitude of 999 before it sent anything, as run 36309935451 kept it."""
+    return _seed_probe(
+        **{
+            "id": "probe-2",
+            "arguments": [BOT, "999", LEVEL1_LOCATION_LONGITUDE, "5"],
+            "stdout": "",
+            "stderr": f"location probe refused: {SEED_REFUSAL}\n",
+            "exit_status": 2,
+            "duration_ms": 106,
+            **overrides,
+        }
+    )
+
+
+def _out_of_range_run(*, reason: str = OUT_OF_RANGE_REASON, **probe_overrides) -> dict:
+    """Run 36309935451's first QA Run: the in-range check passed, the out-of-range one refused."""
+    run = _passed_run()
+    run["result"]["unverified_checks"] = [
+        {"name": OUT_OF_RANGE_CHECK, "reason": reason, "origin": "not_applicable"}
+    ]
+    run["result"]["probe_runs"].append(_refused_probe(**probe_overrides))
+    return run
+
+
+def test_the_out_of_range_run_is_a_valid_qa_run_result():
+    QARunResult.model_validate(_out_of_range_run()["result"])
+
+
+def test_the_seed_s_argument_refusal_of_the_named_value_is_accepted_and_recorded():
+    """Run 36309935451's shape: green, and the evidence says which refusal was accepted."""
+    record = qa_run_facts(_out_of_range_run())
+
+    assert location_proof_mismatches(record) == []
+    assert accepted_location_refusals(record) == [
+        {
+            "check": OUT_OF_RANGE_CHECK,
+            "refusal": LocationRefusal.ARGUMENT.value,
+            "probe_id": "probe-2",
+            "invalid_value": "999",
+            "exit_status": 2,
+            "message": SEED_REFUSAL,
+        }
+    ]
+    # The in-range check is still proven by its own successful probe.
+    assert [probe["id"] for probe in location_probe_runs(record)] == ["probe-1"]
+
+
+def test_a_longitude_refusal_is_the_same_acceptance():
+    message = "LON must be within [-180, 180], got '-181.5'"
+    run = _out_of_range_run(
+        reason=f"not applicable: the probe refused {message}",
+        arguments=[BOT, LEVEL1_LOCATION_LATITUDE, "-181.5"],
+        stderr=f"location probe refused: {message}\n",
+    )
+    run["result"]["unverified_checks"][0]["name"] = "location with out-of-range longitude"
+
+    assert _mismatches(run) == []
+
+
+def _refused(run: dict) -> list[str]:
+    reasons = _mismatches(run)
+    assert accepted_location_refusals(qa_run_facts(run)) == []
+    assert len(reasons) == 1, reasons
+    assert f"the location check {OUT_OF_RANGE_CHECK!r} is in unverified_checks" in reasons[0]
+    return reasons
+
+
+def test_a_generic_not_applicable_with_no_refusal_is_refused():
+    run = _out_of_range_run()
+    run["result"]["probe_runs"].pop()
+
+    reasons = _refused(run)
+
+    assert "no retained telegram probe shows the seed's own argument refusal" in reasons[0]
+
+
+def test_an_argument_refusal_of_a_different_value_is_refused():
+    """The check names 999; the probe the seed refused was sent 1000."""
+    run = _out_of_range_run(
+        arguments=[BOT, "1000", LEVEL1_LOCATION_LONGITUDE, "5"],
+        stderr="location probe refused: LAT must be within [-90, 90], got '1000'\n",
+    )
+
+    _refused(run)
+
+
+def test_a_refusal_line_that_names_another_value_than_the_arguments_is_refused():
+    """The stderr says 999, but the arguments the probe record retains are 1000."""
+    _refused(_out_of_range_run(arguments=[BOT, "1000", LEVEL1_LOCATION_LONGITUDE, "5"]))
+
+
+def test_a_value_that_only_contains_the_refused_one_is_not_naming_it():
+    _refused(_out_of_range_run(reason=f"{OUT_OF_RANGE_REASON.split(':')[0]}: latitude 9990"))
+
+
+def test_a_refusal_with_any_other_exit_status_is_refused():
+    _refused(_out_of_range_run(exit_status=1))
+
+
+def test_a_refusal_the_seed_would_not_print_is_refused():
+    _refused(_out_of_range_run(stderr="LAT out of range\n"))
+
+
+def test_an_argument_refusal_that_is_not_about_the_range_is_refused():
+    message = "LAT must be a decimal number, got 'abc'"
+    _refused(
+        _out_of_range_run(
+            reason=f"refused: {message}",
+            arguments=[BOT, "abc", LEVEL1_LOCATION_LONGITUDE],
+            stderr=f"location probe refused: {message}\n",
+        )
+    )
+
+
+def test_a_refusal_by_a_probe_that_sends_no_geo_point_is_refused():
+    _refused(_out_of_range_run(source="print('hello')\n"))
+
+
+def test_only_a_not_applicable_origin_is_accepted():
+    run = _out_of_range_run()
+    run["result"]["unverified_checks"][0]["origin"] = "executor"
+
+    _refused(run)
+
+
+def test_only_the_out_of_range_location_check_is_accepted():
+    """The in-range check is never excused by a refusal, however well grounded."""
+    run = _out_of_range_run()
+    run["result"]["unverified_checks"][0]["name"] = LOCATION_CHECK
+
+    reasons = _mismatches(run)
+
+    assert accepted_location_refusals(qa_run_facts(run)) == []
+    assert len(reasons) == 1
+    assert f"the location check {LOCATION_CHECK!r} is in unverified_checks" in reasons[0]
+
+
+def test_an_accepted_refusal_does_not_stand_in_for_the_in_range_pass():
+    run = _out_of_range_run()
+    run["result"]["passed_checks"].remove(LOCATION_CHECK)
+
+    reasons = _mismatches(run)
+
+    assert len(reasons) == 1
+    assert reasons[0].startswith("passed_checks names no location check")
+
+
+def test_an_accepted_refusal_does_not_stand_in_for_the_in_range_probe():
+    run = _out_of_range_run()
+    run["result"]["probe_runs"] = [
+        probe for probe in run["result"]["probe_runs"] if probe["id"] != "probe-1"
+    ]
+
+    reasons = _mismatches(run)
+
+    assert len(reasons) == 1
+    assert reasons[0].startswith("probe_runs holds no telegram probe that exited 0")
