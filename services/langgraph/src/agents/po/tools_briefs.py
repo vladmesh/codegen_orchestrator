@@ -250,7 +250,7 @@ def _answer_from_stored(
     return None
 
 
-async def present_product_brief(
+async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named tool argument.
     project_id: str,
     title: str,
     summary: str,
@@ -259,6 +259,7 @@ async def present_product_brief(
     usage_examples: list[dict] | None = None,
     limitations: list[str] | None = None,
     initial_settings: list[dict] | None = None,
+    variant_choices: list[dict] | None = None,
     corrects_brief_id: str | None = None,
     *,
     config: RunnableConfig,
@@ -277,11 +278,11 @@ async def present_product_brief(
     returned.
 
     Write every text the user reads — title, summary, requirement texts,
-    usage examples, limitations, setting descriptions — in the user's language.
+    usage examples, limitations, setting descriptions, variant choices — in the user's language.
     The tool supplies the section labels in that language itself.
 
     The message must fit one Telegram message: at most 8 must-requirements,
-    10 usage examples, 5 limitations and 6 settings, each text short. A brief
+    10 usage examples, 5 limitations, 6 settings and 2 variant choices, each text short. A brief
     that does not fit is refused and nothing is opened; then propose to the
     user to build the product in stages — the first stage in this brief, the
     rest in a later one — and never shorten the wording to fit.
@@ -321,6 +322,11 @@ async def present_product_brief(
             Leave empty when the user chose none. NEVER put a token, password,
             API key or any other secret here — secrets go to
             `set_project_secret`.
+        variant_choices: Chosen free or simplified variants with a noticeable quality gap.
+            Each entry names `feature`, `chosen`, `alternative`, `trade_off` and
+            `add_later`, all in the user's language. The last two are one sentence
+            each. Name the gap and what can be added later before presenting this
+            brief. The alternative is recorded for later, never promised as built.
         corrects_brief_id: The brief id the user corrected, when re-presenting
             after a correction. Leave unset the first time.
     """
@@ -349,6 +355,7 @@ async def present_product_brief(
                 "language": language,
                 "usage_examples": usage_examples or [],
                 "limitations": limitations or [],
+                "variant_choices": variant_choices or [],
             }
         )
         first = ProductBriefCreate(

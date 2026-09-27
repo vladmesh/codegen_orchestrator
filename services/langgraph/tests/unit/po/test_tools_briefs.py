@@ -93,6 +93,7 @@ def _stored_content(summary: str = "A bot that keeps recipes", settings=None) ->
         "language": "en",
         "usage_examples": _EXAMPLES,
         "limitations": [],
+        "variant_choices": [],
     }
 
 
@@ -228,6 +229,76 @@ async def _present(**overrides) -> str:
 def _user_part(message: str) -> str:
     """The part the PO is told to send unchanged: everything after the prefix."""
     return message.split("\n\n", maxsplit=1)[1]
+
+
+@pytest.mark.asyncio
+async def test_receipt_variant_is_shown_confirmed_and_only_chosen_variant_is_planned(stream_client):
+    from src.consumers.architect import _PlanningAttempt, _requirements_briefing
+
+    choice = {
+        "feature": "Receipt recognition",
+        "chosen": "Free on-device OCR",
+        "alternative": "A paid vision model through your key",
+        "trade_off": "Noticeably worse on photos of receipts and bank screenshots.",
+        "add_later": "The paid model can be added later by adding your key.",
+    }
+    api = _API()
+    _install(api, stream_client)
+    message = await _present(
+        title="Receipt bot",
+        summary="Records expenses from receipts",
+        must_requirements=[
+            {"id": "ocr", "text": "Reads receipts", "user_wording": "Use free recognition"}
+        ],
+        usage_examples=[
+            {"requirement_id": "ocr", "user_sends": "A receipt photo", "product_answers": "Amount"}
+        ],
+        variant_choices=[choice],
+    )
+    line = next(line for line in message.splitlines() if choice["feature"] in line)
+    assert all(value in line for value in choice.values())
+    assert "alternative (not included)" in line
+    full = await show_full_brief.ainvoke({"brief_id": BRIEF_ID}, config=_config())
+    assert line in full
+
+    await confirm_product_brief.ainvoke(
+        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
+    )
+    stored = api.briefs[BRIEF_ID]
+    assert stored["confirmed_at"] is not None
+    assert stored["content"]["variant_choices"] == [choice]
+    assert api.posts[-1][1]["content"] == stored["content"]
+    brief = dto.ProductBriefRead.model_validate(stored)
+    content = brief.content
+    planning = _PlanningAttempt(
+        brief=brief,
+        brief_id=brief.id,
+        planning_attempt_id="plan-1",
+        must_requirements=content.must_requirements,
+        initial_settings=content.initial_settings,
+        language=content.language,
+        usage_examples=content.usage_examples,
+        limitations=content.limitations,
+    )
+    instructions = _requirements_briefing(planning)
+    assert all(value in instructions for value in choice.values())
+    assert "Build only the chosen variant" in instructions
+    assert "alternative is not a requirement" in instructions
+    assert "do not build it" in instructions
+
+
+@pytest.mark.parametrize("field", ["feature", "chosen", "alternative", "trade_off", "add_later"])
+def test_changing_a_variant_choice_opens_a_different_revision(field):
+    choice = {
+        "feature": "Recognition",
+        "chosen": "Free OCR",
+        "alternative": "Paid vision",
+        "trade_off": "Worse on photos.",
+        "add_later": "Add your key later.",
+    }
+    content = {**_stored_content(), "variant_choices": [choice]}
+    changed = {**content, "variant_choices": [{**choice, field: "Changed"}]}
+    assert _key_of(content) != _key_of(changed)
 
 
 class TestPresenting:
@@ -688,8 +759,8 @@ class TestTheBudget:
         description = " ".join(present_product_brief.description.split())
         assert (
             f"at most {dto.MAX_MUST_REQUIREMENTS} must-requirements, "
-            f"{dto.MAX_USAGE_EXAMPLES} usage examples, {dto.MAX_LIMITATIONS} limitations "
-            f"and {dto.MAX_INITIAL_SETTINGS} settings"
+            f"{dto.MAX_USAGE_EXAMPLES} usage examples, {dto.MAX_LIMITATIONS} limitations, "
+            f"{dto.MAX_INITIAL_SETTINGS} settings and {dto.MAX_VARIANT_CHOICES} variant choices"
         ) in description
 
 

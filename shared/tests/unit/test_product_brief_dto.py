@@ -37,7 +37,65 @@ def _content(**overrides) -> dict:
     return base
 
 
+_VARIANT = {
+    "feature": "Receipt recognition",
+    "chosen": "Free on-device OCR",
+    "alternative": "Paid vision through the user's key",
+    "trade_off": "Receipt photos and bank screenshots are noticeably less accurate.",
+    "add_later": "Add the paid model later by providing a key.",
+}
+
+
+class TestVariantChoices:
+    @pytest.mark.parametrize(
+        ("field", "limit"),
+        [
+            ("feature", 80),
+            ("chosen", 120),
+            ("alternative", 120),
+            ("trade_off", 200),
+            ("add_later", 160),
+        ],
+    )
+    def test_text_caps_accept_the_limit_and_reject_one_more(self, field, limit):
+        content = _proposed(variant_choices=[{**_VARIANT, field: "x" * limit}])
+        ProposedProductBriefContent.model_validate(content)
+        content["variant_choices"][0][field] += "x"
+        with pytest.raises(ValidationError):
+            ProposedProductBriefContent.model_validate(content)
+
+    def test_optional_and_round_trips(self):
+        assert ProposedProductBriefContent.model_validate(_proposed()).variant_choices == []
+        proposed = ProposedProductBriefContent.model_validate(_proposed(variant_choices=[_VARIANT]))
+        stored = ProductBriefContent.model_validate(proposed.model_dump(mode="json"))
+        assert stored.variant_choices[0].model_dump() == _VARIANT
+
+    @pytest.mark.parametrize("field", _VARIANT)
+    @pytest.mark.parametrize("value", ["", " \n ", "x" * 201])
+    def test_every_text_is_nonblank_and_bounded(self, field, value):
+        with pytest.raises(ValidationError):
+            ProposedProductBriefContent.model_validate(
+                _proposed(variant_choices=[{**_VARIANT, field: value}])
+            )
+
+    def test_features_cannot_repeat_after_trimming(self):
+        with pytest.raises(ValidationError, match="variant choice features must be unique"):
+            ProposedProductBriefContent.model_validate(
+                _proposed(
+                    variant_choices=[_VARIANT, {**_VARIANT, "feature": " Receipt recognition "}]
+                )
+            )
+
+    def test_choice_count_is_bounded(self):
+        choices = [{**_VARIANT, "feature": str(i)} for i in range(dto.MAX_VARIANT_CHOICES + 1)]
+        with pytest.raises(ValidationError):
+            ProposedProductBriefContent.model_validate(_proposed(variant_choices=choices))
+
+
 class TestProductBriefContent:
+    def test_legacy_brief_has_no_variant_choices(self):
+        assert ProductBriefContent.model_validate(_content()).variant_choices == []
+
     def test_minimal(self):
         content = ProductBriefContent.model_validate(_content())
         assert [r.id for r in content.must_requirements] == ["r1"]

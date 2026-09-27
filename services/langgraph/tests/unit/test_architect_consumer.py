@@ -1041,6 +1041,29 @@ class TestProductBriefUsageExamples:
         return graph.ainvoke.call_args[0][0]["messages"][0]["content"]
 
     @pytest.mark.asyncio
+    async def test_variant_choices_reach_the_graph_as_context_for_only_the_chosen_variant(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        brief = make_product_brief()
+        choice = {
+            "feature": "Recognition",
+            "chosen": "Free OCR",
+            "alternative": "Paid vision",
+            "trade_off": "Worse on receipt photos.",
+            "add_later": "Add your key later.",
+        }
+        brief.content = ProductBriefContent.model_validate(
+            {**brief.content.model_dump(), "variant_choices": [choice]}
+        )
+        instructions = await self._instructions(
+            _mock_api_get_project, mock_redis, valid_job_data, brief
+        )
+        assert all(value in instructions for value in choice.values())
+        assert "Recorded variant_choices context" in instructions
+        assert "Build only the chosen variant" in instructions
+        assert "alternative is not a requirement; do not build it" in instructions
+
+    @pytest.mark.asyncio
     async def test_examples_grouped_by_requirement_limitations_and_internal_requirements(
         self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
     ):

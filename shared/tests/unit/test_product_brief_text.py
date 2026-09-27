@@ -271,6 +271,16 @@ def _at_every_cap() -> tuple[str, ProposedProductBriefContent]:
                 for index in range(dto.MAX_USAGE_EXAMPLES)
             ],
             "limitations": ["l" * dto.MAX_LIMITATION_LENGTH] * dto.MAX_LIMITATIONS,
+            "variant_choices": [
+                {
+                    "feature": str(index) * dto.MAX_VARIANT_FEATURE_LENGTH,
+                    "chosen": "c" * dto.MAX_VARIANT_NAME_LENGTH,
+                    "alternative": "a" * dto.MAX_VARIANT_NAME_LENGTH,
+                    "trade_off": "t" * dto.MAX_VARIANT_TRADE_OFF_LENGTH,
+                    "add_later": "l" * dto.MAX_VARIANT_ADD_LATER_LENGTH,
+                }
+                for index in range(dto.MAX_VARIANT_CHOICES)
+            ],
             "initial_settings": [
                 {
                     "key": f"product.setting_{index}",
@@ -284,14 +294,16 @@ def _at_every_cap() -> tuple[str, ProposedProductBriefContent]:
     return "T" * dto.MAX_BRIEF_TITLE_LENGTH, content
 
 
-def test_the_worst_case_full_form_stays_under_the_stated_ceiling():
+@pytest.mark.parametrize("language", ["en", "ru"])
+def test_the_worst_case_full_form_stays_under_the_stated_ceiling(language):
     """The arithmetic the caps exist for, pinned.
 
     Content at every cap is 100 + 400 + 8 x (200 + 250) + 10 x (150 + 200)
-    + 5 x 200 + 6 x 150 = 9500 characters; labels, bullets and markup add the
+    + 5 x 200 + 6 x 150 + 2 x 680 = 10860 characters; labels and markup add the
     rest. The ceiling is well under the 20k brief that broke the canary.
     """
     title, content = _at_every_cap()
+    content.language = language
     raw = (
         dto.MAX_BRIEF_TITLE_LENGTH
         + dto.MAX_SUMMARY_LENGTH
@@ -300,10 +312,58 @@ def test_the_worst_case_full_form_stays_under_the_stated_ceiling():
         + dto.MAX_USAGE_EXAMPLES * (dto.MAX_USER_SENDS_LENGTH + dto.MAX_PRODUCT_ANSWERS_LENGTH)
         + dto.MAX_LIMITATIONS * dto.MAX_LIMITATION_LENGTH
         + dto.MAX_INITIAL_SETTINGS * dto.MAX_SETTING_DESCRIPTION_LENGTH
+        + dto.MAX_VARIANT_CHOICES
+        * (
+            dto.MAX_VARIANT_FEATURE_LENGTH
+            + 2 * dto.MAX_VARIANT_NAME_LENGTH
+            + dto.MAX_VARIANT_TRADE_OFF_LENGTH
+            + dto.MAX_VARIANT_ADD_LATER_LENGTH
+        )
     )
-    assert raw == 9500
+    assert raw == 10860
 
     full = render_full_brief(title, content)
 
     assert raw < utf16_length(full) <= FULL_BRIEF_CEILING
     assert FULL_BRIEF_CEILING <= 12_000
+
+
+@pytest.mark.parametrize(
+    ("language", "heading", "chosen", "alternative", "trade_off", "add_later"),
+    [
+        ("en", "Chosen variants", "chosen", "alternative (not included)", "trade-off", "add later"),
+        (
+            "ru",
+            "Выбранные варианты",
+            "выбрано",
+            "альтернатива (не входит)",
+            "компромисс",
+            "можно добавить позже",
+        ),
+    ],
+)
+def test_variant_choices_use_brief_language_and_escape_every_field(
+    language, heading, chosen, alternative, trade_off, add_later
+):
+    content = ProposedProductBriefContent.model_validate(
+        {
+            **EN,
+            "language": language,
+            "variant_choices": [
+                {
+                    "feature": "<feature>",
+                    "chosen": "<chosen>",
+                    "alternative": "<alternative>",
+                    "trade_off": "<trade_off>",
+                    "add_later": "<add_later>",
+                }
+            ],
+        }
+    )
+    line = (
+        f"• &lt;feature&gt;: {chosen}: &lt;chosen&gt;; "
+        f"{alternative}: &lt;alternative&gt;; {trade_off}: &lt;trade_off&gt;; "
+        f"{add_later}: &lt;add_later&gt;"
+    )
+    for rendered in (render_brief_message("Brief", content), render_full_brief("Brief", content)):
+        assert f"<b>{heading}</b>\n{line}" in rendered

@@ -208,11 +208,15 @@ class TestSystemPrompt:
         assert 'a usage example in that form, or an explicit "not supported"' in SYSTEM_PROMPT
 
     def test_names_the_quality_trade_off_of_a_cheaper_variant(self):
-        assert "cheaper or free variant that is noticeably worse" in SYSTEM_PROMPT
+        assert "free or simplified variant with a noticeable quality gap" in SYSTEM_PROMPT
         assert "say the trade-off in one sentence and what can be connected later" in (
             SYSTEM_PROMPT
         )
-        assert "Record it in `limitations`" in SYSTEM_PROMPT
+        assert "before the brief" in SYSTEM_PROMPT
+        assert "Record it in `variant_choices`" in SYSTEM_PROMPT
+        assert "Never promise the alternative as built" in SYSTEM_PROMPT
+        for field in ("feature", "chosen", "alternative", "trade_off", "add_later"):
+            assert f"`{field}`" in _product_brief_section()
 
     def test_a_stopped_story_is_reported_honestly(self):
         events = " ".join(_section("## Story Events & Reminders").split())

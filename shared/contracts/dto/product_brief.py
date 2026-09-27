@@ -106,6 +106,11 @@ MAX_LIMITATIONS = 5
 MAX_LIMITATION_LENGTH = 200
 MAX_INITIAL_SETTINGS = 6
 MAX_SETTING_DESCRIPTION_LENGTH = 150
+MAX_VARIANT_CHOICES = 2
+MAX_VARIANT_FEATURE_LENGTH = 80
+MAX_VARIANT_NAME_LENGTH = 120
+MAX_VARIANT_TRADE_OFF_LENGTH = 200
+MAX_VARIANT_ADD_LATER_LENGTH = 160
 
 
 class SettingScope(StrEnum):
@@ -304,12 +309,42 @@ class ProposedUsageExample(UsageExample):
     product_answers: str = Field(min_length=1, max_length=MAX_PRODUCT_ANSWERS_LENGTH)
 
 
+class VariantChoice(BaseModel):
+    """A chosen variant and a recorded alternative that is not ordered for this brief."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature: str = Field(min_length=1, max_length=2000)
+    chosen: str = Field(min_length=1, max_length=2000)
+    alternative: str = Field(min_length=1, max_length=2000)
+    trade_off: str = Field(min_length=1, max_length=2000)
+    add_later: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("feature", "chosen", "alternative", "trade_off", "add_later")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("variant choice fields must not be blank")
+        return value
+
+
+class ProposedVariantChoice(VariantChoice):
+    """Short user-facing descriptions; trade_off and add_later are one sentence each."""
+
+    feature: str = Field(min_length=1, max_length=MAX_VARIANT_FEATURE_LENGTH)
+    chosen: str = Field(min_length=1, max_length=MAX_VARIANT_NAME_LENGTH)
+    alternative: str = Field(min_length=1, max_length=MAX_VARIANT_NAME_LENGTH)
+    trade_off: str = Field(min_length=1, max_length=MAX_VARIANT_TRADE_OFF_LENGTH)
+    add_later: str = Field(min_length=1, max_length=MAX_VARIANT_ADD_LATER_LENGTH)
+
+
 class ProductBriefContent(BaseModel):
     """The confirmed brief document. Frozen once `confirmed_at` is stamped.
 
     The read shape — what `ProductBriefRead` parses out of the JSON column.
     Every field added after the first release defaults — `initial_settings`,
-    `language`, `usage_examples`, `limitations` — so a document stored before
+    `language`, `usage_examples`, `limitations`, `variant_choices` — so a document stored before
     it existed still parses as the same brief.
     """
 
@@ -328,6 +363,8 @@ class ProductBriefContent(BaseModel):
     usage_examples: list[UsageExample] = Field(default_factory=list)
     #: Limitations and chosen trade-offs, one plain-language sentence each.
     limitations: list[str] = Field(default_factory=list)
+    #: Build the chosen variant; the alternative is recorded for a later order.
+    variant_choices: list[VariantChoice] = Field(default_factory=list)
 
     @field_validator("limitations")
     @classmethod
@@ -375,6 +412,16 @@ class ProposedProductBriefContent(ProductBriefContent):
     limitations: list[Annotated[str, StringConstraints(max_length=MAX_LIMITATION_LENGTH)]] = Field(
         default_factory=list, max_length=MAX_LIMITATIONS
     )
+    variant_choices: list[ProposedVariantChoice] = Field(
+        default_factory=list, max_length=MAX_VARIANT_CHOICES
+    )
+
+    @model_validator(mode="after")
+    def _variant_features_are_unique(self) -> ProposedProductBriefContent:
+        features = [choice.feature for choice in self.variant_choices]
+        if len(features) != len(set(features)):
+            raise ValueError("variant choice features must be unique")
+        return self
 
     @field_validator("language")
     @classmethod

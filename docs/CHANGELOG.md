@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- Briefs record chosen variants, quality trade-offs and later alternatives; both views show them,
+  and planning explicitly builds only the chosen variant.
 - A state-age pass that ends more waits than `supervisor.state_age_mass_park_threshold` marks each
   `mass_sweep` and sends admins one message; the PO snapshot tells it as a late notice after downtime.
 - A stopped story is told as "stopped, a person is needed, no known deadline"; the PO prompt forbids

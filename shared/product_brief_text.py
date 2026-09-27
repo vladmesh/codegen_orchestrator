@@ -45,6 +45,11 @@ LABELS: dict[str, dict[str, str]] = {
         "what_you_get": "What you get",
         "usage": "How you will use it",
         "limitations": "Limitations",
+        "variant_choices": "Chosen variants",
+        "chosen": "chosen",
+        "alternative": "alternative (not included)",
+        "trade_off": "trade-off",
+        "add_later": "add later",
         "settings": "Settings",
         "you_send": "You send",
         "product_answers": "The product answers",
@@ -60,6 +65,11 @@ LABELS: dict[str, dict[str, str]] = {
         "what_you_get": "Что вы получите",
         "usage": "Как вы будете пользоваться",
         "limitations": "Ограничения",
+        "variant_choices": "Выбранные варианты",
+        "chosen": "выбрано",
+        "alternative": "альтернатива (не входит)",
+        "trade_off": "компромисс",
+        "add_later": "можно добавить позже",
         "settings": "Настройки",
         "you_send": "Вы отправляете",
         "product_answers": "Продукт отвечает",
@@ -144,6 +154,17 @@ def _setting_lines(content: ProductBriefContent) -> list[str]:
     return lines
 
 
+def _variant_lines(content: ProductBriefContent, label: dict[str, str]) -> list[str]:
+    return [
+        f"• {_e(' '.join(choice.feature.split()))}: "
+        + "; ".join(
+            f"{_e(label[field])}: {_e(' '.join(getattr(choice, field).split()))}"
+            for field in ("chosen", "alternative", "trade_off", "add_later")
+        )
+        for choice in content.variant_choices
+    ]
+
+
 def _sections(title: str, content: ProductBriefContent, *, full: bool) -> list[str]:
     label = labels_for(content.language)
     sections = [
@@ -151,6 +172,7 @@ def _sections(title: str, content: ProductBriefContent, *, full: bool) -> list[s
         _section(label["what_you_get"], _requirement_lines(content, label, full)),
         _section(label["usage"], _usage_lines(content, label)),
         _section(label["limitations"], [f"• {_e(item)}" for item in content.limitations]),
+        _section(label["variant_choices"], _variant_lines(content, label)),
         _section(label["settings"], _setting_lines(content)),
     ]
     return [section for section in sections if section is not None]

@@ -466,20 +466,32 @@ no example. The user-facing text comes from a per-language label table (`ru`,
 description, and keeps the brief id in the PO-facing prefix. A stored revision
 lacking these fields cannot be confirmed; the PO is told to present a correction.
 
+**A choice records the cost of the chosen variant.** `variant_choices` defaults
+to `[]` on both content shapes. Each typed entry carries `feature`, `chosen`,
+`alternative`, `trade_off` and `add_later`; proposals reject blank fields and
+duplicate features. Before presenting a free or simplified variant with a
+noticeable quality gap, the PO names the gap and the later upgrade in one
+sentence. Both brief forms show each choice on one line in the brief's language,
+including that the alternative is not included. Confirmation compares these
+fields with the stored content under the existing equality rule. The architect
+receives them as recorded context: build only the chosen variant, never the
+alternative or its upgrade path without a later order. No endpoint or migration
+is added; `content` remains JSON and `limitations` keeps its meaning.
+
 **A brief has two forms, both pure functions of the stored title and content**
 (`shared/product_brief_text.py`), both Telegram HTML with every user or model text
 escaped by `html.escape(..., quote=False)`:
 
 - *Short form* (`render_brief_message`) — the one confirmation message the user
   signs: title and summary, then bold sections *what you get*, *how you will use
-  it*, *limitations*, *settings* in the user's language, each omitted when empty,
+  it*, *limitations*, *chosen variants*, *settings* in the user's language, each omitted when empty,
   and the answer line. Each requirement's wording and each usage example appear
   once; no revision or requirement id, no "your words" quote, no provenance, no
   filler. Its length, in UTF-16 units as Telegram counts it, is at most
   `BRIEF_MESSAGE_BUDGET` (3500).
 - *Full form* (`render_full_brief_sections`) — every section at full length, with
   the user's own words under each requirement, as a list of sections: heading,
-  what you get, how you will use it, limitations, settings (empty ones omitted).
+  what you get, how you will use it, limitations, chosen variants, settings (empty ones omitted).
   The PO's `show_full_brief(brief_id)` joins them with `MESSAGE_BREAK` and is a
   `return_direct` tool, so its text is the turn's answer and each section is its
   own Telegram message; a section over the bot's limit is cut by the bot's
@@ -510,7 +522,9 @@ creation key and the "send the returned message unchanged" rule.
 `ProposedInitialSetting`, `ProductBriefCreate.title`) cap every count and text:
 title 100, summary 400, at most 8 must-requirements (text 200, `user_wording`
 250 — a longer quote goes to `wording_reference`), 10 usage examples (sends 150,
-answers 200), 5 limitations (200 each), 6 initial settings (description 150). At
+answers 200), 5 limitations (200 each), 6 initial settings (description 150), and
+2 variant choices (feature 80, chosen and alternative 120 each, trade-off 200,
+add-later 160). At
 every cap the full form stays under `FULL_BRIEF_CEILING` (12,000 characters as
 the user reads them; pinned in `shared/tests/unit/test_product_brief_text.py`),
 far below the 20k brief that broke the 2026-09-25 canary. The read shapes keep

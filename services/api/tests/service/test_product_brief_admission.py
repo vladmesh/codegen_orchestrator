@@ -70,6 +70,7 @@ _CONTENT = {
         {"requirement_id": "r2", "user_sends": "the command /list", "product_answers": "Dune"},
     ],
     "limitations": ["Books are only added by title, not by photo"],
+    "variant_choices": [],
 }
 
 
@@ -695,6 +696,52 @@ async def test_admit_refuses_rather_than_stamping_over_a_covering_task_outside_t
 
 
 # --- confirmed content is never updated in place -------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed_field", ["feature", "chosen", "alternative", "trade_off", "add_later", "remove"]
+)
+async def test_variant_choice_must_match_the_presented_revision(async_client, changed_field):
+    project_id = await _project(async_client, await _owner(async_client))
+    choice = {
+        "feature": "Receipt recognition",
+        "chosen": "Free on-device OCR",
+        "alternative": "Paid vision through your key",
+        "trade_off": "Noticeably worse on receipt photos and bank screenshots.",
+        "add_later": "Add the paid model later by providing your key.",
+    }
+    content = {**_CONTENT, "variant_choices": [choice]}
+    created = await async_client.post(
+        f"{BRIEFS_URL}/",
+        json={
+            "project_id": project_id,
+            "title": "Receipt bot",
+            "content": content,
+            "request_id": f"req-{uuid.uuid4().hex}",
+        },
+    )
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    brief_id = created.json()["id"]
+    changed = [] if changed_field == "remove" else [{**choice, changed_field: "Changed"}]
+    mismatch = await async_client.post(
+        f"{BRIEFS_URL}/{brief_id}/confirm",
+        json={
+            "request_id": f"conf-{uuid.uuid4().hex}",
+            "content": {**content, "variant_choices": changed},
+        },
+    )
+    assert mismatch.status_code == HTTPStatus.CONFLICT, mismatch.text
+    stored = await async_client.get(f"{BRIEFS_URL}/{brief_id}")
+    assert stored.json()["confirmed_at"] is None
+    assert stored.json()["content"] == content
+    confirmed = await async_client.post(
+        f"{BRIEFS_URL}/{brief_id}/confirm",
+        json={"request_id": f"conf-{uuid.uuid4().hex}", "content": content},
+    )
+    assert confirmed.status_code == HTTPStatus.OK, confirmed.text
+    assert confirmed.json()["content"] == content
+    assert confirmed.json()["confirmed_at"] is not None
 
 
 @pytest.mark.asyncio
