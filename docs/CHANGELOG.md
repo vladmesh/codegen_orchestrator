@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- The deploy-target test pins its Python and pipelines local modules to reduce runner-dependent
+  startup work; verbose failure output identifies the command stalled inside a role task.
 - The deploy-target permission test skips unused fact gathering and bounds each Ansible apply at
   30 seconds, reporting captured output and elapsed time before pytest's timeout.
 - `docs/platform_capabilities.yaml` (v1, draft) states what a product can and cannot have; PO and

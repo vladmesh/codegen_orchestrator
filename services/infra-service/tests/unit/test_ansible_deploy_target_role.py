@@ -5,6 +5,7 @@ from pathlib import Path
 import pwd
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -125,10 +126,17 @@ class TestDeployTargetPermissions:
         started = time.monotonic()
         try:
             result = subprocess.run(
-                ["ansible-playbook", "-i", "localhost,", str(playbook)],
+                ["ansible-playbook", "-vvv", "-i", "localhost,", str(playbook)],
                 cwd=ANSIBLE_DIR,
                 capture_output=True,
-                env={**os.environ, "ANSIBLE_STDOUT_CALLBACK": "default"},
+                env={
+                    **os.environ,
+                    "ANSIBLE_STDOUT_CALLBACK": "default",
+                    # Local modules use the tested Python, not runner-image discovery.
+                    "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+                    # Avoid staging modules and repeated local subprocesses on busy runners.
+                    "ANSIBLE_PIPELINING": "true",
+                },
                 text=True,
                 timeout=ANSIBLE_TIMEOUT_SECONDS,
             )
@@ -182,3 +190,24 @@ def test_apply_role_timeout_reports_output_and_elapsed_time(tmp_path, mocker, st
         expected = output.decode() if isinstance(output, bytes) else output or ""
         assert f"{label}:\n{expected}" in message
     assert run.call_args.kwargs["timeout"] == 30
+
+
+def test_apply_role_uses_test_python_without_discovery(tmp_path, monkeypatch):
+    # Runner images can contain Python versions other than the test environment's.
+    alternate_python = tmp_path / "python3.14"
+    alternate_python.write_text("#!/bin/sh\necho unexpected interpreter discovery >&2\nexit 1\n")
+    alternate_python.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    playbook = tmp_path / "interpreter.yml"
+    playbook.write_text(
+        """
+- hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  tasks:
+    - ansible.builtin.ping:
+"""
+    )
+
+    TestDeployTargetPermissions._apply_role(playbook)
