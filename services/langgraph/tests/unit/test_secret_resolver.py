@@ -5,8 +5,14 @@ from unittest.mock import patch
 
 import pytest
 
+from scripts.platform_capabilities import load_manifest
 from shared.clients.registry import sha_image_tag
-from src.subgraphs.devops.secret_resolver import SecretResolutionError, SecretResolverNode
+from src.subgraphs.devops.secret_resolver import (
+    SecretResolutionError,
+    SecretResolverNode,
+    UnknownDerivedKeyError,
+    is_computable_derived_key,
+)
 
 HEAD_SHA = "6e2fd5b4" + "0" * 32
 BUILT_SHA = "c13d21b9" + "1" * 32
@@ -309,3 +315,47 @@ class TestSecretResolverComputeSecret:
 
         with pytest.raises(SecretResolutionError, match="allocation"):
             self.node._compute_secret("BACKEND_PORT", {"slug": "test-0000"}, state)
+
+
+def _computable_candidates() -> list[str]:
+    """Every key the manifest names, computed or not, plus keys nobody computes."""
+    manifest = load_manifest()
+    listed = [entry.key.replace("*", "WORKER") for entry in manifest.derived_keys]
+    not_resolved = [entry.key for entry in manifest.kit_derived_keys_not_resolved]
+    return sorted(
+        {*listed, *not_resolved, *(key.lower() for key in listed)}
+        | {"PUBLIC_BASE_URL", "WEBHOOK_URL", "UNRECOGNIZED_VALUE", "IMAGE"}
+    )
+
+
+class TestOnePredicate:
+    """`is_computable_derived_key` and `_compute_secret` never disagree."""
+
+    STATE = {
+        "project_id": "p-1",
+        "allocated_resources": {
+            f"server1:{port}": {"server_ip": "192.168.1.100", "port": port, "service_name": name}
+            for port, name in enumerate(
+                ["backend", "frontend", "tg_bot", "postgres", "redis"], start=18001
+            )
+        },
+        "repo_info": {"html_url": "https://github.com/org/product"},
+        "deployed_commit_sha": BUILT_SHA,
+    }
+    PROJECT_SPEC = {"slug": "product-0000", "config": {"modules": ["backend"]}}
+
+    @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
+    @pytest.mark.parametrize("key", _computable_candidates())
+    def test_an_accepted_key_is_computed_and_a_rejected_one_is_unknown(self, key):
+        node = SecretResolverNode()
+        if is_computable_derived_key(key):
+            value = node._compute_secret(key, self.PROJECT_SPEC, self.STATE)
+            assert isinstance(value, str) and value
+        else:
+            with pytest.raises(UnknownDerivedKeyError, match=f"Unknown computed secret: {key}"):
+                node._compute_secret(key, self.PROJECT_SPEC, self.STATE)
+
+    def test_the_story_92b433c8_key_and_the_kits_optional_port_are_not_computable(self):
+        assert not is_computable_derived_key("PUBLIC_BASE_URL")
+        assert not is_computable_derived_key("PORT")
+        assert is_computable_derived_key("BACKEND_IMAGE")

@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 4,
   "cannot": [
     {
       "id": "https_domain",
@@ -51,7 +51,7 @@
       "id": "public_base_url",
       "name": "The product knowing its own public URL",
       "plain": "The product cannot build links to itself, such as a link a user opens in a browser.",
-      "why": "The resolver computes no `PUBLIC_BASE_URL` or similar derived key; a required unknown derived key fails the deploy with `Unknown computed secret` (story-92b433c8).",
+      "why": "The resolver computes no `PUBLIC_BASE_URL` or similar derived key. A required derived key it cannot compute fails the engineering attempt, before any deploy (story-92b433c8 failed its deploy with `Unknown computed secret`).",
       "workaround": "Send the information inside the Telegram chat rather than as a link to the product.",
       "detect": [
         "public_base_url",
@@ -67,10 +67,13 @@
       "why": "An OAuth web redirect needs an https redirect URL on a stable domain, which a product does not have.",
       "workaround": "A Google service account the user shares their calendar or sheet with; a device-code or desktop flow where the provider supports one; or a personal API token the user pastes, stored as a user secret.",
       "detect": [
-        "oauth",
-        "/connect",
+        "oauth redirect",
+        "oauth web",
+        "/connect + oauth",
         "redirect uri",
         "sign in with google",
+        "log in with google",
+        "login with google",
         "авторизация через google",
         "авторизацией через google",
         "авторизацию через google",
@@ -98,13 +101,24 @@
       "why": "The kit has no mail module and the platform provisions no mail server or SMTP relay.",
       "workaround": "Send through a third-party email API with a key the user provides (an outbound call), or send the message through the Telegram bot.",
       "detect": [
-        "email",
-        "e-mail",
+        "send email",
+        "sends email",
+        "sending email",
+        "send an email",
+        "send e-mail",
+        "email notification",
+        "email newsletter",
         "smtp",
-        "электронная почта",
-        "электронной почт",
+        "mail server",
         "отправлять письма",
-        "отправка писем"
+        "отправляет письма",
+        "отправка писем",
+        "отправлять email",
+        "рассылка на почту",
+        "рассылку на почту",
+        "уведомления на почту",
+        "уведомления по email",
+        "письмо на почту"
       ]
     },
     {
@@ -115,13 +129,16 @@
       "workaround": "Keep small files in the database; keep Telegram files by their Telegram file id; or use an external storage service with credentials the user provides.",
       "detect": [
         "file storage",
-        "store files",
+        "store uploaded files",
         "store uploads",
         "persistent files",
+        "files on disk",
         "хранение файлов",
-        "хранить файлы",
-        "хранит файлы",
-        "сохранять файлы"
+        "файловое хранилище",
+        "хранилище файлов",
+        "хранить загруженные файлы",
+        "хранить файлы на сервере",
+        "файлы на диске"
       ]
     },
     {

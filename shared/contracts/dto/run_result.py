@@ -55,6 +55,10 @@ class EngineeringFailureReason(StrEnum):
     # to nothing. Nothing was produced, so the run is failed with its own name
     # instead of being accepted as a success nobody did.
     NO_NEW_COMMIT = "no_new_commit"
+    # The commit's environment contract declares a required production `derived`
+    # key the platform cannot compute, so any deploy of it would fail in the
+    # secret resolver. The keys travel in `uncomputable_derived_keys`.
+    UNCOMPUTABLE_DERIVED_KEY = "uncomputable_derived_key"
 
 
 class DeploySkipReason(StrEnum):
@@ -72,6 +76,15 @@ class DeploySkipReason(StrEnum):
     ALREADY_DEPLOYED_SAME_SHA = "already_deployed_same_sha"
 
 
+def uncomputable_derived_keys_reason(keys: list[str]) -> str:
+    """What the developer is told about required derived keys the platform cannot compute."""
+    return "\n".join(
+        f"the platform cannot compute {key}; remove it, make it optional with a safe default, "
+        "or use a user_secret if the user supplies it; see the capability manifest's derived keys"
+        for key in keys
+    )
+
+
 class EngineeringRunResult(BaseModel):
     """Result of an engineering run (written by the engineering result handler)."""
 
@@ -85,12 +98,26 @@ class EngineeringRunResult(BaseModel):
     #: has a classification the pipeline routes or a person reads. ``None`` is
     #: the ordinary case: a technical failure whose message is the whole story.
     failure_reason: EngineeringFailureReason | None = None
+    #: The required derived keys an `uncomputable_derived_key` failure names, and
+    #: only then; the next attempt at the task is told each of them.
+    uncomputable_derived_keys: list[str] | None = None
     commit_sha: str | None = None
     selected_modules: list[str] | None = None
     test_results: dict | None = None
     allocation_failure_reason: AllocationFailureReason | None = None
     allocation_required_ram_mb: int | None = None
     allocation_min_disk_mb: int | None = None
+
+    @model_validator(mode="after")
+    def _keys_name_an_uncomputable_derived_key_failure(self) -> EngineeringRunResult:
+        names_keys = bool(self.uncomputable_derived_keys)
+        is_that_failure = self.failure_reason is EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY
+        if names_keys != is_that_failure:
+            raise ValueError(
+                "uncomputable_derived_keys is required with, and only with, "
+                "failure_reason uncomputable_derived_key"
+            )
+        return self
 
 
 class MissingUserSecret(BaseModel):

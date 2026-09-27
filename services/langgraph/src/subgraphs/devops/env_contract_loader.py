@@ -4,9 +4,15 @@ import structlog
 import yaml
 
 from shared.clients.github import GitHubAppClient
-from shared.contracts.env_contract import EnvContractMergeError, merge_env_contract_fragments
+from shared.contracts.env_contract import (
+    CanonicalEnvContract,
+    DerivedEntry,
+    EnvContractMergeError,
+    merge_env_contract_fragments,
+)
 from shared.contracts.queues.deploy import DeployOutcome
 
+from .secret_resolver import is_computable_derived_key
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -40,6 +46,23 @@ async def _fetch_env_contract(owner: str, repo: str, ref: str) -> dict | None:
             return merge_env_contract_fragments(fragments).model_dump(mode="json")
         except (EnvContractMergeError, ValueError, yaml.YAMLError) as error:
             raise ValueError("environment contract is invalid") from error
+
+
+def uncomputable_required_derived_keys(contract: dict) -> list[str]:
+    """The required production `derived` keys of a contract the platform cannot compute.
+
+    These are exactly the entries the deploy's secret resolver would fail on; an
+    optional one it skips, and an entry outside production it never resolves.
+    """
+    entries = CanonicalEnvContract.model_validate(contract).entries
+    return sorted(
+        key
+        for key, entry in entries.items()
+        if isinstance(entry, DerivedEntry)
+        and entry.required
+        and "production" in entry.environments
+        and not is_computable_derived_key(key)
+    )
 
 
 async def load_environment_contract(state: DevOpsState) -> dict:

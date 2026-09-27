@@ -41,6 +41,7 @@ from src.subgraphs.devops.secret_resolver import (
     CONTEXT_DERIVED_SECRETS,
     IMAGE_KEY_SUFFIX,
     SecretResolverNode,
+    is_computable_derived_key,
 )
 
 #: The compact block is budgeted on its own, beside the PO's capped `SYSTEM_PROMPT`.
@@ -61,7 +62,7 @@ def _derived_keys_the_resolver_computes() -> set[str]:
 
 
 def _resolver_computes(key: str) -> bool:
-    return key in _derived_keys_the_resolver_computes() or key.endswith(IMAGE_KEY_SUFFIX)
+    return is_computable_derived_key(key)
 
 
 def _port_services_the_code_supports() -> set[str]:

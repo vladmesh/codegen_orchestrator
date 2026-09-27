@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 2, status: draft (owner read-through pending).**
+**Version 4, status: draft (owner read-through pending).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO and the Architect read a compact rendering of the same source on every turn.
 
@@ -94,7 +94,7 @@ Workaround: Poll the provider's API on a timer; the Telegram bot already works t
 
 The product cannot build links to itself, such as a link a user opens in a browser.
 
-Why: The resolver computes no `PUBLIC_BASE_URL` or similar derived key; a required unknown derived key fails the deploy with `Unknown computed secret` (story-92b433c8).
+Why: The resolver computes no `PUBLIC_BASE_URL` or similar derived key. A required derived key it cannot compute fails the engineering attempt, before any deploy (story-92b433c8 failed its deploy with `Unknown computed secret`).
 
 Workaround: Send the information inside the Telegram chat rather than as a link to the product.
 

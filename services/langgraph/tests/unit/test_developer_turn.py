@@ -28,6 +28,7 @@ TASK_2 = "task-c4f82b78"
 TASK_2_TITLE = "tg_bot: /level1 command, command menu, location handler"
 NEW_TASK_HEADING = "## This turn's task"
 NO_CHANGES_HEADING = "## The previous attempt made no changes"
+NOT_DEPLOYABLE_HEADING = "## The previous attempt cannot be deployed"
 
 
 def _attempt(
@@ -37,6 +38,7 @@ def _attempt(
     worker_id: str = WORKER,
     failed: bool = False,
     failure_reason: EngineeringFailureReason | None = None,
+    uncomputable_derived_keys: list[str] | None = None,
 ):
     """An earlier engineering attempt of the story, as the Run list returns it."""
     failed = failed or failure_reason is not None
@@ -50,6 +52,7 @@ def _attempt(
         result=EngineeringRunResult(
             engineering_status=EngineeringStatus.FAILED if failed else EngineeringStatus.DONE,
             failure_reason=failure_reason,
+            uncomputable_derived_keys=uncomputable_derived_keys,
         ),
     )
 
@@ -143,6 +146,41 @@ class TestSameTaskRetryOnAReusedWorker:
         assert f"`{TASK_2}` ({TASK_2_TITLE})" in content
         assert "without changing" in content
         assert NEW_TASK_HEADING not in content
+
+
+class TestRetryAfterAnUncomputableDerivedKey:
+    """The engineering stage refused the commit's contract; the retry is told why."""
+
+    @staticmethod
+    def _refused(*keys: str):
+        return _attempt(
+            "eng-0b",
+            TASK_2,
+            failure_reason=EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY,
+            uncomputable_derived_keys=list(keys),
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_reused_session_is_told_each_key_and_the_ways_out(self):
+        sent = await _turn(_state(), [self._refused("PUBLIC_BASE_URL", "WEBHOOK_URL")])
+
+        assert sent["clear_session"] is False
+        content = sent["task_content"]
+        assert content.startswith(NOT_DEPLOYABLE_HEADING)
+        assert f"`{TASK_2}` ({TASK_2_TITLE})" in content
+        for key in ("PUBLIC_BASE_URL", "WEBHOOK_URL"):
+            assert (
+                f"the platform cannot compute {key}; remove it, make it optional with a safe "
+                "default, or use a user_secret if the user supplies it; see the capability "
+                "manifest's derived keys"
+            ) in content
+        assert NO_CHANGES_HEADING not in content and NEW_TASK_HEADING not in content
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_worker_is_told_too(self):
+        sent = await _turn(_state(worker_id=None), [self._refused("PUBLIC_BASE_URL")], reused=False)
+
+        assert sent["task_content"].startswith(NOT_DEPLOYABLE_HEADING)
 
 
 class TestTurnsWithoutAReusedWorker:

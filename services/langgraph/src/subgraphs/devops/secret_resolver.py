@@ -411,6 +411,8 @@ class SecretResolverNode(FunctionalNode):
 
     def _compute_secret(self, key: str, project_spec: dict, state: DevOpsState) -> str:
         """Compute context-based secret value."""
+        if not is_computable_derived_key(key):
+            raise UnknownDerivedKeyError(f"Unknown computed secret: {key}")
         key_upper = key.upper()
 
         if key_upper in self._STATIC_SECRETS:
@@ -422,10 +424,7 @@ class SecretResolverNode(FunctionalNode):
         if key_upper in self._PORT_SERVICE_MAP:
             return self._resolve_port(key_upper, state)
 
-        if key_upper.endswith(IMAGE_KEY_SUFFIX):
-            return self._resolve_docker_image(key_upper, state)
-
-        raise UnknownDerivedKeyError(f"Unknown computed secret: {key}")
+        return self._resolve_docker_image(key_upper, state)
 
     def _resolve_port(self, key_upper: str, state: DevOpsState) -> str:
         """Resolve port from resource allocator."""
@@ -497,3 +496,20 @@ class SecretResolverNode(FunctionalNode):
             secrets_count=len(secrets),
             secret_names=list(secrets.keys()),
         )
+
+
+def is_computable_derived_key(key: str) -> bool:
+    """Whether a deploy can compute this `derived` contract key.
+
+    The one answer to "does the platform compute it": `_compute_secret` refuses a
+    key this rejects, and the engineering stage refuses a required one before any
+    deploy is triggered. It says nothing about whether the deploy's context holds
+    what the value is computed from — an allocation, the deployed commit.
+    """
+    key_upper = key.upper()
+    return (
+        key_upper in SecretResolverNode._STATIC_SECRETS
+        or key_upper in CONTEXT_DERIVED_SECRETS
+        or key_upper in SecretResolverNode._PORT_SERVICE_MAP
+        or key_upper.endswith(IMAGE_KEY_SUFFIX)
+    )
