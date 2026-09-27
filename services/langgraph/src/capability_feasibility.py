@@ -1,7 +1,8 @@
 """One detection floor for PO intake and Architect admission.
 
 The rendered data ships with src/. Matching is deliberately phrase based;
-the agents must still judge requirements against the whole manifest.
+the agents must still judge requirements against the whole manifest. A term
+joined by " + " matches when every one of its phrases is present.
 """
 
 from dataclasses import dataclass
@@ -53,6 +54,10 @@ class CapabilityConflict:
         )
 
 
+def _term_matches(term: str, text: str) -> bool:
+    return all(part in text for part in term.split(" + "))
+
+
 def capability_conflicts(brief_content: ProductBriefContent) -> list[CapabilityConflict]:
     """Find unsupported requirements without an explicitly accepted workaround."""
     accepted = {choice.capability for choice in brief_content.variant_choices}
@@ -60,7 +65,7 @@ def capability_conflicts(brief_content: ProductBriefContent) -> list[CapabilityC
     for requirement in brief_content.must_requirements:
         text = " ".join(f"{requirement.text} {requirement.user_wording or ''}".casefold().split())
         for item in CAPABILITY_LIMITS.values():
-            if item.id not in accepted and any(term in text for term in item.detect):
+            if item.id not in accepted and any(_term_matches(term, text) for term in item.detect):
                 conflicts.append(CapabilityConflict(requirement.id, requirement.text, item))
     return conflicts
 

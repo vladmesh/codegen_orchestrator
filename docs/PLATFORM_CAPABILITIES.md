@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 3, status: draft (owner read-through pending).**
+**Version 4, status: draft (owner read-through pending).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO and the Architect read a compact rendering of the same source on every turn.
 

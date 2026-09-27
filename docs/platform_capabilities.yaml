@@ -9,7 +9,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 3
+version: 4
 status: draft
 review: owner read-through pending
 
@@ -116,7 +116,9 @@ cannot:
       its deploy with `Unknown computed secret`).
     workaround: Send the information inside the Telegram chat rather than as a link to the product.
   - id: oauth_web_redirect
-    detect: [oauth redirect, oauth web, oauth flow, oauth sign-in, oauth login, google oauth, redirect uri, sign in with google, log in with google, login with google, oauth-авторизац, авторизация через google, авторизацией через google, авторизацию через google, вход через google]
+    # Only the redirect or the web sign-in itself: a device-code or desktop OAuth flow is the
+    # workaround. A term joined by " + " trips when every part is present.
+    detect: [oauth redirect, oauth web, /connect + oauth, redirect uri, sign in with google, log in with google, login with google, авторизация через google, авторизацией через google, авторизацию через google, вход через google]
     name: OAuth web sign-in redirects
     plain: The product cannot use "Sign in with Google" style web redirects to get access to a user's account.
     why: An OAuth web redirect needs an https redirect URL on a stable domain, which a product does not have.

@@ -78,6 +78,8 @@ def test_supported_requirements_pass(text):
         "Google Sheets via service account, without OAuth",
         "/connect_notion with a pasted API token",
         "Бот хранит файлы по Telegram file id",
+        "Use the OAuth flow supported by a device-code client",
+        "device code flow (OAuth device authorization)",
     ],
 )
 def test_supported_phrasings_near_a_missing_capability_do_not_trip(text):

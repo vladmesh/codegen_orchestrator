@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "cannot": [
     {
       "id": "https_domain",
@@ -69,15 +69,11 @@
       "detect": [
         "oauth redirect",
         "oauth web",
-        "oauth flow",
-        "oauth sign-in",
-        "oauth login",
-        "google oauth",
+        "/connect + oauth",
         "redirect uri",
         "sign in with google",
         "log in with google",
         "login with google",
-        "oauth-авторизац",
         "авторизация через google",
         "авторизацией через google",
         "авторизацию через google",
