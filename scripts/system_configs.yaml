@@ -179,6 +179,11 @@
   category: supervisor
   description: "Minutes a story may sit in 'in_progress' with no task in its current work cycle (and no live Product Brief planning attempt) before human review (derived: the architect's 5-minute scaffold wait plus one planning run, with an order of magnitude of headroom)"
 
+- key: supervisor.state_age_mass_park_threshold
+  value: 3
+  category: supervisor
+  description: "Expired waits one state-age watchdog pass may end before the pass counts as a mass sweep after downtime: above it every ending is marked mass_sweep and the admins get one message for the pass instead of one per story (no age cutoff; the PO tells such an event by its dates)"
+
 - key: supervisor.stage_notice_quiet_minutes
   value: 60
   category: supervisor

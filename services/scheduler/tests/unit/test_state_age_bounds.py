@@ -1389,3 +1389,149 @@ async def test_told_does_not_move_the_delivered_secret_wait_anchor():
     counts, ended, _deliver, _notify = await _run_watchdog(world.api, world.redis)
     assert counts["failed"] == 1
     assert _ended_command(ended).anchor.ask_delivered_at == delivered_at
+
+
+# --- a mass sweep after downtime ------------------------------------------
+
+MASS_PARK_THRESHOLD = 3
+
+
+def _many_expired_waits(api_client, *, deploying: int, planless: int) -> list[str]:
+    """Aged waits under two bounds at once, as a pass after an outage finds them."""
+    deploy_stories = [_make_story(id=f"deploy-{i}", status="deploying") for i in range(deploying)]
+    planless_stories = [
+        _make_story(id=f"planless-{i}", status="in_progress").model_copy(
+            update={"updated_at": _ago(PLANLESS_BOUND_MINUTES + 30)}
+        )
+        for i in range(planless)
+    ]
+
+    async def by_status(requested):
+        return {
+            StoryStatus.DEPLOYING: deploy_stories,
+            StoryStatus.IN_PROGRESS: planless_stories,
+        }.get(requested, [])
+
+    api_client.get_stories_by_status.side_effect = by_status
+    api_client.get_latest_run_by_story.return_value = _make_run(
+        status=RunStatus.RUNNING, created_at=_ago(DEPLOY_BOUND_MINUTES * 20)
+    )
+    return [story.id for story in deploy_stories + planless_stories]
+
+
+def _ended_reasons(ended) -> dict[str, dict]:
+    return {
+        call.args[0]: call.args[1].reason.model_dump(mode="json") for call in ended.await_args_list
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_pass_over_the_threshold_marks_every_ending_and_tells_admins_once(
+    api_client, redis_client
+):
+    """The platform was down: four waits expired at once, across two bounds."""
+    story_ids = _many_expired_waits(api_client, deploying=2, planless=2)
+    assert len(story_ids) > MASS_PARK_THRESHOLD
+
+    counts, ended, deliver, notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 4, "failed": 0, "skipped": 0}
+    reasons = _ended_reasons(ended)
+    assert sorted(reasons) == sorted(story_ids)
+    assert all(reason["mass_sweep"] is True for reason in reasons.values())
+    # Every owner is still told; only the administrators get one message.
+    assert sorted(call.args[2] for call in deliver.await_args_list) == sorted(story_ids)
+    notify.assert_awaited_once()
+    message = notify.await_args.args[0]
+    assert "Mass sweep after downtime" in message
+    assert "found 4 expired waits" in message
+    assert "stopped 4 stories" in message
+    for story_id in story_ids:
+        assert story_id in message
+    assert "deploying, waited 600" in message
+    assert "in_progress, waited 90" in message
+
+
+@pytest.mark.asyncio
+async def test_a_pass_at_the_threshold_is_not_a_mass_sweep(api_client, redis_client):
+    story_ids = _many_expired_waits(api_client, deploying=2, planless=1)
+    assert len(story_ids) == MASS_PARK_THRESHOLD
+
+    counts, ended, deliver, notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 3, "failed": 0, "skipped": 0}
+    assert all(reason["mass_sweep"] is False for reason in _ended_reasons(ended).values())
+    assert deliver.await_count == MASS_PARK_THRESHOLD
+    # One administrator notice per ended wait, each about its own story.
+    assert sorted(call.kwargs["story_id"] for call in notify.await_args_list) == sorted(story_ids)
+    assert not any("Mass sweep" in call.args[0] for call in notify.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_mass_sweep_skips_a_story_that_moved_on_and_counts_only_the_parked(
+    api_client, redis_client
+):
+    """Four to end, one moved on before the lock: three parked, one logged skip."""
+    story_ids = _many_expired_waits(api_client, deploying=3, planless=1)
+    guarded = api_client.guard.expire
+
+    async def one_moved_on(story_id, command):
+        if story_id == "deploy-1":
+            api_client.guard.status = StoryStatus.TESTING
+            try:
+                return await guarded(story_id, command)
+            finally:
+                api_client.guard.status = _UNCHANGED
+        return await guarded(story_id, command)
+
+    api_client.expire_state_wait.side_effect = one_moved_on
+
+    with capture_logs() as logs:
+        counts, ended, deliver, notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 3, "failed": 0, "skipped": 1}
+    # The number to end was over the threshold, so every ending is marked.
+    assert all(reason["mass_sweep"] is True for reason in _ended_reasons(ended).values())
+    assert "deploy-1" not in api_client.guard.ended
+    assert sorted(api_client.guard.ended) == sorted(set(story_ids) - {"deploy-1"})
+    skipped = [entry for entry in logs if entry["event"] == "state_age_bound_skipped"]
+    assert [entry["story_id"] for entry in skipped] == ["deploy-1"]
+    assert deliver.await_count == 3  # noqa: PLR2004
+    notify.assert_awaited_once()
+    message = notify.await_args.args[0]
+    assert "found 4 expired waits" in message
+    assert "stopped 3 stories" in message
+    assert "deploy-1:" not in message
+
+
+@pytest.mark.asyncio
+async def test_every_expired_wait_is_read_before_any_is_ended(api_client, redis_client):
+    """The count that decides a mass sweep is the whole pass, not a running tally."""
+    _many_expired_waits(api_client, deploying=2, planless=2)
+    order: list[str] = []
+    run = api_client.get_latest_run_by_story.return_value
+
+    async def read_run(story_id, **kwargs):
+        order.append(f"read:{story_id}")
+        return run
+
+    async def read_tasks(story_id):
+        order.append(f"read:{story_id}")
+        return []
+
+    guarded = api_client.guard.expire
+
+    async def expire(story_id, command):
+        order.append(f"end:{story_id}")
+        return await guarded(story_id, command)
+
+    api_client.get_latest_run_by_story.side_effect = read_run
+    api_client.get_tasks_by_story.side_effect = read_tasks
+    api_client.expire_state_wait.side_effect = expire
+
+    await _run_watchdog(api_client, redis_client)
+
+    first_end = next(i for i, step in enumerate(order) if step.startswith("end:"))
+    assert all(step.startswith("read:") for step in order[:first_end])
+    assert all(step.startswith("end:") for step in order[first_end:])
+    assert len(order[first_end:]) == 4  # noqa: PLR2004

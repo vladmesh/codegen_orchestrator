@@ -147,7 +147,10 @@ class TestContent:
             f"ordered, Product Brief confirmed {when(now - timedelta(days=24), now)}"
         )
         assert when(now - timedelta(days=24), now).endswith("UTC (3 weeks ago)")
-        assert _line(snapshot, "Status") == "waiting_human_review, waiting on human_review"
+        assert _line(snapshot, "Status") == (
+            "waiting_human_review, waiting on human_review; stopped, a person is needed, "
+            "no known deadline"
+        )
         assert _line(snapshot, "In this status since") == when(
             now - timedelta(days=21, hours=2), now
         )
@@ -269,10 +272,98 @@ class TestContent:
         )
 
         assert _line(snapshot, "Status") == (
-            "waiting_human_review, waiting on human_review; stopped after waiting 3 weeks in "
+            "waiting_human_review, waiting on human_review; stopped, a person is needed, no "
+            "known deadline; stopped after waiting 3 weeks in "
             f"pr_review (that wait began {began:%Y-%m-%d %H:%M} UTC)"
         )
         assert _line(snapshot, "In this status since").endswith("UTC (3 minutes ago)")
+
+    async def test_a_mass_sweep_park_is_marked_as_one(self, situation_api, gate_stories, client):
+        """The platform was down: the park is a late notice after an outage, told by its dates."""
+        now = datetime.now(UTC)
+        began = now - timedelta(days=2)
+        gate_stories.put(
+            STORY,
+            status="waiting_human_review",
+            waiting_on="human_review",
+            status_entered_at=_iso(now - timedelta(minutes=2)),
+            quarantine_reason={
+                "reason": "state_wait_age_bound_exceeded",
+                "status": "deploying",
+                "waiting_on": "deploy",
+                "config_key": "supervisor.deploy_wait_max_minutes",
+                "threshold_minutes": 30,
+                "anchor": "deploy_run_created_at",
+                "anchor_at": _iso(began),
+                "age_minutes": 2 * 24 * 60.0,
+                "ending": "park",
+                "mass_sweep": True,
+            },
+        )
+
+        snapshot = await build_situation(
+            ApiSituationReader(situation_api.client),
+            client.redis,
+            SituationSubject(telegram_chat_id=CHAT, project_id=PROJECT, story_id=STORY),
+            now=now,
+        )
+
+        assert _line(snapshot, "Status") == (
+            "waiting_human_review, waiting on human_review; stopped, a person is needed, no "
+            "known deadline; stopped in a mass sweep after downtime; stopped after waiting "
+            f"2 days in deploying (that wait began {began:%Y-%m-%d %H:%M} UTC)"
+        )
+
+    @pytest.mark.parametrize(
+        ("fields", "stopped"),
+        [
+            ({"status": "waiting_human_review", "waiting_on": "human_review"}, True),
+            (
+                {
+                    "status": "in_progress",
+                    "planning": {
+                        "state": "parked",
+                        "failed_attempts": 3,
+                        "max_retries": 3,
+                        "recorded_at": "2026-09-26T10:00:00+00:00",
+                    },
+                },
+                True,
+            ),
+            (
+                {
+                    "status": "in_progress",
+                    "quarantine_reason": {
+                        "reason": "story_failure",
+                        "code": "planning_failed",
+                        "source": "architect",
+                        "detail": "LLMChannelsExhausted",
+                        "observed_at": "2026-09-26T10:00:00+00:00",
+                    },
+                },
+                True,
+            ),
+            ({"status": "in_progress"}, False),
+            ({"status": "waiting_user_secret", "waiting_on": "user_secret"}, False),
+            ({"status": "failed"}, False),
+            ({"status": "completed"}, False),
+        ],
+    )
+    async def test_a_stopped_story_is_told_as_stopped_and_nothing_else_is(
+        self, situation_api, gate_stories, client, fields, stopped
+    ):
+        gate_stories.put(STORY, status_entered_at=_iso(datetime.now(UTC)), **fields)
+
+        snapshot = await build_situation(
+            ApiSituationReader(situation_api.client),
+            client.redis,
+            SituationSubject(telegram_chat_id=CHAT, project_id=PROJECT, story_id=STORY),
+        )
+
+        status = _line(snapshot, "Status")
+        assert ("; stopped, a person is needed, no known deadline" in status) is stopped
+        for softened in ("tested", "standard", "specialist", "checking", "reviewing"):
+            assert softened not in snapshot
 
     async def test_an_event_naming_no_story_says_so(self, situation_api, client):
         snapshot = await build_situation(
@@ -467,7 +558,10 @@ class TestAcceptance:
         snapshot = _snapshot_of(graph)
         order = _line(snapshot, "Order")
         assert f"{ordered:%Y-%m-%d %H:%M} UTC (3 weeks ago)" in order
-        assert _line(snapshot, "Status") == "waiting_human_review, waiting on human_review"
+        assert _line(snapshot, "Status") == (
+            "waiting_human_review, waiting on human_review; stopped, a person is needed, "
+            "no known deadline"
+        )
         assert _line(snapshot, "In this status since") == (
             f"{blocked:%Y-%m-%d %H:%M} UTC (3 weeks ago)"
         )

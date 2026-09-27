@@ -879,15 +879,48 @@ def _run_settle(tmp: Path, *, timeout_seconds: int, cloud_init_rc: int, lock_pol
         stub = stubs / name
         stub.write_text(f'#!/bin/bash\necho "{name} $*" >> "{calls}"\n{body}\n')
         stub.chmod(0o755)
-    result = subprocess.run(
+    # Its own session: `timeout` moves its children to a new process group but
+    # not out of the session, so every stub it started can be waited for.
+    process = subprocess.Popen(
         ["/bin/bash", "-c", command],
         env={"PATH": f"{stubs}:{os.environ['PATH']}"},
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=30,
+        start_new_session=True,
     )
+    stdout, stderr = process.communicate(timeout=30)
+    # A stub signalled by `timeout` can still finish writing into `tmp` after
+    # bash returns; the caller's cleanup must not race it.
+    _wait_until_session_ends(process.pid)
+    result = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
     recorded = calls.read_text().splitlines() if calls.exists() else []
     return result, recorded
+
+
+def _session_members(session_id: int) -> list[int]:
+    """Live (not zombie) processes of a session, read from /proc."""
+    members = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            # Fields after the parenthesised command: state, ppid, pgrp, session.
+            state, _ppid, _pgrp, session = (
+                (entry / "stat").read_text().rsplit(")", 1)[1].split()[:4]
+            )
+        except OSError:
+            continue
+        if int(session) == session_id and state != "Z":
+            members.append(int(entry.name))
+    return members
+
+
+def _wait_until_session_ends(session_id: int, *, seconds: float = 10) -> None:
+    deadline = time.monotonic() + seconds
+    while members := _session_members(session_id):
+        assert time.monotonic() < deadline, f"settle left processes running: {members}"
+        time.sleep(0.01)
 
 
 def test_first_boot_settle_stops_upgrades_then_waits_for_cloud_init_then_locks():

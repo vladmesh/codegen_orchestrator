@@ -153,6 +153,12 @@ class StateWaitExpiryReason(BaseModel):
     anchor_at: str
     age_minutes: float
     ending: StateWaitEnding
+    #: True when one watchdog pass ended more waits than
+    #: ``supervisor.state_age_mass_park_threshold``: the platform was down and
+    #: many waits expired at once. The event is then a late notice after an
+    #: outage, not a fresh failure of the story. Defaults to False, so reasons
+    #: stored before the field existed stay valid.
+    mass_sweep: bool = False
 
     def names_same_wait(self, stored: dict | None) -> bool:
         """True when ``stored`` is this reason for the same wait, however old it grew."""

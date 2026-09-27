@@ -7,8 +7,10 @@ with the same text. It says, each with an absolute UTC date and a human age:
 
 * the order — the story and when its Product Brief was confirmed, or that it is
   not an order;
-* the story's status, when it entered it (``status_entered_at``) and, for a
-  story the state-age watchdog stopped, the wait it had exceeded;
+* the story's status, when it entered it (``status_entered_at``), for a
+  stopped story the fixed fact ``STOPPED_FACT`` and, for a story the state-age
+  watchdog stopped, the wait it had exceeded (``MASS_SWEEP_MARK`` when that
+  pass was a mass sweep after downtime);
 * when the user last wrote in this chat;
 * whether the project's deployed application is up;
 * the user's other ordered stories in work, and a count of platform work;
@@ -44,6 +46,8 @@ from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.state_wait import STATE_AGE_BOUND_REASON, StateWaitExpiryReason
 from shared.contracts.dto.story import STAGE_NOTICE_TERMINAL_STATUSES, StoryDTO, StoryType
 
+from ...consumers.po_story_gate import StoryKeyState, story_key_state
+
 logger = structlog.get_logger(__name__)
 
 #: The run-config key the consumer puts a system event's snapshot under.
@@ -52,6 +56,11 @@ SITUATION_CONFIG_KEY = "po_situation"
 SNAPSHOT_HEADING = "## Situation snapshot"
 DEFERRED_NOTICES_HEADING = "### Deferred notices"
 UNKNOWN = "unknown"
+#: What a stopped story is, told as a fact and never softened: nobody is
+#: working on it and nothing promises when that changes.
+STOPPED_FACT = "stopped, a person is needed, no known deadline"
+#: A watchdog ending from a pass that ended many waits at once after downtime.
+MASS_SWEEP_MARK = "stopped in a mass sweep after downtime"
 
 #: When the user last wrote in a chat, written on every user turn (ISO, UTC).
 LAST_USER_MESSAGE_KEY_PREFIX = "po:last_user_message:"
@@ -422,7 +431,8 @@ async def _story_lines(snap: _Snapshot, story_id: str) -> list[str]:
     async def status() -> str:
         story = await snap.story(story_id)
         waiting = f", waiting on {story.waiting_on}" if story.waiting_on != "none" else ""
-        return f"{story.status}{waiting}{_prior_wait(story)}"
+        stopped = f"; {STOPPED_FACT}" if story_key_state(story) is StoryKeyState.STOPPED else ""
+        return f"{story.status}{waiting}{stopped}{_prior_wait(story)}"
 
     async def since() -> str:
         return _entered(await snap.story(story_id), snap.now)
@@ -457,8 +467,9 @@ def _prior_wait(story: StoryDTO) -> str:
         return ""
     ended = StateWaitExpiryReason.model_validate(reason)
     began = _utc(datetime.fromisoformat(ended.anchor_at))
+    mass = f"; {MASS_SWEEP_MARK}" if ended.mass_sweep else ""
     return (
-        f"; stopped after waiting {human_duration(ended.age_minutes * 60)} in {ended.status}"
+        f"{mass}; stopped after waiting {human_duration(ended.age_minutes * 60)} in {ended.status}"
         f" (that wait began {began:%Y-%m-%d %H:%M} UTC)"
     )
 

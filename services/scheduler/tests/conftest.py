@@ -56,6 +56,7 @@ def initialized_scheduler_config(monkeypatch):
         "supervisor.pr_review_wait_max_minutes": 220,
         "supervisor.user_secret_wait_max_minutes": 1440,
         "supervisor.planless_story_max_minutes": 60,
+        "supervisor.state_age_mass_park_threshold": 3,
         "supervisor.stage_notice_quiet_minutes": 60,
         "supervisor.stage_notice_max_interval_minutes": 1440,
         "supervisor.resource_wait_metrics_freshness_seconds": 300,

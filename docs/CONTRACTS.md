@@ -878,8 +878,10 @@ built by `agents/po/situation.py` from existing API reads and the chat's
 `po:last_user_message:<chat>` key (written on each user turn): the order (story and brief
 `confirmed_at`, or "not an order"), the story's status and when it entered it
 (`status_entered_at`; null on rows landed before that column existed reads `unknown`, never
-`updated_at`), for a story the state-age watchdog stopped the wait its
-`state_wait_age_bound_exceeded` reason records, the user's last message, the project's Application status and last health
+`updated_at`), for a stopped story (key state `stopped`) the fixed fact "stopped, a person is
+needed, no known deadline", for a story the state-age watchdog stopped the wait its
+`state_wait_age_bound_exceeded` reason records (marked "stopped in a mass sweep after downtime" when
+the reason has `mass_sweep: true`), the user's last message, the project's Application status and last health
 check, the user's other ordered stories in work, a count of platform work, and a `### Deferred
 notices` section (empty until notices are deferred). Dates are absolute UTC plus a human age. Each
 field is read on its own: a read that raises, answers 404 or returns a body that is not the DTO

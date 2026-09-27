@@ -36,6 +36,7 @@ PIPELINE_REQUIRED_KEYS = {
     "supervisor.pr_review_wait_max_minutes",
     "supervisor.user_secret_wait_max_minutes",
     "supervisor.planless_story_max_minutes",
+    "supervisor.state_age_mass_park_threshold",
     "supervisor.stage_notice_quiet_minutes",
     "supervisor.stage_notice_max_interval_minutes",
     "supervisor.resource_wait_metrics_freshness_seconds",
