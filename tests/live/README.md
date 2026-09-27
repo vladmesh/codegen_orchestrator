@@ -282,6 +282,31 @@ one selected developer/QA pair; it does not claim unmeasured wall times.
 `tests/live/po_default_preflight.py` is retained as a separate operator preflight. It is not part
 of any named suite in this iteration, so no named suite currently claims PO-default coverage.
 
+## LLM channel failover
+
+`tests/live/test_llm_channel_failover.py` proves the per-agent LLM channel chain end to end on the
+stand. It is not a named suite: it is dispatched as `stand-e2e.yml suite=custom
+target=tests/live/test_llm_channel_failover.py`, runs under the custom-target backstop (2700 s) with
+its own 1900-second productive clock, and every offline selection ignores it.
+
+| Leg | Fault (agent configuration only) | Model turns | Proof |
+| --- | --- | --- | --- |
+| `healthy` | none: the default chain | one Architect planning, one PO turn | `stories.planning.channels == ["codex"]`, no failure; `llm_channel_used agent=po channel=codex` for the turn's `request_id` |
+| `codex_faulted` | Architect chain `[codex(unknown model), claude]` | one Architect planning | `stories.planning.channels == ["claude"]`, `codex:<class>` among the failures; chain restored in the leg |
+| `no_paid_work` | — | none | both stories archived; `GET /api/runs/` lists no Run for either story or the project |
+| `subscriptions_faulted` | PO chain `[codex(unknown model), claude(unknown model), openrouter]`, langgraph recreated | exactly one OpenRouter PO turn | `llm_channel_failed` for codex and claude and `llm_channel_used channel=openrouter` for the turn, `llm_degraded_note_added`, the `subscriptions_down` alert decision and its delivery; chain restored and langgraph recreated again |
+
+The fault is a chain entry naming `nonexistent-model-for-failover-test`, which the CLI rejects, so
+the failure is the CLI's own; `llm_failover.py` holds the one-constant fallback to
+`timeout_seconds: 1` for a CLI that would accept it. The Architect's faulted chain carries no
+`openrouter` entry, and PO input is drained before the paid leg, because the stand's OpenRouter
+balance buys one PO turn. The stories' project is `active` with no repository and no ready workspace,
+so engineering dispatch refuses the plan at `workspace_not_ready`, before the paid gate. langgraph is
+recreated through `stand_run.recreate_and_wait`, which knows it is ready at `po_consumer_started`.
+The run writes `run-evidence-llm-channel-failover-<time>.json`: per leg the fault, the story and its
+`planning` record, the PO request id, the reply text and the channel lines, the recreates and the
+alert outcome, and the chains before and after.
+
 ## LIVE_NO_CLEANUP
 
 Set `LIVE_NO_CLEANUP=1` to leave a run's owned resources in place after teardown so a failed or

@@ -948,6 +948,21 @@ def test_a_consumer_is_ready_only_once_it_says_it_started(tmp_path, monkeypatch)
     assert stand_run.service_is_ready({}, "qa-worker") is True
 
 
+def test_langgraph_is_ready_once_its_po_consumer_says_it_started(monkeypatch):
+    """`langgraph` never logs `langgraph_started`; its PO consumer names the moment."""
+    logs = iter(['{"event": "langgraph_started"}\n', '{"event": "po_consumer_started"}\n'])
+    monkeypatch.setattr(
+        stand_run,
+        "_compose",
+        lambda env, *args, capture=False: subprocess.CompletedProcess(
+            [], 0, stdout=next(logs), stderr=""
+        ),
+    )
+
+    assert stand_run.service_is_ready({}, "langgraph") is False
+    assert stand_run.service_is_ready({}, "langgraph") is True
+
+
 def test_the_runner_waits_for_http_while_the_resolver_already_answers(tmp_path, monkeypatch):
     """The discriminating case of run 33749154999.
 

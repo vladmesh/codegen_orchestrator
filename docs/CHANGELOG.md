@@ -15,6 +15,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   hang on main); every unit test has a 90 s timeout that names a hanging test and its asyncio tasks.
 - RAG is removed: its routes, embedding client, ingest, summarizer, Telegram message capture and four `rag_*` tables
   (dropped by migration `d3f5a7c9e1b4`) had no reader; `OPEN_ROUTER_KEY` is no longer required.
+- Stand live test `test_llm_channel_failover.py` (custom target) proves Architect and PO failover healthy, with codex
+  faulted and with both subscriptions faulted, faulting only agent-config chains and restoring them always.
 
 ## 2026-09-26
 
