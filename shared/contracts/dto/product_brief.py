@@ -314,6 +314,13 @@ class VariantChoice(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: A manifest cannot id: the user explicitly accepted its workaround.
+    capability: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]*$",
+        max_length=128,
+        exclude_if=lambda value: value is None,
+    )
     feature: str = Field(min_length=1, max_length=2000)
     chosen: str = Field(min_length=1, max_length=2000)
     alternative: str = Field(min_length=1, max_length=2000)

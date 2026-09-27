@@ -52,6 +52,7 @@ from shared.redis import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
 from ..agents.architect.tools import reset_task_chain
+from ..capability_feasibility import capability_conflicts
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
 from ..llm import (
@@ -265,6 +266,27 @@ async def _admit_plan(
     second admit would give the same answer, because the missing dispositions
     are missing.
     """
+    conflicts = capability_conflicts(attempt.brief.content)
+    if conflicts:
+        rows = await api_client.list_requirement_coverage(attempt.brief_id)
+        returned = {
+            row.requirement_id
+            for row in rows
+            if row.planning_attempt_id == attempt.planning_attempt_id
+            and row.task_id is None
+            and row.returned_reason
+        }
+        refused = [conflict for conflict in conflicts if conflict.requirement_id not in returned]
+        if refused:
+            await _release_planning_attempt(attempt, log)
+            return live_work_settled(
+                {
+                    "status": "incomplete",
+                    "brief_id": attempt.brief_id,
+                    "error": "Capability conflicts must be returned, not covered by tasks. "
+                    "Nothing was released.\n" + "\n".join(conflict.reason for conflict in refused),
+                }
+            )
     admission = await api_client.admit_product_brief_coverage(
         attempt.brief_id,
         attempt.planning_attempt_id,
@@ -664,6 +686,13 @@ def _requirements_briefing(attempt: _PlanningAttempt | None) -> str:
         "record_requirement_coverage — the task that covers it, or the reason it is "
         "returned. Nothing you plan is dispatched until all of them are recorded."
     )
+    conflicts = capability_conflicts(attempt.brief.content)
+    if conflicts:
+        briefing += (
+            "\nThese requirements cannot be covered by tasks. Return each with returned_reason "
+            "including the following capability reason:\n"
+            + "\n".join(conflict.reason for conflict in conflicts)
+        )
     return (
         briefing
         + _usage_briefing(attempt)
@@ -729,6 +758,7 @@ def _variant_choices_briefing(attempt: _PlanningAttempt) -> str:
     listed = "\n".join(
         f"- {choice.feature}: chosen: {choice.chosen}; alternative: {choice.alternative}; "
         f"trade-off: {choice.trade_off}; add later: {choice.add_later}"
+        + (f"; accepted capability workaround: {choice.capability}" if choice.capability else "")
         for choice in choices
     )
     return (

@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 1, status: draft (owner read-through pending).**
+**Version 2, status: draft (owner read-through pending).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO and the Architect read a compact rendering of the same source on every turn.
 
@@ -79,6 +79,8 @@ Workaround: Use the Telegram bot as the product's interface; it needs no address
 The product cannot be put on its own domain name, such as mybot.example.com.
 
 Why: Nothing allocates, points or verifies a domain for a product; its address is the server IP.
+
+Workaround: Use the Telegram bot, or the backend at http://\<server IP>:\<port>.
 
 ### Inbound webhooks from external services
 

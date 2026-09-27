@@ -478,6 +478,15 @@ receives them as recorded context: build only the chosen variant, never the
 alternative or its upgrade path without a later order. No endpoint or migration
 is added; `content` remains JSON and `limitations` keeps its meaning.
 
+An optional `VariantChoice.capability` names a `cannot` id from the platform
+manifest and records the user's explicit acceptance of its workaround. Absent
+values are omitted from serialization. PO presentation and confirmation reject
+requirements matching manifest detection phrases without that choice. An insisting
+user's `pass_capability_request` sends an admin note and starts no work. The
+Architect consumer checks the same runtime manifest data before coverage admission:
+each conflicting requirement must be returned by the active attempt, never covered
+by a task. The return reason names the capability, manifest version and workaround.
+
 **A brief has two forms, both pure functions of the stored title and content**
 (`shared/product_brief_text.py`), both Telegram HTML with every user or model text
 escaped by `html.escape(..., quote=False)`:

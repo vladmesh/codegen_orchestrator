@@ -1012,6 +1012,94 @@ class TestUndisposedRequirementCounterfactual:
         assert boundary.released == ["task-1"]
         assert boundary.tasks["task-1"]["dispatch_admitted"] is True
 
+    @pytest.mark.parametrize("returned", [False, True])
+    async def test_unsupported_calendar_requires_return_instead_of_task_coverage(
+        self, returned, mock_redis, valid_job_data, boundary, _llm_configured
+    ):
+        from src.agents.architect.tools import record_requirement_coverage
+        from src.consumers.architect import process_architect_job
+
+        boundary.brief.content.must_requirements[0].text = "/connect: secure Google OAuth flow"
+        reason = (
+            "oauth_web_redirect, manifest v2: no stable HTTPS redirect. "
+            "Use a Google service account the user shares their calendar with."
+        )
+        graph = _planning_graph(dispose=["req-2"] if returned else ["req-1", "req-2"])
+        scripted = graph.ainvoke.side_effect
+
+        async def plan(state, config=None):
+            output = await scripted(state, config)
+            if returned:
+                await record_requirement_coverage.ainvoke(
+                    {
+                        "requirement_id": "req-1",
+                        "returned_reason": reason,
+                        "brief_id": state["product_brief_id"],
+                        "planning_attempt_id": state["planning_attempt_id"],
+                    }
+                )
+            return output
+
+        graph.ainvoke.side_effect = plan
+        mock_redis.redis.exists.return_value = False
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            result = await process_architect_job(valid_job_data, mock_redis)
+
+        if returned:
+            assert result["status"] == "success"
+            assert boundary.admit_calls == 1 and boundary.released == ["task-1"]
+            notices = [
+                call.args[1]
+                for call in mock_redis.publish_flat.call_args_list
+                if call.args[0] == "po:input"
+            ]
+            assert any(reason in notice["text"] for notice in notices)
+        else:
+            assert result["status"] == "incomplete"
+            assert "oauth_web_redirect" in result["error"]
+            assert "manifest v2" in result["error"] and "service account" in result["error"]
+            assert boundary.admit_calls == 0 and boundary.released == []
+            assert not boundary.attempt_active
+            assert not boundary.tasks["task-1"]["dispatch_admitted"]
+
+    async def test_accepted_calendar_workaround_allows_task_coverage(
+        self, mock_redis, valid_job_data, boundary, _llm_configured
+    ):
+        from src.consumers.architect import process_architect_job
+
+        content = boundary.brief.content.model_dump()
+        content["must_requirements"][0]["text"] = "/connect: secure Google OAuth flow"
+        content["variant_choices"] = [
+            {
+                "capability": "oauth_web_redirect",
+                "feature": "Calendar connection",
+                "chosen": "Google service account",
+                "alternative": "OAuth",
+                "trade_off": "Share the calendar manually",
+                "add_later": "Web login when supported",
+            }
+        ]
+        boundary.brief.content = ProductBriefContent.model_validate(content)
+        graph = _planning_graph(dispose=["req-1", "req-2"])
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            result = await process_architect_job(valid_job_data, mock_redis)
+        assert result["status"] == "success"
+        assert boundary.admit_calls == 1 and boundary.released == ["task-1"]
+
+    async def test_stale_return_cannot_admit_a_current_conflicting_plan(
+        self, mock_redis, valid_job_data, boundary, _llm_configured
+    ):
+        from src.consumers.architect import process_architect_job
+
+        boundary.brief.content.must_requirements[0].text = "OAuth"
+        boundary.coverage["req-1"] = ("old-attempt", None, "OAuth is unsupported")
+        graph = _planning_graph(dispose=["req-2"])
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            result = await process_architect_job(valid_job_data, mock_redis)
+        assert result["status"] == "incomplete"
+        assert "oauth_web_redirect" in result["error"]
+        assert boundary.admit_calls == 0 and boundary.released == []
+
 
 class TestProductBriefUsageExamples:
     """How the user confirmed each requirement is used reaches the plan in their words."""
