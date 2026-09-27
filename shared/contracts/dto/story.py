@@ -235,6 +235,9 @@ class StoryDTO(TimestampedDTO):
     # The user's answers to the checks QA could not run, oldest first.
     unverified_decisions: "list[StoryUnverifiedDecision]" = Field(default_factory=list)
     reopened_at: datetime | None = None
+    #: When the story landed on ``status`` (read-only; written with it by the API).
+    #: Null for a row last landed before the field existed: unknown, not ``updated_at``.
+    status_entered_at: datetime | None = None
     pr_number: int | None = None
     # How the last planning attempt ended; paired with ``StoryRead.planning``.
     planning: StoryPlanning | None = None
@@ -260,14 +263,14 @@ class StoryCreate(BaseModel):
 #: Story fields a transition owns.  Sending one to ``PATCH /stories/{id}`` is a
 #: caller bug, not a no-op, so it is refused instead of dropped by
 #: ``extra="ignore"``.
-TRANSITION_OWNED_STORY_FIELDS: tuple[str, ...] = ("status", "waiting_on")
+TRANSITION_OWNED_STORY_FIELDS: tuple[str, ...] = ("status", "waiting_on", "status_entered_at")
 
 
 class StoryUpdate(BaseModel):
     """Update story request — the editorial fields, never the lifecycle ones.
 
-    ``status`` was never patchable; ``waiting_on`` is refused on the same
-    grounds and out loud.  Both are written only by the server actions that
+    ``status`` was never patchable; ``waiting_on`` and ``status_entered_at``
+    are refused on the same grounds and out loud.  Both are written only by the server actions that
     perform a transition, so a poller that thinks it knows what a story waits
     for gets a 422 rather than a field it silently clobbered.
     """

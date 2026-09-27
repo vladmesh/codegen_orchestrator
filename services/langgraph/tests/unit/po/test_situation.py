@@ -105,7 +105,9 @@ def _whole_world(situation_api, gate_stories, now: datetime) -> None:
         title="Expense tracking",
         status="waiting_human_review",
         waiting_on="human_review",
-        updated_at=_iso(now - timedelta(days=21, hours=2)),
+        status_entered_at=_iso(now - timedelta(days=21, hours=2)),
+        # Written today without a transition: it must not move the entry age.
+        updated_at=_iso(now - timedelta(minutes=5)),
     )
     gate_stories.put("story-tech", title="Upgrade kit", type="technical")
     gate_stories.put("story-done", title="First version", status="completed")
@@ -113,7 +115,7 @@ def _whole_world(situation_api, gate_stories, now: datetime) -> None:
         "story-quiz",
         project_id=OTHER_PROJECT,
         title="Weekly quiz",
-        updated_at=_iso(now - timedelta(hours=5)),
+        status_entered_at=_iso(now - timedelta(hours=5)),
     )
     situation_api.briefs[STORY] = make_product_brief(
         story_id=STORY, confirmed_at=now - timedelta(days=24)
@@ -145,9 +147,9 @@ class TestContent:
             f"ordered, Product Brief confirmed {when(now - timedelta(days=24), now)}"
         )
         assert when(now - timedelta(days=24), now).endswith("UTC (3 weeks ago)")
-        assert _line(snapshot, "Status") == (
-            "waiting_human_review, waiting on human_review; unchanged since "
-            f"{when(now - timedelta(days=21, hours=2), now)}"
+        assert _line(snapshot, "Status") == "waiting_human_review, waiting on human_review"
+        assert _line(snapshot, "In this status since") == when(
+            now - timedelta(days=21, hours=2), now
         )
         assert _line(snapshot, "User's last message in this chat") == when(
             now - timedelta(days=10), now
@@ -157,7 +159,7 @@ class TestContent:
         )
         assert "- Other ordered stories in work: \n" in snapshot
         assert (
-            '  - story-quiz "Weekly quiz" (project Quiz bot): in_progress, unchanged since '
+            '  - story-quiz "Weekly quiz" (project Quiz bot): in_progress, in it since '
             f"{when(now - timedelta(hours=5), now)}"
         ) in snapshot
         assert 'story-order "Expense tracking" (project' not in snapshot
@@ -187,6 +189,90 @@ class TestContent:
         assert _line(snapshot, "Platform work in this project") == (
             "0 stories in work (not ordered, or technical)"
         )
+
+    async def test_metadata_written_after_the_status_leaves_the_entry_age(
+        self, situation_api, gate_stories, client
+    ):
+        now = datetime.now(UTC)
+        entered = now - timedelta(days=21)
+        gate_stories.put(
+            STORY,
+            status="waiting_human_review",
+            waiting_on="human_review",
+            status_entered_at=_iso(entered),
+            title="Renamed today",
+            quarantine_reason={"operator_note": "written today"},
+            updated_at=_iso(now - timedelta(seconds=30)),
+        )
+
+        snapshot = await build_situation(
+            ApiSituationReader(situation_api.client),
+            client.redis,
+            SituationSubject(telegram_chat_id=CHAT, project_id=PROJECT, story_id=STORY),
+            now=now,
+        )
+
+        assert _line(snapshot, "Story") == 'story-order "Renamed today"'
+        assert _line(snapshot, "In this status since") == when(entered, now)
+        assert when(entered, now).endswith("(3 weeks ago)")
+
+    async def test_a_story_landed_before_the_entry_time_was_recorded_is_unknown(
+        self, situation_api, gate_stories, client
+    ):
+        """No fallback to ``updated_at``: unrelated writes move it."""
+        now = datetime.now(UTC)
+        situation_api.projects = [project_body(PROJECT)]
+        situation_api.project_story_ids = {PROJECT: [STORY, "story-other"]}
+        gate_stories.put(STORY, status_entered_at=None, updated_at=_iso(now))
+        gate_stories.put("story-other", status_entered_at=None)
+
+        snapshot = await build_situation(
+            ApiSituationReader(situation_api.client),
+            client.redis,
+            SituationSubject(telegram_chat_id=CHAT, project_id=PROJECT, story_id=STORY),
+            now=now,
+        )
+
+        assert _line(snapshot, "Status") == "in_progress"
+        assert _line(snapshot, "In this status since") == "unknown"
+        assert "in_progress, in it since unknown" in snapshot
+
+    async def test_a_watchdog_park_names_the_wait_it_ended(
+        self, situation_api, gate_stories, client
+    ):
+        """A fresh park after three weeks in pr_review: the park is new, the wait is not."""
+        now = datetime.now(UTC)
+        began = now - timedelta(days=21)
+        gate_stories.put(
+            STORY,
+            status="waiting_human_review",
+            waiting_on="human_review",
+            status_entered_at=_iso(now - timedelta(minutes=3)),
+            quarantine_reason={
+                "reason": "state_wait_age_bound_exceeded",
+                "status": "pr_review",
+                "waiting_on": "ci",
+                "config_key": "supervisor.state_age_pr_review_minutes",
+                "threshold_minutes": 120,
+                "anchor": "github_pull_request_updated_at",
+                "anchor_at": _iso(began),
+                "age_minutes": 21 * 24 * 60.0,
+                "ending": "park",
+            },
+        )
+
+        snapshot = await build_situation(
+            ApiSituationReader(situation_api.client),
+            client.redis,
+            SituationSubject(telegram_chat_id=CHAT, project_id=PROJECT, story_id=STORY),
+            now=now,
+        )
+
+        assert _line(snapshot, "Status") == (
+            "waiting_human_review, waiting on human_review; stopped after waiting 3 weeks in "
+            f"pr_review (that wait began {began:%Y-%m-%d %H:%M} UTC)"
+        )
+        assert _line(snapshot, "In this status since").endswith("UTC (3 minutes ago)")
 
     async def test_an_event_naming_no_story_says_so(self, situation_api, client):
         snapshot = await build_situation(
@@ -244,7 +330,10 @@ class TestTotality:
     @pytest.mark.parametrize(
         ("route", "fault", "unknown"),
         [
-            *[("story", fault, ["Story", "Status"]) for fault in (RAISE, NOT_FOUND, MALFORMED)],
+            *[
+                ("story", fault, ["Story", "Status", "In this status since"])
+                for fault in (RAISE, NOT_FOUND, MALFORMED)
+            ],
             *[("brief", fault, ["Order"]) for fault in (RAISE, MALFORMED)],
             *[
                 ("projects", fault, ["Other ordered stories in work"])
@@ -363,7 +452,10 @@ class TestAcceptance:
             title="Expense tracking",
             status="waiting_human_review",
             waiting_on="human_review",
-            updated_at=_iso(blocked),
+            status_entered_at=_iso(blocked),
+            # A title edit and quarantine metadata written today, without a transition.
+            updated_at=_iso(now - timedelta(minutes=1)),
+            quarantine_reason={"qa_failure": {"summary": "noted today"}},
         )
         situation_api.briefs[STORY] = make_product_brief(
             story_id=STORY, confirmed_at=ordered
@@ -374,9 +466,10 @@ class TestAcceptance:
         snapshot = _snapshot_of(graph)
         order = _line(snapshot, "Order")
         assert f"{ordered:%Y-%m-%d %H:%M} UTC (3 weeks ago)" in order
-        status = _line(snapshot, "Status")
-        assert status.startswith("waiting_human_review, waiting on human_review; unchanged since")
-        assert f"{blocked:%Y-%m-%d %H:%M} UTC (3 weeks ago)" in status
+        assert _line(snapshot, "Status") == "waiting_human_review, waiting on human_review"
+        assert _line(snapshot, "In this status since") == (
+            f"{blocked:%Y-%m-%d %H:%M} UTC (3 weeks ago)"
+        )
         # The event itself stays one line in the chat; the snapshot is not in it.
         content = graph.ainvoke.call_args.args[0]["messages"][0].content
         assert SNAPSHOT_HEADING not in content

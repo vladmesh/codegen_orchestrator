@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Every PO system-event turn carries a code-built situation snapshot (order date, wait age, app health, other orders)
   as model input only, never checkpointed; `get_product_situation` answers the same on request.
+- `stories.status_entered_at` is stamped by the one status writer, so the PO snapshot's wait age survives
+  unrelated story writes; rows landed before it read `unknown` (migration `a4c6e8f0b2d5`, no backfill).
 - An automatically retried planning is in work, not stopped; `set_reminder` names its story, a story-less reminder
   speaks only if the user asked, and a reminder about a not-ordered story runs no PO turn.
 - PO publishes only key story changes: progress reminders and stage notices stay silent; every unreadable

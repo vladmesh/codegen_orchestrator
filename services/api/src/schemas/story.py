@@ -76,6 +76,8 @@ class StoryRead(TimestampedDTO):
     operator_recheck: StoryRecheck | None = None
     unverified_decisions: list[StoryUnverifiedDecision] = Field(default_factory=list)
     reopened_at: datetime | None = None
+    # When the story landed on `status`; written by the transition, null before it existed.
+    status_entered_at: datetime | None = None
     pr_number: int | None = None
     # How the last planning attempt ended: channels that planned it, or the
     # failure and whether the platform is still retrying.

@@ -88,16 +88,18 @@ def _validate_transition(from_status: str, to_status: str) -> None:
 
 
 def _land_on(story: Story, to_status: StoryStatus) -> None:
-    """Write a story's status and the ``waiting_on`` that status implies.
+    """Write a story's status, the ``waiting_on`` it implies and when it landed there.
 
-    The only assignment of ``Story.waiting_on`` in the codebase.  Both callers
-    — ``_do_transition`` for a single hop and ``_apply_chain`` for a composite —
-    reach the field through here, so the two fields are written together on one
-    locked row inside the caller's transaction and can never disagree.  There is
-    no poller-visible path to the column: ``StoryUpdate`` refuses it.
+    The only assignment of ``Story.status``, ``Story.waiting_on`` and
+    ``Story.status_entered_at`` in the codebase.  Creation and both transition
+    callers — ``_do_transition`` for a single hop and ``_apply_chain`` for a
+    composite — reach the fields through here, so they are written together on
+    one locked row inside the caller's transaction and can never disagree.  There
+    is no poller-visible path to them: ``StoryUpdate`` refuses all three.
     """
     story.status = to_status.value
     story.waiting_on = WAITING_ON_BY_STATUS[to_status].value
+    story.status_entered_at = datetime.now(UTC)
 
 
 def _do_transition(story: Story, to_status: StoryStatus) -> None:

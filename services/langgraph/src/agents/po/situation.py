@@ -7,7 +7,8 @@ with the same text. It says, each with an absolute UTC date and a human age:
 
 * the order — the story and when its Product Brief was confirmed, or that it is
   not an order;
-* the story's status and how long it has been unchanged;
+* the story's status, when it entered it (``status_entered_at``) and, for a
+  story the state-age watchdog stopped, the wait it had exceeded;
 * when the user last wrote in this chat;
 * whether the project's deployed application is up;
 * the user's other ordered stories in work, and a count of platform work;
@@ -39,6 +40,7 @@ from shared.contracts.dto.application import ApplicationDTO, ApplicationStatus
 from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.state_wait import STATE_AGE_BOUND_REASON, StateWaitExpiryReason
 from shared.contracts.dto.story import STAGE_NOTICE_TERMINAL_STATUSES, StoryDTO, StoryType
 
 logger = structlog.get_logger(__name__)
@@ -156,25 +158,30 @@ def human_age(moment: datetime, now: datetime) -> str:
     seconds = (now - _utc(moment)).total_seconds()
     if seconds < 0:
         return "in the future"
-    minutes = int(seconds // 60)
-    hours, days = minutes // 60, minutes // 1440
-    if minutes < 1:
+    if seconds < 60:  # noqa: PLR2004
         return "just now"
+    return f"{human_duration(seconds)} ago"
+
+
+def human_duration(seconds: float) -> str:
+    """A span of time in the words a person would use: ``3 weeks``."""
+    minutes = max(int(seconds // 60), 0)
+    hours, days = minutes // 60, minutes // 1440
     if minutes < 60:  # noqa: PLR2004 — the unit boundaries are the wording
-        return _ago(minutes, "minute")
+        return _span(minutes, "minute")
     if hours < 24:  # noqa: PLR2004
-        return _ago(hours, "hour")
+        return _span(hours, "hour")
     if days < 14:  # noqa: PLR2004
-        return _ago(days, "day")
+        return _span(days, "day")
     if days < 63:  # noqa: PLR2004
-        return _ago(days // 7, "week")
+        return _span(days // 7, "week")
     if days < 365:  # noqa: PLR2004
-        return _ago(days // 30, "month")
-    return _ago(days // 365, "year")
+        return _span(days // 30, "month")
+    return _span(days // 365, "year")
 
 
-def _ago(amount: int, unit: str) -> str:
-    return f"{amount} {unit}{'' if amount == 1 else 's'} ago"
+def _span(amount: int, unit: str) -> str:
+    return f"{amount} {unit}{'' if amount == 1 else 's'}"
 
 
 def when(moment: datetime, now: datetime) -> str:
@@ -392,14 +399,45 @@ async def _story_lines(snap: _Snapshot, story_id: str) -> list[str]:
     async def status() -> str:
         story = await snap.story(story_id)
         waiting = f", waiting on {story.waiting_on}" if story.waiting_on != "none" else ""
-        since = story.updated_at or story.created_at
-        return f"{story.status}{waiting}; unchanged since {when(since, snap.now)}"
+        return f"{story.status}{waiting}{_prior_wait(story)}"
+
+    async def since() -> str:
+        return _entered(await snap.story(story_id), snap.now)
 
     return [
         f"- Story: {await _field('story', title)}",
         f"- Order: {await _field('order', order)}",
         f"- Status: {await _field('status', status)}",
+        f"- In this status since: {await _field('status_entered_at', since)}",
     ]
+
+
+def _entered(story: StoryDTO, now: datetime) -> str:
+    """When the story landed on its status; a row landed before that was recorded raises.
+
+    Never ``updated_at``: unrelated writes (title, quarantine metadata, notices)
+    move it, and a three-week wait would read as a minute old.
+    """
+    if story.status_entered_at is None:
+        raise LookupError(f"{story.id} has no recorded status entry time")
+    return when(story.status_entered_at, now)
+
+
+def _prior_wait(story: StoryDTO) -> str:
+    """The wait the state-age watchdog ended, as its recorded reason states it, or nothing.
+
+    A fresh park after a long wait is the case an old event hides in: the story
+    entered ``waiting_human_review`` minutes ago, after weeks in ``pr_review``.
+    """
+    reason = story.quarantine_reason
+    if not isinstance(reason, dict) or reason.get("reason") != STATE_AGE_BOUND_REASON:
+        return ""
+    ended = StateWaitExpiryReason.model_validate(reason)
+    began = _utc(datetime.fromisoformat(ended.anchor_at))
+    return (
+        f"; stopped after waiting {human_duration(ended.age_minutes * 60)} in {ended.status}"
+        f" (that wait began {began:%Y-%m-%d %H:%M} UTC)"
+    )
 
 
 async def _render_last_message(snap: _Snapshot) -> str:
@@ -432,12 +470,16 @@ async def _render_other_orders(snap: _Snapshot, focus_story_id: str) -> str:
     works = await asyncio.gather(*(snap.project_work(str(p.id)) for p in projects))
     lines = [
         f"\n  - {_story_label(story)} (project {project.title}): {story.status}, "
-        f"unchanged since {when(story.updated_at or story.created_at, snap.now)}"
+        f"in it since {_entered_or_unknown(story, snap.now)}"
         for project, work in zip(projects, works, strict=True)
         for story in work.ordered
         if story.id != focus_story_id
     ]
     return "".join(lines) if lines else "none"
+
+
+def _entered_or_unknown(story: StoryDTO, now: datetime) -> str:
+    return UNKNOWN if story.status_entered_at is None else when(story.status_entered_at, now)
 
 
 async def _render_platform_work(snap: _Snapshot) -> str:
