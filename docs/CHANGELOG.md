@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   "tested", "standard check/procedure" and "a specialist is checking" wherever it tells a stop.
 - The PO publish point logs a reply withheld for a replaced or settled notice; a notice record gone
   before its admin copy is marked sent answers 410, not 500.
+- The first-boot settle unit test waits for every process of its session before removing its temp
+  dir, so a stub killed by `timeout` can no longer race the cleanup (CI flake).
 - PO can defer owner notices with a reason and an admin copy, retrieve them until told or closed,
   and record telling separately from queue delivery.
 
