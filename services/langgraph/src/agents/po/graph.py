@@ -10,7 +10,8 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
@@ -21,6 +22,7 @@ from pydantic import ValidationError
 import structlog
 
 from ...prompts.po import SYSTEM_PROMPT
+from .situation import SITUATION_CONFIG_KEY
 from .tools import get_all_tools
 from .tools_briefs import show_full_brief
 
@@ -31,6 +33,17 @@ class POState(AgentState):
     """PO agent state with context for running summary persistence."""
 
     context: dict[str, Any]
+
+
+def po_prompt(state: POState, config: RunnableConfig) -> list[AnyMessage]:
+    """The system prompt, plus this turn's situation snapshot when the run carries one.
+
+    The snapshot arrives in the run config, not in the state: it is model input
+    for this invocation only and never becomes a checkpointed message.
+    """
+    situation = config["configurable"].get(SITUATION_CONFIG_KEY)
+    system = f"{SYSTEM_PROMPT}\n\n{situation}" if situation else SYSTEM_PROMPT
+    return [SystemMessage(content=system), *state["messages"]]
 
 
 def _not_run_beside_full_brief(name: str) -> str:
@@ -178,7 +191,7 @@ async def create_po_graph(
     return create_react_agent(
         model=llm,
         tools=tool_node,
-        prompt=SYSTEM_PROMPT,
+        prompt=po_prompt,
         pre_model_hook=summarization_hook,
         post_model_hook=show_full_brief_alone,
         state_schema=POState,

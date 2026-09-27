@@ -361,11 +361,53 @@ async def test_record_is_per_chat_and_has_no_periodic_expiry(
 # ── what the gate does not touch ─────────────────────────────────────────
 
 
-async def test_a_turn_without_a_story_is_unaffected(graph, client):
+async def test_a_reminder_the_user_asked_for_is_told_without_a_story(graph, client):
     for _ in range(3):
-        await _turn(graph, client, {"type": "reminder", "text": "check the budget"})
+        await _turn(
+            graph, client, {"type": "reminder", "text": "check the budget", "user_requested": True}
+        )
 
     assert len(_told(client)) == 3
+
+
+async def test_a_reminder_about_no_story_nobody_asked_for_publishes_nothing(graph, client):
+    """Set in a system or reminder turn, it is the PO's own re-check, not the user's."""
+    with capture_logs() as logs:
+        await _turn(graph, client, {"type": "reminder", "text": "check the budget"})
+        await _turn(
+            graph,
+            client,
+            POReminderMessage(text="check the budget", telegram_chat_id=CHAT).model_dump(
+                mode="json"
+            ),
+        )
+
+    assert graph.ainvoke.await_count == 2
+    assert _told(client) == []
+    reasons = [log["reason"] for log in logs if log["event"] == "po_proactive_suppressed"]
+    assert reasons == ["unrequested_reminder", "unrequested_reminder"]
+
+
+async def test_a_retried_planning_is_in_work_and_only_its_park_is_a_stop(
+    graph, client, gate_stories
+):
+    """Review of 1405: an automatic planning retry is work in progress, not a stop."""
+    planning = {"failed_attempts": 1, "max_retries": 3, "recorded_at": T0.isoformat()}
+    gate_stories.put(STORY, planning={**planning, "state": "retrying", "last_failure": FAILURE})
+    with capture_logs() as logs:
+        await _turn(graph, client, _reminder())
+    assert _told(client) == []
+    [suppressed] = [log for log in logs if log["event"] == "po_proactive_suppressed"]
+    assert suppressed["key_state"] == "in_work"
+
+    gate_stories.put(
+        STORY,
+        status="waiting_human_review",
+        quarantine_reason=FAILURE,
+        planning={**planning, "state": "parked", "last_failure": FAILURE},
+    )
+    await _turn(graph, client, _reminder())
+    assert len(_told(client)) == 1
 
 
 async def test_a_user_message_is_answered_as_before(graph, client):

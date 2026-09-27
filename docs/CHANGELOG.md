@@ -5,13 +5,17 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- Every PO system-event turn carries a code-built situation snapshot (order date, wait age, app health, other orders)
+  as model input only, never checkpointed; `get_product_situation` answers the same on request.
+- An automatically retried planning is in work, not stopped; `set_reminder` names its story, a story-less reminder
+  speaks only if the user asked, and a reminder about a not-ordered story runs no PO turn.
 - PO publishes only key story changes: progress reminders and stage notices stay silent; every unreadable
   brief leaves its event pending instead of acknowledging an unknown audience.
 
 - Only an ordered story's (confirmed brief) events reach the user, the rest go to the admins; the chat PO has no
   fix stories: a retry or a complaint reopens the original story.
-- A reminder or stage notice about a story reaches its owner only on a change or a new escalation step, at most
-  `po.story_proactive_daily_cap` a day; the PO's self-reminders no longer repeat "work is going" every 15 minutes.
+- A reminder about a story reaches its owner only on an untold `needs_user` or `stopped` state; stage notices are
+  dropped, so the PO's self-reminders no longer repeat "work is going" every 15 minutes.
 - A stay in one stage is re-announced at 1, 2, 4, 8… quiet intervals, each gap capped at
   `supervisor.stage_notice_max_interval_minutes`; a notice carries its step and stay, told only in rising order.
 - `notify_user` sends nothing in a reminder or system turn, so the gated final reply is the only way such a turn

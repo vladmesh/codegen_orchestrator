@@ -125,12 +125,18 @@ class POSystemEvent(RejectsLegacyRecipientField):
 
 
 class POReminderMessage(RejectsLegacyRecipientField):
-    """Reminder fired from the sorted set poller."""
+    """Reminder fired from the sorted set poller.
+
+    ``story_id`` is the story the PO named when it set the reminder.
+    ``user_requested`` says it was set in the user's own turn: a reminder about
+    no story publishes its reply only then.
+    """
 
     type: Literal["reminder"] = "reminder"
     text: str
     telegram_chat_id: str
     story_id: str = ""
+    user_requested: bool = False
     timestamp: str = ""
 
 

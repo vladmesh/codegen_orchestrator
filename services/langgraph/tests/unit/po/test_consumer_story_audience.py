@@ -14,8 +14,9 @@ from unittest.mock import AsyncMock
 import httpx
 from langchain_core.messages import AIMessage
 import pytest
+from structlog.testing import capture_logs
 
-from shared.contracts.queues.po import POSystemEvent, POUserMessage
+from shared.contracts.queues.po import POReminderMessage, POSystemEvent, POUserMessage
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE
 from src.clients.api import LanggraphAPIClient
@@ -230,7 +231,7 @@ class TestTheAudienceRule:
         assert ordered_stories.reads == []
 
     @pytest.mark.asyncio
-    async def test_the_users_own_message_and_a_reminder_are_not_checked(
+    async def test_the_users_own_message_is_not_checked(
         self, graph, client, admins, ordered_stories
     ):
         await _handle_message(
@@ -241,15 +242,71 @@ class TestTheAudienceRule:
                 mode="json"
             ),
         )
-        await _handle_message(
+
+        assert graph.ainvoke.call_count == 1
+        assert ordered_stories.reads == []
+
+
+class TestAReminderNamingAStory:
+    """Review of 1405: the audience rule holds at the same entry for a story reminder."""
+
+    @pytest.mark.asyncio
+    async def test_a_reminder_about_a_story_nobody_ordered_runs_no_turn(
+        self, graph, client, admins, ordered_stories
+    ):
+        ordered_stories.unordered.add("story-tech")
+
+        with capture_logs() as logs:
+            await _handle_message(graph, client, CHAT, _reminder("story-tech"))
+
+        graph.ainvoke.assert_not_called()
+        client.publish_flat.assert_not_called()
+        admins.assert_not_called()
+        assert ordered_stories.reads == ["story-tech"]
+        [dropped] = [log for log in logs if log["event"] == "po_unordered_story_reminder_dropped"]
+        assert dropped["story_id"] == "story-tech"
+
+    @pytest.mark.asyncio
+    async def test_a_reminder_about_an_ordered_story_runs_its_turn(
+        self, graph, client, admins, ordered_stories
+    ):
+        await _handle_message(graph, client, CHAT, _reminder("story-order"))
+
+        graph.ainvoke.assert_called_once()
+        assert ordered_stories.reads == ["story-order"]
+
+    @pytest.mark.asyncio
+    async def test_an_unanswered_check_leaves_the_reminder_pending(
+        self, graph, client, admins, ordered_stories
+    ):
+        ordered_stories.failing["story-x"] = RuntimeError("API unavailable")
+
+        await _process_message(
             graph,
             client,
-            CHAT,
-            {"type": "reminder", "text": "check story-tech", "story_id": "story-tech"},
+            _semaphore(),
+            {},
+            "1-0",
+            POReminderMessage(text="re-check", telegram_chat_id=CHAT, story_id="story-x"),
         )
 
-        assert graph.ainvoke.call_count == 2
+        client.redis.xack.assert_not_called()
+        graph.ainvoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_reminder_about_no_story_is_not_checked(
+        self, graph, client, admins, ordered_stories
+    ):
+        await _handle_message(graph, client, CHAT, _reminder(""))
+
+        graph.ainvoke.assert_called_once()
         assert ordered_stories.reads == []
+
+
+def _reminder(story_id: str) -> dict:
+    return POReminderMessage(text="re-check", telegram_chat_id=CHAT, story_id=story_id).model_dump(
+        mode="json"
+    )
 
 
 class TestUnknownIsNotNotOrdered:

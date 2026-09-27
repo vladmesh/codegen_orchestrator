@@ -827,8 +827,11 @@ drops every stage notice before the graph; the scheduler producer remains unchan
 
 At the single proactive publish point, `consumers/po_story_gate.py` classifies the current API
 story as `in_work`, `needs_user`, `stopped`, `completed` or `failed`. Reminders publish only an
-untold `needs_user` or `stopped` state; planning failure before building is stopped, while changes
-among in-work statuses, resource waits and escalation steps never justify a message. Terminal
+untold `needs_user` or `stopped` state; a planning failure that parked the story is stopped, while a
+planning being retried automatically, changes among in-work statuses, resource waits and escalation
+steps never justify a message. A reminder names its story in `story_id` (the explicit argument of
+`set_reminder`); one naming no story publishes only if `user_requested` is true, i.e. it was set in
+the user's own turn. Terminal
 reminders stay silent because the durable seam tells endings. Durable key events and returned
 requirements publish and record what was told. Resource/infrastructure waits and resumptions run
 the PO turn but their replies are suppressed. Redis retains the last told state per chat/story
@@ -840,9 +843,23 @@ An unreadable gate suppresses reminders, while durable events still publish.
 checks it before the PO graph for every remaining `system_event` that names a story, so producers do not: a
 not-ordered story's event never reaches the graph or `po:proactive`, the admins get it marked as
 withheld. Stage notices were already dropped without an audience read. `story_waiting_user_secret` is
-exempt. A 404 or a validated unconfirmed brief is "not ordered"; every exception while reading
-the brief, including malformed bodies, leaves the entry unacked for
-the PEL sweep to hand back.
+exempt. A reminder that names a story passes the same check at the same entry: a not-ordered
+story's reminder runs no PO turn and is logged. A 404 or a validated unconfirmed brief is "not
+ordered"; every exception while reading the brief, including malformed bodies, leaves the entry
+unacked for the PEL sweep to hand back.
+
+**The situation snapshot.** Every `system_event` turn that reaches the PO graph carries a snapshot
+built by `agents/po/situation.py` from existing API reads and the chat's
+`po:last_user_message:<chat>` key (written on each user turn): the order (story and brief
+`confirmed_at`, or "not an order"), the story's status and how long it has been unchanged (the
+story's `updated_at`), the user's last message, the project's Application status and last health
+check, the user's other ordered stories in work, a count of platform work, and a `### Deferred
+notices` section (empty until notices are deferred). Dates are absolute UTC plus a human age. Each
+field is read on its own: a read that raises, answers 404 or returns a body that is not the DTO
+makes that field `unknown`, and the turn runs. The snapshot travels in the run config
+(`po_situation`) and the graph's prompt appends it to the system message, so the checkpointer never
+stores it. A user turn has none; `get_product_situation(project_id)` returns the same text for one
+of the user's own projects, about its current or latest ordered story.
 
 In a PO turn without `request_id` (a reminder or system event) the only way to the user is that
 gated final reply: the `notify_user` tool publishes nothing there (the consumer passes

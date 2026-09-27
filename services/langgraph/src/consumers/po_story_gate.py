@@ -2,8 +2,10 @@
 
 The PO graph may write progress prose; this gate at the single proactive publish
 point withholds it. Reminders can tell only needs_user or stopped, different from
-what this chat last heard. Stage notices are dropped before the graph. Durable
-owner events still publish; resource waits and resumptions never do.
+what this chat last heard; a reminder about no story speaks only if the user
+asked for it in their own turn. A planning being retried automatically is in
+work. Stage notices are dropped before the graph. Durable owner events still
+publish; resource waits and resumptions never do.
 
 Redis keeps the last told key state per chat/story, written after publication
 under the consumer's per-chat lock. Records have no expiry: time passing cannot
@@ -74,8 +76,10 @@ def _key_state(
         # Archived stories are terminal and suppressed before this state is used.
         StoryStatus.ARCHIVED: StoryKeyState.COMPLETED,
     }[status]
+    # A planning the platform is retrying on its own is still work in progress;
+    # only one that parked the story, or a recorded planning stop, is a stop.
     if state == StoryKeyState.IN_WORK and (
-        planning_state in {StoryPlanningState.RETRYING, StoryPlanningState.PARKED}
+        planning_state == StoryPlanningState.PARKED
         or failure_code == StoryFailureCode.PLANNING_FAILED
     ):
         return StoryKeyState.STOPPED
@@ -144,6 +148,9 @@ class ProactiveStoryGate:
         if data.get("event") in INTERMEDIATE_EVENTS:
             return self._suppressed(log, story_id, "intermediate_event")
         if not story_id:
+            # A reminder about no story speaks only if the user asked for it.
+            if data.get("type") == "reminder" and not data.get("user_requested"):
+                return self._suppressed(log, story_id, "unrequested_reminder")
             return ProactiveDecision(send=True, reason="no_story")
         if data.get("event") in STORY_END_EVENTS:
             return ProactiveDecision(

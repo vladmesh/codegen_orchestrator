@@ -21,6 +21,7 @@ from shared.contracts.dto.story import (
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
 
+from .situation import ApiSituationReader, SituationSubject, build_situation
 from .tools_briefs import clear_brief_pointer
 from .tools_shared import _get_api, _get_stream_client, _user_headers
 
@@ -533,6 +534,32 @@ async def get_story(story_id: str, *, config: RunnableConfig) -> str:
         "problem": _problem(story, diagnostics),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@tool
+async def get_product_situation(project_id: str, *, config: RunnableConfig) -> str:
+    """What is true now for one of the user's projects: the situation snapshot.
+
+    Call it when the user asks how their work is going, and when they return
+    after a pause (read its deferred notices first). It covers the project's
+    current or latest ordered story (order date, status and how long it has not
+    changed), when the user last wrote, whether the deployed app is up, their
+    other ordered stories in work and deferred notices. It sends nothing.
+
+    Args:
+        project_id: Project ID (UUID).
+    """
+    telegram_chat_id = config["configurable"]["telegram_chat_id"]
+    reader = ApiSituationReader(_get_api())
+    owned = await reader.list_owned_projects(int(telegram_chat_id))
+    if project_id not in {str(project.id) for project in owned}:
+        return f"No project {project_id} among this user's projects."
+    return await build_situation(
+        reader,
+        _get_stream_client().redis,
+        SituationSubject(telegram_chat_id=telegram_chat_id, project_id=project_id),
+        requested=True,
+    )
 
 
 #: What the tool answers after each decision is recorded, so the next move is

@@ -1577,16 +1577,40 @@ class TestSetReminder:
     async def test_uses_user_id_from_config(self, mock_stream_client):
         """telegram_chat_id should come from RunnableConfig, not LLM arguments."""
         await set_reminder.ainvoke(
+            {"delay_minutes": 5, "reason": "re-check the payment", "story_id": "story-second"},
+            config=_make_config("user-777"),
+        )
+
+        reminder = _set_reminder_payload(mock_stream_client)
+        assert reminder["telegram_chat_id"] == "user-777"
+        assert reminder["story_id"] == "story-second"
+
+    @pytest.mark.asyncio
+    async def test_the_story_is_the_named_argument_not_a_guess_from_the_reason(
+        self, mock_stream_client
+    ):
+        await set_reminder.ainvoke(
             {"delay_minutes": 5, "reason": "check story story-second"},
             config=_make_config("user-777"),
         )
 
-        reminder_json = list(mock_stream_client.redis.zadd.call_args[0][1].keys())[0]
-        import json
+        assert _set_reminder_payload(mock_stream_client)["story_id"] == ""
 
-        reminder = json.loads(reminder_json)
-        assert reminder["telegram_chat_id"] == "user-777"
-        assert reminder["story_id"] == "story-second"
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_turn", [True, False])
+    async def test_records_whether_the_user_asked_for_it(self, mock_stream_client, user_turn):
+        await set_reminder.ainvoke(
+            {"delay_minutes": 5, "reason": "remind me to pay"},
+            config=_make_config("user-777", user_turn=user_turn),
+        )
+
+        assert _set_reminder_payload(mock_stream_client)["user_requested"] is user_turn
+
+
+def _set_reminder_payload(mock_stream_client) -> dict:
+    import json
+
+    return json.loads(list(mock_stream_client.redis.zadd.call_args[0][1].keys())[0])
 
 
 class TestNotifyUser:
@@ -1839,7 +1863,7 @@ class TestNoteToAdmins:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 23
+        expected_count = 24
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1861,6 +1885,7 @@ class TestGetAllTools:
             "list_stories",
             "reopen_story",
             "get_story",
+            "get_product_situation",
             "record_unverified_decision",
             "get_story_diagnostics",
             "get_run_status",

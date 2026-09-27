@@ -43,6 +43,7 @@ async def _poll_once(client: RedisStreamClient) -> int:
             text=data.get("text", ""),
             telegram_chat_id=data["telegram_chat_id"],
             story_id=data.get("story_id", ""),
+            user_requested=data.get("user_requested", False),
             timestamp=data.get("timestamp", ""),
         )
         await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(reminder))
