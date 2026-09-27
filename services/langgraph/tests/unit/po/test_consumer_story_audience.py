@@ -18,6 +18,7 @@ import pytest
 from shared.contracts.queues.po import POSystemEvent, POUserMessage
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE
+from src.clients.api import LanggraphAPIClient
 from src.consumers import po as po_consumer
 from src.consumers.po import _handle_message, _process_message
 
@@ -278,6 +279,45 @@ class TestUnknownIsNotNotOrdered:
 
         await _process_message(graph, client, _semaphore(), {}, "1-0", message)
 
+        client.redis.xack.assert_not_called()
+        graph.ainvoke.assert_not_called()
+        client.publish_flat.assert_not_called()
+        admins.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(b'{"id": "brief-1", "project_id', id="invalid-json"),
+            pytest.param(b'{"id": "brief-1", "story_id": "story-x"}', id="not-a-brief"),
+        ],
+    )
+    async def test_a_malformed_2xx_brief_leaves_the_entry_pending(
+        self, graph, client, admins, monkeypatch, body
+    ):
+        """A 200 the client cannot read as a brief answers nothing, as an error does."""
+        api = po_consumer.api_client
+        monkeypatch.setattr(
+            api,
+            "get_product_brief_by_story",
+            LanggraphAPIClient.get_product_brief_by_story.__get__(api),
+        )
+        request = httpx.Request("GET", "http://api/product-briefs/by-story/story-x")
+        monkeypatch.setattr(
+            api,
+            "request",
+            AsyncMock(return_value=httpx.Response(200, content=body, request=request)),
+        )
+        message = POSystemEvent(
+            event=OwnerNotificationEvent.STORY_BLOCKED,
+            text=PR_REVIEW_OWNER_TEXT,
+            story_id="story-x",
+            telegram_chat_id=CHAT,
+        )
+
+        await _process_message(graph, client, _semaphore(), {}, "1-0", message)
+
+        api.request.assert_awaited_once()
         client.redis.xack.assert_not_called()
         graph.ainvoke.assert_not_called()
         client.publish_flat.assert_not_called()

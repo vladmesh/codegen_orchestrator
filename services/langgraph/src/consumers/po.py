@@ -33,12 +33,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 import os
 import socket
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 import structlog
 
 from shared.config_store import ConfigStore
@@ -422,12 +423,14 @@ async def story_is_ordered(story_id: str) -> bool:
 
     Only an ordered story's outcome is the user's to hear; every other story (a
     technical one, a legacy one with no brief) is internal. A clean 404 and a
-    bound brief that is not confirmed are both a definitive "not ordered"; an API
-    error or a timeout answers nothing and raises ``StoryAudienceUnknown``.
+    validated brief that is not confirmed are both a definitive "not ordered".
+    Every other way the read can end answers nothing and raises
+    ``StoryAudienceUnknown``: an API error or a timeout, and a 2xx body that is
+    not JSON or is not a ``ProductBriefRead``.
     """
     try:
         brief = await api_client.get_product_brief_by_story(story_id)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, json.JSONDecodeError, ValidationError) as exc:
         raise StoryAudienceUnknown(story_id) from exc
     return brief is not None and brief.confirmed_at is not None
 
