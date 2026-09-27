@@ -43,6 +43,7 @@ export interface Story {
   operator_recheck?: StoryRecheck | null
   unverified_decisions?: StoryUnverifiedDecision[]
   reopened_at?: string | null
+  status_entered_at?: string | null
   pr_number?: number | null
   planning?: StoryPlanning | null
   created_at: string

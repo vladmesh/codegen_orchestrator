@@ -46,6 +46,7 @@ def _make_story(**overrides):
         "operator_recheck": None,
         "unverified_decisions": [],
         "reopened_at": None,
+        "status_entered_at": None,
         "owner_notification": None,
         "planning": None,
         "created_at": now,
@@ -314,6 +315,87 @@ async def test_update_story():
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert story.title == "Updated title"
+
+
+@pytest.mark.asyncio
+async def test_a_patch_of_other_fields_leaves_the_status_entry_time():
+    """Editorial writes move ``updated_at``, never when the story entered its status."""
+    entered = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
+    story = _make_story(id="story-abc", status="waiting_human_review", status_entered_at=entered)
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.patch(
+            "/api/stories/story-abc",
+            json={"title": "Renamed", "quarantine_reason": {"note": "later"}, "priority": 3},
+        )
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status_entered_at == entered
+    served = resp.json()["status_entered_at"].replace("Z", "+00:00")
+    assert datetime.fromisoformat(served) == entered
+
+
+@pytest.mark.asyncio
+async def test_the_status_entry_time_cannot_be_patched():
+    story = _make_story(id="story-abc")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.patch(
+            "/api/stories/story-abc", json={"status_entered_at": "2026-01-01T00:00:00+00:00"}
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    assert story.status_entered_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_transition_stamps_when_the_story_entered_its_status():
+    before = datetime.now(UTC)
+    story = _make_story(
+        id="story-abc", status="created", status_entered_at=datetime(2026, 9, 1, tzinfo=UTC)
+    )
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/start")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "in_progress"
+    assert before <= story.status_entered_at <= datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_a_created_story_records_when_it_entered_created():
+    before = datetime.now(UTC)
+    session = _mock_session()
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post(
+            "/api/stories/",
+            json={"title": "User login", "project_id": "00000000-0000-0000-0000-000000000001"},
+        )
+
+    assert resp.status_code == 201  # noqa: PLR2004
+    story = session.add.call_args[0][0]
+    assert before <= story.status_entered_at <= datetime.now(UTC)
 
 
 # --- Action endpoints (status transitions) ---

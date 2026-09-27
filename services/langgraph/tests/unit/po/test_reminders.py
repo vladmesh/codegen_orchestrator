@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.queues.po import POReminderMessage
 from shared.queues import PO_INPUT_QUEUE, PO_REMINDERS_KEY
 from src.agents.po.reminders import _poll_once, run_reminder_poller
 
@@ -50,6 +51,29 @@ class TestPollOnce:
         assert fields["type"] == "reminder"
         assert fields["telegram_chat_id"] == "user-42"
         assert fields["text"] == "check task eng-abc123"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_requested", [True, False])
+    async def test_carries_the_story_and_whether_the_user_asked(self, mock_client, user_requested):
+        reminder = json.loads(_make_reminder())
+        reminder.update(story_id="story-pay", user_requested=user_requested)
+        mock_client.redis.zrangebyscore.return_value = [json.dumps(reminder)]
+
+        await _poll_once(mock_client)
+
+        fields = mock_client.publish_flat.call_args[0][1]
+        fired = POReminderMessage.model_validate(fields)
+        assert fired.story_id == "story-pay"
+        assert fired.user_requested is user_requested
+
+    @pytest.mark.asyncio
+    async def test_a_reminder_set_before_the_flag_existed_is_not_user_requested(self, mock_client):
+        mock_client.redis.zrangebyscore.return_value = [_make_reminder()]
+
+        await _poll_once(mock_client)
+
+        fields = mock_client.publish_flat.call_args[0][1]
+        assert POReminderMessage.model_validate(fields).user_requested is False
 
     @pytest.mark.asyncio
     async def test_ignores_future_reminders(self, mock_client):

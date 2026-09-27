@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
-import re
 import time
 
 from langchain_core.runnables import RunnableConfig
@@ -27,16 +26,15 @@ from . import tools_briefs, tools_projects, tools_shared, tools_stories
 
 logger = structlog.get_logger(__name__)
 
-_STORY_ID_RE = re.compile(r"\bstory-[A-Za-z0-9-]+\b")
-
-
 # ---------------------------------------------------------------------------
 # Tools that live in this module (utility / non-domain)
 # ---------------------------------------------------------------------------
 
 
 @tool
-async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfig) -> str:
+async def set_reminder(
+    delay_minutes: int, reason: str, story_id: str | None = None, *, config: RunnableConfig
+) -> str:
     """Set a reminder to wake up after a delay and re-check something.
 
     Use when the user asks to be reminded or a later check is needed.
@@ -45,29 +43,37 @@ async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfi
     A reminder is for you to re-check, not a scheduled message to the user.
     A story reminder can tell only an untold need for the user or a stop.
     In-work stories get no reply; endings come from durable events.
-    Name the story id (story-...) in the reason.
+    A reminder about no story is answered only if the user asked for it.
 
     Args:
         delay_minutes: Minutes until reminder fires.
-        reason: Why you're setting this reminder (e.g. "re-check story story-abc123").
+        reason: Why you're setting this reminder (e.g. "re-check the payment story").
+        story_id: The story it concerns (story-...), if any.
     """
     redis = tools_shared._get_stream_client().redis
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
     fire_at = time.time() + delay_minutes * 60
-    story_match = _STORY_ID_RE.search(reason)
 
     reminder = json.dumps(
         {
             "type": "reminder",
             "telegram_chat_id": telegram_chat_id,
             "text": reason,
-            "story_id": story_match.group(0) if story_match else "",
+            "story_id": story_id or "",
+            # Set in the user's own turn: the user asked for it, so its reply
+            # may reach them even when it names no story.
+            "user_requested": bool(config["configurable"].get("user_turn")),
             "timestamp": datetime.now(UTC).isoformat(),
         }
     )
     await redis.zadd(queues.PO_REMINDERS_KEY, {reminder: fire_at})
 
-    logger.info("po_reminder_set", telegram_chat_id=telegram_chat_id, delay_minutes=delay_minutes)
+    logger.info(
+        "po_reminder_set",
+        telegram_chat_id=telegram_chat_id,
+        delay_minutes=delay_minutes,
+        story_id=story_id or "",
+    )
     return f"Reminder set for {delay_minutes} minutes: {reason}"
 
 
@@ -228,6 +234,7 @@ def get_all_tools() -> list:
         tools_stories.list_stories,
         tools_stories.reopen_story,
         tools_stories.get_story,
+        tools_stories.get_product_situation,
         tools_stories.record_unverified_decision,
         tools_stories.get_story_diagnostics,
         tools_stories.get_run_status,

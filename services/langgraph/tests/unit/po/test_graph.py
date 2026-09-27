@@ -3,20 +3,36 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from fakeredis.aioredis import FakeRedis
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.prebuilt.chat_agent_executor import AgentState
 from langmem.short_term import SummarizationNode
+from pydantic import Field
 import pytest
 
 from shared.contracts.dto.llm_channel import LLMChannel, default_llm_channel_chain
+from shared.contracts.queues.po import POSystemEvent, POUserMessage, po_thread_id
+from shared.contracts.vocab import OwnerNotificationEvent
 from src.agents.po.graph import (
     POState,
     _create_summarization_hook,
     create_po_graph,
+    po_prompt,
 )
+from src.agents.po.situation import (
+    DEFERRED_NOTICES_HEADING,
+    SITUATION_CONFIG_KEY,
+    SNAPSHOT_HEADING,
+)
+from src.consumers.po import _handle_message
 from src.llm import LLMAgent, build_agent_llm
 from src.prompts.po import SYSTEM_PROMPT
+
+CHAT = "1015926438"
 
 
 class TestPOState:
@@ -123,7 +139,7 @@ class TestCreatePOGraph:
         mock_create_agent.assert_called_once()
         call_kwargs = mock_create_agent.call_args[1]
         assert call_kwargs["model"] is llm
-        assert call_kwargs["prompt"] == SYSTEM_PROMPT
+        assert call_kwargs["prompt"] is po_prompt
         assert isinstance(call_kwargs["pre_model_hook"], SummarizationNode)
         assert call_kwargs["pre_model_hook"].model.bound is summarizer
         assert call_kwargs["state_schema"] is POState
@@ -144,3 +160,91 @@ class TestCreatePOGraph:
 
         call_kwargs = mock_create_agent.call_args[1]
         assert isinstance(call_kwargs["checkpointer"], MemorySaver)
+
+
+class _RecordingModel(BaseChatModel):
+    """Answers every turn with one line and keeps what it was given."""
+
+    inputs: list[list[BaseMessage]] = Field(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "recording"
+
+    def bind_tools(self, tools, **kwargs):  # noqa: ANN001, ANN003 - test stand-in
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN001, ANN003
+        self.inputs.append(list(messages))
+        reply = AIMessage(content="Work on your order is stopped; a person is needed.")
+        return ChatResult(generations=[ChatGeneration(message=reply)])
+
+
+class TestPOPrompt:
+    def test_a_run_without_a_snapshot_gets_the_system_prompt_alone(self):
+        human = HumanMessage(content="hi")
+        messages = po_prompt({"messages": [human]}, {"configurable": {}})
+        assert messages == [SystemMessage(content=SYSTEM_PROMPT), human]
+
+    def test_a_run_with_a_snapshot_gets_it_after_the_system_prompt(self):
+        human = HumanMessage(content="[system: system_event:story_blocked] stopped")
+        snapshot = f"{SNAPSHOT_HEADING} (built for this system event)\n- Story: story-1"
+        messages = po_prompt(
+            {"messages": [human]}, {"configurable": {SITUATION_CONFIG_KEY: snapshot}}
+        )
+        assert messages == [SystemMessage(content=f"{SYSTEM_PROMPT}\n\n{snapshot}"), human]
+
+
+class TestTheSnapshotIsNotStored:
+    """The model reads the snapshot; the checkpointed thread never holds it."""
+
+    @pytest.fixture
+    async def po(self):
+        model = _RecordingModel()
+        graph = await create_po_graph(
+            llm=model, summarization_llm=model, checkpoint_database_url=None
+        )
+        return graph, model
+
+    @pytest.fixture
+    def client(self):
+        client = AsyncMock()
+        client.redis = FakeRedis(decode_responses=True)
+        client.publish_flat = AsyncMock()
+        return client
+
+    async def test_a_system_event_turn_saves_the_event_but_not_its_snapshot(self, po, client):
+        graph, model = po
+        event = POSystemEvent(
+            event=OwnerNotificationEvent.STORY_BLOCKED,
+            text="Work on the story is stopped.",
+            story_id="story-order",
+            project_id="00000000-0000-0000-0000-000000000001",
+            telegram_chat_id=CHAT,
+        ).model_dump(mode="json")
+
+        await _handle_message(graph, client, CHAT, event)
+
+        [model_input] = model.inputs
+        assert isinstance(model_input[0], SystemMessage)
+        assert SNAPSHOT_HEADING in model_input[0].content
+        assert DEFERRED_NOTICES_HEADING in model_input[0].content
+
+        saved = await graph.aget_state({"configurable": {"thread_id": po_thread_id(CHAT)}})
+        contents = [str(message.content) for message in saved.values["messages"]]
+        assert any("system_event:story_blocked" in text for text in contents)
+        assert not any(SNAPSHOT_HEADING in text for text in contents)
+        assert not any(DEFERRED_NOTICES_HEADING in text for text in contents)
+
+        # The next user turn reads the thread back without any snapshot in it.
+        await _handle_message(
+            graph,
+            client,
+            CHAT,
+            POUserMessage(
+                text="How is my bot going?", telegram_chat_id=CHAT, request_id="req-1"
+            ).model_dump(mode="json"),
+        )
+        user_turn_input = model.inputs[-1]
+        assert user_turn_input[0] == SystemMessage(content=SYSTEM_PROMPT)
+        assert not any(SNAPSHOT_HEADING in str(message.content) for message in user_turn_input)

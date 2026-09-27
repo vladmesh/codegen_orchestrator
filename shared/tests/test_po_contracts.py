@@ -125,6 +125,19 @@ class TestPOReminderMessage:
         assert restored.text == msg.text
         assert restored.telegram_chat_id == msg.telegram_chat_id
 
+    def test_the_story_and_the_users_request_survive_the_flat_fields(self):
+        msg = POReminderMessage(
+            text="remind me", telegram_chat_id="99", story_id="story-1", user_requested=True
+        )
+        restored = from_flat_fields(to_flat_fields(msg), POReminderMessage)
+        assert restored.story_id == "story-1"
+        assert restored.user_requested is True
+        assert POReminderMessage(text="x", telegram_chat_id="99").user_requested is False
+        unrequested = POReminderMessage(text="x", telegram_chat_id="99", user_requested=False)
+        assert from_flat_fields(to_flat_fields(unrequested), POReminderMessage).user_requested is (
+            False
+        )
+
 
 class TestPOInputDiscriminator:
     adapter = TypeAdapter(POInputMessage)

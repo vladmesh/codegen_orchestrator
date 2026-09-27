@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import os
 import socket
 
@@ -55,6 +56,14 @@ from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis import RedisStreamClient
 
 from ..agents.po.graph import create_po_graph
+from ..agents.po.situation import (
+    SITUATION_CONFIG_KEY,
+    ApiSituationReader,
+    SituationReader,
+    SituationSubject,
+    build_situation,
+    record_user_message,
+)
 from ..agents.po.tools_shared import init_po_clients
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
@@ -436,6 +445,26 @@ async def _withhold_from_user(data: dict) -> None:
     )
 
 
+def _situation_reader() -> SituationReader:
+    """Where the snapshot reads the API: the consumer's own client."""
+    return ApiSituationReader(api_client)
+
+
+async def _record_user_message(client: RedisStreamClient, telegram_chat_id: str) -> None:
+    """Remember when the user last wrote here, for the situation snapshot.
+
+    Best effort: a failed write costs the snapshot one field, never the turn.
+    """
+    try:
+        await record_user_message(client.redis, telegram_chat_id, datetime.now(UTC))
+    except Exception as exc:
+        logger.warning(
+            "po_last_user_message_not_recorded",
+            telegram_chat_id=telegram_chat_id,
+            error=str(exc),
+        )
+
+
 async def _handle_message(
     graph, client: RedisStreamClient, telegram_chat_id: str, data: dict
 ) -> None:
@@ -444,8 +473,12 @@ async def _handle_message(
     A story is internal unless it is ordered (``story_is_ordered``). Every
     producer's story event passes here before the PO graph, so this is the one
     place the audience is decided: a ``system_event`` about a story that is not
-    ordered never reaches the graph or ``po:proactive``. The exception is
-    ``story_waiting_user_secret``: only the user can supply the secret.
+    ordered never reaches the graph or ``po:proactive``, and neither does a
+    reminder about one. The exception is ``story_waiting_user_secret``: only
+    the user can supply the secret.
+
+    A system event turn carries the situation snapshot (``agents.po.situation``)
+    in its run config; a user turn carries none and records when the user wrote.
     """
     timestamp = data.get("timestamp", "")
     text = data.get("text", "")
@@ -480,6 +513,16 @@ async def _handle_message(
         and not await story_is_ordered(story_id)
     ):
         await _withhold_from_user(data)
+        return
+
+    # A reminder about a story follows the same rule: a story nobody ordered
+    # is not the user's to hear about, so it gets no PO turn at all.
+    if msg_type == "reminder" and story_id and not await story_is_ordered(story_id):
+        logger.info(
+            "po_unordered_story_reminder_dropped",
+            telegram_chat_id=telegram_chat_id,
+            story_id=story_id,
+        )
         return
 
     # A user-facing event whose recipient was never resolved cannot be delivered
@@ -522,17 +565,29 @@ async def _handle_message(
     # the pipeline raises about their projects resolve to the same key.
     thread_id = po_thread_id(telegram_chat_id)
     invoke_input = {"messages": [msg]}
-    invoke_config = {
-        "configurable": {
-            "thread_id": thread_id,
-            "telegram_chat_id": telegram_chat_id,
-            "user_name": user_name,
-            # Only a turn the user is waiting on may message them from a tool;
-            # any other turn reaches them only through its gated final reply.
-            "user_turn": bool(data.get("request_id")),
-        },
-        "recursion_limit": 50,
+    configurable = {
+        "thread_id": thread_id,
+        "telegram_chat_id": telegram_chat_id,
+        "user_name": user_name,
+        # Only a turn the user is waiting on may message them from a tool;
+        # any other turn reaches them only through its gated final reply.
+        "user_turn": bool(data.get("request_id")),
     }
+    if msg_type == "user_message":
+        await _record_user_message(client, telegram_chat_id)
+    elif msg_type == "system_event":
+        # What is true now, so an old event is told by its date. Model input for
+        # this turn only: the graph's prompt reads it from the config.
+        configurable[SITUATION_CONFIG_KEY] = await build_situation(
+            _situation_reader(),
+            client.redis,
+            SituationSubject(
+                telegram_chat_id=telegram_chat_id,
+                project_id=data.get("project_id", ""),
+                story_id=story_id,
+            ),
+        )
+    invoke_config = {"configurable": configurable, "recursion_limit": 50}
 
     # Pre-invoke: repair any orphan tool_calls from previous crashed invocations
     await _repair_orphan_tool_calls(graph, thread_id)

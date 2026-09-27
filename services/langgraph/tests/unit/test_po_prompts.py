@@ -350,5 +350,47 @@ def test_story_status_is_only_answered_on_request():
     assert "Set a reminder for 10-15 minutes" not in SYSTEM_PROMPT
     assert "Do not set progress reminders after creating a story" in SYSTEM_PROMPT
     assert "in_work: reply nothing" in SYSTEM_PROMPT
-    assert "Only when the user asks" in _section("## Scenario: Status Check")
-    assert "`get_story`" in _section("## Scenario: Status Check")
+    table = _section("## Situation → Tool")
+    assert "| Status question | `get_product_situation(project_id)`, only when the user asks |" in (
+        table
+    )
+    assert "Never push progress updates." in table
+    assert "## Scenario: Status Check" not in SYSTEM_PROMPT
+
+
+class TestSituationToTool:
+    """The prompt's short "situation -> tool" table (sprint:1468 DoD item 3)."""
+
+    def _rows(self) -> dict[str, str]:
+        table = _section("## Situation → Tool")
+        rows = re.findall(r"^\| (.+?) \| (.+?) \|$", table, flags=re.MULTILINE)
+        return {situation: tool for situation, tool in rows if situation != "Situation"}
+
+    def test_each_situation_names_its_tool(self):
+        assert self._rows() == {
+            "Status question": "`get_product_situation(project_id)`, only when the user asks",
+            "A complaint about an ordered story": (
+                "`list_stories` → `reopen_story` with `user_report`"
+            ),
+            "The user returns after a pause": (
+                "`get_product_situation` first: its deferred notices"
+            ),
+        }
+
+    def test_every_tool_the_table_names_exists(self):
+        from src.agents.po.tools import get_all_tools
+        from src.agents.po.tools_stories import reopen_story
+
+        names = {tool.name for tool in get_all_tools()}
+        named = set(re.findall(r"`([a-z_]+)", " ".join(self._rows().values())))
+        assert named == {"get_product_situation", "list_stories", "reopen_story", "user_report"}
+        assert named - {"user_report"} <= names
+        assert "user_report" in reopen_story.args
+
+    def test_an_event_is_told_by_the_snapshot_dates_not_as_a_fresh_incident(self):
+        from src.agents.po.situation import SNAPSHOT_HEADING
+
+        table = " ".join(_section("## Situation → Tool").split())
+        assert '"Situation snapshot" built by code' in table
+        assert "tell an old event by its dates, never present it as a fresh incident" in table
+        assert SNAPSHOT_HEADING == "## Situation snapshot"

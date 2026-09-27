@@ -57,6 +57,11 @@ class Story(Base):
     unverified_decisions: Mapped[list] = mapped_column(
         JSON, default=list, server_default=text("'[]'"), nullable=False
     )
+    # When the story landed on its current `status`. Written only by `_land_on`,
+    # with `status`; null on rows written before it existed (never backfilled).
+    status_entered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Starts the current work cycle, so completion cannot reuse pre-reopen QA evidence.
     reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # The durable completion notice owed when this story reaches COMPLETED.

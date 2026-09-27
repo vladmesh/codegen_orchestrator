@@ -71,6 +71,7 @@ def test_get_all_tools_preserves_tool_identity_and_order() -> None:
         tools_stories.list_stories,
         tools_stories.reopen_story,
         tools_stories.get_story,
+        tools_stories.get_product_situation,
         tools_stories.record_unverified_decision,
         tools_stories.get_story_diagnostics,
         tools_stories.get_run_status,

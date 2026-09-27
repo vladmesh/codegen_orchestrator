@@ -276,8 +276,11 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     async def test_no_request_id_forwards_to_proactive(self, mock_graph, mock_client):
-        """Without request_id, non-empty response should go to po:proactive."""
-        data = {"type": "reminder", "text": "check story story-abc12345"}
+        """Without request_id, non-empty response should go to po:proactive.
+
+        A reminder naming no story speaks only when the user asked for it.
+        """
+        data = {"type": "reminder", "text": "remind me to pay", "user_requested": True}
 
         await _handle_message(mock_graph, mock_client, "user-1", data)
 

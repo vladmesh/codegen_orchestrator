@@ -6,9 +6,11 @@ import pytest
 from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.story import StoryDTO
 from shared.redis import RedisStreamClient
+from src.agents.po.situation import ApiSituationReader
 from src.consumers import po as po_consumer
 from src.consumers.po_story_gate import ProactiveStoryGate
 from tests.unit.factories import make_product_brief
+from tests.unit.po.situation_api import SituationApi
 
 
 @pytest.fixture(autouse=True)
@@ -110,3 +112,11 @@ def ordered_stories(monkeypatch) -> OrderedStories:
         po_consumer.api_client, "get_product_brief_by_story", stories.get_product_brief_by_story
     )
     return stories
+
+
+@pytest.fixture(autouse=True)
+def situation_api(monkeypatch, gate_stories, ordered_stories) -> SituationApi:
+    """The API every system-event snapshot reads: the real reader over a stub transport."""
+    api = SituationApi(gate_stories, ordered_stories)
+    monkeypatch.setattr(po_consumer, "_situation_reader", lambda: ApiSituationReader(api.client))
+    return api
