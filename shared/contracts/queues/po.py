@@ -21,6 +21,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from shared.contracts.dto.owner_notification import OwnerNoticeReference
 from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.dto.story import (
     STAGE_NOTICE_STATUSES,
@@ -85,12 +86,22 @@ class POSystemEvent(RejectsLegacyRecipientField):
     #: can tell the user honestly without parsing words. Set only on the event
     #: that settles a story on a QA verdict.
     qa_verification: QAVerificationFacts | None = None
+    owner_notice: OwnerNoticeReference | None = None
 
-    @field_validator("qa_verification", mode="before")
+    @field_validator("qa_verification", "owner_notice", mode="before")
     @classmethod
     def _decode_flat_qa_verification(cls, value: object) -> object:
         # A flat stream field is a string; `to_flat_fields` wrote it as JSON.
         return json.loads(value) if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _notice_names_its_story(self) -> POSystemEvent:
+        if self.owner_notice is not None:
+            if not self.story_id:
+                raise ValueError("A record-backed event names its story")
+            if self.owner_notice.source == "story" and self.owner_notice.source_id != self.story_id:
+                raise ValueError("A story-backed event names that story's record")
+        return self
 
     @model_validator(mode="after")
     def _stage_fields_belong_to_stage_notices(self) -> POSystemEvent:

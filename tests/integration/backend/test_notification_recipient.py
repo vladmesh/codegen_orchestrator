@@ -179,6 +179,12 @@ async def test_pipeline_event_reaches_the_owner_telegram_chat(
     entries = await stream_client.redis.xrange(PO_INPUT_QUEUE)
     assert len(entries) == 1, "the scheduler published exactly one PO event"
     event = decode_redis_fields(entries[0][1])
+    from shared.contracts.queues.po import POSystemEvent
+
+    reference = POSystemEvent.model_validate(event).owner_notice
+    assert reference.source == "story"
+    assert reference.source_id == story_id
+    assert reference.owed_at == record.owed_at
     assert event["event"] == "story_completed"
     assert event["telegram_chat_id"] == str(OWNER_TELEGRAM_ID)
     assert event["owner_user_id"] == str(user_id)

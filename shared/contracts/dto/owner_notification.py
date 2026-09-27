@@ -1,7 +1,7 @@
 """The record that the owner of a story is owed a message.
 
 A terminal story outcome — finished, or stopped for a human — is decided by the
-supervisor and told to the owner through `po:input`. The transition is committed
+supervisor and handed to the PO through `po:input`. The transition is committed
 to the database; the message is an `xadd` with nothing behind it. Publishing
 after the commit therefore has a gap: if the publish, or the recipient lookup in
 front of it, fails transiently, the story has already left the status the
@@ -11,8 +11,9 @@ finished and nobody tells them, forever.
 So the message is not inferred from a successful publish. A `story_completed`
 record is committed on the Story with `COMPLETED`; other terminal notices are
 written before their transition on the Run that produced them. From that moment
-the record owns delivery. `OWED` means "the owner has not been told and must
-be"; only a publish that returned moves it to `DELIVERED`.
+the record owns delivery. `OWED` means "the event is owed to the PO"; only a
+publish that returned moves it to `DELIVERED`. The independent `told_state`
+records the PO decision.
 
 The record carries the `terminal_status` the transition produces, and nothing is
 published until the story is read and found in it. This protects run-backed
@@ -42,6 +43,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -71,7 +73,7 @@ OWNER_NOTIFICATION_ATTEMPT_SUPERSEDED = "owner_notification_attempt_superseded"
 class OwnerNotificationState(StrEnum):
     """What is known about the message this story owes its owner."""
 
-    #: Written before the terminal transition. The owner has not been told.
+    #: Written before the terminal transition. The event is owed to the PO.
     OWED = "owed"
     #: The event was accepted by `po:input`. Nothing publishes it again.
     DELIVERED = "delivered"
@@ -83,6 +85,36 @@ class OwnerNotificationState(StrEnum):
     #: was published and no attempt was spent; the obligation is owed again from
     #: scratch when the story really does reach that ending.
     VOIDED = "voided"
+
+
+class OwnerNoticeReference(BaseModel):
+    """The exact obligation carried by a durable PO event."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["run", "story"]
+    source_id: str = Field(min_length=1)
+    owed_at: datetime
+
+
+class OwnerNoticeSettlement(OwnerNoticeReference):
+    """A PO decision, separate from acceptance by po:input."""
+
+    told_state: Literal["told", "suppressed", "closed"]
+    reason: str = ""
+    suppressed_by: Literal["po", "user", "admin"] | None = None
+    #: Explicit resolution may address a retained deferral; a publication write
+    #: must only address the current obligation of its source.
+    resolve_deferred: bool = False
+
+    @model_validator(mode="after")
+    def _decision_is_whole(self) -> OwnerNoticeSettlement:
+        if self.resolve_deferred and self.told_state == "suppressed":
+            raise ValueError("Resolution must tell or close a deferred notice")
+        if self.told_state in {"suppressed", "closed"} and not self.reason.strip():
+            raise ValueError("Suppression and closure require a non-empty reason")
+        if (self.told_state == "suppressed") != (self.suppressed_by is not None):
+            raise ValueError("Only suppression names suppressed_by, and it must name it")
+        return self
 
 
 class OwnerNotification(BaseModel):
@@ -122,9 +154,19 @@ class OwnerNotification(BaseModel):
     owed_at: datetime
     #: When the owner audience was marked delivered: the moment `po:input`
     #: accepted the event. `None` until then, and on every record delivered
-    #: before this field existed. A wait that is measured from the owner having
-    #: been told reads this, never `owed_at` — owing is not telling.
+    #: before this field existed. The secret-wait clock reads this acceptance
+    #: time, never `owed_at` or the separate PO `told_at`.
     delivered_at: datetime | None = None
+    told_state: Literal["told", "suppressed", "closed"] | None = None
+    told_at: datetime | None = None
+    suppressed_reason: str | None = None
+    suppressed_by: Literal["po", "user", "admin"] | None = None
+    suppressed_at: datetime | None = None
+    closed_at: datetime | None = None
+    closed_reason: str | None = None
+    #: Deferred obligations survive replacement of the source's current notice.
+    #: They remain in the same JSON record until explicitly resolved.
+    deferred: list[OwnerNotification] = Field(default_factory=list)
     #: Delivery attempts already spent. Bounded by the producer.
     attempts: int = Field(default=0, ge=0)
     #: Why the last attempt did not deliver.
@@ -149,6 +191,23 @@ class OwnerNotification(BaseModel):
     #: PO as structured facts beside the words. `None` on every ending no QA
     #: verdict settled, and on every record written before this field existed.
     qa_verification: QAVerificationFacts | None = None
+
+    @model_validator(mode="after")
+    def _po_decision_is_whole(self) -> OwnerNotification:
+        if self.told_state == "told" and self.told_at is None:
+            raise ValueError("A told notice records told_at")
+        if self.told_state == "suppressed" and (
+            not self.suppressed_reason
+            or not self.suppressed_reason.strip()
+            or self.suppressed_by is None
+            or self.suppressed_at is None
+        ):
+            raise ValueError("A suppressed notice records reason, decider and time")
+        if self.told_state == "closed" and (
+            not self.closed_reason or not self.closed_reason.strip() or self.closed_at is None
+        ):
+            raise ValueError("A closed notice records reason and time")
+        return self
 
     @model_validator(mode="after")
     def _event_is_durable(self) -> OwnerNotification:
@@ -223,3 +282,7 @@ class OwnerNotificationAttemptClaim(BaseModel):
 
     granted: bool
     notification: OwnerNotification | None
+
+
+class AddressedOwnerNotice(OwnerNoticeReference):
+    notification: OwnerNotification

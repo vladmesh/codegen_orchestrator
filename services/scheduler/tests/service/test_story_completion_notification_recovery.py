@@ -145,6 +145,9 @@ async def test_direct_completion_without_qa_is_recovered_to_po_input(api_client)
         ]
         event = next(item for item in events if item.story_id == story_id)
         assert event.event == "story_completed"
+        assert event.owner_notice.source == "story"
+        assert event.owner_notice.source_id == story_id
+        assert event.owner_notice.owed_at == notification.owed_at
         assert event.text == notification.text
         assert event.telegram_chat_id == str(telegram_id)
         assert event.task_id == story_id

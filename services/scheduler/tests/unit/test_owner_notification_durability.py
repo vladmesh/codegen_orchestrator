@@ -42,6 +42,7 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.story import StoryDTO, StoryStatus
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.tests.allocation_routing_cases import refused_deploy_result
 
@@ -390,6 +391,10 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
         assert world.story.status is StoryStatus.COMPLETED
         assert len(world.published) == 1
         assert world.published[0]["event"] == "story_completed"
+        reference = POSystemEvent.model_validate(world.published[0]).owner_notice
+        assert reference.source == "story"
+        assert reference.source_id == "story-1"
+        assert reference.owed_at == world.record.owed_at
         assert world.record.state is OwnerNotificationState.DELIVERED
         # And the good news went out *after* the story was really finished, not
         # from the sweep that ran before routing on a story still in TESTING.
@@ -657,6 +662,10 @@ class TestTheImpossibleEngineeringPlacementTakesTheSameSeam:
         assert counts["delivered"] == 1
         assert len(world.published) == 1
         assert world.published[0]["event"] == "task_impossible_capacity"
+        reference = POSystemEvent.model_validate(world.published[0]).owner_notice
+        assert reference.source == "run"
+        assert reference.source_id == world.run.id
+        assert reference.owed_at == world.record.owed_at
         assert world.published[0]["task_id"] == "task-7"
         assert world.published[0]["story_id"] == "story-1"
         assert world.published[0]["telegram_chat_id"] == OWNER_CHAT_ID

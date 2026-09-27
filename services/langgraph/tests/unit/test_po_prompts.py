@@ -394,3 +394,22 @@ class TestSituationToTool:
         assert '"Situation snapshot" built by code' in table
         assert "tell an old event by its dates, never present it as a fresh incident" in table
         assert SNAPSHOT_HEADING == "## Situation snapshot"
+
+
+def test_deferred_notices_are_explicit_and_do_not_change_facts():
+    section = _section("## Deferred Notices")
+    for instruction in (
+        "own judgement",
+        "user's or an admin's word",
+        "suppress_owner_notice",
+        "reason",
+        "Never drop a notice silently",
+        "Deferring never changes the facts",
+        "When the user returns",
+        "tell deferred notices first",
+        "resolve_deferred_notice",
+        'outcome="told"',
+        'outcome="closed"',
+        "Nothing expires",
+    ):
+        assert instruction in section

@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- PO can defer owner notices with a reason and an admin copy, retrieve them until told or closed,
+  and record telling separately from queue delivery.
+
 - Every PO system-event turn carries a code-built situation snapshot (order date, wait age, app health, other orders)
   as model input only, never checkpointed; `get_product_situation` answers the same on request.
 - `stories.status_entered_at` is stamped by the one status writer, so the PO snapshot's wait age survives

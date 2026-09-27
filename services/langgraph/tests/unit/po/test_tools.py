@@ -1863,7 +1863,7 @@ class TestNoteToAdmins:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 24
+        expected_count = 26
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1886,6 +1886,8 @@ class TestGetAllTools:
             "reopen_story",
             "get_story",
             "get_product_situation",
+            "suppress_owner_notice",
+            "resolve_deferred_notice",
             "record_unverified_decision",
             "get_story_diagnostics",
             "get_run_status",

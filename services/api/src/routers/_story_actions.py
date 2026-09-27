@@ -63,6 +63,7 @@ from ..infrastructure_park import (
     apply_infrastructure_park,
     infrastructure_conflict,
 )
+from ..owner_notification_settlement import preserve_po_settlement
 from ..schemas.story import StoryRead, StoryTransition
 from ..work_admission import abort_paid_run_pre_handoff
 from ._story_helpers import (
@@ -497,7 +498,7 @@ async def park_waiting_user_secret(
         )
         run.run_metadata = {
             **(run.run_metadata or {}),
-            OWNER_NOTIFICATION_KEY: ask.model_dump(mode="json"),
+            OWNER_NOTIFICATION_KEY: preserve_po_settlement(stored, ask).model_dump(mode="json"),
         }
     await db.commit()
     logger.info(
@@ -626,7 +627,9 @@ async def expire_state_wait(
             skip=skip,
         )
     story.quarantine_reason = command.reason.model_dump(mode="json")
-    story.owner_notification = command.owner_notification.model_dump(mode="json")
+    story.owner_notification = preserve_po_settlement(
+        story.owner_notification, command.owner_notification
+    ).model_dump(mode="json")
     _do_transition(story, command.terminal_status)
     await db.commit()
     logger.info(

@@ -12,7 +12,7 @@ with the same text. It says, each with an absolute UTC date and a human age:
 * when the user last wrote in this chat;
 * whether the project's deployed application is up;
 * the user's other ordered stories in work, and a count of platform work;
-* deferred notices (``read_deferred_notices``, empty until notices are deferred).
+* deferred notices (``read_deferred_notices``), until explicitly told or closed.
 
 It is total: every field is read on its own, and a read that raises or returns
 something unexpected makes that one field ``unknown``. Nothing here decides who
@@ -37,6 +37,7 @@ import structlog
 
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import ApplicationDTO, ApplicationStatus
+from shared.contracts.dto.owner_notification import AddressedOwnerNotice
 from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
@@ -60,6 +61,8 @@ _UP_STATUSES = {ApplicationStatus.RUNNING: "up", ApplicationStatus.DEGRADED: "de
 
 class SituationReader(Protocol):
     """The existing API reads the snapshot is built from."""
+
+    async def list_deferred_notices(self, project_id: str) -> list[AddressedOwnerNotice]: ...
 
     async def get_story(self, story_id: str) -> StoryDTO: ...
 
@@ -87,6 +90,13 @@ class ApiSituationReader:
 
     async def _json(self, path: str, **kwargs) -> object:
         return (await self._api.request("GET", path, **kwargs)).json()
+
+    async def list_deferred_notices(self, project_id: str) -> list[AddressedOwnerNotice]:
+        return TypeAdapter(list[AddressedOwnerNotice]).validate_python(
+            await self._json(
+                "stories/owner-notifications/deferred", params={"project_id": project_id}
+            )
+        )
 
     async def get_story(self, story_id: str) -> StoryDTO:
         return StoryDTO.model_validate(await self._json(f"stories/{story_id}"))
@@ -143,14 +153,27 @@ async def record_user_message(redis: KeyValueStore, telegram_chat_id: str, at: d
     await redis.set(last_user_message_key(telegram_chat_id), at.astimezone(UTC).isoformat())
 
 
-async def read_deferred_notices(telegram_chat_id: str, project_id: str) -> list[str]:
-    """Owner notices held back for this chat, one line each; none are deferred yet.
-
-    The one source of the snapshot's deferred-notices section: the card that
-    lets the PO defer an owner notice fills it, and nothing else writes there.
-    """
-    del telegram_chat_id, project_id
-    return []
+async def read_deferred_notices(
+    telegram_chat_id: str,
+    project_id: str,
+    *,
+    reader: SituationReader,
+    projects: list[ProjectDTO] | None = None,
+) -> list[str]:
+    """All suppressed notices of this user's projects, without an age cutoff."""
+    if projects is None:
+        projects = await reader.list_owned_projects(int(telegram_chat_id))
+    notices = []
+    for project in projects:
+        # The focus project never hides deferred notices in another owned project.
+        for item in await reader.list_deferred_notices(str(project.id)):
+            record = item.notification
+            notices.append(
+                f"story={record.story_id} event={record.event}: {record.text}; "
+                f"reason={record.suppressed_reason}; decided by={record.suppressed_by}; "
+                f"deferred at={record.suppressed_at.isoformat()}"
+            )
+    return notices
 
 
 def human_age(moment: datetime, now: datetime) -> str:
@@ -490,5 +513,10 @@ async def _render_platform_work(snap: _Snapshot) -> str:
 
 async def _render_deferred(snap: _Snapshot) -> str:
     project_id = snap.subject.project_id
-    notices = await read_deferred_notices(snap.subject.telegram_chat_id, project_id)
+    notices = await read_deferred_notices(
+        snap.subject.telegram_chat_id,
+        project_id,
+        reader=snap._reader,
+        projects=await snap.owned_projects(),
+    )
     return "\n".join(f"- {notice}" for notice in notices) if notices else "none"

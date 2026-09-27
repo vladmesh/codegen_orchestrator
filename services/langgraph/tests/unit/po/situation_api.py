@@ -26,6 +26,7 @@ NOT_FOUND = "404"
 MALFORMED = "malformed"
 
 _ROUTES: list[tuple[str, re.Pattern[str]]] = [
+    ("deferred", re.compile(r"^/api/stories/owner-notifications/deferred$")),
     ("brief", re.compile(r"^/api/product-briefs/by-story/(?P<id>[^/]+)$")),
     ("story", re.compile(r"^/api/stories/(?P<id>[^/]+)$")),
     ("project_stories", re.compile(r"^/api/stories/$")),
@@ -71,6 +72,9 @@ class SituationApi:
             return httpx.Response(200, json={"surprise": True})
         answer: Callable = getattr(self, f"_{route}")
         return await answer(match, query)
+
+    async def _deferred(self, match, query) -> httpx.Response:
+        return httpx.Response(200, json=[])
 
     async def _brief(self, match, query) -> httpx.Response:
         story_id = match["id"]

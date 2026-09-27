@@ -40,6 +40,7 @@ from shared.redis.client import RedisStreamClient
 from ..database import get_async_session
 from ..dependencies import get_accept_result_actor, get_redis_client, require_internal_or_admin
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
+from ..owner_notification_settlement import preserve_po_settlement
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
     StoryAccept,
@@ -54,6 +55,7 @@ from ..schemas.story import (
     StoryUnverifiedDecisionCreate,
     StoryUpdate,
 )
+from ._owner_notice_settlement import notice_router
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
 from ._story_actions import action_router
 from ._story_diagnostics import diagnostics_router
@@ -73,6 +75,7 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/stories", tags=["stories"])
 # The composite (multi-hop) Story moves live in their own declared module and
 # are served under the same /stories prefix as the single-hop actions here.
+router.include_router(notice_router)
 router.include_router(action_router)
 router.include_router(diagnostics_router)
 router.include_router(planning_router)
@@ -274,6 +277,7 @@ async def update_story_owner_notification(
     """Settle the story-backed completion notification after one delivery attempt."""
     story = await _get_story_for_update(story_id, db)
     refuse_superseded_write(story.owner_notification, notification)
+    notification = preserve_po_settlement(story.owner_notification, notification)
     story.owner_notification = notification.model_dump(mode="json")
     await db.commit()
     return notification
@@ -553,16 +557,19 @@ async def _owe_completed_story_notification(
     qa_run_id: str | None = None,
 ) -> None:
     """Attach the completion obligation to the story in its transition transaction."""
-    story.owner_notification = OwnerNotification(
-        event=OwnerNotificationEvent.STORY_COMPLETED,
-        text=await _completion_notification_text(story, db, acceptance=acceptance),
-        story_id=story.id,
-        project_id=str(story.project_id),
-        terminal_status=StoryStatus.COMPLETED,
-        state=OwnerNotificationState.OWED,
-        owed_at=datetime.now(UTC),
-        qa_verification=(
-            None if acceptance is not None else await _completing_qa_verification(qa_run_id, db)
+    story.owner_notification = preserve_po_settlement(
+        story.owner_notification,
+        OwnerNotification(
+            event=OwnerNotificationEvent.STORY_COMPLETED,
+            text=await _completion_notification_text(story, db, acceptance=acceptance),
+            story_id=story.id,
+            project_id=str(story.project_id),
+            terminal_status=StoryStatus.COMPLETED,
+            state=OwnerNotificationState.OWED,
+            owed_at=datetime.now(UTC),
+            qa_verification=(
+                None if acceptance is not None else await _completing_qa_verification(qa_run_id, db)
+            ),
         ),
     ).model_dump(mode="json")
 
