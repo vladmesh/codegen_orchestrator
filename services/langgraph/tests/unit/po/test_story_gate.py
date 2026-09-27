@@ -1,4 +1,4 @@
-"""A proactive PO message about a story says a change or a new escalation step, never a repeat.
+"""A proactive PO message about a story says only an untold key change.
 
 The PO turn runs through ``_handle_message`` with a stub graph that always has
 something to say — the model is not trusted to stay quiet — and the gate is the
@@ -8,7 +8,8 @@ is what was published to ``po:proactive``.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+import json
 from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage
@@ -24,9 +25,8 @@ from shared.contracts.dto.story import (
 from shared.contracts.queues.po import POReminderMessage, POSystemEvent
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.queues import PO_PROACTIVE_QUEUE
-from src.consumers import po as po_consumer
 from src.consumers.po import _handle_message
-from src.consumers.po_story_gate import ProactiveStoryGate, story_told_key
+from src.consumers.po_story_gate import story_told_key
 
 CHAT = "1015926438"
 STORY = "story-stuck"
@@ -38,33 +38,6 @@ FAILURE = {
     "detail": "LLMChannelsExhausted",
     "observed_at": "2026-09-26T10:00:00+00:00",
 }
-
-
-class _Clock:
-    def __init__(self) -> None:
-        self.now = T0
-
-    def at(self, minutes: float) -> None:
-        self.now = T0 + timedelta(minutes=minutes)
-
-
-@pytest.fixture
-def clock() -> _Clock:
-    return _Clock()
-
-
-@pytest.fixture
-def cap() -> dict[str, int]:
-    return {"value": 6}
-
-
-@pytest.fixture(autouse=True)
-def gate(monkeypatch, gate_redis, gate_stories, clock, cap) -> ProactiveStoryGate:
-    gate = ProactiveStoryGate(
-        gate_redis, gate_stories, lambda: cap["value"], clock=lambda: clock.now
-    )
-    monkeypatch.setattr(po_consumer, "_story_gate", gate)
-    return gate
 
 
 @pytest.fixture
@@ -132,218 +105,219 @@ async def _turn(graph, client, data: dict) -> None:
     await _handle_message(graph, client, CHAT, data)
 
 
-# ── an unchanged story ───────────────────────────────────────────────────
-
-
-async def test_an_unchanged_story_is_told_once_per_step_and_never_in_between(graph, client, clock):
-    await _turn(graph, client, _stage_notice(0))
-    for step in (1, 2, 3):
-        for _ in range(5):
-            await _turn(graph, client, _reminder())
-            await _turn(graph, client, _stage_notice(step - 1))  # a redelivered old step
-        await _turn(graph, client, _stage_notice(step))
-        await _turn(graph, client, _stage_notice(step))
-
-    assert len(_told(client)) == 4
-    # Every turn still ran: the PO keeps its thread, only the message is withheld.
-    assert graph.ainvoke.await_count == 1 + 3 * (10 + 2)
-
-
-async def test_a_redelivered_older_step_is_never_told_again(graph, client):
-    """At-least-once `po:input`: steps 0, 1, 2, then late copies of 1 and 2."""
-    for step in (0, 1, 2, 1, 2, 0):
-        await _turn(graph, client, _stage_notice(step))
-
-    assert len(_told(client)) == 3
-
-
-async def test_a_return_to_the_stage_is_a_new_stay_whose_steps_are_told(
+async def test_tg_1015926438_progress_is_silent_then_an_untold_stop_is_told_once(
     graph, client, gate_stories
 ):
-    """In work, parked without the user being told, back in the same stage later.
+    for index in range(14):
+        reminder = _reminder()
+        reminder["timestamp"] = f"2026-09-26T{6 + index // 4:02}:{index % 4 * 15:02}:00+00:00"
+        await _turn(graph, client, reminder)
+        if index % 4 == 0:
+            await _turn(graph, client, _stage_notice(index // 4))
+    assert _told(client) == []
+    assert graph.ainvoke.await_count == 14
 
-    The fingerprint is the same as last told, so only the new stay makes its
-    steps new; a late copy of the old stay's notice stays suppressed.
-    """
-    await _turn(graph, client, _stage_notice(0))
-    await _turn(graph, client, _stage_notice(1))
-    await _turn(graph, client, _stage_notice(2))
-
-    back = T0 + timedelta(hours=3)
-    await _turn(graph, client, _stage_notice(0, entered_at=back))
-    await _turn(graph, client, _stage_notice(1, entered_at=back))
-    await _turn(graph, client, _stage_notice(2))  # the old stay, redelivered
-    await _turn(graph, client, _stage_notice(1, entered_at=back))
-
-    assert len(_told(client)) == 5
-
-
-async def test_a_change_is_told_even_by_a_stale_step_and_the_stay_is_kept(
-    graph, client, gate_stories
-):
-    await _turn(graph, client, _stage_notice(0))
-    await _turn(graph, client, _stage_notice(1))
-    gate_stories.put(STORY, waiting_on="resources")
-    await _turn(graph, client, _stage_notice(0))  # stale step, but the story changed
-    await _turn(graph, client, _stage_notice(1))
-
-    assert len(_told(client)) == 3
-
-
-async def test_a_self_reminder_about_an_unchanged_story_cannot_loop(graph, client):
-    for _ in range(14):
+    gate_stories.put(STORY, status="waiting_human_review", quarantine_reason=FAILURE)
+    for _ in range(5):
         await _turn(graph, client, _reminder())
-
     assert len(_told(client)) == 1
 
 
-async def test_a_suppression_is_logged_with_its_reason_and_fingerprint(graph, client):
-    await _turn(graph, client, _reminder())
+@pytest.mark.parametrize("step", [0, 1, 2, 8])
+async def test_stage_notices_are_dropped_before_any_graph_or_audience_read(
+    graph, client, ordered_stories, step
+):
+    ordered_stories.failing[STORY] = RuntimeError("API unavailable")
     with capture_logs() as logs:
-        await _turn(graph, client, _reminder())
-
-    [suppressed] = [log for log in logs if log["event"] == "po_proactive_suppressed"]
-    assert suppressed["story_id"] == STORY
-    assert suppressed["reason"] == "unchanged"
-    assert suppressed["fingerprint"] == {
-        "status": "in_progress",
-        "waiting_on": "none",
-        "failure_code": None,
-        "planning_state": None,
-        "planning_failed_attempts": None,
-    }
-
-
-# ── a change is told once ────────────────────────────────────────────────
+        await _turn(graph, client, _stage_notice(step))
+    graph.ainvoke.assert_not_called()
+    graph.aget_state.assert_not_called()
+    assert ordered_stories.reads == []
+    assert _told(client) == []
+    assert any(log["event"] == "po_story_stage_notice_dropped" for log in logs)
 
 
 @pytest.mark.parametrize(
-    "change",
-    [
-        {"status": "pr_review", "waiting_on": "ci"},
-        {"waiting_on": "resources"},
-        {"status": "waiting_human_review", "quarantine_reason": FAILURE},
-        {
-            "planning": {
-                "state": "retrying",
-                "failed_attempts": 1,
-                "max_retries": 3,
-                "next_attempt_at": "2026-09-26T10:01:00+00:00",
-                "last_failure": FAILURE,
-                "recorded_at": "2026-09-26T10:00:00+00:00",
-            }
-        },
-    ],
-    ids=["status", "waiting_on", "failure", "planning"],
+    "status", ["created", "in_progress", "reopened", "pr_review", "deploying", "testing"]
 )
-async def test_a_change_is_told_once(graph, client, gate_stories, change):
-    await _turn(graph, client, _reminder())
-    gate_stories.put(STORY, **change)
+@pytest.mark.parametrize("waiting_on", ["none", "resources"])
+async def test_in_work_is_never_told(graph, client, gate_stories, status, waiting_on):
+    gate_stories.put(STORY, status=status, waiting_on=waiting_on)
+    with capture_logs() as logs:
+        await _turn(graph, client, _reminder())
+    assert _told(client) == []
+    [suppressed] = [log for log in logs if log["event"] == "po_proactive_suppressed"]
+    assert suppressed["reason"] == "in_work"
+    assert suppressed["key_state"] == "in_work"
+
+
+@pytest.mark.parametrize("status", ["waiting_user_secret", "waiting_human_review"])
+async def test_a_key_change_is_told_once(graph, client, gate_stories, status):
+    gate_stories.put(STORY, status=status)
     for _ in range(4):
         await _turn(graph, client, _reminder())
-
-    assert len(_told(client)) == 2
-
-
-async def test_another_failed_planning_attempt_is_a_change(graph, client, gate_stories):
-    planning = {
-        "state": "retrying",
-        "max_retries": 3,
-        "last_failure": FAILURE,
-        "recorded_at": "2026-09-26T10:00:00+00:00",
-    }
-    for attempts in (1, 1, 2, 2, 3):
-        gate_stories.put(STORY, planning={**planning, "failed_attempts": attempts})
-        await _turn(graph, client, _reminder())
-
-    assert len(_told(client)) == 3
+    assert len(_told(client)) == 1
 
 
-async def test_a_durable_owner_notice_is_told_and_then_not_repeated(graph, client, gate_stories):
-    """A parked story's own notice is not gated; the reminder after it is."""
-    await _turn(graph, client, _reminder())
-    gate_stories.put(STORY, status="waiting_user_secret", waiting_on="user_secret")
-    await _turn(graph, client, _event(OwnerNotificationEvent.STORY_WAITING_USER_SECRET))
-    await _turn(graph, client, _reminder())
-
-    assert [told["event"] if "event" in told else "reminder" for told in _told(client)] == [
-        "reminder",
-        "story_waiting_user_secret",
-    ]
-
-
-# ── a duplicate is allowed, a lost change is not ─────────────────────────
-
-
-async def test_a_failed_publish_leaves_the_change_to_be_told_again(
-    graph, client, gate_stories, gate_redis
+async def test_planning_failures_are_one_stop_not_new_messages_per_attempt(
+    graph, client, gate_stories
 ):
+    for state, attempts in [("retrying", 1), ("retrying", 2), ("parked", 3)]:
+        gate_stories.put(
+            STORY,
+            planning={
+                "state": state,
+                "failed_attempts": attempts,
+                "max_retries": 3,
+                "last_failure": FAILURE,
+                "recorded_at": T0.isoformat(),
+            },
+        )
+        await _turn(graph, client, _reminder())
+    assert len(_told(client)) == 1
+
+
+async def test_a_planned_story_stays_silent(graph, client, gate_stories):
+    gate_stories.put(
+        STORY,
+        planning={
+            "state": "planned",
+            "failed_attempts": 0,
+            "recorded_at": T0.isoformat(),
+        },
+    )
     await _turn(graph, client, _reminder())
-    gate_stories.put(STORY, status="pr_review", waiting_on="ci")
+    assert _told(client) == []
+
+
+async def test_a_planning_failure_without_a_planning_record_is_a_stop(graph, client, gate_stories):
+    gate_stories.put(STORY, quarantine_reason=FAILURE)
+    await _turn(graph, client, _reminder())
+    await _turn(graph, client, _reminder())
+    assert len(_told(client)) == 1
+
+
+async def test_in_work_does_not_erase_the_stop_last_told(graph, client, gate_stories):
+    for status in ("waiting_human_review", "in_progress", "waiting_human_review"):
+        gate_stories.put(STORY, status=status)
+        await _turn(graph, client, _reminder())
+    assert len(_told(client)) == 1
+
+
+async def test_durable_key_events_still_publish_when_story_read_is_unavailable(
+    graph, client, gate_stories
+):
+    gate_stories.get_story = AsyncMock(side_effect=RuntimeError("api down"))
+    await _turn(graph, client, _event(OwnerNotificationEvent.STORY_BLOCKED))
+    assert len(_told(client)) == 1
+
+
+async def test_distinct_key_changes_are_not_capped(graph, client, gate_stories):
+    for _ in range(8):
+        for status in ("waiting_user_secret", "waiting_human_review"):
+            gate_stories.put(STORY, status=status)
+            await _turn(graph, client, _reminder())
+    assert len(_told(client)) == 16
+
+
+@pytest.mark.parametrize(
+    ("event", "status"),
+    [
+        (OwnerNotificationEvent.STORY_BLOCKED, "waiting_human_review"),
+        (OwnerNotificationEvent.STORY_QUARANTINED, "waiting_human_review"),
+        (OwnerNotificationEvent.STORY_IMPOSSIBLE_CAPACITY, "waiting_human_review"),
+        (OwnerNotificationEvent.TASK_IMPOSSIBLE_CAPACITY, "waiting_human_review"),
+        (OwnerNotificationEvent.STORY_WAITING_USER_SECRET, "waiting_user_secret"),
+        (OwnerNotificationEvent.STORY_REQUIREMENTS_RETURNED, "in_progress"),
+    ],
+)
+async def test_a_durable_notice_is_told_and_then_not_repeated(
+    graph, client, gate_stories, event, status
+):
+    gate_stories.put(STORY, status=status)
+    await _turn(graph, client, _event(event))
+    await _turn(graph, client, _reminder())
+    assert [told["event"] for told in _told(client)] == [event.value]
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        OwnerNotificationEvent.TASK_WAITING_RESOURCES,
+        OwnerNotificationEvent.TASK_WAITING_INFRASTRUCTURE,
+        OwnerNotificationEvent.TASK_RESOURCES_RESUMED,
+    ],
+)
+@pytest.mark.parametrize("with_story", [True, False])
+async def test_resource_events_run_the_turn_but_never_publish(graph, client, event, with_story):
+    data = _event(event)
+    if not with_story:
+        del data["story_id"]
+    with capture_logs() as logs:
+        await _turn(graph, client, data)
+    graph.ainvoke.assert_awaited_once()
+    assert _told(client) == []
+    assert any(
+        log["event"] == "po_proactive_suppressed" and log["reason"] == "intermediate_event"
+        for log in logs
+    )
+
+
+@pytest.mark.parametrize("planning_state", [None, "retrying", "parked"])
+async def test_previous_record_format_does_not_repeat_a_stop(
+    graph, client, gate_stories, gate_redis, planning_state
+):
+    gate_stories.put(STORY, status="waiting_human_review")
+    await gate_redis.redis.set(
+        story_told_key(CHAT, STORY),
+        json.dumps(
+            {
+                "fingerprint": {
+                    "status": "waiting_human_review" if planning_state is None else "in_progress",
+                    "waiting_on": "none",
+                    "failure_code": "planning_failed",
+                    "planning_state": planning_state,
+                    "planning_failed_attempts": 1,
+                },
+                "stay": None,
+            }
+        ),
+        ex=60,
+    )
+    await _turn(graph, client, _reminder())
+    assert _told(client) == []
+
+    assert await gate_redis.redis.ttl(story_told_key(CHAT, STORY)) == -1
+
+
+async def test_a_failed_publish_leaves_the_change_untold(graph, client, gate_stories, gate_redis):
+    gate_stories.put(STORY, status="waiting_human_review")
     client.publish_flat.side_effect = ConnectionError("redis gone")
     with pytest.raises(ConnectionError):
         await _turn(graph, client, _reminder())
-
+    assert await gate_redis.redis.get(story_told_key(CHAT, STORY)) is None
     client.publish_flat.side_effect = None
     await _turn(graph, client, _reminder())
     await _turn(graph, client, _reminder())
-
-    # One tell before, the failed attempt (recorded by the mock), then the change
-    # told again, and only once.
-    attempts = [call.args[0] for call in client.publish_flat.await_args_list]
-    assert attempts == [PO_PROACTIVE_QUEUE] * 3
-    told = await gate_redis.redis.get(story_told_key(CHAT, STORY))
-    assert '"status": "pr_review"' in told
+    assert len(_told(client)) == 2  # failed attempt, then one successful publish
 
 
-async def test_a_gate_that_cannot_read_the_story_lets_the_reply_through(
-    graph, client, gate_stories, gate_redis
+@pytest.mark.parametrize("boundary", ["api", "redis", "corrupt_record"])
+async def test_an_unavailable_gate_never_publishes_progress(
+    graph, client, gate_stories, gate_redis, monkeypatch, boundary
 ):
+    if boundary == "api":
+        gate_stories.get_story = AsyncMock(side_effect=RuntimeError("api down"))
+    else:
+        gate_stories.put(STORY, status="waiting_human_review")
+        if boundary == "redis":
+            monkeypatch.setattr(
+                gate_redis.redis, "get", AsyncMock(side_effect=RuntimeError("redis down"))
+            )
+        else:
+            await gate_redis.redis.set(story_told_key(CHAT, STORY), "broken")
     await _turn(graph, client, _reminder())
-    gate_stories.get_story = AsyncMock(side_effect=RuntimeError("api down"))
-
-    await _turn(graph, client, _reminder())
-    await _turn(graph, client, _reminder())
-
-    assert len(_told(client)) == 3
-
-
-# ── the daily backstop ───────────────────────────────────────────────────
-
-
-async def test_the_daily_cap_holds_even_for_real_changes(graph, client, gate_stories, clock, cap):
-    cap["value"] = 2
-    statuses = [("in_progress", "none"), ("pr_review", "ci"), ("deploying", "deploy")]
-    for status, waiting_on in statuses:
-        gate_stories.put(STORY, status=status, waiting_on=waiting_on)
-        with capture_logs() as logs:
-            await _turn(graph, client, _reminder())
-
-    assert len(_told(client)) == 2
-    assert [log["reason"] for log in logs if log["event"] == "po_proactive_suppressed"] == [
-        "daily_cap"
-    ]
-
-    # The next UTC day the change nobody heard about is told.
-    clock.at(24 * 60)
-    await _turn(graph, client, _reminder())
-    assert len(_told(client)) == 3
-
-
-async def test_terminal_and_other_durable_notices_are_neither_capped_nor_counted(
-    graph, client, gate_stories, cap
-):
-    cap["value"] = 1
-    await _turn(graph, client, _reminder())
-    gate_stories.put(STORY, status="waiting_human_review", quarantine_reason=FAILURE)
-    await _turn(graph, client, _event(OwnerNotificationEvent.STORY_BLOCKED))
-    gate_stories.put(STORY, status="failed", quarantine_reason=FAILURE)
-    await _turn(graph, client, _event(OwnerNotificationEvent.STORY_FAILED))
-
-    assert len(_told(client)) == 3
-
-
-# ── the record ends with the story ───────────────────────────────────────
+    assert _told(client) == []
 
 
 @pytest.mark.parametrize(
@@ -353,43 +327,35 @@ async def test_terminal_and_other_durable_notices_are_neither_capped_nor_counted
         (OwnerNotificationEvent.STORY_FAILED, "failed"),
     ],
 )
-async def test_the_storys_ending_forgets_the_record(
+async def test_terminal_notice_publishes_and_forgets_record(
     graph, client, gate_stories, gate_redis, event, status
 ):
+    gate_stories.put(STORY, status="waiting_human_review")
     await _turn(graph, client, _reminder())
-    assert await gate_redis.redis.get(story_told_key(CHAT, STORY)) is not None
-
     gate_stories.put(STORY, status=status)
     await _turn(graph, client, _event(event))
-
-    assert await gate_redis.redis.get(story_told_key(CHAT, STORY)) is None
+    await _turn(graph, client, _reminder())
     assert len(_told(client)) == 2
+    assert await gate_redis.redis.get(story_told_key(CHAT, STORY)) is None
 
 
-async def test_a_reminder_about_an_ended_story_is_not_told_and_forgets_the_record(
-    graph, client, gate_stories, gate_redis
-):
-    """The ending is the durable seam's to tell, e.g. an archived story told nothing here."""
+async def test_archived_story_is_silent_and_forgets_record(graph, client, gate_stories, gate_redis):
+    gate_stories.put(STORY, status="waiting_human_review")
     await _turn(graph, client, _reminder())
     gate_stories.put(STORY, status="archived")
-
-    with capture_logs() as logs:
-        await _turn(graph, client, _reminder())
-
+    await _turn(graph, client, _reminder())
     assert len(_told(client)) == 1
-    assert [log["reason"] for log in logs if log["event"] == "po_proactive_suppressed"] == [
-        "story_ended"
-    ]
     assert await gate_redis.redis.get(story_told_key(CHAT, STORY)) is None
 
 
-async def test_the_record_is_per_chat_and_expires_unrefreshed(graph, client, gate_redis):
+async def test_record_is_per_chat_and_has_no_periodic_expiry(
+    graph, client, gate_stories, gate_redis
+):
+    gate_stories.put(STORY, status="waiting_human_review")
     await _turn(graph, client, _reminder())
     await _handle_message(graph, client, "other-chat", _reminder())
-
     assert len(_told(client)) == 2
-    ttl = await gate_redis.redis.ttl(story_told_key(CHAT, STORY))
-    assert 0 < ttl <= 30 * 24 * 3600
+    assert await gate_redis.redis.ttl(story_told_key(CHAT, STORY)) == -1
 
 
 # ── what the gate does not touch ─────────────────────────────────────────
@@ -446,10 +412,8 @@ async def test_notify_user_in_a_reminder_turn_reaches_nobody(notifying_graph, cl
         await _turn(notifying_graph, client, _reminder())
         await _turn(notifying_graph, client, _stage_notice(0))
 
-    # Only gated final replies — the first reminder's news and the stay's entry
-    # step; the tool published nothing at all.
-    assert [told["text"] for told in _told(client)] == ["Work on it is going."] * 2
-    assert len(notifying_graph.tool_results) == 10
+    assert _told(client) == []
+    assert len(notifying_graph.tool_results) == 5
     assert all(result.startswith("Not sent:") for result in notifying_graph.tool_results)
 
 
@@ -487,32 +451,9 @@ def test_no_po_tool_but_notify_user_publishes_to_the_proactive_stream():
     assert publishers == {"tools.py:notify_user"}
 
 
-# ── the production shape ─────────────────────────────────────────────────
-
-
-async def test_tg_1015926438_eight_stuck_hours_are_four_messages_not_a_flood(graph, client, clock):
-    """An ``in_progress`` story in an unbounded stage for 8 hours.
-
-    The PO re-set a 15-minute reminder every time it fired, and the stage
-    notices came at the scheduler's schedule: entry, then steps at 1, 2 and 4
-    hours (`test_stage_notices.py::test_tg_1015926438_eight_hours_in_an_unbounded_stage`).
-    Before the gate that was at least 14 "work is going" messages, then one an
-    hour. Now it is the entry and the three steps.
-    """
-    stage_notice_at = {0: 0, 60: 1, 120: 2, 240: 3}
-    for minute in range(0, 8 * 60, 15):
-        clock.at(minute)
-        if minute in stage_notice_at:
-            await _turn(graph, client, _stage_notice(stage_notice_at[minute]))
-        await _turn(graph, client, _reminder())
-
-    assert len(_told(client)) == 4
-
-
-def test_the_reminder_tool_tells_the_po_a_reminder_is_a_re_check():
-    """The prompt is at its length cap; the tool's own text carries the rule."""
+def test_reminder_tool_does_not_invite_progress_reminders():
     from src.agents.po.tools import set_reminder
 
     text = " ".join(set_reminder.description.split())
-    assert "A reminder is for you to re-check, not a scheduled message to the user." in text
-    assert "The user hears about a story only when its state has changed" in text
+    assert "Do not set progress reminders after creating a story." in text
+    assert "In-work stories get no reply" in text

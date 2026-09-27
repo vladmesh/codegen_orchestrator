@@ -39,14 +39,13 @@ _STORY_ID_RE = re.compile(r"\bstory-[A-Za-z0-9-]+\b")
 async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfig) -> str:
     """Set a reminder to wake up after a delay and re-check something.
 
-    Use this whenever you need to wait and follow up later — after triggering
-    a task, when the user asks to be reminded, or any situation where you
-    should check back in the future.
+    Use when the user asks to be reminded or a later check is needed.
+    Do not set progress reminders after creating a story.
 
     A reminder is for you to re-check, not a scheduled message to the user.
-    The user hears about a story only when its state has changed since they
-    were last told: your reply to a reminder about an unchanged story is not
-    delivered. Name the story id (story-...) in the reason.
+    A story reminder can tell only an untold need for the user or a stop.
+    In-work stories get no reply; endings come from durable events.
+    Name the story id (story-...) in the reason.
 
     Args:
         delay_minutes: Minutes until reminder fires.

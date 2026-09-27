@@ -352,7 +352,7 @@ The dispositions exist because they need different handling, so no path may answ
 Both waits are bounded by `supervisor.resource_wait_timeout_minutes`, after which a human is told; the deploy wait carries its start in `run_metadata.infrastructure_wait_started_at` so re-dispatching does not reset the bound. Escalation always means the `human-review` story action — the status value is not a route — and never `fail_story`.
 
 ### Target Admission (Provisioning Readiness)
-Before capacity is considered at all, a server has to be an admissible target: managed, operational, `labels.provisioning_phase == "complete"`, and free of an active `PROVISIONING_FAILED` incident. The rule is fail-closed — a missing, empty or unknown phase counts as unfinished — and lives once in `shared/server_admission.py`. Every path that places a workload calls it: `_find_suitable_server` (langgraph allocator, a new host), `_refuse_inadmissible_target` (the same module's reuse branch, the host a project is already bound to) and `_resources_available` (scheduler resource wait), so a parked task can never wake up towards a server the allocator would refuse, and a redeploy or a newly added module cannot be placed on a host that is no longer a legal target. When no host is admissible, the allocator raises `shared/server_admission.py::ADMISSION_FAILURE_REASON` — `AllocationFailureReason.SERVER_NOT_PROVISIONED`: the task parks in `waiting_resources` like a capacity wait — no engineering retry, no story failure, no product-failure notification — but the owner is told through the `task_waiting_infrastructure` PO event, never as a capacity shortage.
+Before capacity is considered at all, a server has to be an admissible target: managed, operational, `labels.provisioning_phase == "complete"`, and free of an active `PROVISIONING_FAILED` incident. The rule is fail-closed — a missing, empty or unknown phase counts as unfinished — and lives once in `shared/server_admission.py`. Every path that places a workload calls it: `_find_suitable_server` (langgraph allocator, a new host), `_refuse_inadmissible_target` (the same module's reuse branch, the host a project is already bound to) and `_resources_available` (scheduler resource wait), so a parked task can never wake up towards a server the allocator would refuse, and a redeploy or a newly added module cannot be placed on a host that is no longer a legal target. When no host is admissible, the allocator raises `shared/server_admission.py::ADMISSION_FAILURE_REASON` — `AllocationFailureReason.SERVER_NOT_PROVISIONED`: the task parks in `waiting_resources` like a capacity wait — no engineering retry, no story failure, no product-failure notification — and the `task_waiting_infrastructure` PO event stays internal, never as a user-facing capacity shortage.
 
 That one reason covers all four rejections, on both placement paths, and there is one constant rather than a rejection-to-reason table because there is no branch to make: none of the rejections is a statement about how much memory was asked for. Two of them — the host is not managed, or its status does not admit — are not literally an unfinished build and the reason vocabulary has no member for them; they are still platform state, and the alternative to the closest infrastructure reason is describing them to the owner as a capacity shortage, which is false. A subset that held only the two provisioning rejections was how the two paths drifted apart: the search path let a host merely in status `provisioning` fall through to `insufficient_free_memory`, which a live acceptance run then read back on an empty 4 GB machine.
 
@@ -363,18 +363,21 @@ One question is answered ahead of that reason, and only in the search path: whet
 A bound-host refusal also shapes the wait: resuming asks whether *any* server is admissible, while this project is refused by *the one it sits on*, so a fleet with one healthy host and one broken host the project is pinned to satisfies the resume condition on every tick and is refused again on every tick. Both waits check their elapsed-time bound before admissibility, which ends that cycle in the same escalation as a wait with no target at all. A server-pinned resume condition would end it sooner, but the wait's contract is fleet-wide today and the bound is what makes the cycle finite.
 
 ### Proactive Message Spam Filter
-PO sends user-facing lifecycle messages through `po:proactive`: deploy success, permanent story failure, and resource-wait entry, escalation, and resumption. Intermediate smoke, precheck, and workflow failures stay internal.
+PO publishes durable key events and returned requirements through `po:proactive`. Resource and
+infrastructure waits and resumptions run the PO turn but their replies are suppressed. Stage notices
+are logged and dropped before the graph; no escalation step can start a PO turn.
 
-A PO turn nobody asked for that names a story — a fired `set_reminder` or a `story_stage` notice — reaches
-the user only when it tells something new (`services/langgraph/src/consumers/po_story_gate.py`): the story's
-fingerprint (`status`, `waiting_on`, the `StoryFailure` code, the planning state and its failed attempts, read
-from the API at publish time) differs from the one last told to that chat, or the notice is a later stay
-(`stage_entered_at`) or a higher step of the stay last told, whatever order redelivery brings it in; and fewer than `po.story_proactive_daily_cap` (6) such messages about the story went to the chat this UTC
-day. Otherwise the turn still runs and only the message is withheld, logged as `po_proactive_suppressed` with the
-reason (`unchanged`, `daily_cap`, `story_ended`) and the fingerprint. The "last told" record
-(`po:story_told:<chat>:<story>`) is written only after the publish, so a failed publish repeats the change rather
-than losing it; the story's ending deletes it. The durable owner notifications are not gated or counted. In such a
-turn the `notify_user` tool sends nothing, so the gated final reply is the only way to the user.
+`services/langgraph/src/consumers/po_story_gate.py` reads the current story at the single proactive
+publish point. A reminder publishes only `needs_user` or `stopped` if that key state differs from
+what this chat last heard. Planning failure before building counts as stopped; changing attempts
+or an in-work status does not create news. Terminal reminders are silent: the durable seam tells endings.
+Suppressions log `po_proactive_suppressed` with their reason and key state. An unreadable API or Redis
+result suppresses reminders, while durable events still publish.
+
+The last-told record (`po:story_told:<chat>:<story>`) is written after publication and has no expiry;
+a failed publish leaves the change untold. Previous fingerprint records retain their told state.
+The story's ending deletes the record. There is no daily cap or periodic progress message.
+`notify_user` sends nothing in these turns, so the final reply is the only way to the user.
 
 ---
 

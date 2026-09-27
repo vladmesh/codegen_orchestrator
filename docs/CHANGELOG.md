@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- PO publishes only key story changes: progress reminders and stage notices stay silent; every unreadable
+  brief leaves its event pending instead of acknowledging an unknown audience.
+
 - Only an ordered story's (confirmed brief) events reach the user, the rest go to the admins; the chat PO has no
   fix stories: a retry or a complaint reopens the original story.
 - A reminder or stage notice about a story reaches its owner only on a change or a new escalation step, at most

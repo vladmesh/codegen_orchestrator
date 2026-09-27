@@ -122,7 +122,6 @@ from services.langgraph.src.agents.qa.packages import observation_answers
 # The PO reminder gate's per-story records, named by the gate itself so the
 # run's cleanup cannot drift from the keys it writes.
 from services.langgraph.src.consumers.po_story_gate import (
-    STORY_TOLD_DAILY_KEY_PREFIX,
     STORY_TOLD_KEY_PREFIX,
 )
 from shared.clients.registry import sha_image_tag
@@ -7217,13 +7216,14 @@ def story_gate_key_patterns(story_id: str) -> list[str]:
     """Globs for every PO reminder-gate key of one story, whatever the chat and the day.
 
     The gate (`services/langgraph/src/consumers/po_story_gate.py`) keeps
-    `po:story_told:<chat>:<story>` and `po:story_told_daily:<chat>:<story>:<UTC day>`.
+    `po:story_told:<chat>:<story>`. Also clean daily counters from older releases
+    (`po:story_told_daily:<chat>:<story>:<UTC day>`).
     The chat is whoever the PO told, and a run may cross midnight, so neither is
     fixed here: the story id is what makes a key this run's.
     """
     return [
         f"{STORY_TOLD_KEY_PREFIX}*:{story_id}",
-        f"{STORY_TOLD_DAILY_KEY_PREFIX}*:{story_id}:*",
+        f"po:story_told_daily:*:{story_id}:*",
     ]
 
 

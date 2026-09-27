@@ -31,15 +31,12 @@ delivery count grows.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 from dataclasses import dataclass
-import json
 import os
 import socket
 
-import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 import structlog
 
 from shared.config_store import ConfigStore
@@ -62,7 +59,7 @@ from ..agents.po.tools_shared import init_po_clients
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
 from ..llm import ChannelChainModel, LLMAgent, LLMAlerts, build_agent_llm, load_channel_chain
-from .po_story_gate import DAILY_CAP_CONFIG_KEY, ProactiveStoryGate
+from .po_story_gate import ProactiveStoryGate
 
 logger = structlog.get_logger(__name__)
 
@@ -120,17 +117,6 @@ def load_summarization_config(api_base_url: str) -> SummarizationConfig:
         trigger_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[1]),
         max_summary_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[2]),
     )
-
-
-def load_story_gate_cap(api_base_url: str) -> Callable[[], int]:
-    """The live reader of ``po.story_proactive_daily_cap``; a missing key fails startup.
-
-    Read per gated turn through the store's cache, so an operator's change
-    applies without a restart.
-    """
-    config = ConfigStore(api_base_url)
-    config.validate_required([DAILY_CAP_CONFIG_KEY])
-    return lambda: config.get_int(DAILY_CAP_CONFIG_KEY)
 
 
 #: The one gate every proactive reply about a story passes (``po_story_gate``).
@@ -235,7 +221,6 @@ async def _consume_po_input(
 async def run_po_consumer(
     summarization_config: SummarizationConfig | None = None,
     llms: POLLMs | None = None,
-    story_gate_cap: Callable[[], int] | None = None,
 ) -> None:
     """Main loop: read po:input, invoke PO graph, write po:response:*."""
     settings = get_settings()
@@ -243,12 +228,11 @@ async def run_po_consumer(
         settings.api_base_url
     )
     effective_llms = llms or await load_po_llms(settings)
-    effective_story_gate_cap = story_gate_cap or load_story_gate_cap(settings.api_base_url)
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()
 
     init_po_clients(api_client, client)
-    init_story_gate(ProactiveStoryGate(client, api_client, effective_story_gate_cap))
+    init_story_gate(ProactiveStoryGate(client, api_client))
 
     graph = await create_po_graph(
         llm=effective_llms.po,
@@ -430,27 +414,16 @@ async def story_is_ordered(story_id: str) -> bool:
     """
     try:
         brief = await api_client.get_product_brief_by_story(story_id)
-    except (httpx.HTTPError, json.JSONDecodeError, ValidationError) as exc:
+    except Exception as exc:
         raise StoryAudienceUnknown(story_id) from exc
     return brief is not None and brief.confirmed_at is not None
 
 
 async def _withhold_from_user(data: dict) -> None:
-    """Keep a not-ordered story's event from the user: the admins get it instead.
-
-    A stage notice is progress chatter nobody owes an admin, so it is only logged.
-    """
+    """Keep a not-ordered story's event from the user: the admins get it instead."""
     event = data.get("event", "")
     story_id = data.get("story_id", "")
     project_id = data.get("project_id", "")
-    if event == OwnerNotificationEvent.STORY_STAGE:
-        logger.info(
-            "po_unordered_story_stage_notice_dropped",
-            story_id=story_id,
-            project_id=project_id,
-            stage=data.get("stage"),
-        )
-        return
     logger.info("po_unordered_story_event_withheld", event_type=event, story_id=story_id)
     await notify_admins_best_effort(
         f"Withheld from the user: story {story_id} is not an ordered story (no confirmed "
@@ -478,6 +451,15 @@ async def _handle_message(
     text = data.get("text", "")
     msg_type = data.get("type", "user_message")
     event = data.get("event", "")
+
+    if msg_type == "system_event" and event == OwnerNotificationEvent.STORY_STAGE:
+        logger.info(
+            "po_story_stage_notice_dropped",
+            telegram_chat_id=telegram_chat_id,
+            story_id=data.get("story_id", ""),
+            stage=data.get("stage"),
+        )
+        return
 
     # Let only shared owner-notification events through so PO can craft their
     # wording. Other validated progress events are not owner notifications.
@@ -589,8 +571,8 @@ async def _handle_message(
     elif response_text:
         # No request_id (reminder, system event) — forward to user via proactive
         # stream, carrying the identifiers the transport needs if delivery fails.
-        # A reply about a story goes only if it tells a change or a new
-        # escalation step (`po_story_gate`); the turn itself has already run.
+        # The gate withholds intermediate events and reminders without an
+        # untold key change; the turn itself has already run.
         gate = _get_story_gate()
         decision = await gate.decide(telegram_chat_id, data)
         if decision.send:

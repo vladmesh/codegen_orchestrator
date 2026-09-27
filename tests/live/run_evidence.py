@@ -316,7 +316,7 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      asked. Before this a run that failed one of them left a reader nothing to
 #      read: stand run 35486586267 failed both and the document named neither.
 # v22: `stage_notices` carries, for each of the run's two stories, the
-#      `story_stage` events its owner was sent while it was in work
+#      `story_stage` events published to po:input while it was in work
 #      (issue:b28d93), or the reason they could not be read.
 # v23: `story_merge_artifacts` carries each level-1 story's merged file set
 #      and the verdict that it contains only the declared product change.
@@ -4027,7 +4027,7 @@ def second_story(ctx: dict) -> dict:
 
 
 STAGE_NOTICES_NOTE = (
-    "The story_stage events each story's owner was sent while it was in work, read "
+    "The story_stage events published internally while each story was in work, read "
     "off po:input after the story ended: the stage, what it waited on, the "
     "magnitude of the wait and whether it was an entry or a repeat after the quiet "
     "interval — beside the stages the harness itself sampled the story in and the "

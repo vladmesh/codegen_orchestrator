@@ -257,6 +257,7 @@ class TestUnknownIsNotNotOrdered:
     @pytest.mark.parametrize(
         "error",
         [
+            RuntimeError("arbitrary brief read failure"),
             httpx.ConnectTimeout("api timed out"),
             httpx.HTTPStatusError(
                 "server error",
@@ -288,6 +289,7 @@ class TestUnknownIsNotNotOrdered:
     @pytest.mark.parametrize(
         "body",
         [
+            pytest.param(b"\xff", id="invalid-utf8"),
             pytest.param(b'{"id": "brief-1", "project_id', id="invalid-json"),
             pytest.param(b'{"id": "brief-1", "story_id": "story-x"}', id="not-a-brief"),
         ],

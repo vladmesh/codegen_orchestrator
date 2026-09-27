@@ -298,12 +298,6 @@
   category: llm
   description: "Max tokens in the summary itself"
 
-# --- po ---
-- key: po.story_proactive_daily_cap
-  value: 6
-  category: po
-  description: "Most proactive PO messages about one story one chat receives per UTC day from reminders and stage notices; terminal outcome notices are not counted or capped"
-
 - key: llm.alert_realert_window_hours
   value: 6
   category: llm
