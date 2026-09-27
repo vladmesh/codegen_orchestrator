@@ -26,36 +26,11 @@ from .tools_shared import _get_api, _get_stream_client, _user_headers
 
 logger = structlog.get_logger(__name__)
 
-#: The actions that build something the user asked for and therefore need a
-#: confirmed Product Brief behind them. `create` is the first story of a DRAFT
-#: project and `feature` is every later one, and a requirement is lost in prose
-#: the same way in both. The one action outside the set is `fix`, which repairs
-#: what a confirmed brief already described; `reopen_story` is a different tool
-#: and never passes through here.
-NEW_PRODUCT_WORK = frozenset({"create", "feature"})
-
 #: How many times the bind is tried before the story is closed. More than one
 #: because a 5xx or a dropped connection says nothing about whether the bind is
 #: possible; small because every further attempt delays closing a story the
 #: scheduler would otherwise pick up.
 BIND_ATTEMPTS = 2
-
-
-def _qa_failure_hold(stories: list[dict], parent_story_id: str | None) -> tuple[str, dict] | None:
-    """Return an unresolved QA failure only when retrying that story chain."""
-    if parent_story_id is None:
-        return None
-
-    for story in stories:
-        if story.get("status") != "waiting_human_review":
-            continue
-        if story.get("id") != parent_story_id:
-            continue
-        reason = story.get("quarantine_reason") or {}
-        evidence = reason.get("qa_failure")
-        if isinstance(evidence, dict):
-            return story["id"], evidence
-    return None
 
 
 async def _confirmed_brief(
@@ -172,28 +147,39 @@ async def _bind_brief_to_story(brief_id: str, story_id: str, headers: dict[str, 
     )
 
 
+#: The answer to a `create_story` call without a brief: no story is created,
+#: and the two things the call may have meant are named.
+_NO_BRIEF_REFUSAL = (
+    "No story was created: every story you create needs a confirmed Product Brief. "
+    "For new work, call present_product_brief, send the user the message it returns, "
+    "and after their yes call confirm_product_brief — then call create_story again "
+    "with product_brief_id. A retry after a failure or a complaint about something "
+    "already built is not a new story: find the original story with list_stories and "
+    "call reopen_story on it."
+)
+
+
 @tool
 async def create_story(
     project_id: str,
     title: str,
     description: str,
-    story_type: str = "feature",
-    parent_story_id: str | None = None,
     product_brief_id: str | None = None,
     *,
     config: RunnableConfig,
 ) -> str:
-    """Create a user story for a project and send it to the architect for decomposition.
+    """Create the user story for a confirmed Product Brief and send it to the architect.
 
-    This is the main way to request work on a project — whether creating it
-    from scratch, adding features, or fixing bugs. The architect will decompose
-    the story into tasks and start engineering work automatically.
+    This is how new work the user ordered starts:
+    the first story of a project and every later feature alike.
+    The architect will decompose the story into tasks and start engineering
+    work automatically.
 
-    New product work needs a confirmed Product Brief: present it with
+    Every story needs a confirmed Product Brief: present it with
     `present_product_brief`, confirm it with `confirm_product_brief` once the
     user says yes, and pass the brief id here. Without it no story is created.
-    New product work is every story that builds something the user asked for —
-    the first story of a project and every later feature alike.
+    A retry after a failure and a complaint about something already built are
+    not new stories: use `reopen_story` on the original story.
 
     IMPORTANT: The description should contain the full gathered requirements —
     not just the user's original short message. Compose a detailed spec from
@@ -202,92 +188,43 @@ async def create_story(
     Args:
         project_id: Project ID.
         title: Short title for the story (e.g. "Currency rate alerts",
-            "Fix login button", "Create telegram bot for recipes").
-        description: Detailed description of what to build or fix.
+            "Create telegram bot for recipes").
+        description: Detailed description of what to build.
             Include all requirements gathered from the conversation.
-        story_type: "feature" (new functionality or project creation),
-            "fix" (bug fix).
-        parent_story_id: Story this work retries or continues, if any.
         product_brief_id: The confirmed Product Brief this story is planned
-            against. Required for new product work, a feature on a live project
-            included; leave unset only for a fix on an existing project. Each
-            story needs its own brief — the one bound to an earlier story is
-            spent.
+            against. Required. Each story needs its own brief — the one bound
+            to an earlier story is spent.
     """
     api = _get_api()
     headers = _user_headers(config)
 
-    # Determine action from project status, not story_type
-    if story_type == "fix":
-        action = "fix"
-    else:
-        proj_resp = await api.get_raw(f"projects/{project_id}", headers=headers)
-        proj_resp.raise_for_status()
-        project_status = proj_resp.json().get("status", ProjectStatus.DRAFT)
-        action = "create" if project_status == ProjectStatus.DRAFT else "feature"
-
-    if action in NEW_PRODUCT_WORK and not product_brief_id:
+    if not product_brief_id:
         # The prose-summary path is not a fallback for a missing brief: the
         # architect would plan against a re-derived interpretation of the
-        # conversation instead of what the user confirmed.
-        logger.warning("po_story_without_confirmed_brief", project_id=project_id, action=action)
-        return (
-            "No story was created: new product work needs a confirmed Product Brief. "
-            "Call present_product_brief, send the user the message it returns, and after "
-            "their yes call confirm_product_brief — then call create_story again with "
-            "product_brief_id."
-        )
+        # conversation instead of what the user confirmed, and the story would
+        # be nobody's order.
+        logger.warning("po_story_without_confirmed_brief", project_id=project_id)
+        return _NO_BRIEF_REFUSAL
 
-    brief = None
-    if product_brief_id:
-        brief, refusal = await _confirmed_brief(project_id, product_brief_id, headers)
-        if refusal is not None:
-            return refusal
+    # The action decides whether the spec is persisted for a new project.
+    proj_resp = await api.get_raw(f"projects/{project_id}", headers=headers)
+    proj_resp.raise_for_status()
+    project_status = proj_resp.json().get("status", ProjectStatus.DRAFT)
+    action = "create" if project_status == ProjectStatus.DRAFT else "feature"
+
+    brief, refusal = await _confirmed_brief(project_id, product_brief_id, headers)
+    if refusal is not None:
+        return refusal
 
     stories_resp = await api.get_raw(f"stories/?project_id={project_id}", headers=headers)
     stories_resp.raise_for_status()
     project_stories = stories_resp.json()
-    reminder_story_id = config["configurable"].get("retry_story_id", "")
-    if reminder_story_id and not any(
-        story.get("id") == reminder_story_id for story in project_stories
-    ):
-        logger.warning(
-            "po_retry_provenance_not_found",
-            project_id=project_id,
-            reminder_story_id=reminder_story_id,
-        )
-        return (
-            "No story was created because the reminder's source story could not be verified. "
-            "Please ask a human to review the retry."
-        )
-    retry_parent_story_id = reminder_story_id or parent_story_id
-    if reminder_story_id and parent_story_id and parent_story_id != reminder_story_id:
-        logger.warning(
-            "po_retry_parent_overridden",
-            requested_parent_story_id=parent_story_id,
-            reminder_story_id=reminder_story_id,
-        )
-    if hold := _qa_failure_hold(project_stories, retry_parent_story_id):
-        held_story_id, evidence = hold
-        fingerprint = evidence.get("fingerprint", "unknown")
-        logger.warning(
-            "po_story_blocked_by_qa_failure",
-            project_id=project_id,
-            held_story_id=held_story_id,
-            failure_fingerprint=fingerprint,
-        )
-        return (
-            "No story was created. A repeated QA failure is waiting for human review "
-            f"on story {held_story_id} (fingerprint: {fingerprint}). "
-            "Please ask a human to decide whether and how to continue."
-        )
 
     # 1. Create story via API (API generates the ID)
     story_payload = {
         "project_id": project_id,
         "title": title,
         "description": description,
-        "parent_story_id": retry_parent_story_id,
         "type": StoryType.PRODUCT.value,
         "created_by": "po",
     }
@@ -299,9 +236,8 @@ async def create_story(
     # Bind before anything can hand the story on. Whether it is published now or
     # queued behind an active story, what the architect eventually picks up must
     # already be brief-backed.
-    if brief is not None:
-        if failure := await _bind_brief_to_story(brief.id, story_id, headers):
-            return failure
+    if failure := await _bind_brief_to_story(brief.id, story_id, headers):
+        return failure
 
     # The architect needs this spec when decomposing a newly created project.
     # Persist it before any path can publish the story for downstream work.
@@ -319,8 +255,7 @@ async def create_story(
     # reachable by its story from here on. Cleared after the spec write above,
     # which writes back a config read before the bind and would otherwise put
     # the pointer back.
-    if brief is not None:
-        await clear_brief_pointer(project_id, headers)
+    await clear_brief_pointer(project_id, headers)
 
     # 2. Check if project already has an active story (sequential processing)
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
@@ -384,26 +319,53 @@ async def list_stories(project_id: str, *, config: RunnableConfig) -> str:
     return "\n".join(lines)
 
 
-@tool
-async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfig) -> str:
-    """Reopen a completed story instead of creating a new one.
+#: The statuses a story is reopened from: a `completed` one the user complains
+#: about, a `failed` one the platform retries. A parked story
+#: (`waiting_human_review`) is returned by a person, never reopened from chat.
+REOPENABLE_STATUSES = frozenset({"completed", "failed"})
 
-    Use this when the user reports a problem with something that was already
-    built in a previous story. The user_report carries their feedback through
-    the entire pipeline (PO → Architect → Developer).
+
+@tool
+async def reopen_story(
+    story_id: str, user_report: str | None = None, *, config: RunnableConfig
+) -> str:
+    """Reopen the original story instead of creating a new one.
+
+    The one way to redo work on a story: the same story is planned again, so it
+    stays the user's order and its outcome is told to them as that order's.
+
+    - A user complaint about a `completed` story: `user_report` is required and
+      carries their words through the pipeline (PO → Architect → Developer).
+    - A platform retry of a `failed` story: `user_report` is optional; pass it
+      only when the user said what went wrong.
 
     Args:
-        story_id: ID of the completed story to reopen.
-        user_report: User's description of what's wrong (e.g. "images work
-            sometimes but not always", "layout is broken on mobile").
+        story_id: ID of the completed or failed story to reopen.
+        user_report: The user's description of what's wrong (e.g. "images work
+            sometimes but not always"). Required for a completed story.
     """
     api = _get_api()
     headers = _user_headers(config)
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
 
+    current = await api.get_raw(f"stories/{story_id}", headers=headers)
+    current.raise_for_status()
+    status = current.json()["status"]
+    if status not in REOPENABLE_STATUSES:
+        return (
+            f"Story {story_id} was not reopened: it is {status}. Only a completed or a "
+            "failed story is reopened; a story waiting for human review is returned by a "
+            "person, and a story in work is still being built."
+        )
+    if status == "completed" and not user_report:
+        return (
+            f"Story {story_id} was not reopened: it is completed, so reopening it is a "
+            "complaint and needs user_report — the user's own description of what is wrong."
+        )
+
     resp = await api.post_raw(
         f"stories/{story_id}/reopen",
-        json={"user_report": user_report, "actor": "po"},
+        json={"user_report": user_report or None, "actor": "po"},
         headers=headers,
     )
     resp.raise_for_status()
@@ -414,7 +376,7 @@ async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfi
         project_id=story["project_id"],
         telegram_chat_id=telegram_chat_id,
         is_reopen=True,
-        user_report=user_report,
+        user_report=user_report or None,
     )
     await _get_stream_client().publish_message(ARCHITECT_QUEUE, arch_msg)
 
@@ -422,11 +384,13 @@ async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfi
         "po_story_reopened",
         story_id=story_id,
         project_id=story["project_id"],
+        reopened_from=status,
     )
+    reported = f"User report: {user_report}\n" if user_report else ""
     return (
         f"Story reopened and sent to architect for re-decomposition.\n"
         f"Story: {story_id} — {story['title']}\n"
-        f"User report: {user_report}\n"
+        f"{reported}"
         f"The architect will review previous tasks and create new ones."
     )
 

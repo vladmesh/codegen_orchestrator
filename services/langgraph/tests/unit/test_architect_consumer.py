@@ -564,6 +564,74 @@ class TestProductBriefPlanning:
         assert graph.ainvoke.call_args[0][0]["planning_attempt_id"] is None
 
     @pytest.mark.asyncio
+    async def test_a_retried_failed_order_whose_plan_was_admitted_is_planned_again(
+        self, mock_redis, _mock_api_get_project, _llm_configured
+    ):
+        """A platform retry reopens the ordered story: the brief's bookkeeping lets it plan.
+
+        The admitted plan stays admitted, so the retry is ordinary work on the
+        same story — no second claim or admission to refuse it — and the story
+        moves on to work once planned.
+        """
+        api = _mock_api_get_project
+        api.get_story = AsyncMock(return_value=make_story(id="story-abc", status="reopened"))
+        api.get_product_brief_by_story = AsyncMock(
+            return_value=make_product_brief(coverage_admitted_at=make_product_brief().confirmed_at)
+        )
+        api.claim_planning_attempt = AsyncMock(
+            return_value=make_planning_attempt(
+                outcome=ProductBriefPlanningAttemptOutcome.ALREADY_ADMITTED,
+                planning_attempt_id=None,
+            )
+        )
+        retry = ArchitectMessage(
+            story_id="story-abc", project_id="proj-123", telegram_chat_id="user-1", is_reopen=True
+        ).model_dump(mode="json")
+        graph = _graph_returning()
+
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(retry, mock_redis)
+
+        assert result["status"] == "success"
+        user_msg = graph.ainvoke.call_args[0][0]["messages"][0]["content"]
+        assert "REOPEN of story story-abc" in user_msg
+        assert "retry after the story failed; there is no user report" in user_msg
+        assert "what made the previous attempt fail" in user_msg
+        assert "None" not in user_msg
+        api.admit_product_brief_coverage.assert_not_called()
+        api.transition_story.assert_called_with("story-abc", "start")
+
+    @pytest.mark.asyncio
+    async def test_a_retried_order_that_failed_in_planning_is_claimed_and_admitted(
+        self, mock_redis, _mock_api_get_project, _llm_configured
+    ):
+        """A story that failed before its plan was admitted gets a fresh attempt."""
+        api = _mock_api_get_project
+        api.get_story = AsyncMock(return_value=make_story(id="story-abc", status="reopened"))
+        api.get_product_brief_by_story = AsyncMock(return_value=make_product_brief())
+        api.claim_planning_attempt = AsyncMock(return_value=make_planning_attempt())
+        api.admit_product_brief_coverage = AsyncMock(return_value=make_admission())
+        retry = ArchitectMessage(
+            story_id="story-abc", project_id="proj-123", telegram_chat_id="user-1", is_reopen=True
+        ).model_dump(mode="json")
+
+        with patch(
+            "src.consumers.architect.create_architect_graph", return_value=_graph_returning()
+        ):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(retry, mock_redis)
+
+        assert result["status"] == "success"
+        api.claim_planning_attempt.assert_awaited_once_with("brief-1")
+        api.admit_product_brief_coverage.assert_awaited_once_with(
+            "brief-1", "plan-1", channels=PlanningChannels(), reopen=True
+        )
+        api.transition_story.assert_called_with("story-abc", "start")
+
+    @pytest.mark.asyncio
     async def test_unconfirmed_brief_is_not_planned(
         self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
     ):

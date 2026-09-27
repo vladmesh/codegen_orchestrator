@@ -713,8 +713,10 @@ path, and binds the brief through `POST /api/product-briefs/{id}/story`
 is already brief-backed. A failed bind publishes nothing *and closes the story
 it could not back*: returning without publishing is not enough, because the
 scheduler's liveness sweep re-publishes a `created` story with no tasks and it
-would then be planned from prose. A `fix` story and `reopen_story` need no
-brief; they repair what a confirmed brief already described.
+would then be planned from prose. The chat PO creates no story without a brief
+and cannot choose a story type: a retry after a failure and a complaint go
+through `reopen_story` on the original `failed` or `completed` story, which
+keeps its brief.
 
 **A planned task's plan membership is immutable while it is unadmitted.** Its
 project, story and planning attempt are what the admission's release set and the
@@ -823,6 +825,14 @@ the same on every notice of the stay, later for a return to the stage. The PO co
 notice only if it is a later stay or a higher step of the stay last told, so a redelivered older
 step is never told again, and nothing about an unchanged story in between
 (`consumers/po_story_gate.py`).
+
+**Only an ordered story's outcome reaches the user.** A story is *ordered* when
+`GET /api/product-briefs/by-story/{id}` returns a brief with `confirmed_at` set. The PO consumer
+checks it before the PO graph for every `system_event` that names a story, so producers do not: a
+not-ordered story's event never reaches the graph or `po:proactive`, the admins get it marked as
+withheld, and a not-ordered `story_stage` is dropped and logged. `story_waiting_user_secret` is
+exempt. A 404 or an unconfirmed brief is "not ordered"; an API error leaves the entry unacked for
+the PEL sweep to hand back.
 
 In a PO turn without `request_id` (a reminder or system event) the only way to the user is that
 gated final reply: the `notify_user` tool publishes nothing there (the consumer passes

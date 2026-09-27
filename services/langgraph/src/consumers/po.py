@@ -36,6 +36,7 @@ from dataclasses import dataclass
 import os
 import socket
 
+import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import TypeAdapter
 import structlog
@@ -297,6 +298,10 @@ async def _process_message(
     values elided, alerts, copies the entry to ``po:input:dlq`` and only then
     ACKs it. So what arrives here is a model, and the ACK below is the one for
     work that was actually attempted.
+
+    The one entry left unacked is an event whose audience could not be decided
+    (``StoryAudienceUnknown``): nothing was attempted, so it stays pending and
+    the PEL sweep hands it back after ``PEL_TIMEOUT_MS``.
     """
     data = message.model_dump(mode="json")
     bind_message_context(data)
@@ -308,8 +313,18 @@ async def _process_message(
 
     async with sem:
         async with lock:
+            handled = True
             try:
                 await _handle_message(graph, client, telegram_chat_id, data)
+            except StoryAudienceUnknown as unknown:
+                handled = False
+                logger.warning(
+                    "po_story_audience_unknown",
+                    msg_id=msg_id,
+                    event_type=data.get("event", ""),
+                    story_id=unknown.story_id,
+                    error=str(unknown.__cause__),
+                )
             except Exception:
                 logger.exception(
                     "po_invoke_failed", telegram_chat_id=telegram_chat_id, msg_id=msg_id
@@ -326,7 +341,8 @@ async def _process_message(
                         to_flat_fields(error_resp),
                     )
             finally:
-                await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
+                if handled:
+                    await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
                 unbind_message_context()
 
 
@@ -389,10 +405,72 @@ def render_qa_verification(facts: dict) -> str:
     return "\n".join(lines)
 
 
+class StoryAudienceUnknown(Exception):
+    """Whether the story is ordered could not be read, so the event is not handled yet.
+
+    Unknown is not "not ordered": ``_process_message`` leaves such an entry
+    pending, and the PEL sweep brings it back.
+    """
+
+    def __init__(self, story_id: str) -> None:
+        super().__init__(f"whether story {story_id} is ordered could not be read")
+        self.story_id = story_id
+
+
+async def story_is_ordered(story_id: str) -> bool:
+    """Whether the story is an ordered one: a confirmed Product Brief is bound to it.
+
+    Only an ordered story's outcome is the user's to hear; every other story (a
+    technical one, a legacy one with no brief) is internal. A clean 404 and a
+    bound brief that is not confirmed are both a definitive "not ordered"; an API
+    error or a timeout answers nothing and raises ``StoryAudienceUnknown``.
+    """
+    try:
+        brief = await api_client.get_product_brief_by_story(story_id)
+    except httpx.HTTPError as exc:
+        raise StoryAudienceUnknown(story_id) from exc
+    return brief is not None and brief.confirmed_at is not None
+
+
+async def _withhold_from_user(data: dict) -> None:
+    """Keep a not-ordered story's event from the user: the admins get it instead.
+
+    A stage notice is progress chatter nobody owes an admin, so it is only logged.
+    """
+    event = data.get("event", "")
+    story_id = data.get("story_id", "")
+    project_id = data.get("project_id", "")
+    if event == OwnerNotificationEvent.STORY_STAGE:
+        logger.info(
+            "po_unordered_story_stage_notice_dropped",
+            story_id=story_id,
+            project_id=project_id,
+            stage=data.get("stage"),
+        )
+        return
+    logger.info("po_unordered_story_event_withheld", event_type=event, story_id=story_id)
+    await notify_admins_best_effort(
+        f"Withheld from the user: story {story_id} is not an ordered story (no confirmed "
+        f"Product Brief). event={event} story={story_id} project={project_id or '-'}\n"
+        f"{data.get('text', '')}",
+        level="info" if event == OwnerNotificationEvent.STORY_COMPLETED else "warning",
+        po_event=event,
+        story_id=story_id,
+        project_id=project_id,
+    )
+
+
 async def _handle_message(
     graph, client: RedisStreamClient, telegram_chat_id: str, data: dict
 ) -> None:
-    """Format message, invoke PO graph, write response."""
+    """Format message, invoke PO graph, write response.
+
+    A story is internal unless it is ordered (``story_is_ordered``). Every
+    producer's story event passes here before the PO graph, so this is the one
+    place the audience is decided: a ``system_event`` about a story that is not
+    ordered never reaches the graph or ``po:proactive``. The exception is
+    ``story_waiting_user_secret``: only the user can supply the secret.
+    """
     timestamp = data.get("timestamp", "")
     text = data.get("text", "")
     msg_type = data.get("type", "user_message")
@@ -407,6 +485,16 @@ async def _handle_message(
             event_type=event,
             text=text,
         )
+        return
+
+    story_id = data.get("story_id", "")
+    if (
+        msg_type == "system_event"
+        and story_id
+        and event != OwnerNotificationEvent.STORY_WAITING_USER_SECRET
+        and not await story_is_ordered(story_id)
+    ):
+        await _withhold_from_user(data)
         return
 
     # A user-facing event whose recipient was never resolved cannot be delivered
@@ -454,7 +542,6 @@ async def _handle_message(
             "thread_id": thread_id,
             "telegram_chat_id": telegram_chat_id,
             "user_name": user_name,
-            "retry_story_id": data.get("story_id", ""),
             # Only a turn the user is waiting on may message them from a tool;
             # any other turn reaches them only through its gated final reply.
             "user_turn": bool(data.get("request_id")),

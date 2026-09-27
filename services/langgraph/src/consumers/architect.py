@@ -985,12 +985,20 @@ async def _plan(
         )
 
         if msg.is_reopen:
+            # A complaint carries the user's words; a retry after a failure may
+            # carry none, and then what failed last time is what to address.
+            if msg.user_report:
+                reason = f"User report: {msg.user_report}\n\n"
+                target = "the user's specific complaint"
+            else:
+                reason = "This is a retry after the story failed; there is no user report.\n\n"
+                target = "what made the previous attempt fail"
             user_content = (
                 f"This is a REOPEN of story {msg.story_id} for project {msg.project_id}. "
-                f"User report: {msg.user_report}\n\n"
+                f"{reason}"
                 f"IMPORTANT: Call get_tasks_by_story FIRST to review what was already tried. "
                 f"Then call get_story and get_project_spec. "
-                f"Create tasks that address the user's specific complaint, "
+                f"Create tasks that address {target}, "
                 f"not repeat the same approach."
             )
         else:

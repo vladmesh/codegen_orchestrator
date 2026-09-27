@@ -375,6 +375,7 @@ class TestCreateStoryIntegration:
 
         assert "No story was created" in result
         assert "present_product_brief" in result
+        assert "reopen_story" in result
         stories = await api_client.get(f"/api/stories/?project_id={project_id}")
         assert stories.status_code == 200
         assert stories.json() == []

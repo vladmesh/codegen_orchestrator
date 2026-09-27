@@ -32,8 +32,9 @@ telling the agent the bot is free. A failed undeploy run surfaces as `failed` ra
 wait. Someone else's project is refused with 403 and stays untouched. This is the way out of a
 `bound_to_own_project` verdict — PO offers the user the choice between continuing in the holding
 project and freeing the token.
-- `create_story`: creating a user story + automatically starting engineering work
-- `reopen_story`: reopening a completed story with a user_report (the context of the problem)
+- `create_story`: creating the user story for a confirmed Product Brief + automatically starting engineering work; refused without a brief
+- `reopen_story`: reopening the original story — a `completed` one with the user's `user_report` (a complaint), or a `failed` one with an optional report (a retry)
+- `note_to_admins`: a note about a service matter to the admins; starts no work and sends the user nothing
 - `list_stories`, `get_story`: viewing stories, the tasks attached to them and their runs (with id, status, type, error, timing)
 - `get_run_status`: the detailed status of a specific engineering/deploy run
 - `get_budget_balance`: the current user's exact known engineering spend and API-calculated
@@ -43,7 +44,7 @@ incomplete cost coverage without exposing reservation internals.
 - `notify_user`: proactive message to user via `po:proactive` stream, in a turn answering the user only; in a reminder or system turn it sends nothing and says so
 - `web_search`: searching the documentation of external APIs through DuckDuckGo
 
-**System events**: the PO consumer accepts three story-level events: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW), and the non-terminal `story_requirements_returned` (the architect's admitted plan returned must-requirements; published by the architect consumer, replayed from the unacknowledged job until `po:input` accepts it), and the non-terminal `story_stage` (the scheduler's stage notice: the stage a story in work is at, what it waits for and the magnitude of the wait, on entry and then at escalation steps 1, 2, 4, 8… quiet intervals into the stay, each carrying its `stage_notice_step`). The rest of `OwnerNotificationEvent` is routed too. All other system events are dropped — the PO checks progress through reminders.
+**System events**: the PO consumer accepts three story-level events: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW), and the non-terminal `story_requirements_returned` (the architect's admitted plan returned must-requirements; published by the architect consumer, replayed from the unacknowledged job until `po:input` accepts it), and the non-terminal `story_stage` (the scheduler's stage notice: the stage a story in work is at, what it waits for and the magnitude of the wait, on entry and then at escalation steps 1, 2, 4, 8… quiet intervals into the stay, each carrying its `stage_notice_step`). The rest of `OwnerNotificationEvent` is routed too. All other system events are dropped — the PO checks progress through reminders. An event about a story that is not ordered (no confirmed Product Brief bound to it) never reaches the PO graph: the admins get it instead, except `story_waiting_user_secret`, which always reaches the PO.
 
 **Proactive story gate**: a turn with no `request_id` that names a story — a reminder or a `story_stage` notice — always runs, but its reply is published to `po:proactive` only if the story's fingerprint (`status`, `waiting_on`, failure code, planning state and attempts) differs from the one last told to that chat, or the notice is a new escalation step (a later stay by `stage_entered_at`, or a higher step of the stay last told, so a redelivered older step is never repeated), and the story's per-chat daily cap (`po.story_proactive_daily_cap`) is not spent. Suppressions log `po_proactive_suppressed`. The enforcement is in `consumers/po_story_gate.py`, not in the prompt; other story events (endings, parked stories) pass and only update the record.
 

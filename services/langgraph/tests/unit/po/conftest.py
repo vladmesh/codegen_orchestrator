@@ -3,10 +3,12 @@
 from fakeredis.aioredis import FakeRedis
 import pytest
 
+from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.story import StoryDTO
 from shared.redis import RedisStreamClient
 from src.consumers import po as po_consumer
 from src.consumers.po_story_gate import ProactiveStoryGate
+from tests.unit.factories import make_product_brief
 
 
 @pytest.fixture(autouse=True)
@@ -73,3 +75,39 @@ def story_gate(monkeypatch, gate_redis, gate_stories) -> ProactiveStoryGate:
     gate = ProactiveStoryGate(gate_redis, gate_stories, lambda: 6)
     monkeypatch.setattr(po_consumer, "_story_gate", gate)
     return gate
+
+
+class OrderedStories:
+    """The API's brief-by-story read: every story is ordered unless a test says otherwise.
+
+    ``unordered`` stories answer as the API's 404; ``failing`` ones raise the
+    error a read that cannot be answered raises.
+    """
+
+    def __init__(self) -> None:
+        self.unordered: set[str] = set()
+        self.unconfirmed: set[str] = set()
+        self.failing: dict[str, Exception] = {}
+        self.reads: list[str] = []
+
+    async def get_product_brief_by_story(self, story_id: str) -> ProductBriefRead | None:
+        self.reads.append(story_id)
+        if story_id in self.failing:
+            raise self.failing[story_id]
+        if story_id in self.unordered:
+            return None
+        if story_id in self.unconfirmed:
+            return make_product_brief(
+                story_id=story_id, confirmed_at=None, confirmation_request_id=None
+            )
+        return make_product_brief(story_id=story_id)
+
+
+@pytest.fixture(autouse=True)
+def ordered_stories(monkeypatch) -> OrderedStories:
+    """Every consumer test runs over stories that are ordered unless it moves one."""
+    stories = OrderedStories()
+    monkeypatch.setattr(
+        po_consumer.api_client, "get_product_brief_by_story", stories.get_product_brief_by_story
+    )
+    return stories
