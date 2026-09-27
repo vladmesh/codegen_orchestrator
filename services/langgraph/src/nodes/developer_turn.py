@@ -15,7 +15,11 @@ from dataclasses import dataclass
 import structlog
 
 from shared.contracts.dto.run import RunDTO
-from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
+from shared.contracts.dto.run_result import (
+    EngineeringFailureReason,
+    EngineeringRunResult,
+    uncomputable_derived_keys_reason,
+)
 from shared.contracts.worker_turn import AttemptTurnMetadata
 
 from ..clients.api import LanggraphAPIClient
@@ -42,6 +46,7 @@ def format_turn_preamble(
     *,
     new_task_on_reused_worker: bool,
     previous_attempt_made_no_changes: bool,
+    uncomputable_derived_keys: list[str] | None = None,
 ) -> str:
     """The section TASK.md opens with, or an empty string when there is nothing to say."""
     sections = []
@@ -60,6 +65,15 @@ The previous attempt at task `{task_id}` ({task_title}) finished without changin
 anything on the branch, so it was not accepted. Implement this task and commit the
 change it needs; a result that reports a commit already on the branch fails again.
 """)
+    if uncomputable_derived_keys:
+        sections.append(f"""## The previous attempt cannot be deployed
+
+The previous attempt at task `{task_id}` ({task_title}) was not accepted: its
+`env.contract.yaml` declares a required `derived` key the platform cannot compute,
+so every deploy of it would fail.
+
+{uncomputable_derived_keys_reason(uncomputable_derived_keys)}
+""")
     return "\n".join(sections) + ("\n" if sections else "")
 
 
@@ -71,6 +85,12 @@ def _previous_attempt_made_no_changes(run: RunDTO | None) -> bool:
     )
 
 
+def _previous_attempt_uncomputable_derived_keys(run: RunDTO | None) -> list[str]:
+    if run is None or not isinstance(run.result, EngineeringRunResult):
+        return []
+    return run.result.uncomputable_derived_keys or []
+
+
 async def plan_turn(state: dict, api_client: LanggraphAPIClient) -> TurnPlan:
     """Decide the session flag and the TASK.md preamble for this attempt's turn.
 
@@ -79,6 +99,9 @@ async def plan_turn(state: dict, api_client: LanggraphAPIClient) -> TurnPlan:
     - An attempt whose previous attempt at the same task made no changes gets the
       same, whether the worker is reused or not: it must not resume the turn that
       produced nothing, and it is told why it runs again.
+    - An attempt whose previous attempt at the same task declared a required
+      derived key the platform cannot compute is told each key; it keeps its
+      session, which holds the work to correct.
     - A retry of the same task after any other failure keeps its session.
     """
     task_id = state.get("planning_task_id")
@@ -106,24 +129,29 @@ async def plan_turn(state: dict, api_client: LanggraphAPIClient) -> TurnPlan:
         new_task_on_reused_worker = last_turn is None or last_turn.task_id != task_id
     previous_attempt = next((run for run in earlier if run.task_id == task_id), None)
     made_no_changes = _previous_attempt_made_no_changes(previous_attempt)
+    uncomputable = _previous_attempt_uncomputable_derived_keys(previous_attempt)
 
-    if not (new_task_on_reused_worker or made_no_changes):
+    if not (new_task_on_reused_worker or made_no_changes or uncomputable):
         return UNCHANGED_TURN
 
     task = await api_client.get_task(task_id)
+    clear_session = bool(worker_id) and (new_task_on_reused_worker or made_no_changes)
     logger.info(
-        "developer_turn_starts_fresh",
+        "developer_turn_planned",
         task_id=task_id,
         worker_id=worker_id,
+        clear_session=clear_session,
         new_task_on_reused_worker=new_task_on_reused_worker,
         previous_attempt_made_no_changes=made_no_changes,
+        uncomputable_derived_keys=uncomputable,
     )
     return TurnPlan(
-        clear_session=bool(worker_id),
+        clear_session=clear_session,
         preamble=format_turn_preamble(
             task_id,
             task.title,
             new_task_on_reused_worker=new_task_on_reused_worker,
             previous_attempt_made_no_changes=made_no_changes,
+            uncomputable_derived_keys=uncomputable,
         ),
     )

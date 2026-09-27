@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- A commit whose env contract requires a derived key the resolver cannot compute fails engineering
+  with each key named, before any deploy; capability detect terms no longer trip on nearby words.
 - Intake and Architect admission refuse unsupported capabilities unless the user accepted a
   manifest workaround; insisting requests go to admins, and scheduled work needs a product timer.
 - The deploy-target permission test creates its disposable user in bounded setup with an empty

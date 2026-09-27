@@ -11,7 +11,11 @@ from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
+from shared.contracts.dto.run_result import (
+    EngineeringFailureReason,
+    EngineeringRunResult,
+    uncomputable_derived_keys_reason,
+)
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.worker_result import WorkerStopReason
@@ -25,6 +29,11 @@ from shared.redis.client import decode_redis_fields
 from ..clients.api import api_client
 from ..clients.story_worker_registry import set_story_worker
 from ..clients.worker_spawner import delete_worker, publish_worker_deletion
+from ..subgraphs.devops.env_contract_loader import (
+    _fetch_env_contract,
+    _parse_repo_url,
+    uncomputable_required_derived_keys,
+)
 from ._events import publish_callback_event, publish_story_event
 from ._live_work import live_work_settled, live_work_unsettled
 
@@ -299,6 +308,7 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
     turn_result_consumed: bool = False,
     story_id: str | None = None,
     failure_reason: EngineeringFailureReason | None = None,
+    uncomputable_derived_keys: list[str] | None = None,
     project_id: str = "",
     telegram_chat_id: str = "",
 ) -> dict:
@@ -316,6 +326,7 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
             "result": EngineeringRunResult(
                 engineering_status=EngineeringStatus.FAILED,
                 failure_reason=failure_reason,
+                uncomputable_derived_keys=uncomputable_derived_keys,
                 execution=execution,
             ).model_dump(mode="json"),
             **_observability_patch(worker_observability),
@@ -462,6 +473,31 @@ async def handle_worker_gave_up(
     )
 
 
+async def _uncomputable_derived_keys_at(project_id: str, commit_sha: str) -> list[str]:
+    """Required derived keys the commit's environment contract declares and no deploy computes.
+
+    The contract is read at the commit, as the deploy will read it. A repository
+    or contract that cannot be read or validated finds nothing here: the deploy
+    reports it as it always has, and this check adds no failure of its own.
+    """
+    try:
+        repository = await api_client.get_primary_repository(project_id)
+        git_url = repository.git_url if repository else None
+        parsed = _parse_repo_url(git_url.removesuffix(".git")) if git_url else None
+        if parsed is None:
+            return []
+        contract = await _fetch_env_contract(*parsed, commit_sha)
+        return uncomputable_required_derived_keys(contract) if contract else []
+    except Exception as error:
+        logger.warning(
+            "derived_key_check_skipped",
+            project_id=project_id,
+            commit_sha=commit_sha,
+            error_type=type(error).__name__,
+        )
+        return []
+
+
 async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
     result = params.result
@@ -532,6 +568,43 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                 logger.info("worker_deleted_after_task", worker_id=worker_id)
             except Exception as e:
                 logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))
+
+    # A required derived key no deploy can compute fails every deploy of this
+    # commit in the secret resolver. It is the developer's to fix, so the attempt
+    # fails here, before a task is done or a deploy is triggered.
+    uncomputable = await _uncomputable_derived_keys_at(project_id, result["commit_sha"])
+    if uncomputable:
+        reason = uncomputable_derived_keys_reason(uncomputable)
+        logger.warning(
+            "engineering_commit_declares_uncomputable_derived_keys",
+            task_id=task_id,
+            project_id=project_id,
+            commit_sha=result["commit_sha"],
+            keys=uncomputable,
+        )
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "failed",
+            task_id,
+            reason,
+            telegram_chat_id=telegram_chat_id,
+            project_id=project_id,
+        )
+        return await fail_job(
+            task_id,
+            reason,
+            planning_task_id,
+            params.worker_observability,
+            redis=redis,
+            execution=params.execution,
+            turn_result_consumed=params.turn_result_consumed,
+            story_id=story_id,
+            failure_reason=EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY,
+            uncomputable_derived_keys=uncomputable,
+            project_id=project_id,
+            telegram_chat_id=telegram_chat_id,
+        )
 
     run_result = EngineeringRunResult(
         engineering_status=result["engineering_status"],

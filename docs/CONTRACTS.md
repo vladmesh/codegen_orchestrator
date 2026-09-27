@@ -1572,6 +1572,27 @@ The manifest-repair follow-up deploy Run that an accepted engineering result
 creates names its story, so every story-scoped reader of deploy Runs — the live
 follow-up wait included — can observe it at all.
 
+### A commit's required derived keys are computable before it deploys
+
+`services/langgraph/src/subgraphs/devops/secret_resolver.py::is_computable_derived_key`
+is the one answer to which `derived` keys a deploy computes: the static values,
+`CONTEXT_DERIVED_SECRETS`, the port keys and the `*_IMAGE` family. `_compute_secret`
+raises `UnknownDerivedKeyError` for any key it rejects, and the deploy skips such
+an entry only when it is optional.
+
+`handle_engineering_success` reads the commit's environment contract with the
+deploy's own loader (`env_contract_loader._fetch_env_contract`, at the commit
+SHA) before the Run is completed, a task is done or a deploy is triggered. A
+required production `derived` entry the predicate rejects fails the attempt
+through `fail_job`: a failed Run carrying `EngineeringRunResult.failure_reason =
+uncomputable_derived_key` and `uncomputable_derived_keys` (required with that
+reason and only with it), an error message naming each key, the task `failed`
+for the supervisor's ordinary retry, and no deploy Run. The next attempt at the
+task keeps its session and TASK.md opens by naming each key and the ways out:
+remove it, make it optional with a safe default, or use a `user_secret`. A
+repository or contract that cannot be read or validated adds no failure here;
+the deploy reports it as before.
+
 ### A reused story worker's turn names its task
 
 A story keeps one worker across its tasks, and a reused worker resumes its CLI
@@ -1588,6 +1609,8 @@ reads the story's engineering Runs — each records its `task_id` and the
 - sends `clear_session=True` with a TASK.md that says the previous attempt at
   this task made no changes, when that attempt failed `no_new_commit` (a fresh
   worker gets the same text; it has no session to clear);
+- keeps the session with a TASK.md that names each key, when that attempt failed
+  `uncomputable_derived_key`;
 - otherwise keeps today's turn: a retry of the same task after any other failure
   resumes its session, and a taskless attempt is sent unchanged.
 

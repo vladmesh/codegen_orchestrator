@@ -21,6 +21,12 @@ def _content(text, choices=()):
     [
         ("OAuth web redirect", "oauth_web_redirect"),
         ("/connect: secure Google OAuth flow", "oauth_web_redirect"),
+        ("/connect — secure Google OAuth flow", "oauth_web_redirect"),
+        (
+            "Хочу помощника Google Calendar с безопасной авторизацией через Google",
+            "oauth_web_redirect",
+        ),
+        ("Sign in with Google", "oauth_web_redirect"),
         ("Set a redirect URI", "oauth_web_redirect"),
         ("Авторизация через Google", "oauth_web_redirect"),
         ("An inbound webhook", "inbound_webhooks"),
@@ -31,6 +37,8 @@ def _content(text, choices=()):
         ("Собственный домен", "custom_domain"),
         ("Send email", "send_email"),
         ("Отправка писем", "send_email"),
+        ("The bot sends email notifications to clients", "send_email"),
+        ("Рассылка на почту клиентам", "send_email"),
         ("File storage", "file_storage"),
         ("Хранение файлов", "file_storage"),
     ],
@@ -62,6 +70,25 @@ def test_supported_requirements_pass(text):
     assert capability_conflicts(_content(text)) == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Save the client's name, phone and email",
+        "адрес электронной почты клиента",
+        "Google Sheets via service account, without OAuth",
+        "/connect_notion with a pasted API token",
+        "Бот хранит файлы по Telegram file id",
+    ],
+)
+def test_supported_phrasings_near_a_missing_capability_do_not_trip(text):
+    """A regression floor from the 1412 review, not a claim of completeness.
+
+    Each phrasing only mentions a word the missing capability also uses; the detect
+    terms name the capability itself, so none of these is refused.
+    """
+    assert capability_conflicts(_content(text)) == []
+
+
 def test_acceptance_covers_only_the_named_capability():
     choice = {
         "feature": "Connect",
@@ -71,10 +98,11 @@ def test_acceptance_covers_only_the_named_capability():
         "add_later": "Web sign-in when supported",
         "capability": "oauth_web_redirect",
     }
-    conflicts = capability_conflicts(_content("OAuth and inbound webhooks", [choice]))
+    text = "OAuth redirect and inbound webhooks"
+    conflicts = capability_conflicts(_content(text, [choice]))
     assert [conflict.capability.id for conflict in conflicts] == ["inbound_webhooks"]
     del choice["capability"]
-    assert len(capability_conflicts(_content("OAuth and inbound webhooks", [choice]))) == 2
+    assert len(capability_conflicts(_content(text, [choice]))) == 2
 
 
 def test_original_user_wording_also_reaches_detection():

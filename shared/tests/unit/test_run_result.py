@@ -17,6 +17,7 @@ from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     DeployRunResult,
     DeploySkipReason,
+    EngineeringFailureReason,
     EngineeringRunResult,
     QABlocker,
     QABlockerCategory,
@@ -532,3 +533,33 @@ class TestUnverifiedChecks:
     def test_an_unverified_check_is_exactly_name_reason_and_origin(self, check):
         with pytest.raises(ValidationError):
             QARunResult.model_validate({"qa_outcome": "passed", "unverified_checks": [check]})
+
+
+class TestUncomputableDerivedKeyFailure:
+    """The keys travel with, and only with, their failure reason."""
+
+    def test_the_keys_round_trip(self):
+        result = EngineeringRunResult(
+            engineering_status="failed",
+            failure_reason=EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY,
+            uncomputable_derived_keys=["PUBLIC_BASE_URL"],
+        )
+
+        assert EngineeringRunResult.model_validate(result.model_dump(mode="json")) == result
+
+    @pytest.mark.parametrize(
+        ("reason", "keys"),
+        [
+            (EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY, None),
+            (EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY, []),
+            (EngineeringFailureReason.NO_NEW_COMMIT, ["PUBLIC_BASE_URL"]),
+            (None, ["PUBLIC_BASE_URL"]),
+        ],
+    )
+    def test_a_mismatched_pair_is_refused(self, reason, keys):
+        with pytest.raises(ValidationError, match="uncomputable_derived_keys"):
+            EngineeringRunResult(
+                engineering_status="failed",
+                failure_reason=reason,
+                uncomputable_derived_keys=keys,
+            )

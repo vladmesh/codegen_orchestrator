@@ -26,6 +26,7 @@ from shared.contracts.dto.story_planning import (
     StoryPlanningState,
 )
 from shared.contracts.queues.architect import ArchitectMessage
+from src.capability_feasibility import MANIFEST_VERSION
 from tests.unit.factories import (
     make_admission,
     make_planning_attempt,
@@ -1021,7 +1022,7 @@ class TestUndisposedRequirementCounterfactual:
 
         boundary.brief.content.must_requirements[0].text = "/connect: secure Google OAuth flow"
         reason = (
-            "oauth_web_redirect, manifest v2: no stable HTTPS redirect. "
+            f"oauth_web_redirect, manifest v{MANIFEST_VERSION}: no stable HTTPS redirect. "
             "Use a Google service account the user shares their calendar with."
         )
         graph = _planning_graph(dispose=["req-2"] if returned else ["req-1", "req-2"])
@@ -1057,7 +1058,8 @@ class TestUndisposedRequirementCounterfactual:
         else:
             assert result["status"] == "incomplete"
             assert "oauth_web_redirect" in result["error"]
-            assert "manifest v2" in result["error"] and "service account" in result["error"]
+            assert f"manifest v{MANIFEST_VERSION}" in result["error"]
+            assert "service account" in result["error"]
             assert boundary.admit_calls == 0 and boundary.released == []
             assert not boundary.attempt_active
             assert not boundary.tasks["task-1"]["dispatch_admitted"]
@@ -1091,7 +1093,7 @@ class TestUndisposedRequirementCounterfactual:
     ):
         from src.consumers.architect import process_architect_job
 
-        boundary.brief.content.must_requirements[0].text = "OAuth"
+        boundary.brief.content.must_requirements[0].text = "OAuth redirect"
         boundary.coverage["req-1"] = ("old-attempt", None, "OAuth is unsupported")
         graph = _planning_graph(dispose=["req-2"])
         with patch("src.consumers.architect.create_architect_graph", return_value=graph):
