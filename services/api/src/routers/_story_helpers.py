@@ -30,6 +30,8 @@ from shared.models import Task
 from shared.models.run import Run
 from shared.models.story import Story
 
+from ..owner_notification_settlement import preserve_po_settlement
+
 _TERMINAL_RUN_STATUSES = frozenset(
     {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
 )
@@ -138,16 +140,19 @@ def _record_story_failure(story: Story, failure: StoryFailure, to_status: StoryS
     """
     story.quarantine_reason = failure.model_dump(mode="json")
     project_id = str(story.project_id)
-    story.owner_notification = OwnerNotification(
-        event=_FAILURE_EVENT_BY_STATUS[to_status],
-        text=story_failure_owner_text(failure),
-        story_id=story.id,
-        project_id=project_id,
-        terminal_status=to_status,
-        state=OwnerNotificationState.OWED,
-        owed_at=datetime.now(UTC),
-        admin_text=story_failure_admin_text(story.id, project_id, failure),
-        admin_state=OwnerNotificationState.OWED,
+    story.owner_notification = preserve_po_settlement(
+        story.owner_notification,
+        OwnerNotification(
+            event=_FAILURE_EVENT_BY_STATUS[to_status],
+            text=story_failure_owner_text(failure),
+            story_id=story.id,
+            project_id=project_id,
+            terminal_status=to_status,
+            state=OwnerNotificationState.OWED,
+            owed_at=datetime.now(UTC),
+            admin_text=story_failure_admin_text(story.id, project_id, failure),
+            admin_state=OwnerNotificationState.OWED,
+        ),
     ).model_dump(mode="json")
 
 

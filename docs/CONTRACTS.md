@@ -316,8 +316,33 @@ already carries a park with `infrastructure_parked` before any attempt id is min
 
 `OwnerNotification.delivered_at` is set by the seam in the same write that marks the owner
 audience `delivered`, and is `None` before that and on records delivered before the field
-existed. A wait measured from the owner having been told — the `waiting_user_secret` age bound —
-reads it, never `owed_at`.
+existed. The `waiting_user_secret` age bound continues to read delivery acceptance,
+never `owed_at` or the independent `told_at`.
+
+`POSystemEvent.owner_notice` identifies a durable obligation by source (`run` or `story`),
+source id and `owed_at`, JSON-encoded in one flat Redis field. Best-effort events carry none.
+`DELIVERED` still means acceptance by `po:input`; the separate `told_state` is absent until
+PO records `told`, `suppressed` or `closed`, with the corresponding time and decision details.
+The PO consumer checks that exact record at its single proactive publish point and writes
+`told` only after publication. A failed write is logged without undoing the publication; an
+unreadable publication decision leaves the input event pending.
+
+Internal/admin `GET /api/stories/{id}/owner-notifications` reads both record homes, and
+`POST /api/stories/{id}/owner-notifications/settlement` compares the source and `owed_at`
+under row locks. A stale identity is 409. Suppression requires the latest delivered,
+unsettled notice, a reason and `suppressed_by=po|user|admin`; a user-secret request is refused.
+The PO tool exposes only `po|user`, verifies project ownership and refuses a latest best-effort
+event, remembered by the consumer per chat/story. Suppression copies story, event, text,
+reason and decider to admins; a failed immediate copy is owed to the existing admin audience.
+
+`GET /api/stories/owner-notifications/deferred?project_id=...` lists suppressed notices without
+an age cutoff. The snapshot reads this for the user's owned projects. PO resolves the oldest
+deferred notice of a story as `told` after telling it in a user turn, or as `closed` on an
+explicit user/admin drop request with a reason. Delivery writes preserve concurrent PO
+settlement. Replacement retains suppressed obligations in the existing record's `deferred`
+list, addressable by their original `owed_at` with explicit `resolve_deferred=true`, and carries
+any pending admin copy forward. A publication write cannot settle a replaced record.
+No new table or delivery-state value is introduced; old records remain unsettled, not deferred.
 
 `OwnerNotification` carries an optional administrator audience (`admin_text`,
 `admin_state`, `admin_attempts`, `admin_detail`) settled independently of the

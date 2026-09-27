@@ -64,6 +64,12 @@ from ..agents.po.situation import (
     build_situation,
     record_user_message,
 )
+from ..agents.po.tools_notices import (
+    OwnerNoticeReadUnknown,
+    notice_may_publish,
+    record_notice_told,
+    remember_owner_event,
+)
 from ..agents.po.tools_shared import init_po_clients
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
@@ -293,9 +299,9 @@ async def _process_message(
     ACKs it. So what arrives here is a model, and the ACK below is the one for
     work that was actually attempted.
 
-    The one entry left unacked is an event whose audience could not be decided
-    (``StoryAudienceUnknown``): nothing was attempted, so it stays pending and
-    the PEL sweep hands it back after ``PEL_TIMEOUT_MS``.
+    An event whose audience or notice settlement could not be read stays
+    pending: no publication decision was possible. The PEL sweep hands it
+    back after ``PEL_TIMEOUT_MS``.
     """
     data = message.model_dump(mode="json")
     bind_message_context(data)
@@ -317,6 +323,14 @@ async def _process_message(
                     msg_id=msg_id,
                     event_type=data.get("event", ""),
                     story_id=unknown.story_id,
+                    error=str(unknown.__cause__),
+                )
+            except OwnerNoticeReadUnknown as unknown:
+                handled = False
+                logger.warning(
+                    "po_owner_notice_pending",
+                    msg_id=msg_id,
+                    story_id=data.get("story_id", ""),
                     error=str(unknown.__cause__),
                 )
             except Exception:
@@ -547,6 +561,8 @@ async def _handle_message(
         )
         return
 
+    await remember_owner_event(client.redis, telegram_chat_id, data)
+
     user_name = data.get("user_name", "")
 
     formatted = f"[{timestamp} UTC] {text}" if timestamp else text
@@ -630,9 +646,10 @@ async def _handle_message(
         # untold key change; the turn itself has already run.
         gate = _get_story_gate()
         decision = await gate.decide(telegram_chat_id, data)
-        if decision.send:
+        if decision.send and await notice_may_publish(api_client, data):
             proactive = proactive_from_input(data, response_text, telegram_chat_id)
             await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+            await record_notice_told(api_client, data)
             # Only after the publish: a failed one must leave the change untold.
             await gate.record_told(telegram_chat_id, decision)
 

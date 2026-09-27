@@ -367,7 +367,8 @@ class TestTotality:
         for label in unknown:
             assert _line(snapshot, label) == "unknown", label
         assert _line(snapshot, "User's last message in this chat").endswith("UTC (2 days ago)")
-        assert snapshot.endswith(f"{DEFERRED_NOTICES_HEADING}\nnone")
+        deferred = "unknown" if route == "projects" else "none"
+        assert snapshot.endswith(f"{DEFERRED_NOTICES_HEADING}\n{deferred}")
 
     async def test_a_brief_404_is_an_answer_not_a_failure(self, graph, client, situation_api):
         """The audience check passed on its own read; the snapshot's read says no brief."""

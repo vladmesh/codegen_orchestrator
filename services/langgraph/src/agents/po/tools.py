@@ -22,7 +22,7 @@ from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.engineering_budget_display import format_microusd
 from shared.notifications import AdminDeliveryStatus, deliver_to_admins
 
-from . import tools_briefs, tools_projects, tools_shared, tools_stories
+from . import tools_briefs, tools_notices, tools_projects, tools_shared, tools_stories
 
 logger = structlog.get_logger(__name__)
 
@@ -235,6 +235,8 @@ def get_all_tools() -> list:
         tools_stories.reopen_story,
         tools_stories.get_story,
         tools_stories.get_product_situation,
+        tools_notices.suppress_owner_notice,
+        tools_notices.resolve_deferred_notice,
         tools_stories.record_unverified_decision,
         tools_stories.get_story_diagnostics,
         tools_stories.get_run_status,

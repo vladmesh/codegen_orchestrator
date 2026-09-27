@@ -93,6 +93,7 @@ from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_ATTEMPT_INTERVAL,
     OWNER_NOTIFICATION_ATTEMPT_SUPERSEDED,
     OWNER_NOTIFICATION_KEY,
+    OwnerNoticeReference,
     OwnerNotification,
     OwnerNotificationAttemptClaim,
     OwnerNotificationState,
@@ -876,6 +877,11 @@ async def _deliver_to_owner(
             owner_user_id=recipient.owner_user_id,
             project_id=record.project_id,
             qa_verification=record.qa_verification,
+            owner_notice=OwnerNoticeReference(
+                source="story" if story_record else "run",
+                source_id=source_id,
+                owed_at=record.owed_at,
+            ),
         )
         await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
     except Exception as exc:

@@ -47,6 +47,7 @@ from shared.models.story import Story
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
+from ..owner_notification_settlement import preserve_po_settlement
 from ._story_helpers import _get_story_for_update
 from ._task_helpers import create_status_event, get_task_for_update, validate_transition
 
@@ -115,7 +116,7 @@ def _owe(
     """Write a fresh owed record on the Run, replacing whatever it carried.
 
     A replaced record — a wait's announcement the resume supersedes — keeps
-    nothing: a visit still delivering it is refused its write by the newer
+    only explicit deferrals: a visit still delivering it is refused its write by the newer
     ``owed_at`` (`OwnerNotification.supersedes`), and its own delivery check
     finds the task no longer waiting.
     """
@@ -130,6 +131,7 @@ def _owe(
         state=OwnerNotificationState.OWED,
         owed_at=datetime.now(UTC),
     )
+    record = preserve_po_settlement((run.run_metadata or {}).get(OWNER_NOTIFICATION_KEY), record)
     run.run_metadata = {
         **(run.run_metadata or {}),
         OWNER_NOTIFICATION_KEY: record.model_dump(mode="json"),

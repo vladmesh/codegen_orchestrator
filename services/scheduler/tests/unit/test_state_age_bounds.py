@@ -1370,3 +1370,22 @@ def test_the_planless_bound_is_not_announced_as_the_in_progress_stage_duration()
     from src.tasks.supervisor.state_age import configured_bound_minutes
 
     assert configured_bound_minutes(StoryStatus.IN_PROGRESS) is None
+
+
+@pytest.mark.asyncio
+async def test_told_does_not_move_the_delivered_secret_wait_anchor():
+    delivered_at = _ago(USER_SECRET_BOUND_MINUTES + 60)
+    world = _SecretWait(
+        consumer_wrote_at=_ago(2),
+        record=_ask_record(
+            OwnerNotificationState.DELIVERED,
+            owed_at=_ago(USER_SECRET_BOUND_MINUTES + 61),
+            delivered_at=delivered_at,
+            told_state="told",
+            told_at=_ago(1),
+            attempts=1,
+        ),
+    )
+    counts, ended, _deliver, _notify = await _run_watchdog(world.api, world.redis)
+    assert counts["failed"] == 1
+    assert _ended_command(ended).anchor.ask_delivered_at == delivered_at

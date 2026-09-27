@@ -48,6 +48,7 @@ from ..engineering_budget_admission import (
     release_pre_handoff_reservation,
 )
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
+from ..owner_notification_settlement import preserve_po_settlement
 from ..schemas import RunCreate, RunRead, RunUpdate
 
 logger = structlog.get_logger()
@@ -248,6 +249,9 @@ def _refuse_superseded_owner_notification(existing: dict, update: dict) -> None:
             detail=f"{OWNER_NOTIFICATION_KEY} is not an owner notification: {exc}",
         ) from exc
     refuse_superseded_write(existing.get(OWNER_NOTIFICATION_KEY), record)
+    update[OWNER_NOTIFICATION_KEY] = preserve_po_settlement(
+        existing.get(OWNER_NOTIFICATION_KEY), record
+    ).model_dump(mode="json")
 
 
 @router.post("/", response_model=RunRead, status_code=status.HTTP_201_CREATED)

@@ -690,8 +690,21 @@ class TestSuperviseDeployingStories:
                 "story_id": "story-1",
                 "project_id": "00000000-0000-0000-0000-000000000001",
                 "timestamp": ANY,
+                "owner_notice": ANY,
             }
         ]
+
+        from shared.contracts.queues.po import POSystemEvent
+
+        reference = POSystemEvent.model_validate(owner_events[0]).owner_notice
+        assert reference.source == "run"
+        assert reference.source_id == "deploy-1"
+        recorded = [
+            call.args[1]["run_metadata"]["owner_notification"]
+            for call in api_client.update_run.call_args_list
+            if "owner_notification" in call.args[1].get("run_metadata", {})
+        ]
+        assert reference.owed_at.isoformat().replace("+00:00", "Z") == recorded[-1]["owed_at"]
 
     @pytest.mark.asyncio
     async def test_code_fix_publish_failure_fails_visibly_without_an_in_progress_orphan(
