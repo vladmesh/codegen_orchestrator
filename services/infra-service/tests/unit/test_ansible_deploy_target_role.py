@@ -6,6 +6,7 @@ import pwd
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 
 import pytest
@@ -14,6 +15,8 @@ import yaml
 ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
 ROLE_TASKS = ANSIBLE_DIR / "roles" / "deploy_target" / "tasks" / "main.yml"
 SOFTWARE_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "provision_software.yml"
+# Two applies leave 30 seconds for setup, assertions and cleanup under pytest's 90s limit.
+ANSIBLE_TIMEOUT_SECONDS = 30
 
 
 def _task_named(tasks: list[dict], name: str) -> dict:
@@ -70,6 +73,7 @@ class TestDeployTargetPermissions:
 - hosts: localhost
   connection: local
   become: true
+  gather_facts: false
   vars:
     deploy_user: DEPLOY_USER
     services_root: SERVICES_ROOT
@@ -118,13 +122,31 @@ class TestDeployTargetPermissions:
 
     @staticmethod
     def _apply_role(playbook: Path) -> None:
-        result = subprocess.run(
-            ["ansible-playbook", "-i", "localhost,", str(playbook)],
-            cwd=ANSIBLE_DIR,
-            capture_output=True,
-            env={**os.environ, "ANSIBLE_STDOUT_CALLBACK": "default"},
-            text=True,
-        )
+        started = time.monotonic()
+        try:
+            result = subprocess.run(
+                ["ansible-playbook", "-i", "localhost,", str(playbook)],
+                cwd=ANSIBLE_DIR,
+                capture_output=True,
+                env={**os.environ, "ANSIBLE_STDOUT_CALLBACK": "default"},
+                text=True,
+                timeout=ANSIBLE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            elapsed = time.monotonic() - started
+            # TimeoutExpired can contain bytes even when text=True, or None before output.
+            stdout = (
+                exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout
+            )
+            stderr = (
+                exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+            )
+            pytest.fail(
+                f"ansible-playbook timed out after {elapsed:.2f}s "
+                f"(limit {ANSIBLE_TIMEOUT_SECONDS}s)\n"
+                f"stdout:\n{stdout or ''}\nstderr:\n{stderr or ''}",
+                pytrace=False,
+            )
         assert result.returncode == 0, result.stdout + result.stderr
 
     @staticmethod
@@ -137,3 +159,26 @@ class TestDeployTargetPermissions:
     def _run_privileged(command: list[str], check: bool = True):
         prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
         return subprocess.run([*prefix, *command], check=check, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [(b"partial task output\n", b"sudo diagnostic\n"), ("task output", "diagnostic"), (None, None)],
+)
+def test_apply_role_timeout_reports_output_and_elapsed_time(tmp_path, mocker, stdout, stderr):
+    run = mocker.patch.object(
+        subprocess,
+        "run",
+        side_effect=subprocess.TimeoutExpired("ansible-playbook", 30, output=stdout, stderr=stderr),
+    )
+    mocker.patch("time.monotonic", side_effect=[100.0, 130.25])
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        TestDeployTargetPermissions._apply_role(tmp_path / "playbook.yml")
+
+    message = str(failure.value)
+    assert "ansible-playbook timed out after 30.25s (limit 30s)" in message
+    for label, output in (("stdout", stdout), ("stderr", stderr)):
+        expected = output.decode() if isinstance(output, bytes) else output or ""
+        assert f"{label}:\n{expected}" in message
+    assert run.call_args.kwargs["timeout"] == 30

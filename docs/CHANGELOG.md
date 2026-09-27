@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- The deploy-target permission test skips unused fact gathering and bounds each Ansible apply at
+  30 seconds, reporting captured output and elapsed time before pytest's timeout.
 - `docs/platform_capabilities.yaml` (v1, draft) states what a product can and cannot have; PO and
   Architect read its compact block, and a test fails when a derived key or port service is unlisted.
 - Briefs record chosen variants, quality trade-offs and later alternatives; both views show them,
