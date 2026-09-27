@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- The deploy-target permission test creates its disposable user in bounded setup with an empty
+  skeleton and no login-log initialization, isolating account setup stalls from the role proof.
 - The deploy-target test pins its Python and pipelines local modules to reduce runner-dependent
   startup work; verbose failure output identifies the command stalled inside a role task.
 - The deploy-target permission test skips unused fact gathering and bounds each Ansible apply at
