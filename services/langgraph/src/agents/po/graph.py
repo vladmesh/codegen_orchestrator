@@ -21,7 +21,7 @@ from langmem.short_term import SummarizationNode
 from pydantic import ValidationError
 import structlog
 
-from ...prompts.po import SYSTEM_PROMPT
+from ...prompts.po import MODEL_PROMPT
 from .situation import SITUATION_CONFIG_KEY
 from .tools import get_all_tools
 from .tools_briefs import show_full_brief
@@ -36,13 +36,14 @@ class POState(AgentState):
 
 
 def po_prompt(state: POState, config: RunnableConfig) -> list[AnyMessage]:
-    """The system prompt, plus this turn's situation snapshot when the run carries one.
+    """The system prompt and the platform capability block, plus this turn's situation
+    snapshot when the run carries one.
 
     The snapshot arrives in the run config, not in the state: it is model input
     for this invocation only and never becomes a checkpointed message.
     """
     situation = config["configurable"].get(SITUATION_CONFIG_KEY)
-    system = f"{SYSTEM_PROMPT}\n\n{situation}" if situation else SYSTEM_PROMPT
+    system = f"{MODEL_PROMPT}\n\n{situation}" if situation else MODEL_PROMPT
     return [SystemMessage(content=system), *state["messages"]]
 
 

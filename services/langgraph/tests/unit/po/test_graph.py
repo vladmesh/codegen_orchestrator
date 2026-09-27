@@ -30,7 +30,7 @@ from src.agents.po.situation import (
 )
 from src.consumers.po import _handle_message
 from src.llm import LLMAgent, build_agent_llm
-from src.prompts.po import SYSTEM_PROMPT
+from src.prompts.po import MODEL_PROMPT
 
 CHAT = "1015926438"
 
@@ -181,10 +181,10 @@ class _RecordingModel(BaseChatModel):
 
 
 class TestPOPrompt:
-    def test_a_run_without_a_snapshot_gets_the_system_prompt_alone(self):
+    def test_a_run_without_a_snapshot_gets_the_system_prompt_and_capabilities_alone(self):
         human = HumanMessage(content="hi")
         messages = po_prompt({"messages": [human]}, {"configurable": {}})
-        assert messages == [SystemMessage(content=SYSTEM_PROMPT), human]
+        assert messages == [SystemMessage(content=MODEL_PROMPT), human]
 
     def test_a_run_with_a_snapshot_gets_it_after_the_system_prompt(self):
         human = HumanMessage(content="[system: system_event:story_blocked] stopped")
@@ -192,7 +192,7 @@ class TestPOPrompt:
         messages = po_prompt(
             {"messages": [human]}, {"configurable": {SITUATION_CONFIG_KEY: snapshot}}
         )
-        assert messages == [SystemMessage(content=f"{SYSTEM_PROMPT}\n\n{snapshot}"), human]
+        assert messages == [SystemMessage(content=f"{MODEL_PROMPT}\n\n{snapshot}"), human]
 
 
 class TestTheSnapshotIsNotStored:
@@ -246,5 +246,5 @@ class TestTheSnapshotIsNotStored:
             ).model_dump(mode="json"),
         )
         user_turn_input = model.inputs[-1]
-        assert user_turn_input[0] == SystemMessage(content=SYSTEM_PROMPT)
+        assert user_turn_input[0] == SystemMessage(content=MODEL_PROMPT)
         assert not any(SNAPSHOT_HEADING in str(message.content) for message in user_turn_input)

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- `docs/platform_capabilities.yaml` (v1, draft) states what a product can and cannot have; PO and
+  Architect read its compact block, and a test fails when a derived key or port service is unlisted.
 - Briefs record chosen variants, quality trade-offs and later alternatives; both views show them,
   and planning explicitly builds only the chosen variant.
 - A state-age pass that ends more waits than `supervisor.state_age_mass_park_threshold` marks each

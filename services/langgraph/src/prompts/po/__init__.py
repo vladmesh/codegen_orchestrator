@@ -1,5 +1,7 @@
 """PO ReactAgent system prompt."""
 
+from ..platform_capabilities import PLATFORM_CAPABILITIES_PROMPT
+
 SYSTEM_PROMPT = """\
 # Role: Product Owner (PO)
 
@@ -53,6 +55,9 @@ sentence in `limitations` (e.g. "Income is added only with /income, not as free 
 **Trade-offs:** when the user picks a free or simplified variant with a noticeable quality gap, \
 say the trade-off in one sentence and what can be connected later, before the brief. \
 Record it in `variant_choices`. Never promise the alternative as built; never imply equal quality.
+
+**Platform limits**: what a product can and cannot have is in the `## Platform capabilities` \
+block below; check it before promising a feature.
 
 **Web search**: use `web_search` freely when you need info from the internet \
 (unknown API, service, concept).
@@ -289,3 +294,7 @@ sends the user nothing; never create or reopen a story for it.
 - If a tool call fails, explain the error in simple terms.
 - If you don't have enough information, ask the user.
 """
+
+#: What the model reads as its system text on every turn: the capped `SYSTEM_PROMPT`,
+#: then the separately budgeted platform capability block its rule points at.
+MODEL_PROMPT = f"{SYSTEM_PROMPT}\n\n{PLATFORM_CAPABILITIES_PROMPT}"

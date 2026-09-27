@@ -1,0 +1,269 @@
+# Platform capability manifest: what a product built by this orchestrator can and cannot have.
+#
+# This file is the one source of truth. `docs/PLATFORM_CAPABILITIES.md` (for people) and
+# `services/langgraph/src/prompts/platform_capabilities.txt` (the compact block the PO and the
+# Architect read) are rendered from it by `python -m scripts.platform_capabilities`; a unit test
+# fails while either is stale, and another fails while a derived key, a secret kind or a port
+# service the code supports is missing here.
+#
+# A pull request that changes a capability (the deployer, the secret resolver, allocations, the
+# kit pin, the modules a product may request) changes this file in the same pull request, bumps
+# `version` and re-renders. See AGENTS.md, "Platform capability manifest".
+version: 1
+status: draft
+review: owner read-through pending
+
+derived_from:
+  kit:
+    source: gh:vladmesh/codegen-product-kit
+    ref: "0.6.2"
+    commit: 9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914
+    note: >-
+      The pinned `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an
+      admitted Copier source, but no new product is scaffolded from it.
+  code:
+    - services/langgraph/src/subgraphs/devops/deployer.py
+    - services/langgraph/src/subgraphs/devops/secret_resolver.py
+    - services/langgraph/src/allocations.py
+    - services/langgraph/src/consumers/deploy.py
+    - services/langgraph/src/agents/po/tools_projects.py
+    - services/infra-service/ansible/roles/security/tasks/main.yml
+    - shared/contracts/service_ports.py
+    - shared/contracts/env_contract.py
+    - shared/contracts/dto/project.py
+
+can:
+  - id: telegram_bot
+    name: Telegram bot (long polling)
+    plain: A Telegram bot people chat with; it fetches new messages itself, so it needs no web address.
+    how: >-
+      Kit module `tg_bot` (python-telegram-bot 21.4, `run_polling`). By default the bot answers
+      only Telegram users the owner has granted access (`grant_project_user`); others are ignored.
+  - id: backend_http
+    name: Backend at http://<server IP>:<port>
+    plain: A web API other programs can call over plain http at the server's address and a port.
+    how: >-
+      Kit module `backend` (FastAPI), always included: the PO adds it to every project. The
+      deployer reports `http://{server_ip}:{port}` of the backend's allocated port, the only
+      port a product publishes; there is no domain name and no https.
+  - id: postgres
+    name: PostgreSQL database
+    plain: A database that keeps the product's data across restarts and updates.
+    how: >-
+      `postgres:16` service `db` with the named volume `db_data`, deployed with the backend.
+      Reachable only from the product's own containers (`db:5432`), not from the internet.
+  - id: redis
+    name: Redis
+    plain: A fast in-memory store for queues, caches and messages between the bot and the backend.
+    how: >-
+      `redis:7-alpine` at `redis:6379`, deployed with the backend or the bot. Product events are
+      Redis Streams. No volume is mounted, so do not treat Redis as permanent storage.
+  - id: scheduled_work
+    name: Work on a timer
+    plain: Doing something regularly or later, such as a daily message, from inside the bot or backend.
+    how: >-
+      A timer loop inside the product's own long-running bot or backend process. The kit's jobs
+      core (`POST /jobs/fire`) only records and dispatches a declared named job; it schedules
+      nothing, and the platform fires a product's jobs only while QA checks it. The bot's
+      library is installed without its job-queue extra.
+  - id: user_settings
+    name: Settings changed without new code
+    plain: Values the owner can change later, such as a list of languages, without rebuilding the product.
+    how: >-
+      Kit core settings v1 (`POST /settings/get`, `POST /settings/set`) for keys declared in the
+      backend's `manifest.yaml`; the platform holds the write capability and writes the values.
+  - id: outbound_apis
+    name: Calls to other online services
+    plain: Using another online service, such as an AI model or a weather API, with a key the user provides.
+    how: >-
+      Product servers allow all outgoing traffic (ufw default allow outgoing). The key is a
+      `user_secret` the PO asks the user for and stores with `set_project_secret`.
+
+cannot:
+  - id: https_domain
+    name: Public HTTPS address / TLS
+    plain: The product has no https:// web address and no certificate.
+    why: The deployer hands out only `http://{server_ip}:{port}`; a product's compose has no TLS proxy.
+    workaround: >-
+      Use the Telegram bot as the product's interface; it needs no address. Programs that accept
+      plain http can call the backend at http://<server IP>:<port>.
+  - id: custom_domain
+    name: Custom domain
+    plain: The product cannot be put on its own domain name, such as mybot.example.com.
+    why: Nothing allocates, points or verifies a domain for a product; its address is the server IP.
+  - id: inbound_webhooks
+    name: Inbound webhooks from external services
+    plain: Other services (payments, GitHub, forms, Telegram webhook mode) cannot push events to the product.
+    why: >-
+      Providers require an https URL, and the product only has plain http on an IP and port that
+      can change when it moves server; the resolver derives no `PUBLIC_BASE_URL`.
+    workaround: >-
+      Poll the provider's API on a timer; the Telegram bot already works this way (long
+      polling).
+  - id: public_base_url
+    name: The product knowing its own public URL
+    plain: The product cannot build links to itself, such as a link a user opens in a browser.
+    why: >-
+      The resolver computes no `PUBLIC_BASE_URL` or similar derived key; a required unknown
+      derived key fails the deploy with `Unknown computed secret` (story-92b433c8).
+    workaround: Send the information inside the Telegram chat rather than as a link to the product.
+  - id: oauth_redirect
+    name: OAuth web sign-in redirects
+    plain: The product cannot use "Sign in with Google" style web redirects to get access to a user's account.
+    why: An OAuth web redirect needs an https redirect URL on a stable domain, which a product does not have.
+    workaround: >-
+      A Google service account the user shares their calendar or sheet with; a device-code or
+      desktop flow where the provider supports one; or a personal API token the user pastes,
+      stored as a user secret.
+  - id: telegram_mini_app
+    name: Telegram Mini App or web pages inside Telegram
+    plain: The bot cannot open its own web app inside Telegram.
+    why: A Telegram Mini App needs an https URL, which a product does not have.
+    workaround: Build the interaction as chat messages with buttons.
+  - id: send_email
+    name: Sending email by itself
+    plain: The product has no mail server of its own to send email.
+    why: The kit has no mail module and the platform provisions no mail server or SMTP relay.
+    workaround: >-
+      Send through a third-party email API with a key the user provides (an outbound call), or
+      send the message through the Telegram bot.
+  - id: file_storage
+    name: File storage beyond the database
+    plain: Uploaded files are not kept on disk; only data in the database survives an update.
+    why: >-
+      The only persistent volume is Postgres's `db_data`; the backend and bot containers have no
+      volume and are replaced on every deploy, and the kit has no object-storage module.
+    workaround: >-
+      Keep small files in the database; keep Telegram files by their Telegram file id; or use an
+      external storage service with credentials the user provides.
+  - id: platform_cron
+    name: A schedule run by the platform
+    plain: The platform does not start the product's jobs on a clock.
+    why: The kit's jobs core schedules nothing, and the platform fires a product's jobs only during QA.
+    workaround: Run a timer loop inside the product's bot or backend process (see "Work on a timer").
+  - id: web_frontend
+    name: A separate website or web app module
+    plain: The product cannot have its own website front end as a separate part.
+    why: >-
+      A product may request only the `backend` and `tg_bot` modules; `frontend` and
+      `notifications` remain only for old records, and only the backend's port is published.
+    workaround: >-
+      Use the Telegram bot as the interface, or simple pages served by the backend at
+      http://<server IP>:<port>.
+  - id: external_database_access
+    name: Reaching the database from outside
+    plain: Nobody outside the server can connect to the product's database or Redis directly.
+    why: >-
+      Postgres and Redis get host ports allocated, but production compose publishes only the
+      backend's port and the firewall opens only that one.
+    workaround: Expose what is needed through backend endpoints.
+
+kit:
+  modules:
+    - name: backend
+      plain: FastAPI web API with PostgreSQL and Redis, always part of a product.
+    - name: tg_bot
+      plain: Telegram bot on long polling that talks to the backend.
+  core:
+    - name: users
+      plain: Per-user access for the bot; the platform grants and revokes Telegram users.
+    - name: settings v1
+      plain: Declared product or per-user settings the platform writes and the product reads.
+    - name: jobs v1
+      plain: Declared named jobs a caller fires; records and dispatches them, schedules nothing.
+    - name: events v1
+      plain: Durable product events on Redis Streams, each handled once per consuming service.
+  packages:
+    - name: reminders
+      version: 0.3.0
+      plain: >-
+        One-time text reminders (create, list, cancel); due reminders are emitted only when
+        something fires its `reminders.tick` job.
+
+deploy_targets:
+  - service: backend
+    requestable: true
+    http_health: true
+    exposure: public, http://<server IP>:<port>; the one published port and health check
+  - service: tg_bot
+    requestable: true
+    http_health: false
+    exposure: none; allocated a port but publishes nothing, reaches Telegram outbound
+  - service: postgres
+    requestable: false
+    http_health: false
+    exposure: internal only, `db:5432`; allocated a host port that production does not publish
+  - service: redis
+    requestable: false
+    http_health: false
+    exposure: internal only, `redis:6379`; allocated a host port that production does not publish
+  - service: notifications
+    requestable: false
+    http_health: false
+    exposure: not deployable for new products; kept only so old project records still read
+  - service: frontend
+    requestable: false
+    http_health: false
+    exposure: not deployable for new products; kept only so old project records still read
+
+secret_kinds:
+  - source: user_secret
+    plain: A key or token the user supplies, such as a bot token or an API key; the PO asks for it.
+  - source: generated_secret
+    plain: A secret the platform generates once and keeps, such as the database password.
+  - source: allocation
+    plain: A port the platform reserves for the product on its server.
+  - source: derived
+    plain: A value the platform computes at deploy time; only the keys listed below exist.
+  - source: literal
+    plain: A fixed, non-secret value written in the product's own environment contract.
+
+derived_keys:
+  - key: APP_ENV
+    value: production
+  - key: ENVIRONMENT
+    value: production
+  - key: DEBUG
+    value: "false"
+  - key: POSTGRES_HOST
+    value: db
+  - key: POSTGRES_PORT
+    value: "5432"
+  - key: POSTGRES_REQUIRE_SSL
+    value: "false"
+  - key: BACKEND_API_URL
+    value: http://backend:8000
+  - key: API_URL
+    value: http://backend:8000
+  - key: API_BASE_URL
+    value: http://backend:8000
+  - key: BACKEND_URL
+    value: http://backend:8000
+  - key: APP_NAME
+    value: the project's runtime slug
+  - key: PROJECT_NAME
+    value: the project's runtime slug
+  - key: COMPOSE_PROJECT_NAME
+    value: the project's runtime slug
+  - key: POSTGRES_DB
+    value: db_<project id>
+  - key: ENABLED_MODULES
+    value: the project's modules, comma-separated
+  - key: BACKEND_PORT
+    value: the backend's allocated port
+  - key: FRONTEND_PORT
+    value: the frontend's allocated port
+  - key: TG_BOT_PORT
+    value: the bot's allocated port
+  - key: POSTGRES_HOST_PORT
+    value: the postgres allocated host port
+  - key: REDIS_HOST_PORT
+    value: the redis allocated host port
+  - key: "*_IMAGE"
+    value: the registry image of that service at the deployed commit
+
+# Derived keys the pinned kit declares for production that the resolver does not compute. Each
+# is optional in the kit, so a deploy skips it instead of failing.
+kit_derived_keys_not_resolved:
+  - key: PORT
+    note: optional backend key; the backend listens on its own default, 8000

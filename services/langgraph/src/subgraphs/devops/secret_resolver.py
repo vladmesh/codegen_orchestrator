@@ -1,5 +1,6 @@
 """SecretResolverNode — resolves secrets by generating, computing, and checking user-provided."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 import json
@@ -49,6 +50,41 @@ class TypedSecretResolutionError(SecretResolutionError):
     def __init__(self, outcome: DeployOutcome, message: str):
         super().__init__(message)
         self.outcome = outcome
+
+
+def _runtime_slug(project_spec: dict, state: DevOpsState) -> str:
+    """The project's runtime slug, which names the app, the project and the stack."""
+    return project_spec_runtime_slug(project_spec)
+
+
+def _postgres_db(project_spec: dict, state: DevOpsState) -> str:
+    """The product database name, unique per project."""
+    safe_project_id = state.get("project_id", "").replace("-", "_").lower()
+    return f"db_{safe_project_id}"
+
+
+def _enabled_modules(project_spec: dict, state: DevOpsState) -> str:
+    """The project's modules as one comma-separated value."""
+    modules = project_spec.get("config", {}).get("modules", [])
+    if not isinstance(modules, list) or not all(isinstance(module, str) for module in modules):
+        raise SecretResolutionError("project modules are invalid")
+    return ",".join(modules)
+
+
+#: Derived keys computed from the project and deploy context, by name. With
+#: `_STATIC_SECRETS`, `_PORT_SERVICE_MAP` and the `IMAGE_KEY_SUFFIX` family this is
+#: every derived key a deploy can resolve; `docs/platform_capabilities.yaml` lists
+#: each one, and a test holds the two together.
+CONTEXT_DERIVED_SECRETS: dict[str, Callable[[dict, DevOpsState], str]] = {
+    "APP_NAME": _runtime_slug,
+    "PROJECT_NAME": _runtime_slug,
+    "POSTGRES_DB": _postgres_db,
+    "COMPOSE_PROJECT_NAME": _runtime_slug,
+    "ENABLED_MODULES": _enabled_modules,
+}
+
+#: A derived key ending in this names the published image of one product service.
+IMAGE_KEY_SUFFIX = "_IMAGE"
 
 
 @dataclass
@@ -380,29 +416,13 @@ class SecretResolverNode(FunctionalNode):
         if key_upper in self._STATIC_SECRETS:
             return self._STATIC_SECRETS[key_upper]
 
-        if key_upper == "APP_NAME":
-            return project_spec_runtime_slug(project_spec)
-
-        if key_upper == "PROJECT_NAME":
-            return project_spec_runtime_slug(project_spec)
-
-        safe_project_id = state.get("project_id", "").replace("-", "_").lower()
-        if key_upper == "POSTGRES_DB":
-            return f"db_{safe_project_id}"
-        if key_upper == "COMPOSE_PROJECT_NAME":
-            return project_spec_runtime_slug(project_spec)
-        if key_upper == "ENABLED_MODULES":
-            modules = project_spec.get("config", {}).get("modules", [])
-            if not isinstance(modules, list) or not all(
-                isinstance(module, str) for module in modules
-            ):
-                raise SecretResolutionError("project modules are invalid")
-            return ",".join(modules)
+        if key_upper in CONTEXT_DERIVED_SECRETS:
+            return CONTEXT_DERIVED_SECRETS[key_upper](project_spec, state)
 
         if key_upper in self._PORT_SERVICE_MAP:
             return self._resolve_port(key_upper, state)
 
-        if key_upper.endswith("_IMAGE"):
+        if key_upper.endswith(IMAGE_KEY_SUFFIX):
             return self._resolve_docker_image(key_upper, state)
 
         raise UnknownDerivedKeyError(f"Unknown computed secret: {key}")
@@ -458,7 +478,7 @@ class SecretResolverNode(FunctionalNode):
             )
 
         owner, repo = path_parts
-        service = key_upper.removesuffix("_IMAGE").lower().replace("_", "-")
+        service = key_upper.removesuffix(IMAGE_KEY_SUFFIX).lower().replace("_", "-")
         return f"{registry_host}/{owner}/{repo}-{service}:{tag}"
 
     async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
