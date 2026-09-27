@@ -14,6 +14,7 @@ from shared.queues import PO_REMINDERS_KEY
 from src.agents.po.tools import (
     get_all_tools,
     get_budget_balance,
+    note_to_admins,
     notify_user,
     set_reminder,
     web_search,
@@ -113,17 +114,13 @@ def _brief(confirmed: bool = True, story_id: str | None = None, project_id: str 
     )
 
 
-def _make_config(
-    telegram_chat_id: str = "test-user", retry_story_id: str = "", *, user_turn: bool = True
-) -> dict:
+def _make_config(telegram_chat_id: str = "test-user", *, user_turn: bool = True) -> dict:
     """Create a RunnableConfig with telegram_chat_id, for a turn answering the user."""
     configurable = {
         "thread_id": f"po-chat-{telegram_chat_id}",
         "telegram_chat_id": telegram_chat_id,
         "user_turn": user_turn,
     }
-    if retry_story_id:
-        configurable["retry_story_id"] = retry_story_id
     return {"configurable": configurable}
 
 
@@ -657,54 +654,10 @@ class TestTeardownProject:
 
 class TestCreateStory:
     @pytest.mark.asyncio
-    async def test_third_matching_qa_failure_reminder_blocks_new_story(
+    async def test_a_held_story_elsewhere_does_not_stop_new_ordered_work(
         self, mock_api_client, mock_stream_client
     ):
-        """Reminder provenance blocks the third story in the same QA failure chain."""
-        mock_api_client.get_raw.side_effect = [
-            _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}}),
-            _brief(),
-            _make_response(
-                [
-                    {
-                        "id": "story-first",
-                        "status": "failed",
-                    },
-                    {
-                        "id": "story-held",
-                        "status": "waiting_human_review",
-                        "quarantine_reason": {
-                            "qa_outcome": "failed",
-                            "qa_failure": {
-                                "fingerprint": "a1b2c3d4",
-                                "fingerprint_attempt": 3,
-                            },
-                        },
-                    },
-                ]
-            ),
-        ]
-
-        result = await create_story.ainvoke(
-            {
-                "project_id": BRIEF_PROJECT_ID,
-                "title": "Try the fix again",
-                "description": "Retry the same failing feature",
-                "product_brief_id": BRIEF_ID,
-            },
-            config=_make_config("user-42", retry_story_id="story-held"),
-        )
-
-        assert "No story was created" in result
-        assert "human review" in result.lower()
-        mock_api_client.post_raw.assert_not_called()
-        mock_stream_client.publish_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_qa_failure_hold_allows_unrelated_story(
-        self, mock_api_client, mock_stream_client
-    ):
-        """A held retry chain must not freeze unrelated project work."""
+        """A new story is its own order: it names no parent and no held story blocks it."""
         project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}})
         mock_api_client.get_raw.side_effect = [
             project_resp,
@@ -740,7 +693,7 @@ class TestCreateStory:
 
         assert "Story created" in result
         story_call = mock_api_client.post_raw.call_args_list[0]
-        assert story_call[1]["json"]["parent_story_id"] is None
+        assert "parent_story_id" not in story_call[1]["json"]
         mock_stream_client.publish_message.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -932,24 +885,6 @@ class TestCreateStory:
         mock_api_client.patch_raw.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_patch_for_fix(self, mock_api_client, mock_stream_client):
-        """For action=fix, should NOT persist description to project config."""
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get_raw.return_value = _make_response([])  # no active stories
-
-        await create_story.ainvoke(
-            {
-                "project_id": "abc",
-                "title": "Fix bug",
-                "description": "Fix the login",
-                "story_type": "fix",
-            },
-            config=_make_config("user-42"),
-        )
-
-        mock_api_client.patch_raw.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_passes_user_id_to_architect_message(self, mock_api_client, mock_stream_client):
         mock_api_client.post_raw.side_effect = [
             _make_response({"id": "story-xxx"}),
@@ -1071,6 +1006,7 @@ class TestCreateStoryIsBriefBacked:
 
         assert "No story was created" in result
         assert "present_product_brief" in result
+        assert "reopen_story" in result
         mock_api_client.post_raw.assert_not_called()
         mock_stream_client.publish_message.assert_not_called()
 
@@ -1280,8 +1216,8 @@ class TestCreateStoryIsBriefBacked:
 
         Once a project is live, a feature is the shape most product work takes,
         and it is where a requirement is lost in prose exactly as it would be at
-        creation. Only a `fix` (and `reopen_story`, a different tool) repairs
-        something a confirmed brief already described.
+        creation. Redoing what was already built is `reopen_story`, a different
+        tool, on the original story.
         """
         mock_api_client.get_raw.return_value = _make_response(
             {"id": BRIEF_PROJECT_ID, "status": "active", "config": {}}
@@ -1333,27 +1269,58 @@ class TestCreateStoryIsBriefBacked:
         )
         mock_stream_client.publish_message.assert_not_called()
 
+    def test_the_chat_po_cannot_choose_a_fix_or_technical_story(self):
+        """No `story_type`, no parent: every story the chat PO creates is an order."""
+        assert set(create_story.args) == {"project_id", "title", "description", "product_brief_id"}
+
     @pytest.mark.asyncio
-    async def test_a_fix_on_an_existing_project_needs_no_brief(
+    async def test_a_fix_without_a_brief_is_refused_and_pointed_to_reopen(
         self, mock_api_client, mock_stream_client
     ):
-        """The flows that legitimately have no brief keep working unchanged."""
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-fix"})
-        mock_api_client.get_raw.return_value = _make_response([])
-
+        """The incident's shape: the PO creating a story nobody ordered."""
         result = await create_story.ainvoke(
             {
                 "project_id": BRIEF_PROJECT_ID,
                 "title": "Fix bug",
                 "description": "Fix the login",
-                "story_type": "fix",
             },
             config=_make_config("user-42"),
         )
 
-        assert "Story created" in result
-        assert mock_api_client.post_raw.call_count == 1
-        mock_stream_client.publish_message.assert_awaited_once()
+        assert "No story was created" in result
+        assert "list_stories" in result
+        assert "reopen_story" in result
+        assert "present_product_brief" in result
+        mock_api_client.post_raw.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_every_created_story_is_a_product_story(
+        self, mock_api_client, mock_stream_client
+    ):
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}})
+        mock_api_client.get_raw.side_effect = [
+            project_resp,
+            _brief(),
+            _make_response([]),
+            project_resp,
+        ]
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _brief(story_id="story-xxx"),
+        ]
+
+        await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Add export",
+                "description": "Export as CSV",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert mock_api_client.post_raw.call_args_list[0][1]["json"]["type"] == "product"
 
 
 class TestListStories:
@@ -1733,19 +1700,25 @@ class TestWebSearch:
 
 
 class TestReopenStory:
+    @staticmethod
+    def _story(status: str, **fields) -> dict:
+        return {
+            "id": "story-abc",
+            "title": "Recipe bot",
+            "project_id": "proj-1",
+            "status": status,
+            **fields,
+        }
+
     @pytest.mark.asyncio
-    async def test_reopens_and_publishes_architect_message(
+    async def test_a_complaint_reopens_a_completed_story_with_the_users_words(
         self, mock_api_client, mock_stream_client
     ):
         """reopen_story calls API + publishes ArchitectMessage with is_reopen=True."""
-        story_data = {
-            "id": "story-abc",
-            "title": "Fix images",
-            "project_id": "proj-1",
-            "status": "in_progress",
-            "user_report": "Images broken on mobile",
-        }
-        mock_api_client.post_raw.return_value = _make_response(story_data)
+        mock_api_client.get_raw.return_value = _make_response(self._story("completed"))
+        mock_api_client.post_raw.return_value = _make_response(
+            self._story("reopened", user_report="Images broken on mobile")
+        )
 
         result = await reopen_story.ainvoke(
             {"story_id": "story-abc", "user_report": "Images broken on mobile"},
@@ -1772,11 +1745,101 @@ class TestReopenStory:
         assert arch_msg.is_reopen is True
         assert arch_msg.user_report == "Images broken on mobile"
 
+    @pytest.mark.asyncio
+    async def test_a_platform_retry_reopens_a_failed_story_without_a_report(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.get_raw.return_value = _make_response(self._story("failed"))
+        mock_api_client.post_raw.return_value = _make_response(self._story("reopened"))
+
+        result = await reopen_story.ainvoke(
+            {"story_id": "story-abc"}, config=_make_config("user-42")
+        )
+
+        assert "Story reopened" in result
+        assert "User report" not in result
+        api_call = mock_api_client.post_raw.call_args
+        assert api_call[0][0] == "stories/story-abc/reopen"
+        assert api_call[1]["json"] == {"user_report": None, "actor": "po"}
+        arch_msg = mock_stream_client.publish_message.call_args[0][1]
+        assert arch_msg.story_id == "story-abc"
+        assert arch_msg.is_reopen is True
+        assert arch_msg.user_report is None
+
+    @pytest.mark.asyncio
+    async def test_a_complaint_without_the_users_words_reopens_nothing(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.get_raw.return_value = _make_response(self._story("completed"))
+
+        result = await reopen_story.ainvoke(
+            {"story_id": "story-abc"}, config=_make_config("user-42")
+        )
+
+        assert "was not reopened" in result
+        assert "user_report" in result
+        mock_api_client.post_raw.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["waiting_human_review", "in_progress", "created"])
+    async def test_only_a_completed_or_failed_story_is_reopened(
+        self, mock_api_client, mock_stream_client, status
+    ):
+        """A parked story is returned by a person; one in work is still being built."""
+        mock_api_client.get_raw.return_value = _make_response(self._story(status))
+
+        result = await reopen_story.ainvoke(
+            {"story_id": "story-abc", "user_report": "still broken"},
+            config=_make_config("user-42"),
+        )
+
+        assert f"was not reopened: it is {status}" in result
+        mock_api_client.post_raw.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+
+class TestNoteToAdmins:
+    @pytest.mark.asyncio
+    async def test_the_note_reaches_the_admins_and_nothing_else(
+        self, mock_api_client, mock_stream_client
+    ):
+        from shared.notifications import AdminDeliveryResult
+
+        deliver = AsyncMock(return_value=AdminDeliveryResult(configured=2, succeeded=2))
+        with patch("src.agents.po.tools.deliver_to_admins", deliver):
+            result = await note_to_admins.ainvoke(
+                {"text": "get_story shows no tasks for story-abc for an hour"},
+                config=_make_config("user-42"),
+            )
+
+        assert "delivered to the admins" in result
+        assert "No work was started" in result
+        sent = deliver.await_args.args[0]
+        assert "get_story shows no tasks for story-abc for an hour" in sent
+        assert "chat=user-42" in sent
+        mock_stream_client.publish_flat.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+        mock_api_client.post_raw.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_undelivered_note_says_so(self, mock_api_client, mock_stream_client):
+        from shared.notifications import AdminDeliveryResult
+
+        deliver = AsyncMock(return_value=AdminDeliveryResult(configured=2, succeeded=0))
+        with patch("src.agents.po.tools.deliver_to_admins", deliver):
+            result = await note_to_admins.ainvoke(
+                {"text": "something is off"}, config=_make_config("user-42")
+            )
+
+        assert "did not reach every admin" in result
+        assert "failed" in result
+
 
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 22
+        expected_count = 23
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1804,6 +1867,7 @@ class TestGetAllTools:
             "get_budget_balance",
             "set_reminder",
             "notify_user",
+            "note_to_admins",
             "web_search",
         }
 

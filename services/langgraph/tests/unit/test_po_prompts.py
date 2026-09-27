@@ -120,10 +120,41 @@ class TestSystemPrompt:
     def test_a_secret_is_never_an_initial_setting(self):
         assert "NEVER put a token, password or API key into `initial_settings`" in SYSTEM_PROMPT
 
-    def test_the_flows_that_have_no_brief_keep_working(self):
-        assert "A `fix` story on an existing project and `reopen_story` need no brief" in (
-            SYSTEM_PROMPT
+    def test_every_story_is_an_order_and_is_redone_by_a_reopen(self):
+        workflow = " ".join(_section("## Story-Based Workflow").split())
+        assert "Every piece of work the user orders is a **story** with a confirmed" in workflow
+        assert "Work is redone by reopening its story, never by a new one." in workflow
+
+    def test_the_fix_story_instruction_is_gone(self):
+        """A story the PO starts on its own is nobody's order (story-4b5265a8)."""
+        assert "fix story" not in SYSTEM_PROMPT.lower()
+        assert "story_type" not in SYSTEM_PROMPT
+        assert "`fix`" not in SYSTEM_PROMPT
+        assert "retry provenance" not in SYSTEM_PROMPT
+
+    def test_a_retry_and_a_complaint_reopen_the_original_story(self):
+        scenario = " ".join(_section("## Scenario: Add Features or Fix Bugs").split())
+        assert (
+            "**A complaint about something built, or a retry after a failure**: "
+            "`list_stories(project_id)` → `reopen_story` on the original story, with "
+            "`user_report` (the user's words) for a complaint. Never a new story."
+        ) in scenario
+        events = " ".join(_section("## Story Events & Reminders").split())
+        assert "`failed` — permanent failure → explain the cause; a retry is `reopen_story(" in (
+            events
         )
+
+    def test_a_service_matter_is_a_note_to_the_admins(self):
+        section = " ".join(_section("## Service Matters").split())
+        assert "`note_to_admins(text)`" in section
+        assert "It starts no work and sends the user nothing" in section
+        assert "never create or reopen a story for it" in section
+
+    def test_the_tools_named_for_retries_and_notes_exist(self):
+        from src.agents.po.tools import get_all_tools
+
+        names = {tool.name for tool in get_all_tools()}
+        assert {"list_stories", "reopen_story", "note_to_admins"} <= names
 
     def test_a_feature_on_a_live_project_is_new_product_work_too(self):
         """The shape most product work takes once a project exists."""
@@ -307,4 +338,9 @@ class TestCreateStoryDocstring:
     def test_says_a_feature_is_new_product_work_too(self):
         doc = create_story.description
         assert "the first story of a project and every later feature alike" in doc
-        assert "leave unset only for a fix on an existing project" in doc
+
+    def test_points_a_retry_or_complaint_to_reopen_story(self):
+        doc = create_story.description
+        assert "Every story needs a confirmed Product Brief" in doc
+        assert "use `reopen_story` on the original story" in doc
+        assert "fix" not in doc.lower()

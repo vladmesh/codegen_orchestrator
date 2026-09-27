@@ -21,6 +21,7 @@ import structlog
 from shared import queues
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.engineering_budget_display import format_microusd
+from shared.notifications import AdminDeliveryStatus, deliver_to_admins
 
 from . import tools_briefs, tools_projects, tools_shared, tools_stories
 
@@ -106,6 +107,34 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
 
     logger.info("po_notify_user", telegram_chat_id=telegram_chat_id, text_length=len(message))
     return "Message sent to user."
+
+
+@tool
+async def note_to_admins(text: str, *, config: RunnableConfig) -> str:
+    """Send a note to the platform's admins. Starts no work, sends the user nothing.
+
+    Use it for a service matter you notice in conversation that is not the
+    user's order: a platform problem, a tool that misbehaves, something only
+    an operator can decide. Never create or reopen a story for such a matter.
+
+    Args:
+        text: What the admins should know, in plain words, with the project
+            or story id when there is one.
+    """
+    telegram_chat_id = config["configurable"]["telegram_chat_id"]
+    user_name = config["configurable"].get("user_name", "")
+    result = await deliver_to_admins(
+        f"PO note (chat={telegram_chat_id} user={user_name or '-'}): {text}", level="info"
+    )
+    logger.info(
+        "po_note_to_admins",
+        telegram_chat_id=telegram_chat_id,
+        delivery=result.status.value,
+        text_length=len(text),
+    )
+    if result.status is AdminDeliveryStatus.DELIVERED:
+        return "Note delivered to the admins. No work was started."
+    return f"The note did not reach every admin ({result.detail}). No work was started."
 
 
 @tool
@@ -206,6 +235,7 @@ def get_all_tools() -> list:
         get_budget_balance,
         set_reminder,
         notify_user,
+        note_to_admins,
         web_search,
     ]
 
@@ -213,6 +243,7 @@ def get_all_tools() -> list:
 __all__ = [
     "get_all_tools",
     "get_budget_balance",
+    "note_to_admins",
     "notify_user",
     "set_reminder",
     "web_search",

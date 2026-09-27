@@ -62,8 +62,10 @@ is the PO that produces it:
 Each story gets its own brief: the revision bound to a story is spent, and the
 next one is a new revision of the same project.
 
-A `fix` story on an existing project and `reopen_story` have no brief and are
-unchanged — they repair what a confirmed brief already described.
+Every story the chat PO creates has a confirmed brief: there is no `fix` story.
+A retry after a failure and a complaint about an ordered story go through
+`reopen_story` on the original story, which keeps its brief and so stays the
+user's order.
 
 ---
 
