@@ -52,12 +52,8 @@ multidict==6.7.0
     # via
     #   aiohttp
     #   yarl
-numpy==2.4.2
-    # via pgvector
 packaging==25.0
     # via ansible-core
-pgvector==0.4.2
-    # via infra-service (services/infra-service/pyproject.toml)
 propcache==0.4.1
     # via
     #   aiohttp

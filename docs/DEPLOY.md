@@ -318,7 +318,6 @@ is never passed into coding-worker containers.
 |--------|-------------|
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
-| `OPEN_ROUTER_KEY` | OpenRouter API key |
 | `PO_LLM_MODEL` | PO agent model name (`openai/gpt-5.6-sol`) |
 | `PO_LLM_BASE_URL` | PO agent LLM base URL |
 | `PO_LLM_API_KEY` | PO agent LLM API key |

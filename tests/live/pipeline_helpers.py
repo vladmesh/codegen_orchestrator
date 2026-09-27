@@ -7424,7 +7424,7 @@ def _psql(sql: str) -> db_teardown.SqlResult:
 
     The batch arrives on stdin (`-f -`), not as an argument: the residue pass
     names every key the run owned, and Linux caps one argv element at 128 KiB,
-    so a run with a few thousand `rag_chunks` rows would have failed that pass
+    so a run with a few thousand owned rows would have failed that pass
     with a bare `OSError` after the deletes had already committed. Stdin has no
     such ceiling. `ON_ERROR_STOP` makes a refused statement end the batch
     instead of letting the rest of a transaction run against a failed one, and

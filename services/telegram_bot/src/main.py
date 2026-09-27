@@ -69,18 +69,6 @@ TYPING_INTERVAL_S = 5
 MESSAGE_FAILED_REPLY = "Не удалось обработать сообщение. Попробуйте позже."
 
 
-async def _post_rag_message(payload: dict) -> None:
-    """Log message to RAG system (fire and forget)."""
-    headers = {}
-    if payload.get("telegram_id"):
-        headers["X-Telegram-ID"] = str(payload["telegram_id"])
-
-    try:
-        await api_client.post_json("rag/messages", headers=headers, json=payload)
-    except httpx.HTTPError as e:
-        logger.warning("rag_message_log_failed", error=str(e))
-
-
 async def start(update: Update, context) -> None:
     """Handle /start command - show main menu."""
     user_is_admin = is_admin(context)
@@ -349,25 +337,11 @@ async def handle_message(update: Update, context) -> None:
 
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    message_id = update.message.message_id
     text = update.message.text
 
     logger.info("message_received", user_id=user_id, text_length=len(text) if text else 0)
 
     try:
-        # Log user message to RAG (fire and forget)
-        asyncio.create_task(
-            _post_rag_message(
-                {
-                    "telegram_id": user_id,
-                    "role": "user",
-                    "message_text": text,
-                    "message_id": str(message_id),
-                    "source": "telegram",
-                }
-            )
-        )
-
         if _stream_client is None:
             raise RuntimeError("Redis client not initialized")
 

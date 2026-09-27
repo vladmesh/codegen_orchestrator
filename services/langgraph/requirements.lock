@@ -129,8 +129,6 @@ multidict==6.7.0
     # via
     #   aiohttp
     #   yarl
-numpy==2.4.2
-    # via pgvector
 openai==2.14.0
     # via langchain-openai
 orjson==3.11.5
@@ -144,8 +142,6 @@ packaging==25.0
     # via
     #   langchain-core
     #   langsmith
-pgvector==0.4.2
-    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 primp==1.2.2
     # via ddgs
 propcache==0.4.1

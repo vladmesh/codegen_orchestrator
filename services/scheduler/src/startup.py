@@ -66,7 +66,6 @@ INFRASTRUCTURE_REQUIRED_KEYS = {
 MAINTENANCE_REQUIRED_KEYS = {
     "scheduler.github_sync_interval",
     "scheduler.github_sync_missing_threshold",
-    "scheduler.rag_summarizer_poll_interval",
 }
 
 REQUIRED_KEYS = sorted(
@@ -83,7 +82,6 @@ BOUNDED_STALE_KEYS = frozenset(
         "scheduler.github_sync_interval",
         "scheduler.server_sync_interval",
         "scheduler.server_details_sync_interval",
-        "scheduler.rag_summarizer_poll_interval",
         "health.metrics_cleanup_interval_seconds",
     }
 )

@@ -47,8 +47,6 @@ multidict==6.7.1
     # via
     #   aiohttp
     #   yarl
-pgvector==0.5.0
-    # via telegram-bot (services/telegram_bot/pyproject.toml)
 propcache==0.5.2
     # via
     #   aiohttp

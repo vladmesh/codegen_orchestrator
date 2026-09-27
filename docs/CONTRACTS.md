@@ -1123,13 +1123,13 @@ completed result.
 | Incidents, analytics, brainstorms | `dto/incident.py`, `dto/analytics.py`, `dto/brainstorm.py` | corresponding schema and router modules | their status vocabularies are source-owned |
 | System config | `services/api/src/schemas/system_config.py` | corresponding API routers | API-local system-config payloads are not shared DTOs |
 | Telegram binding | `shared/contracts/dto/telegram.py` | `routers/projects.py` | token binding is fail-closed and stores the verified bot identity |
-| API analytics and RAG payloads | `services/api/src/schemas/analytics.py`, `schemas/rag.py` | `routers/analytics.py`, `routers/rag.py` | these API-local models have no shared duplicate |
+| API analytics payloads | `services/api/src/schemas/analytics.py` | `routers/analytics.py` | these API-local models have no shared duplicate |
 | Promo-code and port allocation payloads | `services/api/src/schemas/promo_code.py`, `schemas/port_allocation.py` | promo-code and allocation routes | route ownership determines admission and visibility |
 
 ### Shared DTO foundations
 
 `shared/contracts/dto/base.py` supplies common API DTO foundations. The API also
-has local schemas for analytics, brainstorming, API keys, ports, RAG, promo
+has local schemas for analytics, brainstorming, API keys, ports, promo
 codes, system configuration, and LK interactions. Their canonical definitions
 are the corresponding `services/api/src/schemas/*.py` modules unless the table
 above names a shared contract import.

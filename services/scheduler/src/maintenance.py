@@ -11,7 +11,6 @@ from .startup import MAINTENANCE_REQUIRED_KEYS
 from .tasks.analytics_aggregator import analytics_aggregator_worker
 from .tasks.github_sync import sync_projects_worker
 from .tasks.queue_cleanup import queue_cleanup_worker
-from .tasks.rag_summarizer import rag_summarizer_worker
 
 logger = structlog.get_logger()
 
@@ -25,7 +24,6 @@ async def main() -> None:
     await runtime.run_workers(
         [
             ("github_sync", sync_projects_worker),
-            ("rag_summarizer", rag_summarizer_worker),
             ("analytics_aggregator", analytics_aggregator_worker),
             ("queue_cleanup", queue_cleanup_worker),
         ],

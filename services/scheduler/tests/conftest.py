@@ -40,7 +40,6 @@ def initialized_scheduler_config(monkeypatch):
         "scheduler.service_template_source": "gh:vladmesh/service-template",
         "scheduler.service_template_ref": "0.3.0",
         "scheduler.ssl_check_timeout": 5,
-        "scheduler.rag_summarizer_poll_interval": 30,
         "scheduler.ci_failure_max_fingerprint_attempts": 2,
         "scheduler.ci_failure_log_excerpt_lines": 40,
         "deploy.max_deploy_retries": 3,

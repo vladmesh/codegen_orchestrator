@@ -72,10 +72,6 @@ class SchedulerAPIClient(InternalAPIClient):
     def __init__(self) -> None:
         super().__init__(get_settings().api_base_url)
 
-    async def ingest_rag(self, body: bytes, headers: dict) -> dict:
-        resp = await self.request("POST", "rag/ingest", content=body, headers=headers)
-        return resp.json()
-
     # --- Projects ---
 
     async def get_projects(self) -> list[ProjectDTO]:

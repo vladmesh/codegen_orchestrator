@@ -34,7 +34,7 @@ def test_pipeline_does_not_require_maintenance_or_infrastructure_config():
     from src import startup
 
     assert "scheduler.dispatch_interval_seconds" in startup.PIPELINE_REQUIRED_KEYS
-    assert "scheduler.rag_summarizer_poll_interval" not in startup.PIPELINE_REQUIRED_KEYS
+    assert "scheduler.github_sync_missing_threshold" not in startup.PIPELINE_REQUIRED_KEYS
     assert "scheduler.server_sync_interval" not in startup.PIPELINE_REQUIRED_KEYS
 
 
@@ -58,7 +58,7 @@ def test_pipeline_validates_only_its_own_config(monkeypatch):
 
     startup.init_config(startup.PIPELINE_REQUIRED_KEYS)
 
-    with pytest.raises(RuntimeError, match="scheduler.rag_summarizer_poll_interval"):
+    with pytest.raises(RuntimeError, match="scheduler.github_sync_missing_threshold"):
         startup.init_config(startup.MAINTENANCE_REQUIRED_KEYS)
 
 
@@ -264,7 +264,6 @@ async def test_worker_inventory_is_complete_and_disjoint(monkeypatch):
         "health_checker",
         "provisioner_results",
         "github_sync",
-        "rag_summarizer",
         "analytics_aggregator",
         "queue_cleanup",
     }
