@@ -368,12 +368,13 @@ PO sends user-facing lifecycle messages through `po:proactive`: deploy success, 
 A PO turn nobody asked for that names a story — a fired `set_reminder` or a `story_stage` notice — reaches
 the user only when it tells something new (`services/langgraph/src/consumers/po_story_gate.py`): the story's
 fingerprint (`status`, `waiting_on`, the `StoryFailure` code, the planning state and its failed attempts, read
-from the API at publish time) differs from the one last told to that chat, or the notice is an escalation step not
-yet told; and fewer than `po.story_proactive_daily_cap` (6) such messages about the story went to the chat this UTC
+from the API at publish time) differs from the one last told to that chat, or the notice is a later stay
+(`stage_entered_at`) or a higher step of the stay last told, whatever order redelivery brings it in; and fewer than `po.story_proactive_daily_cap` (6) such messages about the story went to the chat this UTC
 day. Otherwise the turn still runs and only the message is withheld, logged as `po_proactive_suppressed` with the
 reason (`unchanged`, `daily_cap`, `story_ended`) and the fingerprint. The "last told" record
 (`po:story_told:<chat>:<story>`) is written only after the publish, so a failed publish repeats the change rather
-than losing it; the story's ending deletes it. The durable owner notifications are not gated or counted.
+than losing it; the story's ending deletes it. The durable owner notifications are not gated or counted. In such a
+turn the `notify_user` tool sends nothing, so the gated final reply is the only way to the user.
 
 ---
 

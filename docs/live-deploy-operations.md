@@ -267,6 +267,7 @@ Proactive messages about one story come from three places, and only the first is
   gives the entry plus 1 h, 2 h and 4 h; after that at most one a day.
 - **PO self-reminders**: the PO re-checks as often as it likes, but the user hears the reply only if the
   story changed (`status`, `waiting_on`, failure code, planning state or attempt count) since they were last told.
+  In such a turn `notify_user` sends nothing (`po_notify_user_refused` in the log).
 
 Both of the last two pass the PO proactive gate, which also caps them at `po.story_proactive_daily_cap`
 (default 6) per chat and story per UTC day. A withheld message is `po_proactive_suppressed` in the langgraph

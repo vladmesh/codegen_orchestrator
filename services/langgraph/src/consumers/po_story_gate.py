@@ -14,21 +14,34 @@ names a story — the reply is published only if
 * the story's **fingerprint** (``status``, ``waiting_on``, the ``StoryFailure``
   code and the planning state with its failed-attempt count, read from the API
   now) differs from the one last told to this chat about this story, or
-* the turn is a stage notice whose **escalation step** (stage and step, see
-  ``scheduler/src/tasks/supervisor/stage_notices.py``) has not been told yet;
+* the turn is a stage notice that is a **new escalation step**: a later stay
+  (``stage_entered_at``) than the one last told, or a higher step
+  (``stage_notice_step``) of the same stay — see
+  ``scheduler/src/tasks/supervisor/stage_notices.py``;
 
 and fewer than ``po.story_proactive_daily_cap`` gated messages about the story
 reached the chat this UTC day. Anything else is suppressed and logged as
 ``po_proactive_suppressed`` with the reason. The PO turn itself has run and its
 thread keeps it either way; only the message to the user is withheld.
 
+**There is no second way out.** In any turn without a ``request_id`` the
+``notify_user`` tool publishes nothing (the consumer passes ``user_turn`` in
+the run config), so this final reply is the only thing such a turn can send.
+
 **Other story turns are not gated.** The durable owner notifications (the
 story's ending, a parked story, a secret request, returned requirements) are
 told as before and never counted against the cap. After one is published, its
 fingerprint is recorded as told, so the next reminder does not repeat it.
 
+**Steps only rise.** ``po:input`` is at-least-once, so a stage notice may
+arrive again after a later one was told. The record keeps the stay last told
+(its stage and ``stage_entered_at``) with the highest step told in it, so a
+lower or equal step of that stay, or any step of an older stay, is suppressed
+whatever order redelivery brings it in. A return to the stage is a new stay
+with a later ``stage_entered_at``, and its steps start over from 0.
+
 **The "last told" record.** Per chat and story, Redis holds the fingerprint and
-the step last told (``po:story_told:<chat>:<story>``). It is written only after
+that stay (``po:story_told:<chat>:<story>``). It is written only after
 the proactive entry was published: a publish that fails leaves the old record,
 so the change is told again on the next turn — a duplicate is the smaller error
 than a change nobody hears about. Turns for one chat run one at a time under
@@ -124,20 +137,72 @@ class StoryFingerprint:
 
 
 @dataclass(frozen=True)
+class StayStep:
+    """Where a stage notice falls: which stay in which stage, and its step there."""
+
+    stage: str
+    #: When the stay's entry notice went out; the scheduler's stay identity.
+    entered_at: datetime
+    step: int
+
+    @classmethod
+    def of_notice(cls, data: dict) -> StayStep | None:
+        if data.get("event") != OwnerNotificationEvent.STORY_STAGE:
+            return None
+        return cls(
+            stage=data["stage"],
+            entered_at=datetime.fromisoformat(data["stage_entered_at"]),
+            step=int(data["stage_notice_step"]),
+        )
+
+    def is_after(self, told: StayStep | None) -> bool:
+        """A later stay than *told*, or a higher step of the same stay."""
+        if told is None:
+            return True
+        if (self.stage, self.entered_at) == (told.stage, told.entered_at):
+            return self.step > told.step
+        return self.entered_at > told.entered_at
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "stage": self.stage,
+            "stage_entered_at": self.entered_at.isoformat(),
+            "max_step_told": self.step,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> StayStep:
+        return cls(
+            stage=data["stage"],
+            entered_at=datetime.fromisoformat(data["stage_entered_at"]),
+            step=int(data["max_step_told"]),
+        )
+
+
+@dataclass(frozen=True)
 class ToldRecord:
-    """The fingerprint and the escalation step last told to one chat about one story."""
+    """The fingerprint and the stage stay last told to one chat about one story."""
 
     fingerprint: StoryFingerprint
-    #: ``<stage>:<step>`` of the last stage notice told, or ``None``.
-    step: str | None
+    #: The latest stay told, with the highest step told in it; ``None`` before any.
+    stay: StayStep | None
 
     def dumps(self) -> str:
-        return json.dumps({"fingerprint": self.fingerprint.as_dict(), "step": self.step})
+        return json.dumps(
+            {
+                "fingerprint": self.fingerprint.as_dict(),
+                "stay": self.stay.as_dict() if self.stay else None,
+            }
+        )
 
     @classmethod
     def loads(cls, raw: str) -> ToldRecord:
         data = json.loads(raw)
-        return cls(fingerprint=StoryFingerprint(**data["fingerprint"]), step=data["step"])
+        stay = data["stay"]
+        return cls(
+            fingerprint=StoryFingerprint(**data["fingerprint"]),
+            stay=StayStep.from_dict(stay) if stay is not None else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -151,7 +216,7 @@ class ProactiveDecision:
     #: The story ended: the record is deleted instead of written.
     ends_story: bool = False
     fingerprint: StoryFingerprint | None = None
-    step: str | None = None
+    stay: StayStep | None = None
     previous: ToldRecord | None = None
 
 
@@ -168,13 +233,6 @@ def _is_gated(data: dict) -> bool:
     return msg_type == "reminder" or (
         msg_type == "system_event" and data.get("event") == OwnerNotificationEvent.STORY_STAGE
     )
-
-
-def _escalation_step(data: dict) -> str | None:
-    """The stage notice's identity as a step of its stay, ``<stage>:<step>``."""
-    if data.get("event") != OwnerNotificationEvent.STORY_STAGE:
-        return None
-    return f"{data['stage']}:{data['stage_notice_step']}"
 
 
 class ProactiveStoryGate:
@@ -228,19 +286,19 @@ class ProactiveStoryGate:
             story_id=story_id,
             gated=gated,
             fingerprint=fingerprint,
-            step=_escalation_step(data),
+            stay=StayStep.of_notice(data),
             previous=previous,
         )
         if not gated:
             return decided
         if previous is None or previous.fingerprint != fingerprint:
             reason = "changed"
-        elif decided.step is not None and decided.step != previous.step:
+        elif decided.stay is not None and decided.stay.is_after(previous.stay):
             reason = "escalation_step"
         else:
-            return self._suppressed(log, story_id, "unchanged", fingerprint, step=decided.step)
+            return self._suppressed(log, story_id, "unchanged", fingerprint, stay=decided.stay)
         if delivered_today >= daily_cap:
-            return self._suppressed(log, story_id, "daily_cap", fingerprint, step=decided.step)
+            return self._suppressed(log, story_id, "daily_cap", fingerprint, stay=decided.stay)
         return replace(decided, reason=reason)
 
     async def record_told(self, telegram_chat_id: str, decision: ProactiveDecision) -> None:
@@ -252,8 +310,11 @@ class ProactiveStoryGate:
             return
         if decision.fingerprint is None:
             return
-        step = decision.step or (decision.previous.step if decision.previous else None)
-        record = ToldRecord(fingerprint=decision.fingerprint, step=step)
+        told_stay = decision.previous.stay if decision.previous else None
+        # A change told by a stale notice keeps the later stay already told.
+        if decision.stay is not None and decision.stay.is_after(told_stay):
+            told_stay = decision.stay
+        record = ToldRecord(fingerprint=decision.fingerprint, stay=told_stay)
         async with self._redis.redis.pipeline(transaction=True) as pipe:
             pipe.set(
                 story_told_key(telegram_chat_id, decision.story_id),
@@ -301,12 +362,12 @@ class ProactiveStoryGate:
         reason: str,
         fingerprint: StoryFingerprint,
         *,
-        step: str | None = None,
+        stay: StayStep | None = None,
     ) -> ProactiveDecision:
         log.info(
             "po_proactive_suppressed",
             reason=reason,
             fingerprint=fingerprint.as_dict(),
-            escalation_step=step,
+            escalation_step=stay.as_dict() if stay else None,
         )
         return ProactiveDecision(send=False, reason=reason, story_id=story_id)

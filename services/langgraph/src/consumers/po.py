@@ -455,6 +455,9 @@ async def _handle_message(
             "telegram_chat_id": telegram_chat_id,
             "user_name": user_name,
             "retry_story_id": data.get("story_id", ""),
+            # Only a turn the user is waiting on may message them from a tool;
+            # any other turn reaches them only through its gated final reply.
+            "user_turn": bool(data.get("request_id")),
         },
         "recursion_limit": 50,
     }

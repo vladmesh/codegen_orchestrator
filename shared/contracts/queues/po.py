@@ -75,6 +75,10 @@ class POSystemEvent(RejectsLegacyRecipientField):
     #: ``entered``, ``n`` for the ``n``-th ``still_there``. PO tells each step
     #: at most once (``stage_notices`` module docstring).
     stage_notice_step: int | None = Field(default=None, ge=0)
+    #: The stay the notice belongs to: when its entry notice went out. Every
+    #: notice of one stay carries the same value; a return to the stage is a
+    #: new stay with a later one.
+    stage_entered_at: datetime | None = None
     #: What the QA run that settled the story checked and could not: the names
     #: of the checks that passed and every unverified check with its reason.
     #: Carried as structured facts, JSON-encoded in its one flat field, so PO
@@ -96,6 +100,7 @@ class POSystemEvent(RejectsLegacyRecipientField):
             self.wait_estimate,
             self.stage_notice,
             self.stage_notice_step,
+            self.stage_entered_at,
         )
         if self.event is not OwnerNotificationEvent.STORY_STAGE:
             if any(field is not None for field in stage_fields):
@@ -103,8 +108,8 @@ class POSystemEvent(RejectsLegacyRecipientField):
             return self
         if any(field is None for field in stage_fields):
             raise ValueError(
-                "story_stage carries stage, waiting_on, wait_estimate, stage_notice "
-                "and stage_notice_step"
+                "story_stage carries stage, waiting_on, wait_estimate, stage_notice, "
+                "stage_notice_step and stage_entered_at"
             )
         if self.stage not in STAGE_NOTICE_STATUSES:
             raise ValueError(f"{self.stage} is not a stage a story is in work in")

@@ -18,10 +18,12 @@ further step doubles the time since the entry: with the default hour the owner
 hears at 1 h, 2 h, 4 h, 8 h... into the stay. The gap between two steps is capped
 at `supervisor.stage_notice_max_interval_minutes` (a day by default), so a
 story stuck for a week is still mentioned daily and no more often. Each notice
-carries its step (`POSystemEvent.stage_notice_step`); PO's proactive gate
-(`langgraph/src/consumers/po_story_gate.py`) tells the owner a new step once and
-suppresses anything about the unchanged story in between, which is what keeps
-PO's own self-reminders from turning into a message every quarter hour.
+carries its step (`POSystemEvent.stage_notice_step`) and the stay it belongs to
+(`stage_entered_at`, when the stay's entry notice went out). PO's proactive gate
+(`langgraph/src/consumers/po_story_gate.py`) tells each stay's steps only in
+rising order, so a redelivered older step is never told twice, and suppresses
+anything about the unchanged story in between, which is what keeps PO's own
+self-reminders from turning into a message every quarter hour.
 
 **What is announced is the stage the story is observed in, not every entry.**
 The sweep is a scan that runs once per dispatcher tick
@@ -46,8 +48,8 @@ delivered late is already stale. So there is no owed record and no recovery
 sweep, and `OwnerNotification` refuses the event outright.
 
 **The marker is what makes it at-most-once per step.** Per story, Redis
-holds the stage last announced, when, and at which step
-(`story:stage_notice:<id>`). It lives outside the scheduler process, as the
+holds the stage last announced, when, at which step, and when the stay was
+entered (`story:stage_notice:<id>`). It lives outside the scheduler process, as the
 architect retry counter does, and Redis runs with `appendonly`, so a scheduler
 restart reads the same marker back and neither repeats a notice nor restarts
 the schedule, however long the scheduler was down. The next step is measured
@@ -55,7 +57,7 @@ from the marker's `notified_at`, never from the tick or the process start. The
 marker is written *before* the publish: a publish that fails after it costs one
 notice, and the reverse order would let a failed marker write send the same
 notice again on the next tick. A marker that cannot be read (including one
-written before steps existed) is treated as no marker: the stage is announced
+written before steps and entry times existed) is treated as no marker: the stage is announced
 once more as an entry, and the rewritten marker ends it.
 
 **A notice names the stage the story is in when it is sent.** The scan and
@@ -169,12 +171,15 @@ class StageNoticeSchedule:
 
 @dataclass(frozen=True)
 class StageNoticeMarker:
-    """The stage last announced for a story, when, and at which escalation step."""
+    """The stage last announced for a story, when, and at which step of which stay."""
 
     stage: StoryStatus
     notified_at: datetime
     #: 0 for the entry notice, ``n`` for the ``n``-th ``still_there`` of this stay.
     step: int
+    #: When the entry notice of this stay went out: the stay's identity, carried
+    #: on every notice of the stay as ``stage_entered_at``.
+    entered_at: datetime
 
     def dumps(self) -> str:
         return json.dumps(
@@ -182,6 +187,7 @@ class StageNoticeMarker:
                 "stage": self.stage.value,
                 "notified_at": self.notified_at.isoformat(),
                 "step": self.step,
+                "entered_at": self.entered_at.isoformat(),
             }
         )
 
@@ -192,6 +198,7 @@ class StageNoticeMarker:
             stage=StoryStatus(data["stage"]),
             notified_at=_parse_datetime(data["notified_at"]),
             step=int(data["step"]),
+            entered_at=_parse_datetime(data["entered_at"]),
         )
 
 
@@ -340,6 +347,7 @@ async def _announce(
     if due is None:
         return None
     kind, step = due
+    entered_at = now if kind is StoryStageNoticeKind.ENTERED else marker.entered_at
 
     project_id = str(story.project_id)
     recipient = await resolve_project_recipient(
@@ -364,6 +372,7 @@ async def _announce(
         wait_estimate=story_wait_estimate(bound_minutes),
         stage_notice=kind,
         stage_notice_step=step,
+        stage_entered_at=entered_at,
     )
     # The scan may be a while old by now, and a routing supervisor running
     # before or beside this sweep may have moved the story on. A notice for a
@@ -382,7 +391,9 @@ async def _announce(
     async with redis_client.redis.pipeline(transaction=True) as pipe:
         pipe.set(
             stage_notice_key(story.id),
-            StageNoticeMarker(stage=stage, notified_at=now, step=step).dumps(),
+            StageNoticeMarker(
+                stage=stage, notified_at=now, step=step, entered_at=entered_at
+            ).dumps(),
         )
         pipe.sadd(MARKED_STORIES_KEY, story.id)
         await pipe.execute()

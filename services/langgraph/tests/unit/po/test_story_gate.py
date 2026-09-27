@@ -101,7 +101,10 @@ def _reminder(story_id: str = STORY) -> dict:
     ).model_dump(mode="json")
 
 
-def _stage_notice(step: int, stage: StoryStatus = StoryStatus.IN_PROGRESS) -> dict:
+def _stage_notice(
+    step: int, stage: StoryStatus = StoryStatus.IN_PROGRESS, *, entered_at: datetime = T0
+) -> dict:
+    """Step *step* of the stay in *stage* whose entry notice went out at *entered_at*."""
     return POSystemEvent(
         event=OwnerNotificationEvent.STORY_STAGE,
         text=f"Story is at stage {stage.value}.",
@@ -115,6 +118,7 @@ def _stage_notice(step: int, stage: StoryStatus = StoryStatus.IN_PROGRESS) -> di
         if step == 0
         else StoryStageNoticeKind.STILL_THERE,
         stage_notice_step=step,
+        stage_entered_at=entered_at,
     ).model_dump(mode="json")
 
 
@@ -143,6 +147,47 @@ async def test_an_unchanged_story_is_told_once_per_step_and_never_in_between(gra
     assert len(_told(client)) == 4
     # Every turn still ran: the PO keeps its thread, only the message is withheld.
     assert graph.ainvoke.await_count == 1 + 3 * (10 + 2)
+
+
+async def test_a_redelivered_older_step_is_never_told_again(graph, client):
+    """At-least-once `po:input`: steps 0, 1, 2, then late copies of 1 and 2."""
+    for step in (0, 1, 2, 1, 2, 0):
+        await _turn(graph, client, _stage_notice(step))
+
+    assert len(_told(client)) == 3
+
+
+async def test_a_return_to_the_stage_is_a_new_stay_whose_steps_are_told(
+    graph, client, gate_stories
+):
+    """In work, parked without the user being told, back in the same stage later.
+
+    The fingerprint is the same as last told, so only the new stay makes its
+    steps new; a late copy of the old stay's notice stays suppressed.
+    """
+    await _turn(graph, client, _stage_notice(0))
+    await _turn(graph, client, _stage_notice(1))
+    await _turn(graph, client, _stage_notice(2))
+
+    back = T0 + timedelta(hours=3)
+    await _turn(graph, client, _stage_notice(0, entered_at=back))
+    await _turn(graph, client, _stage_notice(1, entered_at=back))
+    await _turn(graph, client, _stage_notice(2))  # the old stay, redelivered
+    await _turn(graph, client, _stage_notice(1, entered_at=back))
+
+    assert len(_told(client)) == 5
+
+
+async def test_a_change_is_told_even_by_a_stale_step_and_the_stay_is_kept(
+    graph, client, gate_stories
+):
+    await _turn(graph, client, _stage_notice(0))
+    await _turn(graph, client, _stage_notice(1))
+    gate_stories.put(STORY, waiting_on="resources")
+    await _turn(graph, client, _stage_notice(0))  # stale step, but the story changed
+    await _turn(graph, client, _stage_notice(1))
+
+    assert len(_told(client)) == 3
 
 
 async def test_a_self_reminder_about_an_unchanged_story_cannot_loop(graph, client):
@@ -367,6 +412,79 @@ async def test_a_user_message_is_answered_as_before(graph, client):
 
     assert len(client.publish_flat.await_args_list) == 3
     assert _told(client) == []
+
+
+# ── notify_user: no second way to the user ───────────────────────────────
+
+
+@pytest.fixture
+def notifying_graph(client, monkeypatch):
+    """A PO that calls `notify_user` mid-turn, then writes its final reply."""
+    from src.agents.po import tools_shared
+    from src.agents.po.tools import notify_user
+
+    monkeypatch.setattr(tools_shared, "_stream_client", client)
+    tool_results: list[str] = []
+
+    async def invoke(_input, config):
+        tool_results.append(
+            await notify_user.ainvoke({"message": "Checking on it..."}, config=config)
+        )
+        return {"messages": [AIMessage(content="Work on it is going.")]}
+
+    graph = AsyncMock()
+    graph.ainvoke.side_effect = invoke
+    state = AsyncMock()
+    state.values = {"messages": []}
+    graph.aget_state.return_value = state
+    graph.tool_results = tool_results
+    return graph
+
+
+async def test_notify_user_in_a_reminder_turn_reaches_nobody(notifying_graph, client):
+    for _ in range(5):
+        await _turn(notifying_graph, client, _reminder())
+        await _turn(notifying_graph, client, _stage_notice(0))
+
+    # Only gated final replies — the first reminder's news and the stay's entry
+    # step; the tool published nothing at all.
+    assert [told["text"] for told in _told(client)] == ["Work on it is going."] * 2
+    assert len(notifying_graph.tool_results) == 10
+    assert all(result.startswith("Not sent:") for result in notifying_graph.tool_results)
+
+
+async def test_notify_user_in_a_user_turn_still_sends(notifying_graph, client):
+    await _turn(
+        notifying_graph, client, {"type": "user_message", "text": "how?", "request_id": "r1"}
+    )
+
+    assert [told["text"] for told in _told(client)] == ["Checking on it..."]
+    assert notifying_graph.tool_results == ["Message sent to user."]
+
+
+def test_no_po_tool_but_notify_user_publishes_to_the_proactive_stream():
+    """A new direct publisher would bypass the gate; this names it."""
+    import ast
+    from pathlib import Path
+
+    import src.agents.po as po_package
+
+    publishers = set()
+    for path in sorted(Path(po_package.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(function):
+                names_queue = (
+                    isinstance(node, ast.Attribute | ast.Name)
+                    and getattr(node, "attr", getattr(node, "id", None)) == "PO_PROACTIVE_QUEUE"
+                )
+                names_stream = isinstance(node, ast.Constant) and node.value == "po:proactive"
+                if names_queue or names_stream:
+                    publishers.add(f"{path.name}:{function.name}")
+
+    assert publishers == {"tools.py:notify_user"}
 
 
 # ── the production shape ─────────────────────────────────────────────────

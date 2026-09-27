@@ -70,6 +70,7 @@ def _notice(
         wait_estimate=estimate,
         stage_notice=kind,
         stage_notice_step=0 if kind is StoryStageNoticeKind.ENTERED else 1,
+        stage_entered_at=f"2026-09-21T{at}:00+00:00",
     ).model_dump(mode="json")
 
 

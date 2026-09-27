@@ -816,10 +816,18 @@ The PO prompt's "Story Events & Reminders" lists the events PO receives, each an
 known time), `story_waiting_user_secret` and `story_requirements_returned`. A unit test
 holds the listed set inside the vocabulary the consumer routes.
 
-A `story_stage` event carries `stage`, `waiting_on`, `wait_estimate`, `stage_notice` and
-`stage_notice_step`: 0 for `entered` and only for it, `n` for the `n`-th `still_there` of the stay.
-The PO consumer tells each step of a stay at most once and nothing about an unchanged story in
-between (`consumers/po_story_gate.py`).
+A `story_stage` event carries `stage`, `waiting_on`, `wait_estimate`, `stage_notice`,
+`stage_notice_step` and `stage_entered_at`. The step is 0 for `entered` and only for it, `n` for the
+`n`-th `still_there` of the stay. `stage_entered_at` names the stay: when its entry notice went out,
+the same on every notice of the stay, later for a return to the stage. The PO consumer tells a
+notice only if it is a later stay or a higher step of the stay last told, so a redelivered older
+step is never told again, and nothing about an unchanged story in between
+(`consumers/po_story_gate.py`).
+
+In a PO turn without `request_id` (a reminder or system event) the only way to the user is that
+gated final reply: the `notify_user` tool publishes nothing there (the consumer passes
+`user_turn` in the run config). No other PO tool publishes to `po:proactive`, and a unit test
+holds that.
 
 PO streams use the flat-field codec from `queues/po.py`. The proactive listener
 acks only after successful delivery or terminal delivery exhaustion. Its PEL

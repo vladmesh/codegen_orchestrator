@@ -421,6 +421,23 @@ async def test_a_new_stage_starts_the_schedule_again(api_client, redis_client, s
     told = await _told_at(api_client, redis_client, every=5, start=125, until=125 + 121)
 
     assert told == [(125, 0), (185, 1), (245, 2)]
+    # Each stay is named by its entry: one value for all its steps, a new one per stay.
+    stays = [(n.stage, n.stage_entered_at) for n in await _notices(redis_client)]
+    assert stays == [(StoryStatus.IN_PROGRESS, T0)] * 3 + [(StoryStatus.PR_REVIEW, _at(125))] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_return_to_the_same_stage_is_a_new_stay(api_client, redis_client, stories):
+    stories.put(StoryStatus.DEPLOYING)
+    await _told_at(api_client, redis_client, every=5, until=61)
+    stories.put(StoryStatus.WAITING_USER_SECRET)
+    await _told_at(api_client, redis_client, every=5, start=65, until=70)
+    stories.put(StoryStatus.DEPLOYING)
+    told = await _told_at(api_client, redis_client, every=5, start=70, until=131)
+
+    assert told == [(70, 0), (130, 1)]
+    stays = [n.stage_entered_at for n in await _notices(redis_client)]
+    assert stays == [T0, T0, _at(70), _at(70)]
 
 
 @pytest.mark.asyncio
@@ -434,15 +451,20 @@ async def test_a_restart_reads_the_step_back(api_client, redis_server, stories):
     after = _redis_client(redis_server)
     told = await _told_at(api_client, after, every=5, start=125, until=481)
 
-    # Step 3 falls four intervals after the entry, as if nothing had restarted.
+    # Step 3 falls four intervals after the entry, as if nothing had restarted,
+    # and still names the stay the old process entered.
     assert told == [(240, 3), (480, 4)]
+    assert {n.stage_entered_at for n in await _notices(after)} == {T0}
 
 
 @pytest.mark.asyncio
 async def test_a_marker_without_a_step_is_announced_once_as_an_entry(
     api_client, redis_client, stories
 ):
-    """A marker written before steps existed proves nothing; rewriting it ends that."""
+    """A marker from before the deploy (no step, no entry time) proves nothing.
+
+    It is handled as today: one entry notice, and the rewritten marker ends it.
+    """
     stories.put(StoryStatus.IN_PROGRESS)
     await redis_client.redis.set(
         stage_notice_key(STORY_ID),
@@ -452,6 +474,7 @@ async def test_a_marker_without_a_step_is_announced_once_as_an_entry(
     told = await _told_at(api_client, redis_client, every=5, until=61)
 
     assert told == [(0, 0), (60, 1)]
+    assert (await read_stage_notice_marker(redis_client, STORY_ID)).entered_at == T0
 
 
 @pytest.mark.asyncio
@@ -709,6 +732,7 @@ def test_a_stage_notice_carries_the_typed_stage_it_names():
         "wait_estimate": StoryWaitEstimate.TENS_OF_MINUTES,
         "stage_notice": StoryStageNoticeKind.ENTERED,
         "stage_notice_step": 0,
+        "stage_entered_at": T0,
     }
     POSystemEvent(**fields)
     POSystemEvent(
@@ -720,6 +744,8 @@ def test_a_stage_notice_carries_the_typed_stage_it_names():
         POSystemEvent(**{**fields, "stage_notice": StoryStageNoticeKind.STILL_THERE})
     with pytest.raises(ValidationError, match="carries stage"):
         POSystemEvent(**{**fields, "stage_notice_step": None})
+    with pytest.raises(ValidationError, match="stage_entered_at"):
+        POSystemEvent(**{**fields, "stage_entered_at": None})
     with pytest.raises(ValidationError, match="waits on deploy"):
         POSystemEvent(**{**fields, "waiting_on": WAITING_ON_BY_STATUS[StoryStatus.TESTING]})
     with pytest.raises(ValidationError, match="not a stage a story is in work in"):
