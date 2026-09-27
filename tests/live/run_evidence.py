@@ -165,7 +165,6 @@ import subprocess
 from typing import TypedDict
 
 from brief_telemetry import evidence as brief_telemetry_evidence
-from level1_location_proof import accepted_location_refusals
 from live_harness import resolve_repo_root
 from run_proof import ProofCheck, ProofOutcome
 import structlog
@@ -2146,6 +2145,16 @@ def qa_cell(ctx: dict) -> dict:
     `claude` twice.
     """
     collector: RunEvidenceCollector = ctx["run_evidence"]
+    qa_run_record = ctx.get("qa_run_record") or {}
+    location_refusals_accepted = []
+    if qa_run_record:
+        # Imported here, and only for a run whose QA Run record was read: the location
+        # proof reaches `scripts.template_pin` through `level1_change_set`, and the backend
+        # DinD suite builds artifacts from this module without `scripts/` on its path.
+        # A run with no record accepts no refusal, so skipping the call changes nothing.
+        from level1_location_proof import accepted_location_refusals
+
+        location_refusals_accepted = accepted_location_refusals(qa_run_record)
     cell = {
         "mode": "llm_executor" if ctx.get("qa_requires_executor") else "deterministic_health",
         "executor_requested": ctx.get("qa_agent_type_requested"),
@@ -2164,7 +2173,7 @@ def qa_cell(ctx: dict) -> dict:
         # The unverified location checks `mega-live`'s location proof accepted,
         # each with the kind of refusal it rested on — today only the seed's own
         # argument refusal of an out-of-range coordinate. Empty for every other run.
-        "location_refusals_accepted": accepted_location_refusals(ctx.get("qa_run_record") or {}),
+        "location_refusals_accepted": location_refusals_accepted,
     }
     qa_run = ctx.get("qa_run")
     if qa_run is not None:

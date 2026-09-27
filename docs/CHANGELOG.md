@@ -21,6 +21,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   residue proof no longer names the gate's TTL-bound per-day counters.
 - [hotfix] `mega-live`'s location proof accepts an out-of-range location check reported not applicable only on the
   seed probe's own argument refusal of the value it names, and records that refusal kind in the run evidence.
+- [hotfix] `run_evidence` imports the location proof only to judge a read QA Run record, so the backend DinD suite,
+  which has no `scripts/` on its path, imports it and builds artifacts again.
 
 ## 2026-09-26
 
