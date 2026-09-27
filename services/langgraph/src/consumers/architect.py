@@ -668,6 +668,7 @@ def _requirements_briefing(attempt: _PlanningAttempt | None) -> str:
         briefing
         + _usage_briefing(attempt)
         + _limitations_briefing(attempt)
+        + _variant_choices_briefing(attempt)
         + _settings_briefing(attempt)
     )
 
@@ -718,6 +719,23 @@ def _limitations_briefing(attempt: _PlanningAttempt) -> str:
         f"{listed}\n"
         "They are decisions, not gaps: plan within them, and read them when deciding "
         "whether a requirement's input is settled."
+    )
+
+
+def _variant_choices_briefing(attempt: _PlanningAttempt) -> str:
+    choices = attempt.brief.content.variant_choices
+    if not choices:
+        return ""
+    listed = "\n".join(
+        f"- {choice.feature}: chosen: {choice.chosen}; alternative: {choice.alternative}; "
+        f"trade-off: {choice.trade_off}; add later: {choice.add_later}"
+        for choice in choices
+    )
+    return (
+        "\n\nRecorded variant_choices context from the confirmed brief:\n"
+        f"{listed}\n"
+        "Build only the chosen variant. The alternative is not a requirement; do not build it "
+        "or plan tasks for it. The add-later path is context for a future order."
     )
 
 
