@@ -17,6 +17,7 @@ between the two files.
 | [docs/coding-agents.md](docs/coding-agents.md) | Coding-agent integration and instruction injection |
 | [docs/TESTING.md](docs/TESTING.md) | Test layers, commands, and CI coverage |
 | [docs/SECRETS.md](docs/SECRETS.md) | Secret isolation and operational handling |
+| [docs/PLATFORM_CAPABILITIES.md](docs/PLATFORM_CAPABILITIES.md) | What a product can and cannot have |
 
 ## Related projects
 
@@ -128,6 +129,13 @@ logger = structlog.get_logger()
 async def my_node(state: OrchestratorState) -> dict:
     return {"messages": [...], "current_agent": "my_node"}
 ```
+
+**Platform capability manifest** — `docs/platform_capabilities.yaml` says what a product can and
+cannot have, with workarounds; the PO and the Architect read a compact rendering of it. A PR that
+changes a capability (deployer, secret resolver, allocations, port services, requestable modules,
+the kit pin, anything a product can or cannot do) changes the manifest in the same PR, bumps its
+`version`, and re-renders with `python -m scripts.platform_capabilities`. Unit tests fail while the
+renderings are stale or a derived key, port service or secret kind in the code is unlisted.
 
 ## Makefile
 

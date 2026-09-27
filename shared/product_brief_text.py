@@ -182,9 +182,11 @@ def render_brief_message(title: str, content: ProductBriefContent) -> str:
     """The short form: the one confirmation message the user is shown.
 
     Bold sections in the user's language — what they get, how they will use
-    it, the limitations, the settings — each omitted when empty, and the answer
-    line in their language at the end. Each requirement's wording appears once
-    and its usage appears once, in the usage section.
+    it, the limitations, the variant choices (what was chosen, the alternative,
+    the trade-off and how it could be added later), the settings — each
+    omitted when empty, and the answer line in their language at the end. Each
+    requirement's wording appears once and its usage appears once, in the usage
+    section.
     """
     label = labels_for(content.language)
     return "\n\n".join([*_sections(title, content, full=False), _e(label["answer"])])
@@ -199,7 +201,8 @@ def render_full_brief_sections(title: str, content: ProductBriefContent) -> list
     """The full form, one section per item, in the order the user reads them.
 
     The heading (title and summary), what they get with the user's own words for
-    each requirement, how they will use it, the limitations and the settings.
+    each requirement, how they will use it, the limitations, the variant choices
+    and the settings.
     An empty section is omitted. Nothing is cut: a section over Telegram's limit
     is left to the bot's splitter.
     """

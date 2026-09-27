@@ -27,7 +27,7 @@ import pytest
 from shared.contracts.dto.product_brief import ProductBriefContent
 from src.agents.po.tools_briefs import present_product_brief
 from src.agents.po.tools_shared import init_po_clients
-from src.prompts.po import SYSTEM_PROMPT
+from src.prompts.po import MODEL_PROMPT
 from tests.unit.po.finance_bot_replay import (
     NUDGE,
     TELEGRAM_CHAT_ID,
@@ -67,7 +67,7 @@ async def test_the_po_brief_decides_income_by_text_and_names_the_free_ocr_trade_
             api_key=llm_config["api_key"],
         ),
         tools=ToolNode([present_product_brief], handle_tool_errors=True),
-        prompt=SYSTEM_PROMPT,
+        prompt=MODEL_PROMPT,
         checkpointer=MemorySaver(),
     )
     config = {"configurable": {"thread_id": "po-finance-bot", "telegram_chat_id": TELEGRAM_CHAT_ID}}
