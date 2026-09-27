@@ -815,23 +815,33 @@ quarantined to DLQ, and alerted rather than silently becoming unaddressable.
 The PO prompt's "Story Events & Reminders" lists the events PO receives, each an
 `OwnerNotificationEvent`: `story_completed`, `story_failed`, `story_blocked`,
 `story_quarantined` (worded as `story_blocked`: work is stopped, a person decides, no
-known time), `story_waiting_user_secret` and `story_requirements_returned`. A unit test
+known time), `story_impossible_capacity`, `task_impossible_capacity`,
+`story_waiting_user_secret` and `story_requirements_returned`. A unit test
 holds the listed set inside the vocabulary the consumer routes.
 
 A `story_stage` event carries `stage`, `waiting_on`, `wait_estimate`, `stage_notice`,
 `stage_notice_step` and `stage_entered_at`. The step is 0 for `entered` and only for it, `n` for the
 `n`-th `still_there` of the stay. `stage_entered_at` names the stay: when its entry notice went out,
-the same on every notice of the stay, later for a return to the stage. The PO consumer tells a
-notice only if it is a later stay or a higher step of the stay last told, so a redelivered older
-step is never told again, and nothing about an unchanged story in between
-(`consumers/po_story_gate.py`).
+the same on every notice of the stay, later for a return to the stage. The PO consumer logs and
+drops every stage notice before the graph; the scheduler producer remains unchanged.
+
+At the single proactive publish point, `consumers/po_story_gate.py` classifies the current API
+story as `in_work`, `needs_user`, `stopped`, `completed` or `failed`. Reminders publish only an
+untold `needs_user` or `stopped` state; planning failure before building is stopped, while changes
+among in-work statuses, resource waits and escalation steps never justify a message. Terminal
+reminders stay silent because the durable seam tells endings. Durable key events and returned
+requirements publish and record what was told. Resource/infrastructure waits and resumptions run
+the PO turn but their replies are suppressed. Redis retains the last told state per chat/story
+without expiry until the story ends; the previous fingerprint format counts as already told.
+An unreadable gate suppresses reminders, while durable events still publish.
 
 **Only an ordered story's outcome reaches the user.** A story is *ordered* when
 `GET /api/product-briefs/by-story/{id}` returns a brief with `confirmed_at` set. The PO consumer
-checks it before the PO graph for every `system_event` that names a story, so producers do not: a
+checks it before the PO graph for every remaining `system_event` that names a story, so producers do not: a
 not-ordered story's event never reaches the graph or `po:proactive`, the admins get it marked as
-withheld, and a not-ordered `story_stage` is dropped and logged. `story_waiting_user_secret` is
-exempt. A 404 or an unconfirmed brief is "not ordered"; an API error leaves the entry unacked for
+withheld. Stage notices were already dropped without an audience read. `story_waiting_user_secret` is
+exempt. A 404 or a validated unconfirmed brief is "not ordered"; every exception while reading
+the brief, including malformed bodies, leaves the entry unacked for
 the PEL sweep to hand back.
 
 In a PO turn without `request_id` (a reminder or system event) the only way to the user is that

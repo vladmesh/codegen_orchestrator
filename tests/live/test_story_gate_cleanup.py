@@ -39,13 +39,13 @@ NEXT_DAY = datetime(2026, 9, 28, 0, 5, tzinfo=UTC)
 
 
 def _gate_keys(story_id: str) -> list[str]:
-    """Every key the gate can write for one story: two chats, a run across midnight."""
+    """Current records and legacy daily counters for two chats across midnight."""
     return [
         po_story_gate.story_told_key(CHAT_ID, story_id),
         po_story_gate.story_told_key(OTHER_CHAT_ID, story_id),
-        po_story_gate.story_told_daily_key(CHAT_ID, story_id, DAY),
-        po_story_gate.story_told_daily_key(CHAT_ID, story_id, NEXT_DAY),
-        po_story_gate.story_told_daily_key(OTHER_CHAT_ID, story_id, DAY),
+        f"po:story_told_daily:{CHAT_ID}:{story_id}:{DAY.date().isoformat()}",
+        f"po:story_told_daily:{CHAT_ID}:{story_id}:{NEXT_DAY.date().isoformat()}",
+        f"po:story_told_daily:{OTHER_CHAT_ID}:{story_id}:{DAY.date().isoformat()}",
     ]
 
 
@@ -139,7 +139,6 @@ def test_the_patterns_select_exactly_the_keys_the_gate_writes_for_a_story():
         for key in _gate_keys(other):
             assert not any(fnmatchcase(key, pattern) for pattern in patterns), key
     assert pipeline_helpers.STORY_TOLD_KEY_PREFIX == po_story_gate.STORY_TOLD_KEY_PREFIX
-    assert pipeline_helpers.STORY_TOLD_DAILY_KEY_PREFIX == po_story_gate.STORY_TOLD_DAILY_KEY_PREFIX
 
 
 def test_a_run_that_owns_no_story_asks_redis_nothing(cli, monkeypatch):

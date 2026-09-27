@@ -777,9 +777,9 @@ behind the word `absent`. That kind goes red in `cleanup_all` — before this pr
 is the card's instruction rather than an accident, and is said so in `database_check_from`. The one Redis key a
 clean run keeps is `worker:evidence:removed:<run id>` — the removal records are evidence and expire
 on their own TTL — and it is excluded by name, with the reason in the proof's notes. Other
-TTL-bound keys that name a run's story are removed, not exempted: `cleanup_and_prove` deletes the
+Keys that name a run's story are removed, not exempted: `cleanup_and_prove` deletes the
 scheduler's stage-notice markers and the PO reminder gate's `po:story_told:*:<story>` and
-`po:story_told_daily:*:<story>:*` records (prefixes imported from `po_story_gate`) and reads back
+legacy `po:story_told_daily:*:<story>:*` counters (the current prefix is imported from `po_story_gate`) and reads back
 that none is left, before the proof asks (`test_stage_notice_cleanup.py`, `test_story_gate_cleanup.py`).
 
 **Nobody needed** (`run_intervention.py`, recorded before teardown). No story of the run ever entered

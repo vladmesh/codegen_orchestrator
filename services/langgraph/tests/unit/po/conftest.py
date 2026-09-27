@@ -27,7 +27,6 @@ def _fixed_po_summarization_config(monkeypatch):
             max_summary_tokens=1,
         ),
     )
-    monkeypatch.setattr(po_consumer, "load_story_gate_cap", lambda _api_base_url: lambda: 6)
 
 
 class InWorkStories:
@@ -72,7 +71,7 @@ def gate_redis() -> RedisStreamClient:
 @pytest.fixture(autouse=True)
 def story_gate(monkeypatch, gate_redis, gate_stories) -> ProactiveStoryGate:
     """Every consumer test runs with the real gate over fakeredis and in-work stories."""
-    gate = ProactiveStoryGate(gate_redis, gate_stories, lambda: 6)
+    gate = ProactiveStoryGate(gate_redis, gate_stories)
     monkeypatch.setattr(po_consumer, "_story_gate", gate)
     return gate
 

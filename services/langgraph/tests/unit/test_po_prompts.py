@@ -140,9 +140,7 @@ class TestSystemPrompt:
             "`user_report` (the user's words) for a complaint. Never a new story."
         ) in scenario
         events = " ".join(_section("## Story Events & Reminders").split())
-        assert "`failed` — permanent failure → explain the cause; a retry is `reopen_story(" in (
-            events
-        )
+        assert "A retry is `reopen_story(story_id)`" in events
 
     def test_a_service_matter_is_a_note_to_the_admins(self):
         section = " ".join(_section("## Service Matters").split())
@@ -235,7 +233,7 @@ class TestSystemPrompt:
 
     def test_a_quarantined_story_is_listed_with_the_blocked_wording(self):
         events = _section("## Story Events & Reminders")
-        listed_part = events.split("These are the ONLY events you receive.")[0]
+        listed_part = events.split("**Reminders**")[0]
         assert re.search(r"^- `story_quarantined` —", listed_part, flags=re.MULTILINE)
         bullet = events[events.index("- `story_quarantined`") :]
         bullet = " ".join(bullet[: bullet.index("\n- ")].split())
@@ -247,7 +245,7 @@ class TestSystemPrompt:
     def test_unverified_checks_get_one_honest_message_and_a_recorded_answer(self):
         events = " ".join(_section("## Story Events & Reminders").split())
         rule = events[events.index("**Checks QA could not run.**") :]
-        rule = rule[: rule.index("These are the ONLY events you receive.")].strip()
+        rule = rule[: rule.index("**Reminders**")].strip()
         assert rule == (
             "**Checks QA could not run.** When `story_completed` or `story_quarantined` lists "
             '"What QA could not check", send ONE message in the user\'s language, with the '
@@ -284,15 +282,15 @@ class TestSystemPrompt:
         assert "what they send and what the bot answers" in bullet.replace("\n", " ")
         assert "Never give a backend API address" in bullet
         assert "**NEVER fabricate URLs.**" in SYSTEM_PROMPT
-        assert "`completed` — DONE → good news as for `story_completed`" in SYSTEM_PROMPT
+        assert "Terminal stories: reply nothing" in SYSTEM_PROMPT
 
     def test_the_only_events_listed_are_the_owner_notification_vocabulary(self):
         """Drift: every event the prompt says it receives is one PO's consumer routes."""
         from shared.contracts.vocab import OwnerNotificationEvent
 
         events = _section("## Story Events & Reminders")
-        listed_part, only = events.split("These are the ONLY events you receive.")
-        assert "No task/deploy/infra notifications." in only
+        listed_part = events.split("**Reminders**")[0]
+        assert "Resource/infrastructure waits and resumptions: reply nothing" in listed_part
         listed = re.findall(r"^- `([a-z_]+)` —", listed_part, flags=re.MULTILINE)
         assert "story_requirements_returned" in listed
         assert "story_quarantined" in listed
@@ -305,8 +303,8 @@ class TestSystemPrompt:
         assert "the cause in one plain sentence" in section
         assert "NEVER say development continues or nothing is required of them" in section
         events = _section("## Story Events & Reminders")
-        assert "a `problem` in any status → Reporting a Problem Honestly" in events
-        assert events.index("a `problem` in any status") < events.index("`in_progress` / `created`")
+        assert "planning failed" in events
+        assert "Reporting a Problem Honestly" in events
 
     def test_the_diagnostics_tool_named_in_the_prompt_exists(self):
         from src.agents.po.tools import get_all_tools
@@ -344,3 +342,13 @@ class TestCreateStoryDocstring:
         assert "Every story needs a confirmed Product Brief" in doc
         assert "use `reopen_story` on the original story" in doc
         assert "fix" not in doc.lower()
+
+
+def test_story_status_is_only_answered_on_request():
+    assert "brief update" not in SYSTEM_PROMPT
+    assert "set_reminder(10" not in SYSTEM_PROMPT
+    assert "Set a reminder for 10-15 minutes" not in SYSTEM_PROMPT
+    assert "Do not set progress reminders after creating a story" in SYSTEM_PROMPT
+    assert "in_work: reply nothing" in SYSTEM_PROMPT
+    assert "Only when the user asks" in _section("## Scenario: Status Check")
+    assert "`get_story`" in _section("## Scenario: Status Check")
