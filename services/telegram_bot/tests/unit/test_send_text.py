@@ -276,7 +276,6 @@ class TestNoRawErrorText:
     @pytest.mark.asyncio
     async def test_failed_message_gets_a_fixed_apology(self, error, monkeypatch):
         monkeypatch.setattr(bot_main, "_stream_client", MagicMock())
-        monkeypatch.setattr(bot_main, "_post_rag_message", AsyncMock())
         monkeypatch.setattr(bot_main, "_send_to_po_and_wait", AsyncMock(side_effect=error))
         update = MagicMock()
         update.message.reply_text = AsyncMock()

@@ -60,7 +60,7 @@ Stage by stage: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes and thei
 | `architect` | Splits a story into tasks. Its own container, not part of the scheduler. |
 | `scheduler-pipeline` | Ordered task, story, PR/CI, supervisor, notification, QA and access lifecycle. |
 | `scheduler-infrastructure` | Server sync, health checks, provisioning triggers and result recovery. |
-| `scheduler-maintenance` | GitHub sync, RAG summarization, analytics aggregation and queue cleanup. |
+| `scheduler-maintenance` | GitHub sync, analytics aggregation and queue cleanup. |
 | `scaffolder` | Prepares the repository: copier, `make setup`, first push. Runs before the architect. |
 | `engineering-worker`, `deploy-worker`, `qa-worker` | Redis-stream consumers. Separate entrypoints on the shared `langgraph` image. |
 | `worker-manager` | Starts and reaps the coding-agent containers, isolated on the `codegen_worker` network. |

@@ -250,9 +250,6 @@ class LanggraphAPIClient(InternalAPIClient):
             }
         )
 
-    async def query_rag(self, payload: dict) -> dict:
-        return await self._post_json("rag/query", json=payload)
-
     async def create_incident(self, payload: dict) -> dict:
         return await self._post_json("incidents/", json=payload)
 

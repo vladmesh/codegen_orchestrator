@@ -615,7 +615,7 @@ itself through the product's door — `register_run_owner` mints a promo code an
 fresh Telegram id from the band the harness registers in
 (`live_harness.RUN_USER_TELEGRAM_ID_MIN..MAX`) — so the rows that hang off that user without hanging off its project are the run's residue:
 `engineering_budget_policies`, `engineering_budget_reservations`, the `promo_codes` row it redeemed,
-`work_admission_audits`, its `rag_*` dialogue rows. They join the closure because the *root* does,
+`work_admission_audits`. They join the closure because the *root* does,
 not because anyone listed them; `work_admission_audits.user_id` carries no foreign key at all and is
 covered by the same denormalized-column derivation as `service_deployments.project_id`.
 

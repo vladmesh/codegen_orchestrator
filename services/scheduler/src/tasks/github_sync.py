@@ -1,13 +1,9 @@
 """GitHub sync worker - syncs projects and their status from GitHub."""
 
 import asyncio
-import hashlib
-import hmac
-import json
 import os
 import time
 
-import httpx
 from pydantic import ValidationError
 import structlog
 import yaml
@@ -19,7 +15,6 @@ from shared.notifications import notify_admins_best_effort
 from shared.schemas.github import GitHubRepository
 from shared.schemas.project_spec import ProjectSpecYAML
 from src.clients.api import api_client
-from src.config import get_settings
 
 from .. import startup
 
@@ -34,92 +29,12 @@ def _missing_threshold() -> int:
     return startup.get_config().get_int("scheduler.github_sync_missing_threshold")
 
 
-async def _ingest_to_rag(
-    project_id: str,
-    repo_full_name: str,
-    documents: list[dict],
-) -> None:
-    """Send documents to RAG ingest API (best-effort, non-blocking).
-
-    Documents are indexed with hash-based deduplication - unchanged
-    content will be skipped by the API automatically.
-    """
-    settings = get_settings()
-    secret = os.getenv("RAG_INGEST_SECRET")
-
-    if not settings.api_base_url or not secret:
-        logger.debug(
-            "rag_ingest_skipped",
-            reason="missing_config",
-            has_api_url=bool(settings.api_base_url),
-            has_secret=bool(secret),
-        )
-        return
-
-    if not documents:
-        return
-
-    # Build payload
-    payload = {
-        "event": "rag.docs.upsert",
-        "project_id": project_id,
-        "documents": documents,
-    }
-
-    # Build HMAC signature
-    timestamp = int(time.time())
-    body = json.dumps(payload).encode("utf-8")
-    message = f"{timestamp}.".encode() + body
-    signature = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-RAG-Timestamp": str(timestamp),
-        "X-RAG-Signature": f"sha256={signature}",
-    }
-
-    try:
-        result = await api_client.ingest_rag(body=body, headers=headers)
-
-        logger.info(
-            "rag_ingest_success",
-            project_id=project_id,
-            repo=repo_full_name,
-            docs_received=result.get("documents_received", 0),
-            docs_indexed=result.get("documents_indexed", 0),
-            docs_skipped=result.get("documents_skipped", 0),
-        )
-    except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "rag_ingest_http_error",
-            project_id=project_id,
-            repo=repo_full_name,
-            status_code=exc.response.status_code,
-            detail=exc.response.text[:200],
-        )
-    except Exception as exc:
-        logger.warning(
-            "rag_ingest_failed",
-            project_id=project_id,
-            repo=repo_full_name,
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-
-
-def _hash_content(content: str) -> str:
-    """Generate SHA256 hash of content for deduplication."""
-    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
-
-
-async def _sync_project_docs(
+async def _sync_project_spec(
     github_client: GitHubAppClient,
     project: ProjectDTO,
     r: GitHubRepository,
 ) -> None:
-    """Sync project spec and README to RAG index."""
-    rag_documents: list[dict] = []
+    """Sync the project spec from the repository's .project-spec.yaml."""
     owner, repo = r.full_name.split("/")
 
     # Sync project spec from .project-spec.yaml
@@ -138,18 +53,6 @@ async def _sync_project_docs(
                 "project_spec_synced",
                 project_name=project.title,
                 spec_version=spec_dict.get("version", "unknown"),
-            )
-            rag_documents.append(
-                {
-                    "source_type": "project_spec",
-                    "source_id": ".project-spec.yaml",
-                    "source_uri": f"repo://{r.full_name}/.project-spec.yaml",
-                    "scope": "public",
-                    "path": ".project-spec.yaml",
-                    "title": f"{project.title} Project Spec",
-                    "content": spec_content,
-                    "content_hash": _hash_content(spec_content),
-                }
             )
     except ValidationError as e:
         logger.error(
@@ -173,45 +76,13 @@ async def _sync_project_docs(
             error_type=type(e).__name__,
         )
 
-    # Fetch README.md for RAG
-    try:
-        readme_content = await github_client.get_file_contents(owner, repo, "README.md")
-        if readme_content:
-            rag_documents.append(
-                {
-                    "source_type": "readme",
-                    "source_id": "README.md",
-                    "source_uri": f"repo://{r.full_name}/README.md",
-                    "scope": "public",
-                    "path": "README.md",
-                    "title": f"{project.title} README",
-                    "content": readme_content,
-                    "content_hash": _hash_content(readme_content),
-                }
-            )
-    except Exception as e:
-        logger.debug(
-            "readme_fetch_skipped",
-            project_name=project.title,
-            error=str(e),
-            error_type=type(e).__name__,
-        )
-
-    # Ingest documents to RAG (best-effort)
-    if rag_documents:
-        await _ingest_to_rag(
-            project_id=str(project.id),
-            repo_full_name=r.full_name,
-            documents=rag_documents,
-        )
-
 
 async def _sync_single_repo(
     github_client: GitHubAppClient,
     r: GitHubRepository,
     missing_counters: dict[str, int],
 ) -> None:
-    """Sync a single repository to the database and RAG index."""
+    """Sync a single repository to the database."""
     repo_id = r.id
     repo_name = r.name
 
@@ -241,8 +112,7 @@ async def _sync_single_repo(
         logger.warning("repo_orphaned", repo_name=repo_name, project_id=project_id)
         return
 
-    # Sync project spec and README to RAG
-    await _sync_project_docs(github_client, project, r)
+    await _sync_project_spec(github_client, project, r)
 
     # Reset missing counter if it was missing
     project_id_str = str(project.id)

@@ -13,6 +13,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   reaches the user.
 - [hotfix] `LLMAlerts.drain` no longer busy-loops on an alert whose done callback is still queued (the unit
   hang on main); every unit test has a 90 s timeout that names a hanging test and its asyncio tasks.
+- RAG is removed: its routes, embedding client, ingest, summarizer, Telegram message capture and four `rag_*` tables
+  (dropped by migration `d3f5a7c9e1b4`) had no reader; `OPEN_ROUTER_KEY` is no longer required.
 
 ## 2026-09-26
 

@@ -98,11 +98,6 @@
   category: scheduler
   description: "SSL certificate check socket timeout in seconds"
 
-- key: scheduler.rag_summarizer_poll_interval
-  value: 30
-  category: scheduler
-  description: "RAG summarizer poll interval in seconds"
-
 - key: scheduler.ci_failure_max_fingerprint_attempts
   value: 2
   category: scheduler

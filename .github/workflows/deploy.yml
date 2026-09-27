@@ -265,7 +265,6 @@ jobs:
           # LLM
           ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-          OPEN_ROUTER_KEY=${{ secrets.OPEN_ROUTER_KEY }}
           PO_LLM_MODEL=${{ secrets.PO_LLM_MODEL }}
           PO_LLM_BASE_URL=${{ secrets.PO_LLM_BASE_URL }}
           PO_LLM_API_KEY=${{ secrets.PO_LLM_API_KEY }}

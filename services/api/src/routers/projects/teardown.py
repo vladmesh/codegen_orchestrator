@@ -25,10 +25,6 @@ from shared.models import (
     ProductBrief,
     Project,
     QAProbe,
-    RAGChunk,
-    RAGConversationSummary,
-    RAGDocument,
-    RAGMessage,
     Repository,
     RequirementCoverage,
     Run,
@@ -337,8 +333,6 @@ async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> No
     await db.execute(delete(VerificationGap).where(VerificationGap.project_id == project_id))
 
     for model in (AnalyticsHourly, AnalyticsDaily, AnalyticsKnownUsers):
-        await db.execute(delete(model).where(model.project_id == project_id))
-    for model in (RAGChunk, RAGDocument, RAGMessage, RAGConversationSummary):
         await db.execute(delete(model).where(model.project_id == project_id))
 
     await db.execute(
