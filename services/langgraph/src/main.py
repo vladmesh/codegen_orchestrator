@@ -58,6 +58,7 @@ async def run_worker() -> None:
     # One alert sender for every chain of this process and the balance check.
     alerts = LLMAlerts.from_settings(settings)
     summarization_config = None
+    story_gate_cap = None
     po_llms = None
     if not po_missing:
         if not settings.checkpoint_database_url:
@@ -69,9 +70,10 @@ async def run_worker() -> None:
         # Validate every PO-only startup dependency before unrelated background
         # loops begin. Operational summarization tuning is required system config;
         # an unavailable/malformed source is not an env-fallback mode.
-        from .consumers.po import load_po_llms, load_summarization_config
+        from .consumers.po import load_po_llms, load_story_gate_cap, load_summarization_config
 
         summarization_config = load_summarization_config(settings.api_base_url)
+        story_gate_cap = load_story_gate_cap(settings.api_base_url)
         po_llms = await load_po_llms(settings, alerts)
 
     tasks = [
@@ -97,7 +99,13 @@ async def run_worker() -> None:
         await poller_client.connect()
 
         logger.info("po_consumer_enabled")
-        tasks.append(run_po_consumer(summarization_config=summarization_config, llms=po_llms))
+        tasks.append(
+            run_po_consumer(
+                summarization_config=summarization_config,
+                llms=po_llms,
+                story_gate_cap=story_gate_cap,
+            )
+        )
         tasks.append(run_reminder_poller(poller_client))
 
     await asyncio.gather(*tasks)

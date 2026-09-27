@@ -36,15 +36,20 @@ _STORY_ID_RE = re.compile(r"\bstory-[A-Za-z0-9-]+\b")
 
 @tool
 async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfig) -> str:
-    """Set a reminder to wake up after a delay.
+    """Set a reminder to wake up after a delay and re-check something.
 
     Use this whenever you need to wait and follow up later — after triggering
     a task, when the user asks to be reminded, or any situation where you
     should check back in the future.
 
+    A reminder is for you to re-check, not a scheduled message to the user.
+    The user hears about a story only when its state has changed since they
+    were last told: your reply to a reminder about an unchanged story is not
+    delivered. Name the story id (story-...) in the reason.
+
     Args:
         delay_minutes: Minutes until reminder fires.
-        reason: Why you're setting this reminder (e.g. "check engineering task eng-abc123").
+        reason: Why you're setting this reminder (e.g. "re-check story story-abc123").
     """
     redis = tools_shared._get_stream_client().redis
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
@@ -66,6 +71,13 @@ async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfi
     return f"Reminder set for {delay_minutes} minutes: {reason}"
 
 
+#: The tool result a non-user turn gets from ``notify_user``: nothing was sent.
+_NOTIFY_USER_REFUSED = (
+    "Not sent: in reminder/system turns only your final reply reaches the user, "
+    "and it is sent only if the story changed."
+)
+
+
 @tool
 async def notify_user(message: str, *, config: RunnableConfig) -> str:
     """Send an intermediate message to the user and continue working.
@@ -75,11 +87,20 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
     create_story. Your final response is always delivered to the user
     automatically — do NOT use this tool for final replies.
 
+    Only in a turn answering the user. In a reminder or system turn nothing is
+    sent: your final reply is the only way to reach the user there.
+
     Args:
         message: Text to send to the user right now.
     """
-    client = tools_shared._get_stream_client()
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
+    if not config["configurable"]["user_turn"]:
+        # A reminder or system turn reaches the user only through its gated
+        # final reply (`consumers/po_story_gate.py`); a direct publish here
+        # would bypass it and could repeat an unchanged story without end.
+        logger.info("po_notify_user_refused", telegram_chat_id=telegram_chat_id)
+        return _NOTIFY_USER_REFUSED
+    client = tools_shared._get_stream_client()
     msg = POProactiveMessage(text=message, telegram_chat_id=telegram_chat_id)
     await client.publish_flat(queues.PO_PROACTIVE_QUEUE, to_flat_fields(msg))
 

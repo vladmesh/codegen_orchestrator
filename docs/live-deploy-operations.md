@@ -255,6 +255,26 @@ while you wait. The architect's claim voids the failed attempt's unadmitted
 tasks, so nothing of the failed plan is dispatched. Any other state is refused
 with 422 and changes nothing. Do not PATCH the status or run SQL.
 
+## What a story's owner hears while it is in work, and when
+
+Proactive messages about one story come from three places, and only the first is unconditional:
+
+- **Endings and stops** (`story_completed`, `story_failed`, `story_blocked`, `story_quarantined`,
+  `story_waiting_user_secret`): the durable owner-notification seam, told once each, never capped.
+- **Stage notices**: on entering an in-work stage, then "still there" at 1, 2, 4, 8… ×
+  `supervisor.stage_notice_quiet_minutes` (default 60) after the entry, each gap capped at
+  `supervisor.stage_notice_max_interval_minutes` (default 1440). A story stuck in `in_progress` for 8 hours
+  gives the entry plus 1 h, 2 h and 4 h; after that at most one a day.
+- **PO self-reminders**: the PO re-checks as often as it likes, but the user hears the reply only if the
+  story changed (`status`, `waiting_on`, failure code, planning state or attempt count) since they were last told.
+  In such a turn `notify_user` sends nothing (`po_notify_user_refused` in the log).
+
+Both of the last two pass the PO proactive gate, which also caps them at `po.story_proactive_daily_cap`
+(default 6) per chat and story per UTC day. A withheld message is `po_proactive_suppressed` in the langgraph
+log, with `reason` `unchanged`, `daily_cap` or `story_ended` and the fingerprint it compared. To see what a
+chat was last told about a story: `redis-cli GET po:story_told:<chat>:<story>`. Deleting that key makes the
+next reminder or stage step about the story go out again; it is never needed to unblock anything.
+
 ## LLM channel alerts: what they mean and what to do
 
 Administrators get these from the langgraph and architect processes. Each repeats at most once per

@@ -58,6 +58,7 @@ def initialized_scheduler_config(monkeypatch):
         "supervisor.user_secret_wait_max_minutes": 1440,
         "supervisor.planless_story_max_minutes": 60,
         "supervisor.stage_notice_quiet_minutes": 60,
+        "supervisor.stage_notice_max_interval_minutes": 1440,
         "supervisor.resource_wait_metrics_freshness_seconds": 300,
         "supervisor.qa_handoff_target_held_max_minutes": 4,
         "supervisor.temporary_access_ttl_minutes": 60,

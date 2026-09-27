@@ -113,11 +113,14 @@ def _brief(confirmed: bool = True, story_id: str | None = None, project_id: str 
     )
 
 
-def _make_config(telegram_chat_id: str = "test-user", retry_story_id: str = "") -> dict:
-    """Create a RunnableConfig with telegram_chat_id."""
+def _make_config(
+    telegram_chat_id: str = "test-user", retry_story_id: str = "", *, user_turn: bool = True
+) -> dict:
+    """Create a RunnableConfig with telegram_chat_id, for a turn answering the user."""
     configurable = {
         "thread_id": f"po-chat-{telegram_chat_id}",
         "telegram_chat_id": telegram_chat_id,
+        "user_turn": user_turn,
     }
     if retry_story_id:
         configurable["retry_story_id"] = retry_story_id
@@ -1645,6 +1648,19 @@ class TestNotifyUser:
 
         fields = mock_stream_client.publish_flat.call_args[0][1]
         assert fields["telegram_chat_id"] == "user-456"
+
+    @pytest.mark.asyncio
+    async def test_a_reminder_or_system_turn_sends_nothing(self, mock_stream_client):
+        """Only the gated final reply reaches the user outside a user turn."""
+        result = await notify_user.ainvoke(
+            {"message": "Work is going."},
+            config=_make_config("user-456", user_turn=False),
+        )
+
+        assert result.startswith(
+            "Not sent: in reminder/system turns only your final reply reaches the user"
+        )
+        mock_stream_client.publish_flat.assert_not_called()
 
 
 class TestWebSearch:

@@ -98,8 +98,10 @@ asked once, and its clock starts at that delivery.
 While a story is in work its owner is told the stage, not left in silence
 (`services/scheduler/src/tasks/supervisor/stage_notices.py`). A story in `created`,
 `in_progress`, `reopened`, `pr_review`, `deploying` or `testing` gets one non-terminal
-`story_stage` event on entering the stage and one more each time it is still there
-`supervisor.stage_notice_quiet_minutes` (60) after the last notice. The sweep runs once per
+`story_stage` event on entering the stage (step 0) and then `still_there` steps on a growing
+schedule: step 1 one `supervisor.stage_notice_quiet_minutes` (60) after the entry, then 2, 4, 8…
+quiet intervals after it, each gap capped at `supervisor.stage_notice_max_interval_minutes` (1440).
+Each event carries its `stage_notice_step`. The sweep runs once per
 cycle of the `story_supervision` loop, right after the state-age watchdog, so the owner hears each stage the story is *observed* in within one sweep; a stage
 entered and left between two sweeps is deliberately not announced, because it is no longer true. Just before
 the marker write the story is read again, and a story that has left the scanned stage gets no notice and no
@@ -107,9 +109,9 @@ marker, whatever order the routing supervisors run in; the next sweep announces 
 `StoryStatus`, its `WAITING_ON_BY_STATUS` value and a `StoryWaitEstimate` — the magnitude of the
 state's bound above, or `unbounded` where the map has none. Terminal states and the two states
 whose owner was already told what is needed (`waiting_user_secret`, `waiting_human_review`) get
-none. The last notice per story is a Redis marker (`story:stage_notice:<id>`) written before the
-publish, with no expiry, so a scheduler restart of any length neither repeats nor resets the
-interval; it is deleted by the first sweep that no longer finds the story in work. It is best-effort by
+none. The last notice per story, with its step, is a Redis marker (`story:stage_notice:<id>`) written
+before the publish, with no expiry, so a scheduler restart of any length neither repeats nor resets the
+schedule; it is deleted by the first sweep that no longer finds the story in work. It is best-effort by
 design: a lost stage notice is superseded by the next one, so it is never an owed record.
 
 ---
@@ -362,6 +364,17 @@ A bound-host refusal also shapes the wait: resuming asks whether *any* server is
 
 ### Proactive Message Spam Filter
 PO sends user-facing lifecycle messages through `po:proactive`: deploy success, permanent story failure, and resource-wait entry, escalation, and resumption. Intermediate smoke, precheck, and workflow failures stay internal.
+
+A PO turn nobody asked for that names a story — a fired `set_reminder` or a `story_stage` notice — reaches
+the user only when it tells something new (`services/langgraph/src/consumers/po_story_gate.py`): the story's
+fingerprint (`status`, `waiting_on`, the `StoryFailure` code, the planning state and its failed attempts, read
+from the API at publish time) differs from the one last told to that chat, or the notice is a later stay
+(`stage_entered_at`) or a higher step of the stay last told, whatever order redelivery brings it in; and fewer than `po.story_proactive_daily_cap` (6) such messages about the story went to the chat this UTC
+day. Otherwise the turn still runs and only the message is withheld, logged as `po_proactive_suppressed` with the
+reason (`unchanged`, `daily_cap`, `story_ended`) and the fingerprint. The "last told" record
+(`po:story_told:<chat>:<story>`) is written only after the publish, so a failed publish repeats the change rather
+than losing it; the story's ending deletes it. The durable owner notifications are not gated or counted. In such a
+turn the `notify_user` tool sends nothing, so the gated final reply is the only way to the user.
 
 ---
 

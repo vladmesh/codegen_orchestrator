@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-27
 
+- A reminder or stage notice about a story reaches its owner only on a change or a new escalation step, at most
+  `po.story_proactive_daily_cap` a day; the PO's self-reminders no longer repeat "work is going" every 15 minutes.
+- A stay in one stage is re-announced at 1, 2, 4, 8… quiet intervals, each gap capped at
+  `supervisor.stage_notice_max_interval_minutes`; a notice carries its step and stay, told only in rising order.
+- `notify_user` sends nothing in a reminder or system turn, so the gated final reply is the only way such a turn
+  reaches the user.
 - [hotfix] `LLMAlerts.drain` no longer busy-loops on an alert whose done callback is still queued (the unit
   hang on main); every unit test has a 90 s timeout that names a hanging test and its asyncio tasks.
 
