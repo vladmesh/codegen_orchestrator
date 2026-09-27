@@ -20,8 +20,9 @@ import structlog
 from shared import queues
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.engineering_budget_display import format_microusd
-from shared.notifications import AdminDeliveryStatus, deliver_to_admins
+from shared.notifications import AdminDeliveryResult, AdminDeliveryStatus, deliver_to_admins
 
+from ...capability_feasibility import CAPABILITY_LIMITS, MANIFEST_VERSION
 from . import tools_briefs, tools_notices, tools_projects, tools_shared, tools_stories
 
 logger = structlog.get_logger(__name__)
@@ -126,6 +127,13 @@ async def note_to_admins(text: str, *, config: RunnableConfig) -> str:
         text: What the admins should know, in plain words, with the project
             or story id when there is one.
     """
+    result = await _send_admin_note(text, config)
+    if result.status is AdminDeliveryStatus.DELIVERED:
+        return "Note delivered to the admins. No work was started."
+    return f"The note did not reach every admin ({result.detail}). No work was started."
+
+
+async def _send_admin_note(text: str, config: RunnableConfig) -> AdminDeliveryResult:
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
     user_name = config["configurable"].get("user_name", "")
     result = await deliver_to_admins(
@@ -137,9 +145,30 @@ async def note_to_admins(text: str, *, config: RunnableConfig) -> str:
         delivery=result.status.value,
         text_length=len(text),
     )
+    return result
+
+
+@tool
+async def pass_capability_request(
+    project_id: str, capability_id: str, user_words: str, *, config: RunnableConfig
+) -> str:
+    """Pass an unsupported capability request to admins when the user rejects its workaround.
+
+    Creates no brief or story. Use the manifest's cannot id and quote the user's
+    own words. Relay the result in the user's language; no work has started.
+    """
+    if capability_id not in CAPABILITY_LIMITS:
+        return f"Unknown cannot capability {capability_id!r}. No request was sent or work started."
+    capability = CAPABILITY_LIMITS[capability_id]
+    result = await _send_admin_note(
+        f"Capability request: {capability.id} ({capability.name}), "
+        f"manifest v{MANIFEST_VERSION}; project={project_id}. "
+        f"The user rejected the workaround. User's words: {user_words}",
+        config,
+    )
     if result.status is AdminDeliveryStatus.DELIVERED:
-        return "Note delivered to the admins. No work was started."
-    return f"The note did not reach every admin ({result.detail}). No work was started."
+        return "Your capability request was passed on to the admins. No work was started."
+    return f"The request did not reach every admin ({result.detail}). No work was started."
 
 
 @tool
@@ -244,6 +273,7 @@ def get_all_tools() -> list:
         set_reminder,
         notify_user,
         note_to_admins,
+        pass_capability_request,
         web_search,
     ]
 
@@ -252,6 +282,7 @@ __all__ = [
     "get_all_tools",
     "get_budget_balance",
     "note_to_admins",
+    "pass_capability_request",
     "notify_user",
     "set_reminder",
     "web_search",

@@ -1,17 +1,19 @@
 """Render the platform capability manifest for people and for the prompts.
 
 `docs/platform_capabilities.yaml` is the one source. This module validates it and renders
-the two derived texts: `docs/PLATFORM_CAPABILITIES.md` for people, and the compact block
+the derived texts: `docs/PLATFORM_CAPABILITIES.md` for people, and the compact block
 the PO and the Architect read, `services/langgraph/src/prompts/platform_capabilities.txt`
-(a text file, because the langgraph image carries neither `docs/` nor Markdown).
+(the langgraph image carries neither `docs/` nor Markdown). Beside the block,
+`platform_capabilities.json` carries the version and detection data used at runtime.
 
     python -m scripts.platform_capabilities
 
-rewrites both. Unit tests fail while either differs from what this renders.
+rewrites all three. Unit tests fail while any differs from what this renders.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -22,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "docs" / "platform_capabilities.yaml"
 DOCUMENT_PATH = ROOT / "docs" / "PLATFORM_CAPABILITIES.md"
 PROMPT_BLOCK_PATH = ROOT / "services/langgraph/src/prompts/platform_capabilities.txt"
+RUNTIME_PATH = PROMPT_BLOCK_PATH.with_suffix(".json")
 
 #: The heading the compact block starts with; the PO rule points at it by this name.
 PROMPT_BLOCK_HEADING = "## Platform capabilities"
@@ -55,6 +58,7 @@ class Limitation(_Model):
     plain: str = Field(min_length=1)
     why: str = Field(min_length=1)
     workaround: str | None = None
+    detect: list[str] = Field(min_length=1)
 
 
 class KitItem(_Model):
@@ -221,7 +225,7 @@ def render_prompt_block(manifest: CapabilityManifest) -> str:
         "Cannot (why; instead):",
     ]
     for item in manifest.cannot:
-        line = f"- {item.name}: {' '.join(item.why.split())}"
+        line = f"- {item.name}: [{item.id}] {' '.join(item.why.split())}"
         if item.workaround:
             line += f" Instead: {' '.join(item.workaround.split())}"
         lines.append(line)
@@ -238,10 +242,26 @@ def render_prompt_block(manifest: CapabilityManifest) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_runtime(manifest: CapabilityManifest) -> str:
+    """Runtime detection data; the service image does not carry docs/."""
+    return (
+        json.dumps(
+            {
+                "version": manifest.version,
+                "cannot": [item.model_dump() for item in manifest.cannot],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
 def main() -> None:
     manifest = load_manifest()
     DOCUMENT_PATH.write_text(render_document(manifest))
     PROMPT_BLOCK_PATH.write_text(render_prompt_block(manifest))
+    RUNTIME_PATH.write_text(render_runtime(manifest))
 
 
 if __name__ == "__main__":

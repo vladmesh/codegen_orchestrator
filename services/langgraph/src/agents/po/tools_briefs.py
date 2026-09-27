@@ -73,6 +73,7 @@ from shared.product_brief_text import (
     render_full_brief,
 )
 
+from ...capability_feasibility import capability_refusal
 from ...prompts.qa_capabilities import render_brief_capabilities
 from .tools_shared import _get_api, _user_headers
 
@@ -214,6 +215,8 @@ def _answer_from_stored(
     open revision and no correction, or the correction names the open one.
     """
     if stored is not None and corrects_brief_id is None:
+        if refusal := capability_refusal(stored.content):
+            return refusal + f" Present a corrected brief with corrects_brief_id='{stored.id}'."
         if stored.confirmed_at is not None:
             return _presented(
                 stored,
@@ -235,6 +238,8 @@ def _answer_from_stored(
             "it — not a new one. Send it to the user as it stands:",
         )
     if stored is not None and corrects_brief_id != stored.id:
+        if refusal := capability_refusal(stored.content):
+            return refusal + f" Correct the current brief with corrects_brief_id='{stored.id}'."
         return _presented(
             stored,
             f"Brief {corrects_brief_id} is not the revision presented for this project; "
@@ -323,6 +328,8 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
             API key or any other secret here — secrets go to
             `set_project_secret`.
         variant_choices: Chosen free or simplified variants with a noticeable quality gap.
+            For an accepted platform workaround, add `capability` with its manifest cannot id.
+            Set it only after the user explicitly accepts that workaround.
             Each entry names `feature`, `chosen`, `alternative`, `trade_off` and
             `add_later`, all in the user's language. The last two are one sentence
             each. Name the gap and what can be added later before presenting this
@@ -337,15 +344,6 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
             f"No Product Brief was presented: {project_id!r} is not a project UUID. "
             "Use the UUID create_project returned."
         )
-    api = _get_api()
-    headers = _user_headers(config)
-    project_config = await _project_config(project_id, headers)
-    pointer = project_config.get(PRODUCT_BRIEF_POINTER_KEY)
-
-    stored = await _load_brief(pointer, headers) if pointer else None
-    if (answer := _answer_from_stored(project_id, stored, corrects_brief_id)) is not None:
-        return answer
-
     try:
         content = ProposedProductBriefContent.model_validate(
             {
@@ -367,6 +365,17 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
     except ValidationError as invalid:
         logger.warning("po_brief_content_refused", project_id=project_id, error=str(invalid))
         return _refusal_of_invalid(invalid)
+
+    if refusal := capability_refusal(content):
+        return refusal
+
+    api = _get_api()
+    headers = _user_headers(config)
+    project_config = await _project_config(project_id, headers)
+    pointer = project_config.get(PRODUCT_BRIEF_POINTER_KEY)
+    stored = await _load_brief(pointer, headers) if pointer else None
+    if (answer := _answer_from_stored(project_id, stored, corrects_brief_id)) is not None:
+        return answer
 
     # Measured before anything is written: a brief the user cannot be sent must
     # not become the revision this project points at.
@@ -502,6 +511,8 @@ async def confirm_product_brief(project_id: str, brief_id: str, *, config: Runna
         return f"No Product Brief {brief_id} exists. Present one first."
     if str(brief.project_id) != project_id:
         return f"Product Brief {brief_id} belongs to another project; nothing was confirmed."
+    if refusal := capability_refusal(brief.content):
+        return refusal + f" Present a corrected brief with corrects_brief_id='{brief.id}'."
     if brief.confirmed_at is not None:
         return (
             f"Product Brief {brief.id} (revision {brief.revision}) is already confirmed. "

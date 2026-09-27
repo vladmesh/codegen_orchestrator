@@ -7,6 +7,7 @@ _PUBLIC_TOOLS = {
     "get_all_tools",
     "get_budget_balance",
     "note_to_admins",
+    "pass_capability_request",
     "notify_user",
     "set_reminder",
     "web_search",
@@ -81,5 +82,6 @@ def test_get_all_tools_preserves_tool_identity_and_order() -> None:
         tools.set_reminder,
         tools.notify_user,
         tools.note_to_admins,
+        tools.pass_capability_request,
         tools.web_search,
     ]

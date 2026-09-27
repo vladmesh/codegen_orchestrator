@@ -193,12 +193,14 @@ and an app-level set/readback test pass.
 
 A must-requirement sometimes asks for something the product does on a schedule \
 or after a delay rather than in answer to a request — a nightly digest, \
-a periodic sync, a reminder. Scheduling is NOT yours to design and NOT the \
-generated product's core to perform: the core schedules nothing. It accepts a \
+a periodic sync, a reminder. Production fires no product job on a clock; \
+the core schedules nothing. Plan an in-process timer in the backend or bot \
+that calls the declared job for any behaviour that must run on a schedule. \
+`FIRE JOB` remains the QA verification form, not a production scheduler. The core accepts a \
 fire, records the command and emits `job_fired`, and whichever optional module \
 declared `provides: ["jobs.fire"]` subscribes to that event and does the work.
 
-What your plan owes such a behaviour is two things:
+Beyond the timer, your plan owes such a behaviour two things:
 
 - **The declaration.** The product must declare the behaviour by name in its \
 own `services/<service>/manifest.yaml` under `jobs_schema`, with an arguments \
@@ -208,12 +210,8 @@ declared" (404), and arguments its schema refuses are refused with 422 — \
 without that declaration the behaviour can never be invoked at all.
 - **The provider.** Plan the module that subscribes to `job_fired` and performs \
 the work, because the core will not. It must be a live provider in the deployed \
-topology. Prefer the existing deployable `notifications_worker` when it can own \
-the behaviour. If a new provider service is genuinely needed, make its complete \
-deployment path part of the same behaviour task: Dockerfile and production \
-entrypoint; `services.yml`; that service's `env.contract.yaml` image key; the CI \
-build/push matrix; and wiring in both `infra/compose.base.yml` and \
-`infra/compose.prod.yml` with its broker startup dependency. A handler that \
+topology, inside the backend or bot. Verify its production entrypoint and wiring \
+in `services.yml`, `infra/compose.base.yml` and `infra/compose.prod.yml`. A handler that \
 exists only in source, a test, or a Compose profile that production does not \
 start is not a provider. The task's acceptance criteria must also require the \
 provider to leave the stated durable output observable by QA. `dispatch_status: \
@@ -264,6 +262,12 @@ declaration: nothing here invents a behaviour the brief did not ask for.
 
 ## Capability Shape
 
+A must-requirement needing a capability outside the manifest is returned with \
+`returned_reason` naming the capability id, manifest version and workaround. \
+Cut no task for it and do not plan around it. Only a recorded `variant_choices` \
+entry naming that `capability` permits the accepted workaround. Detection terms \
+are a floor; also judge requirements against the full manifest.
+
 A story sometimes asks for a capability the product does not have at all. Where \
 that capability lives is your decision, taken before you slice anything: it \
 decides what the developer is asked to build, and — for a package — it commits \
@@ -274,12 +278,12 @@ shape that fits, in this order:
 the capability, or carries it after a change inside its own boundary. Nothing \
 new is deployed. This is almost always the answer.
 2. **A shared service.** The capability belongs to a service that already runs \
-in the topology — usually the backend, or the deployable `notifications_worker` \
-for scheduled work. Still nothing new is deployed.
+in the topology: the backend or bot, including its in-process timer for scheduled \
+work. Still nothing new is deployed.
 3. **A container.** The capability needs its own process: its own runtime, its \
 own scaling or a lifecycle the existing services cannot host. It costs a full \
-deployment path — see the provider rules under "Scheduled Behaviours", which \
-apply to any new service.
+deployment path. The current platform cannot deploy extra service modules; \
+return such a requirement with the manifest reason instead of cutting tasks.
 4. **An in-process kit package.** The capability is a self-contained slice of \
 domain behaviour the kit can install into the backend: its own tables, its own \
 routes under one prefix, its own settings and jobs, talking to the rest of the \

@@ -231,11 +231,25 @@ class TestScheduledBehaviourDirectives:
         assert "durable output" in lower
         assert "dispatch_status" in SYSTEM_PROMPT
 
-    def test_prefers_the_existing_worker_and_makes_a_new_provider_fully_deployable(self):
-        assert "notifications_worker" in SYSTEM_PROMPT
-        assert "Dockerfile" in SYSTEM_PROMPT
-        assert "env.contract.yaml" in SYSTEM_PROMPT
-        assert "CI build/push matrix" in SYSTEM_PROMPT
+    def test_production_schedule_needs_an_in_process_timer_calling_the_declared_job(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "notifications_worker" not in SYSTEM_PROMPT
+        assert "production fires no product job on a clock" in prompt
+        assert "in-process timer in the backend or bot" in prompt
+        assert "calls the declared job" in prompt
+        assert "`fire job` remains the qa verification form" in prompt
+
+    def test_unsupported_requirement_is_returned_before_cutting_tasks(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "returned_reason" in prompt
+        assert "capability id, manifest version and workaround" in prompt
+        assert "no task" in prompt
+
+    def test_scheduling_and_capability_blocks_stay_bounded(self):
+        scheduled = SYSTEM_PROMPT.split("## Scheduled Behaviours\n", 1)[1].split("\n## ", 1)[0]
+        capability = SYSTEM_PROMPT.split("## Capability Shape\n", 1)[1].split("\n## ", 1)[0]
+        assert len(scheduled) < 4500
+        assert len(capability) < 6500
 
     def test_teaches_the_criterion_form_qa_fires_from(self):
         assert '- FIRE JOB <name> WITH {"json": "arguments"} THEN <observable>' in SYSTEM_PROMPT

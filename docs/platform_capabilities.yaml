@@ -2,14 +2,14 @@
 #
 # This file is the one source of truth. `docs/PLATFORM_CAPABILITIES.md` (for people) and
 # `services/langgraph/src/prompts/platform_capabilities.txt` (the compact block the PO and the
-# Architect read) are rendered from it by `python -m scripts.platform_capabilities`; a unit test
-# fails while either is stale, and another fails while a derived key, a secret kind or a port
+# Architect read), plus the adjacent runtime JSON, are rendered by `python -m scripts.platform_capabilities`;
+# a unit test fails while any is stale, and another fails while a derived key, a secret kind or a port
 # service the code supports is missing here.
 #
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 1
+version: 2
 status: draft
 review: owner read-through pending
 
@@ -83,6 +83,7 @@ can:
 
 cannot:
   - id: https_domain
+    detect: [public https, https address, tls certificate, публичный https, https-адрес, сертификат tls]
     name: Public HTTPS address / TLS
     plain: The product has no https:// web address and no certificate.
     why: The deployer hands out only `http://{server_ip}:{port}`; a product's compose has no TLS proxy.
@@ -90,10 +91,13 @@ cannot:
       Use the Telegram bot as the product's interface; it needs no address. Programs that accept
       plain http can call the backend at http://<server IP>:<port>.
   - id: custom_domain
+    detect: [custom domain, own domain, public domain, свой домен, собственный домен, публичный домен]
     name: Custom domain
     plain: The product cannot be put on its own domain name, such as mybot.example.com.
     why: Nothing allocates, points or verifies a domain for a product; its address is the server IP.
+    workaround: Use the Telegram bot, or the backend at http://<server IP>:<port>.
   - id: inbound_webhooks
+    detect: [inbound webhook, incoming webhook, receive webhooks, входящий вебхук, входящие вебхуки, входящий webhook, принимать вебхуки]
     name: Inbound webhooks from external services
     plain: Other services (payments, GitHub, forms, Telegram webhook mode) cannot push events to the product.
     why: >-
@@ -103,13 +107,15 @@ cannot:
       Poll the provider's API on a timer; the Telegram bot already works this way (long
       polling).
   - id: public_base_url
+    detect: [public_base_url, own public url, собственный публичный url, ссылки на себя]
     name: The product knowing its own public URL
     plain: The product cannot build links to itself, such as a link a user opens in a browser.
     why: >-
       The resolver computes no `PUBLIC_BASE_URL` or similar derived key; a required unknown
       derived key fails the deploy with `Unknown computed secret` (story-92b433c8).
     workaround: Send the information inside the Telegram chat rather than as a link to the product.
-  - id: oauth_redirect
+  - id: oauth_web_redirect
+    detect: [oauth, /connect, redirect uri, sign in with google, авторизация через google, авторизацией через google, авторизацию через google, вход через google]
     name: OAuth web sign-in redirects
     plain: The product cannot use "Sign in with Google" style web redirects to get access to a user's account.
     why: An OAuth web redirect needs an https redirect URL on a stable domain, which a product does not have.
@@ -118,11 +124,13 @@ cannot:
       desktop flow where the provider supports one; or a personal API token the user pastes,
       stored as a user secret.
   - id: telegram_mini_app
+    detect: [telegram mini app, telegram web app, мини-приложение telegram, мини-приложение в telegram, мини-приложение в телеграм]
     name: Telegram Mini App or web pages inside Telegram
     plain: The bot cannot open its own web app inside Telegram.
     why: A Telegram Mini App needs an https URL, which a product does not have.
     workaround: Build the interaction as chat messages with buttons.
   - id: send_email
+    detect: [email, e-mail, smtp, электронная почта, электронной почт, отправлять письма, отправка писем]
     name: Sending email by itself
     plain: The product has no mail server of its own to send email.
     why: The kit has no mail module and the platform provisions no mail server or SMTP relay.
@@ -130,6 +138,7 @@ cannot:
       Send through a third-party email API with a key the user provides (an outbound call), or
       send the message through the Telegram bot.
   - id: file_storage
+    detect: [file storage, store files, store uploads, persistent files, хранение файлов, хранить файлы, хранит файлы, сохранять файлы]
     name: File storage beyond the database
     plain: Uploaded files are not kept on disk; only data in the database survives an update.
     why: >-
@@ -139,11 +148,13 @@ cannot:
       Keep small files in the database; keep Telegram files by their Telegram file id; or use an
       external storage service with credentials the user provides.
   - id: platform_cron
+    detect: [platform cron, platform-run schedule, platform scheduler, расписание платформы, планировщик платформы, платформа запускает по расписанию]
     name: A schedule run by the platform
     plain: The platform does not start the product's jobs on a clock.
     why: The kit's jobs core schedules nothing, and the platform fires a product's jobs only during QA.
     workaround: Run a timer loop inside the product's bot or backend process (see "Work on a timer").
   - id: web_frontend
+    detect: [separate website, frontend module, separate web app, отдельный сайт, модуль frontend, отдельное веб-приложение]
     name: A separate website or web app module
     plain: The product cannot have its own website front end as a separate part.
     why: >-
@@ -153,6 +164,7 @@ cannot:
       Use the Telegram bot as the interface, or simple pages served by the backend at
       http://<server IP>:<port>.
   - id: external_database_access
+    detect: [external database access, direct database access, public postgres, внешний доступ к базе, прямой доступ к базе, публичный postgres]
     name: Reaching the database from outside
     plain: Nobody outside the server can connect to the product's database or Redis directly.
     why: >-

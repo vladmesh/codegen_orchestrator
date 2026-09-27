@@ -17,10 +17,12 @@ from scripts.platform_capabilities import (
     DOCUMENT_PATH,
     PROMPT_BLOCK_HEADING,
     PROMPT_BLOCK_PATH,
+    RUNTIME_PATH,
     CapabilityManifest,
     load_manifest,
     render_document,
     render_prompt_block,
+    render_runtime,
 )
 from scripts.template_pin import TEMPLATE_PIN
 from shared.contracts.dto.project import REQUESTABLE_SERVICE_MODULES
@@ -213,6 +215,17 @@ class TestTheRenderingsAreCurrent:
 
     def test_the_prompt_block_is_rendered_from_the_manifest(self):
         assert PROMPT_BLOCK_PATH.read_text() == render_prompt_block(load_manifest())
+
+    def test_the_runtime_data_is_rendered_from_the_manifest(self):
+        assert RUNTIME_PATH.read_text() == render_runtime(load_manifest())
+
+    def test_every_limitation_has_unique_id_and_lowercase_english_and_russian_terms(self):
+        items = load_manifest().cannot
+        assert len({item.id for item in items}) == len(items)
+        for item in items:
+            assert all(term == term.lower() and term.strip() for term in item.detect)
+            assert any(re.search("[а-я]", term) for term in item.detect)
+            assert any(re.search("[a-z]", term) for term in item.detect)
 
 
 class TestTheCompactBlock:

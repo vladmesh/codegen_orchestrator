@@ -1863,7 +1863,7 @@ class TestNoteToAdmins:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 26
+        expected_count = 27
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1895,6 +1895,7 @@ class TestGetAllTools:
             "set_reminder",
             "notify_user",
             "note_to_admins",
+            "pass_capability_request",
             "web_search",
         }
 
