@@ -17,6 +17,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   (dropped by migration `d3f5a7c9e1b4`) had no reader; `OPEN_ROUTER_KEY` is no longer required.
 - Stand live test `test_llm_channel_failover.py` (custom target) proves Architect and PO failover healthy, with codex
   faulted and with both subscriptions faulted, faulting only agent-config chains and restoring them always.
+- [hotfix] Live-run cleanup deletes the PO reminder gate's `po:story_told*` keys of the run's stories, so the
+  residue proof no longer names the gate's TTL-bound per-day counters.
+- [hotfix] `mega-live`'s location proof accepts an out-of-range location check reported not applicable only on the
+  seed probe's own argument refusal of the value it names, and records that refusal kind in the run evidence.
 
 ## 2026-09-26
 

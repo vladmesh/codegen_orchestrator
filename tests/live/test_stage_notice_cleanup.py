@@ -10,16 +10,14 @@ the story settle, and an aborted run's story never does. These drive the real
 from __future__ import annotations
 
 import db_teardown
-import fakeredis
 from live_harness import CleanupError, OwnershipManifest, cleanup_guard
 import pipeline_helpers
 import po_checkpoints
 import pytest
+import redis_cli_fake
 import run_residue
 
 from services.scheduler.src.tasks.supervisor import stage_notices
-from shared.live_harness_cleanup import RESIDUE_FINDINGS_KEY
-from shared.queues import STORY_WORKERS_KEY
 
 pytestmark = pytest.mark.needs_no_api_credential
 
@@ -30,43 +28,13 @@ EXTENSION_STORY_ID = "story-0e1f2a3b"
 NEIGHBOUR_STORY_ID = "story-neighbour"
 
 
-class FakeRedisCli:
-    """`redis-cli` as `_redis_command` calls it, answering with its stdout."""
-
-    def __init__(self) -> None:
-        self.redis = fakeredis.FakeRedis(decode_responses=True)
-
-    def __call__(self, *args: str) -> str:
-        result = self.redis.execute_command(*args)
-        if result is None:
-            return ""
-        if isinstance(result, list):
-            return "\n".join(str(item) for item in result)
-        return str(result)
+class FakeRedisCli(redis_cli_fake.FakeRedisCli):
+    """The shared `redis-cli` fake, able to mark a story the way the sweep does."""
 
     def mark(self, story_id: str) -> None:
         """What the sweep writes for a story in work: marker and membership together."""
         self.redis.set(stage_notices.stage_notice_key(story_id), '{"stage": "in_progress"}')
         self.redis.sadd(stage_notices.MARKED_STORIES_KEY, story_id)
-
-
-def _residue_ops(cli: FakeRedisCli) -> run_residue.ResidueOps:
-    return run_residue.ResidueOps(
-        run_labelled_containers=lambda _run: [],
-        compose_project_containers=lambda _project: [],
-        off_host_residue=lambda _inventory: {
-            kind: {RESIDUE_FINDINGS_KEY: []}
-            for kind in ("github_repository", "registry_repositories", "target_containers")
-        },
-        workspace_entries=lambda _entries: [],
-        redis_keys=lambda patterns: sorted(
-            {key for pattern in patterns for key in cli.redis.scan_iter(match=pattern)}
-        ),
-        story_worker_bindings=lambda stories: [
-            story for story in stories if cli.redis.hget(STORY_WORKERS_KEY, story)
-        ],
-        po_checkpoint_rows=lambda _inventory: [],
-    )
 
 
 @pytest.fixture
@@ -75,7 +43,9 @@ def cli(monkeypatch) -> FakeRedisCli:
     cli = FakeRedisCli()
     monkeypatch.setattr(pipeline_helpers, "_redis_command", cli)
     monkeypatch.setattr(
-        run_residue, "host_residue_ops", lambda *_args: (_residue_ops(cli), lambda _e: None)
+        run_residue,
+        "host_residue_ops",
+        lambda *_args: (redis_cli_fake.residue_ops(cli), lambda _e: None),
     )
     monkeypatch.setattr(po_checkpoints, "remove_run_rows", lambda *_args: [])
 

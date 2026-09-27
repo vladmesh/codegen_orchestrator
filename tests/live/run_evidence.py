@@ -165,6 +165,7 @@ import subprocess
 from typing import TypedDict
 
 from brief_telemetry import evidence as brief_telemetry_evidence
+from level1_location_proof import accepted_location_refusals
 from live_harness import resolve_repo_root
 from run_proof import ProofCheck, ProofOutcome
 import structlog
@@ -2160,6 +2161,10 @@ def qa_cell(ctx: dict) -> dict:
         # Where that record was read: inside the QA wait, or by the last read
         # before teardown for a run that left the phase before the wait.
         "run_record_source": ctx.get("qa_run_lookup"),
+        # The unverified location checks `mega-live`'s location proof accepted,
+        # each with the kind of refusal it rested on — today only the seed's own
+        # argument refusal of an out-of-range coordinate. Empty for every other run.
+        "location_refusals_accepted": accepted_location_refusals(ctx.get("qa_run_record") or {}),
     }
     qa_run = ctx.get("qa_run")
     if qa_run is not None:

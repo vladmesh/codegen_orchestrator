@@ -118,6 +118,13 @@ from scripts.template_pin import TEMPLATE_PIN
 # harness reads the architect's published observable through the same function
 # the paid run will, so a criterion that could never bind is caught here.
 from services.langgraph.src.agents.qa.packages import observation_answers
+
+# The PO reminder gate's per-story records, named by the gate itself so the
+# run's cleanup cannot drift from the keys it writes.
+from services.langgraph.src.consumers.po_story_gate import (
+    STORY_TOLD_DAILY_KEY_PREFIX,
+    STORY_TOLD_KEY_PREFIX,
+)
 from shared.clients.registry import sha_image_tag
 from shared.contracts.acceptance import ScheduledBehaviourCriterion
 from shared.contracts.dto.application import ApplicationStatus
@@ -7206,6 +7213,57 @@ def release_story_stage_notices(ctx: dict) -> None:
         )
 
 
+def story_gate_key_patterns(story_id: str) -> list[str]:
+    """Globs for every PO reminder-gate key of one story, whatever the chat and the day.
+
+    The gate (`services/langgraph/src/consumers/po_story_gate.py`) keeps
+    `po:story_told:<chat>:<story>` and `po:story_told_daily:<chat>:<story>:<UTC day>`.
+    The chat is whoever the PO told, and a run may cross midnight, so neither is
+    fixed here: the story id is what makes a key this run's.
+    """
+    return [
+        f"{STORY_TOLD_KEY_PREFIX}*:{story_id}",
+        f"{STORY_TOLD_DAILY_KEY_PREFIX}*:{story_id}:*",
+    ]
+
+
+def _redis_scan(patterns: Iterable[str]) -> list[str]:
+    """Every key any of these globs selects, as `redis-cli --scan` lists it."""
+    found: set[str] = set()
+    for pattern in patterns:
+        found.update(
+            line.strip()
+            for line in _redis_command("--scan", "--pattern", pattern).splitlines()
+            if line.strip()
+        )
+    return sorted(found)
+
+
+def release_story_gate_records(ctx: dict) -> None:
+    """Drop the PO reminder gate's records of every story this run owns.
+
+    The gate's "last told" record goes with the story's ending, but its per-day
+    counter is left to its two-day TTL on purpose, and a run that aborts before
+    the ending leaves the record too. Both are correct product behaviour and
+    both name the run's story, so the residue proof names them — as it did on
+    run 36309935451. The run takes them back itself, after the database teardown
+    has removed the stories a PO turn could be told about, and reads back that
+    none is left.
+    """
+    story_ids = list(run_inventory(ctx).story_ids)
+    if not story_ids:
+        return
+    patterns = [pattern for story_id in story_ids for pattern in story_gate_key_patterns(story_id)]
+    keys = _redis_scan(patterns)
+    if keys:
+        _redis_command("UNLINK", *keys)
+    left = _redis_scan(patterns)
+    if left:
+        raise CleanupError(
+            f"PO reminder-gate records of stories {story_ids} survived removal: {left}"
+        )
+
+
 async def cleanup_and_prove(
     api_internal: httpx.AsyncClient,
     api_observer: httpx.AsyncClient | None,
@@ -7223,6 +7281,7 @@ async def cleanup_and_prove(
     """
     database = await cleanup_all(api_internal, api_observer, ctx)
     release_story_stage_notices(ctx)
+    release_story_gate_records(ctx)
     release_project_fences(ctx)
     remove_run_po_checkpoints(ctx)
     prove_nothing_left(ctx, database)
