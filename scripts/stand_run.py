@@ -618,6 +618,12 @@ def api_serves_health() -> bool:
         return False
 
 
+#: The consumers that do not start through `run_queue_worker`, and the line each
+#: logs once it reads its queue. `langgraph` runs the PO consumer itself
+#: (services/langgraph/src/consumers/po.py), which says `po_consumer_started`.
+STARTUP_LINES = {"langgraph": "po_consumer_started"}
+
+
 def consumer_past_startup(env: dict[str, str], service: str) -> bool:
     """Has a queue consumer finished starting, rather than merely being up?
 
@@ -626,10 +632,12 @@ def consumer_past_startup(env: dict[str, str], service: str) -> bool:
     configuration — that is, once it is actually reading its queue. Before that
     line the container is running and the work the suite queues would sit
     unclaimed. The recreate removed the previous container, so these logs belong
-    to the one just started.
+    to the one just started. A consumer with a start of its own names its line in
+    `STARTUP_LINES`.
     """
     result = _compose(env, "logs", "--no-color", service, capture=True)
-    return result.returncode == 0 and f"{service}_started" in result.stdout
+    line = STARTUP_LINES.get(service, f"{service}_started")
+    return result.returncode == 0 and line in result.stdout
 
 
 def service_is_ready(env: dict[str, str], service: str) -> bool:

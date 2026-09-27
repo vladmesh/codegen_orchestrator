@@ -444,6 +444,13 @@ central QA, and `mega-brief-package` for the same path onto the kit package rout
 A level-1 run that is green therefore says the platform works end to end without a model — never
 that the product a model would have built is good.
 
+### LLM channel failover
+
+`tests/live/test_llm_channel_failover.py` is a stand-only custom target (`stand-e2e.yml suite=custom`)
+that proves the Architect and PO LLM channel chains with the default chain, with the Architect's
+`codex` faulted, and with the PO's `codex` and `claude` faulted onto one OpenRouter turn. It faults
+agent configuration only and restores it always; `tests/live/README.md` has its table.
+
 ### What level 2 adds
 
 `mega-live` (`make stand-run SUITE=mega-live WORKER=<agent> QA=<agent>`) is not a second suite: it is

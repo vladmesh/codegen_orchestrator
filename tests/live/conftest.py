@@ -56,6 +56,11 @@ def pytest_configure(config):
         "markers",
         "live_llm_stand_token: requires a real Claude or Codex stand_token coding turn",
     )
+    config.addinivalue_line(
+        "markers",
+        "live_llm_channel_failover: spends real Codex and Claude subscription turns and one "
+        "OpenRouter PO turn on the stand; never collected by an offline selection",
+    )
 
 
 def pytest_collection_modifyitems(session, config, items):
