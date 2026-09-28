@@ -1164,7 +1164,7 @@ class TestProductBriefUsageExamples:
                 must_requirements=[
                     {"id": "expense-text", "text": "Записывает расход из текста"},
                     {"id": "income", "text": "Записывает доход"},
-                    {"id": "backup", "text": "Ночная резервная копия", "user_facing": False},
+                    {"id": "rollup", "text": "Ночная сверка итогов за день", "user_facing": False},
                 ],
                 # Shown to the user out of requirement order; planned in it.
                 usage_examples=[
@@ -1203,7 +1203,7 @@ class TestProductBriefUsageExamples:
             "  - the user sends: /income 80000 зарплата\n"
             "    the product answers: Записал доход 80 000 ₽"
         ) in instructions
-        assert "- backup: Ночная резервная копия (not user-facing" in instructions
+        assert "- rollup: Ночная сверка итогов за день (not user-facing" in instructions
         assert "- expense-text: Записывает расход из текста\n" in instructions
         assert (
             "Limitations and trade-offs the user confirmed:\n"

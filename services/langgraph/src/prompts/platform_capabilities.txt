@@ -1,26 +1,18 @@
-## Platform capabilities (manifest v4, draft)
-What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@9a4acfd8b75f.
+## Platform capabilities (manifest v5, owner-reviewed)
+What a product built here can and cannot have. The product is a Telegram bot and has no web address.
 Can:
-- Telegram bot (long polling): A Telegram bot people chat with; it fetches new messages itself, so it needs no web address.
-- Backend at http://<server IP>:<port>: A web API other programs can call over plain http at the server's address and a port.
-- PostgreSQL database: A database that keeps the product's data across restarts and updates.
-- Redis: A fast in-memory store for queues, caches and messages between the bot and the backend.
-- Work on a timer: Doing something regularly or later, such as a daily message, from inside the bot or backend.
-- Settings changed without new code: Values the owner can change later, such as a list of languages, without rebuilding the product.
-- Calls to other online services: Using another online service, such as an AI model or a weather API, with a key the user provides.
+- Telegram bot: A Telegram bot people chat with, using commands, buttons and menus.
+- The bot remembers data: The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
+- Actions on a schedule or later: The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
+- Settings without a new version: The owner later changes settings, such as the list of languages or the texts, without a new version of the bot.
+- Connecting to other services: The bot connects to other online services, such as AI, weather or spreadsheets, with a key the user provides; AI in the bot runs on the user's own key.
+- Who can use the bot: At first only the customer can use the bot; everyone else is ignored. The customer can give permanent access to specific Telegram users, and it starts working once the running bot confirms it. The customer can also hand the bot over to another Telegram user. Taking access back and opening the bot to everyone are not available yet.
 Cannot (why; instead):
-- Public HTTPS address / TLS: [https_domain] The deployer hands out only `http://{server_ip}:{port}`; a product's compose has no TLS proxy. Instead: Use the Telegram bot as the product's interface; it needs no address. Programs that accept plain http can call the backend at http://<server IP>:<port>.
-- Custom domain: [custom_domain] Nothing allocates, points or verifies a domain for a product; its address is the server IP. Instead: Use the Telegram bot, or the backend at http://<server IP>:<port>.
-- Inbound webhooks from external services: [inbound_webhooks] Providers require an https URL, and the product only has plain http on an IP and port that can change when it moves server; the resolver derives no `PUBLIC_BASE_URL`. Instead: Poll the provider's API on a timer; the Telegram bot already works this way (long polling).
-- The product knowing its own public URL: [public_base_url] The resolver computes no `PUBLIC_BASE_URL` or similar derived key. A required derived key it cannot compute fails the engineering attempt, before any deploy (story-92b433c8 failed its deploy with `Unknown computed secret`). Instead: Send the information inside the Telegram chat rather than as a link to the product.
-- OAuth web sign-in redirects: [oauth_web_redirect] An OAuth web redirect needs an https redirect URL on a stable domain, which a product does not have. Instead: A Google service account the user shares their calendar or sheet with; a device-code or desktop flow where the provider supports one; or a personal API token the user pastes, stored as a user secret.
-- Telegram Mini App or web pages inside Telegram: [telegram_mini_app] A Telegram Mini App needs an https URL, which a product does not have. Instead: Build the interaction as chat messages with buttons.
-- Sending email by itself: [send_email] The kit has no mail module and the platform provisions no mail server or SMTP relay. Instead: Send through a third-party email API with a key the user provides (an outbound call), or send the message through the Telegram bot.
-- File storage beyond the database: [file_storage] The only persistent volume is Postgres's `db_data`; the backend and bot containers have no volume and are replaced on every deploy, and the kit has no object-storage module. Instead: Keep small files in the database; keep Telegram files by their Telegram file id; or use an external storage service with credentials the user provides.
-- A schedule run by the platform: [platform_cron] The kit's jobs core schedules nothing, and the platform fires a product's jobs only during QA. Instead: Run a timer loop inside the product's bot or backend process (see "Work on a timer").
-- A separate website or web app module: [web_frontend] A product may request only the `backend` and `tg_bot` modules; `frontend` and `notifications` remain only for old records, and only the backend's port is published. Instead: Use the Telegram bot as the interface, or simple pages served by the backend at http://<server IP>:<port>.
-- Reaching the database from outside: [external_database_access] Postgres and Redis get host ports allocated, but production compose publishes only the backend's port and the firewall opens only that one. Instead: Expose what is needed through backend endpoints.
-Kit modules: backend: FastAPI web API with PostgreSQL and Redis, always part of a product; tg_bot: Telegram bot on long polling that talks to the backend.
-Kit packages: reminders 0.3.0: One-time text reminders (create, list, cancel); due reminders are emitted only when something fires its `reminders.tick` job.
-Secret kinds: user_secret, generated_secret, allocation, derived, literal.
-Derived keys (no others exist): APP_ENV, ENVIRONMENT, DEBUG, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_REQUIRE_SSL, BACKEND_API_URL, API_URL, API_BASE_URL, BACKEND_URL, APP_NAME, PROJECT_NAME, COMPOSE_PROJECT_NAME, POSTGRES_DB, ENABLED_MODULES, BACKEND_PORT, FRONTEND_PORT, TG_BOT_PORT, POSTGRES_HOST_PORT, REDIS_HOST_PORT, *_IMAGE.
+- A website or web pages: [web_presence] The bot has no website, web pages, admin panel, link or domain of its own, and cannot open a mini app inside Telegram. The product lives entirely inside the Telegram chat. Instead: Everything happens in the chat with buttons.
+- Receiving events other services send: [inbound_webhooks] The bot cannot receive events that other services send to it by themselves, such as GitHub notifications or form submissions. Other services have nowhere to send such events to. Instead: The bot checks the service itself from time to time, if the service allows that.
+- Accepting payments: [payments] The bot cannot take payments: neither through payment services such as YooKassa or Stripe nor inside Telegram (Stars, Payments). Payment acceptance is not part of what the platform builds. No way around it.
+- Signing in with Google and the like: [oauth_web_redirect] The bot cannot use "Sign in with Google" or similar sign-in buttons to reach a user's account. Such sign-in needs a web page for the user to return to, which the bot does not have. Instead: The user shares their spreadsheet or calendar with the bot's Google service account, or pastes a personal token.
+- Sending email by itself: [send_email] The bot cannot send email by itself. The bot has no mail service of its own. Instead: Send through an email service with a key the user provides, or send the message in Telegram.
+- Keeping uploaded files: [file_storage] The bot does not keep uploaded files itself. The bot remembers data, not files. Instead: Photos and documents stay in Telegram and the bot remembers them; large files go to an external storage service with a key the user provides.
+- Direct access to the bot's data store: [external_database_access] Nobody can connect to the bot's data store directly. The data is reachable only through the bot. Instead: The bot hands out the data needed through a command, such as an export or a report.
+- Backups of the data: [backups] There are no backups of the bot's data; if the server is lost, the bot's data is lost with it. The platform makes no copies of the bot's data. No way around it.

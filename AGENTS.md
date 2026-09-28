@@ -131,10 +131,10 @@ async def my_node(state: OrchestratorState) -> dict:
 ```
 
 **Platform capability manifest** — `docs/platform_capabilities.yaml` says what a product can and
-cannot have, with workarounds; the PO and the Architect read a compact rendering of it. A PR that
-changes a capability (deployer, secret resolver, allocations, port services, requestable modules,
-the kit pin, anything a product can or cannot do) changes the manifest in the same PR, bumps its
-`version`, and re-renders with `python -m scripts.platform_capabilities`. Unit tests fail while the
+cannot have, with workarounds; the PO reads its product block, the Architect its technical
+block. A PR that changes a capability (deployer, secret resolver, allocations, port services,
+requestable modules, the kit pin, anything a product can or cannot do) changes the manifest in the
+same PR, bumps its `version`, and re-renders with `python -m scripts.platform_capabilities`. Unit tests fail while the
 renderings are stale or a derived key, port service or secret kind in the code is unlisted.
 
 ## Makefile

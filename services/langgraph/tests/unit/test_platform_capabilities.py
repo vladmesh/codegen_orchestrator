@@ -7,19 +7,24 @@ secret kind the code gains fails these tests, naming it, until the manifest list
 
 from __future__ import annotations
 
+import json
 import re
 from typing import get_args
 
 from langchain_core.messages import SystemMessage
+import pytest
 import yaml
 
 from scripts.platform_capabilities import (
+    ARCHITECT_BLOCK_HEADING,
+    ARCHITECT_BLOCK_PATH,
     DOCUMENT_PATH,
     PROMPT_BLOCK_HEADING,
     PROMPT_BLOCK_PATH,
     RUNTIME_PATH,
     CapabilityManifest,
     load_manifest,
+    render_architect_block,
     render_document,
     render_prompt_block,
     render_runtime,
@@ -35,7 +40,10 @@ from shared.contracts.service_ports import (
 from src.agents.po.graph import po_prompt
 from src.agents.po.situation import SITUATION_CONFIG_KEY
 from src.prompts.architect import SYSTEM_PROMPT as ARCHITECT_PROMPT
-from src.prompts.platform_capabilities import PLATFORM_CAPABILITIES_PROMPT
+from src.prompts.platform_capabilities import (
+    ARCHITECT_PLATFORM_CAPABILITIES_PROMPT,
+    PLATFORM_CAPABILITIES_PROMPT,
+)
 from src.prompts.po import SYSTEM_PROMPT as PO_SYSTEM_PROMPT
 from src.subgraphs.devops.secret_resolver import (
     CONTEXT_DERIVED_SECRETS,
@@ -46,6 +54,18 @@ from src.subgraphs.devops.secret_resolver import (
 
 #: The compact block is budgeted on its own, beside the PO's capped `SYSTEM_PROMPT`.
 PROMPT_BLOCK_BUDGET = 5000
+#: The Architect's technical block, budgeted on its own beside the Architect prompt.
+ARCHITECT_BLOCK_BUDGET = 7000
+#: Technical detail the PO's product block must never carry.
+TECHNICAL_TERMS = ("derived", "POSTGRES", "http://", "server IP", "settings v1", "jobs", "kit")
+#: The v4 ids merged into `web_presence`; briefs may have recorded them in `variant_choices`.
+MERGED_V4_IDS = {
+    "https_domain",
+    "custom_domain",
+    "public_base_url",
+    "telegram_mini_app",
+    "web_frontend",
+}
 #: How the manifest spells the `*_IMAGE` family the resolver computes by suffix.
 IMAGE_FAMILY = f"*{IMAGE_KEY_SUFFIX}"
 #: The capped PO prompt, from `test_po_prompts.py`; the block must not count against it.
@@ -189,23 +209,37 @@ class TestTheManifestCoversTheCode:
         assert (unaccounted, stale) == ([], [])
 
 
-class TestTheManifestIsVersionedAndDrafted:
-    def test_it_carries_a_version_and_the_owner_read_through_marker(self):
+class TestTheManifestIsVersionedAndReviewed:
+    def test_it_carries_a_version_and_the_owner_review_marker(self):
         manifest = load_manifest()
 
-        assert manifest.version >= 1
-        assert manifest.status == "draft"
-        assert manifest.review == "owner read-through pending"
+        assert manifest.version == 5
+        assert manifest.status == "owner-reviewed"
+        assert manifest.review == "product list agreed by the owner 2026-09-28"
 
     def test_the_document_shows_both_at_the_top(self):
         manifest = load_manifest()
         head = "\n".join(DOCUMENT_PATH.read_text().splitlines()[:6])
 
         assert f"Version {manifest.version}" in head
-        assert "status: draft (owner read-through pending)" in head
+        assert "status: owner-reviewed (product list agreed by the owner 2026-09-28)" in head
 
-    def test_every_limitation_says_why(self):
-        assert all(item.why.strip() for item in load_manifest().cannot)
+    def test_every_limitation_says_why_for_the_product_and_for_the_code(self):
+        assert all(item.why.strip() and item.technical.strip() for item in load_manifest().cannot)
+
+    def test_the_document_puts_the_product_part_first(self):
+        document = DOCUMENT_PATH.read_text()
+
+        assert document.index("## For the product owner") < document.index("## Technical detail")
+
+    def test_merged_ids_are_aliases_only(self):
+        items = load_manifest().cannot
+        ids = {item.id for item in items}
+        aliases = [alias for item in items for alias in item.aliases]
+
+        assert set({item.id: item.aliases for item in items}["web_presence"]) == MERGED_V4_IDS
+        assert len(aliases) == len(set(aliases))
+        assert ids.isdisjoint(aliases)
 
 
 class TestTheRenderingsAreCurrent:
@@ -216,6 +250,9 @@ class TestTheRenderingsAreCurrent:
 
     def test_the_prompt_block_is_rendered_from_the_manifest(self):
         assert PROMPT_BLOCK_PATH.read_text() == render_prompt_block(load_manifest())
+
+    def test_the_architect_block_is_rendered_from_the_manifest(self):
+        assert ARCHITECT_BLOCK_PATH.read_text() == render_architect_block(load_manifest())
 
     def test_the_runtime_data_is_rendered_from_the_manifest(self):
         assert RUNTIME_PATH.read_text() == render_runtime(load_manifest())
@@ -237,14 +274,45 @@ class TestTheCompactBlock:
         manifest = load_manifest()
         block = PLATFORM_CAPABILITIES_PROMPT
 
-        assert block.startswith(f"{PROMPT_BLOCK_HEADING} (manifest v{manifest.version}, draft)")
+        assert block.startswith(
+            f"{PROMPT_BLOCK_HEADING} (manifest v{manifest.version}, owner-reviewed)"
+        )
         assert all(f"- {item.name}: " in block for item in manifest.can)
-        assert all(f"- {item.name}: " in block for item in manifest.cannot)
+        assert all(f"- {item.name}: [{item.id}] " in block for item in manifest.cannot)
         assert all(
-            " ".join(item.workaround.split()) in block
+            " ".join(item.workaround.split()).removesuffix(".") in block
             for item in manifest.cannot
             if item.workaround
         )
+
+    @pytest.mark.parametrize("term", TECHNICAL_TERMS)
+    def test_it_carries_no_technical_detail(self, term):
+        assert term.casefold() not in PLATFORM_CAPABILITIES_PROMPT.casefold()
+
+    def test_the_runtime_data_carries_no_technical_field(self):
+        runtime = json.loads(RUNTIME_PATH.read_text())
+
+        assert all("technical" not in item for item in runtime["cannot"])
+
+
+class TestTheArchitectBlock:
+    def test_it_stays_within_its_own_budget(self):
+        assert len(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT) <= ARCHITECT_BLOCK_BUDGET
+
+    def test_it_carries_the_technical_detail(self):
+        manifest = load_manifest()
+        block = ARCHITECT_PLATFORM_CAPABILITIES_PROMPT
+
+        assert block.startswith(f"{ARCHITECT_BLOCK_HEADING} (manifest v{manifest.version}, ")
+        assert all(" ".join(item.how.split()) in block for item in manifest.can)
+        assert all(" ".join(item.technical.split()) in block for item in manifest.cannot)
+        assert "Derived keys (no others exist): " in block
+
+    def test_it_warns_that_nothing_fires_reminders_tick_in_production(self):
+        block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
+
+        assert "nothing calls the `reminders` package's `reminders.tick` in production" in block
+        assert "must run its own timer loop" in block
 
 
 class TestThePromptsCarryTheBlock:
@@ -266,5 +334,11 @@ class TestThePromptsCarryTheBlock:
     def test_the_po_rule_points_at_the_block(self):
         assert f"`{PROMPT_BLOCK_HEADING}`" in PO_SYSTEM_PROMPT
 
-    def test_the_architect_plans_with_it(self):
-        assert PLATFORM_CAPABILITIES_PROMPT in ARCHITECT_PROMPT
+    def test_the_architect_plans_with_the_technical_block(self):
+        assert ARCHITECT_PLATFORM_CAPABILITIES_PROMPT in ARCHITECT_PROMPT
+        assert PLATFORM_CAPABILITIES_PROMPT not in ARCHITECT_PROMPT
+
+    def test_the_po_does_not_read_the_technical_block(self):
+        [system] = po_prompt({"messages": []}, {"configurable": {}})
+
+        assert ARCHITECT_PLATFORM_CAPABILITIES_PROMPT not in system.content

@@ -1,6 +1,6 @@
 """Architect agent system prompt."""
 
-from ..platform_capabilities import PLATFORM_CAPABILITIES_PROMPT
+from ..platform_capabilities import ARCHITECT_PLATFORM_CAPABILITIES_PROMPT
 from ..qa_capabilities import render_architect_capabilities
 
 _SYSTEM_PROMPT = """\
@@ -390,11 +390,12 @@ Do NOT repeat the same approach if it already failed.
 - Every task must have acceptance_criteria.
 """
 
-# The platform capability block is appended whole, as its own budgeted block, so the
-# planner reads the same can/cannot/workaround list the PO promised against.
+# The technical platform capability block is appended whole, as its own budgeted block, so
+# the planner reads the same can/cannot/workaround list the PO promised against, with how and
+# why each holds in the code.
 SYSTEM_PROMPT = (
     _SYSTEM_PROMPT.replace("__WHAT_QA_CAN_CHECK__\n", render_architect_capabilities())
     + "\n"
-    + PLATFORM_CAPABILITIES_PROMPT
+    + ARCHITECT_PLATFORM_CAPABILITIES_PROMPT
     + "\n"
 )
