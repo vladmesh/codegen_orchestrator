@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-28
 
+- Filtered agents use private HOME Git configuration; recovery transfers remote credentials as
+  private files and cleans them after clone, update or failure.
 - Recovery uses private Ansible vars and redacted diagnostics; worker preparation upgrades
   credentialed origins and keeps Git auth outside reused workspaces.
 - New products scaffold from kit `0.6.3`, carrying bigint user identifiers and Telegram token-safe

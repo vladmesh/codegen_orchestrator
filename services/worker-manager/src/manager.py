@@ -1254,7 +1254,6 @@ class WorkerManager:
         github_token = env_vars.get("GITHUB_TOKEN")
         if github_token:
             container_env["GH_TOKEN"] = github_token
-            container_env.update(git_ops.git_auth_env())
 
         return container_env
 

@@ -88,24 +88,6 @@ fi
 GIT_CREDENTIAL_PATH = "/home/worker/.config/codegen/git-credentials"
 
 
-def git_auth_env() -> dict[str, str]:
-    """Native process configuration inherited by manager and developer Git.
-
-    The helper contains only a path. Reset other helpers and match the repository
-    path so this repository-scoped installation token is not offered elsewhere.
-    """
-    return {
-        "GIT_CONFIG_COUNT": "3",
-        "GIT_CONFIG_KEY_0": "credential.helper",
-        "GIT_CONFIG_VALUE_0": "",
-        "GIT_CONFIG_KEY_1": "credential.https://github.com.helper",
-        "GIT_CONFIG_VALUE_1": f"store --file={shlex.quote(GIT_CREDENTIAL_PATH)}",
-        "GIT_CONFIG_KEY_2": "credential.https://github.com.useHttpPath",
-        "GIT_CONFIG_VALUE_2": "true",
-        "GIT_TERMINAL_PROMPT": "0",
-    }
-
-
 def build_token_refresh_script(repo: str) -> str:
     """Upgrade the released origin and atomically refresh a private credential.
 
@@ -114,6 +96,8 @@ def build_token_refresh_script(repo: str) -> str:
     """
     writer = r"""import os
 from pathlib import Path
+import shlex
+import subprocess
 import tempfile
 from urllib.parse import quote
 path = Path(os.environ["CODEGEN_GIT_CREDENTIAL_PATH"])
@@ -129,11 +113,32 @@ try:
 finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
+
+# HOME survives the wrapper's agent environment filter. Configure native Git
+# once for both manager and agent processes, preserving unrelated global keys.
+config = Path(os.environ["HOME"]) / ".gitconfig"
+fd, temporary = tempfile.mkstemp(dir=config.parent)
+try:
+    with os.fdopen(fd, "wb") as stream:
+        if config.exists():
+            stream.write(config.read_bytes())
+    command = ["git", "-c", "core.hooksPath=/dev/null", "config", "--file", temporary]
+    scope = "credential.https://github.com"
+    subprocess.run([*command, "--replace-all", scope + ".helper", ""], check=True)
+    subprocess.run(
+        [*command, "--add", scope + ".helper", "store --file=" + shlex.quote(str(path))],
+        check=True,
+    )
+    subprocess.run([*command, "--replace-all", scope + ".useHttpPath", "true"], check=True)
+    os.replace(temporary, config)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
 """
     clean_url = shlex.quote(f"https://github.com/{repo}.git")
     return (
         f"set -e\ncd /workspace\n{GIT} remote set-url origin {clean_url}\n"
-        f"python3 -c {shlex.quote(writer)}"
+        f"python3 -I -c {shlex.quote(writer)}"
     )
 
 
@@ -278,7 +283,6 @@ async def refresh_git_token(
 ) -> bool:
     """Sanitize origin and supply credentials for the container's Git lifetime."""
     environment = {
-        **git_auth_env(),
         "GITHUB_TOKEN": token,
         "CODEGEN_GIT_REPO": repo,
         "CODEGEN_GIT_CREDENTIAL_PATH": GIT_CREDENTIAL_PATH,

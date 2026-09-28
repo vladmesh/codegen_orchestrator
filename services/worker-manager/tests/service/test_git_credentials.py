@@ -1,11 +1,13 @@
 """Docker exec environment and developer credential lifetime in a real container."""
 
 import io
+import json
 import os
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from worker_wrapper.wrapper import build_agent_subprocess_env
 
 from shared.contracts.vocab import AgentType
 from src import git_ops
@@ -75,16 +77,26 @@ ENTRYPOINT ["sleep", "infinity"]
             assert token.encode() not in config
             assert b"extraheader" not in config and b"helper" not in config
             assert b"hooksPath = .githooks" in config
-            # No exec environment here: the developer inherits container config
-            # and reads the newly refreshed store, rather than a manager-only token.
+            # Exercise the shipped wrapper filter, then start Git with exactly
+            # that environment inside the real worker HOME. Docker overlays
+            # exec environment, so the Python child explicitly replaces it.
+            agent_env = build_agent_subprocess_env(
+                {**environment, "HOME": "/home/worker", "PATH": "/usr/local/bin:/usr/bin:/bin"}
+            )
+            assert not any(name.startswith("GIT_") for name in agent_env)
+            consumer = (
+                "import json, os, subprocess, sys\n"
+                "result = subprocess.run(['git', 'credential', 'fill'], "
+                "input='protocol=https\\nhost=github.com\\npath=org/repo.git\\n\\n', "
+                "text=True, env=json.loads(os.environ['CODEGEN_TEST_AGENT_ENV']), "
+                "capture_output=True)\n"
+                "sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)\n"
+                "sys.exit(result.returncode)\n"
+            )
             code, output = await docker.exec_in_container(
                 container.id,
-                [
-                    "bash",
-                    "-c",
-                    "printf 'protocol=https\\nhost=github.com\\npath=org/repo.git\\n\\n' "
-                    "| git credential fill",
-                ],
+                ["python3", "-I", "-c", consumer],
+                environment={"CODEGEN_TEST_AGENT_ENV": json.dumps(agent_env)},
             )
             assert code == 0
             assert f"password={token}".encode() in output
@@ -92,6 +104,11 @@ ENTRYPOINT ["sleep", "infinity"]
                 container.id, ["stat", "-c", "%a", git_ops.GIT_CREDENTIAL_PATH]
             )
             assert code == 0 and mode.strip() == b"600"
+            code, global_config = await docker.exec_in_container(
+                container.id, ["cat", "/home/worker/.gitconfig"]
+            )
+            assert code == 0 and b"useHttpPath = true" in global_config
+            assert token.encode() not in global_config
             code, _ = await docker.exec_in_container(
                 container.id,
                 ["bash", "-c", 'test "$GH_TOKEN" = "$GITHUB_TOKEN" && test -n "$GH_TOKEN"'],

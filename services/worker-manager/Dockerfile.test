@@ -28,6 +28,7 @@ FROM test-deps AS test
 
 # Copy shared as plain files (deps are in the service pyproject.toml)
 COPY shared /app/shared
+COPY packages/worker-wrapper/src/worker_wrapper /app/worker_wrapper
 
 # Copy source code
 COPY services/worker-manager/src ./src

@@ -3,6 +3,7 @@
 import base64
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import traceback
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fakeredis import aioredis
 import pytest
 from test_infra_git_no_product_hooks import _OWNERSHIP, _docker_mock, _git, _make_product_repo
+from worker_wrapper.wrapper import build_agent_subprocess_env
 
 from shared.contracts.dto.worker import WorkerStatus
 from shared.tests.git_http_fixture import GitHTTPFixture
@@ -45,6 +47,10 @@ class LocalDocker:
         result = subprocess.run(args, env=environment, capture_output=True, timeout=30)
         return result.returncode, result.stdout + result.stderr
 
+    async def exec_capture(self, container_id, command, **kwargs):
+        code, output = await self.exec_in_container(container_id, command, **kwargs)
+        return code, output, b""
+
 
 @pytest.mark.asyncio
 async def test_released_origin_is_upgraded_and_developer_uses_current_credential(
@@ -67,6 +73,11 @@ async def test_released_origin_is_upgraded_and_developer_uses_current_credential
     )
     home = tmp_path / "worker-home"
     home.mkdir()
+    (home / ".gitconfig").write_text(
+        "[user]\n\tname = Keep existing identity\n"
+        '[credential "https://other.example"]\n\thelper = other-helper\n'
+        '[credential "https://github.com"]\n\thelper = stale-helper\n'
+    )
     credential_path = home / ".config" / "codegen" / "git-credentials"
     monkeypatch.setattr(git_ops, "GIT_CREDENTIAL_PATH", str(credential_path), raising=False)
     docker = LocalDocker(workspace, home)
@@ -96,19 +107,27 @@ async def test_released_origin_is_upgraded_and_developer_uses_current_credential
         assert "helper" not in config.lower()
         assert credential_path.stat().st_mode & 0o777 == 0o600
         assert credential_path.parent.stat().st_mode & 0o777 == 0o700
-        # This is the developer's later Git process, without manager-only exec env.
+        # The shipped wrapper filters every GIT_* setting; HOME must suffice.
+        agent_env = build_agent_subprocess_env({**os.environ, "HOME": str(home)})
+        assert not any(key.startswith("GIT_") for key in agent_env)
         result = subprocess.run(
             ["git", "credential", "fill"],
             cwd=workspace,
             input="protocol=https\nhost=github.com\npath=org/repo.git\n\n",
             text=True,
             capture_output=True,
-            env={**os.environ, **git_ops.git_auth_env()},
+            env=agent_env,
             timeout=10,
         )
         assert result.returncode == 0, result.stderr
         assert f"password={token}" in result.stdout
         assert OLD_TOKEN not in result.stdout
+        global_config = (home / ".gitconfig").read_text()
+        assert "Keep existing identity" in global_config
+        assert "other-helper" in global_config and "stale-helper" not in global_config
+        assert token not in global_config and OLD_TOKEN not in global_config
+        assert "useHttpPath = true" in global_config
+        assert (home / ".gitconfig").stat().st_mode & 0o777 == 0o600
     assert not list(credential_path.parent.glob("tmp*"))
 
 
@@ -207,7 +226,10 @@ async def test_worker_with_repository_requires_credentials_before_checkout():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_boundary", ["origin_upgrade", "credential_write"])
+@pytest.mark.parametrize(
+    "failure_boundary",
+    ["origin_upgrade", "credential_write", "global_config_read", "global_config_write"],
+)
 async def test_failed_refresh_never_publishes_ready_or_injects_agent_materials(
     failure_boundary, monkeypatch, tmp_path
 ):
@@ -227,9 +249,14 @@ async def test_failed_refresh_never_publishes_ready_or_injects_agent_materials(
     monkeypatch.setattr(git_ops, "GIT_CREDENTIAL_PATH", str(credential_path))
     if failure_boundary == "origin_upgrade":
         (workspace / ".git" / "config.lock").write_text("another Git writer holds the lock")
-    else:
+    elif failure_boundary == "credential_write":
         credential_path.parent.write_text("a file obstructs credential storage")
-    docker.exec_in_container = LocalDocker(workspace, home).exec_in_container
+    elif failure_boundary == "global_config_read":
+        (home / ".gitconfig").mkdir()
+    # procfs cannot create a global configuration tempfile, even as root.
+    # Keep the credential path writable to reach the configuration write.
+    writer_home = Path("/proc/self") if failure_boundary == "global_config_write" else home
+    docker.exec_in_container = LocalDocker(workspace, writer_home).exec_in_container
     manager = WorkerManager(redis=redis, docker_client=docker)
     monkeypatch.setattr(manager, "ensure_or_build_image", AsyncMock(return_value="worker:test"))
     monkeypatch.setattr("src.manager.settings.ENVIRONMENT", "test")
@@ -261,11 +288,107 @@ async def test_failed_refresh_never_publishes_ready_or_injects_agent_materials(
     inject.assert_not_awaited()
     assert WorkerStatus.RUNNING not in statuses
     assert "credential" in await redis.get("worker:error:unsafe")
-    assert not credential_path.exists()
-    if failure_boundary == "origin_upgrade":
+    if failure_boundary != "global_config_write":
+        assert not credential_path.exists()
+    else:
+        assert credential_path.stat().st_mode & 0o777 == 0o600
+    if failure_boundary in ("origin_upgrade", "global_config_read"):
         assert OLD_TOKEN in (workspace / ".git" / "config").read_text()
     else:
         assert OLD_TOKEN not in (workspace / ".git" / "config").read_text()
+
+
+@pytest.mark.asyncio
+async def test_refresh_writer_cannot_import_product_shadow_modules(tmp_path, monkeypatch):
+    _, workspace = _make_product_repo(tmp_path)
+    for module in ("pathlib", "tempfile"):
+        (workspace / f"{module}.py").write_text('raise RuntimeError("product module imported")\n')
+    home = tmp_path / "worker-home"
+    home.mkdir()
+    credential_path = home / ".config" / "codegen" / "git-credentials"
+    monkeypatch.setattr(git_ops, "GIT_CREDENTIAL_PATH", str(credential_path))
+    assert await git_ops.refresh_git_token(
+        LocalDocker(workspace, home), "worker", "org/repo", TOKEN, "worker-id"
+    )
+    assert TOKEN in credential_path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_filtered_agent_fetch_and_push_use_private_home_config_after_refresh(
+    tmp_path, monkeypatch
+):
+    with GitHTTPFixture(tmp_path, TOKEN, github_proxy=True) as remote:
+        workspace = tmp_path / "workspace"
+        remote.run("clone", str(remote.remote), str(workspace))
+        remote.run("-C", str(workspace), "config", "user.name", "Developer")
+        remote.run("-C", str(workspace), "config", "user.email", "developer@example.test")
+        remote.run("-C", str(workspace), "config", "core.hooksPath", ".githooks")
+        remote.run(
+            "-C",
+            str(workspace),
+            "remote",
+            "set-url",
+            "origin",
+            f"https://x-access-token:{OLD_TOKEN}@github.com/org/repo",
+        )
+        home = tmp_path / "worker-home"
+        home.mkdir()
+        shutil.copyfile(remote.config_path, home / ".gitconfig")
+        credential_path = home / ".config" / "codegen" / "git-credentials"
+        monkeypatch.setattr(git_ops, "GIT_CREDENTIAL_PATH", str(credential_path))
+        monkeypatch.setenv("PATH", remote.environment["PATH"])
+        # The endpoint is in HOME config, so no GIT_* variable is needed by
+        # either native Git or the actual wrapper's filtered subprocess.
+        monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+        for index, token in enumerate((TOKEN, "worker-harmless-refreshed-token-canary")):
+            remote.token = token
+            docker = LocalDocker(workspace, home)
+            assert await git_ops.refresh_git_token(docker, "worker", "org/repo", token, "worker-id")
+            assert await git_ops.checkout_branch(
+                docker, "worker", "story/manager", "worker-id", secret_values=(token,)
+            )
+            assert (
+                remote.run("-C", str(workspace), "rev-parse", "--abbrev-ref", "@{upstream}")
+                == "origin/story/manager"
+            )
+            agent_env = build_agent_subprocess_env(
+                {**os.environ, "HOME": str(home), "GITHUB_TOKEN": token, "GH_TOKEN": token}
+            )
+            assert not any(name.startswith("GIT_") for name in agent_env)
+            start = len(remote.headers)
+            for command in (
+                ["git", "fetch", "origin"],
+                ["git", "push", "origin", f"HEAD:story/{index}"],
+            ):
+                result = subprocess.run(
+                    command, cwd=workspace, env=agent_env, capture_output=True, timeout=15
+                )
+                assert result.returncode == 0, result.stderr
+            expected = "Basic " + base64.b64encode(f"x-access-token:{token}".encode()).decode()
+            authenticated = [header for header in remote.headers[start:] if header]
+            assert authenticated and all(header == expected for header in authenticated)
+            assert remote.run(
+                "-C", str(remote.remote), "rev-parse", f"story/{index}"
+            ) == remote.run("-C", str(workspace), "rev-parse", "HEAD")
+            # Agent push retains the product's hook, unlike manager Git.
+            assert (workspace / "hook-ran").read_text().count("product-hook") == index + 1
+            scoped = subprocess.run(
+                ["git", "credential", "fill"],
+                cwd=workspace,
+                env=agent_env,
+                input="protocol=https\nhost=github.com\npath=another/repo.git\n\n",
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+            assert scoped.returncode != 0 and token not in scoped.stdout + scoped.stderr
+            exposed = (
+                (workspace / ".git" / "config").read_text()
+                + (home / ".gitconfig").read_text()
+                + str(remote.argv())
+            )
+            assert token not in exposed and expected not in exposed and OLD_TOKEN not in exposed
+        assert not list(home.glob("tmp*")) and not list(credential_path.parent.glob("tmp*"))
 
 
 @pytest.mark.asyncio

@@ -884,22 +884,25 @@ It uses a repository-scoped GitHub installation token, not project application s
 |----------|------------------------|------------------|
 | Scaffolder fresh/ensure workspace Git | Native `GIT_CONFIG_COUNT/KEY/VALUE` environment supplies the HTTP Authorization header for each Git subprocess | Clean GitHub origin; no stored extraheader or token |
 | AnsibleRunner provisioning/recovery | JSON vars file, inventory and optional SSH key in a private `/tmp/codegen-ansible-*` directory; files created mode 0600, directory mode 0700 | `--extra-vars @<path>` contains no credential; the directory is removed on success, nonzero exit, timeout and partial setup/exception |
-| Recovery target clone/update | The Git task receives an Authorization header through native process environment, uses a clean URL and has `no_log: true` | Remote origin is clean; no header written to Git config or passed in Git argv |
-| Worker-manager preparation | Docker's native exec environment carries the current token to a writer in the new container | Released credentialed origin replaced in place; native Git credential store at `/home/worker/.config/codegen/git-credentials`, mode 0600, parent mode 0700 |
-| Developer fetch/push | Container environment inherits native Git configuration naming the private store; `credential.useHttpPath` restricts credential matching to the repository path | No workspace helper, token, encoded header or auth file; store lasts until container removal and is atomically replaced on refresh |
+| Recovery target clone/update | Native Ansible copy transfers a credential store into a unique remote `/tmp/codegen-deploy-git-*` directory, mode 0700; credential file mode 0600, secret tasks use `no_log` | Clean origin; Git environment/command text names only the helper path and scope. The tagged Git block's `always` removes the directory on success, Git failure or setup failure |
+| Worker-manager preparation | Docker's native exec environment carries the current token to an isolated Python writer (`python3 -I`) in the new container | Released credentialed origin replaced in place; native Git credential store at `/home/worker/.config/codegen/git-credentials`, mode 0600, parent mode 0700 |
+| Developer fetch/push | Native `$HOME/.gitconfig` contains only GitHub helper/path/scope settings; HOME survives the wrapper's agent environment filter. `credential.useHttpPath` matches the repository path | Unrelated global settings survive; global config and store are atomically replaced, mode 0600. No workspace helper, token, encoded header or auth file; the private store lasts until container removal |
 | Worker GitHub CLI | Creation supplies the same repository-scoped token as `GITHUB_TOKEN` and `GH_TOKEN` in Docker environment | No CLI login file is created by preparation |
 
 Worker containers are fresh even when the scaffolded workspace is reused. Preparation
 refreshes the private store for that container before checkout or instruction injection;
 Git authentication therefore also works for later developer operations. Refresh replaces
-the store atomically, so a later Git credential read uses the new token. The live refresh
-caller runs during container creation; each replacement container also gets the current
-GitHub CLI environment. This does not introduce token rotation or a background refresh.
+the store atomically, so a later Git credential read uses the new token. Manager and
+filtered agent Git use the same HOME configuration; no `GIT_*` allowlist extension is
+needed. Isolated Python prevents checkout modules from shadowing the writer's stdlib.
+The live refresh caller runs during container creation; each replacement container also
+gets the current GitHub CLI environment. This does not introduce token rotation or a
+background refresh.
 
 Repository credentials are required for developer workspace preparation. A failed origin
-upgrade or credential write refuses preparation; the worker stays unready, gets a visible
-creation failure and follows the existing teardown path. Preparation never resets the
-workspace: repository identity, branches, upstreams, unpushed commits and product hook
+upgrade, credential write or HOME configuration write refuses preparation; the worker
+stays unready, gets a visible creation failure and follows the existing teardown path.
+Preparation never resets the workspace: repository identity, branches, upstreams, unpushed commits and product hook
 configuration survive. Infrastructure Git still disables hooks per command only.
 
 `shared.diagnostics.redact_diagnostic` removes exact supplied credentials, URL userinfo

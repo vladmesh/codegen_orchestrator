@@ -28,16 +28,18 @@ FAILURE = (
 )
 
 
-def test_deploy_git_task_uses_clean_url_native_environment_and_no_log():
+def test_deploy_git_block_uses_clean_url_private_file_and_no_log():
     playbook = Path(__file__).parents[2] / "ansible" / "playbooks" / "deploy_project.yml"
     tasks = yaml.safe_load(playbook.read_text())[0]["tasks"]
-    task = next(task for task in tasks if "git" in task)
+    block = next(task for task in tasks if "block" in task and "git" in task["tags"])
+    task = next(task for task in block["block"] if "git" in task)
     assert task["git"]["repo"] == "https://github.com/{{ repo_full_name }}.git"
     assert task["no_log"] is True
-    assert str(task["environment"]["GIT_CONFIG_COUNT"]) == "1"
-    assert task["environment"]["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
-    assert "github_token" in task["environment"]["GIT_CONFIG_VALUE_0"]
-    assert "b64encode" in task["environment"]["GIT_CONFIG_VALUE_0"]
+    assert "github_token" not in str(task["environment"])
+    transfer = next(task for task in block["block"] if "copy" in task)
+    assert transfer["no_log"] is True and transfer["copy"]["mode"] == "0600"
+    assert "github_token" in transfer["copy"]["content"]
+    assert block["always"][0]["file"]["state"] == "absent"
     assert "github_token=xxx" not in playbook.read_text()
 
 
