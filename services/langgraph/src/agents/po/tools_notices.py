@@ -15,14 +15,14 @@ from shared.contracts.dto.owner_notification import (
     OwnerNoticeReference,
     OwnerNoticeSettlement,
 )
-from shared.contracts.queues.po import POSystemEvent
+from shared.contracts.queues.po import POSystemEvent, protect_po_payload, unprotect_po_payload
+from shared.redis.po import LATEST_OWNER_EVENT_KEY_PREFIX
 
 from .situation import ApiSituationReader
 from .tools_shared import _get_api, _get_stream_client
 
 logger = structlog.get_logger(__name__)
 NOTICE_LIST = TypeAdapter(list[AddressedOwnerNotice])
-LATEST_OWNER_EVENT_KEY_PREFIX = "po:latest_owner_event:"
 
 
 class OwnerNoticeReadUnknown(RuntimeError):
@@ -39,10 +39,15 @@ async def remember_owner_event(redis, chat: str, data: dict) -> None:
     try:
         await redis.set(
             latest_notice_key(chat, data["story_id"]),
-            POSystemEvent.model_validate(data).model_dump_json(),
+            json.dumps(
+                protect_po_payload(
+                    latest_notice_key(chat, data["story_id"]),
+                    POSystemEvent.model_validate(data).model_dump(mode="json"),
+                )
+            ),
         )
-    except Exception as exc:
-        raise OwnerNoticeReadUnknown(data["story_id"]) from exc
+    except Exception:
+        raise OwnerNoticeReadUnknown("PO owner-event persistence failed") from None
 
 
 async def read_notices(api: InternalAPIClient, story_id: str) -> list[AddressedOwnerNotice]:
@@ -90,7 +95,17 @@ async def suppress_owner_notice(
     chat = config["configurable"]["telegram_chat_id"]
     latest = await _get_stream_client().redis.get(latest_notice_key(chat, story_id))
     if latest:
-        event = POSystemEvent.model_validate_json(latest)
+        try:
+            event = POSystemEvent.model_validate(
+                unprotect_po_payload(
+                    latest_notice_key(chat, story_id),
+                    json.loads(latest),
+                )
+            )
+        except Exception:
+            raise OwnerNoticeReadUnknown(
+                "PO owner-event authentication or validation failed"
+            ) from None
         if event.owner_notice is None:
             return "The latest event has no durable record: tell it, or note it to the admins."
     notices = await read_notices(_get_api(), story_id)
@@ -167,8 +182,10 @@ async def notice_may_publish(api: InternalAPIClient, data: dict) -> bool:
     try:
         notices = await read_notices(api, data["story_id"])
     except Exception as exc:
-        logger.warning("po_owner_notice_read_failed", story_id=data["story_id"], error=str(exc))
-        raise OwnerNoticeReadUnknown(data["story_id"]) from exc
+        logger.warning(
+            "po_owner_notice_read_failed", story_id=data["story_id"], error_type=type(exc).__name__
+        )
+        raise OwnerNoticeReadUnknown("PO owner-notice read failed") from None
     record = next(
         (
             n.notification
@@ -196,7 +213,6 @@ async def notice_may_publish(api: InternalAPIClient, data: dict) -> bool:
             "po_reply_withheld_notice_settled",
             told_state=record.told_state,
             suppressed_by=record.suppressed_by,
-            suppressed_reason=record.suppressed_reason,
         )
         return False
     return True
@@ -215,5 +231,7 @@ async def record_notice_told(api: InternalAPIClient, data: dict) -> None:
         response.raise_for_status()
     except Exception as exc:
         logger.warning(
-            "po_owner_notice_told_write_failed", story_id=data["story_id"], error=str(exc)
+            "po_owner_notice_told_write_failed",
+            story_id=data["story_id"],
+            error_type=type(exc).__name__,
         )

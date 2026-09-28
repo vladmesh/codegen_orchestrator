@@ -23,7 +23,7 @@ from enum import StrEnum
 
 import structlog
 
-from shared.contracts.queues.po import POProactiveMessage, from_flat_fields
+from shared.contracts.queues.po import POProactiveMessage, from_flat_fields, po_alert_identifiers
 from shared.contracts.recipient import (
     alert_legacy_recipient_field,
     has_legacy_recipient_field,
@@ -120,7 +120,7 @@ async def attempt_proactive_delivery(bot, proactive: POProactiveMessage) -> str 
             last_error = e
             logger.warning(
                 "proactive_message_send_failed",
-                error=str(e),
+                error_type=type(e).__name__,
                 telegram_chat_id=chat_id,
                 attempt=attempt,
                 max_attempts=PROACTIVE_MAX_ATTEMPTS,
@@ -129,13 +129,20 @@ async def attempt_proactive_delivery(bot, proactive: POProactiveMessage) -> str 
             if attempt < PROACTIVE_MAX_ATTEMPTS:
                 await asyncio.sleep(PROACTIVE_RETRY_DELAY_S * attempt)
 
-    return str(last_error)
+    return type(last_error).__name__
 
 
 async def _alert_delivery_exhausted(
     proactive: POProactiveMessage, *, deliveries: int, error: str
 ) -> None:
     """Report a notification the user will never receive."""
+    identifiers = po_alert_identifiers(proactive.model_dump())
+    proactive = proactive.model_copy(
+        update={
+            field: identifiers.get(field, "")
+            for field in ("telegram_chat_id", "owner_user_id", "event", "story_id", "project_id")
+        }
+    )
     logger.error(
         "proactive_message_delivery_exhausted",
         error=error,
@@ -175,16 +182,19 @@ async def process_proactive_entry(
 
     try:
         proactive = from_flat_fields(msg.data, POProactiveMessage)
+        # Refuse an unusable address before int() can render the rejected value.
+        int(proactive.telegram_chat_id)
     except Exception as e:
         logger.error(
             "proactive_message_invalid",
-            error=str(e),
+            error_type=type(e).__name__,
             entry_id=msg.message_id,
-            telegram_chat_id=msg.data.get("telegram_chat_id"),
         )
         if has_legacy_recipient_field(msg.data):
             await alert_legacy_recipient_field(
-                source=PO_PROACTIVE_QUEUE, entry_id=msg.message_id, data=msg.data
+                source=PO_PROACTIVE_QUEUE,
+                entry_id=msg.message_id,
+                data=po_alert_identifiers(msg.data),
             )
         await client.ack(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, msg.message_id)
         return ProactiveOutcome.REJECTED

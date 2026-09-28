@@ -1,4 +1,4 @@
-"""Service tests for PO reminder flow (real Redis)."""
+"""Unit tests for PO reminder flow with FakeRedis."""
 
 from __future__ import annotations
 
@@ -10,9 +10,14 @@ from fakeredis.aioredis import FakeRedis
 import pytest
 import pytest_asyncio
 
+from shared.contracts.queues.po import protect_po_payload
 from shared.queues import PO_INPUT_QUEUE, PO_REMINDERS_KEY
 from shared.redis import RedisStreamClient
 from src.agents.po.reminders import _poll_once
+
+
+def protected_reminder(data: dict) -> str:
+    return json.dumps(protect_po_payload(PO_REMINDERS_KEY, data))
 
 
 @pytest_asyncio.fixture
@@ -35,7 +40,7 @@ async def redis(raw_redis):
 async def test_reminder_fires_and_reaches_po_input(redis, raw_redis):
     """E2E: ZADD reminder -> poller fires -> message appears in po:input."""
     # 1. Write a reminder that's already due (fire_at = now - 10)
-    reminder = json.dumps(
+    reminder = protected_reminder(
         {
             "type": "reminder",
             "telegram_chat_id": "user-42",
@@ -78,7 +83,7 @@ async def test_reminder_fires_and_reaches_po_input(redis, raw_redis):
 @pytest.mark.asyncio
 async def test_future_reminder_not_fired(redis, raw_redis):
     """Reminder with future timestamp should stay in ZSET."""
-    reminder = json.dumps(
+    reminder = protected_reminder(
         {
             "type": "reminder",
             "telegram_chat_id": "user-99",
@@ -100,7 +105,7 @@ async def test_multiple_due_reminders_all_fire(redis, raw_redis):
     """Multiple due reminders should all be moved to po:input."""
     now = time.time()
     for i in range(3):
-        reminder = json.dumps(
+        reminder = protected_reminder(
             {
                 "type": "reminder",
                 "telegram_chat_id": f"user-{i}",

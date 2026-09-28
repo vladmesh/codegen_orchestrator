@@ -1,8 +1,8 @@
 """Contracts for PO Redis streams (po:input, po:response, po:proactive).
 
-PO messages use flat Redis fields (not JSON 'data' wrapper), so they do NOT
-inherit from BaseMessage/QueueMeta. Instead they are standalone Pydantic models
-with helpers for flat-field serialization.
+PO models have a logical flat-field codec and do not inherit BaseMessage/QueueMeta.
+The Redis client wraps every PO wire payload in an authenticated Fernet envelope.
+Direct Redis readers authenticate with unprotect_po_payload before validation.
 
 Addressing: ``telegram_chat_id`` is the Telegram chat the message is delivered
 to — never the internal ``User.id``. Producers that only know the internal id
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import re
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -32,7 +33,76 @@ from shared.contracts.dto.story import (
     StoryWaitingOn,
 )
 from shared.contracts.recipient import RejectsLegacyRecipientField
-from shared.contracts.vocab import OwnerNotificationEvent, POSystemEventName
+from shared.contracts.vocab import OwnerNotificationEvent, POCallbackEvent, POSystemEventName
+
+PO_PAYLOAD_ENVELOPE = "po_encrypted_v1"
+
+
+class POPayloadProtectionError(RuntimeError):
+    """A safe failure with no payload, key or nested exception rendering."""
+
+
+def is_po_stream(stream: str) -> bool:
+    from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
+
+    return stream in (PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE) or stream.startswith("po:response:")
+
+
+def po_alert_identifiers(data: dict) -> dict[str, str]:
+    """Keep transport alerts useful without echoing unvalidated payload values."""
+    identifiers = {}
+    for field in ("story_id", "project_id", "task_id", "owner_user_id", "telegram_chat_id"):
+        value = data.get(field)
+        if isinstance(value, str) and re.fullmatch(
+            r"-?\d{1,20}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|"
+            r"(?:story|project|proj|task|run)-[a-z0-9]{1,64}",
+            value,
+        ):
+            identifiers[field] = value
+    if isinstance(data.get("event"), str) and data["event"] in {
+        *OwnerNotificationEvent,
+        *POCallbackEvent,
+    }:
+        identifiers["event"] = data["event"]
+    return identifiers
+
+
+def protect_po_payload(scope: str, payload: dict) -> dict[str, str]:
+    """Authenticate the entire payload and its Redis destination before persistence."""
+    try:
+        # Worker DTO bundles do not carry the service-only cipher module.
+        from shared.crypto import SecretsCipher
+
+        plaintext = json.dumps({"scope": scope, "payload": payload}, separators=(",", ":"))
+        return {PO_PAYLOAD_ENVELOPE: SecretsCipher().encrypt(plaintext)}
+    except Exception:
+        raise POPayloadProtectionError(
+            "PO payload encryption failed; check SECRETS_ENCRYPTION_KEY"
+        ) from None
+
+
+def unprotect_po_payload(scope: str, fields: dict) -> dict:
+    """Authenticate before decoding/validation. Runtime accepts no plaintext state."""
+    try:
+        from shared.crypto import SecretsCipher
+
+        fields = {
+            k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
+            for k, v in fields.items()
+        }
+        if set(fields) != {PO_PAYLOAD_ENVELOPE}:
+            raise ValueError
+        decoded = json.loads(SecretsCipher().decrypt(fields[PO_PAYLOAD_ENVELOPE]))
+        if set(decoded) != {"scope", "payload"} or decoded["scope"] != scope:
+            raise ValueError
+        if not isinstance(decoded["payload"], dict):
+            raise ValueError
+        return decoded["payload"]
+    except Exception:
+        raise POPayloadProtectionError(
+            "PO payload authentication failed; check protected state and SECRETS_ENCRYPTION_KEY"
+        ) from None
+
 
 # --- PO Input messages (po:input) ---
 

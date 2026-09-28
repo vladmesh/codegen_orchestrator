@@ -159,7 +159,12 @@ async def _call(api_client, method: str, path: str, **kwargs) -> httpx.Response:
 
 async def _notices(redis_client: RedisStreamClient, story_id: str) -> list[POSystemEvent]:
     """This story's stage notices on ``po:input``, parsed with the contract PO parses with."""
-    entries = await redis_client.redis.xrange(PO_INPUT_QUEUE)
+    from shared.contracts.queues.po import unprotect_po_payload
+
+    entries = [
+        (entry_id, unprotect_po_payload(PO_INPUT_QUEUE, fields))
+        for entry_id, fields in await redis_client.redis.xrange(PO_INPUT_QUEUE)
+    ]
     return [
         POSystemEvent.model_validate(fields)
         for _, fields in entries

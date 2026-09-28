@@ -21,6 +21,7 @@ services:
       DEFAULT_AGENT_TYPE: claude
       TELEGRAM_BOT_TOKEN: "123:test"
       REDIS_URL: redis://redis:6379/0
+      SECRETS_ENCRYPTION_KEY: wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       API_BASE_URL: http://api:8000
       # The bot reaches the API through the shared internal transport, which reads
       # this at import time. Without it the container dies on a KeyError.
@@ -52,6 +53,7 @@ services:
     environment:
       DEFAULT_AGENT_TYPE: claude
       REDIS_URL: redis://redis:6379/0
+      SECRETS_ENCRYPTION_KEY: wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       TELEGRAM_BOT_TOKEN: "123:test"
       API_BASE_URL: http://api:8000
       INTERNAL_API_KEY: test-internal-api-key-for-service-tests
@@ -69,7 +71,7 @@ services:
       - ../../../services/telegram_bot/pytest.ini:/app/pytest.ini
       - ../../../shared:/app/shared
     working_dir: /app
-    command: ["pytest", "tests/service", "-v", "-s", "--asyncio-mode=auto"]
+    command: ["pytest", "tests/service", "tests/integration/po_transport", "-v", "-s", "--asyncio-mode=auto"]
     depends_on:
       redis:
         condition: service_healthy

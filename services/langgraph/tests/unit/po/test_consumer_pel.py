@@ -35,6 +35,7 @@ import pytest
 import pytest_asyncio
 from structlog.testing import capture_logs
 
+from shared.contracts.queues.po import protect_po_payload, unprotect_po_payload
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE
 from shared.redis import RedisStreamClient
 from shared.redis.client import dlq_stream
@@ -232,7 +233,7 @@ class TestReclaimRunsForTheProcessLifetime:
         # consumer that then dies with it, not to PO.
         po_run.gate.hold()
         assert await _until(lambda: po_run.gate.waiting >= 1)
-        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
+        await po_run.client.publish_flat(PO_INPUT_QUEUE, VALID_INPUT)
         await po_run.gate.bypass(
             PO_CONSUMER_GROUP, "po-worker-dead", {PO_INPUT_QUEUE: ">"}, count=1
         )
@@ -258,7 +259,9 @@ class TestSweepWalksThePelToItsEnd:
         prefix = po_consumer.READ_COUNT * 10
         fresh = [PelEntry(f"{1000 + i}-0", idle_ms=0) for i in range(prefix)]
         stale_id = f"{1000 + prefix}-0"
-        stale = PelEntry(stale_id, idle_ms=60_000, fields=dict(VALID_INPUT))
+        stale = PelEntry(
+            stale_id, idle_ms=60_000, fields=protect_po_payload(PO_INPUT_QUEUE, VALID_INPUT)
+        )
         pel = RedisPelScan([*fresh, stale])
         po_run.redis.xautoclaim = pel
 
@@ -312,7 +315,7 @@ class TestPoisonEntryIsObservedNotDestroyed:
             "telegram_chat_id": "u1",
             "request_id": sentinel,
         }
-        await po_run.redis.xadd(PO_INPUT_QUEUE, poison)
+        await po_run.client.publish_flat(PO_INPUT_QUEUE, poison)
 
         with capture_logs() as logs:
             await po_run.start()
@@ -320,10 +323,11 @@ class TestPoisonEntryIsObservedNotDestroyed:
 
         entries = await po_run.dlq_entries()
         assert len(entries) == 1
-        fields = entries[0][1]
+        fields = unprotect_po_payload(DLQ, entries[0][1])
         assert fields["source_stream"] == PO_INPUT_QUEUE
         assert fields["group"] == PO_CONSUMER_GROUP
-        assert json.loads(fields["body"]) == poison
+        assert unprotect_po_payload(PO_INPUT_QUEUE, json.loads(fields["body"])) == poison
+        assert sentinel not in str(entries)
 
         assert await _until(lambda: po_run.pending_is(0)), "the quarantined entry was never acked"
         po_run.graph.ainvoke.assert_not_called()
@@ -343,7 +347,10 @@ class TestPoisonEntryIsObservedNotDestroyed:
             return await real_xadd(stream, *args, **kwargs)
 
         po_run.redis.xadd = refuse_dlq
-        await real_xadd(PO_INPUT_QUEUE, {"type": "not_a_po_message_kind", "text": "x"})
+        await real_xadd(
+            PO_INPUT_QUEUE,
+            protect_po_payload(PO_INPUT_QUEUE, {"type": "not_a_po_message_kind", "text": "x"}),
+        )
 
         await po_run.start()
         assert await _until(lambda: po_run.gate.reads >= 2)
@@ -357,7 +364,7 @@ class TestPoisonEntryIsObservedNotDestroyed:
     ):
         alert = AsyncMock()
         monkeypatch.setattr("shared.notifications.notify_admins_best_effort", alert)
-        await po_run.redis.xadd(
+        await po_run.client.publish_flat(
             PO_INPUT_QUEUE,
             {**VALID_INPUT, "user_id": "42", "story_id": "story-9"},
         )
@@ -375,7 +382,7 @@ class TestNewerPublisherIsNotDestroyed:
     """AC6: an added field used to fail validation and destroy the message."""
 
     async def test_an_unknown_field_is_dropped_and_the_message_is_handled(self, po_run):
-        await po_run.redis.xadd(
+        await po_run.client.publish_flat(
             PO_INPUT_QUEUE, {**VALID_INPUT, "shiny_new_field": "from a newer publisher"}
         )
 
@@ -386,7 +393,7 @@ class TestNewerPublisherIsNotDestroyed:
         assert await _until(lambda: po_run.pending_is(0))
         assert await po_run.dlq_entries() == []
         response = await po_run.redis.xrange("po:response:r1")
-        assert response and response[0][1]["text"] == "ok"
+        assert response and unprotect_po_payload("po:response:r1", response[0][1])["text"] == "ok"
 
 
 @pytest.fixture
@@ -449,7 +456,7 @@ class TestTheInFlightSetAtTheProductionRatio:
 
         po_run.redis.xautoclaim = recording_xautoclaim
 
-        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
+        await po_run.client.publish_flat(PO_INPUT_QUEUE, VALID_INPUT)
         await po_run.start()
 
         assert await _until(lambda: len(held.calls) == 1)
@@ -479,7 +486,7 @@ class TestTheInFlightSetAtTheProductionRatio:
             return 0
 
         po_run.redis.xack = ack_without_removing
-        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
+        await po_run.client.publish_flat(PO_INPUT_QUEUE, VALID_INPUT)
         await po_run.start()
 
         assert await _until(lambda: po_run.graph.ainvoke.await_count >= 1)
@@ -499,7 +506,7 @@ class TestTheInFlightSetAtTheProductionRatio:
             raise ConnectionError("ack refused")
 
         po_run.redis.xack = refuse_ack
-        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
+        await po_run.client.publish_flat(PO_INPUT_QUEUE, VALID_INPUT)
         await po_run.start()
 
         assert await _until(lambda: po_run.graph.ainvoke.await_count >= 1)
@@ -515,7 +522,7 @@ class TestTheInFlightSetAtTheProductionRatio:
         """Nothing sticky is left in Redis by a process that died: one timeout
         after it stopped, its in-flight entry is claimable by another PO.
         """
-        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
+        await po_run.client.publish_flat(PO_INPUT_QUEUE, VALID_INPUT)
         await po_run.start()
         assert await _until(lambda: len(held.calls) == 1)
         entry_id = held.calls[0]

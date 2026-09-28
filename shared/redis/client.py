@@ -14,6 +14,13 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 import structlog
 
+from shared.contracts.queues.po import (
+    POPayloadProtectionError,
+    is_po_stream,
+    po_alert_identifiers,
+    protect_po_payload,
+    unprotect_po_payload,
+)
 from shared.contracts.recipient import (
     alert_legacy_recipient_field,
     has_legacy_recipient_field,
@@ -30,7 +37,7 @@ logger = structlog.get_logger(__name__)
 
 def decode_redis_value(value: Any) -> Any:
     """Normalize Redis bytes responses at the client boundary."""
-    return value.decode() if isinstance(value, bytes) else value
+    return value.decode(errors="surrogateescape") if isinstance(value, bytes) else value
 
 
 def decode_redis_fields(fields: dict) -> dict[str, str]:
@@ -175,6 +182,7 @@ class RedisStreamClient:
             self._redis = redis.from_url(
                 self.redis_url,
                 decode_responses=True,
+                encoding_errors="surrogateescape",
                 socket_timeout=None,
             )
             logger.info("redis_connected")
@@ -202,12 +210,16 @@ class RedisStreamClient:
     async def publish(self, stream: str, data: dict[str, Any]) -> str:
         """Publish a dict to a Redis Stream (wrapped in JSON 'data' field)."""
         message = {"data": json.dumps(data)}
+        if is_po_stream(stream):
+            message = protect_po_payload(stream, data)
         message_id = await self.redis.xadd(stream, message, **self._xadd_kwargs())
         logger.debug("message_published", stream=stream, message_id=message_id)
         return message_id
 
     async def publish_flat(self, stream: str, fields: dict[str, str]) -> str:
         """Publish flat key-value fields directly to a Redis Stream (no JSON wrapping)."""
+        if is_po_stream(stream):
+            fields = protect_po_payload(stream, fields)
         message_id = await self.redis.xadd(stream, fields, **self._xadd_kwargs())
         logger.debug("message_published_flat", stream=stream, message_id=message_id)
         return message_id
@@ -411,6 +423,8 @@ class RedisStreamClient:
                 if "NOGROUP" in str(e):
                     logger.warning("consumer_nogroup_recovering", stream=stream, group=group)
                     await self.ensure_consumer_group(stream, group)
+                elif is_po_stream(stream):
+                    logger.error("consume_error", stream=stream, error_type=type(e).__name__)
                 else:
                     logger.error("consume_error", stream=stream, error=str(e))
                 await asyncio.sleep(1)
@@ -457,7 +471,21 @@ class RedisStreamClient:
                 yield None  # type: ignore[misc]
                 continue
             message_id, fields, reclaimed = entry
-            data = self._parse_fields(fields)
+            if is_po_stream(stream):
+                try:
+                    data = unprotect_po_payload(stream, fields)
+                except POPayloadProtectionError:
+                    await self._reject_entry(
+                        stream,
+                        group,
+                        message_id,
+                        fields=fields,
+                        failure=DLQ_FAILURE_DECODE,
+                        reason={"error": "PO authentication failed"},
+                    )
+                    continue
+            else:
+                data = self._parse_fields(fields)
             yield StreamMessage(message_id=message_id, data=data, reclaimed=reclaimed)
             if auto_ack:
                 await self.redis.xack(stream, group, message_id)
@@ -497,6 +525,8 @@ class RedisStreamClient:
             "body": json.dumps(decode_redis_fields(fields)),
         }
         try:
+            if is_po_stream(stream):
+                entry = protect_po_payload(target, entry)
             dlq_id = await self.redis.xadd(target, entry, **self._xadd_kwargs())
         except Exception as e:
             # Payload-handling failures log only their type because bodies may contain secrets.
@@ -569,8 +599,12 @@ class RedisStreamClient:
             message_id, fields, _reclaimed = entry
 
             try:
-                data = self._decode_entry(fields)
-            except json.JSONDecodeError as e:
+                data = (
+                    unprotect_po_payload(stream, fields)
+                    if is_po_stream(stream)
+                    else self._decode_entry(fields)
+                )
+            except (json.JSONDecodeError, POPayloadProtectionError) as e:
                 # Never log raw fields: queue payloads may contain secrets.
                 logger.error(
                     "typed_consume_decode_failed",
@@ -592,7 +626,11 @@ class RedisStreamClient:
                 value, dropped = validate_tolerating_additions(adapter, data)
             except ValidationError as e:
                 # Validation input may contain secrets, so log only safe errors.
-                errors = safe_validation_errors(e)
+                errors = (
+                    {"error": "PO validation failed", "count": e.error_count()}
+                    if is_po_stream(stream)
+                    else safe_validation_errors(e)
+                )
                 logger.error(
                     "typed_consume_validation_failed",
                     stream=stream,
@@ -605,7 +643,9 @@ class RedisStreamClient:
                 # work.
                 if has_legacy_recipient_field(data):
                     await alert_legacy_recipient_field(
-                        source=stream, entry_id=message_id, data=data
+                        source=stream,
+                        entry_id=message_id,
+                        data=po_alert_identifiers(data) if is_po_stream(stream) else data,
                     )
                 await self._reject_entry(
                     stream,
@@ -625,7 +665,7 @@ class RedisStreamClient:
                     "typed_consume_unknown_fields_ignored",
                     stream=stream,
                     entry_id=message_id,
-                    unknown_fields=dropped,
+                    unknown_fields=len(dropped) if is_po_stream(stream) else dropped,
                 )
 
             yield TypedMessage(message_id=message_id, value=value)
