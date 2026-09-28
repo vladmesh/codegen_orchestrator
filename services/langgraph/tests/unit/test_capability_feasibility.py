@@ -71,6 +71,46 @@ def test_all_manifest_terms_are_active(item):
         }
 
 
+@pytest.mark.parametrize("item", list(CAPABILITY_LIMITS.values()), ids=lambda item: item.id)
+def test_all_weak_terms_are_active_on_their_own(item):
+    for term in item.detect_weak:
+        assert item.id in {
+            conflict.capability.id for conflict in capability_conflicts(_content(term.upper()))
+        }
+
+
+@pytest.mark.parametrize(
+    ("text", "capability"),
+    [
+        ("payment", "payments"),
+        ("оплата", "payments"),
+        ("платёж", "payments"),
+        ("платеж", "payments"),
+        ("upload", "file_storage"),
+        ("Оплата подписки в боте", "payments"),
+        ("Users upload their documents", "file_storage"),
+    ],
+)
+def test_the_bare_words_the_owner_listed_trip(text, capability):
+    assert capability in {
+        conflict.capability.id for conflict in capability_conflicts(_content(text))
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "capability"),
+    [
+        ("Record the payment through YooKassa", "payments"),
+        ("Учёт расходов и приём оплаты через ЮKassa", "payments"),
+        ("Upload files and keep their Telegram file id", "file_storage"),
+    ],
+)
+def test_a_recording_cue_does_not_excuse_a_strong_term(text, capability):
+    assert capability in {
+        conflict.capability.id for conflict in capability_conflicts(_content(text))
+    }
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -118,6 +158,10 @@ def test_supported_phrasings_near_a_missing_capability_do_not_trip(text):
         "A habit tracker bot: /done marks a habit, the bot keeps history and sends reminders",
         "The bot records rent payments and shows a monthly report",
         "The user sends a photo of a receipt and the bot keeps its Telegram file id",
+        "Учёт платежей по кредиту: бот отмечает, какой платёж уже внесён",
+        "Track which payment is due next and remind about it",
+        "Бот записывает оплату коммуналки и показывает расходы за месяц",
+        "The user can upload a receipt photo; the bot keeps its file id",
     ],
 )
 def test_an_ordinary_tracker_bot_brief_trips_nothing(text):

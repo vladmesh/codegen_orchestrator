@@ -62,6 +62,8 @@ class Limitation(_Model):
     `name`, `plain`, `why` and `workaround` are product language: they reach the PO and,
     through a refusal, the user. `technical` reaches only the Architect and the document.
     `aliases` are retired ids merged into this one, still honoured in recorded choices.
+    A `detect` term always trips; a `detect_weak` term trips unless the requirement also
+    carries a `weak_unless` phrase, such as an expense tracker merely recording payments.
     """
 
     id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
@@ -72,6 +74,8 @@ class Limitation(_Model):
     workaround: str | None = None
     technical: str = Field(min_length=1)
     detect: list[str] = Field(min_length=1)
+    detect_weak: list[str] = []
+    weak_unless: list[str] = []
 
 
 class KitItem(_Model):

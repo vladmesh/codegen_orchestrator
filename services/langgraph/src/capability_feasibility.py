@@ -3,7 +3,9 @@
 The rendered data ships with src/ and carries only the product-language fields,
 so a refusal never quotes technical detail. Matching is deliberately phrase based;
 the agents must still judge requirements against the whole manifest. A term
-joined by " + " matches when every one of its phrases is present.
+joined by " + " matches when every one of its phrases is present, and "ё" reads
+as "е" on both sides. A weak term (a bare word such as "payment") trips only
+when none of the limitation's `weak_unless` phrases is in the requirement.
 """
 
 from dataclasses import dataclass
@@ -24,6 +26,16 @@ class CapabilityLimit(BaseModel):
     why: str
     workaround: str | None
     detect: list[str]
+    detect_weak: list[str]
+    weak_unless: list[str]
+
+    def trips(self, text: str) -> bool:
+        """Whether a normalised requirement text needs this missing capability."""
+        if any(_term_matches(term, text) for term in self.detect):
+            return True
+        return any(_term_matches(term, text) for term in self.detect_weak) and not any(
+            _normalise(phrase) in text for phrase in self.weak_unless
+        )
 
 
 class _Manifest(BaseModel):
@@ -56,8 +68,12 @@ class CapabilityConflict:
         )
 
 
+def _normalise(text: str) -> str:
+    return " ".join(text.casefold().replace("ё", "е").split())
+
+
 def _term_matches(term: str, text: str) -> bool:
-    return all(part in text for part in term.split(" + "))
+    return all(_normalise(part) in text for part in term.split(" + "))
 
 
 def capability_conflicts(brief_content: ProductBriefContent) -> list[CapabilityConflict]:
@@ -68,10 +84,10 @@ def capability_conflicts(brief_content: ProductBriefContent) -> list[CapabilityC
     accepted = {choice.capability for choice in brief_content.variant_choices}
     conflicts = []
     for requirement in brief_content.must_requirements:
-        text = " ".join(f"{requirement.text} {requirement.user_wording or ''}".casefold().split())
+        text = _normalise(f"{requirement.text} {requirement.user_wording or ''}")
         for item in CAPABILITY_LIMITS.values():
             waived = not accepted.isdisjoint({item.id, *item.aliases})
-            if not waived and any(_term_matches(term, text) for term in item.detect):
+            if not waived and item.trips(text):
                 conflicts.append(CapabilityConflict(requirement.id, requirement.text, item))
     return conflicts
 

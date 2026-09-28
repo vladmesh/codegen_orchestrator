@@ -179,8 +179,8 @@ cannot:
       can change when it moves server; the resolver derives no `PUBLIC_BASE_URL`. Poll the
       provider's API from a timer loop; the Telegram bot already works this way (long polling).
   - id: payments
-    # Bare "payment", "оплата" and "платёж" are left out: an expense tracker records payments
-    # without accepting any, and the floor must not refuse it.
+    # A bare word ("payment", "оплата", "платёж") is a weak term: an expense tracker records
+    # payments without accepting any, so it trips unless the requirement is about recording.
     detect:
       - accept payment
       - accept payments
@@ -203,6 +203,8 @@ cannot:
       - юkassa
       - юкасса
       - юкассу
+    detect_weak: [payment, оплата, оплату, платёж, платежи]
+    weak_unless: [record, track, expense, budget, spent, учёт, учитыва, записыва, расход, трат, бюджет, отмеча]
     name: Accepting payments
     plain: >-
       The bot cannot take payments: neither through payment services such as YooKassa or Stripe
@@ -257,6 +259,8 @@ cannot:
       - документы на сервере
       - загрузка файлов
       - загружать файлы
+    detect_weak: [upload]
+    weak_unless: [file id, file_id]
     name: Keeping uploaded files
     plain: The bot does not keep uploaded files itself.
     why: The bot remembers data, not files.
