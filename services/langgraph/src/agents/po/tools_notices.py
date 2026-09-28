@@ -22,6 +22,7 @@ from .tools_shared import _get_api, _get_stream_client
 
 logger = structlog.get_logger(__name__)
 NOTICE_LIST = TypeAdapter(list[AddressedOwnerNotice])
+LATEST_OWNER_EVENT_KEY_PREFIX = "po:latest_owner_event:"
 
 
 class OwnerNoticeReadUnknown(RuntimeError):
@@ -29,7 +30,7 @@ class OwnerNoticeReadUnknown(RuntimeError):
 
 
 def latest_notice_key(chat: str, story: str) -> str:
-    return f"po:latest_owner_event:{chat}:{story}"
+    return f"{LATEST_OWNER_EVENT_KEY_PREFIX}{chat}:{story}"
 
 
 async def remember_owner_event(redis, chat: str, data: dict) -> None:

@@ -114,6 +114,9 @@ import structlog
 
 from scripts.template_pin import TEMPLATE_PIN
 
+# The PO's record of the latest owner event per story, named by the PO itself.
+from services.langgraph.src.agents.po.tools_notices import LATEST_OWNER_EVENT_KEY_PREFIX
+
 # The observation binder central QA judges a package behaviour row with. The
 # harness reads the architect's published observable through the same function
 # the paid run will, so a criterion that could never bind is caught here.
@@ -7227,6 +7230,16 @@ def story_gate_key_patterns(story_id: str) -> list[str]:
     ]
 
 
+def owner_event_key_patterns(story_id: str) -> list[str]:
+    """Glob for the PO's latest-owner-event record of one story, whatever the chat.
+
+    The PO consumer (`services/langgraph/src/agents/po/tools_notices.py`) keeps
+    `po:latest_owner_event:<chat>:<story>` with no TTL, so the story id is what
+    makes a key this run's.
+    """
+    return [f"{LATEST_OWNER_EVENT_KEY_PREFIX}*:{story_id}"]
+
+
 def _redis_scan(patterns: Iterable[str]) -> list[str]:
     """Every key any of these globs selects, as `redis-cli --scan` lists it."""
     found: set[str] = set()
@@ -7264,6 +7277,29 @@ def release_story_gate_records(ctx: dict) -> None:
         )
 
 
+def release_story_owner_events(ctx: dict) -> None:
+    """Drop the PO's latest-owner-event record of every story this run owns.
+
+    The PO keeps the record so a later deferral can check it against the durable
+    notice, and nothing removes it when the story ends — correct product
+    behaviour, but the key names the run's story, so the residue proof names it,
+    as it did on run 36383692107. The run takes it back after the database
+    teardown and reads back that none is left.
+    """
+    story_ids = list(run_inventory(ctx).story_ids)
+    if not story_ids:
+        return
+    patterns = [pattern for story_id in story_ids for pattern in owner_event_key_patterns(story_id)]
+    keys = _redis_scan(patterns)
+    if keys:
+        _redis_command("UNLINK", *keys)
+    left = _redis_scan(patterns)
+    if left:
+        raise CleanupError(
+            f"PO owner-event records of stories {story_ids} survived removal: {left}"
+        )
+
+
 async def cleanup_and_prove(
     api_internal: httpx.AsyncClient,
     api_observer: httpx.AsyncClient | None,
@@ -7282,6 +7318,7 @@ async def cleanup_and_prove(
     database = await cleanup_all(api_internal, api_observer, ctx)
     release_story_stage_notices(ctx)
     release_story_gate_records(ctx)
+    release_story_owner_events(ctx)
     release_project_fences(ctx)
     remove_run_po_checkpoints(ctx)
     prove_nothing_left(ctx, database)

@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - The API refuses to start with an empty `INTERNAL_API_KEY`, and an empty `X-Internal-Key` never
   authenticates, so a blank key can no longer be an internal-service bypass.
+- Live-run cleanup releases the PO's `po:latest_owner_event:*:<story>` records of the run's stories,
+  so the residue proof no longer fails on them (e2e run 36383692107).
 
 ## 2026-09-27
 
