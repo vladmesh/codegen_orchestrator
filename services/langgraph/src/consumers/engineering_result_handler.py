@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http import HTTPStatus
 
+import httpx
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
@@ -16,11 +18,13 @@ from shared.contracts.dto.run_result import (
     EngineeringRunResult,
     uncomputable_derived_keys_reason,
 )
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode, bounded_diagnostic
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.worker_result import WorkerStopReason
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
+from shared.empty_engineering_stop import ensure_empty_story_stop
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
@@ -219,80 +223,32 @@ def _attempt_execution_patch(
     return {"run_metadata": metadata}
 
 
-async def _park_story_without_new_commit(
-    story_id: str,
-    task_id: str,
-    error_msg: str,
-    *,
-    redis: RedisStreamClient,
-    execution: EngineeringExecutionEvidence | None = None,
-    project_id: str,
-    telegram_chat_id: str,
-) -> None:
-    """Take a story whose taskless engineering produced no new commit out of the retry set.
+class StoryStopError(RuntimeError):
+    """The empty-result stop was refused; leave the engineering message reclaimable."""
 
-    The story is not defective and nothing about it is transient: no PR can be
-    opened for a branch that carries no commit of its own, so leaving it
-    ``in_progress`` only feeds `complete_stories` a pull request GitHub refuses
-    with 422 for ever. A person has to decide what happens next, and the reason
-    they need travels with the story rather than only in this process's log.
 
-    Both audiences are told, for the same reason the ``gave_up`` route tells
-    them: the administrators because a parked story is operational work, and the
-    owner because their product stops here until a person moves it. The durable
-    owner-notification record lives in the scheduler and is not reachable from
-    this consumer, so the owner's message is the best-effort ``po:input``
-    publish this module already uses.
-    """
-    reason = {
-        "reason": EngineeringFailureReason.NO_NEW_COMMIT.value,
-        "attempt_id": task_id,
-        "detail": error_msg,
-    }
-    try:
-        await api_client.patch(f"stories/{story_id}", json={"quarantine_reason": reason})
-    except Exception:
-        logger.warning("story_no_new_commit_reason_write_failed", story_id=story_id, exc_info=True)
-    try:
-        await api_client.transition_story(story_id, "human-review")
-    except Exception:
-        logger.warning("story_no_new_commit_transition_failed", story_id=story_id, exc_info=True)
-        return
-    logger.warning(
-        "engineering_no_new_commit_story_parked",
-        story_id=story_id,
-        task_id=task_id,
+class EmptyResultSettlementError(RuntimeError):
+    """A known empty worker outcome must never become a generic terminal failure."""
+
+
+async def _park_story_without_new_commit(story_id: str, task_id: str, error_msg: str) -> None:
+    """Commit the taskless stop with its reason and owed notices before ending the Run."""
+    failure = StoryFailure(
+        code=StoryFailureCode.NO_NEW_COMMIT,
+        source="engineering",
+        detail=f"Attempt {task_id}: {error_msg}",
     )
-    await notify_admins_best_effort(
-        f"Story {story_id} parked in human review: attempt {task_id} produced no new commit "
-        f"({error_msg})",
-        level="warning",
-        component="engineering_result_handler",
-        story_id=story_id,
-        task_id=task_id,
-        project_id=project_id,
-    )
-    if telegram_chat_id:
-        try:
-            await publish_story_event(
-                redis,
-                telegram_chat_id=telegram_chat_id,
-                event=OwnerNotificationEvent.STORY_BLOCKED,
-                text=(
-                    "The last attempt finished without changing any code, so there is nothing "
-                    "to review or deploy. A specialist has to look at this; nothing more "
-                    "happens automatically."
-                ),
-                story_id=story_id,
-                project_id=project_id,
-            )
-        except Exception:
-            logger.warning(
-                "po_notify_on_no_new_commit_failed",
-                story_id=story_id,
-                task_id=task_id,
-                exc_info=True,
-            )
+    try:
+        await ensure_empty_story_stop(api_client, story_id, failure, actor="engineering-worker")
+    except Exception as exc:
+        logger.error(
+            "story_no_new_commit_stop_failed",
+            story_id=story_id,
+            task_id=task_id,
+            error_type=type(exc).__name__,
+        )
+        raise StoryStopError(f"story {story_id} stop failed") from None
+    logger.warning("engineering_no_new_commit_story_parked", story_id=story_id, task_id=task_id)
 
 
 async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part named
@@ -313,45 +269,67 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
     telegram_chat_id: str = "",
 ) -> dict:
     """Mark a run as failed and optionally update planning task."""
-    await prepare_terminal_settlement(
-        task_id,
-        redis=redis,
-        turn_result_consumed=turn_result_consumed,
-    )
-    await api_client.patch(
-        f"runs/{task_id}",
-        json={
-            "status": RunStatus.FAILED.value,
-            "error_message": error_msg,
-            "result": EngineeringRunResult(
-                engineering_status=EngineeringStatus.FAILED,
-                failure_reason=failure_reason,
-                uncomputable_derived_keys=uncomputable_derived_keys,
-                execution=execution,
-            ).model_dump(mode="json"),
-            **_observability_patch(worker_observability),
-            **_attempt_execution_patch(stop_reason, agent_limit_seconds, execution),
-        },
-    )
+    try:
+        await prepare_terminal_settlement(
+            task_id,
+            redis=redis,
+            turn_result_consumed=turn_result_consumed,
+        )
+    except Exception as exc:
+        if failure_reason is not EngineeringFailureReason.NO_NEW_COMMIT:
+            raise
+        logger.error(
+            "empty_worker_settlement_failed", task_id=task_id, error_type=type(exc).__name__
+        )
+        raise EmptyResultSettlementError(f"empty result for run {task_id} is not settled") from None
+    if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT:
+        error_msg = bounded_diagnostic(error_msg)
+        # A planned task keeps its existing failed-iteration retry policy. A
+        # taskless repair must stop durably before its queue entry can be ACKed.
+        if story_id and not planning_task_id:
+            await _park_story_without_new_commit(story_id, task_id, error_msg)
+    terminal = {
+        "status": RunStatus.FAILED.value,
+        "error_message": error_msg,
+        "result": EngineeringRunResult(
+            engineering_status=EngineeringStatus.FAILED,
+            failure_reason=failure_reason,
+            uncomputable_derived_keys=uncomputable_derived_keys,
+            execution=execution,
+        ).model_dump(mode="json"),
+        **_observability_patch(worker_observability),
+        **_attempt_execution_patch(stop_reason, agent_limit_seconds, execution),
+    }
+    if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT:
+        await _write_empty_terminal(task_id, terminal)
+    else:
+        await api_client.patch(f"runs/{task_id}", json=terminal)
     if planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
-    # A task's attempt that changed nothing is an ordinary failed iteration: the
-    # task is FAILED above and the supervisor retries it, with a fresh session,
-    # until its iteration budget runs out. A taskless repair has no such loop.
-    if (
-        failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
-        and story_id
-        and not planning_task_id
-    ):
-        await _park_story_without_new_commit(
-            story_id,
-            task_id,
-            error_msg,
-            redis=redis,
-            project_id=project_id,
-            telegram_chat_id=telegram_chat_id,
-        )
     return live_work_unsettled({"status": "failed", "error": error_msg})
+
+
+async def _write_empty_terminal(task_id: str, terminal: dict) -> None:
+    """Retry one transient write of this exact settled outcome, without another turn.
+
+    The API's immutable terminal writer makes the identical retry safe even
+    when a response was lost after commit. All other failures propagate as this
+    known outcome's settlement error rather than invoking the generic fallback.
+    """
+    try:
+        try:
+            await api_client.patch(f"runs/{task_id}", json=terminal)
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR
+            ):
+                raise
+            logger.warning("empty_run_write_retry", task_id=task_id, error_type=type(exc).__name__)
+            await api_client.patch(f"runs/{task_id}", json=terminal)
+    except Exception as exc:
+        logger.error("empty_run_write_failed", task_id=task_id, error_type=type(exc).__name__)
+        raise EmptyResultSettlementError(f"empty result for run {task_id} is not settled") from None
 
 
 async def handle_worker_gave_up(
@@ -498,6 +476,32 @@ async def _uncomputable_derived_keys_at(project_id: str, commit_sha: str) -> lis
         return []
 
 
+async def publish_empty_result_callback(
+    redis: RedisStreamClient,
+    callback_stream: str | None,
+    task_id: str,
+    message: str,
+    *,
+    telegram_chat_id: str,
+    project_id: str,
+) -> None:
+    """An optional callback cannot undo the committed empty-result disposition."""
+    try:
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "failed",
+            task_id,
+            bounded_diagnostic(message),
+            telegram_chat_id=telegram_chat_id,
+            project_id=project_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "empty_result_callback_failed", task_id=task_id, error_type=type(exc).__name__
+        )
+
+
 async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
     result = params.result
@@ -515,38 +519,28 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
 
     if not result.get("commit_sha"):
         logger.error("no_commit_sha", task_id=task_id, project_id=project_id)
-        await prepare_terminal_settlement(
+        outcome = await fail_job(
             task_id,
+            "Developer completed but no commit was made",
+            planning_task_id,
+            params.worker_observability,
             redis=redis,
+            execution=params.execution,
             turn_result_consumed=params.turn_result_consumed,
+            story_id=story_id,
+            failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
+            project_id=project_id,
+            telegram_chat_id=telegram_chat_id,
         )
-        await api_client.patch(
-            f"runs/{task_id}",
-            json={
-                "status": RunStatus.FAILED.value,
-                "error_message": "Developer completed but no commit was made",
-                "result": EngineeringRunResult(
-                    engineering_status=EngineeringStatus.FAILED
-                ).model_dump(mode="json"),
-                **_observability_patch(params.worker_observability),
-            },
-        )
-        await publish_callback_event(
+        await publish_empty_result_callback(
             redis,
             callback_stream,
-            "failed",
             task_id,
             "Development completed but no code was committed",
             telegram_chat_id=telegram_chat_id,
             project_id=project_id,
         )
-        return live_work_unsettled(
-            {
-                "status": "failed",
-                "error": "No commit_sha",
-                "finished_at": datetime.now(UTC).isoformat(),
-            }
-        )
+        return outcome
 
     logger.info("engineering_job_success", task_id=task_id, commit_sha=result.get("commit_sha"))
 

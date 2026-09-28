@@ -38,6 +38,48 @@ services:
       - MOCKSERVER_SERVER_PORT=8000
 
   # Test Runner
+  db:
+    image: pgvector/pgvector:0.8.6-pg16
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  control-api:
+    image: codegen-orchestrator/api:test
+    build:
+      context: ../../..
+      dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    command: ["/entrypoint.sh"]
+    environment:
+      - DEFAULT_AGENT_TYPE=claude
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=test
+      - SEED_SYSTEM_CONFIGS_ON_START=true
+      - SYSTEM_CONFIGS_TEST_OVERLAY=/app/scripts/system_configs.service_test.yaml
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - LK_JWT_SECRET=test-lk-jwt-secret-for-service-tests
+      - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   langgraph-test-runner:
     image: codegen-orchestrator/langgraph-test-runner:test
     build:
@@ -50,12 +92,17 @@ services:
       - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
+      - TEST_API_BASE_URL=http://control-api:8000
+      - TEST_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
     depends_on:
       redis:
         condition: service_healthy
+      control-api:
+        condition: service_healthy
     volumes:
       - ../../../services/langgraph/src:/app/src
       - ../../../services/langgraph/tests:/app/tests
       - ../../../shared:/app/shared
+      - ../../../services/scheduler/src:/app/scheduler/src:ro

@@ -16,12 +16,20 @@ def _plan(changes, event="pull_request"):
     )
 
 
-def test_a_one_service_pull_request_runs_only_that_service_s_legs():
+def test_a_scheduler_pull_request_runs_its_service_and_the_empty_result_handoff():
     service, integration, imports = _plan(["scheduler", "service-images"])
 
-    assert service == ["scheduler"]
+    assert service == ["langgraph", "scheduler"]
     assert integration == ["infra"]
     assert imports == "true"
+
+
+def test_api_changes_run_langgraph_empty_result_storage_regressions():
+    assert _plan(["api"])[0] == ["api", "langgraph"]
+
+
+def test_scheduler_changes_run_the_planned_empty_result_handoff():
+    assert _plan(["scheduler"])[0] == ["langgraph", "scheduler"]
 
 
 def test_a_pull_request_touching_no_service_runs_no_docker_leg():
@@ -82,7 +90,7 @@ def test_the_outputs_are_written_for_github(tmp_path, monkeypatch):
     assert ci_plan.main() == 0
 
     assert output.read_text().splitlines() == [
-        'service-legs=["api"]',
+        'service-legs=["api", "langgraph"]',
         'integration-legs=["backend", "frontend", "infra", "po-tools"]',
         "service-image-imports=false",
     ]

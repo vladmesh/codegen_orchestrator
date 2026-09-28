@@ -25,6 +25,7 @@ from shared.contracts.dto.state_wait import (
     StateWaitSkipReason,
 )
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.models import Project, Story
 
@@ -134,6 +135,74 @@ async def test_parking_a_story_with_a_reason_owes_the_blocked_notice(async_clien
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["engineering", "scheduler"])
+async def test_empty_engineering_stop_commits_status_reason_and_both_notices_without_redis(
+    async_client: AsyncClient, db_session: AsyncSession, source: str, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    import src.dependencies as deps
+
+    project_id = await _project(async_client)
+    story_id = await _started_story(async_client, project_id)
+    monkeypatch.setattr(
+        deps._redis_client,
+        "publish_flat",
+        AsyncMock(side_effect=ConnectionError("Redis interrupted")),
+    )
+    failure = StoryFailure(
+        code="no_new_commit",
+        source=source,
+        detail=f"No new commit: https://x-access-token:{TOKEN}@github.com/o/r " + "x" * 2000,
+    )
+    parked = await async_client.post(
+        f"/api/stories/{story_id}/human-review",
+        json={"actor": source, "failure": failure.model_dump(mode="json")},
+    )
+    assert parked.status_code == 200, parked.text
+    row = await _story_row(db_session, story_id)
+    assert row.status == "waiting_human_review"
+    assert row.waiting_on == "human_review"
+    assert row.quarantine_reason["code"] == "no_new_commit"
+    assert len(row.quarantine_reason["detail"]) <= 503
+    notice = OwnerNotification.model_validate(row.owner_notification)
+    assert notice.state is OwnerNotificationState.OWED
+    assert notice.admin_state is OwnerNotificationState.OWED
+    assert notice.event is OwnerNotificationEvent.STORY_BLOCKED
+    assert "nothing was produced" in notice.text
+    assert "a person" in notice.text
+    assert TOKEN not in str([row.quarantine_reason, row.owner_notification])
+    deps._redis_client.publish_flat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_empty_stop_rolls_back_status_and_reason_if_notice_cannot_be_recorded(
+    async_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from src.routers import _story_helpers
+
+    project_id = await _project(async_client)
+    story_id = await _started_story(async_client, project_id)
+    monkeypatch.setattr(
+        _story_helpers, "story_failure_owner_text", Mock(side_effect=RuntimeError("notice fault"))
+    )
+    with pytest.raises(RuntimeError, match="notice fault"):
+        await async_client.post(
+            f"/api/stories/{story_id}/human-review",
+            json={
+                "failure": {"code": "no_new_commit", "source": "engineering", "detail": "No commit"}
+            },
+        )
+    row = await _story_row(db_session, story_id)
+    assert row.status == "in_progress"
+    assert row.waiting_on == "none"
+    assert row.quarantine_reason is None
+    assert row.owner_notification is None
+
+
+@pytest.mark.asyncio
 async def test_a_refused_stop_writes_no_reason(async_client: AsyncClient):
     project_id = await _project(async_client)
     created = await async_client.post(
@@ -151,6 +220,22 @@ async def test_a_refused_stop_writes_no_reason(async_client: AsyncClient):
     story = (await async_client.get(f"/api/stories/{story_id}")).json()
     assert story["status"] == "archived"
     assert story["quarantine_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_refused_empty_stop_writes_neither_reason_nor_owed_notice(async_client, db_session):
+    project_id = await _project(async_client)
+    story_id = await _started_story(async_client, project_id)
+    assert (await async_client.post(f"/api/stories/{story_id}/archive")).status_code == 200
+    refused = await async_client.post(
+        f"/api/stories/{story_id}/human-review",
+        json={"failure": {"code": "no_new_commit", "source": "engineering", "detail": "No commit"}},
+    )
+    assert refused.status_code == 422
+    row = await _story_row(db_session, story_id)
+    assert row.status == "archived"
+    assert row.quarantine_reason is None
+    assert row.owner_notification is None
 
 
 @pytest.mark.asyncio

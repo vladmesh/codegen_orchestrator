@@ -26,16 +26,19 @@ from shared.contracts.dto.lifecycle_wait import (
     TaskResourceWaitCommand,
 )
 from shared.contracts.dto.product_brief import ProductBriefRead
-from shared.contracts.dto.run import RunType
+from shared.contracts.dto.run import RunDTO, RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
+    EngineeringFailureReason,
     EngineeringRunResult,
 )
 from shared.contracts.dto.story import StoryDTO, StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.story_planning import StoryPlanningState, planning_retry_queued_key
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
+from shared.empty_engineering_stop import ensure_empty_story_stop, matching_empty_cause
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
@@ -325,26 +328,54 @@ async def supervise_failed_tasks(
     tasks = await api_client.get_tasks_by_status(TaskStatus.FAILED)
     retried = 0
     escalated = 0
-    # One story reaches the human-review queue once per tick. Several failed
-    # tasks can share a story, and escalating each of them issued a second
-    # `human-review` transition for a story already in it — refused by the API
-    # and swallowed here. The queue entry is about the story, so the first one
-    # is the whole move.
+    # Choose the story's required cause before any sibling can make a bare stop.
     escalated_stories: set[str] = set()
+    blocked_stories: set[str] = set()
+    runs_by_task: dict[str, list[RunDTO]] = {}
+    empty_stops: dict[str, list[tuple[TaskDTO, StoryFailure]]] = {}
+    for task in tasks:
+        if not task.story_id:
+            continue
+        try:
+            runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
+            runs_by_task[task.id] = runs
+            failure = _empty_exhaustion_failure(task, runs)
+            if failure is not None:
+                empty_stops.setdefault(task.story_id, []).append((task, failure))
+        except Exception as exc:
+            # An unread sibling could require a typed stop. Do not let another
+            # row park its story without that evidence this cycle.
+            blocked_stories.add(task.story_id)
+            logger.error(
+                "failed_task_outcome_read_failed", task_id=task.id, error_type=type(exc).__name__
+            )
+
+    for story_id, candidates in empty_stops.items():
+        if story_id in blocked_stories:
+            continue
+        try:
+            failure = await _selected_empty_story_failure(
+                api_client, story_id, candidates, runs_by_task
+            )
+            await ensure_empty_story_stop(api_client, story_id, failure, actor="supervisor")
+            escalated_stories.add(story_id)
+        except Exception as exc:
+            blocked_stories.add(story_id)
+            logger.error("empty_task_stop_failed", story_id=story_id, error_type=type(exc).__name__)
 
     for task in tasks:
         task_id = task.id
         story_id = task.story_id
 
         # Skip standalone tasks (not part of a story)
-        if not story_id:
+        if not story_id or story_id in blocked_stories:
             continue
 
         current_iter = task.current_iteration
         log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
         try:
             task_retried, task_escalated = await _supervise_failed_task(
-                api_client, redis_client, task, log, escalated_stories
+                api_client, redis_client, task, log, escalated_stories, runs_by_task[task.id]
             )
         except Exception:
             log.exception("failed_task_supervision_contained")
@@ -355,17 +386,63 @@ async def supervise_failed_tasks(
     return {"retried": retried, "escalated": escalated}
 
 
+def _empty_exhaustion_failure(task: TaskDTO, runs: list[RunDTO]) -> StoryFailure | None:
+    if task.current_iteration < task.max_iterations or not runs:
+        return None
+    latest = runs[0]
+    if (
+        not isinstance(latest.result, EngineeringRunResult)
+        or latest.result.failure_reason is not EngineeringFailureReason.NO_NEW_COMMIT
+    ):
+        return None
+    return StoryFailure(
+        code=StoryFailureCode.NO_NEW_COMMIT,
+        source="scheduler",
+        detail=f"Task {task.id} exhausted its {task.max_iterations} retries. "
+        f"Attempt {latest.id} produced no new commit to merge or deploy.",
+    )
+
+
+async def _selected_empty_story_failure(
+    api_client: SchedulerAPIClient,
+    story_id: str,
+    candidates: list[tuple[TaskDTO, StoryFailure]],
+    runs_by_task: dict[str, list[RunDTO]],
+) -> StoryFailure:
+    """Retain a committed sibling's episode when only another sibling remains failed."""
+    story = await api_client.get_story(story_id)
+    for _, failure in candidates:
+        if matching_empty_cause(story, failure) is not None:
+            return failure
+    if story.status is StoryStatus.WAITING_HUMAN_REVIEW:
+        for sibling in await api_client.get_tasks_by_story(story_id):
+            if (
+                sibling.story_id != story_id
+                or sibling.status not in {TaskStatus.FAILED, TaskStatus.WAITING_HUMAN_REVIEW}
+                or sibling.current_iteration < sibling.max_iterations
+            ):
+                continue
+            runs = runs_by_task.get(sibling.id)
+            if runs is None:
+                runs = await api_client.list_runs(
+                    task_id=sibling.id, run_type=RunType.ENGINEERING.value
+                )
+            failure = _empty_exhaustion_failure(sibling, runs)
+            if failure is not None and matching_empty_cause(story, failure) is not None:
+                return failure
+    # Stable identity, independent of API priority/list ordering.
+    return min(candidates, key=lambda candidate: candidate[0].id)[1]
+
+
 async def _supervise_failed_task(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
     task: TaskDTO,
     log: structlog.stdlib.BoundLogger,
     escalated_stories: set[str],
+    engineering_runs: list[RunDTO],
 ) -> tuple[int, int]:
     """Supervise one row so every read and write has one containment boundary."""
-    engineering_runs = await api_client.list_runs(
-        task_id=task.id, run_type=RunType.ENGINEERING.value
-    )
     infrastructure = await _park_pre_agent_infrastructure_refusal(
         api_client,
         task,
@@ -403,8 +480,13 @@ async def _supervise_failed_task(
         )
         try:
             await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
-        except Exception:
-            log.warning("task_whr_transition_failed", task_id=task.id, exc_info=True)
+        except Exception as exc:
+            if _empty_exhaustion_failure(task, engineering_runs) is not None:
+                log.warning(
+                    "task_whr_transition_failed", task_id=task.id, error_type=type(exc).__name__
+                )
+            else:
+                log.warning("task_whr_transition_failed", task_id=task.id, exc_info=True)
 
         if story_id not in escalated_stories:
             escalated_stories.add(story_id)

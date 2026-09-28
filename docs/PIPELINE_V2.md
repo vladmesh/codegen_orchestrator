@@ -609,7 +609,10 @@ created → in_progress → pr_review → deploying → testing → completed
 `deploying` is a deploy gate — story waits for successful deploy before QA.
 `testing` — deployed service being tested by the QA consumer through a central ephemeral QA worker
 on the management host (Codex by default, with Claude Code as an explicit `QA_EXECUTOR_AGENT_TYPE=claude` override).
-`waiting_human_review` — developer reported a blocker; pipeline is paused until admin resolves.
+`waiting_human_review` — developer reported a blocker or engineering produced no new code;
+the pipeline is paused until a person decides the next move. Empty taskless results and
+GitHub's no-commits PR refusal store the reason and owed owner/admin notices with the stop.
+Planned tasks keep their iteration budget and owe that notice only when retries are exhausted.
 
 **Who moves a Story.** Only the API does, in two places: `_do_transition`
 (`services/api/src/routers/_story_helpers.py`) for a single hop, and

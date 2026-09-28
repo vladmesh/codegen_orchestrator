@@ -19,6 +19,7 @@ from langgraph.prebuilt import create_react_agent
 from pydantic import Field
 import pytest
 
+from shared.contracts.dto.story_failure import StoryFailure, story_failure_owner_text
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.po import POUserMessage, po_thread_id
 from shared.queues import ARCHITECT_QUEUE, PO_PROACTIVE_QUEUE
@@ -117,6 +118,31 @@ async def test_a_fresh_block_of_an_ordered_story_is_told_without_softening(world
     )
     assert system.content.endswith("### Deferred notices\nnone")
     # The scripted reply is what the user is sent, and the record is told.
+    queue, fields = stream.publish_flat.await_args.args
+    assert queue == PO_PROACTIVE_QUEUE
+    assert fields["text"] == reply
+    assert ledger.notice.told_state == "told"
+
+
+async def test_empty_engineering_reason_reaches_the_real_po_graph_and_owner(world, gate_stories):
+    ledger, stream = world
+    gate_stories.put(STORY, status="waiting_human_review", waiting_on="human_review")
+    failure = StoryFailure(
+        code="no_new_commit", source="engineering", detail="Worker made no commit"
+    )
+    text = story_failure_owner_text(failure)
+    ledger.notice = ledger.notice.model_copy(update={"text": text})
+    reply = (
+        "Nothing was produced to merge or deploy. "
+        "Work is stopped; a person must decide the next move."
+    )
+    model = RecordingModel(responses=[AIMessage(content=reply)])
+    await po._handle_message(
+        _graph(model, [tools_notices.suppress_owner_notice]), stream, CHAT, ledger.event()
+    )
+    [messages] = model.seen
+    assert text in messages[-1].content
+    assert "a person is needed" in messages[0].content
     queue, fields = stream.publish_flat.await_args.args
     assert queue == PO_PROACTIVE_QUEUE
     assert fields["text"] == reply

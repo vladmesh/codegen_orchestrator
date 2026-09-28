@@ -46,6 +46,7 @@ from shared.contracts.dto.run_result import QARunResult
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
 from shared.contracts.dto.state_wait import StateWaitExpiryCommand, StateWaitExpiryRead
 from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story_failure import StoryFailure
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.temporary_access import (
     QA_ROUTING_PENDING,
@@ -606,6 +607,19 @@ class SchedulerAPIClient(InternalAPIClient):
         if qa_run_id is not None:
             body["qa_run_id"] = qa_run_id
         resp = await self.request("POST", f"stories/{story_id}/{action}", json=body)
+        return StoryDTO.model_validate(resp.json())
+
+    async def stop_story(
+        self, story_id: str, action: str, failure: StoryFailure, *, actor: str
+    ) -> StoryDTO:
+        """Commit a story stop, its reason and both notification obligations together."""
+        if action not in {"fail", "human-review"}:
+            raise ValueError(f"{action} is not a stopping story action")
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/{action}",
+            json={"actor": actor, "failure": failure.model_dump(mode="json")},
+        )
         return StoryDTO.model_validate(resp.json())
 
     async def update_story(self, story_id: str, data: dict) -> StoryDTO:
