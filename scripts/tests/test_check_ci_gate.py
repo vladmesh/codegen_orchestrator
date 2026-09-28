@@ -620,9 +620,10 @@ def test_a_job_whose_worst_case_retries_and_test_bound_exceed_its_limit_fails(ga
 def test_the_leg_that_pulls_the_most_images_decides(gate):
     jobs = gate.load_workflow()["jobs"]
     assert _budget_minutes(gate, jobs, "test-service", service="scheduler") == 50
+    assert _budget_minutes(gate, jobs, "test-service", service="langgraph") == 50
     jobs["test-service"]["timeout-minutes"] = 45
 
-    with pytest.raises(SystemExit, match="test-service service=scheduler can take 50 minutes"):
+    with pytest.raises(SystemExit, match="test-service service=langgraph can take 50 minutes"):
         gate.assert_job_timeouts(jobs)
 
 

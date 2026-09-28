@@ -19,7 +19,7 @@ from shared.clients.github import NoCommitsBetweenError
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskDTO
-from src.tasks.story_completion import STORY_NO_COMMITS_REASON, complete_stories
+from src.tasks.story_completion import complete_stories
 
 _NOW = datetime.now(UTC)
 _PROJ_ID = "00000000-0000-0000-0000-000000000001"
@@ -104,11 +104,13 @@ async def test_no_commits_between_takes_the_story_out_of_the_retry_set(api_clien
         completed = await complete_stories(api_client, redis_client)
 
     assert completed == 0
-    api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
-    reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
-    assert reason["reason"] == STORY_NO_COMMITS_REASON
-    assert reason["branch"] == "story/story-1"
-    assert "No commits between" in reason["detail"]
+    api_client.stop_story.assert_awaited_once()
+    failure = api_client.stop_story.await_args.args[2]
+    assert failure.code.value == "no_new_commit"
+    assert "story/story-1" in failure.detail
+    assert "No commits between" in failure.detail
+    api_client.update_story.assert_not_awaited()
+    api_client.transition_story.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -120,11 +122,11 @@ async def test_a_parked_story_is_not_selected_by_the_next_completion_cycle(
         selected if status == StoryStatus.IN_PROGRESS else []
     )
 
-    async def park(story_id, action):
+    async def park(story_id, action, failure, *, actor):
         assert (story_id, action) == ("story-1", "human-review")
         selected.clear()
 
-    api_client.transition_story.side_effect = park
+    api_client.stop_story.side_effect = park
     github = AsyncMock()
     github.get_ref_sha.return_value = _STORY_HEAD_SHA
     github.create_pull_request.side_effect = NoCommitsBetweenError(
@@ -304,7 +306,8 @@ async def test_no_commits_between_closes_the_pool_before_the_story_is_parked(
         "get_ref_sha",
         "create_pull_request",
     ]
-    api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+    api_client.stop_story.assert_awaited_once()
+    api_client.transition_story.assert_not_awaited()
 
 
 @pytest.mark.asyncio

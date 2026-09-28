@@ -24,6 +24,10 @@ def test_a_one_service_pull_request_runs_only_that_service_s_legs():
     assert imports == "true"
 
 
+def test_api_changes_run_langgraph_empty_result_storage_regressions():
+    assert _plan(["api"])[0] == ["api", "langgraph"]
+
+
 def test_a_pull_request_touching_no_service_runs_no_docker_leg():
     """A docs-only change used to hold a runner per leg, and 4-6 minutes of imports."""
     assert _plan([]) == ([], [], "false")
@@ -82,7 +86,7 @@ def test_the_outputs_are_written_for_github(tmp_path, monkeypatch):
     assert ci_plan.main() == 0
 
     assert output.read_text().splitlines() == [
-        'service-legs=["api"]',
+        'service-legs=["api", "langgraph"]',
         'integration-legs=["backend", "frontend", "infra", "po-tools"]',
         "service-image-imports=false",
     ]

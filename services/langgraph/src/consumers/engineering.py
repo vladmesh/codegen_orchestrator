@@ -16,7 +16,11 @@ from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import AllocationFailureReason, EngineeringRunResult
+from shared.contracts.dto.run_result import (
+    AllocationFailureReason,
+    EngineeringFailureReason,
+    EngineeringRunResult,
+)
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import ActionType
@@ -35,11 +39,13 @@ from ._repo_setup import _create_repo_and_set_secrets
 from .acceptance_context import load_primary_repository, load_task_acceptance_criteria
 from .engineering_result_handler import (
     EngineeringSuccessParams,
+    StoryStopError,
     _write_task_event,
     fail_job as _fail_job,
     handle_engineering_success as _handle_engineering_success,
     handle_worker_gave_up as _handle_worker_gave_up,
     prepare_terminal_settlement,
+    publish_empty_result_callback,
 )
 from .story_context import (
     build_story_context as _build_story_context,
@@ -212,6 +218,52 @@ async def _existing_attempt_worker(
             task_id=task_id,
         )
     return attempt_turn.worker_id
+
+
+async def _handle_failed_result(
+    result: dict, msg: EngineeringMessage, redis: RedisStreamClient
+) -> dict:
+    """Route an empty result durably before its optional callback; preserve other failures."""
+    # A failed or unexpected status follows technical-failure routing.
+    errors = result.get("errors", ["Unknown engineering status"])
+    error_msg = "; ".join(errors)
+    empty_result = result.get("failure_reason") is EngineeringFailureReason.NO_NEW_COMMIT
+    if not empty_result:
+        logger.error("engineering_job_failed_status", task_id=msg.task_id, errors=errors)
+        await publish_callback_event(
+            redis,
+            msg.callback_stream,
+            "failed",
+            msg.task_id,
+            error_msg,
+            telegram_chat_id=msg.telegram_chat_id,
+            project_id=msg.project_id or "",
+        )
+    outcome = await _fail_job(
+        msg.task_id,
+        error_msg,
+        msg.planning_task_id,
+        result.get("worker_observability"),
+        stop_reason=result.get("stop_reason"),
+        agent_limit_seconds=result.get("agent_limit_seconds"),
+        redis=redis,
+        execution=result.get("execution"),
+        turn_result_consumed=result.get("turn_result_consumed", False),
+        story_id=msg.story_id,
+        failure_reason=result.get("failure_reason"),
+        project_id=msg.project_id or "",
+        telegram_chat_id=msg.telegram_chat_id,
+    )
+    if empty_result:
+        await publish_empty_result_callback(
+            redis,
+            msg.callback_stream,
+            msg.task_id,
+            outcome["error"],
+            telegram_chat_id=msg.telegram_chat_id,
+            project_id=msg.project_id or "",
+        )
+    return outcome
 
 
 async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -417,35 +469,11 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 execution=result.get("execution"),
             )
         else:
-            # FAILED (technical) or unexpected status — treat as technical failure
-            errors = result.get("errors", ["Unknown engineering status"])
-            error_msg = "; ".join(errors)
-            logger.error("engineering_job_failed_status", task_id=task_id, errors=errors)
-            await publish_callback_event(
-                redis,
-                callback_stream,
-                "failed",
-                task_id,
-                error_msg,
-                telegram_chat_id=telegram_chat_id,
-                project_id=project_id or "",
-            )
-            return await _fail_job(
-                task_id,
-                error_msg,
-                planning_task_id,
-                result.get("worker_observability"),
-                stop_reason=result.get("stop_reason"),
-                agent_limit_seconds=result.get("agent_limit_seconds"),
-                redis=redis,
-                execution=result.get("execution"),
-                turn_result_consumed=result.get("turn_result_consumed", False),
-                story_id=story_id,
-                failure_reason=result.get("failure_reason"),
-                project_id=project_id or "",
-                telegram_chat_id=telegram_chat_id,
-            )
+            return await _handle_failed_result(result, msg, redis)
 
+    except StoryStopError:
+        # A refused empty-result story stop is not a terminal Run outcome.
+        raise
     except Exception as e:
         logger.error(
             "engineering_job_exception",

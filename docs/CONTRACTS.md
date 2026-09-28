@@ -1128,6 +1128,13 @@ work-cycle task count, the last failed Runs and task stop events, and the newest
 lines naming the story or project — named fields only, redacted, at most
 `STORY_DIAGNOSTIC_LOG_LIMIT`; an unreadable log store is `logs_unavailable`, never an error.
 
+Empty engineering stops use `StoryFailureCode.NO_NEW_COMMIT` (`no_new_commit`, source
+`engineering` or `scheduler`) on `/human-review`: taskless results, exhausted planned-task
+retries and GitHub's specific no-commits PR refusal commit the reason, `waiting_on=human_review`
+and both owed audiences together. No separate reason PATCH or immediate Redis publication is
+required; the existing notification sweep delivers `story_blocked` with the bounded cause and
+the explanation that nothing was produced and a person must decide the next move.
+
 **A failed planning attempt is a story state.** `stories.planning` (`StoryPlanning`, on
 `StoryRead.planning`, `shared/contracts/dto/story_planning.py`) is the one durable record that
 planning is owed: every path that makes the architect owe a story a planning run writes it as
@@ -1588,8 +1595,9 @@ check: a worker success whose reported commit equals that head, or adds no file
 change over it (`shared.clients.github` `commit_adds_changes`: nothing ahead of
 the head, or commits that net out to no file change), is a failed Run carrying
 `EngineeringRunResult.failure_reason = no_new_commit`
-(`shared/contracts/dto/run_result.py::EngineeringFailureReason`), distinct from
-the missing-SHA failure "Developer completed but no commit was made". The branch
+(`shared/contracts/dto/run_result.py::EngineeringFailureReason`). A worker success
+with an absent or empty SHA, including the consumer's defensive success entry,
+carries that same classification. The branch
 base, a commit already deployed and an earlier task's commit are all at or
 behind the head, so the former default-branch guard is this same check. No
 deploy is published for it.
@@ -1597,13 +1605,18 @@ deploy is published for it.
 A planning task's attempt that fails this way is an ordinary failed iteration:
 the task goes to `failed`, the supervisor retries it while `current_iteration <
 max_iterations` and escalates it to human review after that, so it is never
-`done`. A taskless attempt (a deploy repair) has no iteration loop: its story
+`done`; exhaustion uses the typed story stop and owes both audiences. A taskless attempt
+(a deploy repair) has no iteration loop: its story
 leaves `in_progress` for human review with the reason on its
 `quarantine_reason`, because no pull request can ever be opened for a branch
 that carries no commit of its own — GitHub answers that request 422 "No commits
 between". `complete_stories` classifies that same refusal through
 `shared.clients.github.NoCommitsBetweenError` and parks the story instead of
-retrying it every tick; other PR-creation errors stay transient.
+retrying it every tick; other PR-creation errors stay transient. The consumer settles
+the worker turn first and requires the typed story stop before ending the taskless Run.
+A refused stop propagates, leaving the Run nonterminal and the queue entry reclaimable;
+the scheduler logs a refused stop and leaves the story selected for a later cycle.
+An optional engineering callback failure after the stop leaves the committed notice owed.
 The manifest-repair follow-up deploy Run that an accepted engineering result
 creates names its story, so every story-scoped reader of deploy Runs — the live
 follow-up wait included — can observe it at all.

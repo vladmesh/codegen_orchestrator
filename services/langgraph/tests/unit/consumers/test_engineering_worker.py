@@ -37,6 +37,7 @@ def mock_api():
     with patch("src.consumers.engineering.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
+        api.stop_story = AsyncMock()
         api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
         api.get_project = AsyncMock(return_value=None)
         api.get_primary_repository = AsyncMock(
@@ -1130,12 +1131,13 @@ class TestNoNewCommitFailure:
         run_patch = mock_api.patch.await_args_list[0].kwargs["json"]
         assert run_patch["status"] == "failed"
         assert run_patch["result"]["failure_reason"] == "no_new_commit"
-        story_patch = mock_api.patch.await_args_list[1]
-        assert story_patch.args[0] == "stories/story-1"
-        reason = story_patch.kwargs["json"]["quarantine_reason"]
-        assert reason["reason"] == "no_new_commit"
-        assert reason["attempt_id"] == "eng-deploy-fix-deploy-poll-1"
-        mock_api.transition_story.assert_awaited_once_with("story-1", "human-review")
+        mock_api.stop_story.assert_awaited_once()
+        assert mock_api.stop_story.await_args.args[:2] == ("story-1", "human-review")
+        reason = mock_api.stop_story.await_args.args[2]
+        assert reason.code.value == "no_new_commit"
+        assert "eng-deploy-fix-deploy-poll-1" in reason.detail
+        assert len(mock_api.patch.await_args_list) == 1
+        mock_api.transition_story.assert_not_awaited()
         # Nothing was deployed for a run that produced nothing.
         mock_redis.publish_message.assert_not_awaited()
 
@@ -1143,12 +1145,10 @@ class TestNoNewCommitFailure:
     async def test_the_parking_is_not_silent(self, mock_redis, mock_api):
         """A story parked here reaches both audiences, not just this process's log.
 
-        The administrators get the reason because a parked story is operational
-        work; the owner gets a story-level event because their product stops
-        moving until a person picks it up, and nothing else would ever tell them.
+        The native stop owes both audiences in its database transaction. The
+        consumer supplies the typed reason without publishing an immediate notice.
         """
         from shared.contracts.dto.run_result import EngineeringFailureReason
-        from shared.queues import PO_INPUT_QUEUE
         from src.consumers.engineering import _fail_job
 
         mock_api.transition_story = AsyncMock()
@@ -1167,23 +1167,20 @@ class TestNoNewCommitFailure:
                 telegram_chat_id="777",
             )
 
-        alert = notify.await_args.args[0]
-        assert "story-1" in alert
-        assert "eng-deploy-fix-deploy-poll-1" in alert
-        assert "no new commit on story/story-1" in alert
+        from shared.contracts.dto.story_failure import story_failure_owner_text
 
-        queue, fields = mock_redis.publish_flat.await_args.args
-        assert queue == PO_INPUT_QUEUE
-        assert fields["event"] == "story_blocked"
-        assert fields["telegram_chat_id"] == "777"
-        assert fields["story_id"] == "story-1"
-        assert "nothing more happens automatically" in fields["text"]
+        notify.assert_not_awaited()
+        mock_api.stop_story.assert_awaited_once()
+        reason = mock_api.stop_story.await_args.args[2]
+        assert "no new commit on story/story-1" in reason.detail
+        assert "nothing was produced" in story_failure_owner_text(reason)
+        mock_redis.publish_flat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_parked_story_without_a_chat_still_alerts_the_administrators(
         self, mock_redis, mock_api
     ):
-        """An owner with no chat is not a reason to leave operations blind."""
+        """The API owes both audiences even when the engineering message has no chat."""
         from shared.contracts.dto.run_result import EngineeringFailureReason
         from src.consumers.engineering import _fail_job
 
@@ -1202,7 +1199,8 @@ class TestNoNewCommitFailure:
                 project_id="project-1",
             )
 
-        notify.assert_awaited_once()
+        notify.assert_not_awaited()
+        mock_api.stop_story.assert_awaited_once()
         mock_redis.publish_flat.assert_not_awaited()
 
     @pytest.mark.asyncio

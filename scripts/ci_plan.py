@@ -36,7 +36,7 @@ TEMPLATE_TRIGGERS = ("docker-test", "integration-tests", "ci", "deps", "scaffold
 # leg -> the filters of the services its compose file builds and exercises.
 SERVICE_LEGS: dict[str, tuple[str, ...]] = {
     "api": ("api", *COMMON_TRIGGERS),
-    "langgraph": ("langgraph", *COMMON_TRIGGERS),
+    "langgraph": ("langgraph", "api", *COMMON_TRIGGERS),
     "scheduler": ("scheduler", *COMMON_TRIGGERS),
     "telegram_bot": ("telegram", *COMMON_TRIGGERS),
     # tests/compose/service/worker-manager.yml builds and starts the worker broker too.

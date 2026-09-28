@@ -298,6 +298,10 @@ class DeveloperNode(FunctionalNode):
                 "failure_reason": EngineeringFailureReason.NO_NEW_COMMIT,
                 "errors": state.get("errors", []) + [no_new_commit],
                 "turn_result_consumed": worker_result.turn_result_consumed,
+                "worker_observability": self._worker_observability(
+                    worker_result, state.get("project_spec") or {}, agent_type
+                ),
+                "execution": worker_result.execution,
             }
 
         return self._build_result_state(worker_result, project_name, repo_full_name, state)
@@ -462,7 +466,6 @@ class DeveloperNode(FunctionalNode):
                 logger.error(
                     "developer_node_no_commit",
                     project_name=project_name,
-                    output=worker_result.output[:500],
                 )
                 return {
                     "messages": [
@@ -471,6 +474,7 @@ class DeveloperNode(FunctionalNode):
                         )
                     ],
                     "engineering_status": EngineeringStatus.FAILED,
+                    "failure_reason": EngineeringFailureReason.NO_NEW_COMMIT,
                     "errors": state.get("errors", [])
                     + ["Worker reported success but no commit was made"],
                     "worker_observability": DeveloperNode._worker_observability(

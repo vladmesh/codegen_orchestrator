@@ -57,6 +57,8 @@ class StoryFailureCode(StrEnum):
     #: failure no retry can clear. The detail names the error class and, for
     #: an LLM failure, each channel with its failure class.
     PLANNING_FAILED = "planning_failed"
+    #: Engineering produced no new code, or GitHub refused a PR with no commits.
+    NO_NEW_COMMIT = "no_new_commit"
 
 
 class StoryFailure(BaseModel):
@@ -66,7 +68,7 @@ class StoryFailure(BaseModel):
 
     reason: Literal["story_failure"] = STORY_FAILURE_REASON
     code: StoryFailureCode
-    #: The service that decided the stop (``scaffolder``, ``architect``).
+    #: The service that decided the stop (scaffolder, architect, engineering, scheduler).
     source: str = Field(min_length=1, max_length=64)
     #: The cause, as the failing service saw it. Redacted and bounded here.
     detail: str
@@ -90,6 +92,9 @@ _OWNER_WORDS: dict[StoryFailureCode, str] = {
     StoryFailureCode.PLANNING_FAILED: (
         "Work on this change stopped before it began: the platform could not plan the "
         "work, so nothing was built."
+    ),
+    StoryFailureCode.NO_NEW_COMMIT: (
+        "Work on this change stopped: nothing was produced to merge or deploy."
     ),
 }
 

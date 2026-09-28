@@ -9,6 +9,7 @@ import structlog
 from shared.clients.github import GitHubAppClient, NoCommitsBetweenError
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryDTO, StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
@@ -23,10 +24,6 @@ if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
 logger = structlog.get_logger(__name__)
-
-#: The classification a story carries when GitHub refused its pull request
-#: because the story branch holds no commit of its own.
-STORY_NO_COMMITS_REASON = "story_branch_has_no_commits"
 
 
 def _validate_current_cycle_pr(pr: object, *, branch: str, branch_sha: str) -> dict:
@@ -134,25 +131,16 @@ async def _park_story_without_commits(
     detail: str,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Move a story whose branch has no commit out of ``in_progress``.
-
-    `complete_stories` only looks at ``in_progress`` stories, so the transition
-    is what ends the retry loop; the quarantine reason is what tells a person
-    why, next to the story rather than only in a log line that scrolls away.
-    """
-    reason = {
-        "reason": STORY_NO_COMMITS_REASON,
-        "branch": branch,
-        "detail": detail,
-    }
+    """Atomically park the story with its cause and owed owner/admin notices."""
+    failure = StoryFailure(
+        code=StoryFailureCode.NO_NEW_COMMIT,
+        source="scheduler",
+        detail=f"Branch {branch}: {detail}",
+    )
     try:
-        await api_client.update_story(story_id, {"quarantine_reason": reason})
-    except Exception:
-        log.exception("story_no_commits_reason_write_failed", branch=branch)
-    try:
-        await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
-    except Exception:
-        log.exception("story_no_commits_transition_failed", branch=branch)
+        await api_client.stop_story(story_id, STORY_HUMAN_REVIEW_ACTION, failure, actor="scheduler")
+    except Exception as exc:
+        log.error("story_no_commits_stop_failed", branch=branch, error_type=type(exc).__name__)
         return
     log.warning("story_parked_without_commits", branch=branch)
 
@@ -299,7 +287,7 @@ async def complete_stories(
             # every later tick asks GitHub the same impossible question and gets
             # the same 422. Take the story out of the retry set with the reason
             # attached, and leave the decision to a person.
-            log.warning("story_pr_no_commits_between", branch=branch, detail=str(no_commits))
+            log.warning("story_pr_no_commits_between", branch=branch)
             await _park_story_without_commits(api_client, story_id, branch, str(no_commits), log)
             continue
         except Exception:

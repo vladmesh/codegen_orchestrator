@@ -29,9 +29,11 @@ from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
+    EngineeringFailureReason,
     EngineeringRunResult,
 )
 from shared.contracts.dto.story import StoryDTO, StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.story_planning import StoryPlanningState, planning_retry_queued_key
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -401,6 +403,29 @@ async def _supervise_failed_task(
             "task_retries_exhausted",
             reason="escalating_to_human",
         )
+        latest = engineering_runs[0] if engineering_runs else None
+        empty_result = (
+            latest is not None
+            and isinstance(latest.result, EngineeringRunResult)
+            and latest.result.failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
+        )
+        if empty_result and story_id not in escalated_stories:
+            try:
+                await api_client.stop_story(
+                    story_id,
+                    STORY_HUMAN_REVIEW_ACTION,
+                    StoryFailure(
+                        code=StoryFailureCode.NO_NEW_COMMIT,
+                        source="scheduler",
+                        detail=f"Task {task.id} exhausted its {max_iter} retries. "
+                        f"Attempt {latest.id} produced no new commit to merge or deploy.",
+                    ),
+                    actor="supervisor",
+                )
+            except Exception as exc:
+                log.error("empty_task_stop_failed", error_type=type(exc).__name__)
+                return 0, 0
+            escalated_stories.add(story_id)
         try:
             await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
         except Exception:

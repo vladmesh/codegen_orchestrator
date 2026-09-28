@@ -9,14 +9,22 @@ GitHub refuses with 422 "No commits between" for ever.
 
 from __future__ import annotations
 
+import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+import uuid
 
+from psycopg import AsyncConnection
+from psycopg.rows import dict_row
 import pytest
+from structlog.testing import capture_logs
 
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
+from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import EngineeringFailureReason
+from shared.contracts.dto.story_failure import StoryFailureCode
 from shared.contracts.vocab import AgentType
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.queues import DEPLOY_QUEUE
@@ -56,7 +64,8 @@ async def _github_reporting_a_deployed_head():
 
 
 @pytest.mark.asyncio
-async def test_reported_deployed_head_fails_the_run_and_parks_the_story(real_redis):
+@pytest.mark.parametrize("commit_sha", [None, "", _DEPLOYED_HEAD, "older-head", "net-empty-head"])
+async def test_reported_deployed_head_fails_the_run_and_parks_the_story(real_redis, commit_sha):
     """The whole consumer path, from worker result to Run, story and deploy queue."""
     from src.clients.worker_spawner import SpawnResult
     from src.consumers.engineering import process_engineering_job
@@ -111,7 +120,8 @@ async def test_reported_deployed_head_fails_the_run_and_parks_the_story(real_red
                         success=True,
                         exit_code=0,
                         output="The deployment already looks correct",
-                        commit_sha=_DEPLOYED_HEAD,
+                        commit_sha=commit_sha,
+                        turn_result_consumed=True,
                     )
                 ),
             ),
@@ -126,17 +136,382 @@ async def test_reported_deployed_head_fails_the_run_and_parks_the_story(real_red
         terminal = run_patches[-1].kwargs["json"]
         assert terminal["status"] == "failed"
         assert terminal["result"]["failure_reason"] == EngineeringFailureReason.NO_NEW_COMMIT.value
-        assert "no new commit" in terminal["error_message"]
+        assert "commit" in terminal["error_message"]
 
-        story_patches = [
-            call for call in api.patch.await_args_list if call.args[0] == f"stories/{_STORY_ID}"
-        ]
-        assert len(story_patches) == 1
-        assert story_patches[0].kwargs["json"]["quarantine_reason"]["reason"] == "no_new_commit"
-        api.transition_story.assert_awaited_once_with(_STORY_ID, "human-review")
+        assert not any(call.args[0] == f"stories/{_STORY_ID}" for call in api.patch.await_args_list)
+        api.stop_story.assert_awaited_once()
+        assert api.stop_story.await_args.args[:2] == (_STORY_ID, "human-review")
+        assert api.stop_story.await_args.args[2].code is StoryFailureCode.NO_NEW_COMMIT
+        api.transition_story.assert_not_awaited()
 
         # Nothing was handed to deploy: the SHA is already deployed.
         assert await real_redis.xlen(DEPLOY_QUEUE) == 0
     finally:
         await redis_client.close()
         await real_redis.delete(DEPLOY_QUEUE)
+
+
+@pytest.fixture
+async def durable_api(real_redis):
+    """A real control API/DB for this consumer, alongside its legacy API fixture."""
+    from datetime import UTC, datetime, timedelta
+
+    from shared.contracts.dto.executor_diagnostics import (
+        EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+        ExecutorDiagnostic,
+        ExecutorDiagnosticSnapshot,
+    )
+    from shared.tests.executor_diagnostic_cases import host_profile_for_reason
+    from src.clients.api import LanggraphAPIClient
+
+    now = datetime.now(UTC)
+    expiry = now + timedelta(minutes=5)
+    await real_redis.set(
+        EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+        ExecutorDiagnosticSnapshot(
+            schema_version="v2",
+            version="empty-result-test",
+            observed_at=now,
+            expires_at=expiry,
+            diagnostics=[
+                ExecutorDiagnostic(
+                    executor=executor,
+                    enabled=True,
+                    auth_mode="host_session",
+                    availability="available",
+                    observed_at=now,
+                    expires_at=expiry,
+                    active_lease_count=0,
+                    reason_code="ready",
+                    reason="Local authentication and worker inventory are ready.",
+                    profile=host_profile_for_reason("ready"),
+                )
+                for executor in (AgentType.CLAUDE, AgentType.CODEX)
+            ],
+        ).model_dump_json(),
+        ex=300,
+    )
+    api = LanggraphAPIClient()
+    api.base_url = os.environ["TEST_API_BASE_URL"]
+    telegram_id = uuid.uuid4().int % 1_000_000_000
+    await api.post("users/", json={"telegram_id": telegram_id, "username": f"empty_{telegram_id}"})
+    project = await api.post(
+        "projects/",
+        json={
+            "title": "Empty engineering",
+            "initiating_run_id": "fixture-init",
+            "status": "active",
+            "config": {},
+        },
+        headers={"X-Telegram-ID": str(telegram_id)},
+    )
+    project_id = project["id"]
+    await api.post(
+        "repositories/",
+        json={
+            "project_id": project_id,
+            "name": f"empty-{uuid.uuid4().hex[:8]}",
+            "git_url": "https://github.com/fixture/empty.git",
+        },
+    )
+    story = await api.post("stories/", json={"project_id": project_id, "title": "Empty result"})
+    story_id = story["id"]
+    await api.transition_story(story_id, "start")
+    run_id = f"eng-empty-{uuid.uuid4().hex[:12]}"
+    admitted = await api.post(
+        "work-admission/paid-runs",
+        json={
+            "id": run_id,
+            "type": "engineering",
+            "project_id": project_id,
+            "story_id": story_id,
+            "run_metadata": {"deploy_fix_attempt": 1},
+        },
+    )
+    assert admitted["run_id"] == run_id
+    yield api, project_id, story_id, run_id
+    await api.close()
+
+
+async def _durable_stop_row(story_id):
+    async with await AsyncConnection.connect(
+        os.environ["TEST_DATABASE_URL"], row_factory=dict_row
+    ) as connection:
+        cursor = await connection.execute(
+            "SELECT status, waiting_on, quarantine_reason, owner_notification "
+            "FROM stories WHERE id=%s",
+            (story_id,),
+        )
+        return await cursor.fetchone()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "commit_sha", [None, "", _DEPLOYED_HEAD, "older-head", "net-empty-head", "a" * 40]
+)
+@pytest.mark.parametrize("interrupted", [False, True])
+async def test_actual_empty_processing_commits_the_story_reason_and_owed_notices(
+    real_redis,
+    durable_api,
+    commit_sha,
+    interrupted,
+):
+    from src.clients.worker_spawner import SpawnResult
+    from src.consumers.engineering import process_engineering_job
+
+    api, project_id, story_id, run_id = durable_api
+    github = await _github_reporting_a_deployed_head()
+    stream = RedisStreamClient()
+    await stream.connect()
+    before_deploys = await real_redis.xlen(DEPLOY_QUEUE)
+    github.commit_adds_changes.return_value = commit_sha == "a" * 40
+    original_publish = stream.publish_flat
+
+    async def interrupted_publish(queue, fields):
+        if interrupted and fields.get("event") == "failed":
+            raise ConnectionError("CALLBACK_CANARY")
+        await original_publish(queue, fields)
+
+    try:
+        with (
+            patch("src.consumers.engineering.api_client", api),
+            patch("src.consumers.engineering_result_handler.api_client", api),
+            patch("src.nodes.developer.api_client", api),
+            patch("src.nodes.developer.GitHubAppClient", return_value=github),
+            patch("src.consumers.engineering._resolve_allocations", AsyncMock(return_value={})),
+            patch("src.consumers.engineering._build_story_context", AsyncMock(return_value=None)),
+            patch("src.consumers.engineering._build_story_md", AsyncMock(return_value=None)),
+            patch(
+                "src.nodes.developer.request_spawn",
+                AsyncMock(
+                    return_value=SpawnResult(
+                        request_id="fixture-turn",
+                        success=True,
+                        exit_code=0,
+                        commit_sha=commit_sha,
+                        output="Authorization: Bearer EMPTY_OUTPUT_CANARY",
+                        turn_result_consumed=True,
+                    )
+                ),
+            ),
+            patch(
+                "src.consumers.engineering_result_handler._uncomputable_derived_keys_at",
+                AsyncMock(return_value=[]),
+            ),
+            patch.object(stream, "publish_flat", side_effect=interrupted_publish),
+            patch.object(api, "patch", wraps=api.patch) as writes,
+            capture_logs() as logs,
+        ):
+            outcome = await process_engineering_job(
+                {
+                    **_engineering_message(),
+                    "task_id": run_id,
+                    "project_id": project_id,
+                    "story_id": story_id,
+                    "callback_stream": f"fixture:callback:{run_id}" if interrupted else None,
+                },
+                stream,
+            )
+        if commit_sha == "a" * 40:
+            assert outcome["status"] == "success"
+            assert (await api.get_run(run_id)).status.value == "completed"
+            row = await _durable_stop_row(story_id)
+            assert row["status"] == "in_progress"
+            assert row["quarantine_reason"] is None
+            assert row["owner_notification"] is None
+            assert await real_redis.xlen(DEPLOY_QUEUE) == before_deploys + 1
+            return
+        assert outcome["status"] == "failed"
+        run = await api.get_run(run_id)
+        assert run.status.value == "failed"
+        assert run.result.failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
+        assert len((await api.get(f"runs/{run_id}"))["error_message"]) <= 503
+        row = await _durable_stop_row(story_id)
+        assert row["status"] == "waiting_human_review"
+        assert row["waiting_on"] == "human_review"
+        cause = row["quarantine_reason"]
+        assert cause["code"] == "no_new_commit"
+        notification = OwnerNotification.model_validate(row["owner_notification"])
+        assert notification.state is OwnerNotificationState.OWED
+        assert notification.admin_state is OwnerNotificationState.OWED
+        assert notification.event.value == "story_blocked"
+        assert "nothing was produced" in notification.text
+        assert "a person" in notification.text
+        assert run_id in cause["detail"]
+        assert "EMPTY_OUTPUT_CANARY" not in json.dumps([row, logs])
+        assert "CALLBACK_CANARY" not in json.dumps(logs)
+        assert not any(call.args[0] == f"stories/{story_id}" for call in writes.await_args_list)
+        assert await real_redis.xlen(DEPLOY_QUEUE) == before_deploys
+    finally:
+        await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_actual_stop_refusal_leaves_the_attempt_reclaimable(real_redis, durable_api):
+    from src.clients.worker_spawner import SpawnResult
+    from src.consumers.engineering import process_engineering_job
+    from src.consumers.engineering_result_handler import StoryStopError
+
+    api, project_id, story_id, run_id = durable_api
+    stream = RedisStreamClient()
+    await stream.connect()
+    try:
+        with (
+            patch("src.consumers.engineering.api_client", api),
+            patch("src.consumers.engineering_result_handler.api_client", api),
+            patch("src.nodes.developer.api_client", api),
+            patch(
+                "src.nodes.developer.GitHubAppClient",
+                return_value=await _github_reporting_a_deployed_head(),
+            ),
+            patch("src.consumers.engineering._resolve_allocations", AsyncMock(return_value={})),
+            patch("src.consumers.engineering._build_story_context", AsyncMock(return_value=None)),
+            patch("src.consumers.engineering._build_story_md", AsyncMock(return_value=None)),
+            patch(
+                "src.nodes.developer.request_spawn",
+                AsyncMock(
+                    return_value=SpawnResult(
+                        request_id="fixture-turn",
+                        success=True,
+                        exit_code=0,
+                        output="",
+                        turn_result_consumed=True,
+                    )
+                ),
+            ),
+            patch.object(
+                api, "stop_story", side_effect=RuntimeError("Authorization: Bearer REFUSAL_CANARY")
+            ),
+            capture_logs() as logs,
+        ):
+            with pytest.raises(StoryStopError):
+                await process_engineering_job(
+                    {
+                        **_engineering_message(),
+                        "task_id": run_id,
+                        "project_id": project_id,
+                        "story_id": story_id,
+                    },
+                    stream,
+                )
+        assert (await api.get_run(run_id)).status.value == "running"
+        row = await _durable_stop_row(story_id)
+        assert row["status"] == "in_progress"
+        assert row["quarantine_reason"] is None
+        assert row["owner_notification"] is None
+        assert "REFUSAL_CANARY" not in json.dumps(logs)
+    finally:
+        await stream.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit_sha", [None, _DEPLOYED_HEAD])
+async def test_actual_planned_empty_attempt_fails_its_task_without_parking_the_story(
+    real_redis,
+    durable_api,
+    commit_sha,
+):
+    from src.clients.worker_spawner import SpawnResult
+    from src.consumers.engineering import process_engineering_job
+
+    api, project_id, story_id, run_id = durable_api
+    task = await api.post(
+        "tasks/",
+        json={
+            "project_id": project_id,
+            "story_id": story_id,
+            "title": "Planned change",
+            "status": "in_dev",
+            "max_iterations": 3,
+        },
+    )
+    stream = RedisStreamClient()
+    await stream.connect()
+    before_deploys = await real_redis.xlen(DEPLOY_QUEUE)
+    try:
+        with (
+            patch("src.consumers.engineering.api_client", api),
+            patch("src.consumers.engineering_result_handler.api_client", api),
+            patch("src.nodes.developer.api_client", api),
+            patch(
+                "src.nodes.developer.GitHubAppClient",
+                return_value=await _github_reporting_a_deployed_head(),
+            ),
+            patch("src.consumers.engineering._resolve_allocations", AsyncMock(return_value={})),
+            patch("src.consumers.engineering._build_story_context", AsyncMock(return_value=None)),
+            patch("src.consumers.engineering._build_story_md", AsyncMock(return_value=None)),
+            patch(
+                "src.nodes.developer.request_spawn",
+                AsyncMock(
+                    return_value=SpawnResult(
+                        request_id="planned-turn",
+                        success=True,
+                        exit_code=0,
+                        output="",
+                        commit_sha=commit_sha,
+                        turn_result_consumed=True,
+                    )
+                ),
+            ),
+        ):
+            outcome = await process_engineering_job(
+                {
+                    **_engineering_message(),
+                    "task_id": run_id,
+                    "project_id": project_id,
+                    "story_id": story_id,
+                    "planning_task_id": task["id"],
+                },
+                stream,
+            )
+        assert outcome["status"] == "failed"
+        assert (
+            await api.get_run(run_id)
+        ).result.failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
+        failed = await api.get_task(task["id"])
+        assert failed.status.value == "failed"
+        assert (failed.current_iteration, failed.max_iterations) == (0, 3)
+        row = await _durable_stop_row(story_id)
+        assert row["status"] == "in_progress"
+        assert row["quarantine_reason"] is None
+        assert row["owner_notification"] is None
+        assert await real_redis.xlen(DEPLOY_QUEUE) == before_deploys
+    finally:
+        await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_defensive_empty_success_uses_the_real_atomic_story_stop(real_redis, durable_api):
+    from src.consumers.engineering_result_handler import (
+        EngineeringSuccessParams,
+        handle_engineering_success,
+    )
+
+    api, project_id, story_id, run_id = durable_api
+    stream = RedisStreamClient()
+    await stream.connect()
+    try:
+        with patch("src.consumers.engineering_result_handler.api_client", api):
+            outcome = await handle_engineering_success(
+                EngineeringSuccessParams(
+                    result={"engineering_status": "done"},
+                    task_id=run_id,
+                    project=await api.get_project(project_id),
+                    callback_stream=None,
+                    redis=stream,
+                    skip_deploy=False,
+                    story_id=story_id,
+                )
+            )
+        assert outcome["status"] == "failed"
+        assert (
+            await api.get_run(run_id)
+        ).result.failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
+        row = await _durable_stop_row(story_id)
+        assert row["status"] == "waiting_human_review"
+        assert row["waiting_on"] == "human_review"
+        assert row["quarantine_reason"]["code"] == "no_new_commit"
+        assert row["owner_notification"]["state"] == "owed"
+        assert row["owner_notification"]["admin_state"] == "owed"
+    finally:
+        await stream.close()

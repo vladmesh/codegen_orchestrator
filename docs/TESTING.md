@@ -44,6 +44,15 @@ make stand-run SUITE=mega-brief-package  # The same brief path onto the kit pack
 make test-clean                # Remove all test containers/volumes
 ```
 
+The Langgraph service route also starts a real control API and PostgreSQL for
+`test_engineering_no_new_commit.py`: absent, unchanged, older and net-empty worker
+commits traverse the producer/consumer and leave the typed story stop and both notices
+in PostgreSQL. It covers planned-task failures, the defensive entry, callback interruption
+and a new commit's deploy publication. Scheduler service regressions cover two completion
+cycles, stop refusal, real Redis notification recovery and the normal PR route. API failure
+visibility tests verify atomic storage and rollback when notification construction fails.
+The PO graph regression uses a deterministic model fixture to verify the empty-result text.
+
 ## Pre-push Hook
 
 Runs automatically before `git push`:
@@ -261,7 +270,7 @@ Buildx bootstrap (120 s attempts), 6.5 minutes per image pulled (90 s attempts),
 | `fast-checks` | 3.5 min (unit tests 2.9) | 40 | 45 | Redis pull 3 × 90 s; Redis regression 3 min |
 | `ci-contract` | 0.8 min | 11 | 15 | — |
 | `service-image-imports` | 6.6 min (import step 6.0) | 32.5 | 35 | Buildx 3 × 120 s; imports 15 min |
-| `test-service/<leg>` | 8.7 min (tests 8.4) | 50 (`scheduler`, 3 images) | 55 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
+| `test-service/<leg>` | 8.7 min (tests 8.4) | 50 (`scheduler` and `langgraph`, 3 images) | 55 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
 | `test-integration/<leg>` | 4.2 min (tests 3.9) | 40.5 (2 images) | 45 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 10 min |
 | `template-compatibility/<entry>` | 3.7 min (smoke 3.5) | 24.5 | 30 | smoke 15 min |
 | `web-checks/<app>` | 0.5 min | — | 10 | — |

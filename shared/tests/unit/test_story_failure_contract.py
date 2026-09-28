@@ -18,6 +18,14 @@ from shared.contracts.dto.story_failure import (
 TOKEN = "ghs_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"  # noqa: S105 - a fake installation token
 
 
+def test_empty_engineering_tells_the_owner_nothing_was_produced_and_a_person_must_decide():
+    failure = StoryFailure(code="no_new_commit", source="engineering", detail="No commit was made")
+    text = story_failure_owner_text(failure)
+    assert "nothing was produced" in text
+    assert "a person" in text
+    assert "Nothing more happens automatically" in text
+
+
 def test_the_detail_is_redacted_before_it_can_be_stored():
     failure = StoryFailure(
         code=StoryFailureCode.SCAFFOLD_FAILED,
