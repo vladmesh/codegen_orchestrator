@@ -1,8 +1,10 @@
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
+from shared.contracts.dto.worker import WorkerStatus, worker_creation_failure_key
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
@@ -16,6 +18,8 @@ from shared.contracts.queues.worker_result import WorkerResultStatus
 from .conftest import (
     REDIS_STREAM_COMMANDS,
     REDIS_STREAM_DEV_RESPONSES,
+    WORKSPACE_BASE_PATH,
+    scaffolded_worker_config,
     wait_for_create_response,
     wait_for_stream_message,
 )
@@ -46,7 +50,8 @@ class TestWorkerExecution:
         req_id = f"test-req-{uuid4().hex[:6]}"
         command = CreateWorkerCommand(
             request_id=req_id,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name="test-claude",
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
@@ -54,7 +59,6 @@ class TestWorkerExecution:
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -80,6 +84,80 @@ class TestWorkerExecution:
         assert exit_code == 0
         assert b"test assistant" in output
 
+        # Readiness requires real credential preparation, including native HOME
+        # configuration usable after the agent's environment filter removes tokens.
+        exit_code, output = container.exec_run("cat /workspace/.git/config")
+        assert exit_code == 0
+        assert command.config.env_vars["GITHUB_TOKEN"].encode() not in output
+        assert f"https://github.com/{command.config.env_vars['REPO_NAME']}.git".encode() in output
+
+        probe = """import os
+from pathlib import Path
+import stat
+import subprocess
+
+home = Path(os.environ["HOME"])
+credential = home / ".config/codegen/git-credentials"
+assert stat.S_IMODE(credential.stat().st_mode) == 0o600
+assert stat.S_IMODE((home / ".gitconfig").stat().st_mode) == 0o600
+assert stat.S_IMODE(credential.parent.stat().st_mode) == 0o700
+env = {"HOME": str(home), "PATH": os.environ["PATH"], "GIT_TERMINAL_PROMPT": "0"}
+repo = os.environ["REPO_NAME"]
+query = f"protocol=https\\nhost=github.com\\npath={repo}.git\\n\\n"
+result = subprocess.run(["git", "credential", "fill"], input=query, text=True,
+                        capture_output=True, env=env, check=True)
+assert "username=x-access-token" in result.stdout
+assert f"password={os.environ['GITHUB_TOKEN']}\\n" in result.stdout
+wrong_query = "protocol=https\\nhost=github.com\\npath=other/repository.git\\n\\n"
+wrong = subprocess.run(["git", "credential", "fill"], input=wrong_query, text=True,
+                       capture_output=True, env=env)
+assert wrong.returncode != 0
+assert os.environ["GITHUB_TOKEN"] not in wrong.stdout
+"""
+        exit_code, output = container.exec_run(["python3", "-c", probe])
+        assert exit_code == 0, f"Native repository credential setup failed: {output.decode()}"
+
+    @pytest.mark.parametrize(
+        "env_vars",
+        [{}, {"REPO_NAME": "invalid/repository"}, {"GITHUB_TOKEN": "synthetic-invalid"}],
+    )
+    async def test_missing_repository_credentials_refused_before_injection(
+        self, redis_client, scaffolded_workspace, env_vars
+    ):
+        worker_id = f"missing-credentials-{uuid4().hex[:8]}"
+        request_id = f"refused-{uuid4().hex[:8]}"
+        # Deliberately bypass the valid fixture producer: these inputs must remain invalid.
+        command = CreateWorkerCommand(
+            request_id=request_id,
+            config=WorkerConfig(
+                name=worker_id,
+                worker_type="developer",
+                agent_type=AgentType.CLAUDE,
+                instructions="Must not be injected before credential preparation.",
+                task_content="Must not reach an agent.",
+                allowed_commands=[],
+                capabilities=[],
+                ownership=_ownership(),
+                repo_id=scaffolded_workspace,
+                env_vars=env_vars,
+                auth_mode="api_key",
+                api_key="sk-ant-test-claude-key",
+            ),
+        )
+        await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
+        with pytest.raises(RuntimeError):
+            await wait_for_create_response(
+                redis_client, REDIS_STREAM_DEV_RESPONSES, request_id=request_id
+            )
+        failure = await redis_client.hgetall(worker_creation_failure_key(worker_id))
+        assert "Repository credentials are required" in failure["error"]
+        assert (
+            await redis_client.hget(f"worker:status:{worker_id}", "status") != WorkerStatus.RUNNING
+        )
+        workspace = Path(WORKSPACE_BASE_PATH, scaffolded_workspace)
+        assert not (workspace / "TASK.md").exists()
+        assert not (workspace / "CLAUDE.md").exists()
+
     @pytest.mark.asyncio
     async def test_create_factory_worker_with_curl_capability(
         self, redis_client, docker_client, scaffolded_workspace
@@ -90,7 +168,8 @@ class TestWorkerExecution:
         req_id = f"test-req-{uuid4().hex[:6]}"
         command = CreateWorkerCommand(
             request_id=req_id,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name="test-factory",
                 worker_type="developer",
                 agent_type=AgentType.FACTORY,
@@ -98,7 +177,6 @@ class TestWorkerExecution:
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -135,7 +213,8 @@ class TestWorkerExecution:
         req_id_1 = f"cache-1-{uuid4().hex[:6]}"
         cmd1 = CreateWorkerCommand(
             request_id=req_id_1,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name="cache-claude",
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
@@ -143,7 +222,6 @@ class TestWorkerExecution:
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd1.model_dump_json()})
@@ -158,7 +236,8 @@ class TestWorkerExecution:
         req_id_2 = f"cache-2-{uuid4().hex[:6]}"
         cmd2 = CreateWorkerCommand(
             request_id=req_id_2,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name="cache-factory",
                 worker_type="developer",
                 agent_type=AgentType.FACTORY,
@@ -166,7 +245,6 @@ class TestWorkerExecution:
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd2.model_dump_json()})
@@ -209,7 +287,8 @@ class TestWorkerExecution:
         # 1. Create Worker (Factory Agent for simplicity or Claude)
         command = CreateWorkerCommand(
             request_id=req_id,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name="exec-worker",
                 worker_type="developer",
                 agent_type=AgentType.FACTORY,
@@ -217,7 +296,6 @@ class TestWorkerExecution:
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})

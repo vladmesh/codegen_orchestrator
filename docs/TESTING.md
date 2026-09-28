@@ -508,6 +508,10 @@ SHA it tested. In CI it builds no worker image: it pulls the candidates `build-w
 resolved for the push into DinD by digest (`WORKER_BASE_IMAGE_SOURCE=candidates`), and the release
 commits exactly those digests (docs/DEPLOY.md, "Worker base images are a release chain"). A local
 `make test-integration-backend-dind` builds the chain from the tree inside DinD, as before.
+`python -m tests.integration.backend` invokes that same complete Compose target for a reusable
+worker-local check receipt. Scaffolded developer fixtures share a clean origin and repository-scoped
+synthetic token; native credential probes stay local and never authenticate against GitHub. DinD
+mounts `/tmp` before its workspace/transcript child volumes so its entrypoint cannot hide them.
 Worker-path coverage is available through `make test-live-engineering`
 (`tests/live/test_pipeline_engineering.py`). Use `make test-live-mega-noop` for the deterministic
 scaffold, engineering, deploy and QA path, or a named `make stand-run SUITE=...` for model-backed

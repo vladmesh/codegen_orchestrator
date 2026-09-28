@@ -16,11 +16,10 @@ from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
     DeleteWorkerCommand,
-    WorkerConfig,
     WorkerOwnership,
 )
 
-from .conftest import WORKSPACE_BASE_PATH, wait_for_create_response
+from .conftest import WORKSPACE_BASE_PATH, scaffolded_worker_config, wait_for_create_response
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
@@ -52,7 +51,8 @@ class TestDevEnvIntegration:
 
         cmd = CreateWorkerCommand(
             request_id=req_id,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name=worker_name,
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
@@ -60,7 +60,6 @@ class TestDevEnvIntegration:
                 allowed_commands=[],
                 capabilities=[],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
@@ -97,7 +96,8 @@ class TestDevEnvIntegration:
 
         cmd = CreateWorkerCommand(
             request_id=req_id,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name=worker_name,
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
@@ -105,7 +105,6 @@ class TestDevEnvIntegration:
                 allowed_commands=[],
                 capabilities=[],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
@@ -158,7 +157,8 @@ class TestDevEnvIntegration:
 
         cmd = CreateWorkerCommand(
             request_id=req_id,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name=worker_name,
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
@@ -166,7 +166,6 @@ class TestDevEnvIntegration:
                 allowed_commands=[],
                 capabilities=[],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})

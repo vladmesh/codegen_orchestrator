@@ -7,7 +7,6 @@ from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
     WorkerCapability,
-    WorkerConfig,
     WorkerOwnership,
 )
 
@@ -15,6 +14,7 @@ from .conftest import (
     assert_worker_is_running,
     delete_test_worker,
     exec_in_running_worker,
+    scaffolded_worker_config,
     wait_for_worker_exit,
     wait_for_worker_ready,
 )
@@ -43,7 +43,8 @@ async def test_claude_cli_installed(redis_client, docker_client, scaffolded_work
     worker_id = f"test-claude-{request_id[:8]}"
 
     # 1. Send CreateWorkerCommand
-    config = WorkerConfig(
+    config = scaffolded_worker_config(
+        scaffolded_workspace,
         name=worker_id,
         worker_type="developer",
         agent_type=AgentType.CLAUDE,
@@ -55,7 +56,6 @@ async def test_claude_cli_installed(redis_client, docker_client, scaffolded_work
         # real subscription session, so keep the wrapper alive with its isolated test key.
         auth_mode="api_key",
         api_key="sk-ant-test-claude-key",
-        repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
@@ -86,7 +86,8 @@ async def test_claude_session_mounted(redis_client, docker_client, scaffolded_wo
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-mount-{request_id[:8]}"
 
-    config = WorkerConfig(
+    config = scaffolded_worker_config(
+        scaffolded_workspace,
         name=worker_id,
         worker_type="developer",
         agent_type=AgentType.CLAUDE,
@@ -96,7 +97,6 @@ async def test_claude_session_mounted(redis_client, docker_client, scaffolded_wo
         ownership=_ownership(),
         auth_mode="host_session",
         host_claude_dir="/host-claude",
-        repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
@@ -133,7 +133,8 @@ async def test_claude_instructions_injected(redis_client, docker_client, scaffol
     worker_id = f"test-claude-instr-{request_id[:8]}"
     instructions = "unique-test-instructions-content-123"
 
-    config = WorkerConfig(
+    config = scaffolded_worker_config(
+        scaffolded_workspace,
         name=worker_id,
         worker_type="developer",
         agent_type=AgentType.CLAUDE,
@@ -147,7 +148,6 @@ async def test_claude_instructions_injected(redis_client, docker_client, scaffol
         # tests the wrong boundary.
         auth_mode="api_key",
         api_key="sk-ant-test-claude-key",
-        repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
@@ -177,7 +177,8 @@ async def test_stopped_instruction_worker_reports_startup_evidence(
     """The prior dead-container path reports its exit rather than a Docker 409."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-stopped-{request_id[:8]}"
-    config = WorkerConfig(
+    config = scaffolded_worker_config(
+        scaffolded_workspace,
         name=worker_id,
         worker_type="developer",
         agent_type=AgentType.CLAUDE,
@@ -190,7 +191,6 @@ async def test_stopped_instruction_worker_reports_startup_evidence(
         # must reject it at startup after worker-manager injects instructions.
         # This follows the failed gate's ordering without exposing daemon files.
         host_claude_dir="/host-claude-unwritable",
-        repo_id=scaffolded_workspace,
     )
 
     await redis_client.xadd(
