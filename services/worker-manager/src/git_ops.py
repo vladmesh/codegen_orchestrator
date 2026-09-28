@@ -16,10 +16,11 @@ the developer agent's own commits and pushes.
 import asyncio
 import base64
 from dataclasses import dataclass
-import re
+import shlex
 
 import structlog
 
+from shared.diagnostics import redact_diagnostic
 from shared.git_not_found_retry import git_repository_not_found, retry_delay_after
 
 from .docker_ops import DockerClientWrapper
@@ -83,33 +84,69 @@ fi
 """
 
 
-def build_token_refresh_script(repo: str, token: str) -> str:
-    """The shell that re-points `origin` at a fresh installation token."""
+# Container-private storage, never a bind mount or a workspace auth artifact.
+GIT_CREDENTIAL_PATH = "/home/worker/.config/codegen/git-credentials"
+
+
+def git_auth_env() -> dict[str, str]:
+    """Native process configuration inherited by manager and developer Git.
+
+    The helper contains only a path. Reset other helpers and match the repository
+    path so this repository-scoped installation token is not offered elsewhere.
+    """
+    return {
+        "GIT_CONFIG_COUNT": "3",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "credential.https://github.com.helper",
+        "GIT_CONFIG_VALUE_1": f"store --file={shlex.quote(GIT_CREDENTIAL_PATH)}",
+        "GIT_CONFIG_KEY_2": "credential.https://github.com.useHttpPath",
+        "GIT_CONFIG_VALUE_2": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
+def build_token_refresh_script(repo: str) -> str:
+    """Upgrade the released origin and atomically refresh a private credential.
+
+    Docker passes the token in its native exec environment. No token or encoding
+    of it is part of this script, Git argv or persisted workspace configuration.
+    """
+    writer = r"""import os
+from pathlib import Path
+import tempfile
+from urllib.parse import quote
+path = Path(os.environ["CODEGEN_GIT_CREDENTIAL_PATH"])
+path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+path.parent.chmod(0o700)
+fd, temporary = tempfile.mkstemp(dir=path.parent)
+try:
+    with os.fdopen(fd, "w") as stream:
+        token = quote(os.environ["GITHUB_TOKEN"], safe="")
+        repo = os.environ["CODEGEN_GIT_REPO"]
+        stream.write(f"https://x-access-token:{token}@github.com/{repo}.git\n")
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+"""
+    clean_url = shlex.quote(f"https://github.com/{repo}.git")
     return (
-        f"cd /workspace && "
-        f"{GIT} remote set-url origin 'https://x-access-token:{token}@github.com/{repo}'"
+        f"set -e\ncd /workspace\n{GIT} remote set-url origin {clean_url}\n"
+        f"python3 -c {shlex.quote(writer)}"
     )
-
-
-async def _exec_script(
-    docker: DockerClientWrapper, container_id: str, script: str
-) -> tuple[int, str]:
-    encoded = base64.b64encode(script.encode()).decode()
-    cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
-    return await docker.exec_in_container(container_id, cmd, timeout=30)
 
 
 _OUTPUT_TAIL_CHARS = 2000
 _CONTAINER_LOG_TAIL_LINES = 20
-_CREDENTIAL_IN_URL = re.compile(r"(https?://)[^/@\s]+@")
 
 
-def _tail(raw: bytes | str | None) -> str:
+def _tail(raw: bytes | str | None, secrets: tuple[str, ...] = ()) -> str:
     """The redacted last characters of one stream, for a log line and an error."""
     if raw is None:
         return ""
     text = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
-    text = _CREDENTIAL_IN_URL.sub(r"\1***@", text).strip()
+    text = redact_diagnostic(text, secrets=secrets).strip()
     return text[-_OUTPUT_TAIL_CHARS:]
 
 
@@ -129,7 +166,9 @@ class CheckoutResult:
         return self.ok
 
 
-async def _container_account(docker: DockerClientWrapper, container_id: str) -> str:
+async def _container_account(
+    docker: DockerClientWrapper, container_id: str, secrets: tuple[str, ...] = ()
+) -> str:
     """Whether the worker container is still running, and its last log lines if not.
 
     A checkout that exits without a word is almost never git's doing: git always
@@ -140,7 +179,10 @@ async def _container_account(docker: DockerClientWrapper, container_id: str) -> 
     try:
         attrs = await docker.inspect_container(container_id)
     except Exception as exc:  # noqa: BLE001 — the account is evidence, not a second failure
-        return f"the worker container could not be inspected: {type(exc).__name__}: {exc}"
+        return (
+            f"the worker container could not be inspected: {type(exc).__name__}: "
+            f"{_tail(str(exc), secrets)}"
+        )
     state = (attrs or {}).get("State") or {}
     if state.get("Running"):
         return "the worker container is still running"
@@ -151,13 +193,21 @@ async def _container_account(docker: DockerClientWrapper, container_id: str) -> 
     try:
         logs = await docker.read_container_logs(container_id, tail=_CONTAINER_LOG_TAIL_LINES)
     except Exception as exc:  # noqa: BLE001 — a missing log still leaves the state above
-        return f"{account}; its log could not be read: {type(exc).__name__}: {exc}"
-    logs_tail = _tail(logs)
+        return (
+            f"{account}; its log could not be read: {type(exc).__name__}: "
+            f"{_tail(str(exc), secrets)}"
+        )
+    logs_tail = _tail(logs, secrets)
     return f"{account}; its log ends: {logs_tail}" if logs_tail else account
 
 
 async def checkout_branch(
-    docker: DockerClientWrapper, container_id: str, branch: str, worker_id: str
+    docker: DockerClientWrapper,
+    container_id: str,
+    branch: str,
+    worker_id: str,
+    *,
+    secret_values: tuple[str, ...] = (),
 ) -> CheckoutResult:
     """Checkout a story branch in the workspace.
 
@@ -172,7 +222,12 @@ async def checkout_branch(
     attempt = 0
     while True:
         attempt += 1
-        exit_code, stdout, stderr = await docker.exec_capture(container_id, cmd, timeout=30)
+        try:
+            exit_code, stdout, stderr = await docker.exec_capture(container_id, cmd, timeout=30)
+        except Exception as exc:  # noqa: BLE001 - return a safe checkout failure
+            detail = f"{type(exc).__name__}: {_tail(str(exc), secret_values)}"
+            logger.error("checkout_branch_failed", worker_id=worker_id, error=detail)
+            return CheckoutResult(ok=False, detail=detail)
         if exit_code == 0:
             logger.info(
                 "checkout_branch_complete", worker_id=worker_id, branch=branch, attempts=attempt
@@ -187,12 +242,12 @@ async def checkout_branch(
             branch=branch,
             attempt=attempt,
             delay_seconds=delay,
-            stderr=_tail(stderr),
-            stdout=_tail(stdout),
+            stderr=_tail(stderr, secret_values),
+            stdout=_tail(stdout, secret_values),
         )
         await asyncio.sleep(delay)
 
-    stdout_tail, stderr_tail = _tail(stdout), _tail(stderr)
+    stdout_tail, stderr_tail = _tail(stdout, secret_values), _tail(stderr, secret_values)
     parts = [f"exit_code={exit_code}"]
     if stderr_tail:
         parts.append(f"stderr: {stderr_tail}")
@@ -202,7 +257,7 @@ async def checkout_branch(
         parts.append(f"attempts={attempt}")
     container = None
     if not stderr_tail and not stdout_tail:
-        container = await _container_account(docker, container_id)
+        container = await _container_account(docker, container_id, secret_values)
         parts.append(f"no output; {container}")
     detail = "; ".join(parts)
     logger.error(
@@ -221,12 +276,30 @@ async def checkout_branch(
 async def refresh_git_token(
     docker: DockerClientWrapper, container_id: str, repo: str, token: str, worker_id: str
 ) -> bool:
-    """Update git remote URL with fresh token in existing workspace."""
-    exit_code, output = await _exec_script(
-        docker, container_id, build_token_refresh_script(repo, token)
-    )
+    """Sanitize origin and supply credentials for the container's Git lifetime."""
+    environment = {
+        **git_auth_env(),
+        "GITHUB_TOKEN": token,
+        "CODEGEN_GIT_REPO": repo,
+        "CODEGEN_GIT_CREDENTIAL_PATH": GIT_CREDENTIAL_PATH,
+    }
+    try:
+        exit_code, output = await docker.exec_in_container(
+            container_id,
+            ["bash", "-c", build_token_refresh_script(repo)],
+            timeout=30,
+            environment=environment,
+        )
+    except Exception as exc:  # noqa: BLE001 - fail preparation without leaking SDK output
+        logger.error(
+            "git_token_refresh_failed",
+            worker_id=worker_id,
+            error=_tail(str(exc), (token,)),
+            error_type=type(exc).__name__,
+        )
+        return False
     if exit_code != 0:
-        logger.error("git_token_refresh_failed", worker_id=worker_id, error=output)
+        logger.error("git_token_refresh_failed", worker_id=worker_id, error=_tail(output, (token,)))
         return False
     logger.info("git_token_refreshed", worker_id=worker_id, repo=repo)
     return True

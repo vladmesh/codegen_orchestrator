@@ -233,6 +233,7 @@ async def test_a_developer_worker_carries_the_ownership_the_request_named(_works
             base_image="worker-base:latest",
             ownership=OWNERSHIP,
             repo_id="repo-1",
+            env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
         )
 
     labels = docker.run_container.await_args.kwargs["labels"]

@@ -45,4 +45,5 @@ services:
     volumes:
       - ../../../services/infra-service/src:/app/services/infra-service/src
       - ../../../services/infra-service/tests:/app/services/infra-service/tests
+      - ../../../services/infra-service/ansible:/app/services/infra-service/ansible:ro
       - ../../../shared:/app/shared

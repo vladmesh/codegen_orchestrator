@@ -70,6 +70,7 @@ async def _create(manager: WorkerManager, worker_id: str, run_id: str) -> str:
             base_image="worker-base:latest",
             ownership=_ownership(run_id, f"attempt-{run_id}"),
             repo_id="repo-1",
+            env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
         )
 
 

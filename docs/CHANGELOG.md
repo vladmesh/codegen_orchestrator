@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-28
 
+- Recovery uses private Ansible vars and redacted diagnostics; worker preparation upgrades
+  credentialed origins and keeps Git auth outside reused workspaces.
 - New products scaffold from kit `0.6.3`, carrying bigint user identifiers and Telegram token-safe
   logging; the generated fixture and capability provenance follow the published release.
 - PO Redis/checkpoint maintenance shares one Deploy order, fences writes through readiness and

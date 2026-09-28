@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY services/infra-service/pyproject.toml /app/services/infra-service/
 COPY shared/ /app/shared/
 COPY services/infra-service/src/ /app/services/infra-service/src/
+COPY services/infra-service/ansible/ /app/services/infra-service/ansible/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -e /app/services/infra-service
 

@@ -244,7 +244,13 @@ class DockerClientWrapper:
             pass
 
     async def exec_in_container(
-        self, container_id: str, command: str | list[str], user: str = "worker", timeout: int = 30
+        self,
+        container_id: str,
+        command: str | list[str],
+        user: str = "worker",
+        timeout: int = 30,
+        *,
+        environment: dict[str, str] | None = None,
     ) -> tuple[int, bytes]:
         """
         Execute a command in a running container.
@@ -262,7 +268,8 @@ class DockerClientWrapper:
         # exec_run is blocking, run in executor
         # returns (exit_code, output)
         return await asyncio.wait_for(
-            self._run(container.exec_run, cmd=command, user=user), timeout=timeout
+            self._run(container.exec_run, cmd=command, user=user, environment=environment),
+            timeout=timeout,
         )
 
     async def exec_capture(

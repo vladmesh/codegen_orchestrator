@@ -2,7 +2,9 @@
 # Deploy Project Playbook
 # Deploys a project from GitHub to a server using Docker Compose
 # Usage: ansible-playbook -i inventory.ini playbooks/deploy_project.yml \
-#        -e "project_name=hello-bot repo_full_name=org/repo github_token=xxx service_port=8000"
+#        --extra-vars @/tmp/private-deploy-vars.json
+# JSON keys: project_name, repo_full_name, github_token, service_port.
+# Keep the vars file outside the checkout, mode 0600, and remove it after execution.
 
 - name: Deploy Project
   hosts: all
@@ -35,11 +37,17 @@
     # ========================================
     - name: Clone/update repository from GitHub
       git:
-        repo: "https://x-access-token:{{ github_token }}@github.com/{{ repo_full_name }}.git"
+        repo: "https://github.com/{{ repo_full_name }}.git"
         dest: "{{ deploy_dir }}"
         version: main
         force: yes
         accept_hostkey: yes
+      environment:
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader"
+        GIT_CONFIG_VALUE_0: "Authorization: Basic {{ ('x-access-token:' ~ github_token) | b64encode }}"
+        GIT_TERMINAL_PROMPT: "0"
+      no_log: true
       tags: [git]
 
     # ========================================

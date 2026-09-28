@@ -146,6 +146,7 @@ async def test_instruction_injection_failure_aborts_worker_creation():
             "src.manager.workspace_mod.get_scaffolded_workspace",
             return_value=(Path("/data/ws/repo-1"), True),
         ),
+        patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True),
     ):
         mock_settings.ENVIRONMENT = "production"
         mock_settings.DOCKER_NETWORK = ""
@@ -170,6 +171,7 @@ async def test_instruction_injection_failure_aborts_worker_creation():
                 api_key="test-api-key",
                 instructions="required instructions",
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
     assert await redis.hget("worker:status:w-injection-failure", "status") == WorkerStatus.FAILED
@@ -365,6 +367,7 @@ async def test_production_launch_uses_hardened_container_config(agent_type):
             auth_mode="api_key",
             api_key="test-api-key",
             repo_id="repo-1",
+            env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
         )
 
     kwargs = wrapper.run_container.call_args.kwargs
@@ -461,6 +464,7 @@ async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
             auth_mode="api_key",
             api_key="test-api-key",
             repo_id="repo-1",
+            env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
         )
 
     kwargs = wrapper.run_container.call_args.kwargs
