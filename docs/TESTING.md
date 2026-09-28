@@ -483,6 +483,12 @@ and renders with the values empty. `scripts/make_stand_session.py` authorizes a 
 The backend integration suite (`tests/compose/integration/backend.yml`) runs the API, Redis and
 LangGraph paths that do not create worker containers. It runs on relevant pull requests.
 
+`make test-integration-po-tools` also runs
+`services/langgraph/tests/integration/checkpoints/` with the locked LangGraph test image,
+real PostgreSQL and the real API. It reads every checkpoint payload back directly and checks
+encryption, resume, summaries, pending writes, safe logs and the quiesced upgrade procedure.
+It requires no paid model or Telegram credentials; the model and echo tool are deterministic.
+
 `tests/compose/integration/backend-dind.yml` covers worker-container creation and execution with
 Docker-in-Docker. `ci.yml` runs it as `test-backend-dind-integration` on every push to `main` and
 when CI is manually dispatched for `main`; it stays out of pull requests, where a privileged

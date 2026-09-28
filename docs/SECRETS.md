@@ -40,6 +40,174 @@ The key point: **the secrets are encrypted at rest in PostgreSQL** (Fernet encry
 
 ## 3. Integration with Components
 
+### PO conversation checkpoints
+
+`agents/po/checkpoints.py::ProtectedPostgresSaver` is the single persistence boundary
+for the PO graph. It uses LangGraph's `EncryptedSerializer` with an adapter to the
+existing `SecretsCipher` and `SECRETS_ENCRYPTION_KEY`. The bytes-to-text base64
+transport is inside authenticated Fernet encryption. No secret recognition rules,
+new key or runtime dependency are involved. Project-secret endpoints and PO tools
+retain their existing behavior; this change protects conversation copies at rest.
+
+The inventory for the released `langgraph-checkpoint-postgres==3.0.4` is:
+
+| Table / field | Stored content | Protection |
+|---|---|---|
+| `langgraph.checkpoints.checkpoint` | Inline primitive channel values, checkpoint state and bookkeeping | `po_encrypted_v1` authenticated envelope; only `v` and `channel_versions` remain visible for the saver's SQL joins and pending-send migration |
+| `langgraph.checkpoints.metadata` | Source, step, parents, run metadata and copied configurable values (including user name) | Entire JSONB document in an authenticated envelope |
+| `langgraph.checkpoint_blobs.blob` | Messages, user text, AI tool-call arguments, tool results, `context.running_summary`, `llm_input_messages` and other non-primitive channels | Native typed serialization followed by Fernet; type is suffixed `+fernet` |
+| `langgraph.checkpoint_writes.blob` | Pending channel updates, tool work/results, input, interrupts, errors and pre-v4 pending sends | Same encrypted serializer, including null writes |
+| `langgraph.checkpoint_migrations.v` | Saver migration numbers | No dialogue payload |
+
+Other columns contain graph-controlled identifiers: thread/chat ID, namespace,
+checkpoint and parent IDs, channel name/version, serializer type, task ID/path and
+write index. They are neither message content nor secret values. The unused
+`checkpoints.type` column remains unchanged. RAG dialogue tables were removed by
+`d3f5a7c9e1b4`; this boundary does not recreate them.
+
+Native encrypted serialization alone is insufficient: the saver bypasses it for
+inline primitives and metadata. The PO extension changes only that JSONB write
+and its corresponding read, retaining native blob/write SQL, versioning, parent
+links and pending-write ordering. All serialization and encryption for a checkpoint
+finish before its first INSERT. Native pending writes likewise serialize the whole
+batch before their INSERT. Normal consumer invocations, its one corruption retry,
+orphan repair (`aupdate_state`) and the real summarization
+hook all use this same saver. Metadata filters decrypt before filtering and preserve
+the native containment behavior, with no plaintext filter values sent to PostgreSQL.
+
+A missing/invalid key fails before setup writes. Plaintext rows refuse PO startup;
+invalid ciphertext and wrong keys fail on read with payload-free errors. The PO
+consumer logs exception classes instead of model/tool exception text or traces,
+and corruption retry logs no raw error. Successful logs contain counts and IDs.
+Dialogue is decrypted in process for the supported conversation and tool behavior;
+this is an at-rest boundary, not a change to model input or queue transport.
+
+Runtime reads accept only encrypted payloads. Released native JSON checkpoint
+versions 1–4 and native `json`, `msgpack`, `bytes`, `bytearray` and `null` blobs are
+accepted only by the explicit maintenance conversion below. The upstream pre-v4
+pending-send reader still runs after conversion, against encrypted write blobs.
+There is no permanent plaintext runtime fallback. Conversion requires quiesced
+writers, holds exclusive locks on all three payload tables, validates existing
+ciphertext with the configured key, and commits all rows in one transaction.
+Failure rolls back every thread/table. Reruns validate encrypted payloads and
+convert zero rows. Large installations need space for the encrypted data and WAL
+and a maintenance window for the table scan and transaction; do not slice the
+transaction while keeping writers live.
+
+### Production checkpoint upgrade runbook
+
+This is a later production operation after release. Do not start the protected PO
+on an unconverted database, resume an old plaintext writer after conversion, or
+run this procedure from an unmerged candidate checkout.
+
+1. Verify the released service image and existing production
+   `SECRETS_ENCRYPTION_KEY` are available. Use the same key that decrypts project
+   configuration, including for the maintenance container. Do not generate a new
+   key. `CHECKPOINT_DATABASE_URL` must address the intended database and select
+   `langgraph` via `options=-c%20search_path%3Dlanggraph`, as in the production
+   Compose file. The command refuses a different current schema. Disable shell
+   tracing; keep keys and database URLs out of operation notes.
+2. Pause PO ingress and drain active PO turns, then stop every `langgraph` replica
+   and any independently launched PO process. The current deployment has one
+   `langgraph` writer; engineering/deploy consumers use no PO saver. Pause the
+   Telegram transport too, so users see the maintenance window. Scheduler and
+   worker events may remain queued. Record only consumer/in-flight counts, not
+   message bodies. Verify no checkpoint writer remains before acknowledging
+   `--writers-quiesced`; exclusive locks are additional protection, not a substitute
+   for stopping old processes.
+
+   ```bash
+   docker compose stop telegram_bot
+   # Wait for already-admitted PO turns to finish, then:
+   docker compose stop langgraph
+   docker compose ps langgraph telegram_bot
+   ```
+
+3. Take and verify a restorable database backup while writers are stopped, before
+   applying conversion. The backup and the deployed key must be available to
+   the authorized recovery operator. For example, in the production project
+   directory with the released Compose configuration:
+
+   ```bash
+   umask 077
+   checkpoint_backup_dir=backups/po-checkpoint-upgrade
+   install -d -m 0700 "$checkpoint_backup_dir"
+   docker compose exec -T db sh -c \
+     'pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' \
+     > "$checkpoint_backup_dir/before-upgrade.dump"
+   test -s "$checkpoint_backup_dir/before-upgrade.dump"
+   docker compose exec -T db pg_restore --list \
+     < "$checkpoint_backup_dir/before-upgrade.dump" > /dev/null
+   ```
+
+   Confirm restorability through the installation's isolated restore procedure,
+   not by restoring over production. Preserve the pre-RAG-drop backup from the
+   issue and any other prior dumps as restricted secret-bearing artifacts (0600,
+   restricted directory/access and approved retention). Neither this conversion
+   nor a later encrypted dump scrubs old backups, WAL archives, replicas or copies.
+   Do not delete them or claim their contents were scrubbed.
+4. With the released image selected and writers still stopped, run validation and
+   counts, then conversion. `run --no-deps` does not start the normal PO process:
+
+   ```bash
+   docker compose run --rm --no-deps --entrypoint python langgraph \
+     -m src.agents.po.checkpoint_upgrade --writers-quiesced
+   docker compose run --rm --no-deps --entrypoint python langgraph \
+     -m src.agents.po.checkpoint_upgrade --writers-quiesced --apply
+   docker compose run --rm --no-deps --entrypoint python langgraph \
+     -m src.agents.po.checkpoint_upgrade --writers-quiesced
+   ```
+
+   Default mode is dry-run. Reports contain `before`, `would_convert` or
+   `converted`, and `after`, each separated into checkpoint JSON, metadata,
+   blobs and writes. Preserve these counts on the operation/sprint. Applied
+   `after.*.plaintext` must all be zero; the final dry-run validates decryption
+   and must report zero `would_convert`. No values, URLs, keys or row identities
+   are printed. A nonzero exit means stop, retain the backup and investigate
+   with writers paused. Failed conversion changes no rows. Never skip a bad row
+   or delete a thread to make the command succeed.
+5. Verify representation directly in PostgreSQL as well as through the command:
+
+   ```bash
+   docker compose exec -T db sh -c \
+     'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
+   SELECT 'checkpoint' AS payload, count(*) AS remaining_plaintext
+     FROM langgraph.checkpoints WHERE NOT checkpoint ? 'po_encrypted_v1'
+   UNION ALL SELECT 'metadata', count(*)
+     FROM langgraph.checkpoints WHERE NOT metadata ? 'po_encrypted_v1'
+   UNION ALL SELECT 'blobs', count(*) FROM langgraph.checkpoint_blobs
+     WHERE type <> 'empty' AND type NOT LIKE '%+fernet'
+   UNION ALL SELECT 'writes', count(*) FROM langgraph.checkpoint_writes
+     WHERE type IS NULL OR type NOT LIKE '%+fernet';
+   SQL
+   ```
+
+   All four counts must be zero. Envelope markers alone are not ciphertext
+   validation: the final keyed dry-run above also authenticates and deserializes
+   every protected payload. Record table row counts before/after if required by
+   the operation; conversion updates in place and deletes no conversations.
+6. Resume only the released encrypted writer, then Telegram transport:
+
+   ```bash
+   docker compose up -d --no-deps langgraph
+   docker compose logs --since 2m langgraph
+   docker compose up -d --no-deps telegram_bot
+   ```
+
+   Check healthy PO startup and have an authorized user continue one existing
+   conversation with a harmless follow-up. Confirm prior context and any pending
+   tool work resume; record the result without transcript or credential values.
+   Verify new writes are encrypted with the same direct storage count query.
+   If recovery requires the old writer, stop the new writer first and use the
+   verified backup under the recovery operation. Old code cannot read the new
+   encrypted representation; never run old and new formats together.
+
+`make test-integration-po-tools` runs the deterministic PO graph/consumer tests
+against real PostgreSQL and the real API, using the service's dependency lock.
+They inspect every column of all four checkpoint tables, cover user/tool/summary
+canaries and resume, and capture successful and failed logs. They also test
+released-row conversion, pending work, dry-run, rerun, rollback and writer locks.
+
 ### Infra Service (Provisioning Only)
 
 The `infra-service` is responsible for preparing the "bare metal". It uses **L1 Secrets** only.

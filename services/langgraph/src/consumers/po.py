@@ -333,9 +333,13 @@ async def _process_message(
                     story_id=data.get("story_id", ""),
                     error=str(unknown.__cause__),
                 )
-            except Exception:
-                logger.exception(
-                    "po_invoke_failed", telegram_chat_id=telegram_chat_id, msg_id=msg_id
+            except Exception as exc:
+                # Model/tool/validation exceptions can echo user credentials.
+                logger.error(
+                    "po_invoke_failed",
+                    telegram_chat_id=telegram_chat_id,
+                    msg_id=msg_id,
+                    error_type=type(exc).__name__,
                 )
                 request_id = data.get("request_id")
                 if request_id:
@@ -391,7 +395,6 @@ async def _repair_orphan_tool_calls(graph, thread_id: str) -> int:
         "po_checkpoint_repaired",
         thread_id=thread_id,
         repaired_count=len(orphan_calls),
-        tool_names=[tc["name"] for tc in orphan_calls],
     )
     return len(orphan_calls)
 
@@ -515,7 +518,6 @@ async def _handle_message(
             "po_system_event_dropped",
             telegram_chat_id=telegram_chat_id,
             event_type=event,
-            text=text,
         )
         return
 
@@ -614,7 +616,7 @@ async def _handle_message(
         if "tool_calls that do not have a corresponding ToolMessage" not in str(exc):
             raise
         # Race condition: corruption appeared between pre-check and invoke — repair and retry once
-        logger.warning("po_checkpoint_corrupt_on_invoke", thread_id=thread_id, error=str(exc))
+        logger.warning("po_checkpoint_corrupt_on_invoke", thread_id=thread_id)
         await _repair_orphan_tool_calls(graph, thread_id)
         result = await graph.ainvoke(invoke_input, config=invoke_config)
 
