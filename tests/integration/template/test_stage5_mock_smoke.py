@@ -89,12 +89,14 @@ def test_commands_use_reproducible_host_permissions(
 
     monkeypatch.setattr(subprocess, "run", capture_run)
 
-    smoke._run(["true"])
+    smoke._run(["true"], phase="setup")
+    smoke._write_artifact("a" * 40, None)
 
     assert captured_environment["HOST_UID"] == str(tmp_path.stat().st_uid)
     assert captured_environment["HOST_GID"] == str(tmp_path.stat().st_gid)
     assert callable(captured_run_kwargs["preexec_fn"])
     assert captured_run_kwargs["timeout"] > 0
+    assert json.loads(smoke.artifact.read_text())["completed_phases"] == ["setup"]
 
 
 def test_command_timeout_reports_phase_and_command(
@@ -160,6 +162,7 @@ def test_a_tag_pin_accepts_its_own_record_and_not_a_bare_short_sha(tmp_path: Pat
 def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pinned_sha = "a" * 40
     events: list[tuple[str, str]] = []
+    worker_calls: list[tuple[str, tuple[str, ...]]] = []
     smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
 
     monkeypatch.setattr(
@@ -177,7 +180,11 @@ def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.M
         "_read_resolved_commit",
         lambda _self, expected: events.append(("recorded", expected)) or expected,
     )
-    monkeypatch.setattr(Stage5Smoke, "_run_make", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        Stage5Smoke,
+        "_run_make",
+        lambda _self, target, *variables: worker_calls.append((target, variables)),
+    )
     monkeypatch.setattr(Stage5Smoke, "_make_workspace_readable", lambda *_args: None)
     monkeypatch.setattr(Stage5Smoke, "_run_worker_start", lambda *_args: None)
     monkeypatch.setattr(Stage5Smoke, "_exercise_generated_access_lifecycle", lambda *_args: None)
@@ -194,6 +201,16 @@ def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.M
         ("copier", pinned_sha),
         ("recorded", pinned_sha),
         ("package", pinned_sha),
+    ]
+    assert worker_calls == [
+        ("setup", ()),
+        ("lint", ()),
+        ("tests", ()),
+        ("smoke-probe", ("SMOKE_RUNNER=backend", "SMOKE_URL=http://backend:8000/health")),
+        (
+            "worker-call",
+            ("SMOKE_RUNNER=backend", "method=GET", "url=http://backend:8000/health"),
+        ),
     ]
 
 

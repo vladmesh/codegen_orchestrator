@@ -1327,12 +1327,20 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.6.2` tag, which dereferences to
-`9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.6.2` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.6.3` tag, which dereferences to
+`f23460c62fa3508858c0552557b2860af09f2656`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.6.3` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`.
 Its main-push image workflow runs frozen root sync, frozen `services/backend`
 sync, and generation in that order before building either service image.
+The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
+after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs. The kit's
+[release proofs](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md)
+cover PostgreSQL preserving upgrade/readback above int32 and real HTTP logging.
+Existing Copier products retain owned ORM files: their later update must reconcile
+`User.id`, `UserChannel.user_id`, and `Setting.subject_id` and apply the forward
+migration. Downgrade refuses data or sequence values outside int32. This pin
+changes new-product scaffolding; it does not migrate deployed products.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
 (`tests/live/pipeline_helpers.py`, still overridable per run by

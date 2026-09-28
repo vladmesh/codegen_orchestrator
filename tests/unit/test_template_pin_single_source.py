@@ -89,7 +89,7 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
 
 def test_production_pin_is_the_immutable_kit_release() -> None:
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 2)
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 3)
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -98,13 +98,15 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    corrected_commit = "9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914"
+    corrected_commit = "f23460c62fa3508858c0552557b2860af09f2656"
 
     assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
+    assert answers["_src_path"] == template_pin.TEMPLATE_PIN.source
     assert answers["modules"] == "backend,tg_bot"
     assert f"codegen-product-kit.git@{corrected_commit}" in project
     assert f"rev={corrected_commit}" in lock
     assert "1d0c0fdd8b12bf1548ab3f97882e5edee7c55763" not in project
+    assert "9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914" not in project
 
 
 def test_pinned_fixture_syncs_both_locked_environments_before_generation() -> None:

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-28
 
+- New products scaffold from kit `0.6.3`, carrying bigint user identifiers and Telegram token-safe
+  logging; the generated fixture and capability provenance follow the published release.
 - PO Redis/checkpoint maintenance shares one Deploy order, fences writes through readiness and
   reconciliation, and drains late proactive work before switching images.
 - PO Redis dialogue, DLQs, reminders and owner-event caches encrypt whole payloads before writes;

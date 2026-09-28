@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 5
+version: 6
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -20,7 +20,7 @@ derived_from:
     # The commit the pinned release resolves to. The release tag itself is written down only
     # in `scripts/system_configs.yaml` (`scheduler.service_template_ref`); a test ties this
     # commit to the vendored render of that pin, so moving the pin fails until it is updated.
-    commit: 9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914
+    commit: f23460c62fa3508858c0552557b2860af09f2656
     note: >-
       The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is
       still an admitted Copier source, but no new product is scaffolded from it.
