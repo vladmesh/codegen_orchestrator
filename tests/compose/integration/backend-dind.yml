@@ -28,6 +28,7 @@ services:
       - API_URL=http://api:8000
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
     depends_on:
       redis:
         condition: service_healthy
@@ -46,6 +47,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       # GitHub/registry env vars intentionally absent — tests verify
       # the flow fails at the external boundary
     depends_on:
@@ -66,6 +68,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       # The consumer is idle in this suite. These values let it start while
       # ensuring an accidental LLM request cannot reach a real endpoint.
       - ARCHITECT_LLM_MODEL=test-model

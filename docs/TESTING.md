@@ -489,6 +489,16 @@ real PostgreSQL and the real API. It reads every checkpoint payload back directl
 encryption, resume, summaries, pending writes, safe logs and the quiesced upgrade procedure.
 It requires no paid model or Telegram credentials; the model and echo tool are deterministic.
 
+The same route runs `services/langgraph/tests/integration/po_redis/` against real
+Redis: complete stream/DLQ/cache readback, canary echoes, reclaim/ACK, missing and
+wrong keys, authentication/validation failures, a real DLQ ACL refusal, startup
+refusal, and the quiesced converter with released plaintext fixtures. The
+`telegram_bot` service route also executes `tests/integration/po_transport/`
+inside the locked bot test image, exercising actual bot input, direct response
+XREAD and proactive parsing/delivery with harmless Telegram fixtures. No Redis
+writes are mocked in these regressions; the synthetic graph and external bot
+are deterministic. No paid E2E policy or installation adapter changes are needed.
+
 `tests/compose/integration/backend-dind.yml` covers worker-container creation and execution with
 Docker-in-Docker. `ci.yml` runs it as `test-backend-dind-integration` on every push to `main` and
 when CI is manually dispatched for `main`; it stays out of pull requests, where a privileged

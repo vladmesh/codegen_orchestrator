@@ -4970,8 +4970,23 @@ async def run_brief_qa_and_retain_job_evidence(
 
 def _redis_json(*args: str) -> object:
     """Run one JSON Redis command through the stand's own Redis container."""
+    from shared.contracts.queues.po import is_po_stream
+
+    command = ["docker", "compose", "exec", "-T", "redis", "redis-cli", "--json", *args]
+    if len(args) > 1 and is_po_stream(args[1]) and args[0] in ("XADD", "XRANGE", "XREVRANGE"):
+        command = [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "langgraph",
+            "python",
+            "-m",
+            "shared.redis.po_cli",
+            *args,
+        ]
     result = subprocess.run(
-        ["docker", "compose", "exec", "-T", "redis", "redis-cli", "--json", *args],
+        command,
         capture_output=True,
         text=True,
         timeout=15,

@@ -18,7 +18,12 @@ from langchain_core.tools import tool
 import structlog
 
 from shared import queues
-from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
+from shared.contracts.queues.po import (
+    POProactiveMessage,
+    po_alert_identifiers,
+    protect_po_payload,
+    to_flat_fields,
+)
 from shared.engineering_budget_display import format_microusd
 from shared.notifications import AdminDeliveryResult, AdminDeliveryStatus, deliver_to_admins
 
@@ -56,16 +61,19 @@ async def set_reminder(
     fire_at = time.time() + delay_minutes * 60
 
     reminder = json.dumps(
-        {
-            "type": "reminder",
-            "telegram_chat_id": telegram_chat_id,
-            "text": reason,
-            "story_id": story_id or "",
-            # Set in the user's own turn: the user asked for it, so its reply
-            # may reach them even when it names no story.
-            "user_requested": bool(config["configurable"].get("user_turn")),
-            "timestamp": datetime.now(UTC).isoformat(),
-        }
+        protect_po_payload(
+            queues.PO_REMINDERS_KEY,
+            {
+                "type": "reminder",
+                "telegram_chat_id": telegram_chat_id,
+                "text": reason,
+                "story_id": story_id or "",
+                # Set in the user's own turn: the user asked for it, so its reply
+                # may reach them even when it names no story.
+                "user_requested": bool(config["configurable"].get("user_turn")),
+                "timestamp": datetime.now(UTC).isoformat(),
+            },
+        )
     )
     await redis.zadd(queues.PO_REMINDERS_KEY, {reminder: fire_at})
 
@@ -73,7 +81,7 @@ async def set_reminder(
         "po_reminder_set",
         telegram_chat_id=telegram_chat_id,
         delay_minutes=delay_minutes,
-        story_id=story_id or "",
+        **po_alert_identifiers({"story_id": story_id or ""}),
     )
     return f"Reminder set for {delay_minutes} minutes: {reason}"
 

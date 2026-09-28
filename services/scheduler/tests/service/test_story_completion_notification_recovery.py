@@ -10,7 +10,7 @@ import pytest
 
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
-from shared.contracts.queues.po import POSystemEvent, from_flat_fields
+from shared.contracts.queues.po import POSystemEvent, from_flat_fields, unprotect_po_payload
 from shared.contracts.queues.qa import QAMessage
 from shared.queues import PO_INPUT_QUEUE
 from shared.redis import RedisStreamClient
@@ -138,10 +138,11 @@ async def test_direct_completion_without_qa_is_recovered_to_po_input(api_client)
 
         unread = await redis_client.redis.xread({PO_INPUT_QUEUE: before})
         events = [
-            from_flat_fields(fields, POSystemEvent)
+            from_flat_fields(logical, POSystemEvent)
             for _, entries in unread
             for _, fields in entries
-            if fields.get("type") == "system_event"
+            if (logical := unprotect_po_payload(PO_INPUT_QUEUE, fields)).get("type")
+            == "system_event"
         ]
         event = next(item for item in events if item.story_id == story_id)
         assert event.event == "story_completed"
@@ -275,10 +276,11 @@ async def test_bearer_admin_acceptance_is_recovered_to_po_input(api_client):
 
         unread = await redis_client.redis.xread({PO_INPUT_QUEUE: before})
         events = [
-            from_flat_fields(fields, POSystemEvent)
+            from_flat_fields(logical, POSystemEvent)
             for _, entries in unread
             for _, fields in entries
-            if fields.get("type") == "system_event"
+            if (logical := unprotect_po_payload(PO_INPUT_QUEUE, fields)).get("type")
+            == "system_event"
         ]
         event = next(item for item in events if item.story_id == story_id)
         assert event.event == "story_completed"
@@ -362,10 +364,11 @@ async def test_admin_console_acceptance_is_recovered_to_po_input(api_client):
 
         unread = await redis_client.redis.xread({PO_INPUT_QUEUE: before})
         events = [
-            from_flat_fields(fields, POSystemEvent)
+            from_flat_fields(logical, POSystemEvent)
             for _, entries in unread
             for _, fields in entries
-            if fields.get("type") == "system_event"
+            if (logical := unprotect_po_payload(PO_INPUT_QUEUE, fields)).get("type")
+            == "system_event"
         ]
         event = next(item for item in events if item.story_id == story_id)
         assert event.event == "story_completed"

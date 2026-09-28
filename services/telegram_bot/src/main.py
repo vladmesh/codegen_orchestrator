@@ -25,10 +25,17 @@ from telegram.ext import (
     filters,
 )
 
-from shared.contracts.queues.po import POUserMessage, to_flat_fields
+from shared.contracts.queues.po import (
+    POPayloadProtectionError,
+    POResponse,
+    POUserMessage,
+    to_flat_fields,
+    unprotect_po_payload,
+)
 from shared.engineering_budget_display import format_microusd
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
-from shared.redis import RedisStreamClient, decode_redis_fields
+from shared.redis import RedisStreamClient
+from shared.redis.po import verify_po_storage
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -231,7 +238,7 @@ async def _read_po_response(
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error("po_response_xread_error", error=str(e))
+            logger.error("po_response_xread_error", error_type=type(e).__name__)
             await asyncio.sleep(0.5)
             continue
 
@@ -241,7 +248,11 @@ async def _read_po_response(
         for _stream_name, stream_messages in messages:
             if stream_messages:
                 _msg_id, data = stream_messages[0]
-                return decode_redis_fields(data)
+                logical = unprotect_po_payload(response_stream, data)
+                try:
+                    return to_flat_fields(POResponse.model_validate(logical))
+                except Exception:
+                    raise POPayloadProtectionError("PO response validation failed") from None
 
     return None
 
@@ -302,8 +313,7 @@ async def _send_to_po_and_wait(
 
         # Check for error response
         if data.get("error") == "true":
-            error_text = data.get("text", "Unknown error")
-            raise RuntimeError(error_text)
+            raise RuntimeError("PO returned an error response")
 
         response_text = data.get("text", "")
         if not response_text:
@@ -323,7 +333,7 @@ async def _send_to_po_and_wait(
         try:
             await client.redis.delete(response_stream)
         except Exception as e:
-            logger.debug("response_stream_cleanup_failed", error=str(e))
+            logger.debug("response_stream_cleanup_failed", error_type=type(e).__name__)
 
 
 async def handle_message(update: Update, context) -> None:
@@ -363,10 +373,10 @@ async def handle_message(update: Update, context) -> None:
         logger.warning("po_response_timeout", user_id=user_id)
         await update.message.reply_text("Таймаут ожидания ответа. Попробуйте позже.")
     except RuntimeError as e:
-        logger.error("po_response_error", error=str(e), user_id=user_id)
+        logger.error("po_response_error", error_type=type(e).__name__, user_id=user_id)
         await update.message.reply_text(MESSAGE_FAILED_REPLY)
     except Exception as e:
-        logger.error("message_handling_failed", error=str(e), user_id=user_id)
+        logger.error("message_handling_failed", error_type=type(e).__name__, user_id=user_id)
         await update.message.reply_text(MESSAGE_FAILED_REPLY)
 
 
@@ -433,6 +443,7 @@ async def post_init(app: Application) -> None:
     # Single RedisStreamClient for all operations (message handling + consumer listeners)
     _stream_client = RedisStreamClient(redis_url=settings.redis_url)
     await _stream_client.connect()
+    await verify_po_storage(_stream_client.redis)
 
     # Start provisioner notifications listener
     admin_ids = settings.get_admin_ids()

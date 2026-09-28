@@ -524,8 +524,26 @@ class MatrixRuntime:
 
     @staticmethod
     def _compose_redis(*args: str) -> subprocess.CompletedProcess[str]:
+        command = ["docker", "compose", "exec", "-T", "redis", "redis-cli", *args]
+        if (
+            len(args) > 2
+            and args[0] == "--json"
+            and args[1] in ("XRANGE", "XREVRANGE")
+            and args[2] == "po:proactive"
+        ):
+            command = [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "langgraph",
+                "python",
+                "-m",
+                "shared.redis.po_cli",
+                *args[1:],
+            ]
         return subprocess.run(
-            ["docker", "compose", "exec", "-T", "redis", "redis-cli", *args],
+            command,
             capture_output=True,
             text=True,
             timeout=15,

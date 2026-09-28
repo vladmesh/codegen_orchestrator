@@ -59,7 +59,7 @@ services:
       dockerfile: services/langgraph/Dockerfile.test
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
-    command: ["pytest", "tests/integration/po_tools/", "services/langgraph/tests/integration/checkpoints/", "--import-mode=importlib", "-v"]
+    command: ["pytest", "tests/integration/po_tools/", "services/langgraph/tests/integration/checkpoints/", "services/langgraph/tests/integration/po_redis/", "--import-mode=importlib", "-v"]
     environment:
       - API_URL=http://api:8000
       - API_BASE_URL=http://api:8000

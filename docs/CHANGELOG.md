@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-28
 
+- PO Redis dialogue, DLQs, reminders and owner-event caches encrypt whole payloads before writes;
+  a quiesced upgrade preserves retained evidence and delivery state.
 - PO checkpoints encrypt all dialogue payloads with the project key; a quiesced, atomic upgrade
   preserves existing conversations and pending work with count-only reporting.
 - The checkpoint upgrade runbook uses the complete production image chain and stops PO writers

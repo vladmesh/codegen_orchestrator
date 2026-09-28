@@ -20,6 +20,7 @@ services:
       - API_URL=http://api:8000
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
     depends_on:
       redis:
         condition: service_healthy
@@ -38,6 +39,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
     depends_on:
       redis:
         condition: service_healthy
@@ -125,6 +127,7 @@ services:
       - ../../../packages:/app/packages
     environment:
       - PYTHONUNBUFFERED=1
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - REDIS_URL=redis://172.31.0.10:6379/0
       - API_BASE_URL=http://172.31.0.20:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests

@@ -46,7 +46,7 @@ from shared.queues import (  # noqa: E402
     PO_PROACTIVE_GROUP,
     PO_PROACTIVE_QUEUE,
 )
-from shared.redis.client import RedisStreamClient, decode_redis_fields  # noqa: E402
+from shared.redis.client import RedisStreamClient  # noqa: E402
 
 OWNER_TELEGRAM_ID = 987654321
 API_BASE_URL = os.getenv("API_BASE_URL", "http://172.31.0.20:8000")
@@ -178,7 +178,9 @@ async def test_pipeline_event_reaches_the_owner_telegram_chat(
 
     entries = await stream_client.redis.xrange(PO_INPUT_QUEUE)
     assert len(entries) == 1, "the scheduler published exactly one PO event"
-    event = decode_redis_fields(entries[0][1])
+    from shared.contracts.queues.po import unprotect_po_payload
+
+    event = unprotect_po_payload(PO_INPUT_QUEUE, entries[0][1])
     from shared.contracts.queues.po import POSystemEvent
 
     reference = POSystemEvent.model_validate(event).owner_notice
@@ -197,7 +199,9 @@ async def test_pipeline_event_reaches_the_owner_telegram_chat(
 
     published = await stream_client.redis.xrange(PO_PROACTIVE_QUEUE)
     assert len(published) == 1
-    message = from_flat_fields(decode_redis_fields(published[0][1]), POProactiveMessage)
+    message = from_flat_fields(
+        unprotect_po_payload(PO_PROACTIVE_QUEUE, published[0][1]), POProactiveMessage
+    )
     assert message.telegram_chat_id == str(OWNER_TELEGRAM_ID)
     assert message.owner_user_id == str(user_id)
 

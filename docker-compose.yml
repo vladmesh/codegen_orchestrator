@@ -218,6 +218,7 @@ services:
     environment:
       API_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
       ARCHITECT_LLM_API_KEY: ${ARCHITECT_LLM_API_KEY:-}
       ARCHITECT_LLM_BASE_URL: ${ARCHITECT_LLM_BASE_URL:-}
@@ -280,6 +281,7 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:?DEFAULT_AGENT_TYPE must be set to claude, factory or codex}
       LK_DOMAIN: ${LK_DOMAIN}
       LOG_FORMAT: ${LOG_FORMAT:-json}
@@ -406,6 +408,7 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
       # The PR poller and story completion write these into a product repository
       # as its registry secrets before every merge they perform or enable.
@@ -449,6 +452,7 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-infrastructure
@@ -489,6 +493,7 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-maintenance

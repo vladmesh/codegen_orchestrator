@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from shared.clients.internal_api import InternalAPIClient
+from shared.contracts.queues.po import unprotect_po_payload
 from shared.queues import PO_REMINDERS_KEY
 from src.agents.po.tools import (
     get_all_tools,
@@ -1610,7 +1611,9 @@ class TestSetReminder:
 def _set_reminder_payload(mock_stream_client) -> dict:
     import json
 
-    return json.loads(list(mock_stream_client.redis.zadd.call_args[0][1].keys())[0])
+    return unprotect_po_payload(
+        PO_REMINDERS_KEY, json.loads(list(mock_stream_client.redis.zadd.call_args[0][1].keys())[0])
+    )
 
 
 class TestNotifyUser:

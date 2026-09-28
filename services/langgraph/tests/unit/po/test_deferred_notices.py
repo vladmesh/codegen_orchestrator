@@ -356,7 +356,8 @@ async def test_a_reply_withheld_for_a_settled_notice_is_logged(world):
     stream.publish_flat.assert_not_called()
     [withheld] = [log for log in logs if log["event"] == "po_reply_withheld_notice_settled"]
     assert (withheld["story_id"], withheld["told_state"]) == (STORY, "suppressed")
-    assert (withheld["suppressed_by"], withheld["suppressed_reason"]) == ("admin", "Wait")
+    assert withheld["suppressed_by"] == "admin"
+    assert "suppressed_reason" not in withheld
     assert withheld["source"] == ledger.source
 
 

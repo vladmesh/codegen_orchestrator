@@ -918,7 +918,35 @@ gated final reply: the `notify_user` tool publishes nothing there (the consumer 
 `user_turn` in the run config). No other PO tool publishes to `po:proactive`, and a unit test
 holds that.
 
-PO streams use the flat-field codec from `queues/po.py`. The proactive listener
+PO models use the logical flat-field codec from `queues/po.py`. Before the first
+Redis command, `RedisStreamClient.publish_flat` (and `publish`/`publish_message`
+on PO streams) protects the entire payload with the deployed
+`SECRETS_ENCRYPTION_KEY`. The sole wire field is `po_encrypted_v1`, a Fernet token
+authenticating both the destination key and the payload. No model field remains
+in cleartext. `consume_typed`, the proactive `consume` path, and the bot's direct
+response XREAD authenticate/decode before validation or delivery. Runtime has no
+plaintext read/write fallback. PO and bot startup authenticate retained PO
+payloads and refuse released plaintext before consumption; the offline,
+quiesced converter is described in [SECRETS.md](SECRETS.md#production-po-redis-upgrade).
+
+PO reminders protect the entire JSON member before ZADD; the poller authenticates
+before validating and publishing a separately protected input. Latest owner
+events protect the entire JSON document before SET; notice tools authenticate
+before reading the notice reference. Keys, stream entry IDs, consumer/group
+names, cursors, delivery counts, reminder scores and TTLs remain operational
+metadata. Payload timestamps, names, reasons, QA facts, notice references, errors,
+and recipient/story/project/task identifiers are inside the envelope. A failed
+reminder authentication retains the member for repair and logs no body.
+
+PO quarantine protects the complete DLQ record, including the original wire
+body and failure reason, before XADD and ACK. A failed DLQ write leaves the
+original entry pending. Validation logs report counts; transport exceptions
+report safe classifications. Unvalidated alert identifiers are restricted to
+known event vocabulary and identifier shapes. Payloads and exception bodies are
+never rendered in transport failure logs or alerts. ACKed retained entries remain
+protected. Other services' queue representations are unchanged.
+
+The proactive listener
 acks only after successful delivery or terminal delivery exhaustion. Its PEL
 delivery count survives a restart; exhaustion is alerted and is not retried as
 an endlessly valid message.

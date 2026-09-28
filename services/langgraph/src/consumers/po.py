@@ -45,6 +45,7 @@ from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.queues.po import (
     POInputMessage,
     POResponse,
+    po_alert_identifiers,
     po_thread_id,
     proactive_from_input,
     to_flat_fields,
@@ -54,6 +55,7 @@ from shared.log_config.correlation import bind_message_context, unbind_message_c
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis import RedisStreamClient
+from shared.redis.po import verify_po_storage
 
 from ..agents.po.graph import create_po_graph
 from ..agents.po.situation import (
@@ -205,7 +207,9 @@ async def _consume_po_input(
         # is working on it any more — so the id goes either way.
         in_flight.pop(msg_id, None)
         if not task.cancelled() and task.exception() is not None:
-            logger.error("po_dispatch_failed", msg_id=msg_id, error=str(task.exception()))
+            logger.error(
+                "po_dispatch_failed", msg_id=msg_id, error_type=type(task.exception()).__name__
+            )
 
     async for message in client.consume_typed(
         PO_INPUT_QUEUE,
@@ -245,6 +249,7 @@ async def run_po_consumer(
     effective_llms = llms or await load_po_llms(settings)
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()
+    await verify_po_storage(client.redis)
 
     init_po_clients(api_client, client)
     init_story_gate(ProactiveStoryGate(client, api_client))
@@ -322,16 +327,16 @@ async def _process_message(
                     "po_story_audience_unknown",
                     msg_id=msg_id,
                     event_type=data.get("event", ""),
-                    story_id=unknown.story_id,
-                    error=str(unknown.__cause__),
+                    error_type=type(unknown).__name__,
+                    **po_alert_identifiers({"story_id": unknown.story_id}),
                 )
             except OwnerNoticeReadUnknown as unknown:
                 handled = False
                 logger.warning(
                     "po_owner_notice_pending",
                     msg_id=msg_id,
-                    story_id=data.get("story_id", ""),
-                    error=str(unknown.__cause__),
+                    error_type=type(unknown).__name__,
+                    **po_alert_identifiers({"story_id": data.get("story_id", "")}),
                 )
             except Exception as exc:
                 # Model/tool/validation exceptions can echo user credentials.
