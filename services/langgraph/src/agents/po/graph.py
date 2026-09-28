@@ -22,6 +22,7 @@ from pydantic import ValidationError
 import structlog
 
 from ...prompts.po import MODEL_PROMPT
+from .checkpoints import ProtectedPostgresSaver, ProtectedSerializer
 from .situation import SITUATION_CONFIG_KEY
 from .tools import get_all_tools
 from .tools_briefs import show_full_brief
@@ -133,13 +134,16 @@ def _create_summarization_hook(
 
 async def _create_postgres_checkpointer(checkpoint_database_url: str) -> BaseCheckpointSaver:
     """Create AsyncPostgresSaver, ensuring the langgraph schema exists."""
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     import psycopg
     from psycopg_pool import AsyncConnectionPool
 
+    # Validate the shared key before any database write, including setup DDL.
+    serde = ProtectedSerializer()
     # psycopg3 sync connection to create schema (DDL, one-time)
     with psycopg.connect(checkpoint_database_url) as conn:
         conn.execute("CREATE SCHEMA IF NOT EXISTS langgraph")
+        if conn.execute("SELECT current_schema()").fetchone()[0] != "langgraph":
+            raise RuntimeError("CHECKPOINT_DATABASE_URL must select the langgraph schema")
         conn.commit()
 
     # Use explicit pool for long-lived consumer (from_conn_string returns context manager).
@@ -147,10 +151,16 @@ async def _create_postgres_checkpointer(checkpoint_database_url: str) -> BaseChe
     pool = AsyncConnectionPool(
         conninfo=checkpoint_database_url,
         kwargs={"autocommit": True, "prepare_threshold": 0},
+        open=False,
     )
     await pool.open()
-    checkpointer = AsyncPostgresSaver(conn=pool)
-    await checkpointer.setup()
+    checkpointer = ProtectedPostgresSaver(conn=pool, serde=serde)
+    try:
+        await checkpointer.setup()
+        await checkpointer.require_encrypted_rows()
+    except Exception:
+        await pool.close()
+        raise
     logger.info("po_checkpointer_postgres")
     return checkpointer
 
