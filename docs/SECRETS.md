@@ -96,47 +96,85 @@ transaction while keeping writers live.
 
 ### Production checkpoint upgrade runbook
 
-This is a later production operation after release. Do not start the protected PO
-on an unconverted database, resume an old plaintext writer after conversion, or
-run this procedure from an unmerged candidate checkout.
+This is a later production operation on a released main revision, never on an
+unmerged candidate. The supported [Deploy workflow](DEPLOY.md#updating) starts
+all services, including `langgraph` and `telegram_bot`; it has no maintenance-pause
+input. The protected PO refuses plaintext rows before consuming messages and may
+restart until explicitly stopped. A green Deploy does not prove healthy PO startup
+in this window: `langgraph` has no healthcheck. Arrange an operator to stop the
+restarted services as soon as the workflow's Switch has run `up`.
 
-1. Verify the released service image and existing production
-   `SECRETS_ENCRYPTION_KEY` are available. Use the same key that decrypts project
-   configuration, including for the maintenance container. Do not generate a new
-   key. `CHECKPOINT_DATABASE_URL` must address the intended database and select
-   `langgraph` via `options=-c%20search_path%3Dlanggraph`, as in the production
-   Compose file. The command refuses a different current schema. Disable shell
-   tracing; keep keys and database URLs out of operation notes.
-2. Pause PO ingress and drain active PO turns, then stop every `langgraph` replica
-   and any independently launched PO process. The current deployment has one
+1. Reserve the maintenance window against concurrent deploys/manual restarts.
+   Obtain the released full main SHA and the deployment environment's exact
+   `DEPLOY_PATH` and `COMPOSE_ARGS`. The default chain is
+   `-f docker-compose.yml -f docker-compose.prod.yml`; on h01o, retain its additional
+   absolute-path host override from `COMPOSE_ARGS`, in the same order. Do not
+   substitute the default for a host's configured chain. Append the live
+   `deployed-service-images.compose.yml` last, as Deploy does. All host commands
+   below use this Bash array, the same deploy directory/project and its `.env`:
+
+   ```bash
+   set +x
+   set -euo pipefail
+   umask 077
+   : "${DEPLOY_PATH:?Set the deployment environment's DEPLOY_PATH}"
+   : "${COMPOSE_ARGS:?Set the deployment environment's complete COMPOSE_ARGS}"
+   : "${CHECKPOINT_RELEASE_SHA:?Set the full released main SHA}"
+   cd "$DEPLOY_PATH"
+   checkpoint_compose_refresh() {
+     read -r -a checkpoint_compose_args <<< "$COMPOSE_ARGS"
+     COMPOSE=(docker compose "${checkpoint_compose_args[@]}" \
+       -f deployed-service-images.compose.yml)
+   }
+   checkpoint_compose_refresh
+   checkpoint_backup_dir="$PWD/backups/po-checkpoint-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
+   install -d -m 0700 "$checkpoint_backup_dir"
+   "${COMPOSE[@]}" config --format json > "$checkpoint_backup_dir/compose-before.json"
+   python3 scripts/service_release.py readback \
+     --compose-config "$checkpoint_backup_dir/compose-before.json" \
+     --record deployed-service-images.json --deploy-path "$PWD"
+   ```
+
+   `COMPOSE_ARGS` uses the workflow's whitespace-separated CLI arguments; its
+   file paths must not contain spaces. Verify the existing production
+   `SECRETS_ENCRYPTION_KEY` will remain unchanged through Deploy, including in the
+   maintenance container. Use the key that decrypts project configuration; do not
+   generate a new one. `CHECKPOINT_DATABASE_URL` must address the intended database
+   and select `langgraph` via `options=-c%20search_path%3Dlanggraph`, as in Compose.
+   The maintenance command refuses a different current schema. Rendered config
+   contains credentials: keep these files restricted and never attach them or
+   keys/URLs to operation notes. Record only safe digest/count/readback evidence.
+2. Pre-deploy: pause PO ingress and drain active PO turns, then stop every
+   `langgraph` replica and any independently launched PO process. The current deployment has one
    `langgraph` writer; engineering/deploy consumers use no PO saver. Pause the
-   Telegram transport too, so users see the maintenance window. Scheduler and
+   Telegram transport too, to prevent new admissions. Scheduler and
    worker events may remain queued. Record only consumer/in-flight counts, not
    message bodies. Verify no checkpoint writer remains before acknowledging
    `--writers-quiesced`; exclusive locks are additional protection, not a substitute
    for stopping old processes.
 
+   Preserve Telegram pending updates and Redis streams/consumer-group pending
+   entries: do not flush, trim, acknowledge or delete them to clear the window,
+   and do not use Telegram's drop-pending-updates option.
+
    ```bash
-   docker compose stop telegram_bot
+   "${COMPOSE[@]}" stop telegram_bot
    # Wait for already-admitted PO turns to finish, then:
-   docker compose stop langgraph
-   docker compose ps langgraph telegram_bot
+   "${COMPOSE[@]}" stop langgraph
+   "${COMPOSE[@]}" ps --all langgraph telegram_bot
+   test -z "$("${COMPOSE[@]}" ps --status running --status restarting -q langgraph telegram_bot)"
    ```
 
 3. Take and verify a restorable database backup while writers are stopped, before
    applying conversion. The backup and the deployed key must be available to
-   the authorized recovery operator. For example, in the production project
-   directory with the released Compose configuration:
+   the authorized recovery operator. In the same host shell:
 
    ```bash
-   umask 077
-   checkpoint_backup_dir=backups/po-checkpoint-upgrade
-   install -d -m 0700 "$checkpoint_backup_dir"
-   docker compose exec -T db sh -c \
+   "${COMPOSE[@]}" exec -T db sh -c \
      'pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' \
      > "$checkpoint_backup_dir/before-upgrade.dump"
    test -s "$checkpoint_backup_dir/before-upgrade.dump"
-   docker compose exec -T db pg_restore --list \
+   "${COMPOSE[@]}" exec -T db pg_restore --list \
      < "$checkpoint_backup_dir/before-upgrade.dump" > /dev/null
    ```
 
@@ -146,15 +184,104 @@ run this procedure from an unmerged candidate checkout.
    restricted directory/access and approved retention). Neither this conversion
    nor a later encrypted dump scrubs old backups, WAL archives, replicas or copies.
    Do not delete them or claim their contents were scrubbed.
-4. With the released image selected and writers still stopped, run validation and
-   counts, then conversion. `run --no-deps` does not start the normal PO process:
+4. Dispatch the actual Deploy workflow for the released revision from an
+   authorized control shell with `CHECKPOINT_RELEASE_SHA` set to the same SHA:
 
    ```bash
-   docker compose run --rm --no-deps --entrypoint python langgraph \
+   gh workflow run deploy.yml --repo vladmesh/codegen_orchestrator --ref main \
+     -f environment=production -f revision="$CHECKPOINT_RELEASE_SHA"
+   ```
+
+   Record this dispatch's run ID. Deploy pulls and verifies the release, rewrites
+   the host `.env`, switches the checkout and image override, and runs
+   `up -d --remove-orphans --no-build --pull never` for all services. Thus the old
+   writer stop above does not survive Deploy. Any newly admitted PO updates wait
+   in Redis while the protected writer refuses the unconverted rows. No old
+   writer may run concurrently with this switch or the conversion.
+5. Post-deploy stop: as soon as Switch has run its all-service `up`, return to the
+   host shell and reconstruct the chain from the current deployment environment
+   values. Do not wait for green before stopping the restarted ingress and PO:
+
+   ```bash
+   cd "$DEPLOY_PATH"
+   checkpoint_compose_refresh
+   "${COMPOSE[@]}" stop telegram_bot langgraph
+   "${COMPOSE[@]}" ps --all langgraph telegram_bot
+   test -z "$("${COMPOSE[@]}" ps --status running --status restarting -q langgraph telegram_bot)"
+   ```
+
+   Confirm every independent PO writer is also stopped. Allow the remainder of
+   Deploy to finish (its later `up` recreates only schedulers). In the control shell:
+
+   ```bash
+   : "${CHECKPOINT_DEPLOY_RUN_ID:?Set the recorded Deploy run ID}"
+   gh run watch "$CHECKPOINT_DEPLOY_RUN_ID" --repo vladmesh/codegen_orchestrator --exit-status
+   ```
+
+   If Deploy fails, keep PO/ingress stopped and follow
+   [deploy failure recovery](DEPLOY.md#if-a-deploy-fails); do not convert a
+   partially applied target or mismatched release records. Every retry starts
+   services again and requires this post-deploy stop again.
+6. After successful Deploy, reconstruct and verify the effective configuration
+   again: both checkout files and the release override have changed. Confirm the
+   release record and resolved maintenance image name the intended SHA/digest,
+   contain no checkout source mounts, and have the required key. In the host shell:
+
+   ```bash
+   cd "$DEPLOY_PATH"
+   checkpoint_compose_refresh
+   test "$(git rev-parse HEAD)" = "$CHECKPOINT_RELEASE_SHA"
+   "${COMPOSE[@]}" config --format json > "$checkpoint_backup_dir/compose-after.json"
+   checkpoint_langgraph_image=$(python3 - "$checkpoint_backup_dir/compose-after.json" \
+     "$CHECKPOINT_RELEASE_SHA" <<'PY'
+   import json
+   from pathlib import Path
+   import sys
+   config = json.loads(Path(sys.argv[1]).read_text())
+   record = json.loads(Path("deployed-service-images.json").read_text())
+   assert record["git_sha"] == sys.argv[2], "Unexpected deployed release"
+   service = config["services"]["langgraph"]
+   image = service["image"]
+   assert image == record["images"]["langgraph"]["reference"], "Wrong maintenance image"
+   assert "@sha256:" in image, "Maintenance requires a released digest"
+   assert service["environment"]["SECRETS_ENCRYPTION_KEY"], "Missing checkpoint key"
+   for item in config["services"].values():
+       for mount in item.get("volumes", []):
+           if mount["type"] != "bind":
+               continue
+           source = Path(mount["source"]).resolve()
+           if source.is_relative_to(Path.cwd()):
+               relative = source.relative_to(Path.cwd())
+               assert relative.parts and relative.parts[0] in {"infra", "secrets"}, "Checkout source mount"
+   print(image)
+   PY
+   )
+   checkpoint_source_hash=$(python3 -c \
+     'import json; print(json.load(open("deployed-service-images.json"))["source_hash"])')
+   test "$(docker image inspect --format \
+     '{{index .Config.Labels "org.codegen.worker_source_hash"}}' "$checkpoint_langgraph_image")" \
+     = "$checkpoint_source_hash"
+   docker image inspect --format '{{.Id}}' "$checkpoint_langgraph_image"
+   "${COMPOSE[@]}" ps --all langgraph telegram_bot
+   test -z "$("${COMPOSE[@]}" ps --status running --status restarting -q langgraph telegram_bot)"
+   ```
+
+   The image must already exist locally from Deploy. `run` accepts `--pull never`
+   but has no `--no-build` option; omit `--build` and fail this preflight if the
+   released image is absent. `up` below explicitly uses `--no-build --pull never`.
+   Do not build or pull a replacement image during maintenance. Production runtime
+   mounts/configuration come from the complete Compose chain, with no `/app/src`
+   or `/app/shared` checkout mounts. Full container readback is performed after
+   resume; it would correctly fail for the two intentionally stopped services now.
+7. With all checkpoint writers stopped, run validation/counts, conversion, then
+   keyed validation again. `run --no-deps` does not start the normal PO process:
+
+   ```bash
+   "${COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python langgraph \
      -m src.agents.po.checkpoint_upgrade --writers-quiesced
-   docker compose run --rm --no-deps --entrypoint python langgraph \
+   "${COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python langgraph \
      -m src.agents.po.checkpoint_upgrade --writers-quiesced --apply
-   docker compose run --rm --no-deps --entrypoint python langgraph \
+   "${COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python langgraph \
      -m src.agents.po.checkpoint_upgrade --writers-quiesced
    ```
 
@@ -166,10 +293,10 @@ run this procedure from an unmerged candidate checkout.
    are printed. A nonzero exit means stop, retain the backup and investigate
    with writers paused. Failed conversion changes no rows. Never skip a bad row
    or delete a thread to make the command succeed.
-5. Verify representation directly in PostgreSQL as well as through the command:
+8. Verify representation directly in PostgreSQL as well as through the command:
 
    ```bash
-   docker compose exec -T db sh -c \
+   "${COMPOSE[@]}" exec -T db sh -c \
      'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
    SELECT 'checkpoint' AS payload, count(*) AS remaining_plaintext
      FROM langgraph.checkpoints WHERE NOT checkpoint ? 'po_encrypted_v1'
@@ -186,21 +313,32 @@ run this procedure from an unmerged candidate checkout.
    validation: the final keyed dry-run above also authenticates and deserializes
    every protected payload. Record table row counts before/after if required by
    the operation; conversion updates in place and deletes no conversations.
-6. Resume only the released encrypted writer, then Telegram transport:
+9. Resume only the released encrypted writer. Confirm `po_consumer_started` and
+   stable startup (not merely `po_consumer_enabled` or a running/restarting
+   container) before resuming Telegram transport:
 
    ```bash
-   docker compose up -d --no-deps langgraph
-   docker compose logs --since 2m langgraph
-   docker compose up -d --no-deps telegram_bot
+   "${COMPOSE[@]}" up -d --no-deps --no-build --pull never langgraph
+   "${COMPOSE[@]}" logs --since 2m langgraph
+   # Continue only after healthy PO startup is confirmed:
+   "${COMPOSE[@]}" up -d --no-deps --no-build --pull never telegram_bot
+   "${COMPOSE[@]}" config --format json > "$checkpoint_backup_dir/compose-resumed.json"
+   python3 scripts/service_release.py readback \
+     --compose-config "$checkpoint_backup_dir/compose-resumed.json" \
+     --record deployed-service-images.json --deploy-path "$PWD"
    ```
 
    Check healthy PO startup and have an authorized user continue one existing
    conversation with a harmless follow-up. Confirm prior context and any pending
    tool work resume; record the result without transcript or credential values.
    Verify new writes are encrypted with the same direct storage count query.
-   If recovery requires the old writer, stop the new writer first and use the
-   verified backup under the recovery operation. Old code cannot read the new
-   encrypted representation; never run old and new formats together.
+   If startup, readback or the conversation check fails, stop both services using
+   `"${COMPOSE[@]}" stop telegram_bot langgraph` and retain the backup, key and
+   count evidence for recovery. Old code cannot read converted rows: never restart
+   an old writer against them or run old/new writers together. Recovery to an old
+   writer requires a separate approved recovery operation restoring the verified
+   pre-conversion backup before that writer starts, with forward-only migrations
+   considered as described in [Rolling back](DEPLOY.md#rolling-back).
 
 `make test-integration-po-tools` runs the deterministic PO graph/consumer tests
 against real PostgreSQL and the real API, using the service's dependency lock.

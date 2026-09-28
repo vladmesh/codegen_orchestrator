@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - PO checkpoints encrypt all dialogue payloads with the project key; a quiesced, atomic upgrade
   preserves existing conversations and pending work with count-only reporting.
+- The checkpoint upgrade runbook uses the complete production image chain and stops PO writers
+  again after Deploy, so conversion runs from the released digest with ingress paused.
 - Capability manifest v5 is the owner's product list: the PO reads a product-only block and refusals quote
   only product fields; the Architect gets the technical block; payments, backups and web presence detected.
 - The API refuses to start with an empty `INTERNAL_API_KEY`, and an empty `X-Internal-Key` never
