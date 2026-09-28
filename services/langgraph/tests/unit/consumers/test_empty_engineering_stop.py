@@ -9,6 +9,7 @@ from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import SpawnResult
 from src.consumers.engineering_result_handler import (
+    EmptyResultSettlementError,
     EngineeringSuccessParams,
     fail_job,
     handle_engineering_success,
@@ -98,3 +99,23 @@ async def test_stop_does_not_depend_on_reason_patch_or_redis_publication():
     assert [call.args[0] for call in api.patch.await_args_list] == ["runs/eng-1"]
     api.transition_story.assert_not_awaited()
     redis.publish_flat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_empty_outcome_survives_a_required_worker_settlement_failure():
+    api = AsyncMock()
+    with (
+        patch("src.consumers.engineering_result_handler.api_client", api),
+        patch(
+            "src.consumers.engineering_result_handler.prepare_terminal_settlement",
+            AsyncMock(side_effect=ConnectionError("teardown unavailable")),
+        ),
+    ):
+        with pytest.raises(EmptyResultSettlementError):
+            await fail_job(
+                "eng-1",
+                "Worker made no new commit",
+                redis=AsyncMock(),
+                failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
+            )
+    api.patch.assert_not_awaited()

@@ -18,6 +18,7 @@ from shared.queues import PO_INPUT_QUEUE
 from shared.redis import RedisStreamClient
 from src.tasks.owner_notifications import supervise_owed_owner_notifications
 from src.tasks.story_completion import complete_stories
+from src.tasks.supervisor.liveness import supervise_failed_tasks
 
 
 @pytest.fixture
@@ -99,6 +100,137 @@ async def _read_row(story_id):
         await db.close()
 
 
+async def _exhausted_task(api, project_id, story_id, *, empty=True, priority=0):
+    task = (
+        await api.request(
+            "POST",
+            "tasks/",
+            json={
+                "project_id": project_id,
+                "story_id": story_id,
+                "title": "Exhausted attempt",
+                "status": "failed",
+                "max_iterations": 3,
+                "priority": priority,
+            },
+        )
+    ).json()
+    await api.update_task(task["id"], {"current_iteration": 3})
+    result = {"engineering_status": "failed"}
+    if empty:
+        result["failure_reason"] = "no_new_commit"
+    db = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
+    try:
+        await db.execute(
+            "INSERT INTO runs (id, type, status, project_id, story_id, task_id, "
+            "metadata, result, created_at, completed_at) VALUES "
+            "($1, 'engineering', 'failed', $2, $3, $4, '{}'::json, $5::json, now(), now())",
+            "exhausted-" + uuid.uuid4().hex,
+            uuid.UUID(project_id),
+            story_id,
+            task["id"],
+            json.dumps(result),
+        )
+    finally:
+        await db.close()
+    return task["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("empty_first", [False, True])
+@pytest.mark.parametrize("interrupt_task", [False, True])
+async def test_exhausted_siblings_keep_the_empty_cause_across_order_and_partial_settlement(
+    api_client,
+    completion_story,
+    empty_first,
+    interrupt_task,
+    capsys,
+):
+    story_id, project_id, _, _ = completion_story
+    ordinary = await _exhausted_task(
+        api_client,
+        project_id,
+        story_id,
+        empty=False,
+        priority=int(empty_first),
+    )
+    empty = await _exhausted_task(
+        api_client,
+        project_id,
+        story_id,
+        priority=int(not empty_first),
+    )
+    selected = [task.id for task in await api_client.get_tasks_by_status("failed")]
+    assert (selected.index(empty) < selected.index(ordinary)) is empty_first
+    original = api_client.transition_task
+
+    async def interrupt(task_id, *args, **kwargs):
+        if interrupt_task and task_id == empty:
+            raise ConnectionError("Authorization: Bearer TASK_WRITE_CANARY")
+        return await original(task_id, *args, **kwargs)
+
+    with patch.object(api_client, "transition_task", side_effect=interrupt):
+        await supervise_failed_tasks(api_client, AsyncMock())
+    row = await _read_row(story_id)
+    assert row["status"] == "waiting_human_review"
+    assert row["waiting_on"] == "human_review"
+    assert row["quarantine_reason"]["code"] == "no_new_commit"
+    notice = OwnerNotification.model_validate(row["owner_notification"])
+    assert notice.state is OwnerNotificationState.OWED
+    assert notice.admin_state is OwnerNotificationState.OWED
+    assert empty in row["quarantine_reason"]["detail"]
+    assert (await api_client.get_task(ordinary)).status.value == "waiting_human_review"
+    if interrupt_task:
+        assert (await api_client.get_task(empty)).status.value == "failed"
+    await supervise_failed_tasks(api_client, AsyncMock())
+    assert (await api_client.get_task(empty)).status.value == "waiting_human_review"
+    assert await _read_row(story_id) == row
+    assert "TASK_WRITE_CANARY" not in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unrelated", ["cause", "notice", "missing_notice", "bare"])
+async def test_empty_exhaustion_does_not_accept_an_unrelated_stop(
+    api_client,
+    completion_story,
+    unrelated,
+):
+    from shared.contracts.dto.story_failure import StoryFailure
+
+    story_id, project_id, _, _ = completion_story
+    task_id = await _exhausted_task(api_client, project_id, story_id)
+    run = (await api_client.list_runs(task_id=task_id, run_type="engineering"))[0]
+    detail = (
+        "another attempt"
+        if unrelated == "cause"
+        else f"Task {task_id} exhausted its 3 retries. "
+        f"Attempt {run.id} produced no new commit to merge or deploy."
+    )
+    if unrelated == "bare":
+        await api_client.transition_story(story_id, "human-review")
+    else:
+        await api_client.stop_story(
+            story_id,
+            "human-review",
+            StoryFailure(code="no_new_commit", source="scheduler", detail=detail),
+            actor="fixture",
+        )
+    if unrelated == "notice":
+        notice = await api_client.get_story_owner_notification(story_id)
+        notice.admin_text = "Notice from a different stop"
+        await api_client.update_story_owner_notification(story_id, notice.model_dump(mode="json"))
+    if unrelated == "missing_notice":
+        db = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
+        try:
+            await db.execute("UPDATE stories SET owner_notification=NULL WHERE id=$1", story_id)
+        finally:
+            await db.close()
+    row = await _read_row(story_id)
+    assert await supervise_failed_tasks(api_client, AsyncMock()) == {"retried": 0, "escalated": 0}
+    assert (await api_client.get_task(task_id)).status.value == "failed"
+    assert await _read_row(story_id) == row
+
+
 def _github(*, empty=True):
     github = AsyncMock()
     github.__aenter__.return_value = github
@@ -114,6 +246,42 @@ def _github(*, empty=True):
 
         github.create_pull_request.side_effect = create
     return github
+
+
+@pytest.mark.asyncio
+async def test_remaining_empty_sibling_recognizes_the_settled_siblings_stop(
+    api_client,
+    completion_story,
+):
+    story_id, project_id, _, _ = completion_story
+    siblings = [
+        await _exhausted_task(api_client, project_id, story_id, priority=priority)
+        for priority in (0, 1)
+    ]
+    original = api_client.transition_task
+    interrupted = []
+
+    async def fail_remaining_sibling(task_id, *args, **kwargs):
+        story = await api_client.get_story(story_id)
+        if task_id not in story.quarantine_reason["detail"]:
+            interrupted.append(task_id)
+            raise ConnectionError("sibling task transition unavailable")
+        return await original(task_id, *args, **kwargs)
+
+    with patch.object(api_client, "transition_task", side_effect=fail_remaining_sibling):
+        await supervise_failed_tasks(api_client, AsyncMock())
+    assert len(interrupted) == 1
+    row = await _read_row(story_id)
+    assert row["owner_notification"]["state"] == "owed"
+    assert row["owner_notification"]["admin_state"] == "owed"
+    with patch.object(api_client, "stop_story", wraps=api_client.stop_story) as stops:
+        await supervise_failed_tasks(api_client, AsyncMock())
+    stops.assert_not_awaited()
+    for task_id in siblings:
+        task = await api_client.get_task(task_id)
+        assert task.status.value == "waiting_human_review"
+        assert (task.current_iteration, task.max_iterations) == (3, 3)
+    assert await _read_row(story_id) == row
 
 
 @pytest.mark.asyncio

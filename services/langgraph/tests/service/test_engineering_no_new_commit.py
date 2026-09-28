@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import uuid
 
+import httpx
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 import pytest
@@ -513,5 +516,199 @@ async def test_defensive_empty_success_uses_the_real_atomic_story_stop(real_redi
         assert row["quarantine_reason"]["code"] == "no_new_commit"
         assert row["owner_notification"]["state"] == "owed"
         assert row["owner_notification"]["admin_state"] == "owed"
+    finally:
+        await stream.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("planned,precommitted", [(False, False), (False, True), (True, False)])
+@pytest.mark.parametrize("write_failure", ["before_commit", "after_commit", "persistent"])
+async def test_transient_terminal_write_preserves_the_known_empty_attempt(  # noqa: PLR0915
+    durable_api,
+    real_redis,
+    planned,
+    precommitted,
+    write_failure,
+):
+    from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+    from shared.contracts.dto.story_failure import StoryFailure
+    from src.clients.worker_spawner import SpawnResult
+    from src.consumers.engineering import process_engineering_job
+    from src.consumers.engineering_result_handler import EmptyResultSettlementError
+
+    api, project_id, story_id, run_id = durable_api
+    task = None
+    if planned:
+        task = await api.post(
+            "tasks/",
+            json={
+                "project_id": project_id,
+                "story_id": story_id,
+                "title": "Last planned attempt",
+                "status": "in_dev",
+                "max_iterations": 3,
+            },
+        )
+        await api.patch(f"tasks/{task['id']}", json={"current_iteration": 3})
+        async with await AsyncConnection.connect(os.environ["TEST_DATABASE_URL"]) as db:
+            await db.execute("UPDATE runs SET task_id=%s WHERE id=%s", (task["id"], run_id))
+    if precommitted:
+        await api.stop_story(
+            story_id,
+            "human-review",
+            StoryFailure(
+                code="no_new_commit",
+                source="engineering",
+                detail=f"Attempt {run_id}: Worker reported success but no commit was made",
+            ),
+            actor="engineering-worker",
+        )
+    original_row = await _durable_stop_row(story_id)
+    original_patch = api.patch
+    writes = []
+
+    async def fail_first_write(path, *args, **kwargs):
+        body = kwargs.get("json", {})
+        if path == f"runs/{run_id}" and body.get("status") == "failed":
+            writes.append(body)
+            if write_failure == "persistent" or len(writes) == 1:
+                if write_failure == "after_commit":
+                    await original_patch(path, *args, **kwargs)
+                raise httpx.ConnectError("Authorization: Bearer RUN_WRITE_CANARY")
+        return await original_patch(path, *args, **kwargs)
+
+    spawn = AsyncMock(
+        return_value=SpawnResult(
+            request_id="settled-empty-turn",
+            success=True,
+            exit_code=0,
+            output="",
+            turn_result_consumed=True,
+            transcript_path="/fixture/empty-attempt.jsonl",
+            execution=EngineeringExecutionEvidence(execution_phase="agent_started"),
+        )
+    )
+    stream = RedisStreamClient()
+    await stream.connect()
+    before_deploys = await real_redis.xlen(DEPLOY_QUEUE)
+    try:
+        with (
+            patch("src.consumers.engineering.api_client", api),
+            patch("src.consumers.engineering_result_handler.api_client", api),
+            patch("src.nodes.developer.api_client", api),
+            patch(
+                "src.nodes.developer.GitHubAppClient",
+                return_value=await _github_reporting_a_deployed_head(),
+            ),
+            patch("src.consumers.engineering._resolve_allocations", AsyncMock(return_value={})),
+            patch("src.consumers.engineering._build_story_context", AsyncMock(return_value=None)),
+            patch("src.consumers.engineering._build_story_md", AsyncMock(return_value=None)),
+            patch("src.nodes.developer.request_spawn", spawn),
+            patch.object(api, "patch", side_effect=fail_first_write),
+            patch.object(api, "stop_story", wraps=api.stop_story) as stops,
+            patch(
+                "src.consumers.engineering_result_handler.publish_worker_deletion", AsyncMock()
+            ) as deletion,
+            capture_logs() as logs,
+        ):
+            message = {
+                **_engineering_message(),
+                "task_id": run_id,
+                "project_id": project_id,
+                "story_id": story_id,
+                "planning_task_id": task["id"] if planned else None,
+            }
+            if write_failure == "persistent":
+                with pytest.raises(EmptyResultSettlementError):
+                    await process_engineering_job(message, stream)
+            else:
+                outcome = await process_engineering_job(message, stream)
+        assert len(writes) == 2
+        assert writes[0] == writes[1]
+        spawn.assert_awaited_once()
+        deletion.assert_not_awaited()
+        if precommitted:
+            stops.assert_not_awaited()
+        assert "RUN_WRITE_CANARY" not in json.dumps(logs)
+        assert await real_redis.xlen(DEPLOY_QUEUE) == before_deploys
+        if write_failure == "persistent":
+            assert (await api.get_run(run_id)).status.value == "running"
+            if planned:
+                assert (await api.get_task(task["id"])).status.value == "in_dev"
+            else:
+                row = await _durable_stop_row(story_id)
+                assert row["quarantine_reason"]["code"] == "no_new_commit"
+                assert row["owner_notification"]["state"] == "owed"
+                if precommitted:
+                    assert row == original_row
+            return
+        assert outcome["status"] == "failed"
+        run = await api.get_run(run_id)
+        assert run.status.value == "failed"
+        assert run.result.failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
+        assert run.result.execution.execution_phase.value == "agent_started"
+        async with await AsyncConnection.connect(os.environ["TEST_DATABASE_URL"]) as db:
+            cursor = await db.execute(
+                "SELECT count(*) FROM engineering_attempt_ledger WHERE run_id=%s", (run_id,)
+            )
+            assert (await cursor.fetchone())[0] == 1
+        assert (await api.get(f"runs/{run_id}"))[
+            "transcript_path"
+        ] == "/fixture/empty-attempt.jsonl"
+        row = await _durable_stop_row(story_id)
+        if planned:
+            assert row == original_row
+            assert (await api.get_task(task["id"])).status.value == "failed"
+            # Run the actual scheduler in its own import/process boundary against
+            # the same API, PostgreSQL and Redis, using the persisted producer result.
+            env = os.environ | {
+                "PYTHONPATH": "/app/scheduler:/app",
+                "API_BASE_URL": os.environ["TEST_API_BASE_URL"],
+                "SETTLEMENT_TASK_ID": task["id"],
+            }
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-P",
+                    "-c",
+                    """
+import asyncio
+import os
+from src.clients.api import SchedulerAPIClient
+from src.tasks.supervisor.liveness import supervise_failed_tasks
+from shared.redis import RedisStreamClient
+
+async def settle():
+    api = SchedulerAPIClient()
+    stream = RedisStreamClient()
+    await stream.connect()
+    try:
+        await supervise_failed_tasks(api, stream)
+        task = await api.get_task(os.environ['SETTLEMENT_TASK_ID'])
+        assert task.status.value == 'waiting_human_review'
+    finally:
+        await stream.close()
+        await api.close()
+
+asyncio.run(settle())
+""",
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert completed.returncode == 0, completed.stdout + completed.stderr
+            stopped = await _durable_stop_row(story_id)
+            assert stopped["quarantine_reason"]["code"] == "no_new_commit"
+            assert run_id in stopped["quarantine_reason"]["detail"]
+            assert stopped["owner_notification"]["state"] == "owed"
+            assert stopped["owner_notification"]["admin_state"] == "owed"
+        else:
+            assert row["quarantine_reason"]["code"] == "no_new_commit"
+            assert row["owner_notification"]["state"] == "owed"
+            assert row["owner_notification"]["admin_state"] == "owed"
+            if precommitted:
+                assert row == original_row
     finally:
         await stream.close()

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http import HTTPStatus
 
+import httpx
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
@@ -22,6 +24,7 @@ from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.worker_result import WorkerStopReason
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
+from shared.empty_engineering_stop import ensure_empty_story_stop
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
@@ -224,6 +227,10 @@ class StoryStopError(RuntimeError):
     """The empty-result stop was refused; leave the engineering message reclaimable."""
 
 
+class EmptyResultSettlementError(RuntimeError):
+    """A known empty worker outcome must never become a generic terminal failure."""
+
+
 async def _park_story_without_new_commit(story_id: str, task_id: str, error_msg: str) -> None:
     """Commit the taskless stop with its reason and owed notices before ending the Run."""
     failure = StoryFailure(
@@ -232,7 +239,7 @@ async def _park_story_without_new_commit(story_id: str, task_id: str, error_msg:
         detail=f"Attempt {task_id}: {error_msg}",
     )
     try:
-        await api_client.stop_story(story_id, "human-review", failure, actor="engineering-worker")
+        await ensure_empty_story_stop(api_client, story_id, failure, actor="engineering-worker")
     except Exception as exc:
         logger.error(
             "story_no_new_commit_stop_failed",
@@ -262,35 +269,67 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
     telegram_chat_id: str = "",
 ) -> dict:
     """Mark a run as failed and optionally update planning task."""
-    await prepare_terminal_settlement(
-        task_id,
-        redis=redis,
-        turn_result_consumed=turn_result_consumed,
-    )
+    try:
+        await prepare_terminal_settlement(
+            task_id,
+            redis=redis,
+            turn_result_consumed=turn_result_consumed,
+        )
+    except Exception as exc:
+        if failure_reason is not EngineeringFailureReason.NO_NEW_COMMIT:
+            raise
+        logger.error(
+            "empty_worker_settlement_failed", task_id=task_id, error_type=type(exc).__name__
+        )
+        raise EmptyResultSettlementError(f"empty result for run {task_id} is not settled") from None
     if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT:
         error_msg = bounded_diagnostic(error_msg)
         # A planned task keeps its existing failed-iteration retry policy. A
         # taskless repair must stop durably before its queue entry can be ACKed.
         if story_id and not planning_task_id:
             await _park_story_without_new_commit(story_id, task_id, error_msg)
-    await api_client.patch(
-        f"runs/{task_id}",
-        json={
-            "status": RunStatus.FAILED.value,
-            "error_message": error_msg,
-            "result": EngineeringRunResult(
-                engineering_status=EngineeringStatus.FAILED,
-                failure_reason=failure_reason,
-                uncomputable_derived_keys=uncomputable_derived_keys,
-                execution=execution,
-            ).model_dump(mode="json"),
-            **_observability_patch(worker_observability),
-            **_attempt_execution_patch(stop_reason, agent_limit_seconds, execution),
-        },
-    )
+    terminal = {
+        "status": RunStatus.FAILED.value,
+        "error_message": error_msg,
+        "result": EngineeringRunResult(
+            engineering_status=EngineeringStatus.FAILED,
+            failure_reason=failure_reason,
+            uncomputable_derived_keys=uncomputable_derived_keys,
+            execution=execution,
+        ).model_dump(mode="json"),
+        **_observability_patch(worker_observability),
+        **_attempt_execution_patch(stop_reason, agent_limit_seconds, execution),
+    }
+    if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT:
+        await _write_empty_terminal(task_id, terminal)
+    else:
+        await api_client.patch(f"runs/{task_id}", json=terminal)
     if planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
     return live_work_unsettled({"status": "failed", "error": error_msg})
+
+
+async def _write_empty_terminal(task_id: str, terminal: dict) -> None:
+    """Retry one transient write of this exact settled outcome, without another turn.
+
+    The API's immutable terminal writer makes the identical retry safe even
+    when a response was lost after commit. All other failures propagate as this
+    known outcome's settlement error rather than invoking the generic fallback.
+    """
+    try:
+        try:
+            await api_client.patch(f"runs/{task_id}", json=terminal)
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR
+            ):
+                raise
+            logger.warning("empty_run_write_retry", task_id=task_id, error_type=type(exc).__name__)
+            await api_client.patch(f"runs/{task_id}", json=terminal)
+    except Exception as exc:
+        logger.error("empty_run_write_failed", task_id=task_id, error_type=type(exc).__name__)
+        raise EmptyResultSettlementError(f"empty result for run {task_id} is not settled") from None
 
 
 async def handle_worker_gave_up(

@@ -1135,6 +1135,13 @@ and both owed audiences together. No separate reason PATCH or immediate Redis pu
 required; the existing notification sweep delivers `story_blocked` with the bounded cause and
 the explanation that nothing was produced and a person must decide the next move.
 
+Failed-task supervision selects the required typed stop for each story before any exhausted
+sibling can make a bare escalation. It reads each selected task's latest engineering result;
+an unread sibling leaves that story selected. A partial handoff resumes only when the story's
+status/waiting reason, exact task/attempt cause and owner/admin notification episode match the
+empty-result stop. A settled exhausted sibling can supply that same proof. Unrelated human
+review or a missing/mismatched notice is not proof; no repeated transition is globally allowed.
+
 **A failed planning attempt is a story state.** `stories.planning` (`StoryPlanning`, on
 `StoryRead.planning`, `shared/contracts/dto/story_planning.py`) is the one durable record that
 planning is owed: every path that makes the architect owe a story a planning run writes it as
@@ -1617,6 +1624,12 @@ the worker turn first and requires the typed story stop before ending the taskle
 A refused stop propagates, leaving the Run nonterminal and the queue entry reclaimable;
 the scheduler logs a refused stop and leaves the story selected for a later cycle.
 An optional engineering callback failure after the stop leaves the committed notice owed.
+The empty-result terminal writer retries one transient Run write with the identical typed
+result, execution, worker observability and accounting input. A lost response therefore reuses
+the immutable outcome and first ledger fact. A persistent write or required worker-settlement
+failure propagates without creating a generic terminal answer or another worker turn. A
+previously committed matching taskless stop is validated against its cause and both notice
+audiences before completing the Run; its original notification episode is retained.
 The manifest-repair follow-up deploy Run that an accepted engineering result
 creates names its story, so every story-scoped reader of deploy Runs — the live
 follow-up wait included — can observe it at all.

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-28
 
+- Empty-result settlement preserves its cause across exhausted siblings and interrupted writes;
+  committed stops resume remaining task/Run effects without another worker turn or notice episode.
 - Empty engineering and no-commits PR stops persist their reason and owed owner/admin notices
   atomically; planned-task retries keep their budget and notify on exhaustion.
 - Backend DinD fixtures provide matching origins and synthetic repository credentials; explicit

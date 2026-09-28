@@ -38,6 +38,7 @@ def mock_api():
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.stop_story = AsyncMock()
+        api.get_story = AsyncMock(return_value=SimpleNamespace(status="in_progress"))
         api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
         api.get_project = AsyncMock(return_value=None)
         api.get_primary_repository = AsyncMock(

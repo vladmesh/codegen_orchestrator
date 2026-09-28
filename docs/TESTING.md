@@ -52,6 +52,11 @@ and a new commit's deploy publication. Scheduler service regressions cover two c
 cycles, stop refusal, real Redis notification recovery and the normal PR route. API failure
 visibility tests verify atomic storage and rollback when notification construction fails.
 The PO graph regression uses a deterministic model fixture to verify the empty-result text.
+The settlement regressions cover exhausted siblings in both API orders, partial task settlement,
+unrelated/missing notices, Run transport failure before and after commit, and persistent write
+failure without a generic outcome. The Langgraph runner carries scheduler source and runs its
+real supervision in a separate Python process against the consumer's persisted planned result;
+API, Langgraph and scheduler changes all select this Langgraph service leg in CI.
 
 ## Pre-push Hook
 

@@ -11,6 +11,7 @@ from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
+from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.product_brief import (
     ProductBriefAdmissionCommand,
     ProductBriefAdmissionRead,
@@ -399,6 +400,11 @@ class LanggraphAPIClient(InternalAPIClient):
     async def get_story(self, story_id: str) -> StoryDTO:
         resp = await self.request("GET", f"stories/{story_id}")
         return StoryDTO.model_validate(resp.json())
+
+    async def get_story_owner_notification(self, story_id: str) -> OwnerNotification:
+        return OwnerNotification.model_validate(
+            await self.get(f"stories/{story_id}/owner-notification")
+        )
 
     async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
         resp = await self.request("GET", "tasks/", params={"story_id": story_id})

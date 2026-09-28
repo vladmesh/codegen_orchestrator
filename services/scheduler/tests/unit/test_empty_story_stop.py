@@ -12,6 +12,27 @@ from src.tasks.supervisor import supervise_failed_tasks
 
 
 @pytest.mark.asyncio
+async def test_exhausted_story_chooses_empty_reason_before_any_bare_stop():
+    api = AsyncMock()
+    ordinary = _make_task(id="ordinary", story_id="story-1", status="failed", current_iteration=3)
+    empty = _make_task(id="empty", story_id="story-1", status="failed", current_iteration=3)
+    api.get_tasks_by_status.return_value = [ordinary, empty]
+    empty_run = _make_run(
+        id="empty-run",
+        type="engineering",
+        status="failed",
+        result=EngineeringRunResult(engineering_status="failed", failure_reason="no_new_commit"),
+    )
+    api.list_runs.side_effect = lambda *, task_id, **kwargs: (
+        [empty_run] if task_id == empty.id else []
+    )
+    await supervise_failed_tasks(api, AsyncMock())
+    api.stop_story.assert_awaited_once()
+    api.transition_story.assert_not_awaited()
+    assert api.transition_task.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_no_commits_uses_a_typed_stop_without_a_reason_patch():
     api = AsyncMock()
     await _park_story_without_commits(

@@ -38,6 +38,7 @@ from ._live_work import live_work_unsettled
 from ._repo_setup import _create_repo_and_set_secrets
 from .acceptance_context import load_primary_repository, load_task_acceptance_criteria
 from .engineering_result_handler import (
+    EmptyResultSettlementError,
     EngineeringSuccessParams,
     StoryStopError,
     _write_task_event,
@@ -471,8 +472,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         else:
             return await _handle_failed_result(result, msg, redis)
 
-    except StoryStopError:
-        # A refused empty-result story stop is not a terminal Run outcome.
+    except (StoryStopError, EmptyResultSettlementError):
+        # Preserve the known worker outcome across its remaining settlement effects.
         raise
     except Exception as e:
         logger.error(
