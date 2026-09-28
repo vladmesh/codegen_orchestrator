@@ -361,6 +361,7 @@ class TestItReachesOnlyItsAllowlist:
                 ownership=_OWNERSHIP,
                 agent_type=AgentType.CLAUDE,
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         assert wrapper.run_container.await_args.kwargs["network"] == "codegen_worker"

@@ -269,7 +269,7 @@ async def test_an_unpushed_local_commit_on_a_resumed_branch_is_never_discarded(t
 
 
 async def test_the_token_refresh_script_is_hook_free():
-    script = git_ops.build_token_refresh_script("org/repo", "ghs-token")
+    script = git_ops.build_token_refresh_script("org/repo")
 
     invocations = list(_GIT_COMMAND.finditer(script))
     assert invocations
@@ -284,7 +284,7 @@ async def test_refresh_git_token_execs_the_hook_free_script():
 
     assert await git_ops.refresh_git_token(docker, "cid", "org/repo", "ghs-token", "w-1")
 
-    decoded = _decoded_script(docker.exec_in_container.await_args.args[1])
+    decoded = docker.exec_in_container.await_args.args[1][2]
     assert git_ops.GIT in decoded
     for match in _GIT_COMMAND.finditer(decoded):
         assert decoded[match.end() :].startswith(_HOOKLESS)
@@ -379,6 +379,7 @@ async def test_a_false_checkout_fails_creation_before_any_material_is_injected()
                 api_key="test-api-key",
                 instructions="required instructions",
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
                 branch="story/story-ea07a289",
             )
 

@@ -2,7 +2,9 @@
 # Deploy Project Playbook
 # Deploys a project from GitHub to a server using Docker Compose
 # Usage: ansible-playbook -i inventory.ini playbooks/deploy_project.yml \
-#        -e "project_name=hello-bot repo_full_name=org/repo github_token=xxx service_port=8000"
+#        --extra-vars @/tmp/private-deploy-vars.json
+# JSON keys: project_name, repo_full_name, github_token, service_port.
+# Keep the vars file outside the checkout, mode 0600, and remove it after execution.
 
 - name: Deploy Project
   hosts: all
@@ -33,13 +35,45 @@
     # ========================================
     # 2. Clone or update repository
     # ========================================
-    - name: Clone/update repository from GitHub
-      git:
-        repo: "https://x-access-token:{{ github_token }}@github.com/{{ repo_full_name }}.git"
-        dest: "{{ deploy_dir }}"
-        version: main
-        force: yes
-        accept_hostkey: yes
+    - name: Authenticate repository deployment with a private remote file
+      block:
+        - name: Create private Git credential directory outside the deployment
+          tempfile:
+            state: directory
+            path: /tmp
+            prefix: codegen-deploy-git-
+          register: git_credential_directory
+
+        - name: Transfer repository credential through the native file module
+          copy:
+            content: "https://x-access-token:{{ github_token | urlencode | replace('/', '%2F') }}@github.com/{{ repo_full_name }}.git\n"
+            dest: "{{ git_credential_directory.path }}/credentials"
+            mode: '0600'
+          no_log: true
+
+        - name: Clone/update repository from GitHub
+          git:
+            repo: "https://github.com/{{ repo_full_name }}.git"
+            dest: "{{ deploy_dir }}"
+            version: main
+            force: yes
+            accept_hostkey: yes
+          environment:
+            GIT_CONFIG_COUNT: "3"
+            GIT_CONFIG_KEY_0: "credential.helper"
+            GIT_CONFIG_VALUE_0: ""
+            GIT_CONFIG_KEY_1: "credential.https://github.com.helper"
+            GIT_CONFIG_VALUE_1: "store --file={{ git_credential_directory.path }}/credentials"
+            GIT_CONFIG_KEY_2: "credential.https://github.com.useHttpPath"
+            GIT_CONFIG_VALUE_2: "true"
+            GIT_TERMINAL_PROMPT: "0"
+          no_log: true
+      always:
+        - name: Remove private Git credential directory
+          file:
+            path: "{{ git_credential_directory.path }}"
+            state: absent
+          when: git_credential_directory is defined and git_credential_directory.path is defined
       tags: [git]
 
     # ========================================

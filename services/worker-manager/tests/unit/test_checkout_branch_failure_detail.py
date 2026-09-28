@@ -92,7 +92,7 @@ async def test_a_token_in_git_output_is_redacted():
     result = await git_ops.checkout_branch(docker, "cid", _BRANCH, "w-1")
 
     assert "ghs_SECRET" not in result.detail
-    assert "https://***@github.com/o/r/" in result.detail
+    assert "https://[redacted]@github.com/o/r/" in result.detail
 
 
 async def test_repository_not_found_twice_then_checkout_completes():

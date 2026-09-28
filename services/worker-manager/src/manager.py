@@ -29,6 +29,7 @@ from shared.contracts.dto.worker import (
 )
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
+from shared.diagnostics import redact_diagnostic
 from shared.qa_probe_cli import QA_PROBE_LIBRARY_PATH, QA_PROBE_PATH, QA_PROBE_SCRIPT
 from shared.queues import WORKER_COMMANDS
 from shared.redis import decode_redis_fields, decode_redis_value
@@ -521,11 +522,17 @@ class WorkerManager:
             return container.id
 
         except Exception as e:
-            logger.error("worker_creation_failed", worker_id=worker_id, error=str(e))
+            message = redact_diagnostic(
+                e,
+                secrets=(env_vars.get("GITHUB_TOKEN", ""), env_vars.get("GH_TOKEN", "")),
+            )
+            logger.error("worker_creation_failed", worker_id=worker_id, error=message)
             await self.redis.hset(
                 f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED}
             )
-            await self.redis.set(f"worker:error:{worker_id}", str(e))
+            await self.redis.set(f"worker:error:{worker_id}", message)
+            if message != str(e):
+                raise RuntimeError(f"{type(e).__name__}: {message}") from None
             raise
 
     async def pause_worker(self, worker_id: str) -> None:
@@ -953,11 +960,10 @@ class WorkerManager:
                 workspace_path=str(ws_path),
                 container_config=config,
                 allow_host_network=allow_host_network,
-                # A QA container starts before its injected files exist. Keep
-                # it STARTING until AGENTS/CLAUDE, TASK and /workspace/qa are
-                # all usable, so the central runner cannot publish its turn to
-                # a partial workspace.
-                publish_ready=not is_qa_worker,
+                # Keep preparation private until Git credentials, checkout and
+                # turn materials are ready. Reused developer workspaces can
+                # still carry a released credentialed origin at container start.
+                publish_ready=False,
             )
             if is_qa_worker:
                 # Proof, not intent: whatever was asked for, this is what Docker
@@ -982,11 +988,12 @@ class WorkerManager:
 
             if is_qa_worker:
                 await self._inject_qa_probe(container_id, worker_id, qa_probe_library)
-                await self.redis.hset(
-                    f"worker:status:{worker_id}",
-                    mapping={"status": WorkerStatus.RUNNING},
-                )
                 logger.info("qa_executor_ready", worker_id=worker_id)
+
+            await self.redis.hset(
+                f"worker:status:{worker_id}",
+                mapping={"status": WorkerStatus.RUNNING},
+            )
 
             return worker_id
         except Exception as exc:
@@ -1024,22 +1031,33 @@ class WorkerManager:
         repo_name = env_vars.get("REPO_NAME")
         github_token = env_vars.get("GITHUB_TOKEN")
 
+        if repo_id and not (repo_name and github_token):
+            raise RuntimeError("Repository credentials are required before workspace preparation")
+
         if repo_name and github_token:
             logger.info(
                 "refreshing_git_token",
                 worker_id=worker_id,
                 repo_id=repo_id,
             )
-            await git_ops.refresh_git_token(
+            refreshed = await git_ops.refresh_git_token(
                 self.docker, container_id, repo_name, github_token, worker_id
             )
+            if not refreshed:
+                raise RuntimeError("Git credential refresh or workspace sanitization failed")
 
         if branch:
             # A checkout that returns False established neither the branch nor
             # its upstream. Ignoring it used to let creation continue with the
             # worker on the wrong branch and no upstream to push to; raising
             # sends the failure into the `checkout_branch` step record.
-            checkout = await git_ops.checkout_branch(self.docker, container_id, branch, worker_id)
+            checkout = await git_ops.checkout_branch(
+                self.docker,
+                container_id,
+                branch,
+                worker_id,
+                secret_values=(github_token,) if github_token else (),
+            )
             if not checkout:
                 raise RuntimeError(
                     f"checkout_branch did not establish branch {branch} or its upstream: "

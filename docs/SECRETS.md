@@ -874,6 +874,60 @@ The `infra-service` is responsible for preparing the "bare metal". It uses **L1 
 
 It does **NOT** handle Project (L2) secrets. It does not deploy applications.
 
+### GitHub credentials at execution boundaries
+
+Infrastructure recovery retains the existing `deploy_project.yml` redeployment path.
+It uses a repository-scoped GitHub installation token, not project application secrets.
+`redeploy_service` goes through `AnsibleRunner`, the same execution boundary as provisioning.
+
+| Boundary | Transport and lifetime | Persistent state |
+|----------|------------------------|------------------|
+| Scaffolder fresh/ensure workspace Git | Native `GIT_CONFIG_COUNT/KEY/VALUE` environment supplies the HTTP Authorization header for each Git subprocess | Clean GitHub origin; no stored extraheader or token |
+| AnsibleRunner provisioning/recovery | JSON vars file, inventory and optional SSH key in a private `/tmp/codegen-ansible-*` directory; files created mode 0600, directory mode 0700 | `--extra-vars @<path>` contains no credential; the directory is removed on success, nonzero exit, timeout and partial setup/exception |
+| Recovery target clone/update | Native Ansible copy transfers a credential store into a unique remote `/tmp/codegen-deploy-git-*` directory, mode 0700; credential file mode 0600, secret tasks use `no_log` | Clean origin; Git environment/command text names only the helper path and scope. The tagged Git block's `always` removes the directory on success, Git failure or setup failure |
+| Worker-manager preparation | Docker's native exec environment carries the current token to an isolated Python writer (`python3 -I`) in the new container | Released credentialed origin replaced in place; native Git credential store at `/home/worker/.config/codegen/git-credentials`, mode 0600, parent mode 0700 |
+| Developer fetch/push | Native `$HOME/.gitconfig` contains only GitHub helper/path/scope settings; HOME survives the wrapper's agent environment filter. `credential.useHttpPath` matches the repository path | Unrelated global settings survive; global config and store are atomically replaced, mode 0600. No workspace helper, token, encoded header or auth file; the private store lasts until container removal |
+| Worker GitHub CLI | Creation supplies the same repository-scoped token as `GITHUB_TOKEN` and `GH_TOKEN` in Docker environment | No CLI login file is created by preparation |
+
+Worker containers are fresh even when the scaffolded workspace is reused. Preparation
+refreshes the private store for that container before checkout or instruction injection;
+Git authentication therefore also works for later developer operations. Refresh replaces
+the store atomically, so a later Git credential read uses the new token. Manager and
+filtered agent Git use the same HOME configuration; no `GIT_*` allowlist extension is
+needed. Isolated Python prevents checkout modules from shadowing the writer's stdlib.
+The live refresh caller runs during container creation; each replacement container also
+gets the current GitHub CLI environment. This does not introduce token rotation or a
+background refresh.
+
+Repository credentials are required for developer workspace preparation. A failed origin
+upgrade, credential write or HOME configuration write refuses preparation; the worker
+stays unready, gets a visible creation failure and follows the existing teardown path.
+Preparation never resets the workspace: repository identity, branches, upstreams, unpushed commits and product hook
+configuration survive. Infrastructure Git still disables hooks per command only.
+
+`shared.diagnostics.redact_diagnostic` removes exact supplied credentials, URL userinfo
+and encoded Authorization values before runner/recovery logs, output, recap/tail fields
+or administrator notifications leave the boundary. Runner exceptions log sanitized text
+without an original exception traceback. Worker Git failures and native container-creation
+errors apply the same diagnostic boundary; useful failure context remains bounded.
+
+#### Existing-workspace upgrade and production readback
+
+The released worker-manager persisted
+`https://x-access-token:<token>@github.com/<owner>/<repo>` in workspace `.git/config`.
+The next worker preparation replaces this origin with the clean repository URL before
+checkout and agent materials, including when no branch checkout was requested. The
+existing workspace file reader can then read the real config safely; endpoint filtering
+is not the upgrade mechanism. Scaffolder fresh/ensure routes continue using clean origins.
+
+This change runs no production cleanup. After controlled release, read back prepared
+workspace configs and remote deployment configs without exposing credential values.
+Dormant workspaces not prepared again and remote `/opt/apps/<project>` directories not
+updated again can still carry the released URLs and need a later controlled upgrade and
+readback. Historical logs, argv captures and administrator messages also remain a separate
+operational obligation. The production storage safeguards remain prerequisites; credential
+rotation and the source issue's platform SSH-key duplication are outside this change.
+
 ### Deployment via GitHub Actions
 
 Application deployment is fully delegated to GitHub Actions. This allows secure usage of L2 secrets without exposing them to the Orchestrator's backend.

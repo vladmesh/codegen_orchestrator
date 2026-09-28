@@ -1,20 +1,19 @@
 """Service recovery for provisioner - redeploys services after server recovery."""
 
-import os
-import subprocess
-import tempfile
-
 import structlog
 
+from shared.diagnostics import redact_diagnostic
 from shared.notifications import notify_admins_best_effort
 
 from ..clients.api import DeploymentRecord
-from ..config.constants import Paths, Timeouts
+from ..config.constants import Timeouts
+from .ansible_runner import AnsibleRunner
 from .api_client import get_services_on_server
 
 logger = structlog.get_logger()
 
 MAX_ERROR_PREVIEW = 5
+MAX_ERROR_DETAIL = 500
 
 
 async def redeploy_service(
@@ -42,26 +41,6 @@ async def redeploy_service(
     if not port:
         return False, f"Service {service_name} has no port"
 
-    playbook_path = Paths.playbook("deploy_project.yml")
-
-    # Construct inventory
-    inventory_content = (
-        f"{server_ip} ansible_user=root ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
-    )
-
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".ini") as inv_file:
-        inv_file.write(inventory_content)
-        inventory_path = inv_file.name
-
-    extra_vars = (
-        f"project_name={service_name} "
-        f"repo_full_name={repo_full_name} "
-        f"github_token={github_token} "
-        f"service_port={port}"
-    )
-
-    cmd = ["ansible-playbook", "-i", inventory_path, playbook_path, "--extra-vars", extra_vars]
-
     logger.info(
         "service_redeployment",
         service_name=service_name,
@@ -69,13 +48,22 @@ async def redeploy_service(
         port=port,
         status="start",
     )
-
     try:
-        process = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=Timeouts.SERVICE_DEPLOY
+        success, output = AnsibleRunner().run_playbook(
+            server_ip=server_ip,
+            server_handle=service.server_handle,
+            playbook_name="deploy_project.yml",
+            timeout=Timeouts.SERVICE_DEPLOY,
+            extra_vars={
+                "project_name": service_name,
+                "repo_full_name": repo_full_name,
+                "github_token": github_token,
+                "service_port": str(port),
+            },
+            secret_values=(github_token,),
         )
-
-        if process.returncode == 0:
+        output = redact_diagnostic(output, secrets=(github_token,))
+        if success:
             logger.info(
                 "service_redeployment",
                 service_name=service_name,
@@ -84,40 +72,35 @@ async def redeploy_service(
                 status="success",
             )
             return True, f"Service {service_name} redeployed successfully"
-        else:
-            logger.error(
-                "service_redeployment",
-                service_name=service_name,
-                server_ip=server_ip,
-                port=port,
-                status="failed",
-                error=process.stderr[-500:],
-            )
-            return False, f"Ansible failed: {process.stderr[-500:]}"
-
-    except subprocess.TimeoutExpired:
+        is_timeout = output.startswith("Timeout after ")
+        # Keep stderr's reason as well as the closing stdout when a play is noisy.
+        detail = output
+        if len(detail) > MAX_ERROR_DETAIL:
+            half = MAX_ERROR_DETAIL // 2
+            detail = f"{output[:half]}\n...\n{output[-half:]}"
         logger.error(
             "service_redeployment",
             service_name=service_name,
             server_ip=server_ip,
             port=port,
-            status="timeout",
+            status="timeout" if is_timeout else "failed",
+            error=detail,
         )
-        return False, f"Deployment timeout for {service_name}"
-    except Exception as e:
+        if is_timeout:
+            return False, f"Deployment timeout for {service_name}"
+        return False, f"Ansible failed for {service_name}: {detail}"
+    except Exception as exc:
+        reason = redact_diagnostic(exc, secrets=(github_token,))[-500:]
         logger.error(
             "service_redeployment",
             service_name=service_name,
             server_ip=server_ip,
             port=port,
             status="error",
-            error=str(e),
-            error_type=type(e).__name__,
+            error=reason,
+            error_type=type(exc).__name__,
         )
-        return False, f"Deployment error: {e}"
-    finally:
-        if os.path.exists(inventory_path):
-            os.remove(inventory_path)
+        return False, f"Deployment error for {service_name}: {reason}"
 
 
 async def redeploy_all_services(
@@ -174,12 +157,13 @@ async def redeploy_all_services(
             owner, repo = repo_full_name.split("/")
             token = await github_client.get_token(owner, repo)
         except Exception as e:
-            errors.append(f"{service_name}: failed to get token - {e}")
+            errors.append(f"{service_name}: failed to get token - {redact_diagnostic(e)[-500:]}")
             fail_count += 1
             continue
 
         success, message = await redeploy_service(service, server_ip, token)
 
+        message = redact_diagnostic(message, secrets=(token,))
         if success:
             success_count += 1
             logger.info("service_redeployed", service_name=service_name)
