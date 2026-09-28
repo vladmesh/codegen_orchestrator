@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-28
 
+- Capability manifest v5 is the owner's product list: the PO reads a product-only block and refusals quote
+  only product fields; the Architect gets the technical block; payments, backups and web presence detected.
 - The API refuses to start with an empty `INTERNAL_API_KEY`, and an empty `X-Internal-Key` never
   authenticates, so a blank key can no longer be an internal-service bypass.
 - Live-run cleanup releases the PO's `po:latest_owner_event:*:<story>` records of the run's stories,

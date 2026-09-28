@@ -362,9 +362,9 @@ class TestPresenting:
                 {"id": "expense", "text": "Записывает расход", "user_wording": "считай траты"},
                 {"id": "income", "text": "Записывает доход", "user_wording": "и доходы тоже"},
                 {
-                    "id": "backup",
-                    "text": "Раз в сутки сохраняет резервную копию",
-                    "user_wording": "чтобы ничего не пропало",
+                    "id": "rollup",
+                    "text": "Раз в сутки подводит итоги дня",
+                    "user_wording": "и итоги за день",
                     "user_facing": False,
                 },
             ],
@@ -394,7 +394,7 @@ class TestPresenting:
         assert "<b>Как вы будете пользоваться</b>" in shown
         assert "• Вы отправляете: команду /income 50000 зарплата" in shown
         assert "  Продукт отвечает: Записал доход 50 000 ₽" in shown
-        assert "• Раз в сутки сохраняет резервную копию — работает без ваших сообщений" in shown
+        assert "• Раз в сутки подводит итоги дня — работает без ваших сообщений" in shown
         assert "<b>Ограничения</b>\n• Доход вводится только" in shown
         assert "<b>Настройки</b>\n• Чеки распознаются бесплатным способом" in shown
         assert "ocr.method" not in shown

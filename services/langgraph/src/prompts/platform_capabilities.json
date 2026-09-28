@@ -1,75 +1,126 @@
 {
-  "version": 4,
+  "version": 5,
   "cannot": [
     {
-      "id": "https_domain",
-      "name": "Public HTTPS address / TLS",
-      "plain": "The product has no https:// web address and no certificate.",
-      "why": "The deployer hands out only `http://{server_ip}:{port}`; a product's compose has no TLS proxy.",
-      "workaround": "Use the Telegram bot as the product's interface; it needs no address. Programs that accept plain http can call the backend at http://<server IP>:<port>.",
+      "id": "web_presence",
+      "aliases": [
+        "https_domain",
+        "custom_domain",
+        "public_base_url",
+        "telegram_mini_app",
+        "web_frontend"
+      ],
+      "name": "A website or web pages",
+      "plain": "The bot has no website, web pages, admin panel, link or domain of its own, and cannot open a mini app inside Telegram.",
+      "why": "The product lives entirely inside the Telegram chat.",
+      "workaround": "Everything happens in the chat with buttons.",
       "detect": [
+        "website",
+        "web page",
+        "web interface",
+        "admin panel",
+        "admin dashboard",
+        "landing page",
+        "separate web app",
+        "frontend module",
         "public https",
         "https address",
         "tls certificate",
-        "публичный https",
-        "https-адрес",
-        "сертификат tls"
-      ]
-    },
-    {
-      "id": "custom_domain",
-      "name": "Custom domain",
-      "plain": "The product cannot be put on its own domain name, such as mybot.example.com.",
-      "why": "Nothing allocates, points or verifies a domain for a product; its address is the server IP.",
-      "workaround": "Use the Telegram bot, or the backend at http://<server IP>:<port>.",
-      "detect": [
         "custom domain",
         "own domain",
         "public domain",
+        "public_base_url",
+        "own public url",
+        "telegram mini app",
+        "telegram web app",
+        "сайт",
+        "веб-страниц",
+        "веб-интерфейс",
+        "веб интерфейс",
+        "админка",
+        "админку",
+        "админ-панель",
+        "личный кабинет",
+        "личного кабинета",
+        "лендинг",
+        "отдельное веб-приложение",
+        "модуль frontend",
+        "публичный https",
+        "https-адрес",
+        "сертификат tls",
         "свой домен",
         "собственный домен",
-        "публичный домен"
+        "публичный домен",
+        "собственный публичный url",
+        "ссылки на себя",
+        "мини-приложение telegram",
+        "мини-приложение в telegram",
+        "мини-приложение в телеграм"
       ]
     },
     {
       "id": "inbound_webhooks",
-      "name": "Inbound webhooks from external services",
-      "plain": "Other services (payments, GitHub, forms, Telegram webhook mode) cannot push events to the product.",
-      "why": "Providers require an https URL, and the product only has plain http on an IP and port that can change when it moves server; the resolver derives no `PUBLIC_BASE_URL`.",
-      "workaround": "Poll the provider's API on a timer; the Telegram bot already works this way (long polling).",
+      "aliases": [],
+      "name": "Receiving events other services send",
+      "plain": "The bot cannot receive events that other services send to it by themselves, such as GitHub notifications or form submissions.",
+      "why": "Other services have nowhere to send such events to.",
+      "workaround": "The bot checks the service itself from time to time, if the service allows that.",
       "detect": [
         "inbound webhook",
         "incoming webhook",
         "receive webhooks",
+        "webhook url",
+        "callback url",
         "входящий вебхук",
         "входящие вебхуки",
         "входящий webhook",
-        "принимать вебхуки"
+        "принимать вебхуки",
+        "заявки с формы",
+        "заявки с форм"
       ]
     },
     {
-      "id": "public_base_url",
-      "name": "The product knowing its own public URL",
-      "plain": "The product cannot build links to itself, such as a link a user opens in a browser.",
-      "why": "The resolver computes no `PUBLIC_BASE_URL` or similar derived key. A required derived key it cannot compute fails the engineering attempt, before any deploy (story-92b433c8 failed its deploy with `Unknown computed secret`).",
-      "workaround": "Send the information inside the Telegram chat rather than as a link to the product.",
+      "id": "payments",
+      "aliases": [],
+      "name": "Accepting payments",
+      "plain": "The bot cannot take payments: neither through payment services such as YooKassa or Stripe nor inside Telegram (Stars, Payments).",
+      "why": "Payment acceptance is not part of what the platform builds.",
+      "workaround": null,
       "detect": [
-        "public_base_url",
-        "own public url",
-        "собственный публичный url",
-        "ссылки на себя"
+        "accept payment",
+        "accept payments",
+        "accepting payments",
+        "take payments",
+        "payment gateway",
+        "payment provider",
+        "telegram payments",
+        "telegram stars",
+        "stripe",
+        "yookassa",
+        "принимать оплату",
+        "принимать платежи",
+        "приём оплаты",
+        "прием оплаты",
+        "приём платежей",
+        "прием платежей",
+        "платёжная система",
+        "платежная система",
+        "юkassa",
+        "юкасса",
+        "юкассу"
       ]
     },
     {
       "id": "oauth_web_redirect",
-      "name": "OAuth web sign-in redirects",
-      "plain": "The product cannot use \"Sign in with Google\" style web redirects to get access to a user's account.",
-      "why": "An OAuth web redirect needs an https redirect URL on a stable domain, which a product does not have.",
-      "workaround": "A Google service account the user shares their calendar or sheet with; a device-code or desktop flow where the provider supports one; or a personal API token the user pastes, stored as a user secret.",
+      "aliases": [],
+      "name": "Signing in with Google and the like",
+      "plain": "The bot cannot use \"Sign in with Google\" or similar sign-in buttons to reach a user's account.",
+      "why": "Such sign-in needs a web page for the user to return to, which the bot does not have.",
+      "workaround": "The user shares their spreadsheet or calendar with the bot's Google service account, or pastes a personal token.",
       "detect": [
         "oauth redirect",
         "oauth web",
-        "/connect + oauth",
+        "google oauth",
         "redirect uri",
         "sign in with google",
         "log in with google",
@@ -77,29 +128,18 @@
         "авторизация через google",
         "авторизацией через google",
         "авторизацию через google",
-        "вход через google"
-      ]
-    },
-    {
-      "id": "telegram_mini_app",
-      "name": "Telegram Mini App or web pages inside Telegram",
-      "plain": "The bot cannot open its own web app inside Telegram.",
-      "why": "A Telegram Mini App needs an https URL, which a product does not have.",
-      "workaround": "Build the interaction as chat messages with buttons.",
-      "detect": [
-        "telegram mini app",
-        "telegram web app",
-        "мини-приложение telegram",
-        "мини-приложение в telegram",
-        "мини-приложение в телеграм"
+        "вход через google",
+        "войти с google",
+        "войти через google"
       ]
     },
     {
       "id": "send_email",
+      "aliases": [],
       "name": "Sending email by itself",
-      "plain": "The product has no mail server of its own to send email.",
-      "why": "The kit has no mail module and the platform provisions no mail server or SMTP relay.",
-      "workaround": "Send through a third-party email API with a key the user provides (an outbound call), or send the message through the Telegram bot.",
+      "plain": "The bot cannot send email by itself.",
+      "why": "The bot has no mail service of its own.",
+      "workaround": "Send through an email service with a key the user provides, or send the message in Telegram.",
       "detect": [
         "send email",
         "sends email",
@@ -123,60 +163,41 @@
     },
     {
       "id": "file_storage",
-      "name": "File storage beyond the database",
-      "plain": "Uploaded files are not kept on disk; only data in the database survives an update.",
-      "why": "The only persistent volume is Postgres's `db_data`; the backend and bot containers have no volume and are replaced on every deploy, and the kit has no object-storage module.",
-      "workaround": "Keep small files in the database; keep Telegram files by their Telegram file id; or use an external storage service with credentials the user provides.",
+      "aliases": [],
+      "name": "Keeping uploaded files",
+      "plain": "The bot does not keep uploaded files itself.",
+      "why": "The bot remembers data, not files.",
+      "workaround": "Photos and documents stay in Telegram and the bot remembers them; large files go to an external storage service with a key the user provides.",
       "detect": [
         "file storage",
         "store uploaded files",
         "store uploads",
+        "uploaded files",
+        "upload files",
+        "file upload",
         "persistent files",
         "files on disk",
+        "photos on the server",
         "хранение файлов",
         "файловое хранилище",
         "хранилище файлов",
         "хранить загруженные файлы",
         "хранить файлы на сервере",
-        "файлы на диске"
-      ]
-    },
-    {
-      "id": "platform_cron",
-      "name": "A schedule run by the platform",
-      "plain": "The platform does not start the product's jobs on a clock.",
-      "why": "The kit's jobs core schedules nothing, and the platform fires a product's jobs only during QA.",
-      "workaround": "Run a timer loop inside the product's bot or backend process (see \"Work on a timer\").",
-      "detect": [
-        "platform cron",
-        "platform-run schedule",
-        "platform scheduler",
-        "расписание платформы",
-        "планировщик платформы",
-        "платформа запускает по расписанию"
-      ]
-    },
-    {
-      "id": "web_frontend",
-      "name": "A separate website or web app module",
-      "plain": "The product cannot have its own website front end as a separate part.",
-      "why": "A product may request only the `backend` and `tg_bot` modules; `frontend` and `notifications` remain only for old records, and only the backend's port is published.",
-      "workaround": "Use the Telegram bot as the interface, or simple pages served by the backend at http://<server IP>:<port>.",
-      "detect": [
-        "separate website",
-        "frontend module",
-        "separate web app",
-        "отдельный сайт",
-        "модуль frontend",
-        "отдельное веб-приложение"
+        "файлы на диске",
+        "файлы на сервере",
+        "фото на сервере",
+        "документы на сервере",
+        "загрузка файлов",
+        "загружать файлы"
       ]
     },
     {
       "id": "external_database_access",
-      "name": "Reaching the database from outside",
-      "plain": "Nobody outside the server can connect to the product's database or Redis directly.",
-      "why": "Postgres and Redis get host ports allocated, but production compose publishes only the backend's port and the firewall opens only that one.",
-      "workaround": "Expose what is needed through backend endpoints.",
+      "aliases": [],
+      "name": "Direct access to the bot's data store",
+      "plain": "Nobody can connect to the bot's data store directly.",
+      "why": "The data is reachable only through the bot.",
+      "workaround": "The bot hands out the data needed through a command, such as an export or a report.",
       "detect": [
         "external database access",
         "direct database access",
@@ -184,6 +205,24 @@
         "внешний доступ к базе",
         "прямой доступ к базе",
         "публичный postgres"
+      ]
+    },
+    {
+      "id": "backups",
+      "aliases": [],
+      "name": "Backups of the data",
+      "plain": "There are no backups of the bot's data; if the server is lost, the bot's data is lost with it.",
+      "why": "The platform makes no copies of the bot's data.",
+      "workaround": null,
+      "detect": [
+        "backup",
+        "backups",
+        "data recovery",
+        "бэкап",
+        "резервная копия",
+        "резервные копии",
+        "резервное копирование",
+        "резервную копию"
       ]
     }
   ]
