@@ -29,7 +29,6 @@ import pytest
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
-    WorkerConfig,
     WorkerLabel,
     WorkerOwnership,
 )
@@ -37,6 +36,7 @@ from shared.contracts.queues.worker import (
 from .conftest import (
     REDIS_STREAM_COMMANDS,
     REDIS_STREAM_DEV_RESPONSES,
+    scaffolded_worker_config,
     wait_for_create_response,
 )
 
@@ -61,7 +61,8 @@ async def _owned_worker(redis_client, docker_client, repo_id: str, ownership: Wo
     request_id = f"own-{uuid4().hex[:8]}"
     command = CreateWorkerCommand(
         request_id=request_id,
-        config=WorkerConfig(
+        config=scaffolded_worker_config(
+            repo_id,
             name=f"dev-own-{uuid4().hex[:8]}",
             worker_type="developer",
             agent_type=AgentType.CLAUDE,
@@ -72,7 +73,6 @@ async def _owned_worker(redis_client, docker_client, repo_id: str, ownership: Wo
             # api_key mode keeps the container off the host session mount: this
             # worker never runs an agent, it only has to be created and die.
             auth_mode="api_key",
-            repo_id=repo_id,
         ),
     )
     await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})

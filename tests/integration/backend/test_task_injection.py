@@ -7,13 +7,13 @@ from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
     WorkerCapability,
-    WorkerConfig,
     WorkerOwnership,
 )
 
 from .conftest import (
     REDIS_STREAM_COMMANDS,
     REDIS_STREAM_DEV_RESPONSES,
+    scaffolded_worker_config,
     wait_for_create_response,
 )
 
@@ -50,7 +50,8 @@ class TestTaskInjection:
 
         command = CreateWorkerCommand(
             request_id=req_id,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name=f"test-task-{req_id}",
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
@@ -59,7 +60,6 @@ class TestTaskInjection:
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -101,7 +101,8 @@ class TestTaskInjection:
         req_id = f"test-hints-{uuid4().hex[:6]}"
         command = CreateWorkerCommand(
             request_id=req_id,
-            config=WorkerConfig(
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
                 name=f"test-hints-{req_id}",
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
@@ -110,7 +111,6 @@ class TestTaskInjection:
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
                 ownership=_ownership(),
-                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})

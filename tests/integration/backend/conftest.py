@@ -28,6 +28,7 @@ from shared.contracts.queues.worker import (
     CreateWorkerResponse,
     DeleteWorkerCommand,
     DeleteWorkerResponse,
+    WorkerConfig,
 )
 from shared.contracts.vocab import AgentType
 from shared.queues import WORKER_MANAGER_GROUP
@@ -706,6 +707,29 @@ async def cleanup_redis_streams(redis_client):
 WORKSPACE_BASE_PATH = "/tmp/codegen/workspaces"  # noqa: S108
 
 
+def _scaffolded_repository_env(repo_id: str) -> dict[str, str]:
+    """One test-only identity for the origin and repository-scoped native credential."""
+    return {
+        "REPO_NAME": f"backend-dind/{repo_id}",
+        "GITHUB_TOKEN": f"synthetic-backend-dind-{repo_id}",
+    }
+
+
+def scaffolded_worker_config(
+    repo_id: str, *, env_vars: dict[str, str] | None = None, **config
+) -> WorkerConfig:
+    """Build a valid developer request without changing its other test inputs.
+
+    Invalid repository input belongs in an explicit WorkerConfig, outside this
+    success-path producer. Synthetic credentials only exercise local Git setup;
+    these repositories do not exist on GitHub and must never be fetched.
+    """
+    repository_env = _scaffolded_repository_env(repo_id)
+    if repository_env.keys() & (env_vars or {}).keys():
+        raise ValueError("Use WorkerConfig directly for invalid repository input")
+    return WorkerConfig(repo_id=repo_id, env_vars=repository_env | (env_vars or {}), **config)
+
+
 def _create_scaffolded_workspace() -> str:
     """Create a minimal git repo at /tmp/codegen/workspaces/{repo_id}/. Returns repo_id."""
     repo_id = str(uuid4())
@@ -714,6 +738,12 @@ def _create_scaffolded_workspace() -> str:
 
     # Initialize a minimal git repo (workers expect a git workspace)
     subprocess.run(["git", "init", ws_path], check=True, capture_output=True)
+    repo_name = _scaffolded_repository_env(repo_id)["REPO_NAME"]
+    subprocess.run(
+        ["git", "-C", ws_path, "remote", "add", "origin", f"https://github.com/{repo_name}.git"],
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(
         ["git", "-C", ws_path, "config", "user.email", "test@test.com"],
         check=True,

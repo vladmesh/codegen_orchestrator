@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-28
 
+- Backend DinD fixtures provide matching origins and synthetic repository credentials; explicit
+  `/tmp` mounting preserves shared workspaces so real worker credential preparation can run.
 - Filtered agents use private HOME Git configuration; recovery transfers remote credentials as
   private files and cleans them after clone, update or failure.
 - Recovery uses private Ansible vars and redacted diagnostics; worker preparation upgrades

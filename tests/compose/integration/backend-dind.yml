@@ -202,6 +202,9 @@ services:
   docker:
     image: docker:29.7.0-dind
     privileged: true
+    # The DinD entrypoint mounts /tmp if it is not already a mountpoint, hiding
+    # the workspace/transcript child mounts below it. Mount the parent first.
+    tmpfs: /tmp
     environment:
       - DOCKER_TLS_CERTDIR=
     dns:
