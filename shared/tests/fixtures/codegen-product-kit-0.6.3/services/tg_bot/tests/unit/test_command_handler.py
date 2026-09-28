@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Final
 from unittest.mock import AsyncMock, MagicMock
 
@@ -30,7 +31,7 @@ def mock_context() -> MagicMock:
 
 
 @pytest.fixture
-def mock_broker():
+def mock_broker() -> Iterator[MagicMock]:
     from unittest.mock import patch
 
     mock = MagicMock()
@@ -41,7 +42,7 @@ def mock_broker():
 
 
 @pytest.fixture
-def mock_publish():
+def mock_publish() -> Iterator[AsyncMock]:
     from unittest.mock import patch
 
     with patch("services.tg_bot.src.main.publish_command_received") as mock:
@@ -61,7 +62,9 @@ async def test_handle_command_publishes_event(
     await handle_command(mock_update, mock_context)
 
     mock_publish.assert_awaited_once()
-    event = mock_publish.await_args.args[0]
+    awaited = mock_publish.await_args
+    assert awaited is not None
+    event = awaited.args[0]
     assert event.command == "/command test"
     assert event.args == ["arg1", "arg2"]
     assert event.user_id == TEST_TELEGRAM_USER_ID
@@ -84,11 +87,11 @@ class TestBackendAccess:
     async def test_active_identity_is_admitted(self) -> None:
         from unittest.mock import patch
 
-        from shared.generated.schemas import UserAccess
+        from shared.generated.schemas import Status, UserAccess
 
         access = UserAccess(
             user_id=1,
-            status="active",
+            status=Status.active,
             channel="telegram",
             external_id=str(TEST_TELEGRAM_USER_ID),
         )
@@ -107,11 +110,11 @@ class TestBackendAccess:
     async def test_revoked_and_unknown_identities_are_denied(self) -> None:
         from unittest.mock import patch
 
-        from shared.generated.schemas import UserAccess
+        from shared.generated.schemas import Status, UserAccess
 
         revoked = UserAccess(
             user_id=1,
-            status="inactive",
+            status=Status.inactive,
             channel="telegram",
             external_id=str(TEST_TELEGRAM_USER_ID),
         )
@@ -149,11 +152,11 @@ class TestBackendAccess:
 
         from telegram.ext import ApplicationHandlerStop
 
-        from shared.generated.schemas import UserAccess
+        from shared.generated.schemas import Status, UserAccess
 
         revoked = UserAccess(
             user_id=1,
-            status="inactive",
+            status=Status.inactive,
             channel="telegram",
             external_id=str(TEST_TELEGRAM_USER_ID),
         )

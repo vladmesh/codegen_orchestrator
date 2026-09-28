@@ -1,4 +1,4 @@
-## Platform capabilities (manifest v5, owner-reviewed)
+## Platform capabilities (manifest v6, owner-reviewed)
 What a product built here can and cannot have. The product is a Telegram bot and has no web address.
 Can:
 - Telegram bot: A Telegram bot people chat with, using commands, buttons and menus.

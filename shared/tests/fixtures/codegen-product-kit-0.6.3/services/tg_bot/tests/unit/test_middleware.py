@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from datetime import UTC, datetime
 import io
 import json
 import logging
@@ -19,7 +21,7 @@ configure_logging(service_name="tg_bot_test")
 
 
 @pytest.fixture()
-def log_capture():
+def log_capture() -> Iterator[io.StringIO]:
     """Capture structlog JSON output via a dedicated handler."""
     buf = io.StringIO()
     handler = logging.StreamHandler(buf)
@@ -52,7 +54,7 @@ def _make_update(
     chat = Chat(id=user_id, type="private")
     message = Message(
         message_id=1,
-        date=None,
+        date=datetime.fromtimestamp(0, UTC),
         chat=chat,
         from_user=user,
         text=text,
@@ -105,12 +107,12 @@ class TestInstallUpdateLogging:
     @patch("telegram.Bot.initialize", new_callable=AsyncMock)
     @patch("telegram.Bot.get_me", new_callable=AsyncMock)
     async def test_update_logged_with_standard_fields(
-        self, mock_get_me, mock_bot_init, log_capture
+        self, mock_get_me: AsyncMock, mock_bot_init: AsyncMock, log_capture: io.StringIO
     ) -> None:
         app = ApplicationBuilder().token("fake:token").build()
         await app.initialize()
 
-        async def _noop(update, context):
+        async def _noop(update: Update, context: object) -> None:
             pass
 
         from telegram.ext import TypeHandler
@@ -141,11 +143,13 @@ class TestInstallUpdateLogging:
     @pytest.mark.asyncio
     @patch("telegram.Bot.initialize", new_callable=AsyncMock)
     @patch("telegram.Bot.get_me", new_callable=AsyncMock)
-    async def test_handler_error_logged(self, mock_get_me, mock_bot_init, log_capture) -> None:
+    async def test_handler_error_logged(
+        self, mock_get_me: AsyncMock, mock_bot_init: AsyncMock, log_capture: io.StringIO
+    ) -> None:
         app = ApplicationBuilder().token("fake:token").build()
         await app.initialize()
 
-        async def _boom(update, context):
+        async def _boom(update: Update, context: object) -> None:
             raise ValueError("test boom")
 
         from telegram.ext import TypeHandler

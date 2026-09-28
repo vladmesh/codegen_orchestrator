@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, Enum, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, CheckConstraint, Enum, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from services.backend.src.core.orm import ORMBase
@@ -42,7 +42,7 @@ class Setting(ORMBase):
     )
     # Product-wide settings use the non-null sentinel 0 so the database unique
     # constraint remains effective on PostgreSQL as well as SQLite.
-    subject_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     value: Mapped[Any] = mapped_column(JSON(none_as_null=False), nullable=False)
 
 

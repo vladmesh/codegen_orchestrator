@@ -1,5 +1,5 @@
-## Platform capabilities, technical (manifest v5, owner-reviewed)
-What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@9a4acfd8b75f.
+## Platform capabilities, technical (manifest v6, owner-reviewed)
+What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@f23460c62fa3.
 Can (how):
 - Telegram bot [telegram_bot]: Kit module `tg_bot` (python-telegram-bot 21.4, `run_polling`), so the bot needs no web address. Kit module `backend` (FastAPI) is always included: the PO adds it to every project. The deployer reports `http://{server_ip}:{port}` of the backend's allocated port, the only port a product publishes; there is no domain name and no https.
 - The bot remembers data [stored_data]: `postgres:16` service `db` with the named volume `db_data`, deployed with the backend, reachable only from the product's own containers (`db:5432`). `redis:7-alpine` at `redis:6379` carries queues, caches and product events (Redis Streams); it has no volume, so it is not permanent storage.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from sqlalchemy import Enum, ForeignKey, String, UniqueConstraint, text
+from sqlalchemy import BigInteger, Enum, ForeignKey, Integer, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from services.backend.src.core.orm import ORMBase
@@ -22,7 +22,10 @@ class User(ORMBase):
 
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # SQLite's rowid autoincrement requires the literal INTEGER type in unit tests.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
     status: Mapped[UserStatus] = mapped_column(
         Enum(
             UserStatus,
@@ -46,7 +49,9 @@ class UserChannel(ORMBase):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     channel: Mapped[str] = mapped_column(String(64), nullable=False)
     external_id: Mapped[str] = mapped_column(String(256), nullable=False)
     user: Mapped[User] = relationship(back_populates="channels")

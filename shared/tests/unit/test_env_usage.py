@@ -395,7 +395,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     }
     assert (
         fixture_tree_digest(fixture)
-        == "f151a3bbf5057ddace93b894a184a0a5749b03e22ce8b4d9e5d5438801be6ac5"
+        == "8a24822fb07737c59415a845e8e1679c628f68d80bff7c34a14c097df80e9363"
     )
 
 

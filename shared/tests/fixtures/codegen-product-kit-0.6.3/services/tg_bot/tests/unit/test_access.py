@@ -24,3 +24,8 @@ def test_malformed_telegram_id_is_denied_before_lookup() -> None:
 
 def test_valid_telegram_id_becomes_external_identity() -> None:
     assert telegram_external_id(123456789) == "123456789"
+
+
+def test_high_telegram_ids_keep_their_external_identity() -> None:
+    assert telegram_external_id(2**31 + 1) == "2147483649"
+    assert telegram_external_id(8202532144) == "8202532144"

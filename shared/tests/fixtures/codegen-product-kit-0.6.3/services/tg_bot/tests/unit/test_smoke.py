@@ -6,20 +6,22 @@ the container at startup but pass unit tests (which use absolute imports).
 
 from __future__ import annotations
 
+import pytest
 
-def test_main_importable():
+
+def test_main_importable() -> None:
     from services.tg_bot.src.main import build_application
 
     assert build_application is not None
 
 
-def test_middleware_importable():
+def test_middleware_importable() -> None:
     from services.tg_bot.src.middleware import install_update_logging
 
     assert install_update_logging is not None
 
 
-def test_placeholder_token_detected(monkeypatch):
+def test_placeholder_token_detected(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.tg_bot.src.main import PLACEHOLDER_TELEGRAM_BOT_TOKEN, _uses_placeholder_token
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", PLACEHOLDER_TELEGRAM_BOT_TOKEN)
@@ -27,7 +29,7 @@ def test_placeholder_token_detected(monkeypatch):
     assert _uses_placeholder_token()
 
 
-def test_placeholder_token_requires_dev_opt_in(monkeypatch):
+def test_placeholder_token_requires_dev_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.tg_bot.src.main import (
         ALLOW_PLACEHOLDER_TOKEN_ENV,
         PLACEHOLDER_TELEGRAM_BOT_TOKEN,
@@ -40,7 +42,7 @@ def test_placeholder_token_requires_dev_opt_in(monkeypatch):
     assert not _allows_placeholder_token()
 
 
-def test_placeholder_token_can_be_allowed_for_dev(monkeypatch):
+def test_placeholder_token_can_be_allowed_for_dev(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.tg_bot.src.main import (
         ALLOW_PLACEHOLDER_TOKEN_ENV,
         PLACEHOLDER_TELEGRAM_BOT_TOKEN,

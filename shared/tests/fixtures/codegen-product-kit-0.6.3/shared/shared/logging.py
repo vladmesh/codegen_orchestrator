@@ -8,9 +8,19 @@ running non-interactively, and coloured console output in a terminal.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 
 import structlog
+
+_TELEGRAM_TOKEN_PATH = re.compile(r"(/(?:file/)?bot)\d+(?::|%3[Aa])[A-Za-z0-9_-]+")
+
+
+class _TelegramSafeFormatter(structlog.stdlib.ProcessorFormatter):
+    """Remove Telegram URL credentials after rendering messages and tracebacks."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _TELEGRAM_TOKEN_PATH.sub(r"\1[REDACTED]", super().format(record))
 
 
 def configure_logging(service_name: str, log_level: str = "INFO") -> None:
@@ -41,7 +51,7 @@ def configure_logging(service_name: str, log_level: str = "INFO") -> None:
         else structlog.processors.JSONRenderer()
     )
 
-    formatter = structlog.stdlib.ProcessorFormatter(
+    formatter = _TelegramSafeFormatter(
         processor=renderer,
         foreign_pre_chain=shared_processors,
     )
@@ -54,8 +64,10 @@ def configure_logging(service_name: str, log_level: str = "INFO") -> None:
     root.addHandler(handler)
     root.setLevel(getattr(logging, log_level.upper(), logging.INFO))
 
-    # Quiet down noisy third-party loggers
+    # Request URLs contain Telegram credentials, including at application DEBUG.
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Bind service name so every subsequent log line includes it
     structlog.contextvars.clear_contextvars()
