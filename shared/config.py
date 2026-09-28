@@ -129,9 +129,14 @@ def default_agent_type_field():
 
 
 def internal_api_key_field():
-    """Shared service token for internal API calls (X-Internal-Key header)."""
+    """Shared service token for internal API calls (X-Internal-Key header).
+
+    An empty key would make an empty `X-Internal-Key` header a valid credential,
+    so it is refused at startup.
+    """
     return Field(
         ...,
         alias="INTERNAL_API_KEY",
+        min_length=1,
         description="Secret token internal services use to authenticate against the API",
     )

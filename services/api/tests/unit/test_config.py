@@ -51,3 +51,11 @@ def test_settings_and_executor_resolution_work_without_telegram_bot_token(monkey
     assert not hasattr(settings, "telegram_bot_token")
     assert decision.agent_type is AgentType.CODEX
     assert decision.source is ExecutorDecisionSource.API_DEFAULT
+
+
+def test_blank_internal_api_key_is_rejected(monkeypatch):
+    """An empty INTERNAL_API_KEY would authenticate an empty X-Internal-Key header."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "")
+
+    with pytest.raises(ValueError, match="INTERNAL_API_KEY"):
+        Settings(_env_file=None)

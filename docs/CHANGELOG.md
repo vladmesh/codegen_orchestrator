@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-28
+
+- The API refuses to start with an empty `INTERNAL_API_KEY`, and an empty `X-Internal-Key` never
+  authenticates, so a blank key can no longer be an internal-service bypass.
+
 ## 2026-09-27
 
 - A commit whose env contract requires a derived key the resolver cannot compute fails engineering

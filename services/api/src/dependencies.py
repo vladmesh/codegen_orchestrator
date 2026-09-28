@@ -51,9 +51,13 @@ async def is_internal_service(
     x_internal_key: str | None = Header(None, alias="X-Internal-Key"),
 ) -> bool:
     """Return True when the request carries a valid internal service token."""
-    if x_internal_key is None:
+    if not x_internal_key:
         return False
-    return secrets.compare_digest(x_internal_key, get_settings().internal_api_key)
+    configured_key = get_settings().internal_api_key
+    # Settings already refuse an empty key; an empty one here must still match nothing.
+    if not configured_key:
+        return False
+    return secrets.compare_digest(x_internal_key, configured_key)
 
 
 async def resolve_actor(
