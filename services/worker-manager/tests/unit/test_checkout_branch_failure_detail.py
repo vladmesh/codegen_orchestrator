@@ -98,7 +98,11 @@ async def test_a_token_in_git_output_is_redacted():
 async def test_repository_not_found_twice_then_checkout_completes():
     missing = (128, b"", b"remote: Repository not found.\n")
     docker = _docker(0)
-    docker.exec_capture.side_effect = [missing, missing, (0, b"origin/story/x", b"")]
+    docker.exec_capture.side_effect = [
+        missing,
+        missing,
+        (0, b"origin/story/x\nCODEGEN_CHECKOUT_HEAD=" + b"a" * 40, b""),
+    ]
     sleep = AsyncMock()
 
     with patch("src.git_ops.asyncio.sleep", sleep), structlog.testing.capture_logs() as logs:

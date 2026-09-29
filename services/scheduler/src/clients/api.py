@@ -38,6 +38,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotification,
     OwnerNotificationAttemptClaim,
 )
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairCommand, PRConflictRepairRead
 from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
@@ -570,6 +571,14 @@ class SchedulerAPIClient(InternalAPIClient):
             json={"actor": "scheduler"},
         )
         return StoryDTO.model_validate(resp.json())
+
+    async def repair_story_pr_conflicts(
+        self, story_id: str, command: PRConflictRepairCommand
+    ) -> PRConflictRepairRead:
+        resp = await self.request(
+            "POST", f"stories/{story_id}/repair-pr-conflicts", json=command.model_dump(mode="json")
+        )
+        return PRConflictRepairRead.model_validate(resp.json())
 
     async def park_infrastructure_refusal(
         self, story_id: str, command: EngineeringInfrastructureParkCommand

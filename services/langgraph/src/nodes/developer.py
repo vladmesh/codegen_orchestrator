@@ -255,6 +255,8 @@ class DeveloperNode(FunctionalNode):
             project_name=project_name,
             clear_session=turn.clear_session,
         )
+        if worker_result.pre_attempt_head_sha is not None:
+            pre_attempt_head = worker_result.pre_attempt_head_sha
 
         unpushed = await self._unpushed_commit_error(
             github_client=github_client,

@@ -12,6 +12,18 @@
 
 ## Running Tests
 
+Dirty-PR regressions use real local bare Git remotes, PostgreSQL row locks and
+Redis dispatch/notice readback. API service tests cover concurrent admission,
+rollback and response-loss retry, head/cycle/owner fences and terminal repair
+exhaustion. The LangGraph service leg runs `test_pr_conflict_recovery.py` against
+the disposable `conflict-api` fixture: the registered PO `reopen_story` tool and
+actual scheduler poller/dispatcher reach one admitted engineering Run, then
+deterministic results exercise clean merging, dirty exhaustion, `gave_up` and
+all native failed-iteration retries with both notice audiences.
+Refusal settlement is replayed after an interrupted Task write without another stop.
+Only GitHub and administrator Telegram responses are synthetic; no provider,
+worker container, live repository mutation or production recovery is exercised.
+
 ```bash
 # Unit (fast, no deps — run before every push)
 make test-unit                 # All services (parallel, ~12s; no host services)

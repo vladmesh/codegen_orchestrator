@@ -39,6 +39,7 @@ from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.empty_engineering_stop import ensure_empty_story_stop, matching_empty_cause
+from shared.pr_conflict_repair import stop_failed_pr_repair
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
@@ -478,6 +479,17 @@ async def _supervise_failed_task(
             "task_retries_exhausted",
             reason="escalating_to_human",
         )
+        if task.id.startswith("pr-conflict-") and story_id not in escalated_stories:
+            await stop_failed_pr_repair(
+                api_client,
+                story_id,
+                task.id,
+                engineering_runs[0].id if engineering_runs else "no-run",
+                "Engineering retries exhausted.",
+                "scheduler",
+            )
+            # This scoped path never applies a bare stop to a superseded cycle.
+            escalated_stories.add(story_id)
         try:
             await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
         except Exception as exc:

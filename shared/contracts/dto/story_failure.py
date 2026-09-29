@@ -61,6 +61,7 @@ class StoryFailureCode(StrEnum):
     NO_NEW_COMMIT = "no_new_commit"
     #: The deploy could not compute the required production environment.
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
+    PR_CONFLICT_REPAIR_EXHAUSTED = "pr_conflict_repair_exhausted"
 
 
 class StoryFailure(BaseModel):
@@ -83,6 +84,9 @@ class StoryFailure(BaseModel):
 
 
 _OWNER_WORDS: dict[StoryFailureCode, str] = {
+    StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED: (
+        "Work on this change stopped: its pull request still has conflicts after repair."
+    ),
     StoryFailureCode.SCAFFOLD_FAILED: (
         "Work on this change stopped before it began: the platform could not create the "
         "project's code repository, so nothing was built."

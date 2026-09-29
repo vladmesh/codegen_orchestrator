@@ -26,6 +26,7 @@ from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.empty_engineering_stop import ensure_empty_story_stop
 from shared.notifications import notify_admins_best_effort
+from shared.pr_conflict_repair import stop_failed_pr_repair
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
 from shared.redis.client import decode_redis_fields
@@ -378,6 +379,35 @@ async def handle_worker_gave_up(
         },
     )
 
+    settlement = live_work_settled(
+        {"status": "gave_up", "reason": reason, "finished_at": datetime.now(UTC).isoformat()}
+    )
+    if planning_task_id and planning_task_id.startswith("pr-conflict-"):
+        if story_id is None:
+            raise RuntimeError("An admitted conflict repair requires its story")
+        await stop_failed_pr_repair(
+            api_client,
+            story_id,
+            planning_task_id,
+            task_id,
+            f"The worker declined repair: {bounded_diagnostic(reason)}",
+            "engineering",
+        )
+        task = await api_client.get_task(planning_task_id)
+        if task.status != TaskStatus.WAITING_HUMAN_REVIEW:
+            await api_client.post(
+                f"tasks/{planning_task_id}/transition",
+                params={"to_status": TaskStatus.WAITING_HUMAN_REVIEW.value},
+                json={"actor": "engineering-worker"},
+            )
+        await api_client.patch(
+            f"tasks/{planning_task_id}", json={"failure_metadata": {"reason": reason}}
+        )
+        await _write_task_event(
+            api_client, planning_task_id, "note", {"action": "worker_gave_up", "reason": reason}
+        )
+        return settlement
+
     if planning_task_id:
         try:
             await api_client.post(
@@ -442,13 +472,7 @@ async def handle_worker_gave_up(
         except Exception:
             logger.warning("po_notify_on_gave_up_failed", task_id=task_id, exc_info=True)
 
-    return live_work_settled(
-        {
-            "status": "gave_up",
-            "reason": reason,
-            "finished_at": datetime.now(UTC).isoformat(),
-        }
-    )
+    return settlement
 
 
 async def _uncomputable_derived_keys_at(project_id: str, commit_sha: str) -> list[str]:

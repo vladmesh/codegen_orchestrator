@@ -12,6 +12,7 @@ import uuid
 import structlog
 
 from shared.clients.github import GitHubAppClient, RegistrySecretsNotRefreshedError
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairCommand
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.users_grant import (
@@ -685,6 +686,24 @@ async def _merge_open_pr(
         pull_request = {**pull_request, "auto_merge": None}
 
     mergeable_state = pull_request.get("mergeable_state")
+    if mergeable_state == "dirty":
+        story = await api_client.get_story(story_id)
+        command = PRConflictRepairCommand(
+            project_id=project_id,
+            pr_number=pr_number,
+            cycle_started_at=story.reopened_at or story.created_at,
+            expected_head_sha=pull_request["head"]["sha"],
+        )
+        repair = await api_client.repair_story_pr_conflicts(story_id, command)
+        log.info(
+            "poll_dirty_pr_repair",
+            outcome=repair.outcome,
+            task_id=repair.task_id,
+            pr_number=pr_number,
+        )
+        # The API commits both owed audiences on exhaustion. The normal durable
+        # notification sweep delivers them even if this poll dies after admission.
+        return None
     if mergeable_state == "behind":
         try:
             await github.update_pull_request_branch(owner, repo_name, pr_number)
@@ -725,6 +744,32 @@ async def _merge_open_pr(
         )
         return None
 
+    return await _merge_clean_pr(
+        api_client,
+        github,
+        redis_client,
+        story_id=story_id,
+        project_id=project_id,
+        owner=owner,
+        repo_name=repo_name,
+        pr_number=pr_number,
+        log=log,
+    )
+
+
+async def _merge_clean_pr(
+    api_client: SchedulerAPIClient,
+    github: GitHubAppClient,
+    redis_client: RedisStreamClient,
+    *,
+    story_id: str,
+    project_id: str,
+    owner: str,
+    repo_name: str,
+    pr_number: int,
+    log: structlog.stdlib.BoundLogger,
+) -> dict | None:
+    mergeable_state = "clean"
     # The merge starts the product's push-main CI, whose image builds read the
     # registry secrets when they start. Make them current first, on every merge:
     # an imported repository, or one created before a hostname or credential

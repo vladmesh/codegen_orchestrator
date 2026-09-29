@@ -80,6 +80,34 @@ services:
       timeout: 5s
       retries: 10
 
+  conflict-api:
+    image: codegen-orchestrator/api:test
+    build:
+      context: ../../..
+      dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    command: ["python", "/app/conflict-api-fixture.py"]
+    environment:
+      - DEFAULT_AGENT_TYPE=claude
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379/0
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - LK_JWT_SECRET=test-lk-jwt-secret-for-service-tests
+      - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
+    depends_on:
+      control-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ../../../services/api/src:/app/src:ro
+      - ../../../shared:/app/shared:ro
+      - ../../../services/langgraph/tests/service/_pr_conflict_api.py:/app/conflict-api-fixture.py:ro
+
   langgraph-test-runner:
     image: codegen-orchestrator/langgraph-test-runner:test
     build:
@@ -93,6 +121,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - TEST_API_BASE_URL=http://control-api:8000
+      - TEST_CONFLICT_API_BASE_URL=http://conflict-api:8000
       - TEST_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
@@ -100,6 +129,8 @@ services:
       redis:
         condition: service_healthy
       control-api:
+        condition: service_healthy
+      conflict-api:
         condition: service_healthy
     volumes:
       - ../../../services/langgraph/src:/app/src

@@ -24,6 +24,50 @@ the boundary, producer, consumer, or invariant changes.
 
 ## Caller principals
 
+### Story PR conflict repair
+
+`POST /api/stories/{id}/repair-pr-conflicts` accepts `PRConflictRepairCommand`
+and returns `PRConflictRepairRead`. The scheduler supplies the observed head;
+the registered PO `reopen_story` tool may omit it only for the released
+`waiting_human_review` / `github_app_merge_refused` / `dirty` quarantine.
+The API resolves service, administrator or project-owner authority from credentials,
+checks project, current PR and cycle (`reopened_at`, otherwise `created_at`), and
+reads the open dirty PR, repository, story branch and actual default through the
+GitHub App. Actor text and model-selected IDs grant no authority.
+
+Task rows lock before Story rows. A deterministic Task ID per story cycle and
+the Story lock serialize admission: one FIX Task, its immutable admission event
+and `in_progress` landing commit together. Repeated requests reuse that Task;
+neither repair admission nor CI retry starts another story cycle. Prior Tasks,
+Runs and PR identities survive. The event records PR/head/default evidence and
+the required `llm.task_default_max_iterations` bound, which normal engineering
+dispatch enforces. No Run or queue message is created here; ordinary task
+dispatch uses `/work-admission/engineering-dispatches`.
+
+Once this Task completes, exhausts its failed-iteration retries, is cancelled or
+requires human review, a still dirty PR exhausts repair rather than creating
+another Task, even if its head changed. The native iteration ceiling permits
+iteration zero followed by retries up to `max_iterations`; a failed attempt
+below that ceiling remains eligible for the ordinary supervisor retry.
+Exhaustion commits the named PR, Task and bound with both owed notice audiences.
+An interrupted response is safe to repeat. Missing/stale evidence,
+live unrelated work and unrelated quarantines fail without mutation. GitHub
+read failures remain visible failures. This route never resets a task budget,
+force-pushes, merges a dirty PR or replans the story.
+
+The failed-task supervisor and engineering `gave_up` handler use the immutable
+admission event to record this same named, durable stop before settling the
+repair Task. A transport failure retains the next visit; a superseded cycle or
+unrelated quarantine cannot stop current work. The existing no-new-commit,
+infrastructure and resource-wait dispositions retain priority. Owner/admin
+delivery uses the existing owed-notification sweep.
+
+Worker checkout fast-forwards a synchronized story tip to freshly fetched
+default only when both local and fetched remote work are contained there.
+Unmerged work stays; divergence and tracked dirty work fail visibly. Native
+non-force publication and readback finish preparation before the turn baseline
+is recorded, so advancing the base is not engineering output.
+
 `services/api/src/dependencies.py` and `services/api/src/routers/_recipients.py`
 resolve the caller once. An LK bearer acts only as the token subject. An
 internal key is a service principal and may name an actor through

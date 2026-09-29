@@ -84,6 +84,7 @@ class SpawnResult:
     agent_limit_seconds: int | None = None
     turn_result_consumed: bool = False
     execution: EngineeringExecutionEvidence | None = None
+    pre_attempt_head_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -593,6 +594,35 @@ async def record_worker_on_attempt(attempt_id: str, worker_id: str) -> None:
     )
 
 
+async def record_prepared_head(redis_client, attempt_id: str, worker_id: str) -> str:
+    """Read checkout's published tip after readiness and before the first turn.
+
+    Checkout publishes and reads back its preserved local HEAD, so this native
+    evidence is the actual prepared base. Reclaimed turns use their saved baseline.
+    """
+    import re
+
+    from .api import api_client
+
+    raw = await redis_client.hget(f"worker:meta:{worker_id}", "prepared_head_sha")
+    head = decode_redis_value(raw) if raw is not None else None
+    if head is None or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is None:
+        raise RuntimeError("The prepared checkout has no valid HEAD evidence")
+    await api_client.patch(
+        f"runs/{attempt_id}",
+        json={"run_metadata": AttemptTurnMetadata(pre_attempt_head_sha=head).as_run_metadata()},
+    )
+    return head
+
+
+async def _create_output_group(redis_client, output_stream: str, group_name: str) -> None:
+    try:
+        await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
+    except redis.ResponseError as exc:
+        if "BUSYGROUP" not in str(exc):
+            raise
+
+
 async def _send_turn(
     redis_client: redis.Redis,
     worker_id: str,
@@ -800,14 +830,16 @@ async def request_spawn(
 
         logger.info("worker_ready", request_id=request_id, worker_id=worker_id)
 
+        prepared_head = (
+            await record_prepared_head(redis_client, ownership.attempt_id, worker_id)
+            if story.branch
+            else None
+        )
+
         # 4. Set up output stream consumer group BEFORE sending task
         # Use id="0" to read any existing messages (in case worker is very fast)
         output_stream = f"worker:{worker_id}:output"
-        try:
-            await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
-        except redis.ResponseError as e:
-            if "BUSYGROUP" not in str(e):
-                raise
+        await _create_output_group(redis_client, output_stream, group_name)
 
         # 5. Send task message to worker input stream
         await record_turn_on_attempt(ownership.attempt_id, request_id)
@@ -837,7 +869,9 @@ async def request_spawn(
             return _invalid_worker_result(request_id, worker_id)
 
         if output_resp:
-            return spawn_result_from_output(output_resp, request_id, worker_id)
+            result = spawn_result_from_output(output_resp, request_id, worker_id)
+            result.pre_attempt_head_sha = prepared_head
+            return result
         else:
             # Timeout - cleanup the zombie container
             if worker_id:

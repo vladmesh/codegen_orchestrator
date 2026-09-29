@@ -11,6 +11,11 @@ from langchain_core.tools import tool
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.pr_conflict_repair import (
+    PRConflictRepairCommand,
+    PRConflictRepairOutcome,
+    PRConflictRepairRead,
+)
 from shared.contracts.dto.product_brief import ProductBriefRead, ProductBriefStoryBind
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import (
@@ -339,6 +344,8 @@ async def reopen_story(
       carries their words through the pipeline (PO → Architect → Developer).
     - A platform retry of a `failed` story: `user_report` is optional; pass it
       only when the user said what went wrong.
+    - A story waiting for human review because its PR was refused as dirty:
+      request one bounded conflict repair on its existing branch and PR.
 
     Args:
         story_id: ID of the completed or failed story to reopen.
@@ -351,7 +358,33 @@ async def reopen_story(
 
     current = await api.get_raw(f"stories/{story_id}", headers=headers)
     current.raise_for_status()
-    status = current.json()["status"]
+    record = current.json()
+    status = record["status"]
+    quarantine = record.get("quarantine_reason") or {}
+    if (
+        status == "waiting_human_review"
+        and quarantine.get("reason") == "github_app_merge_refused"
+        and quarantine.get("mergeable_state") == "dirty"
+        and quarantine.get("pr_number") == record.get("pr_number")
+    ):
+        command = PRConflictRepairCommand(
+            project_id=record["project_id"],
+            pr_number=record["pr_number"],
+            cycle_started_at=record.get("reopened_at") or record["created_at"],
+        )
+        response = await api.post_raw(
+            f"stories/{story_id}/repair-pr-conflicts",
+            json=command.model_dump(mode="json"),
+            headers=headers,
+        )
+        response.raise_for_status()
+        repaired = PRConflictRepairRead.model_validate(response.json())
+        if repaired.outcome is PRConflictRepairOutcome.EXHAUSTED:
+            return f"Conflict repair stopped for story {story_id}: {repaired.reason}"
+        return (
+            f"Story {story_id} resumed for conflict repair in Task {repaired.task_id}. "
+            "The existing pull request and its work are preserved; normal dispatch will run it."
+        )
     if status not in REOPENABLE_STATUSES:
         return (
             f"Story {story_id} was not reopened: it is {status}. Only a completed or a "

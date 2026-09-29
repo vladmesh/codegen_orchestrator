@@ -1084,7 +1084,7 @@ async def test_checkout_branch_called_when_branch_provided():
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
-    wrapper.exec_capture = AsyncMock(return_value=(0, b"ok", b""))
+    wrapper.exec_capture = AsyncMock(return_value=(0, b"CODEGEN_CHECKOUT_HEAD=" + b"a" * 40, b""))
 
     manager = WorkerManager(redis=redis, docker_client=wrapper)
 
