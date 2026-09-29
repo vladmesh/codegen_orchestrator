@@ -53,6 +53,141 @@ admission = importlib.import_module("review_api.engineering_dispatch_admission")
 
 
 @pytest.mark.asyncio
+async def test_budget_denied_conflict_task_reaches_durable_native_review():
+    """Reviewer reproduction with the real admission/refusal writer wired in."""
+    from shared.contracts.dto.work_admission import PaidRunStartRead, WorkAdmissionRead
+
+    paid = importlib.import_module("review_api.work_admission")
+    cycle = datetime.now(UTC)
+    pid = uuid.uuid4()
+    tid = repair_task_id("story", cycle)
+    task = Task(
+        id=tid,
+        project_id=pid,
+        story_id="story",
+        status="todo",
+        type="fix",
+        repository_id="repo",
+        dispatch_admitted=True,
+        created_by=PR_CONFLICT_REPAIR_KEY,
+        current_iteration=0,
+        max_iterations=3,
+    )
+    story = Story(id="story", project_id=pid, status="in_progress", pr_number=3, created_at=cycle)
+    project = Project(
+        id=pid, status="active", config={"workspace_ready": True}, initiating_run_id="po-request"
+    )
+    evidence = PRConflictRepairEvidence(
+        project_id=pid,
+        story_id=story.id,
+        pr_number=3,
+        cycle_started_at=cycle,
+        repository_id="repo",
+        head_sha="a" * 40,
+        default_branch="main",
+        default_sha="b" * 40,
+        max_iterations=3,
+    )
+    events = [
+        TaskEvent(task_id=tid, details={PR_CONFLICT_REPAIR_KEY: evidence.model_dump(mode="json")})
+    ]
+    audits = []
+    db = AsyncMock()
+    db.get.return_value = Repository(id="repo", project_id=pid, role="primary")
+    db.add = lambda row: events.append(row) if isinstance(row, TaskEvent) else audits.append(row)
+
+    async def scalars(statement):
+        return SimpleNamespace(
+            all=lambda: events if statement.column_descriptions[0]["entity"] is TaskEvent else [tid]
+        )
+
+    db.scalars.side_effect = scalars
+
+    async def deny(command, session):
+        return PaidRunStartRead(
+            admission=await paid._audit(
+                session,
+                "paid_work",
+                WorkAdmissionRead(outcome="denied", reason="engineering_budget_denied"),
+                reference_id=command.id,
+                command_payload=command.model_dump(mode="json"),
+            )
+        )
+
+    api = AsyncMock()
+
+    def task_read():
+        return SimpleNamespace(
+            id=tid,
+            project_id=pid,
+            story_id=story.id,
+            status=TaskStatus(task.status),
+            current_iteration=0,
+            max_iterations=3,
+            type=TaskType.FIX,
+        )
+
+    api.get_tasks_by_status.side_effect = lambda status: (
+        [task_read()] if status == TaskStatus(task.status) else []
+    )
+
+    async def ask(command):
+        return await admission.admit_engineering_dispatch(command, db)
+
+    api.admit_engineering_dispatch.side_effect = ask
+    stream = AsyncMock()
+    with (
+        patch.object(
+            admission,
+            "_lock_dispatch_tasks",
+            AsyncMock(return_value=(task, {tid: task}, None, story.id)),
+        ),
+        patch(
+            "review_api.routers._story_helpers._get_story_for_update", AsyncMock(return_value=story)
+        ),
+        patch(
+            "review_api.routers.projects_guards.load_locked_project",
+            AsyncMock(return_value=project),
+        ),
+        patch.object(admission, "_lock_engineering_runs", AsyncMock(return_value=[])),
+        patch.object(admission, "start_paid_run", AsyncMock(side_effect=deny)),
+    ):
+        for _ in range(3):
+            assert await dispatcher.dispatch_todo_tasks(api, stream) == 0
+            await supervise_stuck_tasks(api, stream)
+            assert await supervise_failed_tasks(api, stream) == {"retried": 0, "escalated": 0}
+    assert task.status == story.status == "waiting_human_review"
+    assert story.owner_notification["state"] == story.owner_notification["admin_state"] == "owed"
+    assert task.current_iteration == 0 and len(audits) == 1
+    api.transition_task.assert_not_awaited()
+    api.start_engineering_attempt.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+    api.owe_story_owner_notification.assert_not_awaited()
+    stream.publish_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_conflict_refusal_disposition_never_falls_back_to_generic_start():
+    from shared.contracts.dto.work_admission import PaidRunStartRead, WorkAdmissionRead
+
+    api = AsyncMock()
+    stream = AsyncMock()
+    decision = EngineeringDispatchRead(
+        outcome="refused",
+        reason="engineering_budget_denied",
+        paid_work=PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome="denied", reason="engineering_budget_denied")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="committed disposition"):
+        await dispatcher._handle_refusal(
+            api, stream, SimpleNamespace(id="pr-conflict-missing"), decision, structlog.get_logger()
+        )
+    api.transition_task.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_fast_failed_conflict_retry_survives_original_dispatch_start():
     pid = uuid.uuid4()
     cycle = datetime.now(UTC)

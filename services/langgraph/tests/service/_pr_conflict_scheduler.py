@@ -11,7 +11,10 @@ from shared.notifications import AdminDeliveryResult
 from shared.redis import RedisStreamClient
 from src import startup
 from src.clients.api import SchedulerAPIClient
-from src.tasks.owner_notifications import deliver_owed_notification
+from src.tasks.owner_notifications import (
+    deliver_owed_notification,
+    supervise_owed_owner_notifications,
+)
 from src.tasks.pr_poller import poll_merged_prs
 from src.tasks.supervisor.liveness import supervise_failed_tasks, supervise_stuck_tasks
 from src.tasks.task_dispatcher import dispatch_todo_tasks
@@ -26,6 +29,20 @@ class ScopedAPI(SchedulerAPIClient):
 
     async def get_tasks_by_status(self, status):
         return [row for row in await super().get_tasks_by_status(status) if row.story_id == STORY]
+
+    async def list_runs_owing_owner_notification(self, **kwargs):
+        return [
+            row
+            for row in await super().list_runs_owing_owner_notification(**kwargs)
+            if row.story_id == STORY
+        ]
+
+    async def list_stories_owing_owner_notification(self, **kwargs):
+        return [
+            row
+            for row in await super().list_stories_owing_owner_notification(**kwargs)
+            if row.id == STORY
+        ]
 
 
 class SyntheticGitHub:
@@ -73,6 +90,16 @@ async def exercise():
                 assert await poll_merged_prs(api, stream) == 0
             if mode == "clean":
                 assert github.merged and github.refreshed
+        elif mode == "refusal-lost":
+            await refuse_with_lost_response(api, stream)
+        elif mode == "notice-sweep":
+            with patch(
+                "src.tasks.owner_notifications.deliver_to_admins",
+                AsyncMock(return_value=AdminDeliveryResult(configured=1, succeeded=1)),
+            ) as admins:
+                await supervise_owed_owner_notifications(api, stream)
+                await supervise_owed_owner_notifications(api, stream)
+                admins.assert_awaited_once()
         elif mode == "dispatch":
             assert await dispatch_todo_tasks(api, stream) == 1
             assert await dispatch_todo_tasks(api, stream) == 0
@@ -129,6 +156,71 @@ async def exercise():
     finally:
         await stream.close()
         await api.close()
+
+
+async def refuse_with_lost_response(api, stream):
+    request = api.request
+    lost = False
+    discovered = 0
+    ready = asyncio.Event()
+
+    async def rendezvous(method, path):
+        nonlocal discovered
+        if method == "POST" and path.endswith("engineering-dispatches"):
+            discovered += 1
+            if discovered == 2:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), timeout=5)
+
+    async def decide_and_lose(send, method, path, **kwargs):
+        nonlocal lost
+        await rendezvous(method, path)
+        result = await send(method, path, **kwargs)
+        if (
+            method == "POST"
+            and path.endswith("engineering-dispatches")
+            and result.json()["refusal_disposition"]
+            and not lost
+        ):
+            assert result.json()["outcome"] == "refused"
+            lost = True
+            raise OSError("committed refusal response lost")
+        return result
+
+    async def lose(method, path, **kwargs):
+        return await decide_and_lose(request, method, path, **kwargs)
+
+    other = ScopedAPI()
+    other_request = other.request
+
+    async def other_lose(method, path, **kwargs):
+        return await decide_and_lose(other_request, method, path, **kwargs)
+
+    try:
+        with (
+            patch.object(api, "request", lose),
+            patch.object(other, "request", other_lose),
+            patch.object(
+                api,
+                "transition_task",
+                AsyncMock(side_effect=AssertionError("generic refusal start")),
+            ),
+            patch.object(
+                other,
+                "transition_task",
+                AsyncMock(side_effect=AssertionError("generic refusal start")),
+            ),
+        ):
+            assert await asyncio.gather(
+                dispatch_todo_tasks(api, stream), dispatch_todo_tasks(other, stream)
+            ) == [0, 0]
+        assert lost
+        for _ in range(2):
+            assert await dispatch_todo_tasks(api, stream) == 0
+            await supervise_stuck_tasks(api, stream)
+            assert await supervise_failed_tasks(api, stream) == {"retried": 0, "escalated": 0}
+    finally:
+        await other.close()
 
 
 async def delayed_dispatch_start(api, stream):

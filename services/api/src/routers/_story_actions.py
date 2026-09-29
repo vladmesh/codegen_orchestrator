@@ -298,14 +298,16 @@ async def _repair_admission_evidence(
 ) -> PRConflictRepairEvidence:
     if task.story_id != story.id or task.project_id != story.project_id:
         _repair_conflict("The repair Task has inconsistent resource relationships.")
-    admission = await db.scalar(
-        select(TaskEvent)
-        .where(TaskEvent.task_id == task.id, TaskEvent.event_type == TaskEventType.NOTE.value)
-        .order_by(TaskEvent.id)
+    from ._pr_conflict_attempt import _admission_evidence
+
+    events = list(
+        (
+            await db.scalars(
+                select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
+            )
+        ).all()
     )
-    if admission is None or PR_CONFLICT_REPAIR_KEY not in admission.details:
-        _repair_conflict("The repair admission evidence is missing.")
-    evidence = PRConflictRepairEvidence.model_validate(admission.details[PR_CONFLICT_REPAIR_KEY])
+    evidence = await _admission_evidence(task, story, events, db)
     if (
         evidence.pr_number != story.pr_number
         or evidence.repository_id != repository_id

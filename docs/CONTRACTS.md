@@ -26,6 +26,34 @@ the boundary, producer, consumer, or invariant changes.
 
 ### Story PR conflict repair
 
+Conflict dispatch dispositions use the existing engineering admission lock ladder.
+The following producers and consumers own each outcome; admission refusals create
+no Run and a deferred paid gate result does not itself count an engineering attempt.
+
+| Outcome | Authority and native consumer |
+|---|---|
+| Non-TODO/unadmitted Task, blocker, internal/legacy/draft project, workspace pending, roster change, stale cycle/PR or Story review | Admission refuses without Task/Story disposition; dispatcher waits for later eligibility. |
+| Failed workspace ensure | Admission's native infrastructure park and workspace audit; infrastructure retry clears the exact park. |
+| Sibling status/live Run, own live Run, finished current-iteration Run | Locked admission refuses busy work or returns a repair; dispatcher uses admitted-start or scoped terminal settlement, without buying another attempt. |
+| Emergency stop, paid-count deferral, first/later budget denial | Paid gate audits the real decision; conflict admission commits Task/Story human review and both owed audiences together. This retains the existing engineering refusal consumer's human disposition, including the paid-count gate's deferred result. |
+| Executor unavailable/confirmation required | Paid gate audits; admission commits the existing infrastructure park, even for deferred confirmation; scheduler consumes it and infrastructure retry owns recovery. |
+| Admitted/lost-response start, operator spawn | Admission creates a real Run/hold; dispatcher publishes then uses locked admitted-start; operator spawn locks admission/start before publication. Generic conflict start remains refused. |
+| Terminal/reclaimed/stuck/failed/finished-Run recovery | Consumer persists the real Run; scoped attempt-outcome owns retry/ending. Reclaim ACKs terminal work; native supervision or TODO recovery settles it. Infrastructure/resource/no-new-commit priorities remain. |
+| Deliberate human recovery | Authenticated internal/admin Task resume checks the current conflict admission and matching stop, records the fresh iteration/bound, and returns Task/Story eligibility. Admission recognises only that native audited bound; prior decisions/Runs remain history. |
+
+`EngineeringDispatchRead.refusal_disposition` names the parked conflict Task and
+the immutable paid decision reference, never a Run FK. The scheduler consumes
+the committed result without another start, Story stop or notice write. Lost
+responses converge through the non-TODO fence and normal owed-notice delivery.
+Other Task dispatch policy and the released dirty-Story restart boundary retain
+their existing ownership.
+The native resume status event alone may extend the bound; generic conflict
+transition/reopen bodies cannot claim `action=operator_resume`, and client note
+events have no status edges that could supply that authority.
+An immutable no-Run stop continues to fence dispatch after mutable status or
+metadata changes until that deliberate command supersedes it. Current conflict
+admission and live-work checks also precede workspace-failure parks.
+
 `POST /api/stories/{id}/repair-pr-conflicts` accepts `PRConflictRepairCommand`
 and returns `PRConflictRepairRead`. The scheduler supplies the observed head;
 the registered PO `reopen_story` tool may omit it only for the released

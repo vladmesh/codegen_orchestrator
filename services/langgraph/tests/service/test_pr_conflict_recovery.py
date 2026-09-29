@@ -63,9 +63,11 @@ async def rows(query, *args):
         "gave_up-todo",
         "failed",
         "failed-late-start",
+        "budget-first",
+        "budget-retry",
     ],
 )
-async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
+async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(  # noqa: PLR0915 - native recovery cases
     real_redis, released, ending
 ):
     api = LanggraphAPIClient()
@@ -164,6 +166,11 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
             }
         )
         await real_redis.set(EXECUTOR_DIAGNOSTICS_REDIS_KEY, snapshot.model_dump_json())
+        if ending.startswith("budget-"):
+            await exercise_budget_refusal(
+                api, real_redis, sid, project, repair, original["id"], ending
+            )
+            return
         delayed_dispatch = await begin_dispatch(real_redis, sid, ending)
         runs = await rows("SELECT * FROM runs WHERE task_id=%s", repair["id"])
         assert len(runs) == 1 and runs[0]["story_id"] == sid
@@ -207,6 +214,118 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
         )
     finally:
         await api.close()
+
+
+async def exercise_budget_refusal(api, redis, sid, project, repair, original_id, ending):
+    url = f"engineering-budget-policies/{project['owner_id']}"
+    policy = await set_budget_policy(
+        api,
+        url,
+        json={"limit_microusd": 20, "attempt_reservation_microusd": 10, "state": "enabled"},
+    )
+    later = ending == "budget-retry"
+    if later:
+        # Real Redis publication/consumer failure/atomic retry, including the
+        # original delayed admitted start, precede this later no-Run denial.
+        delayed = await begin_dispatch(redis, sid, "failed-late-start")
+        run = (await rows("SELECT * FROM runs WHERE task_id=%s", repair["id"]))[0]
+        await fail_before_original_start(api, redis, sid, repair, run, delayed)
+    before_runs = await rows(
+        "SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"]
+    )
+    before_events = await api.get(f"tasks/{repair['id']}/events")
+    policy = await set_budget_policy(
+        api,
+        url,
+        json={
+            "limit_microusd": 0,
+            "attempt_reservation_microusd": 10,
+            "state": "enabled",
+            "version": policy["version"],
+        },
+    )
+    publications = await redis.xrange(ENGINEERING_QUEUE)
+    await asyncio.to_thread(scheduler, "refusal-lost", sid)
+    task = await api.get_task(repair["id"])
+    story = await api.get_story(sid)
+    assert task.status.value == story.status.value == "waiting_human_review"
+    assert task.current_iteration == int(later) and task.max_iterations == repair["max_iterations"]
+    audits = await rows(
+        "SELECT * FROM work_admission_audits WHERE subject='paid_work' "
+        "AND reason='engineering_budget_denied' AND command_payload->>'task_id'=%s",
+        repair["id"],
+    )
+    assert len(audits) == 1
+    did = audits[0]["reference_id"]
+    assert (
+        repair["id"] in story.quarantine_reason["detail"]
+        and did in story.quarantine_reason["detail"]
+    )
+    assert not await rows("SELECT id FROM runs WHERE id=%s", did)
+    budget = await api.get(f"engineering-budget-policies/admissions/{did}")
+    assert (
+        budget["outcome"] == "denied"
+        and budget["reservation_state"] is None
+        and budget["active_held_microusd"] == 0
+    )
+    assert (
+        await rows("SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"])
+        == before_runs
+    )
+    events = await api.get(f"tasks/{repair['id']}/events")
+    assert events[: len(before_events)] == before_events and len(events) == len(before_events) + 2
+    assert await redis.xrange(ENGINEERING_QUEUE) == publications
+    notice = await api.get(f"stories/{sid}/owner-notification")
+    assert notice["state"] == notice["admin_state"] == "owed"
+    await asyncio.to_thread(scheduler, "notice-sweep", sid)
+    notice = await api.get(f"stories/{sid}/owner-notification")
+    assert notice["state"] == notice["admin_state"] == "delivered"
+    await assert_delivered_notice_is_stable(api, redis, sid, notice)
+    notices = [
+        unprotect_po_payload(PO_INPUT_QUEUE, fields)
+        for _, fields in await redis.xrange(PO_INPUT_QUEUE)
+    ]
+    assert sum(n.get("story_id") == sid for n in notices) == 1
+    await set_budget_policy(
+        api,
+        url,
+        json={
+            "limit_microusd": 100,
+            "attempt_reservation_microusd": 10,
+            "state": "enabled",
+            "version": policy["version"],
+        },
+    )
+    # Existing authenticated internal/admin recovery deliberately grants the
+    # next iteration and ceiling; money alone cannot resume a parked Task.
+    refused = await api.post(
+        "work-admission/engineering-dispatches", json={"task_id": repair["id"]}
+    )
+    assert refused["reason"] == "task_not_dispatchable"
+    resumed = await api.post(
+        f"tasks/{repair['id']}/resume", json={"guidance": "Policy capacity restored", "retries": 4}
+    )
+    assert (
+        resumed["current_iteration"] == int(later) + 1
+        and resumed["max_iterations"] == int(later) + 5
+    )
+    await asyncio.to_thread(scheduler, "dispatch", sid)
+    after = await rows("SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"])
+    assert len(after) == len(before_runs) + 1 and after[:-1] == before_runs
+    assert after[-1]["metadata"]["iteration"] == int(later) + 1
+    messages = [
+        EngineeringMessage.model_validate_json(fields[b"data"])
+        for _, fields in await redis.xrange(ENGINEERING_QUEUE)
+    ]
+    messages = [message for message in messages if message.story_id == sid]
+    assert len(messages) == len(after) and {m.task_id for m in messages} == {r["id"] for r in after}
+    assert len(await rows("SELECT id FROM tasks WHERE story_id=%s", sid)) == 2
+    assert (await api.get_task(original_id)).status.value == "done"
+    assert await api.get(f"stories/{sid}/owner-notification") == notice
+
+
+async def set_budget_policy(api, url, **kwargs):
+    return (await api.request("PUT", url, **kwargs)).json()
 
 
 async def assert_delivered_notice_is_stable(api, redis, sid, notice):

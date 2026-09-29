@@ -1,5 +1,22 @@
 # Test Infrastructure
 
+Conflict no-Run refusal regressions are selected by the existing required
+`Service Tests (api)` and `Service Tests (langgraph)` jobs. API
+`test_pr_conflict_dispatch_refusal.py` drives the actual paid gate at iteration
+zero and after native failed-attempt retry, tests pre-commit rollback and lost
+response/concurrent replay, verifies audit/history/notice obligations, and uses
+LK administrator resume after restoring versioned policy capacity. Stale PR,
+cycle, foreign Story, unrelated stop and live work refuse recovery; actor text
+does not authorize it. Other paid-control/executor/workspace refusals keep their
+existing routing and priority over budget.
+LangGraph `test_pr_conflict_recovery.py` adds `budget-first` and `budget-retry`
+for both initial and released admission. Real Redis dispatch, an early FAILED
+consumer, delayed original start, lost refusal response, native notice sweeps
+and deliberate resume prove no extra Run/publication/notice episode before
+one truthful next Run. Broad units remain selected by Fast Checks. These cases
+are CI proofs only when executed; controlled GitHub and administrator delivery
+responses do not prove live backend freshness or production recovery.
+
 ## Test Layers
 
 | Layer | Location | Dependencies | CI | Speed |

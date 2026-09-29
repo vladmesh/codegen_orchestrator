@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Dispose no-Run conflict dispatch refusals with their Task, Story and both notices atomically;
+  fence deliberate resume with immutable refusal and retry-bound authority.
+
 - Read physical Run metadata in the late-start recovery fixture so CI can verify the next admitted
   attempt and continue bounded exhaustion after the delayed start.
 

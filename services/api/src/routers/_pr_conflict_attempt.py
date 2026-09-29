@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_dispatch import ENGINEERING_DISPATCH_REFUSAL_KEY
 from shared.contracts.dto.engineering_execution import EngineeringExecutionPhase
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.pr_conflict_repair import (
@@ -99,10 +100,34 @@ async def _admission_evidence(
         or repository.role != "primary"
         or evidence.story_id != story.id
         or evidence.project_id != story.project_id
-        or task.max_iterations != evidence.max_iterations
+        or task.project_id != story.project_id
+        or task.story_id != story.id
     ):
         _refuse("The repair admission does not prove this bounded Task.")
-    return evidence
+    # Only the native resume status event can replace the original ceiling.
+    # The public note-event endpoint cannot supply from_status/to_status.
+    ceiling = evidence.max_iterations
+    for event in events:
+        audit = event.details
+        if (
+            event.event_type == TaskEventType.STATUS_CHANGE.value
+            and event.from_status == TaskStatus.WAITING_HUMAN_REVIEW.value
+            and event.to_status == TaskStatus.BACKLOG.value
+            and audit.get("action") == "operator_resume"
+        ):
+            if (
+                audit["previous_max_iterations"] != ceiling
+                or type(audit["iteration"]) is not int
+                or audit["iteration"] <= audit["previous_iteration"]
+                or task.current_iteration < audit["iteration"]
+                or audit["max_iterations"] != audit["iteration"] + audit["retries"]
+                or not 0 <= audit["retries"] <= 10  # noqa: PLR2004 - TaskResume's native bound
+            ):
+                _refuse("The native resume has inconsistent retry authority.")
+            ceiling = audit["max_iterations"]
+    if task.max_iterations != ceiling:
+        _refuse("The repair bound has no native audited authority.")
+    return evidence.model_copy(update={"max_iterations": ceiling})
 
 
 def _recorded_outcome(events, run_id, command):
@@ -121,6 +146,26 @@ def _recorded_outcome(events, run_id, command):
                 else outcome
             )
     return None
+
+
+def _pending_dispatch_refusal(events):
+    """Only the native resume status edge supersedes a committed no-Run stop."""
+    saved = None
+    for event in events:
+        if event.event_type != TaskEventType.STATUS_CHANGE.value:
+            continue
+        if (
+            event.to_status == TaskStatus.WAITING_HUMAN_REVIEW.value
+            and ENGINEERING_DISPATCH_REFUSAL_KEY in event.details
+        ):
+            saved = event.details[ENGINEERING_DISPATCH_REFUSAL_KEY]
+        elif (
+            event.from_status == TaskStatus.WAITING_HUMAN_REVIEW.value
+            and event.to_status == TaskStatus.BACKLOG.value
+            and event.details.get("action") == "operator_resume"
+        ):
+            saved = None
+    return saved
 
 
 def _verify_recorded_stop(story):

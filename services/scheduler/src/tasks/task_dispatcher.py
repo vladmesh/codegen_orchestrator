@@ -224,12 +224,13 @@ async def _handle_refusal(
     decision: EngineeringDispatchRead,
     log: structlog.BoundLogger,
 ) -> None:
-    """Act on a refusal: only a refusal that already counted an attempt routes.
+    """Consume the paid gate's disposition or route an ordinary Task refusal.
 
     `paid_work` is present exactly when the paid gate decided, and that is the
     line: a refusal from an earlier condition is a state this tick simply cannot
-    dispatch in and a later tick may, while a paid denial has spent the attempt
-    and hands the story and the task to a human instead of retrying.
+    dispatch in and a later tick may. The gate's no-Run decisions count no
+    engineering attempt. Admission owns infrastructure and conflict stops;
+    ordinary Tasks retain their existing scheduler refusal routing.
     """
     if decision.paid_work is None:
         log.info("task_dispatch_refused", reason=decision.reason.value)
@@ -247,6 +248,21 @@ async def _handle_refusal(
             disposition=(
                 decision.infrastructure_park.value if decision.infrastructure_park else None
             ),
+        )
+        return
+    if task.id.startswith("pr-conflict-"):
+        disposition = decision.refusal_disposition
+        if (
+            disposition is None
+            or disposition.task_id != task.id
+            or disposition.reason is not decision.reason
+        ):
+            raise RuntimeError("Conflict paid refusal has no matching committed disposition")
+        log.info(
+            "task_dispatch_refusal_disposed_by_admission",
+            task_id=disposition.task_id,
+            decision_id=disposition.decision_id,
+            reason=disposition.reason.value,
         )
         return
     if task.story_id and admission.message:
