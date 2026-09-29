@@ -40,7 +40,12 @@ from shared.contracts.queues.worker_result import (
     WorkerResultAdapter,
     WorkerStopReason,
 )
-from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
+from shared.contracts.worker_turn import (
+    AttemptTurnMetadata,
+    PreparedCheckoutBaseline,
+    WorkerActiveTurn,
+    active_turn_key,
+)
 from shared.diagnostics import safe_validation_errors
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
@@ -84,6 +89,7 @@ class SpawnResult:
     agent_limit_seconds: int | None = None
     turn_result_consumed: bool = False
     execution: EngineeringExecutionEvidence | None = None
+    pre_attempt_head_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -593,6 +599,108 @@ async def record_worker_on_attempt(attempt_id: str, worker_id: str) -> None:
     )
 
 
+async def reconcile_prepared_baseline(
+    redis_client, ownership: WorkerOwnership, worker_id: str
+) -> AttemptTurnMetadata:
+    """Reconcile the creator's checkout before its first turn, including reclaim.
+
+    Read the durable Run again: a lost write response or stale consumer state
+    cannot erase preparation or an already published turn's original baseline.
+    Worker metadata holds checkout evidence, never the agent's later HEAD.
+    """
+    from .api import api_client
+
+    row = await api_client.get(f"runs/{ownership.attempt_id}")
+    metadata = AttemptTurnMetadata.from_run_metadata(row["run_metadata"])
+    if (
+        row["id"] != ownership.attempt_id
+        or str(row["project_id"]) != ownership.project_id
+        or row["story_id"] != ownership.story_id
+        or row["type"] != "engineering"
+        or metadata.initiating_run_id != ownership.run_id
+        or metadata.worker_id not in {None, worker_id}
+    ):
+        raise RuntimeError("Prepared checkout Run ownership is inconsistent")
+    native = decode_redis_fields(await redis_client.hgetall(f"worker:meta:{worker_id}"))
+    if not native or any(
+        native.get(key) != value
+        for key, value in {
+            "project_id": ownership.project_id,
+            "run_id": ownership.run_id,
+            "story_id": ownership.story_id,
+        }.items()
+    ):
+        raise RuntimeError("Prepared checkout worker ownership is missing or inconsistent")
+    try:
+        prepared = PreparedCheckoutBaseline(
+            worker_id=worker_id,
+            attempt_id=native["attempt_id"],
+            head_sha=native["prepared_head_sha"],
+        )
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError("The prepared checkout has no valid identity or HEAD evidence") from exc
+    if metadata.prepared_checkout is not None and metadata.prepared_checkout != prepared:
+        raise RuntimeError("Prepared checkout evidence disagrees with the Run")
+    active = WorkerActiveTurn.from_redis_fields(
+        decode_redis_fields(await redis_client.hgetall(active_turn_key(worker_id)))
+    )
+    if active is not None and (
+        active.worker_id != worker_id
+        or active.attempt_id != ownership.attempt_id
+        or active.request_id != metadata.active_turn_request_id
+    ):
+        raise RuntimeError("Prepared checkout active turn ownership is inconsistent")
+    if prepared.attempt_id != ownership.attempt_id:
+        creator = await api_client.get(f"runs/{prepared.attempt_id}")
+        creator_turn = AttemptTurnMetadata.from_run_metadata(creator["run_metadata"])
+        if (
+            creator["id"] != prepared.attempt_id
+            or str(creator["project_id"]) != ownership.project_id
+            or creator["story_id"] != ownership.story_id
+            or creator["type"] != "engineering"
+            or creator_turn.initiating_run_id != ownership.run_id
+            or creator_turn.worker_id != worker_id
+            or creator["status"] not in {"completed", "failed", "cancelled"}
+        ):
+            raise RuntimeError("Reused worker checkout creator is missing or inconsistent")
+    if metadata.active_turn_request_id is not None:
+        if metadata.worker_id != worker_id or metadata.pre_attempt_head_sha is None:
+            raise RuntimeError("Published turn baseline or ownership is missing")
+        if (
+            prepared.attempt_id == ownership.attempt_id
+            and metadata.pre_attempt_head_sha != prepared.head_sha
+        ):
+            raise RuntimeError("Published turn disagrees with its saved checkout baseline")
+        return metadata
+    if prepared.attempt_id != ownership.attempt_id:
+        # Reused workers keep their creation ownership. Their initial checkout
+        # is not the starting HEAD of a later attempt on the same story.
+        if metadata.pre_attempt_head_sha is None:
+            raise RuntimeError("Reused worker attempt has no pre-turn baseline")
+        return metadata
+    if metadata.prepared_checkout is not None:
+        if metadata.pre_attempt_head_sha != prepared.head_sha:
+            raise RuntimeError("Prepared checkout baseline is inconsistent")
+        return metadata
+    update = AttemptTurnMetadata(
+        worker_id=worker_id, pre_attempt_head_sha=prepared.head_sha, prepared_checkout=prepared
+    )
+    await api_client.patch(
+        f"runs/{ownership.attempt_id}", json={"run_metadata": update.as_run_metadata()}
+    )
+    return AttemptTurnMetadata.from_run_metadata(
+        {**metadata.as_run_metadata(), **update.as_run_metadata()}
+    )
+
+
+async def _create_output_group(redis_client, output_stream: str, group_name: str) -> None:
+    try:
+        await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
+    except redis.ResponseError as exc:
+        if "BUSYGROUP" not in str(exc):
+            raise
+
+
 async def _send_turn(
     redis_client: redis.Redis,
     worker_id: str,
@@ -800,14 +908,17 @@ async def request_spawn(
 
         logger.info("worker_ready", request_id=request_id, worker_id=worker_id)
 
+        prepared = (
+            await reconcile_prepared_baseline(redis_client, ownership, worker_id)
+            if story.branch
+            else AttemptTurnMetadata()
+        )
+        prepared_head = prepared.pre_attempt_head_sha
+
         # 4. Set up output stream consumer group BEFORE sending task
         # Use id="0" to read any existing messages (in case worker is very fast)
         output_stream = f"worker:{worker_id}:output"
-        try:
-            await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
-        except redis.ResponseError as e:
-            if "BUSYGROUP" not in str(e):
-                raise
+        await _create_output_group(redis_client, output_stream, group_name)
 
         # 5. Send task message to worker input stream
         await record_turn_on_attempt(ownership.attempt_id, request_id)
@@ -837,7 +948,9 @@ async def request_spawn(
             return _invalid_worker_result(request_id, worker_id)
 
         if output_resp:
-            return spawn_result_from_output(output_resp, request_id, worker_id)
+            result = spawn_result_from_output(output_resp, request_id, worker_id)
+            result.pre_attempt_head_sha = prepared_head
+            return result
         else:
             # Timeout - cleanup the zombie container
             if worker_id:
@@ -918,7 +1031,6 @@ async def send_task_to_worker(
             forcing a fresh Claude CLI session (no --resume). Use for retries
             to avoid inheriting errors from a failed previous attempt.
     """
-    await record_worker_on_attempt(ownership.attempt_id, worker_id)
     request_id = str(uuid.uuid4())
     settings = get_settings()
     redis_client = redis.from_url(settings.redis_url)
@@ -930,8 +1042,14 @@ async def send_task_to_worker(
     output_stream = f"worker:{worker_id}:output"
 
     try:
+        prepared_head = None
+        if branch:
+            turn_metadata = await reconcile_prepared_baseline(redis_client, ownership, worker_id)
+            prepared_head = turn_metadata.pre_attempt_head_sha
+        await record_worker_on_attempt(ownership.attempt_id, worker_id)
         adopted = await _adopt_recorded_turn(worker_id, ownership, redis_client, turn_metadata)
         if adopted is not None:
+            adopted.pre_attempt_head_sha = prepared_head
             return adopted
 
         # 1. Set up output stream consumer group BEFORE sending the task.
@@ -988,7 +1106,9 @@ async def send_task_to_worker(
             return _invalid_worker_result(request_id, worker_id)
 
         if output_resp:
-            return spawn_result_from_output(output_resp, request_id, worker_id)
+            result = spawn_result_from_output(output_resp, request_id, worker_id)
+            result.pre_attempt_head_sha = prepared_head
+            return result
         else:
             return SpawnResult(
                 request_id=request_id,

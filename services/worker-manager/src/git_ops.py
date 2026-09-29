@@ -16,6 +16,7 @@ the developer agent's own commits and pushes.
 import asyncio
 import base64
 from dataclasses import dataclass
+import re
 import shlex
 
 import structlog
@@ -40,22 +41,39 @@ def build_checkout_script(branch: str) -> str:
       hard-coded here: the scaffolder is what publishes it.
     - A story branch that does not exist yet is cut from the *freshly fetched*
       default branch, never from whatever the reused workspace had checked out.
-    - A story branch that already exists resumes at its remote tip, and is never
-      reset or rebased onto the default branch: a local tip that is ahead of the
-      remote is the developer's own work and is kept.
+    - Synchronize local and remote tips only by fast-forward. A local tip ahead
+      of remote is kept; divergent tips fail without discarding either side.
+    - Advance to default only when the synchronized tip is already contained
+      there. Publish that advance by a native non-force push.
     - The push that establishes the upstream is not swallowed, and the script
       ends by reading the upstream back, so a checkout that did not do its job
       exits non-zero.
     """
     return f"""set -e
 cd /workspace
-{GIT} remote set-head origin --auto >/dev/null 2>&1 || true
-DEFAULT_BRANCH="$({GIT} symbolic-ref --quiet --short refs/remotes/origin/HEAD | cut -d/ -f2-)"
+TRACKED_STATUS="$({GIT} status --porcelain --untracked-files=no)"
+if [ -n "$TRACKED_STATUS" ]; then
+  echo "workspace has unfinished tracked changes; checkout refused" >&2
+  exit 1
+fi
+is_ancestor() {{
+  if {GIT} merge-base --is-ancestor "$1" "$2"; then
+    return 0
+  else
+    ANCESTRY_STATUS=$?
+    if [ "$ANCESTRY_STATUS" = 1 ]; then return 1; fi
+    exit "$ANCESTRY_STATUS"
+  fi
+}}
+ORIGIN_HEAD="$({GIT} ls-remote --symref origin HEAD)"
+DEFAULT_BRANCH="$(printf '%s\\n' "$ORIGIN_HEAD" | awk '
+  $1 == "ref:" && $3 == "HEAD" {{sub("^refs/heads/", "", $2); print $2}}')"
 if [ -z "$DEFAULT_BRANCH" ]; then
   echo "cannot determine the default branch of origin" >&2
   exit 1
 fi
 {GIT} fetch origin "+$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+{GIT} remote set-head origin "$DEFAULT_BRANCH"
 if BRANCH_FETCH_OUTPUT="$({GIT} fetch origin "+{branch}:refs/remotes/origin/{branch}" 2>&1)"; then
   REMOTE_BRANCH=1
 else
@@ -68,19 +86,32 @@ fi
 if {GIT} show-ref --verify --quiet "refs/heads/{branch}"; then
   {GIT} checkout {branch}
   if [ "$REMOTE_BRANCH" = 1 ]; then
-    {GIT} merge --ff-only "refs/remotes/origin/{branch}" || true
+    if is_ancestor "refs/remotes/origin/{branch}" HEAD; then
+      :
+    else
+      {GIT} merge --ff-only "refs/remotes/origin/{branch}"
+    fi
   fi
 elif [ "$REMOTE_BRANCH" = 1 ]; then
   {GIT} checkout -b {branch} "refs/remotes/origin/{branch}"
 else
   {GIT} checkout -b {branch} "refs/remotes/origin/$DEFAULT_BRANCH"
 fi
-if [ "$REMOTE_BRANCH" = 1 ]; then
-  {GIT} branch --set-upstream-to="origin/{branch}" {branch}
-else
-  {GIT} push -u origin {branch}
+if is_ancestor HEAD "refs/remotes/origin/$DEFAULT_BRANCH"; then
+  {GIT} merge --ff-only "refs/remotes/origin/$DEFAULT_BRANCH"
 fi
+# Publish the preserved local tip too: the remote and local pre-turn evidence
+# must agree, including work left unpushed by an earlier interrupted worker.
+{GIT} push -u origin {branch}
 {GIT} rev-parse --abbrev-ref --symbolic-full-name "{branch}@{{upstream}}"
+LOCAL_HEAD="$({GIT} rev-parse HEAD)"
+REMOTE_READBACK="$({GIT} ls-remote --exit-code origin "refs/heads/{branch}")"
+REMOTE_HEAD="${{REMOTE_READBACK%%[[:space:]]*}}"
+if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
+  echo "published story branch head does not match local HEAD" >&2
+  exit 1
+fi
+printf 'CODEGEN_CHECKOUT_HEAD=%s\\n' "$LOCAL_HEAD"
 """
 
 
@@ -166,6 +197,7 @@ class CheckoutResult:
 
     ok: bool
     detail: str = ""
+    head_sha: str | None = None
 
     def __bool__(self) -> bool:
         return self.ok
@@ -234,10 +266,18 @@ async def checkout_branch(
             logger.error("checkout_branch_failed", worker_id=worker_id, error=detail)
             return CheckoutResult(ok=False, detail=detail)
         if exit_code == 0:
+            output = stdout.decode(errors="replace") if isinstance(stdout, bytes) else stdout
+            heads = [
+                line.removeprefix("CODEGEN_CHECKOUT_HEAD=")
+                for line in (output or "").splitlines()
+                if line.startswith("CODEGEN_CHECKOUT_HEAD=")
+            ]
+            if len(heads) != 1 or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", heads[0]) is None:
+                return CheckoutResult(ok=False, detail="checkout returned no valid prepared head")
             logger.info(
                 "checkout_branch_complete", worker_id=worker_id, branch=branch, attempts=attempt
             )
-            return CheckoutResult(ok=True)
+            return CheckoutResult(ok=True, head_sha=heads[0])
         delay = retry_delay_after(attempt) if git_repository_not_found(stderr, stdout) else None
         if delay is None:
             break

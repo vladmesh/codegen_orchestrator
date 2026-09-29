@@ -13,6 +13,33 @@ from .engineering_execution import EngineeringInfrastructureParkDisposition
 from .work_admission import PaidRunStartRead, WorkAdmissionReason
 
 
+class EngineeringAttemptStartOutcome(StrEnum):
+    STARTED = "started"
+    REUSED = "reused"
+    SETTLED = "settled"
+    STALE = "stale"
+    TERMINAL_PENDING = "terminal_pending"
+    PRIORITY_PENDING = "priority_pending"
+    COMPLETED = "completed"
+
+
+class EngineeringAttemptStartCommand(BaseModel):
+    """Fence a conflict Task handoff with the Run admission already created."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+
+
+class EngineeringAttemptStartRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: EngineeringAttemptStartOutcome
+    task_id: str
+    run_id: str
+
+
 class EngineeringDispatchOutcome(StrEnum):
     """What this tick may do with the task it asked about."""
 
@@ -194,12 +221,30 @@ class EngineeringDispatchCommand(BaseModel):
         return overrides
 
 
+ENGINEERING_DISPATCH_REFUSAL_KEY = "engineering_dispatch_refusal"
+
+
+class EngineeringDispatchRefusalDisposition(BaseModel):
+    """Admission committed human review for this Task and its current Story.
+
+    `decision_id` references WorkAdmissionAudit, and budget admission when the
+    paid gate reached it. No Run exists for this decision.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
+    decision_id: str = Field(min_length=1)
+    reason: EngineeringDispatchRefusal
+
+
 class EngineeringDispatchRead(BaseModel):
     """The admission point's answer for one task.
 
     `run_id` names the engineering run this decision is about: the one just
-    created when admitted, the one the paid gate refused to create when the
-    refusal came from that gate, and the prior attempt's run when repairing.
+    created when admitted, and the prior attempt's run when repairing. Existing
+    infrastructure refusals retain their audit reference here. A conflict
+    human disposition instead names its no-Run decision in `refusal_disposition`.
 
     A repair decision is deliberately not keyed on `current_iteration`. That
     field is incremented by the very retry that creates the risk, so a fence
@@ -227,3 +272,6 @@ class EngineeringDispatchRead(BaseModel):
     #: For a typed pre-agent infrastructure refusal, what the same admission
     #: transaction did to the task and story. `None` for every other decision.
     infrastructure_park: EngineeringInfrastructureParkDisposition | None = None
+    #: The conflict refusal's Task/Story stop and both owed notice audiences
+    #: committed together. Consumers perform no independent start/park writes.
+    refusal_disposition: EngineeringDispatchRefusalDisposition | None = None

@@ -1063,6 +1063,11 @@ class WorkerManager:
                     f"checkout_branch did not establish branch {branch} or its upstream: "
                     f"{checkout.detail}"
                 )
+            if checkout.head_sha is None:
+                raise RuntimeError("Checkout did not retain its prepared HEAD evidence")
+            await self.redis.hset(
+                f"worker:meta:{worker_id}", "prepared_head_sha", checkout.head_sha
+            )
 
     @staticmethod
     def _set_worker_workspace(

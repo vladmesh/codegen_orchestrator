@@ -10,7 +10,11 @@ import httpx
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+)
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairAttemptDisposition
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import (
@@ -26,6 +30,7 @@ from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.empty_engineering_stop import ensure_empty_story_stop
 from shared.notifications import notify_admins_best_effort
+from shared.pr_conflict_repair import settle_pr_repair_attempt
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
 from shared.redis.client import decode_redis_fields
@@ -304,7 +309,29 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
         await _write_empty_terminal(task_id, terminal)
     else:
         await api_client.patch(f"runs/{task_id}", json=terminal)
-    if planning_task_id:
+    if (
+        planning_task_id
+        and planning_task_id.startswith("pr-conflict-")
+        and (
+            execution is None
+            or execution.execution_phase is not EngineeringExecutionPhase.PRE_AGENT_REFUSED
+        )
+    ):
+        # Early consumer failures may not carry story context; the admitted
+        # Run still owns that required identity.
+        if story_id is None:
+            story_id = (await api_client.get_run(task_id)).story_id
+        if story_id is None:
+            raise RuntimeError("An admitted conflict repair requires its story")
+        await settle_pr_repair_attempt(
+            api_client,
+            story_id,
+            planning_task_id,
+            task_id,
+            "Engineering attempt failed; settle within the admitted repair bound.",
+            PRConflictRepairAttemptDisposition.FAILED,
+        )
+    elif planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
     return live_work_unsettled({"status": "failed", "error": error_msg})
 
@@ -378,6 +405,22 @@ async def handle_worker_gave_up(
         },
     )
 
+    settlement = live_work_settled(
+        {"status": "gave_up", "reason": reason, "finished_at": datetime.now(UTC).isoformat()}
+    )
+    if planning_task_id and planning_task_id.startswith("pr-conflict-"):
+        if story_id is None:
+            raise RuntimeError("An admitted conflict repair requires its story")
+        await settle_pr_repair_attempt(
+            api_client,
+            story_id,
+            planning_task_id,
+            task_id,
+            f"The worker declined repair: {bounded_diagnostic(reason)}",
+            PRConflictRepairAttemptDisposition.GAVE_UP,
+        )
+        return settlement
+
     if planning_task_id:
         try:
             await api_client.post(
@@ -442,13 +485,7 @@ async def handle_worker_gave_up(
         except Exception:
             logger.warning("po_notify_on_gave_up_failed", task_id=task_id, exc_info=True)
 
-    return live_work_settled(
-        {
-            "status": "gave_up",
-            "reason": reason,
-            "finished_at": datetime.now(UTC).isoformat(),
-        }
-    )
+    return settlement
 
 
 async def _uncomputable_derived_keys_at(project_id: str, commit_sha: str) -> list[str]:

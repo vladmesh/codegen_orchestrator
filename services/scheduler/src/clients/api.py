@@ -18,6 +18,8 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionRead,
 )
 from shared.contracts.dto.engineering_dispatch import (
+    EngineeringAttemptStartCommand,
+    EngineeringAttemptStartRead,
     EngineeringDispatchCommand,
     EngineeringDispatchRead,
 )
@@ -38,6 +40,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotification,
     OwnerNotificationAttemptClaim,
 )
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairCommand, PRConflictRepairRead
 from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
@@ -571,6 +574,14 @@ class SchedulerAPIClient(InternalAPIClient):
         )
         return StoryDTO.model_validate(resp.json())
 
+    async def repair_story_pr_conflicts(
+        self, story_id: str, command: PRConflictRepairCommand
+    ) -> PRConflictRepairRead:
+        resp = await self.request(
+            "POST", f"stories/{story_id}/repair-pr-conflicts", json=command.model_dump(mode="json")
+        )
+        return PRConflictRepairRead.model_validate(resp.json())
+
     async def park_infrastructure_refusal(
         self, story_id: str, command: EngineeringInfrastructureParkCommand
     ) -> EngineeringInfrastructureParkRead:
@@ -697,6 +708,16 @@ class SchedulerAPIClient(InternalAPIClient):
             json={"actor": actor, "details": details or {}},
         )
         return TaskDTO.model_validate(resp.json())
+
+    async def start_engineering_attempt(
+        self, command: EngineeringAttemptStartCommand
+    ) -> EngineeringAttemptStartRead:
+        resp = await self.request(
+            "POST",
+            "work-admission/engineering-dispatches/start",
+            json=command.model_dump(mode="json"),
+        )
+        return EngineeringAttemptStartRead.model_validate(resp.json())
 
     async def park_task_waiting_resources(
         self, task_id: str, command: TaskResourceWaitCommand

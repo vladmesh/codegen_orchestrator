@@ -5,6 +5,27 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Compare conflict refusal history by immutable event IDs and validate both refusal audits, preserving
+  complete records when atomic retry events share a timestamp and the API returns a different order.
+
+- Dispose no-Run conflict dispatch refusals with their Task, Story and both notices atomically;
+  fence deliberate resume with immutable refusal and retry-bound authority.
+
+- Read physical Run metadata in the late-start recovery fixture so CI can verify the next admitted
+  attempt and continue bounded exhaustion after the delayed start.
+
+- Fence admitted conflict starts with immutable Run and settlement evidence, so delayed dispatch
+  cannot overwrite an atomic retry or revive settled work.
+
+- Recover terminal conflict Runs through scoped settlement before generic Task replay, so interrupted
+  refusals owe both notices and immutable Run evidence decides the bounded ending.
+
+- Reconcile reclaimed checkout baselines before worker turns; atomically fence conflict retries and
+  terminal settlement to their admitted cycle and Run so lost responses cannot strand or stop new work.
+
+- Advance merged story branches without discarding local work; admit one bounded dirty-PR repair
+  through normal dispatch, including authenticated recovery of the released dirty quarantine.
+
 - Atomically fence every leased ACK retry with ownership and retained result settlement; expose lost-reply
   ambiguity and provision the required Telegram concurrency policy on the stand.
 - Telegram dispatches users concurrently while retaining per-user order; live work survives short Redis

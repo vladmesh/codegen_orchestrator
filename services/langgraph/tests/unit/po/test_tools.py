@@ -1826,6 +1826,51 @@ class TestReopenStory:
         mock_stream_client.publish_message.assert_not_called()
 
 
+class TestDirtyQuarantineRecovery:
+    @pytest.mark.asyncio
+    async def test_registered_reopen_tool_recovers_only_released_dirty_reason(
+        self, mock_api_client, mock_stream_client
+    ):
+        from shared.contracts.dto.pr_conflict_repair import PRConflictRepairCommand
+
+        mock_api_client.get_raw.return_value = _make_response(
+            {
+                "id": "story-abc",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "title": "Dirty story",
+                "status": "waiting_human_review",
+                "pr_number": 3,
+                "created_at": "2026-09-29T00:00:00Z",
+                "reopened_at": None,
+                "quarantine_reason": {
+                    "reason": "github_app_merge_refused",
+                    "mergeable_state": "dirty",
+                    "pr_number": 3,
+                },
+            }
+        )
+        mock_api_client.post_raw.return_value = _make_response(
+            {
+                "outcome": "admitted",
+                "story_id": "story-abc",
+                "task_id": "repair-1",
+                "pr_number": 3,
+                "max_iterations": 3,
+                "reason": None,
+            }
+        )
+        result = await reopen_story.ainvoke(
+            {"story_id": "story-abc"}, config=_make_config("user-42")
+        )
+        assert "repair-1" in result and "conflict" in result.lower()
+        (path,), kwargs = mock_api_client.post_raw.call_args
+        assert path == "stories/story-abc/repair-pr-conflicts"
+        command = PRConflictRepairCommand.model_validate(kwargs["json"])
+        assert command.pr_number == 3 and command.expected_head_sha is None
+        assert kwargs["headers"]["X-Telegram-ID"] == "user-42"
+        mock_stream_client.publish_message.assert_not_called()
+
+
 class TestNoteToAdmins:
     @pytest.mark.asyncio
     async def test_the_note_reaches_the_admins_and_nothing_else(

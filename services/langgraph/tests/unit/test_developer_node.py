@@ -953,6 +953,24 @@ def _stub_story_github(mock_github_cls):
 
 
 class TestNoNewCommitOnStoryBranch:
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_a_prepared_base_advance_is_not_agent_work(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        _CommitGraph(story_head="deployed-head").install(mock_github_cls)
+        self._api(mock_api)
+        result = self._reports("main-head")
+        result.pre_attempt_head_sha = "main-head"
+        mock_spawn.return_value = result
+        from src.nodes.developer import DeveloperNode
+
+        outcome = await DeveloperNode().run(self._story_state())
+        assert outcome["engineering_status"] == EngineeringStatus.FAILED
+        assert outcome["failure_reason"] is EngineeringFailureReason.NO_NEW_COMMIT
+
     """A DONE result must add a change over the head its attempt started from.
 
     That head is recorded on the attempt before the turn is sent: the story

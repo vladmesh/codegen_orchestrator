@@ -8,17 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.contracts.dto.engineering_dispatch import (
+    ENGINEERING_DISPATCH_REFUSAL_KEY,
     EngineeringDispatchCommand,
     EngineeringDispatchOrigin,
     EngineeringDispatchOutcome,
     EngineeringDispatchRefusal,
+    EngineeringDispatchRefusalDisposition,
 )
 from shared.contracts.dto.engineering_execution import ENGINEERING_INFRASTRUCTURE_KEY
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.models import Run, Task, TaskEvent
+from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis.client import RedisStreamClient
 
@@ -113,6 +115,7 @@ async def start_task(
     task = await get_task_for_update(task_id, db)
 
     # Allow start from backlog (auto-promote to todo first) or from todo
+    _refuse_unfenced_conflict_start(task)
     if task.status == TaskStatus.BACKLOG:
         await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, {}, db)
         task.status = TaskStatus.TODO
@@ -196,6 +199,7 @@ async def reopen_task(
 ) -> TaskRead:
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
+    _refuse_client_resume_audit(task, body)
 
     validate_transition(task.status, TaskStatus.BACKLOG)
 
@@ -339,6 +343,9 @@ async def resume_task(
             "Another task of this story holds the story branch with a live worker.",
         )
 
+    if task.id.startswith("pr-conflict-"):
+        await _validate_conflict_resume(task, story, runs, db)
+
     iteration = _fresh_iteration(task, [run for run in runs if run.task_id == task.id])
     audit = {
         "action": RESUME_ACTION,
@@ -392,6 +399,84 @@ async def resume_task(
     return to_read(task)
 
 
+async def _validate_conflict_resume(task, story, runs, db):
+    """A current matching stop, never a status or caller's actor hint, permits resume."""
+    from pydantic import ValidationError
+
+    from shared.contracts.dto.pr_conflict_repair import cycle_stamp
+    from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+
+    from ._pr_conflict_attempt import (
+        _admission_evidence,
+        _pending_dispatch_refusal,
+        _verify_recorded_stop,
+    )
+
+    if story is None:
+        _refuse_resume("conflict_resume_refused", "The conflict Task has no Story.")
+    events = list(
+        (
+            await db.scalars(
+                select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
+            )
+        ).all()
+    )
+    evidence = await _admission_evidence(task, story, events, db)
+    if evidence.pr_number != story.pr_number or cycle_stamp(
+        evidence.cycle_started_at
+    ) != cycle_stamp(story.reopened_at or story.created_at):
+        _refuse_resume("stale_conflict", "The conflict Task belongs to a replaced PR or cycle.")
+    try:
+        failure = StoryFailure.model_validate(story.quarantine_reason)
+        if (
+            failure.code
+            not in {StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED, StoryFailureCode.NO_NEW_COMMIT}
+            or task.id not in failure.detail
+        ):
+            _refuse_resume("conflict_resume_refused", "The Story has no matching conflict stop.")
+        _verify_recorded_stop(story)
+        saved = (task.failure_metadata or {}).get(ENGINEERING_DISPATCH_REFUSAL_KEY)
+        if saved != _pending_dispatch_refusal(events):
+            _refuse_resume(
+                "conflict_resume_refused", "The Task lost its matching immutable refusal."
+            )
+        if saved is not None:
+            disposition = EngineeringDispatchRefusalDisposition.model_validate(saved)
+            audits = list(
+                (
+                    await db.scalars(
+                        select(WorkAdmissionAudit).where(
+                            WorkAdmissionAudit.subject == "paid_work",
+                            WorkAdmissionAudit.reference_id == disposition.decision_id,
+                        )
+                    )
+                ).all()
+            )
+            if len(audits) != 1:
+                _refuse_resume(
+                    "conflict_resume_refused", "The paid refusal audit is missing or ambiguous."
+                )
+            audit = audits[0]
+            payload = audit.command_payload
+            if (
+                disposition.task_id != task.id
+                or audit.reason != disposition.reason.value
+                or audit.outcome not in {"denied", "deferred"}
+                or payload["type"] != RunType.ENGINEERING.value
+                or payload["project_id"] != str(task.project_id)
+                or payload["story_id"] != story.id
+                or payload["task_id"] != task.id
+                or payload["run_metadata"]["iteration"] != task.current_iteration
+                or disposition.decision_id not in failure.detail
+                or any(run.id == disposition.decision_id for run in runs)
+            ):
+                _refuse_resume(
+                    "conflict_resume_refused", "The paid refusal does not prove this Task stop."
+                )
+    except ValidationError:
+        _refuse_resume("conflict_resume_refused", "The matching conflict stop is malformed.")
+
+
 @action_router.post("/{task_id}/transition", response_model=TaskRead)
 async def transition_task(
     task_id: str,
@@ -401,7 +486,10 @@ async def transition_task(
 ) -> TaskRead:
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
+    _refuse_client_resume_audit(task, body)
 
+    if to_status == TaskStatus.IN_DEV:
+        _refuse_unfenced_conflict_start(task)
     validate_transition(task.status, to_status)
 
     old_status = task.status
@@ -412,6 +500,16 @@ async def transition_task(
 
     logger.info("task_transitioned", task_id=task.id, from_s=old_status, to_s=to_status)
     return to_read(task)
+
+
+def _refuse_unfenced_conflict_start(task: Task) -> None:
+    if task.id.startswith("pr-conflict-"):
+        raise HTTPException(409, detail={"code": "conflict_start_requires_admitted_attempt"})
+
+
+def _refuse_client_resume_audit(task: Task, body: TaskTransition) -> None:
+    if task.id.startswith("pr-conflict-") and body.details.get("action") == RESUME_ACTION:
+        raise HTTPException(409, detail={"code": "conflict_resume_requires_operator_command"})
 
 
 @action_router.post("/{task_id}/spawn-worker")

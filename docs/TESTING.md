@@ -1,5 +1,22 @@
 # Test Infrastructure
 
+Conflict no-Run refusal regressions are selected by the existing required
+`Service Tests (api)` and `Service Tests (langgraph)` jobs. API
+`test_pr_conflict_dispatch_refusal.py` drives the actual paid gate at iteration
+zero and after native failed-attempt retry, tests pre-commit rollback and lost
+response/concurrent replay, verifies audit/history/notice obligations, and uses
+LK administrator resume after restoring versioned policy capacity. Stale PR,
+cycle, foreign Story, unrelated stop and live work refuse recovery; actor text
+does not authorize it. Other paid-control/executor/workspace refusals keep their
+existing routing and priority over budget.
+LangGraph `test_pr_conflict_recovery.py` adds `budget-first` and `budget-retry`
+for both initial and released admission. Real Redis dispatch, an early FAILED
+consumer, delayed original start, lost refusal response, native notice sweeps
+and deliberate resume prove no extra Run/publication/notice episode before
+one truthful next Run. Broad units remain selected by Fast Checks. These cases
+are CI proofs only when executed; controlled GitHub and administrator delivery
+responses do not prove live backend freshness or production recovery.
+
 ## Test Layers
 
 | Layer | Location | Dependencies | CI | Speed |
@@ -11,6 +28,37 @@
 | **E2E** | `tests/live/`, `.github/workflows/stand-e2e.yml` | Stand + real LLM | Manual workflow | up to each suite's own cap (below) |
 
 ## Running Tests
+
+Dirty-PR regressions use real local bare Git remotes, PostgreSQL row locks and
+Redis dispatch/notice readback. API service tests cover concurrent admission,
+rollback and response-loss retry, head/cycle/owner fences and terminal repair
+exhaustion. The LangGraph service leg runs `test_pr_conflict_recovery.py` against
+the disposable `conflict-api` fixture: the registered PO `reopen_story` tool and
+actual scheduler poller/dispatcher reach one admitted engineering Run, then
+deterministic results exercise clean merging, dirty exhaustion, `gave_up` and
+all native failed-iteration retries with both notice audiences.
+Refusal regressions cancel the actual handler after FAILED/GAVE_UP persistence
+and before scoped settlement, then use real Redis PEL reclaim and the consumer
+guard followed by native stuck/failed-supervisor ticks. They also cover lost
+committed responses, concurrent recovery, unchanged immutable Runs, one ledger
+event and delivery to both audiences without another episode on later ticks.
+The `failed-late-start` variants suspend dispatch after Redis publication and
+release its real API start after the actual early failure consumer commits
+TODO/iteration 1. Native ticks then admit exactly one next Run and continue
+the bounded retry history. API `test_pr_conflict_attempt_start.py` covers both
+start/settlement orders, duplicated/lost responses, terminal and replaced-work
+fences, unchanged holds/history/notices and refusal of generic start bypasses.
+The focused unit `test_pr_conflict_recovery_fixture.py` exercises that late-start
+readback with physical Run column names; skipped/reversed iterations and duplicate
+publications cannot continue to the bounded loop. It supplies no persistence proof.
+API service cases prove terminal evidence outranks callback observations from
+`in_dev` and interrupted-dispatch `todo`, reject malformed/unrelated evidence,
+and interleave cycle/PR replacement between discovery and locked settlement.
+Unreleased partial `backlog` retries are refused; no native repair producer
+splits the atomic retry. The matching stop produced by dirty-PR admission still
+finishes Task settlement without replacing its reason or notices.
+Only GitHub and administrator Telegram responses are synthetic; no provider,
+worker container, live repository mutation or production recovery is exercised.
 
 ```bash
 # Unit (fast, no deps — run before every push)

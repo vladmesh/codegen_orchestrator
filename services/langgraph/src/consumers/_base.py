@@ -5,6 +5,8 @@ signal handling, consumer group setup, message reading, ACKing, and shutdown.
 
 Includes a staleness guard: before processing, checks if the referenced run/story
 is already terminal (COMPLETED/FAILED/CANCELLED/ARCHIVED). If so, ACKs and skips.
+An interrupted conflict settlement remains discoverable by native Task supervision,
+which submits the immutable Run to the scoped attempt-outcome transaction.
 
 Consumption is bounded by a slot gate. One slot is the historical behaviour —
 read one entry, run it to its terminal outcome, then read the next — and it stays

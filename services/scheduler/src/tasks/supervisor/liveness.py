@@ -25,8 +25,12 @@ from shared.contracts.dto.lifecycle_wait import (
     TaskResourceResumeDisposition,
     TaskResourceWaitCommand,
 )
+from shared.contracts.dto.pr_conflict_repair import (
+    PRConflictRepairAttemptDisposition,
+    PRConflictRepairAttemptOutcome,
+)
 from shared.contracts.dto.product_brief import ProductBriefRead
-from shared.contracts.dto.run import RunDTO, RunType
+from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     EngineeringFailureReason,
@@ -39,6 +43,7 @@ from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.empty_engineering_stop import ensure_empty_story_stop, matching_empty_cause
+from shared.pr_conflict_repair import settle_pr_repair_attempt
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
@@ -319,9 +324,9 @@ async def supervise_failed_tasks(
 ) -> dict[str, int]:
     """Detect failed tasks and retry or escalate to waiting_human_review.
 
-    FAILED status means technical failure (crash, OOM, timeout) — the worker
-    never explicitly gave up. Supervisor retries if iterations remain, otherwise
-    transitions to WAITING_HUMAN_REVIEW (same as gave_up — needs human).
+    Ordinary technical failures retry while iterations remain. Conflict Tasks
+    submit immutable Run evidence to scoped settlement, which also recognizes
+    a persisted gave_up regardless of the caller's mutable observation.
 
     Returns dict with 'retried' and 'escalated' counts.
     """
@@ -340,7 +345,7 @@ async def supervise_failed_tasks(
             runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
             runs_by_task[task.id] = runs
             failure = _empty_exhaustion_failure(task, runs)
-            if failure is not None:
+            if failure is not None and not task.id.startswith("pr-conflict-"):
                 empty_stops.setdefault(task.story_id, []).append((task, failure))
         except Exception as exc:
             # An unread sibling could require a typed stop. Do not let another
@@ -461,6 +466,21 @@ async def _supervise_failed_task(
     current_iter = task.current_iteration
     max_iter = task.max_iterations
     story_id = task.story_id
+    if task.id.startswith("pr-conflict-"):
+        outcome = await settle_pr_repair_attempt(
+            api_client,
+            story_id,
+            task.id,
+            engineering_runs[0].id,
+            "Engineering attempt failed; retry within the admitted repair bound.",
+            PRConflictRepairAttemptDisposition.FAILED,
+        )
+        if outcome.outcome is PRConflictRepairAttemptOutcome.EXHAUSTED:
+            escalated_stories.add(story_id)
+            return 0, 1
+        return int(outcome.outcome is PRConflictRepairAttemptOutcome.RETRIED), 0
+    if task.status is TaskStatus.BACKLOG:
+        return 0, 0
     if current_iter < max_iter:
         # Retry: failed → backlog → todo, bump iteration
         await api_client.transition_task(task.id, TaskStatus.BACKLOG, "supervisor")
@@ -824,6 +844,19 @@ async def supervise_stuck_tasks(
         if run is None:
             terminal_run = await select_terminal_engineering_run(api_client, task.id)
             if terminal_run is not None:
+                if task.id.startswith("pr-conflict-") and terminal_run.status is RunStatus.FAILED:
+                    try:
+                        await _supervise_failed_task(
+                            api_client,
+                            redis_client,
+                            task,
+                            logger.bind(task_id=task.id, story_id=task.story_id),
+                            set(),
+                            [terminal_run],
+                        )
+                    except Exception:
+                        logger.exception("conflict_terminal_settlement_failed", task_id=task.id)
+                    continue
                 await replay_terminal_attempt(api_client, task.id, terminal_run, "supervisor")
             continue
         state, worker_id = await attempt_state(redis_client, run, now)
