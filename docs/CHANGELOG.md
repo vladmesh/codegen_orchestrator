@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Read physical Run metadata in the late-start recovery fixture so CI can verify the next admitted
+  attempt and continue bounded exhaustion after the delayed start.
+
 - Fence admitted conflict starts with immutable Run and settlement evidence, so delayed dispatch
   cannot overwrite an atomic retry or revive settled work.
 

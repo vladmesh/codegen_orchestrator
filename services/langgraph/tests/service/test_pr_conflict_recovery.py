@@ -234,10 +234,13 @@ async def finish_admitted_repair(api, redis, sid, pid, repair, run, ending, dela
         return
     await fail_before_original_start(api, redis, sid, repair, run, delayed)
     await asyncio.to_thread(scheduler, "dispatch-start-lost", sid)
-    next_runs = await rows("SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"])
+    next_runs = await rows(
+        "SELECT id, metadata FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"]
+    )
     assert len(next_runs) == 2
-    assert next_runs[0]["run_metadata"]["iteration"] == 0
-    assert next_runs[1]["run_metadata"]["iteration"] == 1
+    # Raw PostgreSQL rows use the physical column, unlike the API's run_metadata.
+    assert next_runs[0]["metadata"]["iteration"] == 0
+    assert next_runs[1]["metadata"]["iteration"] == 1
     messages = [
         EngineeringMessage.model_validate_json(fields[b"data"])
         for _, fields in await redis.xrange(ENGINEERING_QUEUE)

@@ -31,6 +31,9 @@ TODO/iteration 1. Native ticks then admit exactly one next Run and continue
 the bounded retry history. API `test_pr_conflict_attempt_start.py` covers both
 start/settlement orders, duplicated/lost responses, terminal and replaced-work
 fences, unchanged holds/history/notices and refusal of generic start bypasses.
+The focused unit `test_pr_conflict_recovery_fixture.py` exercises that late-start
+readback with physical Run column names; skipped/reversed iterations and duplicate
+publications cannot continue to the bounded loop. It supplies no persistence proof.
 API service cases prove terminal evidence outranks callback observations from
 `in_dev` and interrupted-dispatch `todo`, reject malformed/unrelated evidence,
 and interleave cycle/PR replacement between discovery and locked settlement.
