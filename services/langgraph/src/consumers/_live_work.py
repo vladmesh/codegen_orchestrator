@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 import time
 import uuid
@@ -25,6 +25,9 @@ logger = structlog.get_logger(__name__)
 LIVE_WORK_LEASE_SECONDS = 60
 LIVE_WORK_LEASE_REFRESH_SECONDS = 10
 LIVE_WORK_SETTLED_KEY = "_live_work_settled"
+_COMMIT_UNSETTLED = -1
+_COMMIT_LEASE_LOST = -2
+_COMMIT_UNFENCED = -3
 
 
 class LiveWorkResultUnsettledError(RuntimeError):
@@ -35,10 +38,16 @@ class LiveWorkOwnershipError(RuntimeError):
     """Confirmed ownership was lost or could no longer be established safely."""
 
 
+class LiveWorkAckUnprovenError(RuntimeError):
+    """Redis may have applied an ACK, but this owner cannot prove its outcome."""
+
+
 @dataclass
 class _LeaseState:
     deadline: float
     failure: str | None = None
+    result: dict | None = None
+    ack_uncertain: bool = False
 
 
 async def _within_live_lease[T](state: _LeaseState, attempt: Callable[[], Awaitable[T]]) -> T:
@@ -68,13 +77,15 @@ async def _record_failure(redis: RedisStreamClient, project_id: str, reason: str
     try:
         async with asyncio.timeout(LIVE_WORK_LEASE_REFRESH_SECONDS):
             await _mark_live_work_failure(redis, project_id, reason)
-    except Exception as error:
+    except (Exception, asyncio.CancelledError) as error:
         logger.error(
             "live_work_failure_marker_write_failed",
             project_id=project_id,
             reason=reason,
             error_type=type(error).__name__,
         )
+        if isinstance(error, asyncio.CancelledError):
+            raise
 
 
 def live_work_cancel_key(project_id: str) -> str:
@@ -254,42 +265,117 @@ async def _confirm_live_work(
 
 
 async def _stop_watch(watch: asyncio.Task) -> None:
+    owner = asyncio.current_task()
+    assert owner is not None
+    cancellations = owner.cancelling()
     watch.cancel()
-    with suppress(asyncio.CancelledError):
-        await watch
+    try:
+        await asyncio.shield(watch)
+    except asyncio.CancelledError:
+        # Join the cancelled child, but retain a new cancellation of its owner.
+        # Shielding prevents that second cancellation from interrupting the
+        # child's cleanup while we distinguish the two sources.
+        with suppress(asyncio.CancelledError):
+            await watch
+        if owner.cancelling() > cancellations:
+            raise
 
 
-async def _settle_cancelled_live_work(
+async def _commit_live_work(
     redis: RedisStreamClient,
     project_id: str,
+    token: str,
     state: _LeaseState,
     queue: str,
     group: str,
     message_id: str,
-) -> None:
-    if state.failure and state.failure != "teardown":
-        await _record_failure(redis, project_id, state.failure)
-        raise asyncio.CancelledError
-    teardown = state.failure == "teardown"
-    if not teardown:
+    *,
+    cancelled: bool = False,
+) -> bool:
+    """Validate terminal authority and XACK in one server decision on every retry."""
+    reply: int | None = None
+
+    async def attempt() -> int:
+        nonlocal reply
+        if state.failure and state.failure != "teardown":
+            raise LiveWorkOwnershipError(state.failure)
         try:
-            async with asyncio.timeout(LIVE_WORK_LEASE_REFRESH_SECONDS):
-                teardown = await redis.redis.exists(live_work_cancel_key(project_id))
-        except Exception as error:
-            logger.error(
-                "live_work_cancel_visibility_failed",
-                project_id=project_id,
-                error_type=type(error).__name__,
+            reply = await redis.redis.eval(
+                """
+                local teardown = redis.call('EXISTS', KEYS[1]) == 1
+                if (teardown or ARGV[2] == '1') and ARGV[3] == '1' and ARGV[4] ~= '1' then
+                    return -1
+                end
+                local score = redis.call('ZSCORE', KEYS[2], ARGV[1])
+                if score == false then return -2 end
+                local now = redis.call('TIME')
+                local now_ms = now[1] * 1000 + math.floor(now[2] / 1000)
+                if tonumber(score) <= now_ms then return -2 end
+                if ARGV[5] == '1' and not teardown then return -3 end
+                return redis.call('XACK', KEYS[3], ARGV[6], ARGV[7])
+                """,
+                3,
+                live_work_cancel_key(project_id),
+                live_work_leases_key(project_id),
+                queue,
+                token,
+                int(state.failure == "teardown"),
+                int(state.result is not None),
+                int(state.result is not None and _live_work_result_is_settled(state.result)),
+                int(cancelled),
+                group,
+                message_id,
             )
-            raise asyncio.CancelledError from error
-    if not teardown:
-        raise asyncio.CancelledError
+            return reply
+        except (RedisAuthenticationError, RedisAuthorizationError):
+            raise
+        except (asyncio.CancelledError, RedisConnectionError, RedisTimeoutError, TimeoutError):
+            # A disconnect/timeout/cancellation cannot tell whether the script
+            # committed before the reply disappeared. Never infer settlement.
+            state.ack_uncertain = True
+            raise
+
     try:
-        await _within_live_lease(state, lambda: redis.ack(queue, group, message_id))
+        outcome = await _within_live_lease(state, attempt)
+        if outcome == _COMMIT_UNSETTLED:
+            assert state.result is not None
+            status = _live_work_result_status(state.result) or "unknown"
+            raise LiveWorkResultUnsettledError(
+                f"live work returned unsettled result during teardown: {status}"
+            )
+        if outcome == _COMMIT_LEASE_LOST:
+            raise LiveWorkOwnershipError("lease_lost")
+        if outcome == _COMMIT_UNFENCED:
+            await _record_failure(redis, project_id, "cancel_settlement_failed")
+            return False
+        if outcome != 1:
+            raise LiveWorkAckUnprovenError("live work ACK outcome unproven")
+    except LiveWorkResultUnsettledError:
+        state.failure = "cancel_settlement_failed"
+        await _record_failure(redis, project_id, "cancel_settlement_failed")
+        raise
+    except LiveWorkOwnershipError as error:
+        state.failure = str(error)
+        if reply == 1:
+            logger.error(
+                "live_work_ack_reply_after_deadline", project_id=project_id, entry_id=message_id
+            )
+        await _record_failure(redis, project_id, str(error))
+        raise
+    except LiveWorkAckUnprovenError:
+        state.failure = "ack_uncertain"
+        await _record_failure(redis, project_id, "ack_uncertain")
+        raise
     except Exception:
+        state.failure = "ack_failed"
         await _record_failure(redis, project_id, "ack_failed")
         raise
-    logger.info("live_teardown_active_job_acked", entry_id=message_id)
+    finally:
+        if state.ack_uncertain:
+            logger.warning("live_work_ack_uncertain", project_id=project_id, entry_id=message_id)
+    if cancelled:
+        logger.info("live_teardown_active_job_acked", entry_id=message_id)
+    return True
 
 
 async def _record_process_failure(
@@ -347,39 +433,66 @@ async def execute_live_work(
         _cancel_on_live_teardown(redis, project_id, lease, owner, state),
         name=f"live-work-watch:{project_id}",
     )
+    primary_failed = False
     try:
         result = await process()
+        # Store before the next await: cancellation while stopping the watcher
+        # or settling Redis must never turn a returned result into unwound work.
+        state.result = result
         await _stop_watch(cancellation_watch)
-        if state.failure and state.failure != "teardown":
-            raise LiveWorkOwnershipError(state.failure)
-        if state.failure == "teardown" or await _confirm_live_work(redis, project_id, lease, state):
-            if not _live_work_result_is_settled(result):
-                status = _live_work_result_status(result) or "unknown"
-                await _record_failure(redis, project_id, "cancel_settlement_failed")
-                raise LiveWorkResultUnsettledError(
-                    f"live work returned unsettled result during teardown: {status}"
-                )
-        await _within_live_lease(state, lambda: redis.ack(queue, group, message_id))
+        await _commit_live_work(redis, project_id, lease, state, queue, group, message_id)
         return result
     except asyncio.CancelledError:
-        await _stop_watch(cancellation_watch)
-        await _settle_cancelled_live_work(redis, project_id, state, queue, group, message_id)
+        primary_failed = True
+        with suppress(asyncio.CancelledError):
+            await _stop_watch(cancellation_watch)
+        try:
+            # Shutdown settlement gets the existing network-attempt bound as
+            # well as the lease bound; an invisible fence cannot delay unwind
+            # for an entire remaining lease.
+            async with asyncio.timeout(LIVE_WORK_LEASE_REFRESH_SECONDS):
+                settled = await _commit_live_work(
+                    redis, project_id, lease, state, queue, group, message_id, cancelled=True
+                )
+        except TimeoutError:
+            await _record_failure(
+                redis,
+                project_id,
+                "ack_uncertain" if state.ack_uncertain else "cancel_settlement_failed",
+            )
+            raise asyncio.CancelledError from None
+        except Exception:
+            # Terminal validation/failure marking has completed; preserve the
+            # owner's cancellation instead of replacing it with a Redis error.
+            raise asyncio.CancelledError from None
+        if not settled:
+            raise
         return None
     except WorkflowCancellationUnprovenError:
         # An external GitHub Actions run may still be live. This is fail-closed
         # regardless of which teardown key is set: never ACK, always fence cleanup.
-        await _stop_watch(cancellation_watch)
-        await _record_failure(redis, project_id, "workflow_cancellation_unproven")
+        primary_failed = True
+        state.failure = "workflow_cancellation_unproven"
+        with suppress(asyncio.CancelledError):
+            await _stop_watch(cancellation_watch)
+        with suppress(asyncio.CancelledError):
+            await _record_failure(redis, project_id, "workflow_cancellation_unproven")
         raise
-    except LiveWorkResultUnsettledError:
-        raise
-    except LiveWorkOwnershipError as error:
-        await _record_failure(redis, project_id, str(error))
+    except (LiveWorkResultUnsettledError, LiveWorkOwnershipError, LiveWorkAckUnprovenError):
+        primary_failed = True
         raise
     except Exception:
-        await _stop_watch(cancellation_watch)
-        await _record_process_failure(redis, project_id, state)
+        primary_failed = True
+        with suppress(asyncio.CancelledError):
+            await _stop_watch(cancellation_watch)
+        if state.failure != "ack_failed":
+            with suppress(asyncio.CancelledError):
+                await _record_process_failure(redis, project_id, state)
         raise
     finally:
-        await _stop_watch(cancellation_watch)
-        await _finish_live_work_safely(redis, project_id, lease)
+        # A new cleanup cancellation must not replace an existing primary failure.
+        with suppress(asyncio.CancelledError) if primary_failed else nullcontext():
+            try:
+                await _stop_watch(cancellation_watch)
+            finally:
+                await _finish_live_work_safely(redis, project_id, lease)

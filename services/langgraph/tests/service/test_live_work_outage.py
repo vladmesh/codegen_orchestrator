@@ -25,9 +25,18 @@ class CountedClient(RedisStreamClient):
         super().__init__(url)
         self.acks = []
 
-    async def ack(self, queue, group, message_id):
-        self.acks.append(message_id)
-        return await super().ack(queue, group, message_id)
+    async def connect(self):
+        await super().connect()
+        command = self.redis.execute_command
+
+        async def counted(*args, **kwargs):
+            result = await command(*args, **kwargs)
+            if result == 1 and (args[0] == "XACK" or (args[0] == "EVAL" and "'XACK'" in args[1])):
+                self.acks.append(args[-1])
+            return result
+
+        # Instrument replies from native commands; every write still reaches Redis.
+        self.redis.execute_command = counted
 
 
 class RedisProxy:
@@ -39,6 +48,9 @@ class RedisProxy:
         self.rejected = asyncio.Event()
         self.tasks = set()
         self.writers = set()
+        self.commit_fault = None
+        self.commit_dropped = asyncio.Event()
+        self.commit_requests = 0
 
     async def start(self):
         self.server = await asyncio.start_server(self.connection, "127.0.0.1", 0)
@@ -56,14 +68,47 @@ class RedisProxy:
                 return
             other, upstream = await asyncio.open_connection(self.target.hostname, self.target.port)
             self.writers.add(upstream)
+            drop_reply = False
+
+            async def requests():
+                nonlocal drop_reply
+                # Native RESP2 commands are arrays of bulk strings. Read whole
+                # frames so fault placement does not depend on TCP segmentation.
+                while header := await reader.readline():
+                    frame = bytearray(header)
+                    arguments = []
+                    for _ in range(int(header[1:])):
+                        length = await reader.readline()
+                        value = await reader.readexactly(int(length[1:]) + 2)
+                        frame.extend(length + value)
+                        arguments.append(value[:-2])
+                    terminal = arguments[0] == b"XACK" or (
+                        arguments[0] == b"EVAL" and b"'XACK'" in arguments[1]
+                    )
+                    if terminal:
+                        self.commit_requests += 1
+                        if self.commit_fault == "before":
+                            self.commit_fault = None
+                            self.commit_dropped.set()
+                            self.cut()
+                            return
+                        if self.commit_fault == "after":
+                            self.commit_fault = None
+                            drop_reply = True
+                    upstream.write(frame)
+                    await upstream.drain()
 
             async def copy(source, destination):
                 while data := await source.read(65536):
+                    if drop_reply:
+                        self.commit_dropped.set()
+                        self.cut()
+                        return
                     destination.write(data)
                     await destination.drain()
 
             pumps = [
-                asyncio.create_task(copy(reader, upstream)),
+                asyncio.create_task(requests()),
                 asyncio.create_task(copy(other, writer)),
             ]
             await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
@@ -87,9 +132,10 @@ class RedisProxy:
     async def close(self):
         self.server.close()
         await self.server.wait_closed()
-        for task in tuple(self.tasks):
-            task.cancel()
-        await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
+        for writer in tuple(self.writers):
+            writer.close()
+        async with asyncio.timeout(2):
+            await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
 
 
 async def test_expired_unpruned_token_cannot_renew_or_prevent_pel_takeover(real_redis):
@@ -229,7 +275,254 @@ async def _prove_ten_second_outage(real_redis, record_property, events):
         )
 
 
-@pytest.mark.parametrize("fault", ["removed", "teardown", "unproven", "unsettled"])
+@pytest.mark.parametrize("fault", ["completion_cancel", "teardown", "removed", "expired", "both"])
+async def test_completed_unsettled_result_retains_pel_across_terminal_retry(
+    real_redis,
+    monkeypatch,
+    events,
+    fault,
+):
+    monkeypatch.setattr(work, "LIVE_WORK_LEASE_REFRESH_SECONDS", 0.2)
+    project = "terminal-" + uuid.uuid4().hex
+    queue, group = project + ":queue", "terminal"
+    proxy = RedisProxy(os.environ["REDIS_URL"])
+    client = CountedClient(await proxy.start())
+    task = None
+    calls = 0
+
+    async def process():
+        nonlocal calls
+        calls += 1
+        if fault == "completion_cancel":
+            proxy.cut()
+        else:
+            proxy.commit_fault = "before"
+        return work.live_work_unsettled({"status": "failed"})
+
+    try:
+        await client.connect()
+        await client.ensure_consumer_group(queue, group)
+        entry = await real_redis.xadd(queue, {"project_id": project})
+        await real_redis.xreadgroup(group, "owner", {queue: ">"})
+        task = asyncio.create_task(
+            work.execute_live_work(
+                client,
+                queue=queue,
+                group=group,
+                message_id=entry,
+                project_id=project,
+                process=process,
+            )
+        )
+        async with asyncio.timeout(3):
+            while not any(e.get("event") == "live_work_redis_uncertain" for e in events):
+                await asyncio.sleep(0.01)
+        assert any(e.get("error_type") == "ConnectionError" for e in events)
+        if fault != "completion_cancel":
+            assert proxy.commit_dropped.is_set()
+        assert not task.done()
+        assert (await real_redis.xpending(queue, group))["pending"] == 1
+        if fault in {"completion_cancel", "teardown", "both"}:
+            await real_redis.set(work.live_work_cancel_key(project), "1")
+        if fault in {"removed", "both"}:
+            await real_redis.delete(work.live_work_leases_key(project))
+        if fault == "expired":
+            seconds, micros = await real_redis.time()
+            leases = work.live_work_leases_key(project)
+            tokens = await real_redis.zrange(leases, 0, -1)
+            assert len(tokens) == 1
+            await real_redis.zadd(leases, {tokens[0]: seconds * 1000 + micros // 1000 - 1})
+        proxy.failed = False
+        if fault == "completion_cancel":
+            task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 3)
+        assert (await real_redis.xpending(queue, group))["pending"] == 1
+        assert isinstance(
+            task.exception() if not task.cancelled() else asyncio.CancelledError(),
+            (
+                asyncio.CancelledError,
+                work.LiveWorkOwnershipError,
+                work.LiveWorkResultUnsettledError,
+            ),
+        )
+        expected = b"lease_lost" if fault in {"removed", "expired"} else b"cancel_settlement_failed"
+        assert await real_redis.get(work.live_work_failure_key(project)) == expected
+        assert 0 < await real_redis.ttl(work.live_work_failure_key(project)) <= 120
+        assert calls == 1 and client.acks == []
+        assert not await real_redis.exists(work.live_work_leases_key(project))
+        assert not any(t.get_name() == f"live-work-watch:{project}" for t in asyncio.all_tasks())
+    finally:
+        proxy.failed = False
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await client.close()
+        await proxy.close()
+        assert not proxy.tasks and not proxy.writers
+        await real_redis.delete(
+            queue,
+            work.live_work_leases_key(project),
+            work.live_work_cancel_key(project),
+            work.live_work_failure_key(project),
+        )
+
+
+@pytest.mark.parametrize("reply_lost", [False, True])
+@pytest.mark.parametrize("teardown", [False, True])
+async def test_terminal_retry_requires_a_proven_ack_reply(
+    real_redis,
+    monkeypatch,
+    events,
+    reply_lost,
+    teardown,
+):
+    monkeypatch.setattr(work, "LIVE_WORK_LEASE_REFRESH_SECONDS", 0.2)
+    project = "ack-reply-" + uuid.uuid4().hex
+    queue, group = project + ":queue", "ack-reply"
+    proxy = RedisProxy(os.environ["REDIS_URL"])
+    client = CountedClient(await proxy.start())
+    task = None
+    calls = 0
+
+    async def process():
+        nonlocal calls
+        calls += 1
+        proxy.commit_fault = "after" if reply_lost else "before"
+        return work.live_work_settled({"status": "passed"})
+
+    try:
+        await client.connect()
+        await client.ensure_consumer_group(queue, group)
+        entry = await real_redis.xadd(queue, {"project_id": project})
+        await real_redis.xreadgroup(group, "owner", {queue: ">"})
+        task = asyncio.create_task(
+            work.execute_live_work(
+                client,
+                queue=queue,
+                group=group,
+                message_id=entry,
+                project_id=project,
+                process=process,
+            )
+        )
+        async with asyncio.timeout(3):
+            while not any(e.get("event") == "live_work_redis_uncertain" for e in events):
+                await asyncio.sleep(0.01)
+        assert any(e.get("error_type") == "ConnectionError" for e in events)
+        assert proxy.commit_dropped.is_set() and not task.done()
+        assert (await real_redis.xpending(queue, group))["pending"] == int(not reply_lost)
+        if teardown:
+            await real_redis.set(work.live_work_cancel_key(project), "1")
+        proxy.failed = False
+        if reply_lost:
+            with pytest.raises(work.LiveWorkAckUnprovenError):
+                await asyncio.wait_for(task, 3)
+            assert await real_redis.get(work.live_work_failure_key(project)) == b"ack_uncertain"
+            assert 0 < await real_redis.ttl(work.live_work_failure_key(project)) <= 120
+            assert client.acks == []
+        else:
+            assert await asyncio.wait_for(task, 3) == work.live_work_settled({"status": "passed"})
+            assert client.acks == [entry]
+            assert not await real_redis.exists(work.live_work_failure_key(project))
+        assert calls == 1 and proxy.commit_requests == 2
+        assert (await real_redis.xpending(queue, group))["pending"] == 0
+        assert not await real_redis.exists(work.live_work_leases_key(project))
+        assert not any(t.get_name() == f"live-work-watch:{project}" for t in asyncio.all_tasks())
+    finally:
+        proxy.failed = False
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await client.close()
+        await proxy.close()
+        assert not proxy.tasks and not proxy.writers
+        await real_redis.delete(
+            queue,
+            work.live_work_leases_key(project),
+            work.live_work_cancel_key(project),
+            work.live_work_failure_key(project),
+        )
+
+
+@pytest.mark.parametrize("fault", ["before", "after"])
+async def test_running_cancellation_with_uncertain_ack_preserves_primary_cancellation(
+    real_redis,
+    monkeypatch,
+    events,
+    fault,
+):
+    monkeypatch.setattr(work, "LIVE_WORK_LEASE_REFRESH_SECONDS", 0.2)
+    project = "cancel-ack-" + uuid.uuid4().hex
+    queue, group = project + ":queue", "cancel-ack"
+    proxy = RedisProxy(os.environ["REDIS_URL"])
+    client = CountedClient(await proxy.start())
+    started, cancelled = asyncio.Event(), asyncio.Event()
+    task = None
+    calls = 0
+
+    async def process():
+        nonlocal calls
+        calls += 1
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    try:
+        await client.connect()
+        await client.ensure_consumer_group(queue, group)
+        entry = await real_redis.xadd(queue, {"project_id": project})
+        await real_redis.xreadgroup(group, "owner", {queue: ">"})
+        task = asyncio.create_task(
+            work.execute_live_work(
+                client,
+                queue=queue,
+                group=group,
+                message_id=entry,
+                project_id=project,
+                process=process,
+            )
+        )
+        await asyncio.wait_for(started.wait(), 2)
+        proxy.commit_fault = fault
+        await real_redis.set(work.live_work_cancel_key(project), "1")
+        task.cancel()
+        async with asyncio.timeout(3):
+            while not any(e.get("event") == "live_work_redis_uncertain" for e in events):
+                await asyncio.sleep(0.01)
+        assert proxy.commit_dropped.is_set()
+        assert any(e.get("error_type") == "ConnectionError" for e in events)
+        assert (await real_redis.xpending(queue, group))["pending"] == int(fault == "before")
+        proxy.failed = False
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 3)
+        assert await real_redis.get(work.live_work_failure_key(project)) == b"ack_uncertain"
+        assert 0 < await real_redis.ttl(work.live_work_failure_key(project)) <= 120
+        assert calls == 1 and cancelled.is_set() and client.acks == []
+        assert (await real_redis.xpending(queue, group))["pending"] == int(fault == "before")
+        assert not await real_redis.exists(work.live_work_leases_key(project))
+        assert not any(t.get_name() == f"live-work-watch:{project}" for t in asyncio.all_tasks())
+    finally:
+        proxy.failed = False
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await client.close()
+        await proxy.close()
+        assert not proxy.tasks and not proxy.writers
+        await real_redis.delete(
+            queue,
+            work.live_work_leases_key(project),
+            work.live_work_cancel_key(project),
+            work.live_work_failure_key(project),
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["removed", "teardown", "removed_teardown", "unproven", "unsettled", "unsettled_fence_removed"],
+)
 async def test_authoritative_loss_and_teardown_preserve_real_pending_settlement(
     real_redis,
     monkeypatch,
@@ -252,7 +545,9 @@ async def test_authoritative_loss_and_teardown_preserve_real_pending_settlement(
             cancelled.set()
             if fault == "unproven":
                 raise WorkflowCancellationUnprovenError("fixture stop unproven") from None
-            if fault == "unsettled":
+            if fault == "unsettled_fence_removed":
+                await real_redis.delete(work.live_work_cancel_key(project))
+            if fault in {"unsettled", "unsettled_fence_removed"}:
                 return work.live_work_unsettled({"status": "failed"})
             raise
 
@@ -272,9 +567,9 @@ async def test_authoritative_loss_and_teardown_preserve_real_pending_settlement(
             )
         )
         await asyncio.wait_for(started.wait(), 2)
-        if fault == "removed":
+        if fault in {"removed", "removed_teardown"}:
             await real_redis.delete(work.live_work_leases_key(project))
-        else:
+        if fault != "removed":
             await real_redis.set(work.live_work_cancel_key(project), "1")
         if fault == "teardown":
             assert await asyncio.wait_for(task, 2) is None
@@ -283,8 +578,10 @@ async def test_authoritative_loss_and_teardown_preserve_real_pending_settlement(
         else:
             exception = {
                 "removed": asyncio.CancelledError,
+                "removed_teardown": asyncio.CancelledError,
                 "unproven": WorkflowCancellationUnprovenError,
                 "unsettled": work.LiveWorkResultUnsettledError,
+                "unsettled_fence_removed": work.LiveWorkResultUnsettledError,
             }[fault]
             with pytest.raises(exception):
                 await asyncio.wait_for(task, 2)
@@ -298,6 +595,62 @@ async def test_authoritative_loss_and_teardown_preserve_real_pending_settlement(
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        await client.close()
+        await real_redis.delete(
+            queue,
+            work.live_work_leases_key(project),
+            work.live_work_cancel_key(project),
+            work.live_work_failure_key(project),
+        )
+
+
+@pytest.mark.parametrize("status", ["success", "passed", "skipped", "gave_up"])
+@pytest.mark.parametrize("settled", [True, False, None])
+async def test_completed_result_settlement_is_authoritative_under_native_teardown(
+    real_redis,
+    status,
+    settled,
+):
+    project = "result-fence-" + uuid.uuid4().hex
+    queue, group = project + ":queue", "result-fence"
+    client = CountedClient(os.environ["REDIS_URL"])
+    result = {"status": status}
+    if settled is not None:
+        result[work.LIVE_WORK_SETTLED_KEY] = settled
+
+    async def process():
+        await real_redis.set(work.live_work_cancel_key(project), "1")
+        return result
+
+    try:
+        await client.connect()
+        await client.ensure_consumer_group(queue, group)
+        entry = await real_redis.xadd(queue, {"project_id": project})
+        await real_redis.xreadgroup(group, "owner", {queue: ">"})
+        execution = work.execute_live_work(
+            client,
+            queue=queue,
+            group=group,
+            message_id=entry,
+            project_id=project,
+            process=process,
+        )
+        if settled is True:
+            assert await execution == result
+            assert client.acks == [entry]
+            assert not await real_redis.exists(work.live_work_failure_key(project))
+        else:
+            with pytest.raises(work.LiveWorkResultUnsettledError):
+                await execution
+            assert client.acks == []
+            assert (
+                await real_redis.get(work.live_work_failure_key(project))
+                == b"cancel_settlement_failed"
+            )
+        assert (await real_redis.xpending(queue, group))["pending"] == int(settled is not True)
+        assert not await real_redis.exists(work.live_work_leases_key(project))
+        assert not any(t.get_name() == f"live-work-watch:{project}" for t in asyncio.all_tasks())
+    finally:
         await client.close()
         await real_redis.delete(
             queue,

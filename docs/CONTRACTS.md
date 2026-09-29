@@ -1037,9 +1037,21 @@ request; failed attempts never extend it. A ten-second connection outage fits
 inside this confirmed window. No renewal is accepted after the local deadline.
 Confirmed teardown still cancels the owner. Missing/expired ownership, exhausted
 uncertainty and non-transient errors cancel visibly and retain the pending entry.
-Completion must confirm ownership/teardown before ACK; completion during an outage
-waits within the same window. Unproven external cancellation or unsettled teardown
-results never ACK. Watchers are cancelled and awaited on every exit; bounded
+Leased completion and cancellation use one terminal Lua decision: check the
+completed result's settlement, teardown fence and unexpired token against Redis
+TIME, then XACK atomically. Every retry repeats this decision inside the original
+confirmed deadline. A returned result remains authoritative through subsequent
+owner cancellation; only a running process that unwound can settle as cancelled
+work. Unproven external cancellation, unsettled teardown results, known ownership
+loss and exhausted uncertainty prevent ACK. Cancellation without teardown leaves
+the entry pending. An observed teardown continues to constrain a returned result
+even if its key later disappears. Shutdown settlement is additionally bounded by
+the existing ten-second attempt window. A lost ACK reply may mean Redis already
+committed: a subsequent zero XACK is unproven, fences cleanup and never claims
+recovered settlement.
+No durable ACK recovery protocol is introduced. A definitive ACK reply received
+after the conservative local deadline is reported as already applied but cannot
+claim current ownership. Watchers are cancelled and awaited on every exit; bounded
 best-effort failure marking and lease removal cannot mask the primary failure.
 This changes no DTO, stream, schema, key format or released-worker upgrade protocol.
 

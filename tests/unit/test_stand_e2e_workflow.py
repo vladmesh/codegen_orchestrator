@@ -1898,6 +1898,45 @@ def test_mega_noop_renders_without_the_qa_session_as_it_always_has(tmp_path):
     assert "TELETHON" not in (tmp_path / ".stand.env").read_text()
 
 
+def test_actual_stand_renderer_provisions_required_policy_for_clean_compose(tmp_path):
+    step = _steps()["Render protected dynamic configuration"]
+    # Use the workflow's literal policy, without supplying it from the test or
+    # the invoking shell. Other values are synthetic and never contact a service.
+    literals = {name: str(value) for name, value in step["env"].items() if "${{" not in str(value)}
+    result = _run_render(
+        tmp_path,
+        qa_telethon="false",
+        **literals,
+        HOST_UID="1000",
+        HOST_GID="1000",
+        ORCHESTRATOR_PUBLIC_IP="127.0.0.1",
+        ORCHESTRATOR_HOSTNAME="stand.test",
+    )
+    assert result.returncode == 0, result.stderr
+    (tmp_path / ".env").write_bytes((tmp_path / ".stand.env").read_bytes())
+    root = WORKFLOW.parents[2]
+    command = [
+        "docker",
+        "compose",
+        "--project-directory",
+        str(tmp_path),
+        "--env-file",
+        str(tmp_path / ".env"),
+    ]
+    for name in ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml"):
+        command += ["-f", str(root / name)]
+    configured = subprocess.run(  # noqa: S603
+        [*command, "config", "--quiet"],
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert configured.returncode == 0, configured.stderr
+    assert "TELEGRAM_MAX_CONCURRENT_UPDATES=8\n" in (tmp_path / ".stand.env").read_text()
+
+
 def test_the_qa_worker_env_file_reaches_the_stand_beside_its_env_and_is_never_rsynced():
     bring_up = _steps()["Bring up dynamic orchestrator and wait for API"]["run"]
     bootstrap = _steps()["Bootstrap dynamic orchestrator"]["run"]

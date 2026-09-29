@@ -399,7 +399,7 @@ them in the repository environment. Services fail fast when the in-container pat
 | Secret | Description |
 |--------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
-| `TELEGRAM_MAX_CONCURRENT_UPDATES` | Required integer >= 2; Deploy provisions 8 simultaneous updates, retaining per-user handler order |
+| `TELEGRAM_MAX_CONCURRENT_UPDATES` | Required integer >= 2; Deploy and the protected stand renderer provision 8 simultaneous updates, retaining per-user handler order |
 | `ADMIN_TELEGRAM_IDS` | Comma-separated admin Telegram IDs |
 | `TELEGRAM_ID_ADMIN` | Primary admin Telegram ID (for seeding) |
 | `TELETHON_API_ID` | Telegram API ID for the QA runtime's Telethon client |

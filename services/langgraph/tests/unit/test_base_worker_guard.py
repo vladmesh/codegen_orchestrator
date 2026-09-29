@@ -281,9 +281,9 @@ class TestTerminalConsumerMessages:
         redis = MagicMock()
         redis.connect = AsyncMock()
         redis.close = AsyncMock()
-        redis.ack = AsyncMock(side_effect=RuntimeError("ack unavailable"))
+        redis.ack = AsyncMock()
         redis.consume = consume
-        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.eval = AsyncMock(side_effect=[1, RuntimeError("ack unavailable")])
         redis.redis.exists = AsyncMock(return_value=True)
         redis.redis.set = AsyncMock()
         redis.redis.zrem = AsyncMock()
@@ -338,7 +338,7 @@ class TestTerminalConsumerMessages:
 
         redis = MagicMock()
         redis.ack = AsyncMock()
-        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.eval = AsyncMock(side_effect=[1, -1])  # acquisition, atomic refusal
         redis.redis.set = AsyncMock()
         redis.redis.zrem = AsyncMock()
         redis.redis.exists = AsyncMock(return_value=True)
@@ -392,7 +392,10 @@ class TestTerminalConsumerMessages:
             )
 
         assert result == {"status": status, LIVE_WORK_SETTLED_KEY: True}
-        redis.ack.assert_awaited_once_with("queue", "capability-workers", "1-0")
+        commits = [c for c in redis.redis.eval.await_args_list if "'XACK'" in c.args[0]]
+        assert len(commits) == 1
+        assert commits[0].args[4] == "queue"
+        assert commits[0].args[-5:] == (1, 1, 0, "capability-workers", "1-0")
         redis.redis.set.assert_not_awaited()
 
     @pytest.mark.asyncio()
@@ -401,7 +404,7 @@ class TestTerminalConsumerMessages:
 
         redis = MagicMock()
         redis.ack = AsyncMock()
-        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.eval = AsyncMock(side_effect=[1, -1])  # acquisition, atomic refusal
         redis.redis.set = AsyncMock()
         redis.redis.zrem = AsyncMock()
         redis.redis.exists = AsyncMock(return_value=True)
