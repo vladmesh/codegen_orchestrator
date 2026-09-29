@@ -300,9 +300,8 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
     )
     events = await api.get(f"tasks/{repair['id']}/events")
     detail = (
-        f"PR #{story.pr_number}: repair Task {repair['id']}, decision {did}, "
-        f"iteration {int(later)}, ceiling {repair['max_iterations']}: "
-        f"engineering_budget_denied. {audits[0]['message']}"
+        f"PR #{story.pr_number} repair Task {repair['id']} is waiting for engineering "
+        f"budget (decision {did}). {audits[0]['message']}"
     )
     assert story.quarantine_reason["detail"] == detail
     assert_refusal_preserves_task_history(
