@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -38,7 +39,14 @@ from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_accept_result_actor, get_redis_client, require_internal_or_admin
+from ..dependencies import (
+    _optional_bearer_scheme,
+    get_accept_result_actor,
+    get_redis_client,
+    is_internal_service,
+    require_internal_or_admin,
+    resolve_actor,
+)
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..owner_notification_settlement import preserve_po_settlement
 from ..schemas.actions import AdminAction
@@ -316,7 +324,19 @@ async def update_story(
     story_id: str,
     body: StoryUpdate,
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> StoryRead:
+    timeline = body.generated_product_timeline
+    if isinstance(timeline, dict) and "deploy_observation" in timeline:
+        actor = await resolve_actor(
+            is_internal=_is_internal, telegram_id=x_telegram_id, credentials=credentials, db=db
+        )
+        if actor is not None:
+            raise HTTPException(
+                status_code=403, detail="merged deploy observations require the internal producer"
+            )
     story = await _get_story_for_update(story_id, db)
 
     update_data = body.model_dump(exclude_unset=True)

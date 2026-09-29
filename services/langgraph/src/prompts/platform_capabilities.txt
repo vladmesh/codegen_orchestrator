@@ -1,6 +1,7 @@
-## Platform capabilities (manifest v6, owner-reviewed)
+## Platform capabilities (manifest v7, owner-reviewed)
 What a product built here can and cannot have. The product is a Telegram bot and has no web address.
 Can:
+- Plain HTTP self links: The bot can include plain HTTP self links; their address can change when the product moves.
 - Telegram bot: A Telegram bot people chat with, using commands, buttons and menus.
 - The bot remembers data: The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
 - Actions on a schedule or later: The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
@@ -8,7 +9,7 @@ Can:
 - Connecting to other services: The bot connects to other online services, such as AI, weather or spreadsheets, with a key the user provides; AI in the bot runs on the user's own key.
 - Who can use the bot: At first only the customer can use the bot; everyone else is ignored. The customer can give permanent access to specific Telegram users, and it starts working once the running bot confirms it. The customer can also hand the bot over to another Telegram user. Taking access back and opening the bot to everyone are not available yet.
 Cannot (why; instead):
-- A website or web pages: [web_presence] The bot has no website, web pages, admin panel, link or domain of its own, and cannot open a mini app inside Telegram. The product lives entirely inside the Telegram chat. Instead: Everything happens in the chat with buttons.
+- A website or web pages: [web_presence] The bot has no website, web pages, admin panel or domain of its own, and cannot open a mini app inside Telegram. The product lives entirely inside the Telegram chat. Instead: Everything happens in the chat with buttons.
 - Receiving events other services send: [inbound_webhooks] The bot cannot receive events that other services send to it by themselves, such as GitHub notifications or form submissions. Other services have nowhere to send such events to. Instead: The bot checks the service itself from time to time, if the service allows that.
 - Accepting payments: [payments] The bot cannot take payments: neither through payment services such as YooKassa or Stripe nor inside Telegram (Stars, Payments). Payment acceptance is not part of what the platform builds. No way around it.
 - Signing in with Google and the like: [oauth_web_redirect] The bot cannot use "Sign in with Google" or similar sign-in buttons to reach a user's account. Such sign-in needs a web page for the user to return to, which the bot does not have. Instead: The user shares their spreadsheet or calendar with the bot's Google service account, or pastes a personal token.

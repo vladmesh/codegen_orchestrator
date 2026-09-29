@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 6
+version: 7
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -42,6 +42,14 @@ derived_from:
 # Everything technical lives in `how` (can) and `technical` (cannot), which only the Architect's
 # block and the document carry.
 can:
+  - id: http_self_address
+    name: Plain HTTP self links
+    plain: The bot can include plain HTTP self links; their address can change when the product moves.
+    how: >-
+      Required production derived `PUBLIC_BASE_URL` resolves from the single trusted backend
+      allocation to the same HTTP endpoint the deployer reports, with bracketed IPv6 literals.
+      Missing, invalid or ambiguous allocations fail with that key named. This supplies an
+      address only; domain allocation, TLS, frontend and inbound webhook capabilities remain unsupported.
   - id: telegram_bot
     name: Telegram bot
     plain: A Telegram bot people chat with, using commands, buttons and menus.
@@ -100,7 +108,7 @@ can:
 cannot:
   - id: web_presence
     # Merges the v4 items named in `aliases`; a brief that accepted one of them keeps its waiver.
-    aliases: [https_domain, custom_domain, public_base_url, telegram_mini_app, web_frontend]
+    aliases: [https_domain, custom_domain, telegram_mini_app, web_frontend]
     detect:
       - website
       - web page
@@ -116,8 +124,6 @@ cannot:
       - custom domain
       - own domain
       - public domain
-      - public_base_url
-      - own public url
       - telegram mini app
       - telegram web app
       - сайт
@@ -138,22 +144,20 @@ cannot:
       - свой домен
       - собственный домен
       - публичный домен
-      - собственный публичный url
-      - ссылки на себя
       - мини-приложение telegram
       - мини-приложение в telegram
       - мини-приложение в телеграм
     name: A website or web pages
     plain: >-
-      The bot has no website, web pages, admin panel, link or domain of its own, and cannot open
+      The bot has no website, web pages, admin panel or domain of its own, and cannot open
       a mini app inside Telegram.
     why: The product lives entirely inside the Telegram chat.
     workaround: Everything happens in the chat with buttons.
     technical: >-
       The deployer hands out only `http://{server_ip}:{port}` of the backend; a product's compose
-      has no TLS proxy, nothing allocates or verifies a domain, and the resolver computes no
-      `PUBLIC_BASE_URL` (a required derived key it cannot compute fails the engineering attempt
-      before any deploy). A Mini App needs an https URL. A product may request only the
+      has no TLS proxy and nothing allocates or verifies a domain. Derived `PUBLIC_BASE_URL`
+      is that allocated backend HTTP address, with brackets for IPv6, for plain self links;
+      it promises no frontend, TLS or webhook availability. A Mini App needs an https URL. A product may request only the
       `backend` and `tg_bot` modules; `frontend` remains only for old records.
   - id: inbound_webhooks
     detect:
@@ -176,7 +180,7 @@ cannot:
     workaround: The bot checks the service itself from time to time, if the service allows that.
     technical: >-
       Providers require an https URL, and the product only has plain http on an IP and port that
-      can change when it moves server; the resolver derives no `PUBLIC_BASE_URL`. Poll the
+      can change when it moves server; derived `PUBLIC_BASE_URL` is only that HTTP address. Poll the
       provider's API from a timer loop; the Telegram bot already works this way (long polling).
   - id: payments
     # A bare word ("payment", "оплата", "платёж") is a weak term: an expense tracker records
@@ -382,6 +386,8 @@ derived_keys:
     value: db_<project id>
   - key: ENABLED_MODULES
     value: the project's modules, comma-separated
+  - key: PUBLIC_BASE_URL
+    value: the single allocated backend's HTTP address and port, with bracketed IPv6
   - key: BACKEND_PORT
     value: the backend's allocated port
   - key: FRONTEND_PORT

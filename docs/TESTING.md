@@ -58,6 +58,19 @@ failure without a generic outcome. The Langgraph runner carries scheduler source
 real supervision in a separate Python process against the consumer's persisted planned result;
 API, Langgraph and scheduler changes all select this Langgraph service leg in CI.
 
+`services/langgraph/tests/service/test_public_deploy.py` uses that same selected CI leg:
+the real DevOps graph and deploy consumer persist an unknown required derived-key failure,
+then the real scheduler commits its typed story stop and recovers owner delivery after an
+interrupted Redis publication. The current merged PR poller, with deterministic GitHub App
+and successful publication fixtures, crosses the real lifecycle API after committed grant
+exhaustion. PostgreSQL/Redis readback proves immutable prior Runs, separate head/built SHAs,
+one bounded replacement epoch and one dispatch under concurrent admission. Missing, malformed,
+stale-cycle and mismatched evidence fail closed. API service tests retain the ordinary
+target-reset and safety assertions with current-merge evidence and test observation forgery
+through a public bearer. Pure Langgraph tests cover IPv4/IPv6, backend selection, sensitivity,
+invalid endpoints and a deterministic resolver-to-dotenv-to-successful-deploy handoff.
+No live GitHub mutation, paid provider or stand is used.
+
 ## Pre-push Hook
 
 Runs automatically before `git push`:

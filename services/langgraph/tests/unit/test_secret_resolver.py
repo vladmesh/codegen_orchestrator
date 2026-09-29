@@ -355,7 +355,7 @@ class TestOnePredicate:
             with pytest.raises(UnknownDerivedKeyError, match=f"Unknown computed secret: {key}"):
                 node._compute_secret(key, self.PROJECT_SPEC, self.STATE)
 
-    def test_the_story_92b433c8_key_and_the_kits_optional_port_are_not_computable(self):
-        assert not is_computable_derived_key("PUBLIC_BASE_URL")
+    def test_public_url_is_computable_and_the_kits_optional_port_is_not(self):
+        assert is_computable_derived_key("PUBLIC_BASE_URL")
         assert not is_computable_derived_key("PORT")
         assert is_computable_derived_key("BACKEND_IMAGE")

@@ -16,6 +16,18 @@ class GrantIntentKind(StrEnum):
     INCOMING_OWNER = "incoming_owner"
 
 
+class GrantIntentLifecycleRequest(BaseModel):
+    """Internal admission; a PR number selects trusted persisted merge evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: GrantIntentKind
+    story_id: str | None = None
+    head_sha: CommitSha | None = None
+    deployed_commit_sha: CommitSha | None = None
+    merged_pr_number: int | None = Field(default=None, gt=0)
+
+
 class GrantIntentStatus(StrEnum):
     PUBLISH_OWED = "publish_owed"
     QUEUED = "queued"

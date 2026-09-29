@@ -43,7 +43,7 @@ attempt and holds only the intent reference plus its exact SHA.
 
 An APPLIED intent wins redelivery and is never rewritten or dispatched again. An
 automatic source Run cannot replace a binding while its execution Run is live,
-cannot reopen an exhausted intent, and cannot bind a SHA retained in
+cannot reopen an exhausted target, and cannot bind a SHA retained in
 `target_history`; it receives `in_flight`, `exhausted`, or `stale_target` with no
 new Run. Only after the prior execution is terminal may a genuinely new
 authoritative target record the replaced application/deployment/SHA and its
@@ -74,6 +74,27 @@ through the ordinary successful-deploy handoff without spending a retry;
 infrastructure and user-secret recovery only claim an intent redispatch when the
 result is `dispatched`, and convert `exhausted` into the normal failed-story and
 admin-alert outcome.
+
+`GrantIntentLifecycleRequest` (`shared/contracts/dto/users_grant.py`) adds an optional
+`merged_pr_number` for the PR poller. It selects evidence, never grants a reset. After its
+GitHub App reads the current story PR and observes successful image publication on `main`
+for the built merge SHA, the poller persists `generated_product_timeline.deploy_observation`
+(story, project, primary repository URL, observation time), alongside the exact PR and CI
+reading, before admission. This observation can be written only by an internal service;
+ordinary authenticated story updates keep their existing authorization.
+
+Under the existing project/intent locks, APPLIED and a live execution take precedence.
+A superseded SHA is refused. Any automatic replacement requires the selected current PR,
+matching story/project/repository, exact head and built SHAs, one completed successful CI run
+on `main`, and merge/observation timestamps within the current story cycle. Missing or
+inconsistent evidence returns a visible 409 without mutation. A changed SHA without merge
+authority returns `stale_target`, or `exhausted` if the current epoch already exhausted.
+A verified new merged target may replace even a committed exhausted epoch on the same
+intent: it retains the old target/count, resets only the new target counter and creates
+one immutable Run under the same ceiling. An exhausted same target remains terminal.
+Generic supervisor, infrastructure and secret recovery supply no merge authority. Publication
+reacquires the existing project/intent locks after the Run commit, serializing concurrent
+owed dispatches without minting another Run or changing prior execution history.
 
 After smoke success, deploy grants through `POST /users/grant` and requires
 `GET /users/access` to report that exact identity active before the API records
@@ -1142,6 +1163,16 @@ status/waiting reason, exact task/attempt cause and owner/admin notification epi
 empty-result stop. A settled exhausted sibling can supply that same proof. Unrelated human
 review or a missing/mismatched notice is not proof; no repeated transition is globally allowed.
 
+For `DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED`, the DevOps subgraph preserves the typed
+resolver outcome and key-bearing error even when `deployment_result` is absent or null.
+The deploy consumer commits a failed Run with bounded/redacted cause and performs no deploy
+execution after resolver failure. The scheduler consumes that persisted result and sends
+`StoryFailureCode.ENVIRONMENT_RESOLUTION_FAILED`, source `scheduler`, through `stop_story`
+with action `fail`. The API commits the failed status, cause and owed owner/admin notices
+together. Stop refusal propagates for retry; notification publication is recovered by the
+existing owed-notice sweep. No preceding reason PATCH is required. Other deploy outcomes
+retain their existing routes.
+
 **A failed planning attempt is a story state.** `stories.planning` (`StoryPlanning`, on
 `StoryRead.planning`, `shared/contracts/dto/story_planning.py`) is the one durable record that
 planning is owed: every path that makes the architect owe a story a planning run writes it as
@@ -1641,6 +1672,14 @@ is the one answer to which `derived` keys a deploy computes: the static values,
 `CONTEXT_DERIVED_SECRETS`, the port keys and the `*_IMAGE` family. `_compute_secret`
 raises `UnknownDerivedKeyError` for any key it rejects, and the deploy skips such
 an entry only when it is optional.
+
+Required production derived `PUBLIC_BASE_URL` is the allocated backend's plain HTTP address
+and port. Resolver and deployer use the same single backend allocation, independent of resource
+ordering; standard-library IP validation and bracketed IPv6 formatting apply. Absent, invalid
+or ambiguous endpoints fail `environment_resolution_failed` naming `PUBLIC_BASE_URL`.
+Overrides cannot replace derived values. The canonical derived entry stays non-sensitive;
+other entry kinds retain their declared sensitivity routing. This supplies no domain, TLS,
+frontend or webhook guarantee.
 
 `handle_engineering_success` reads the commit's environment contract with the
 deploy's own loader (`env_contract_loader._fetch_env_contract`, at the commit

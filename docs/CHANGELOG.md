@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-29
+
+- Derived `PUBLIC_BASE_URL` uses the deployed HTTP endpoint; resolver failures reach owners,
+  and verified merged repairs open bounded grant epochs without duplicate concurrent dispatch.
+
 ## 2026-09-28
 
 - Empty-result settlement preserves its cause across exhausted siblings and interrupted writes;

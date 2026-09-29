@@ -17,6 +17,13 @@ def _content(text, choices=()):
 
 
 @pytest.mark.parametrize(
+    "text", ["PUBLIC_BASE_URL", "Own public URL", "Собственный публичный URL", "Ссылки на себя"]
+)
+def test_plain_self_address_is_supported_without_a_web_presence_waiver(text):
+    assert capability_conflicts(_content(text)) == []
+
+
+@pytest.mark.parametrize(
     ("text", "capability"),
     [
         ("OAuth web redirect", "oauth_web_redirect"),
@@ -180,10 +187,16 @@ def test_the_refusal_reason_is_built_from_product_fields_only():
 
 
 @pytest.mark.parametrize(
-    "old_id",
-    ["https_domain", "custom_domain", "public_base_url", "telegram_mini_app", "web_frontend"],
+    ("old_id", "expected"),
+    [
+        ("https_domain", []),
+        ("custom_domain", []),
+        ("public_base_url", ["web_presence"]),
+        ("telegram_mini_app", []),
+        ("web_frontend", []),
+    ],
 )
-def test_a_choice_recorded_under_a_merged_v4_id_still_waives_it(old_id):
+def test_historical_choices_waive_only_their_current_limitation(old_id, expected):
     choice = {
         "feature": "Links",
         "chosen": "Chat buttons",
@@ -193,7 +206,10 @@ def test_a_choice_recorded_under_a_merged_v4_id_still_waives_it(old_id):
         "capability": old_id,
     }
 
-    assert capability_conflicts(_content("Собственный домен", [choice])) == []
+    assert [
+        conflict.capability.id
+        for conflict in capability_conflicts(_content("Собственный домен", [choice]))
+    ] == expected
 
 
 def test_acceptance_covers_only_the_named_capability():

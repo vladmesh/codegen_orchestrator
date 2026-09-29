@@ -125,6 +125,39 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
     return gh
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("address", ["192.0.2.42", "2001:db8::42"])
+@patch("src.subgraphs.devops.deployer.GitHubAppClient")
+@patch("src.subgraphs.devops.deployer.api_client")
+async def test_resolved_public_address_reaches_dotenv_and_success_url(
+    mock_api, mock_gh_cls, base_state, address
+):
+    from src.subgraphs.devops.secret_resolver import SecretResolverNode
+    from tests.unit.test_public_base_url import public_state
+
+    gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+    gh.wait_for_workflow_completion.return_value = {**_SUCCESS_RUN, "head_sha": BUILT_SHA}
+    base_state["head_sha"] = PINNED_SHA
+    base_state["deployed_commit_sha"] = BUILT_SHA
+    base_state["allocated_resources"]["backend"]["server_ip"] = address
+    base_state["allocated_resources"] = {
+        "bot": {"service_name": "tg_bot", "server_ip": "192.0.2.99", "port": 8081},
+        **base_state["allocated_resources"],
+    }
+    resolved = await SecretResolverNode().run(public_state(base_state["allocated_resources"]))
+    base_state["non_secret_values"].update(resolved["non_secret_values"])
+    written = {}
+
+    async def write(owner, repo, values):
+        written.update(values)
+        return len(values)
+
+    gh.set_repository_secrets.side_effect = write
+    result = await DeployerNode().run(base_state)
+    assert result["deployed_url"] == resolved["non_secret_values"]["PUBLIC_BASE_URL"]
+    assert _dotenv(written)["PUBLIC_BASE_URL"] == result["deployed_url"]
+
+
 class TestDeployerNodeErrors:
     @pytest.mark.asyncio
     async def test_no_project_id_returns_error(self, deployer):

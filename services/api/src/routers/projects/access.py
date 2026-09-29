@@ -15,12 +15,14 @@ import structlog
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deployment import DeploymentResult
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
     GrantIntent,
     GrantIntentDispatchTarget,
     GrantIntentKind,
     GrantIntentLifecycleDisposition,
+    GrantIntentLifecycleRequest,
     GrantIntentLifecycleResult,
     GrantIntentStatus,
 )
@@ -35,6 +37,7 @@ from shared.models import (
     User,
     UsersGrantIntent,
 )
+from shared.models.story import Story
 from shared.queues import DEPLOY_QUEUE
 from shared.redis.client import RedisStreamClient
 
@@ -53,18 +56,6 @@ router = APIRouter()
 logger = structlog.get_logger()
 DEPLOY_RETRY_CEILING_KEY = "deploy.max_deploy_retries"
 _RETRY_CEILING_EXHAUSTED_DETAIL = "deployment retry ceiling exhausted"
-
-
-class GrantIntentLifecycleRequest(BaseModel):
-    """Internal producer request. It never accepts a capability or secret."""
-
-    kind: GrantIntentKind
-    story_id: str | None = None
-    head_sha: str | None = Field(default=None, min_length=40, max_length=40)
-    # The built commit the grant's deploy has to deploy — see
-    # `DeployMessage.deployed_commit_sha`. Distinct from `head_sha`, which is the
-    # story commit the grant is recorded against.
-    deployed_commit_sha: str | None = Field(default=None, min_length=40, max_length=40)
 
 
 class GrantIntentCompletion(BaseModel):
@@ -197,6 +188,78 @@ async def _deploy_retry_ceiling(db: AsyncSession) -> int:
     return ceiling
 
 
+async def _require_current_merged_target(
+    db: AsyncSession,
+    project: Project,
+    story_id: str | None,
+    pr_number: int,
+    head_sha: str,
+    built_sha: str,
+) -> None:
+    """Authorize replacement from the poller's persisted App/CI reading, under lock."""
+    story = await db.scalar(select(Story).where(Story.id == story_id).with_for_update())
+    if story is None or story.project_id != project.id:
+        raise HTTPException(
+            status_code=409, detail="merged repair story does not belong to project"
+        )
+    timeline = story.generated_product_timeline or {}
+    if not isinstance(timeline, dict):
+        raise HTTPException(
+            status_code=409, detail="merged repair publication evidence is malformed"
+        )
+    observation = timeline.get("deploy_observation") or {}
+    pr = timeline.get("pull_request") or {}
+    ci = timeline.get("latest_ci_observation") or {}
+    runs = timeline.get("ci_runs", [])
+    if (
+        not all(isinstance(value, dict) for value in (observation, pr, ci))
+        or not isinstance(runs, list)
+        or not all(isinstance(run, dict) for run in runs)
+    ):
+        raise HTTPException(
+            status_code=409, detail="merged repair publication evidence is malformed"
+        )
+    repo = await db.scalar(
+        select(Repository).where(Repository.project_id == project.id, Repository.role == "primary")
+    )
+    matches = (
+        story.status in {StoryStatus.PR_REVIEW.value, StoryStatus.DEPLOYING.value}
+        and story.pr_number == pr_number == pr.get("number")
+        and pr.get("state") == "closed"
+        and pr.get("head_sha") == head_sha
+        and pr.get("merge_commit_sha") == built_sha
+        and observation.get("story_id") == story.id
+        and observation.get("project_id") == str(project.id)
+        and repo is not None
+        and observation.get("repository_url") == repo.git_url
+        and ci.get("ci_status") == "completed"
+        and ci.get("ci_conclusion") == "success"
+        and type(ci.get("ci_run_id")) is int
+        and ci["ci_run_id"] > 0
+    )
+    matching_runs = [run for run in runs if run.get("id") == ci.get("ci_run_id")]
+    run = matching_runs[0] if len(matching_runs) == 1 else {}
+    matches = (
+        matches
+        and run.get("branch") == "main"
+        and run.get("head_sha") == built_sha
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "success"
+    )
+    try:
+        merged_at = datetime.fromisoformat(pr["merged_at"])
+        observed_at = datetime.fromisoformat(observation["observed_at"])
+        cycle_start = story.reopened_at or story.created_at
+        matches = matches and cycle_start <= merged_at <= observed_at <= datetime.now(UTC)
+    except (KeyError, TypeError, ValueError):
+        matches = False
+    if not matches:
+        raise HTTPException(
+            status_code=409,
+            detail="merged repair lacks matching current-cycle PR/publication evidence",
+        )
+
+
 async def _lifecycle(  # noqa: PLR0913
     db: AsyncSession,
     project: Project,
@@ -208,6 +271,7 @@ async def _lifecycle(  # noqa: PLR0913
     deployed_commit_sha: str,
     story_id: str | None,
     explicit_user_retry: bool = False,
+    merged_pr_number: int | None = None,
 ) -> tuple[UsersGrantIntent, Run | None, bool, GrantIntentLifecycleDisposition]:
     """The sole create/lookup/rebind/dispatch-preparation operation.
 
@@ -252,10 +316,15 @@ async def _lifecycle(  # noqa: PLR0913
         live_run = await _execution_is_live(db, intent)
         if live_run is not None:
             return intent, live_run, False, GrantIntentLifecycleDisposition.IN_FLIGHT
-        if _is_exhausted(intent):
+        if _is_exhausted(intent) and merged_pr_number is None:
             return intent, None, False, GrantIntentLifecycleDisposition.EXHAUSTED
         if _target_was_superseded(intent, target):
             return intent, None, False, GrantIntentLifecycleDisposition.STALE_TARGET
+        if merged_pr_number is None:
+            return intent, None, False, GrantIntentLifecycleDisposition.STALE_TARGET
+        await _require_current_merged_target(
+            db, project, story_id, merged_pr_number, target[2], deployed_commit_sha
+        )
 
     rebound = False
     if target_changed:
@@ -377,15 +446,22 @@ async def _dispatch_lifecycle(
             deployed_commit_sha=deployed_commit_sha,
         )
         await db.commit()
-        try:
-            await redis.publish_message(DEPLOY_QUEUE, message)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="grant intent is durable but dispatch is still owed"
-            ) from None
+        # The Run must exist before publication. Reacquire the same project and
+        # intent locks across the owed publish so a concurrent admission cannot
+        # also publish the live Run in this commit-to-queue interval.
+        await load_locked_project(db, project.id)
+        await db.refresh(intent, with_for_update=True)
+        if intent.execution_run_id != run.id:
+            raise HTTPException(status_code=409, detail="grant dispatch was superseded")
         if intent.status == GrantIntentStatus.PUBLISH_OWED.value:
+            try:
+                await redis.publish_message(DEPLOY_QUEUE, message)
+            except Exception:
+                raise HTTPException(
+                    status_code=503, detail="grant intent is durable but dispatch is still owed"
+                ) from None
             intent.status = GrantIntentStatus.QUEUED.value
-            await db.commit()
+        await db.commit()
     if disposition is GrantIntentLifecycleDisposition.DISPATCHED:
         assert run is not None
         return GrantIntentLifecycleResult(
@@ -521,6 +597,7 @@ async def resume_initial_owner_intent(
         target=(None, None, body.head_sha),
         deployed_commit_sha=body.deployed_commit_sha,
         story_id=body.story_id,
+        merged_pr_number=body.merged_pr_number,
     )
     return await _dispatch_lifecycle(db, redis, project, intent, run, disposition, created)
 

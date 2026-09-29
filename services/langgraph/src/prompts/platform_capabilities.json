@@ -1,17 +1,16 @@
 {
-  "version": 6,
+  "version": 7,
   "cannot": [
     {
       "id": "web_presence",
       "aliases": [
         "https_domain",
         "custom_domain",
-        "public_base_url",
         "telegram_mini_app",
         "web_frontend"
       ],
       "name": "A website or web pages",
-      "plain": "The bot has no website, web pages, admin panel, link or domain of its own, and cannot open a mini app inside Telegram.",
+      "plain": "The bot has no website, web pages, admin panel or domain of its own, and cannot open a mini app inside Telegram.",
       "why": "The product lives entirely inside the Telegram chat.",
       "workaround": "Everything happens in the chat with buttons.",
       "detect": [
@@ -29,8 +28,6 @@
         "custom domain",
         "own domain",
         "public domain",
-        "public_base_url",
-        "own public url",
         "telegram mini app",
         "telegram web app",
         "сайт",
@@ -51,8 +48,6 @@
         "свой домен",
         "собственный домен",
         "публичный домен",
-        "собственный публичный url",
-        "ссылки на себя",
         "мини-приложение telegram",
         "мини-приложение в telegram",
         "мини-приложение в телеграм"

@@ -52,7 +52,7 @@ export interface Story {
 
 export interface StoryFailure {
   reason?: 'story_failure'
-  code: 'scaffold_failed' | 'scaffold_timeout' | 'planning_failed' | 'no_new_commit'
+  code: 'scaffold_failed' | 'scaffold_timeout' | 'planning_failed' | 'no_new_commit' | 'environment_resolution_failed'
   source: string
   detail: string
   observed_at?: string

@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from ipaddress import ip_address
+from ipaddress import IPv6Address, ip_address
 import json
 import os
 import secrets as secrets_module
@@ -71,6 +71,43 @@ def _enabled_modules(project_spec: dict, state: DevOpsState) -> str:
     return ",".join(modules)
 
 
+def backend_allocation(state: DevOpsState) -> dict:
+    """The single validated backend allocation used for deployment and self links."""
+    try:
+        if not isinstance(state.get("allocated_resources", {}), dict):
+            raise SecretResolutionError("Invalid backend allocation mapping")
+        endpoint = SecretResolverNode._find_allocation(state, "backend")
+        if endpoint is None:
+            raise SecretResolutionError("Missing allocation for service backend")
+        address = ip_address(endpoint[0])
+        if (
+            address.is_loopback
+            or address.is_unspecified
+            or address.is_multicast
+            or (isinstance(address, IPv6Address) and address.scope_id)
+        ):
+            raise SecretResolutionError("Invalid allocation for service backend: unusable address")
+    except SecretResolutionError as error:
+        raise SecretResolutionError(f"PUBLIC_BASE_URL: {error}") from error
+    return next(
+        resource
+        for resource in state["allocated_resources"].values()
+        if isinstance(resource, dict) and resource.get("service_name") == "backend"
+    )
+
+
+def backend_base_url(state: DevOpsState) -> str:
+    """Plain HTTP at the allocated address; IPv6 literals require URL brackets."""
+    allocation = backend_allocation(state)
+    address = ip_address(allocation["server_ip"])
+    host = f"[{address.compressed}]" if isinstance(address, IPv6Address) else address.compressed
+    return f"http://{host}:{allocation['port']}"
+
+
+def _public_base_url(project_spec: dict, state: DevOpsState) -> str:
+    return backend_base_url(state)
+
+
 #: Derived keys computed from the project and deploy context, by name. With
 #: `_STATIC_SECRETS`, `_PORT_SERVICE_MAP` and the `IMAGE_KEY_SUFFIX` family this is
 #: every derived key a deploy can resolve; `docs/platform_capabilities.yaml` lists
@@ -81,6 +118,7 @@ CONTEXT_DERIVED_SECRETS: dict[str, Callable[[dict, DevOpsState], str]] = {
     "POSTGRES_DB": _postgres_db,
     "COMPOSE_PROJECT_NAME": _runtime_slug,
     "ENABLED_MODULES": _enabled_modules,
+    "PUBLIC_BASE_URL": _public_base_url,
 }
 
 #: A derived key ending in this names the published image of one product service.
@@ -340,7 +378,8 @@ class SecretResolverNode(FunctionalNode):
             raise SecretResolutionError("project slug is required for secret resolution")
         return project_id, project_spec
 
-    def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
+    @staticmethod
+    def _find_allocation(state: DevOpsState, service_name: str) -> tuple[str, int] | None:
         """Look up allocated server IP and port for a service.
 
         Searches allocated_resources by matching service_name field.

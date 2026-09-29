@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import hashlib
 import json
 import os
@@ -134,6 +135,7 @@ async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, ea
     *,
     owner: str,
     repo_name: str,
+    repository_url: str,
     story_id: str,
     project_id: str,
     head_sha: str,
@@ -166,6 +168,12 @@ async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, ea
         head_sha=deployed_commit_sha,
     )
     if verdict.state is ImagePublication.PUBLISHED:
+        timeline["deploy_observation"] = {
+            "story_id": story_id,
+            "project_id": project_id,
+            "repository_url": repository_url,
+            "observed_at": datetime.now(UTC).isoformat(),
+        }
         await api_client.update_story(story_id, {"generated_product_timeline": timeline})
         log.info(
             "poll_merged_images_published",
@@ -895,6 +903,7 @@ async def poll_merged_prs(
                 redis_client,
                 owner=owner,
                 repo_name=repo_name,
+                repository_url=git_url,
                 story_id=story_id,
                 project_id=project_id,
                 head_sha=head_sha,
@@ -925,6 +934,7 @@ async def poll_merged_prs(
                         story_id=story_id,
                         head_sha=head_sha,
                         deployed_commit_sha=deployed_commit_sha,
+                        merged_pr_number=story.pr_number,
                     )
                 )
                 log.info(

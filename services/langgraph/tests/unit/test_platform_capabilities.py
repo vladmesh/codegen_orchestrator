@@ -62,7 +62,6 @@ TECHNICAL_TERMS = ("derived", "POSTGRES", "http://", "server IP", "settings v1",
 MERGED_V4_IDS = {
     "https_domain",
     "custom_domain",
-    "public_base_url",
     "telegram_mini_app",
     "web_frontend",
 }
@@ -213,7 +212,7 @@ class TestTheManifestIsVersionedAndReviewed:
     def test_it_carries_a_version_and_the_owner_review_marker(self):
         manifest = load_manifest()
 
-        assert manifest.version == 6
+        assert manifest.version == 7
         assert manifest.status == "owner-reviewed"
         assert manifest.review == "product list agreed by the owner 2026-09-28"
 

@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 6, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 7, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -10,6 +10,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ### Can
 
+- **Plain HTTP self links.** The bot can include plain HTTP self links; their address can change when the product moves.
 - **Telegram bot.** A Telegram bot people chat with, using commands, buttons and menus.
 - **The bot remembers data.** The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
 - **Actions on a schedule or later.** The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
@@ -19,7 +20,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ### Cannot
 
-- **A website or web pages** (`web_presence`). The bot has no website, web pages, admin panel, link or domain of its own, and cannot open a mini app inside Telegram. The product lives entirely inside the Telegram chat. Instead: Everything happens in the chat with buttons.
+- **A website or web pages** (`web_presence`). The bot has no website, web pages, admin panel or domain of its own, and cannot open a mini app inside Telegram. The product lives entirely inside the Telegram chat. Instead: Everything happens in the chat with buttons.
 - **Receiving events other services send** (`inbound_webhooks`). The bot cannot receive events that other services send to it by themselves, such as GitHub notifications or form submissions. Other services have nowhere to send such events to. Instead: The bot checks the service itself from time to time, if the service allows that.
 - **Accepting payments** (`payments`). The bot cannot take payments: neither through payment services such as YooKassa or Stripe nor inside Telegram (Stars, Payments). Payment acceptance is not part of what the platform builds. There is no way around it.
 - **Signing in with Google and the like** (`oauth_web_redirect`). The bot cannot use "Sign in with Google" or similar sign-in buttons to reach a user's account. Such sign-in needs a web page for the user to return to, which the bot does not have. Instead: The user shares their spreadsheet or calendar with the bot's Google service account, or pastes a personal token.
@@ -47,6 +48,10 @@ Code it was read from:
 - `shared/contracts/dto/users_grant.py`
 
 ### How each capability works
+
+#### Plain HTTP self links
+
+How: Required production derived `PUBLIC_BASE_URL` resolves from the single trusted backend allocation to the same HTTP endpoint the deployer reports, with bracketed IPv6 literals. Missing, invalid or ambiguous allocations fail with that key named. This supplies an address only; domain allocation, TLS, frontend and inbound webhook capabilities remain unsupported.
 
 #### Telegram bot
 
@@ -76,13 +81,13 @@ How: Kit core `users` (grant, revoke, resolve by channel and external id); the b
 
 #### A website or web pages
 
-Why: The deployer hands out only `http://{server_ip}:{port}` of the backend; a product's compose has no TLS proxy, nothing allocates or verifies a domain, and the resolver computes no `PUBLIC_BASE_URL` (a required derived key it cannot compute fails the engineering attempt before any deploy). A Mini App needs an https URL. A product may request only the `backend` and `tg_bot` modules; `frontend` remains only for old records.
+Why: The deployer hands out only `http://{server_ip}:{port}` of the backend; a product's compose has no TLS proxy and nothing allocates or verifies a domain. Derived `PUBLIC_BASE_URL` is that allocated backend HTTP address, with brackets for IPv6, for plain self links; it promises no frontend, TLS or webhook availability. A Mini App needs an https URL. A product may request only the `backend` and `tg_bot` modules; `frontend` remains only for old records.
 
-Merges the former ids `https_domain`, `custom_domain`, `public_base_url`, `telegram_mini_app`, `web_frontend`.
+Merges the former ids `https_domain`, `custom_domain`, `telegram_mini_app`, `web_frontend`.
 
 #### Receiving events other services send
 
-Why: Providers require an https URL, and the product only has plain http on an IP and port that can change when it moves server; the resolver derives no `PUBLIC_BASE_URL`. Poll the provider's API from a timer loop; the Telegram bot already works this way (long polling).
+Why: Providers require an https URL, and the product only has plain http on an IP and port that can change when it moves server; derived `PUBLIC_BASE_URL` is only that HTTP address. Poll the provider's API from a timer loop; the Telegram bot already works this way (long polling).
 
 #### Accepting payments
 
@@ -162,6 +167,7 @@ The only `derived` keys a deploy can fill. Any other derived key is left out whe
 - `COMPOSE_PROJECT_NAME`: the project's runtime slug
 - `POSTGRES_DB`: db_\<project id>
 - `ENABLED_MODULES`: the project's modules, comma-separated
+- `PUBLIC_BASE_URL`: the single allocated backend's HTTP address and port, with bracketed IPv6
 - `BACKEND_PORT`: the backend's allocated port
 - `FRONTEND_PORT`: the frontend's allocated port
 - `TG_BOT_PORT`: the bot's allocated port
