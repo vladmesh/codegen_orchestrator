@@ -17,6 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
+from shared.contracts.dto.engineering_dispatch import (
+    ENGINEERING_DISPATCH_REFUSAL_KEY,
+    EngineeringDispatchRefusal,
+    EngineeringDispatchRefusalDisposition,
+)
 from shared.contracts.dto.engineering_execution import (
     ENGINEERING_INFRASTRUCTURE_KEY,
     EngineeringExecutionPhase,
@@ -65,6 +71,7 @@ from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.models import (
+    EngineeringBudgetReservation,
     Project,
     Repository,
     Run,
@@ -77,6 +84,7 @@ from shared.models.story import Story
 
 from ..database import get_async_session
 from ..dependencies import _optional_bearer_scheme, is_internal_service, require_internal_or_admin
+from ..engineering_budget_admission import engineering_budget_has_capacity
 from ..infrastructure_park import (
     SCAFFOLD_ERROR_KEY,
     WORKSPACE_ENSURE_AUDIT_SUBJECT,
@@ -157,11 +165,8 @@ async def repair_pr_conflicts(
         and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
         and reason.get("code") == StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED.value
     )
-    if story.status not in {StoryStatus.PR_REVIEW.value, StoryStatus.IN_PROGRESS.value}:
-        if not (released_park or exhausted_park):
-            _repair_conflict("This human-review reason does not permit conflict recovery.")
-    if task is None and story.status == StoryStatus.IN_PROGRESS.value:
-        _repair_conflict("The story has engineering work in progress.")
+    budget_park = _is_budget_park(task, story, reason)
+    _validate_repair_story_status(story, task, released_park, exhausted_park, budget_park)
     if command.expected_head_sha is None and not (released_park or task is not None):
         _repair_conflict("Automatic admission requires the observed PR head.")
     current = [row for row in tasks if in_work_cycle(row.created_at, story.reopened_at, row.status)]
@@ -248,7 +253,11 @@ async def repair_pr_conflicts(
         outcome = PRConflictRepairOutcome.ADMITTED
     else:
         evidence = await _repair_admission_evidence(task, story, repository.id, db)
-        if exhausted_park:
+        budget_decision = await _budget_wait_decision(task, story, reason, db)
+        if budget_decision is not None:
+            await _readmit_budget_wait(task, story, project, budget_decision, identity, db)
+            outcome = PRConflictRepairOutcome.REUSED
+        elif exhausted_park:
             outcome = PRConflictRepairOutcome.EXHAUSTED
         elif not live and (
             task.status
@@ -289,6 +298,7 @@ async def repair_pr_conflicts(
         max_iterations=evidence.max_iterations,
         reason=(story.quarantine_reason or {}).get("detail")
         if outcome is PRConflictRepairOutcome.EXHAUSTED
+        or _is_budget_park(task, story, story.quarantine_reason or {})
         else None,
     )
 
@@ -318,6 +328,162 @@ async def _repair_admission_evidence(
     ):
         _repair_conflict("The repair belongs to a replaced PR, repository or cycle.")
     return evidence
+
+
+def _is_budget_park(task: Task | None, story: Story, reason: dict) -> bool:
+    return bool(
+        task is not None
+        and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
+        and reason.get("reason") == EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED.value
+    )
+
+
+def _validate_repair_story_status(
+    story: Story,
+    task: Task | None,
+    released_park: bool,
+    exhausted_park: bool,
+    budget_park: bool,
+) -> None:
+    if story.status not in {StoryStatus.PR_REVIEW.value, StoryStatus.IN_PROGRESS.value}:
+        if not (released_park or exhausted_park or budget_park):
+            _repair_conflict("This human-review reason does not permit conflict recovery.")
+    if task is None and story.status == StoryStatus.IN_PROGRESS.value:
+        _repair_conflict("The story has engineering work in progress.")
+
+
+async def _readmit_budget_wait(
+    task: Task,
+    story: Story,
+    project: Project,
+    decision_id: str,
+    actor: str,
+    db: AsyncSession,
+) -> None:
+    if not await engineering_budget_has_capacity(project.owner_id, db):
+        return
+    from ._pr_conflict_attempt import BUDGET_REPAIR_READMITTED_ACTION
+
+    audit = {
+        "action": BUDGET_REPAIR_READMITTED_ACTION,
+        "decision_id": decision_id,
+        "iteration": task.current_iteration,
+    }
+    validate_transition(task.status, TaskStatus.BACKLOG)
+    task.status = TaskStatus.BACKLOG.value
+    await create_status_event(
+        task, TaskStatus.WAITING_HUMAN_REVIEW, TaskStatus.BACKLOG, actor, audit, db
+    )
+    validate_transition(task.status, TaskStatus.TODO)
+    task.status = TaskStatus.TODO.value
+    await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, actor, audit, db)
+    story.quarantine_reason = None
+    _do_transition(story, StoryStatus.IN_PROGRESS)
+    story.owner_notification = preserve_po_settlement(
+        story.owner_notification,
+        OwnerNotification(
+            event=OwnerNotificationEvent.TASK_RESOURCES_RESUMED,
+            text=(
+                f"Engineering budget is available; repair Task {task.id} "
+                f"is queued for PR #{story.pr_number}."
+            ),
+            story_id=story.id,
+            project_id=str(story.project_id),
+            terminal_status=StoryStatus.IN_PROGRESS,
+            task_id=task.id,
+            expected_task_statuses=(TaskStatus.TODO, TaskStatus.IN_DEV),
+            state=OwnerNotificationState.OWED,
+            owed_at=datetime.now(UTC),
+            admin_text=f"Repair Task {task.id} readmitted after budget decision {decision_id}.",
+            admin_state=OwnerNotificationState.OWED,
+        ),
+    ).model_dump(mode="json")
+    await db.commit()
+
+
+async def _budget_wait_decision(
+    task: Task, story: Story, reason: dict, db: AsyncSession
+) -> str | None:
+    """Prove a current no-Run budget wait from native, durable admission facts."""
+    from ._pr_conflict_attempt import _pending_dispatch_refusal
+
+    if (
+        task.status != TaskStatus.WAITING_HUMAN_REVIEW.value
+        or story.status != StoryStatus.WAITING_HUMAN_REVIEW.value
+        or reason.get("reason")
+        not in {EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED.value, "story_failure"}
+    ):
+        return None
+    events = list(
+        (
+            await db.scalars(
+                select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
+            )
+        ).all()
+    )
+    saved = _pending_dispatch_refusal(events)
+    if saved is None:
+        return None
+    try:
+        refusal = EngineeringDispatchRefusalDisposition.model_validate(saved)
+    except ValueError:
+        _repair_conflict("The recorded budget refusal is malformed.")
+    if refusal.reason is not EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED:
+        return None
+    if refusal.task_id != task.id:
+        _repair_conflict("The budget refusal belongs to another Task.")
+    status_events = [e for e in events if e.event_type == TaskEventType.STATUS_CHANGE.value]
+    if (
+        not status_events
+        or status_events[-1].to_status != TaskStatus.WAITING_HUMAN_REVIEW.value
+        or status_events[-1].details.get(ENGINEERING_DISPATCH_REFUSAL_KEY) != saved
+    ):
+        return None
+    if reason.get("reason") == EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED.value:
+        if reason.get("task_id") != task.id or reason.get("decision_id") != refusal.decision_id:
+            _repair_conflict("The budget wait does not match its admission decision.")
+    elif (
+        reason.get("code") != StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED.value
+        or task.current_iteration != 0
+        or task.id not in reason.get("detail", "")
+        or refusal.decision_id not in reason.get("detail", "")
+    ):
+        return None
+    audit = await db.scalar(
+        select(WorkAdmissionAudit).where(
+            WorkAdmissionAudit.reference_id == refusal.decision_id,
+            WorkAdmissionAudit.subject == "paid_work",
+            WorkAdmissionAudit.reason == EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED.value,
+        )
+    )
+    reservation = await db.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == refusal.decision_id
+        )
+    )
+    if (
+        audit is None
+        or audit.outcome != "denied"
+        or (audit.command_payload or {}).get("task_id") != task.id
+        or (audit.command_payload or {}).get("story_id") != story.id
+        or reservation is None
+        or reservation.outcome is not EngineeringBudgetAdmissionOutcome.DENIED
+        or reservation.task_id != task.id
+        or reservation.story_id != story.id
+        or reservation.project_id != story.project_id
+        or reservation.state is not None
+    ):
+        _repair_conflict("The budget refusal lacks its matching paid decision.")
+    runs = (
+        await db.scalars(
+            select(Run).where(Run.task_id == task.id).order_by(Run.id).with_for_update()
+        )
+    ).all()
+    if any((run.run_metadata or {}).get("iteration") == task.current_iteration for run in runs):
+        return None
+    if reason.get("reason") == "story_failure" and runs:
+        return None
+    return refusal.decision_id
 
 
 async def _observe_dirty_pr(

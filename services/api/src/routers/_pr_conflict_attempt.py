@@ -148,8 +148,11 @@ def _recorded_outcome(events, run_id, command):
     return None
 
 
+BUDGET_REPAIR_READMITTED_ACTION = "budget_repair_readmitted"
+
+
 def _pending_dispatch_refusal(events):
-    """Only the native resume status edge supersedes a committed no-Run stop."""
+    """Only native audited recovery edges supersede a committed no-Run stop."""
     saved = None
     for event in events:
         if event.event_type != TaskEventType.STATUS_CHANGE.value:
@@ -162,7 +165,7 @@ def _pending_dispatch_refusal(events):
         elif (
             event.from_status == TaskStatus.WAITING_HUMAN_REVIEW.value
             and event.to_status == TaskStatus.BACKLOG.value
-            and event.details.get("action") == "operator_resume"
+            and event.details.get("action") in {"operator_resume", BUDGET_REPAIR_READMITTED_ACTION}
         ):
             saved = None
     return saved

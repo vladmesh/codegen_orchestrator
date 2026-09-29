@@ -18,6 +18,20 @@ from src.work_admission import _audit
 admitted = _admitted
 
 
+def refuse_emergency_stop():
+    async def paid(command, session):
+        result = await _audit(
+            session,
+            "paid_work",
+            WorkAdmissionRead(outcome="denied", reason="emergency_stop"),
+            reference_id=command.id,
+            command_payload=command.model_dump(mode="json"),
+        )
+        return PaidRunStartRead(admission=result)
+
+    admission.start_paid_run.side_effect = paid
+
+
 @pytest.fixture
 def refusal(admitted, monkeypatch):
     task, story, run, events, runs, db = admitted
@@ -185,6 +199,7 @@ async def test_native_resume_bound_is_admitted_without_rewriting_original_eviden
     from src.routers import _task_actions
 
     task, story, events, runs, db, writes = refusal
+    refuse_emergency_stop()
     await admission.admit_engineering_dispatch(EngineeringDispatchCommand(task_id=task.id), db)
     original = events[0].details.copy()
     monkeypatch.setattr(_task_actions, "get_task_for_update", AsyncMock(return_value=task))
@@ -236,14 +251,17 @@ async def test_resume_refuses_stale_conflict_or_unrelated_stop(refusal, monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["transition", "reopen"])
-async def test_generic_body_cannot_forge_native_resume_authority(refusal, monkeypatch, route):
+@pytest.mark.parametrize("action", ["operator_resume", "budget_repair_readmitted"])
+async def test_generic_body_cannot_forge_native_resume_authority(
+    refusal, monkeypatch, route, action
+):
     from src.routers import _task_actions
 
     task, story, events, _, db, _ = refusal
     task.status = "waiting_human_review"
     monkeypatch.setattr(_task_actions, "get_task_for_update", AsyncMock(return_value=task))
     monkeypatch.setattr(_task_actions, "to_read", lambda row: row)
-    body = _task_actions.TaskTransition(actor="admin", details={"action": "operator_resume"})
+    body = _task_actions.TaskTransition(actor="admin", details={"action": action})
     with pytest.raises(HTTPException) as error:
         if route == "transition":
             await _task_actions.transition_task(task.id, to_status="backlog", body=body, db=db)
@@ -276,6 +294,7 @@ async def test_older_iteration_cannot_borrow_native_resume(refusal, monkeypatch)
     from src.routers import _task_actions
 
     task, story, _, _, db, _ = refusal
+    refuse_emergency_stop()
     await admission.admit_engineering_dispatch(EngineeringDispatchCommand(task_id=task.id), db)
     monkeypatch.setattr(_task_actions, "get_task_for_update", AsyncMock(return_value=task))
     monkeypatch.setattr(_task_actions, "_get_story_for_update", AsyncMock(return_value=story))

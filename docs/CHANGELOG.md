@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Park budget-denied PR repairs as an owner-visible wait and re-admit proven no-Run Tasks
+  in the same cycle after budget recovery, preserving real exhaustion and attempt history.
+
 - Admit provider-absent, unreachable, unmanaged and off-allowlist Time4VPS history in production preflight;
   retain blocking drift for live inventory, authorized targets and unsettled rows.
 

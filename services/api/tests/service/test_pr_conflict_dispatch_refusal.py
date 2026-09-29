@@ -11,7 +11,17 @@ from sqlalchemy import select
 from test_pr_conflict_attempt import failed_attempt
 from test_pr_conflict_repair import dirty_story as _dirty_story
 
+from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
+from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import (
+    StoryFailure,
+    StoryFailureCode,
+    story_failure_admin_text,
+    story_failure_owner_text,
+)
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.models import (
+    EngineeringAttemptLedger,
     EngineeringBudgetReservation,
     Project,
     Run,
@@ -95,8 +105,140 @@ async def decisions(db, tid):
 
 
 @pytest.mark.asyncio
+async def test_zero_iteration_budget_wait_readmits_same_cycle_after_policy_top_up(
+    async_client, db_session, dirty_story
+):
+    sid, tid, policy_url, version = await ready_task(async_client, db_session, dirty_story, False)
+    owner_id = int(policy_url.rsplit("/", 1)[1])
+    db_session.add(
+        EngineeringAttemptLedger(
+            idempotency_key=f"historical-spend-{uuid.uuid4().hex}",
+            user_id=owner_id,
+            owner_attribution="resolved",
+            role="engineering",
+            occurred_at=datetime.now(UTC),
+            provider="synthetic",
+            cost_source="provider_reported",
+            cost_microusd=108_100_000,
+        )
+    )
+    await db_session.commit()
+    refused = await async_client.post(DISPATCH, json={"task_id": tid})
+    assert refused.status_code == 200 and refused.json()["reason"] == "engineering_budget_denied"
+    task = await db_session.get(Task, tid, populate_existing=True)
+    story = await db_session.get(Story, sid, populate_existing=True)
+    assert task.current_iteration == 0
+    assert story.quarantine_reason["reason"] == "engineering_budget_denied"
+    assert story.owner_notification["state"] == story.owner_notification["admin_state"] == "owed"
+    assert story.owner_notification["event"] == "story_blocked"
+    assert not (await db_session.scalars(select(Run).where(Run.task_id == tid))).all()
+    readback = await async_client.get(policy_url)
+    assert readback.status_code == 200 and readback.json()["policy"]["version"] == version
+    balance = await async_client.get(f"{policy_url}/balance")
+    assert balance.status_code == 200
+    assert balance.json()["known_spend_microusd"] == 108_100_000
+    assert balance.json()["available_microusd"] == 0
+    topped = await async_client.put(
+        policy_url,
+        json={
+            "limit_microusd": 200_000_000,
+            "attempt_reservation_microusd": 10_000_000,
+            "state": "enabled",
+            "version": version,
+        },
+    )
+    assert topped.status_code == 200, topped.text
+    balance = await async_client.get(f"{policy_url}/balance")
+    assert balance.status_code == 200 and balance.json()["available_microusd"] == 91_900_000
+    url = f"/api/stories/{sid}/repair-pr-conflicts"
+    owner_headers = bearer(int(policy_url.rsplit("/", 1)[1]))
+    responses = await asyncio.gather(
+        *[async_client.post(url, headers=owner_headers, json=dirty_story[1]) for _ in range(5)]
+    )
+    assert all(r.status_code == 200 for r in responses), [r.text for r in responses]
+    assert {r.json()["outcome"] for r in responses} == {"reused"}
+    assert {r.json()["task_id"] for r in responses} == {tid}
+    await db_session.refresh(task)
+    await db_session.refresh(story)
+    assert (task.status, task.current_iteration, story.status) == ("todo", 0, "in_progress")
+    assert story.quarantine_reason is None
+    assert len(await decisions(db_session, tid)) == 1
+    admitted = await async_client.post(DISPATCH, json={"task_id": tid})
+    assert admitted.json()["outcome"] == "admitted", admitted.text
+    run = await db_session.get(Run, admitted.json()["run_id"])
+    assert run.run_metadata["iteration"] == 0
+
+
+@pytest.mark.asyncio
+async def test_budget_wait_without_top_up_keeps_its_original_decision(
+    async_client, db_session, dirty_story
+):
+    sid, tid, policy_url, _ = await ready_task(async_client, db_session, dirty_story, False)
+    await async_client.post(DISPATCH, json={"task_id": tid})
+    response = await async_client.post(
+        f"/api/stories/{sid}/repair-pr-conflicts",
+        headers=bearer(int(policy_url.rsplit("/", 1)[1])),
+        json=dirty_story[1],
+    )
+    assert response.status_code == 200 and response.json()["outcome"] == "reused", response.text
+    assert "waiting for engineering budget" in response.json()["reason"]
+    task = await db_session.get(Task, tid, populate_existing=True)
+    assert task.status == "waiting_human_review"
+    story = await db_session.get(Story, sid, populate_existing=True)
+    assert story.quarantine_reason["reason"] == "engineering_budget_denied"
+    assert len(await decisions(db_session, tid)) == 1
+
+
+@pytest.mark.asyncio
+async def test_released_zero_iteration_exhausted_label_with_budget_only_history_recovers(
+    async_client, db_session, dirty_story
+):
+    sid, tid, policy_url, version = await ready_task(async_client, db_session, dirty_story, False)
+    refused = await async_client.post(DISPATCH, json={"task_id": tid})
+    decision_id = refused.json()["refusal_disposition"]["decision_id"]
+    story = await db_session.get(Story, sid, populate_existing=True)
+    failure = StoryFailure(
+        code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
+        source="scheduler",
+        detail=f"PR #3 repair Task {tid}, decision {decision_id}, iteration 0: budget denied.",
+    )
+    story.quarantine_reason = failure.model_dump(mode="json")
+    story.owner_notification = OwnerNotification(
+        event=OwnerNotificationEvent.STORY_BLOCKED,
+        text=story_failure_owner_text(failure),
+        story_id=sid,
+        project_id=str(story.project_id),
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        state=OwnerNotificationState.OWED,
+        owed_at=datetime.now(UTC),
+        admin_text=story_failure_admin_text(sid, str(story.project_id), failure),
+        admin_state=OwnerNotificationState.OWED,
+    ).model_dump(mode="json")
+    await db_session.commit()
+    topped = await async_client.put(
+        policy_url,
+        json={
+            "limit_microusd": 100,
+            "attempt_reservation_microusd": 10,
+            "state": "enabled",
+            "version": version,
+        },
+    )
+    assert topped.status_code == 200, topped.text
+    response = await async_client.post(
+        f"/api/stories/{sid}/repair-pr-conflicts",
+        headers=bearer(int(policy_url.rsplit("/", 1)[1])),
+        json=dirty_story[1],
+    )
+    assert response.status_code == 200 and response.json()["outcome"] == "reused", response.text
+    task = await db_session.get(Task, tid, populate_existing=True)
+    assert (task.status, task.current_iteration) == ("todo", 0)
+    assert not (await db_session.scalars(select(Run).where(Run.task_id == tid))).all()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("later", [False, True], ids=["iteration0", "bounded-retry"])
-async def test_budget_refusal_is_atomic_once_and_native_resume_creates_real_next_run(
+async def test_budget_refusal_is_atomic_once_and_same_cycle_repair_creates_real_run(
     async_client, db_session, dirty_story, later
 ):
     sid, tid, policy_url, version = await ready_task(async_client, db_session, dirty_story, later)
@@ -153,41 +295,23 @@ async def test_budget_refusal_is_atomic_once_and_native_resume_creates_real_next
         },
     )
     assert restored.status_code == 200, restored.text
-    # Funding by itself does not clear the stop.
+    # Funding by itself does not clear the wait.
     assert (await async_client.post(DISPATCH, json={"task_id": tid})).json()[
         "reason"
     ] == "task_not_dispatchable"
-    owner_id = int(policy_url.rsplit("/", 1)[1])
-    unauthorised = await async_client.post(
-        f"/api/tasks/{tid}/resume",
-        headers=bearer(owner_id),
-        json={"guidance": "Borrow admin actor", "actor": "admin"},
-    )
-    assert unauthorised.status_code == 403, unauthorised.text
-    admin = await async_client.post(
-        "/api/users/", json={"telegram_id": uuid.uuid4().int % 1_000_000_000, "is_admin": True}
-    )
-    assert admin.status_code == 201, admin.text
-    resumed = await async_client.post(
-        f"/api/tasks/{tid}/resume",
-        headers=bearer(admin.json()["id"]),
-        json={"guidance": "Budget restored", "retries": 4},
-    )
-    assert resumed.status_code == 200, resumed.text
-    assert resumed.json()["current_iteration"] == int(later) + 1
-    assert resumed.json()["max_iterations"] == int(later) + 5
     again = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=dirty_story[1])
-    assert (
-        again.json()["outcome"] == "reused" and again.json()["max_iterations"] == int(later) + 5
-    ), again.text
+    assert again.json()["outcome"] == "reused", again.text
+    assert again.json()["max_iterations"] == original_bound
+    await db_session.refresh(task)
+    assert task.current_iteration == int(later) and task.status == "todo"
     admitted = await async_client.post(DISPATCH, json={"task_id": tid})
     assert admitted.json()["outcome"] == "admitted", admitted.text
     rid = admitted.json()["run_id"]
     run = await db_session.get(Run, rid)
-    assert run.run_metadata["iteration"] == int(later) + 1 and rid != did
+    assert run.run_metadata["iteration"] == int(later) and rid != did
     assert (await async_client.post(DISPATCH, json={"task_id": tid})).json()["run_id"] == rid
     await db_session.refresh(story)
-    assert story.status == "in_progress" and story.owner_notification == owed
+    assert story.status == "in_progress" and story.owner_notification != owed
     assert [
         r for r in (await history(db_session, tid))[0] if r[0] in {old[0] for old in before_runs}
     ] == before_runs

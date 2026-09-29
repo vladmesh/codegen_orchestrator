@@ -26,6 +26,7 @@ attributes and all. A route that must know something first asks a column-only
 question, as `spawn-worker` does for the hop it is able to perform.
 """
 
+from datetime import UTC, datetime
 import uuid
 
 from fastapi import HTTPException
@@ -501,8 +502,15 @@ async def _park_infrastructure_refusal(
 
 async def _dispose_conflict_refusal(task, story, decision_id, started, command, db):
     """Dispose the paid gate's own no-Run decision on its already-fenced rows."""
-    from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+    from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
+    from shared.contracts.dto.story_failure import (
+        StoryFailure,
+        StoryFailureCode,
+        bounded_diagnostic,
+    )
+    from shared.contracts.vocab import OwnerNotificationEvent
 
+    from .owner_notification_settlement import preserve_po_settlement
     from .routers._pr_conflict_attempt import _start_interrupted_dispatch
     from .routers._story_helpers import _do_transition, _record_story_failure
     from .routers._task_helpers import create_status_event, validate_transition
@@ -536,6 +544,38 @@ async def _dispose_conflict_refusal(task, story, decision_id, started, command, 
         task, before, TaskStatus.WAITING_HUMAN_REVIEW, command.origin.value, audit, db
     )
     task.failure_metadata = {**(task.failure_metadata or {}), **audit}
+    if disposition.reason is EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED:
+        # A denied reservation has no Run or executed iteration. Keep the repair
+        # Task and its ceiling intact; the same repair command can release this
+        # specific wait after the owner restores capacity.
+        budget_detail = bounded_diagnostic(
+            f"PR #{story.pr_number} repair Task {task.id} is waiting for engineering "
+            f"budget (decision {decision_id}). {started.admission.message}"
+        )
+        story.quarantine_reason = {
+            "reason": disposition.reason.value,
+            "task_id": task.id,
+            "decision_id": decision_id,
+            "detail": budget_detail,
+        }
+        story.owner_notification = preserve_po_settlement(
+            story.owner_notification,
+            OwnerNotification(
+                event=OwnerNotificationEvent.STORY_BLOCKED,
+                text=f"{budget_detail} Raise the engineering budget and retry this PR repair.",
+                story_id=story.id,
+                project_id=str(story.project_id),
+                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+                task_id=task.id,
+                expected_task_statuses=(TaskStatus.WAITING_HUMAN_REVIEW,),
+                state=OwnerNotificationState.OWED,
+                owed_at=datetime.now(UTC),
+                admin_text=budget_detail,
+                admin_state=OwnerNotificationState.OWED,
+            ),
+        ).model_dump(mode="json")
+        _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+        return disposition
     _record_story_failure(
         story,
         StoryFailure(

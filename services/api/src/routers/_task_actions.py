@@ -508,7 +508,12 @@ def _refuse_unfenced_conflict_start(task: Task) -> None:
 
 
 def _refuse_client_resume_audit(task: Task, body: TaskTransition) -> None:
-    if task.id.startswith("pr-conflict-") and body.details.get("action") == RESUME_ACTION:
+    from ._pr_conflict_attempt import BUDGET_REPAIR_READMITTED_ACTION
+
+    if task.id.startswith("pr-conflict-") and body.details.get("action") in {
+        RESUME_ACTION,
+        BUDGET_REPAIR_READMITTED_ACTION,
+    }:
         raise HTTPException(409, detail={"code": "conflict_resume_requires_operator_command"})
 
 

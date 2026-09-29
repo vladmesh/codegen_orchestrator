@@ -157,6 +157,43 @@ async def admit_engineering_attempt(
     return _read(reservation, available)
 
 
+async def engineering_budget_has_capacity(user_id: int, db: AsyncSession) -> bool:
+    """Read the current policy under its admission lock without reserving a Run."""
+    policy = await db.scalar(
+        select(EngineeringBudgetPolicy)
+        .where(EngineeringBudgetPolicy.user_id == user_id)
+        .with_for_update()
+    )
+    if policy is None or policy.state is EngineeringBudgetPolicyState.DISABLED:
+        return True
+    known_spend = int(
+        await db.scalar(
+            select(func.coalesce(func.sum(EngineeringAttemptLedger.cost_microusd), 0)).where(
+                EngineeringAttemptLedger.user_id == user_id
+            )
+        )
+        or 0
+    )
+    held = int(
+        await db.scalar(
+            select(
+                func.coalesce(func.sum(EngineeringBudgetReservation.active_held_microusd), 0)
+            ).where(
+                EngineeringBudgetReservation.user_id == user_id,
+                EngineeringBudgetReservation.state.in_(
+                    [
+                        EngineeringBudgetReservationState.ACTIVE,
+                        EngineeringBudgetReservationState.UNKNOWN_FINAL,
+                    ]
+                ),
+            )
+        )
+        or 0
+    )
+    available = max(policy.limit_microusd - known_spend - held, 0)
+    return available > 0 and policy.attempt_reservation_microusd <= available
+
+
 async def release_pre_handoff_reservation(attempt_id: str, db: AsyncSession) -> None:
     """Release only a hold whose queue handoff definitely did not happen."""
     reservation = await db.scalar(

@@ -35,7 +35,8 @@ no Run and a deferred paid gate result does not itself count an engineering atte
 | Non-TODO/unadmitted Task, blocker, internal/legacy/draft project, workspace pending, roster change, stale cycle/PR or Story review | Admission refuses without Task/Story disposition; dispatcher waits for later eligibility. |
 | Failed workspace ensure | Admission's native infrastructure park and workspace audit; infrastructure retry clears the exact park. |
 | Sibling status/live Run, own live Run, finished current-iteration Run | Locked admission refuses busy work or returns a repair; dispatcher uses admitted-start or scoped terminal settlement, without buying another attempt. |
-| Emergency stop, paid-count deferral, first/later budget denial | Paid gate audits the real decision; conflict admission commits Task/Story human review and both owed audiences together. This retains the existing engineering refusal consumer's human disposition, including the paid-count gate's deferred result. |
+| Emergency stop, paid-count deferral | Paid gate audits the real decision; conflict admission commits Task/Story human review and both owed audiences together, including a deferred paid-count result. |
+| Engineering budget denial | Paid gate records a denied reservation without a Run; conflict admission parks the Task and Story for owner-visible budget recovery with both owed audiences, retaining the iteration and repair ceiling. |
 | Executor unavailable/confirmation required | Paid gate audits; admission commits the existing infrastructure park, even for deferred confirmation; scheduler consumes it and infrastructure retry owns recovery. |
 | Admitted/lost-response start, operator spawn | Admission creates a real Run/hold; dispatcher publishes then uses locked admitted-start; operator spawn locks admission/start before publication. Generic conflict start remains refused. |
 | Terminal/reclaimed/stuck/failed/finished-Run recovery | Consumer persists the real Run; scoped attempt-outcome owns retry/ending. Reclaim ACKs terminal work; native supervision or TODO recovery settles it. Infrastructure/resource/no-new-commit priorities remain. |
@@ -73,7 +74,7 @@ dispatch enforces. No Run or queue message is created here; ordinary task
 dispatch uses `/work-admission/engineering-dispatches`.
 
 Once this Task completes, exhausts its failed-iteration retries, is cancelled or
-requires human review, a still dirty PR exhausts repair rather than creating
+requires human review for a non-budget reason, a still dirty PR exhausts repair rather than creating
 another Task, even if its head changed. The native iteration ceiling permits
 iteration zero followed by retries up to `max_iterations`; a failed attempt
 below that ceiling remains eligible for the ordinary supervisor retry.
@@ -82,6 +83,17 @@ An interrupted response is safe to repeat. Missing/stale evidence,
 live unrelated work and unrelated quarantines fail without mutation. GitHub
 read failures remain visible failures. This route never resets a task budget,
 force-pushes, merges a dirty PR or replans the story.
+
+A budget-denied repair has no Run and does not exhaust the cycle. The same
+`repair-pr-conflicts` command, with current PR and cycle evidence, releases only
+a matching native budget wait after the locked policy has capacity. It keeps the
+Task ID, iteration, ceiling, denied reservation and audit history; concurrent
+requests converge on one `todo` Task. A released `pr_conflict_repair_exhausted`
+stop is recoverable only when iteration zero has no engineering Run and its
+immutable refusal event, paid audit and denied reservation prove that the stop
+was solely a budget refusal. Real failures, current-iteration Runs, stale PRs,
+superseded cycles and unrelated stops remain fenced. No request field resets
+the repair bound or manufactures an admission.
 
 `POST /api/stories/{id}/repair-pr-conflicts/attempt-outcome` accepts
 `PRConflictRepairAttemptCommand` from an internal service or administrator and
