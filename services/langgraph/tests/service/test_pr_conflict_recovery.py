@@ -216,6 +216,15 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(  # noq
         await api.close()
 
 
+def assert_refusal_preserves_task_history(before_events, events):
+    # Atomic retries share created_at; the events API does not order timestamp ties.
+    # Preserve every field and the two-event delta in immutable event ID order.
+    before_events = sorted(before_events, key=lambda event: event["id"])
+    events = sorted(events, key=lambda event: event["id"])
+    assert len({event["id"] for event in events}) == len(events)
+    assert events[: len(before_events)] == before_events and len(events) == len(before_events) + 2
+
+
 async def exercise_budget_refusal(api, redis, sid, project, repair, original_id, ending):
     url = f"engineering-budget-policies/{project['owner_id']}"
     policy = await set_budget_policy(
@@ -273,7 +282,7 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
         == before_runs
     )
     events = await api.get(f"tasks/{repair['id']}/events")
-    assert events[: len(before_events)] == before_events and len(events) == len(before_events) + 2
+    assert_refusal_preserves_task_history(before_events, events)
     assert await redis.xrange(ENGINEERING_QUEUE) == publications
     notice = await api.get(f"stories/{sid}/owner-notification")
     assert notice["state"] == notice["admin_state"] == "owed"
