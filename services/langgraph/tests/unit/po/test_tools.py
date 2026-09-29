@@ -1911,7 +1911,7 @@ class TestNoteToAdmins:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 27
+        expected_count = 29
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1922,6 +1922,8 @@ class TestGetAllTools:
             "list_projects",
             "get_project",
             "grant_project_user",
+            "get_initial_owner_deployment",
+            "retry_initial_owner_deployment",
             "set_project_secret",
             "transfer_project_ownership",
             "validate_telegram_token",

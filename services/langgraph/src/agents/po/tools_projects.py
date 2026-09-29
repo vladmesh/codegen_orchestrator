@@ -21,6 +21,11 @@ from shared.contracts.dto.telegram import (
     TelegramTokenVerdict,
     TokenVerdictStatus,
 )
+from shared.contracts.dto.users_grant import (
+    GrantIntent,
+    GrantIntentLifecycleResult,
+    GrantIntentRetryCommand,
+)
 from shared.contracts.vocab import AgentType
 
 from .tools_shared import _get_api, _user_headers
@@ -44,6 +49,7 @@ HTTP_FORBIDDEN = 403
 HTTP_NOT_FOUND = 404
 HTTP_UNPROCESSABLE = 422
 HTTP_CONFLICT = 409
+HTTP_UNAVAILABLE = 503
 
 # A teardown is an SSH `docker compose down` on the project's server: seconds when the
 # consumer is free, minutes when it is busy. The tool waits rather than promising a
@@ -266,6 +272,56 @@ async def transfer_project_ownership(
     return (
         f"Ownership-transfer intent {body['intent_id']} is {body['status']}. "
         "Ownership remains unchanged until the service confirms the incoming user is active."
+    )
+
+
+@tool
+async def get_initial_owner_deployment(project_id: str, *, config: RunnableConfig) -> str:
+    """Read initial deployment history and any exact exhausted-attempt retry command.
+
+    Deployment credentials are platform provisioned. Offer
+    retry_initial_owner_deployment only when exhaustion.action and
+    exhaustion.retry_command are present; zero admissions offer neither.
+    """
+    response = await _get_api().get_raw(
+        f"projects/{project_id}/users/initial-owner-deployment", headers=_user_headers(config)
+    )
+    if response.status_code in {HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_CONFLICT}:
+        return f"Error: {response.json()['detail']}"
+    response.raise_for_status()
+    intent = GrantIntent.model_validate(response.json())
+    return intent.model_dump_json()
+
+
+@tool
+async def retry_initial_owner_deployment(
+    project_id: str, intent_id: str, expected_execution_run_id: str, *, config: RunnableConfig
+) -> str:
+    """Deliberately retry an exhausted initial deployment when the owner requests it.
+
+    Copy the intent ID and expected execution Run ID from the exhaustion
+    readback. Keep this fence when retrying a lost response. A queued result
+    means admitted for deployment; it never means deployed or active.
+    """
+    command = GrantIntentRetryCommand(expected_execution_run_id=expected_execution_run_id)
+    response = await _get_api().post_raw(
+        f"projects/{project_id}/users/grant-intents/{intent_id}/retry",
+        json=command.model_dump(mode="json"),
+        headers=_user_headers(config),
+    )
+    if response.status_code in {HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNPROCESSABLE, HTTP_CONFLICT}:
+        return f"Retry refused: {response.json()['detail']}"
+    if response.status_code == HTTP_UNAVAILABLE:
+        return (
+            "Retry committed; queue publication is owed. "
+            "Repeat the same fenced command to recover publication."
+        )
+    response.raise_for_status()
+    result = GrantIntentLifecycleResult.model_validate(response.json())
+    return (
+        f"Initial deployment intent {result.intent_id}: {result.disposition.value} "
+        f"({result.status.value}). "
+        "Deployment and active access require successful platform deployment and service readback."
     )
 
 

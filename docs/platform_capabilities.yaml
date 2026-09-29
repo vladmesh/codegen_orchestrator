@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 8
+version: 10
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -100,14 +100,14 @@ can:
       At first only the customer can use the bot; everyone else is ignored. The customer can
       give permanent access to specific Telegram users, and it starts working once the running
       bot confirms it. The customer can also hand the bot over to another Telegram user. Taking
-      access back and opening the bot to everyone are not available yet.
+      access back and opening the bot to everyone are not available yet. The owner or admin can
+      retry exhausted initial deployment only when the platform offers a retry action for a failed attempt.
     how: >-
-      Kit core `users` (grant, revoke, resolve by channel and external id); the bot admits a
-      Telegram user only when the backend resolves that identity with status `active`. The
-      platform records a durable grant intent (`initial_owner` on the first deploy, `add_user`
-      from the PO's `grant_project_user`, `incoming_owner` from `transfer_project_ownership`)
-      that the deploy worker applies and reads back. The PO has no revoke tool and there is no
-      public or mode-switch setting.
+      Kit core `users` resolves Telegram identities; only backend-confirmed `active` users
+      enter the bot. The platform tracks durable `initial_owner` (first deploy), `add_user`
+      (PO grant) and `incoming_owner` (PO transfer) intents, applied and checked by the worker.
+      No PO revoke or public/mode-switch tool. Only an admitted terminal Run permits bounded
+      owner/admin retry; zero admissions do not.
 
 cannot:
   - id: web_presence

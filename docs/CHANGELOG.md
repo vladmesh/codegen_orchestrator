@@ -5,6 +5,27 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Verify a policy increase on an exhausted Story through lifecycle replay, proving no automatic
+  reset without asking the deploying scheduler to process a terminal Story.
+
+- Revalidate initial-owner retry against current deploy policy at locked API read and command boundaries;
+  keep terminal Story and notice wording stable so policy changes cannot promise unavailable retry.
+
+- Derive initial-owner retry guidance from the verified exhausted Run across readback, notices
+  and PO capabilities: zero admissions offer no action, while fenced terminal Runs retain it.
+
+- Assert zero-ceiling replay preserves the exhausted intent and notice episode while reporting
+  the per-call created flag accurately, so CI distinguishes replay from first intent creation.
+
+- Recover owed initial-owner Run publication through the deploying supervisor; stop trusted zero-admission
+  and typed cancelled exhaustion, and refuse premature human retry without resetting its epoch.
+
+- Correct initial-owner CI notice, cancellation and replacement-owner fixtures, and retain the
+  recovery deadline without a pytest plugin so native retry proofs can execute.
+
+- Allow owner/admin retry of exhausted initial deployment with an immutable attempt fence;
+  commit its typed Story cause and both owed notices so automatic recovery stays bounded.
+
 - Compare conflict refusal history by immutable event IDs and validate both refusal audits, preserving
   complete records when atomic retry events share a timestamp and the API returns a different order.
 

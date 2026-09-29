@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,6 +27,9 @@ class GrantIntentLifecycleRequest(BaseModel):
     head_sha: CommitSha | None = None
     deployed_commit_sha: CommitSha | None = None
     merged_pr_number: int | None = Field(default=None, gt=0)
+    # Internal recovery of a committed, still-owed immutable Run. Never opens
+    # an epoch or refreshes the deliberate human retry fence.
+    expected_execution_run_id: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class GrantIntentStatus(StrEnum):
@@ -62,6 +66,38 @@ class GrantIntentDispatchTarget(BaseModel):
     sha: CommitSha
 
 
+class GrantIntentRetryCommand(BaseModel):
+    """Deliberate human command, fenced by the exhausted immutable attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_execution_run_id: str = Field(min_length=1, max_length=255)
+
+
+class GrantIntentExhaustion(BaseModel):
+    """Safe readback of a bounded initial-owner deployment epoch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: Literal["initial_owner_deployment_exhausted"] = "initial_owner_deployment_exhausted"
+    attempts: int = Field(ge=0)
+    target: GrantIntentDispatchTarget
+    exhausted_execution_run_id: str | None
+    action: Literal["retry_initial_owner_deployment"] | None
+    retry_command: GrantIntentRetryCommand | None
+
+    @model_validator(mode="after")
+    def _action_requires_current_run_fence(self) -> "GrantIntentExhaustion":
+        if (self.action is None) != (self.retry_command is None):
+            raise ValueError("exhaustion action and retry command must agree")
+        if self.retry_command is not None and (
+            self.exhausted_execution_run_id != self.retry_command.expected_execution_run_id
+            or self.attempts == 0
+        ):
+            raise ValueError("retry command requires the exhausted admitted Run")
+        return self
+
+
 class GrantIntentLifecycleResult(BaseModel):
     """Per-call result of creating or resuming a grant-intent lifecycle."""
 
@@ -73,6 +109,7 @@ class GrantIntentLifecycleResult(BaseModel):
     execution_run_id: str | None = None
     target: GrantIntentDispatchTarget | None = None
     created: bool = False
+    exhaustion: GrantIntentExhaustion | None = None
 
     @model_validator(mode="after")
     def _dispatch_owns_its_attempt(self) -> "GrantIntentLifecycleResult":
@@ -112,6 +149,7 @@ class GrantIntent(BaseModel):
     execution_run_id: str | None = None
     target_history: list[dict[str, object]] = Field(default_factory=list)
     retry_history: list[dict[str, object]] = Field(default_factory=list)
+    exhaustion: GrantIntentExhaustion | None = None
 
     def with_status(self, status: GrantIntentStatus, *, detail: str | None = None) -> "GrantIntent":
         """Return a safe state transition without changing the target."""

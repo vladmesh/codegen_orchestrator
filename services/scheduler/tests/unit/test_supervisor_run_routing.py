@@ -933,6 +933,13 @@ class TestSuperviseDeployingStories:
             intent_id="users-grant-initial_owner-seed",
             status=GrantIntentStatus.FAILED,
             disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+            exhaustion={
+                "attempts": 3,
+                "target": {"sha": "a" * 40},
+                "exhausted_execution_run_id": "run-1",
+                "action": "retry_initial_owner_deployment",
+                "retry_command": {"expected_execution_run_id": "run-1"},
+            },
         )
 
         with patch(
@@ -941,8 +948,8 @@ class TestSuperviseDeployingStories:
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
-        api_client.fail_story.assert_awaited_once_with("story-1")
-        notify.assert_awaited_once()
+        api_client.fail_story.assert_not_awaited()
+        notify.assert_not_awaited()
         api_client.create_run.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
 
@@ -999,6 +1006,13 @@ class TestSuperviseDeployingStories:
             intent_id="users-grant-initial_owner-seed",
             status=GrantIntentStatus.FAILED,
             disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+            exhaustion={
+                "attempts": 3,
+                "target": {"sha": "a" * 40},
+                "exhausted_execution_run_id": "run-1",
+                "action": "retry_initial_owner_deployment",
+                "retry_command": {"expected_execution_run_id": "run-1"},
+            },
         )
 
         with (
@@ -1022,8 +1036,8 @@ class TestSuperviseDeployingStories:
             )
 
         assert action is RefusedDeployAction.FAILED
-        api_client.fail_story.assert_awaited_once_with("story-1")
-        notify.assert_awaited_once()
+        api_client.fail_story.assert_not_awaited()
+        notify.assert_not_awaited()
         api_client.create_run.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
 
@@ -1046,6 +1060,13 @@ class TestSuperviseDeployingStories:
             intent_id="users-grant-initial_owner-seed",
             status=GrantIntentStatus.FAILED,
             disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+            exhaustion={
+                "attempts": 3,
+                "target": {"sha": "a" * 40},
+                "exhausted_execution_run_id": "run-1",
+                "action": "retry_initial_owner_deployment",
+                "retry_command": {"expected_execution_run_id": "run-1"},
+            },
         )
 
         with patch(
@@ -1060,12 +1081,12 @@ class TestSuperviseDeployingStories:
                 logger,
             )
 
-        api_client.fail_story.assert_awaited_once_with("story-1")
+        api_client.fail_story.assert_not_awaited()
         # The story is failed straight out of WAITING_USER_SECRET: this path
         # must not also move it to DEPLOYING first, which was a second Story
         # transition with nothing to finish it.
         api_client.transition_story.assert_not_awaited()
-        notify.assert_awaited_once()
+        notify.assert_not_awaited()
         api_client.create_run.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
 

@@ -1,4 +1,4 @@
-## Platform capabilities (manifest v8, owner-reviewed)
+## Platform capabilities (manifest v10, owner-reviewed)
 What a product built here can and cannot have. The product is a Telegram bot and has no web address.
 Can:
 - Plain HTTP self links: The bot can include plain HTTP self links; their address can change when the product moves.
@@ -7,7 +7,7 @@ Can:
 - Actions on a schedule or later: The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
 - Settings without a new version: The owner later changes settings, such as the list of languages or the texts, without a new version of the bot.
 - Connecting to other services: The bot connects to other online services, such as AI, weather or spreadsheets, with a key the user provides; AI in the bot runs on the user's own key.
-- Who can use the bot: At first only the customer can use the bot; everyone else is ignored. The customer can give permanent access to specific Telegram users, and it starts working once the running bot confirms it. The customer can also hand the bot over to another Telegram user. Taking access back and opening the bot to everyone are not available yet.
+- Who can use the bot: At first only the customer can use the bot; everyone else is ignored. The customer can give permanent access to specific Telegram users, and it starts working once the running bot confirms it. The customer can also hand the bot over to another Telegram user. Taking access back and opening the bot to everyone are not available yet. The owner or admin can retry exhausted initial deployment only when the platform offers a retry action for a failed attempt.
 Cannot (why; instead):
 - A website or web pages: [web_presence] The bot has no website, web pages, admin panel or domain of its own, and cannot open a mini app inside Telegram. The product lives entirely inside the Telegram chat. Instead: Everything happens in the chat with buttons.
 - Receiving events other services send: [inbound_webhooks] The bot cannot receive events that other services send to it by themselves, such as GitHub notifications or form submissions. Other services have nowhere to send such events to. Instead: The bot checks the service itself from time to time, if the service allows that.

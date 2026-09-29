@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.owner_notification import OwnerNotification
@@ -23,7 +23,7 @@ from shared.contracts.dto.story import (
     StoryUpdate,
     StoryWaitingOn,
 )
-from shared.contracts.dto.story_failure import StoryFailure
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.story_planning import StoryPlanning
 
 __all__ = [
@@ -111,6 +111,13 @@ class StoryStopTransition(StoryTransition):
     """
 
     failure: StoryFailure | None = None
+
+    @field_validator("failure")
+    @classmethod
+    def _native_grant_stop(cls, value: StoryFailure | None) -> StoryFailure | None:
+        if value is not None and value.code is StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED:
+            raise ValueError("initial-owner exhaustion is decided by the grant lifecycle")
+        return value
 
 
 class StoryOwnerNotificationRead(BaseModel):

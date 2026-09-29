@@ -62,6 +62,7 @@ class StoryFailureCode(StrEnum):
     #: The deploy could not compute the required production environment.
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
     PR_CONFLICT_REPAIR_EXHAUSTED = "pr_conflict_repair_exhausted"
+    INITIAL_OWNER_DEPLOYMENT_EXHAUSTED = "initial_owner_deployment_exhausted"
 
 
 class StoryFailure(BaseModel):
@@ -84,6 +85,10 @@ class StoryFailure(BaseModel):
 
 
 _OWNER_WORDS: dict[StoryFailureCode, str] = {
+    StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED: (
+        "Initial deployment stopped: its bounded deployment attempts are exhausted. "
+        "Deployment credentials are provisioned by the platform."
+    ),
     StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED: (
         "Work on this change stopped: its pull request still has conflicts after repair."
     ),
@@ -111,6 +116,12 @@ _OWNER_WORDS: dict[StoryFailureCode, str] = {
 
 def story_failure_owner_text(failure: StoryFailure) -> str:
     """The owed owner message for a stop: what happened, the cause, what comes next."""
+    if failure.code is StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED:
+        return (
+            f"{_OWNER_WORDS[failure.code]} Cause reported by the {failure.source}: "
+            f"{failure.detail} No further deployment will run automatically; "
+            "a person has to fix it or decide the next steps."
+        )
     return (
         f"{_OWNER_WORDS[failure.code]} Cause reported by the {failure.source}: "
         f"{failure.detail} This is a platform problem, not something the user did. "

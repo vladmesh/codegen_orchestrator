@@ -843,6 +843,13 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
         "intent_id": "users-grant-initial_owner-00000000000000000000000000000001-84",
         "disposition": "exhausted",
         "status": "failed",
+        "exhaustion": {
+            "attempts": 3,
+            "target": {"sha": "a" * 40},
+            "exhausted_execution_run_id": "run-1",
+            "action": "retry_initial_owner_deployment",
+            "retry_command": {"expected_execution_run_id": "run-1"},
+        },
     }
     gh.get_latest_workflow_run.return_value = _published_ci_run()
     gh.get_pull_request.return_value = {
@@ -854,12 +861,12 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
 
     assert await poll_merged_prs(api, redis) == 0
 
-    api.fail_story.assert_awaited_once_with(story.id)
+    api.fail_story.assert_not_awaited()
     # The story is failed straight out of PR_REVIEW: this path must not also
     # move it to DEPLOYING first, which was a second Story transition with
     # nothing to finish it.
     api.transition_story.assert_not_awaited()
-    notify.assert_awaited_once()
+    notify.assert_not_awaited()
     api.create_run.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
 
