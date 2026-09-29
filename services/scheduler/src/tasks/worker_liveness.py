@@ -143,6 +143,8 @@ def terminal_task_statuses(run: Any) -> tuple[TaskStatus, ...]:
 
 async def replay_terminal_attempt(api_client: Any, task_id: str, run: Any, actor: str) -> None:
     """Apply a terminal run's already-recorded outcome without changing the run."""
+    if task_id.startswith("pr-conflict-") and run.status == RunStatus.FAILED:
+        raise RuntimeError("Failed conflict attempts require scoped settlement")
     for status in terminal_task_statuses(run):
         await api_client.transition_task(task_id, status, actor)
 

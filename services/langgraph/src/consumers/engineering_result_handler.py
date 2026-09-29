@@ -10,7 +10,10 @@ import httpx
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+)
 from shared.contracts.dto.pr_conflict_repair import PRConflictRepairAttemptDisposition
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
@@ -306,7 +309,29 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
         await _write_empty_terminal(task_id, terminal)
     else:
         await api_client.patch(f"runs/{task_id}", json=terminal)
-    if planning_task_id:
+    if (
+        planning_task_id
+        and planning_task_id.startswith("pr-conflict-")
+        and (
+            execution is None
+            or execution.execution_phase is not EngineeringExecutionPhase.PRE_AGENT_REFUSED
+        )
+    ):
+        # Early consumer failures may not carry story context; the admitted
+        # Run still owns that required identity.
+        if story_id is None:
+            story_id = (await api_client.get_run(task_id)).story_id
+        if story_id is None:
+            raise RuntimeError("An admitted conflict repair requires its story")
+        await settle_pr_repair_attempt(
+            api_client,
+            story_id,
+            planning_task_id,
+            task_id,
+            "Engineering attempt failed; settle within the admitted repair bound.",
+            PRConflictRepairAttemptDisposition.FAILED,
+        )
+    elif planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
     return live_work_unsettled({"status": "failed", "error": error_msg})
 

@@ -64,16 +64,38 @@ fence the decision in one transaction. Replaced cycles/PRs and older attempts
 return `stale` without changing current work or notices; client reads grant no
 settlement authority. Malformed or unrelated admission/Run evidence refuses.
 
+The persisted terminal Run decides `failed` versus `gave_up` and supplies the
+diagnostic; the command's disposition/detail are observations, not permission
+to downgrade a refusal into a retry. Settlement accepts the native interruption
+states `in_dev` after the Run write and before any Task write, and `todo` when
+the worker finished before dispatch's status write. It commits the
+Task disposition directly, without a generic Task-only human-review hop.
+Task-only human review without a matching stop is not a supported repair state.
+
+Engineering result delivery submits this command after persisting the Run.
+Terminal queue reclaim ACKs that immutable Run without repeating the worker;
+the normal stuck-task sweep discovers its still `in_dev` Task and submits the
+same command. Failed-task supervision also submits it, after infrastructure and
+resource dispositions, using immutable Run evidence even for a saved `gave_up`.
+Dispatch's finished-Run recovery submits the command from `todo`; for a proven
+infrastructure/resource refusal it restores `in_dev` discovery and defers to
+the stuck sweep's existing priority routing. It never replays a repair refusal
+as Task-only human review.
+Request failure leaves the Task discoverable on the next native tick. Generic
+terminal replay refuses failed conflict Tasks instead of bypassing settlement.
+
 For an ordinary failed repair below the recorded ceiling, its next iteration
 and `todo` state commit together, with an immutable per-attempt settlement event.
 Lost responses and concurrent repeats reuse that event without another increment
-or Run. A proven legacy partial `backlog` retry with the same failed iteration
-and no live attempt is completed by this command; supervision scans only admitted
-conflict Tasks for this recovery. Unrelated retry policy is unchanged.
+or Run. No native repair producer splits retry into separate `backlog`/`todo`
+writes; intermediate unreleased `backlog` retries are refused rather than
+treated as supported history. Unrelated retry policy is unchanged.
 
 At the ceiling or on `gave_up`, repair Task settlement, the named durable Story
 stop and both owed notice audiences commit together. Replay reconciles the same
-settlement without another stop/notice episode. The existing no-new-commit,
+settlement without another stop/notice episode. Dirty-PR admission can already
+have stopped an exhausted Task in the same cycle; the attempt command finishes
+that matching stop without replacing its notice episode. The existing no-new-commit,
 infrastructure and resource-wait dispositions retain priority. Owner/admin
 delivery uses the existing owed-notification sweep.
 

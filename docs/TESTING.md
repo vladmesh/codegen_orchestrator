@@ -20,7 +20,17 @@ the disposable `conflict-api` fixture: the registered PO `reopen_story` tool and
 actual scheduler poller/dispatcher reach one admitted engineering Run, then
 deterministic results exercise clean merging, dirty exhaustion, `gave_up` and
 all native failed-iteration retries with both notice audiences.
-Refusal settlement is replayed after an interrupted Task write without another stop.
+Refusal regressions cancel the actual handler after FAILED/GAVE_UP persistence
+and before scoped settlement, then use real Redis PEL reclaim and the consumer
+guard followed by native stuck/failed-supervisor ticks. They also cover lost
+committed responses, concurrent recovery, unchanged immutable Runs, one ledger
+event and delivery to both audiences without another episode on later ticks.
+API service cases prove terminal evidence outranks callback observations from
+`in_dev` and interrupted-dispatch `todo`, reject malformed/unrelated evidence,
+and interleave cycle/PR replacement between discovery and locked settlement.
+Unreleased partial `backlog` retries are refused; no native repair producer
+splits the atomic retry. The matching stop produced by dirty-PR admission still
+finishes Task settlement without replacing its reason or notices.
 Only GitHub and administrator Telegram responses are synthetic; no provider,
 worker container, live repository mutation or production recovery is exercised.
 

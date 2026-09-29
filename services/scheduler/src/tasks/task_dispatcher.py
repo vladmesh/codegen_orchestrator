@@ -25,12 +25,17 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
-from shared.contracts.dto.engineering_execution import infrastructure_refusal_for_dispatch
-from shared.contracts.dto.run import RunDTO
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionPhase,
+    infrastructure_refusal_for_dispatch,
+)
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairAttemptDisposition
+from shared.contracts.dto.run import RunDTO, RunStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType, OwnerNotificationEvent
+from shared.pr_conflict_repair import settle_pr_repair_attempt
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis import RedisStreamClient
 
@@ -139,14 +144,36 @@ async def _recover_dispatched_task(
 ) -> None:
     """Replay a finished run's outcome onto a task the transition never left todo.
 
-    in_dev is the only way out of todo, so the task goes there first and the
-    outcome is applied on top — the result handler could not apply it while the
-    task was still in todo, and without the replay the task would sit in in_dev
-    with nothing working on it.
+    Ordinary outcomes follow the native start hops. Failed conflict attempts
+    settle under their admission/Run fence even when dispatch never wrote the
+    start; infrastructure/resource refusals defer to native supervision.
 
     The run is always finished by the time this is called: the admission point
     names this repair only for a run no longer in flight.
     """
+    if task_id.startswith("pr-conflict-") and run.status is RunStatus.FAILED:
+        result = run.result
+        if result.allocation_failure_reason is not None or (
+            result.execution is not None
+            and result.execution.execution_phase is EngineeringExecutionPhase.PRE_AGENT_REFUSED
+        ):
+            # Restore only discovery; the next stuck sweep applies native
+            # infrastructure/resource priority before any repair settlement.
+            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            log.info("conflict_refusal_deferred_to_supervision", run_id=run.id)
+            return
+        if run.story_id is None:
+            raise RuntimeError("An admitted conflict repair requires its story")
+        outcome = await settle_pr_repair_attempt(
+            api_client,
+            run.story_id,
+            task_id,
+            run.id,
+            "Recover terminal conflict Run before dispatch status write.",
+            PRConflictRepairAttemptDisposition.FAILED,
+        )
+        log.info("conflict_dispatch_outcome_settled", run_id=run.id, outcome=outcome.outcome.value)
+        return
     await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
     for status in terminal_task_statuses(run):
         await api_client.transition_task(task_id, status, "dispatcher")

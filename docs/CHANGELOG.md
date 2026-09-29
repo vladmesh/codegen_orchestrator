@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Recover terminal conflict Runs through scoped settlement before generic Task replay, so interrupted
+  refusals owe both notices and immutable Run evidence decides the bounded ending.
+
 - Reconcile reclaimed checkout baselines before worker turns; atomically fence conflict retries and
   terminal settlement to their admitted cycle and Run so lost responses cannot strand or stop new work.
 

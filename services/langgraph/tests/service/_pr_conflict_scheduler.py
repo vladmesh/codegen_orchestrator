@@ -13,7 +13,7 @@ from src import startup
 from src.clients.api import SchedulerAPIClient
 from src.tasks.owner_notifications import deliver_owed_notification
 from src.tasks.pr_poller import poll_merged_prs
-from src.tasks.supervisor.liveness import supervise_failed_tasks
+from src.tasks.supervisor.liveness import supervise_failed_tasks, supervise_stuck_tasks
 from src.tasks.task_dispatcher import dispatch_todo_tasks
 
 STORY = os.environ["CONFLICT_STORY"]
@@ -76,6 +76,11 @@ async def exercise():
         elif mode == "dispatch":
             assert await dispatch_todo_tasks(api, stream) == 1
             assert await dispatch_todo_tasks(api, stream) == 0
+        elif mode == "dispatch-interrupt":
+            with patch.object(
+                api, "transition_task", AsyncMock(side_effect=OSError("status write unavailable"))
+            ):
+                assert await dispatch_todo_tasks(api, stream) == 0
         elif mode == "fail-lost":
             request = api.request
             lost = False
@@ -95,6 +100,13 @@ async def exercise():
         elif mode == "fail":
             outcome = await supervise_failed_tasks(api, stream)
             assert outcome["retried"] + outcome["escalated"] == 1, outcome
+        elif mode in {"stuck", "stuck-concurrent-lost"}:
+            if mode == "stuck-concurrent-lost":
+                await concurrent_terminal_recovery(api, stream)
+            # Later native ticks must not create another settlement episode.
+            for _ in range(2):
+                await supervise_stuck_tasks(api, stream)
+                assert await supervise_failed_tasks(api, stream) == {"retried": 0, "escalated": 0}
         else:
             record = await api.get_story_owner_notification(STORY)
             with patch(
@@ -104,10 +116,57 @@ async def exercise():
                 await deliver_owed_notification(
                     api, stream, STORY, record, structlog.get_logger(), story_record=True
                 )
-                admins.assert_awaited_once()
+                if mode == "notice-repeat":
+                    admins.assert_not_awaited()
+                else:
+                    admins.assert_awaited_once()
     finally:
         await stream.close()
         await api.close()
+
+
+async def concurrent_terminal_recovery(api, stream):
+    request = api.request
+    lost = False
+    discovered = 0
+    ready = asyncio.Event()
+
+    async def rendezvous(method, path):
+        nonlocal discovered
+        if method == "POST" and path.endswith("/attempt-outcome"):
+            discovered += 1
+            if discovered == 2:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), timeout=5)
+
+    async def lose_settlement_response(method, path, **kwargs):
+        nonlocal lost
+        await rendezvous(method, path)
+        response = await request(method, path, **kwargs)
+        if method == "POST" and path.endswith("/attempt-outcome") and not lost:
+            lost = True
+            raise OSError("synthetic terminal settlement response loss")
+        return response
+
+    other = ScopedAPI()
+    other_request = other.request
+
+    async def concurrent_request(method, path, **kwargs):
+        await rendezvous(method, path)
+        return await other_request(method, path, **kwargs)
+
+    try:
+        with (
+            patch.object(api, "request", lose_settlement_response),
+            patch.object(other, "request", concurrent_request),
+        ):
+            await asyncio.gather(
+                supervise_stuck_tasks(api, stream),
+                supervise_stuck_tasks(other, stream),
+            )
+        assert lost
+    finally:
+        await other.close()
 
 
 asyncio.run(exercise())

@@ -56,18 +56,10 @@ async def failed_attempt(client, db, fixture, *, ceiling=False, gave_up=False):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("backlog", [False, True])
 async def test_retry_is_atomic_concurrent_and_response_loss_replay(
-    async_client, db_session, dirty_story, backlog
+    async_client, db_session, dirty_story
 ):
     sid, command = await failed_attempt(async_client, db_session, dirty_story)
-    if backlog:
-        response = await async_client.post(
-            f"/api/tasks/{command['task_id']}/transition",
-            params={"to_status": "backlog"},
-            json={"actor": "supervisor"},
-        )
-        assert response.status_code == 200, response.text
     url = f"/api/stories/{sid}/repair-pr-conflicts/attempt-outcome"
     replies = await asyncio.gather(*[async_client.post(url, json=command) for _ in range(6)])
     assert all(r.status_code == 200 for r in replies), [r.text for r in replies]
@@ -140,10 +132,13 @@ async def test_reconcile_preexisting_named_stop_finishes_task_without_new_notice
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("gave_up", [False, True])
 async def test_old_terminal_callback_cannot_stop_normally_reopened_cycle(
-    async_client, db_session, dirty_story
+    async_client, db_session, dirty_story, gave_up
 ):
-    sid, command = await failed_attempt(async_client, db_session, dirty_story, ceiling=True)
+    sid, command = await failed_attempt(
+        async_client, db_session, dirty_story, ceiling=True, gave_up=gave_up
+    )
     for action in ("fail", "reopen", "start"):
         moved = await async_client.post(f"/api/stories/{sid}/{action}")
         assert moved.status_code == 200, moved.text
@@ -185,10 +180,14 @@ async def test_stale_attempt_identity_mutates_nothing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("gave_up", [False, True])
+@pytest.mark.parametrize("replacement", ["cycle", "pr"])
 async def test_client_reads_interleaved_with_normal_lifecycle_cannot_authorize_old_stop(
-    async_client, db_session, dirty_story
+    async_client, db_session, dirty_story, gave_up, replacement
 ):
-    sid, command = await failed_attempt(async_client, db_session, dirty_story, ceiling=True)
+    sid, command = await failed_attempt(
+        async_client, db_session, dirty_story, ceiling=True, gave_up=gave_up
+    )
     snapshots = []
 
     class InterleavedAPI:
@@ -196,8 +195,12 @@ async def test_client_reads_interleaved_with_normal_lifecycle_cannot_authorize_o
             response = await async_client.request(method, f"/api/{path}", **kwargs)
             response.raise_for_status()
             if method == "GET" and path.endswith("/events"):
-                for action in ("fail", "reopen", "start"):
-                    moved = await async_client.post(f"/api/stories/{sid}/{action}")
+                if replacement == "cycle":
+                    for action in ("fail", "reopen", "start"):
+                        moved = await async_client.post(f"/api/stories/{sid}/{action}")
+                        assert moved.status_code == 200, moved.text
+                else:
+                    moved = await async_client.patch(f"/api/stories/{sid}", json={"pr_number": 4})
                     assert moved.status_code == 200, moved.text
                 row = await db_session.get(Story, sid, populate_existing=True)
                 snapshots.append(
@@ -214,7 +217,9 @@ async def test_client_reads_interleaved_with_normal_lifecycle_cannot_authorize_o
         command["task_id"],
         command["attempt_id"],
         "Old repair exhausted",
-        PRConflictRepairAttemptDisposition.FAILED,
+        PRConflictRepairAttemptDisposition.GAVE_UP
+        if gave_up
+        else PRConflictRepairAttemptDisposition.FAILED,
     )
     assert outcome.outcome.value == "stale"
     row = await db_session.get(Story, sid, populate_existing=True)
@@ -225,11 +230,12 @@ async def test_client_reads_interleaved_with_normal_lifecycle_cannot_authorize_o
         row.owner_notification,
     ) == snapshots[0]
     task = await db_session.get(Task, command["task_id"], populate_existing=True)
-    assert task.status == "failed" and task.current_iteration == command["expected_iteration"]
+    assert task.status == ("in_dev" if gave_up else "failed")
+    assert task.current_iteration == command["expected_iteration"]
 
 
 @pytest.mark.asyncio
-async def test_partial_backlog_at_ceiling_stops_without_increment(
+async def test_unreleased_partial_backlog_refuses_without_mutation(
     async_client, db_session, dirty_story
 ):
     sid, command = await failed_attempt(async_client, db_session, dirty_story, ceiling=True)
@@ -242,10 +248,111 @@ async def test_partial_backlog_at_ceiling_stops_without_increment(
     response = await async_client.post(
         f"/api/stories/{sid}/repair-pr-conflicts/attempt-outcome", json=command
     )
-    assert response.status_code == 200 and response.json()["outcome"] == "exhausted", response.text
+    assert response.status_code == 409, response.text
     task = await db_session.get(Task, command["task_id"], populate_existing=True)
     assert task.current_iteration == command["expected_iteration"]
-    assert task.status == "waiting_human_review"
+    assert task.status == "backlog"
+    story = await db_session.get(Story, sid, populate_existing=True)
+    assert story.status == "in_progress" and story.owner_notification is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gave_up", [False, True])
+@pytest.mark.parametrize("task_status", ["in_dev", "todo"])
+async def test_immutable_run_outranks_callback_and_settles_before_task_write(
+    async_client, db_session, dirty_story, gave_up, task_status
+):
+    from sqlalchemy import select
+
+    from shared.models import TaskEvent
+
+    sid, command = await failed_attempt(async_client, db_session, dirty_story, gave_up=True)
+    run = await db_session.get(Run, command["attempt_id"], populate_existing=True)
+    run.result = {"engineering_status": "gave_up" if gave_up else "failed"}
+    run.error_message = "Durable refusal" if gave_up else "Durable technical failure"
+    task = await db_session.get(Task, command["task_id"], populate_existing=True)
+    task.status = task_status
+    await db_session.commit()
+    # The command's mutable observation disagrees with immutable terminal evidence.
+    command["disposition"] = "failed" if gave_up else "gave_up"
+    command["detail"] = "Stale callback-local diagnostic"
+    url = f"/api/stories/{sid}/repair-pr-conflicts/attempt-outcome"
+    replies = await asyncio.gather(*[async_client.post(url, json=command) for _ in range(6)])
+    assert all(reply.status_code == 200 for reply in replies), [r.text for r in replies]
+    task = await db_session.get(Task, command["task_id"], populate_existing=True)
+    story = await db_session.get(Story, sid, populate_existing=True)
+    events = (await db_session.scalars(select(TaskEvent).where(TaskEvent.task_id == task.id))).all()
+    settlements = [
+        e.details["pr_conflict_repair_attempt"]
+        for e in events
+        if "pr_conflict_repair_attempt" in e.details
+    ]
+    assert len(settlements) == 1
+    assert settlements[0]["disposition"] == run.result["engineering_status"]
+    if gave_up:
+        assert all(reply.json()["outcome"] == "exhausted" for reply in replies)
+        assert task.status == story.status == "waiting_human_review"
+        assert task.current_iteration == 0
+        assert "Durable refusal" in story.quarantine_reason["detail"]
+        assert "Stale callback" not in story.quarantine_reason["detail"]
+        assert (
+            story.owner_notification["state"] == story.owner_notification["admin_state"] == "owed"
+        )
+    else:
+        assert sum(reply.json()["outcome"] == "retried" for reply in replies) == 1
+        assert (task.status, task.current_iteration) == ("todo", 1)
+        assert story.status == "in_progress" and story.owner_notification is None
+    before = (
+        task.status,
+        task.current_iteration,
+        story.quarantine_reason,
+        story.owner_notification,
+    )
+    await async_client.post(url, json=command)
+    await db_session.refresh(task)
+    await db_session.refresh(story)
+    assert (
+        task.status,
+        task.current_iteration,
+        story.quarantine_reason,
+        story.owner_notification,
+    ) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ["admission", "iteration", "result", "unrelated"])
+async def test_malformed_or_unrelated_terminal_evidence_refuses_without_mutation(
+    async_client, db_session, dirty_story, corruption
+):
+    from sqlalchemy import select
+
+    from shared.models import TaskEvent
+
+    sid, command = await failed_attempt(async_client, db_session, dirty_story, gave_up=True)
+    run = await db_session.get(Run, command["attempt_id"], populate_existing=True)
+    task = await db_session.get(Task, command["task_id"], populate_existing=True)
+    if corruption == "admission":
+        event = await db_session.scalar(
+            select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
+        )
+        event.details = {"pr_conflict_repair": {"broken": True}}
+    elif corruption == "iteration":
+        run.run_metadata = {**run.run_metadata, "iteration": True}
+    elif corruption == "result":
+        run.result = {"engineering_status": "not-an-outcome"}
+    else:
+        run.task_id = dirty_story[3]
+    await db_session.commit()
+    response = await async_client.post(
+        f"/api/stories/{sid}/repair-pr-conflicts/attempt-outcome",
+        json=command,
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "pr_conflict_repair_refused"
+    await db_session.refresh(task)
+    story = await db_session.get(Story, sid, populate_existing=True)
+    assert (task.status, task.current_iteration) == ("in_dev", 0)
+    assert story.status == "in_progress" and story.owner_notification is None
 
 
 @pytest.mark.asyncio

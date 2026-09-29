@@ -1,12 +1,13 @@
 """Registered owner tool, poller and dispatcher retain real Task/Run history."""
 
 import asyncio
+from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 import os
 from pathlib import Path
 import subprocess
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import uuid
 
 from psycopg import AsyncConnection
@@ -51,7 +52,18 @@ async def rows(query, *args):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("released", [False, True])
-@pytest.mark.parametrize("ending", ["dirty", "clean", "gave_up", "failed"])
+@pytest.mark.parametrize(
+    "ending",
+    [
+        "dirty",
+        "clean",
+        "gave_up",
+        "gave_up-lost",
+        "gave_up-concurrent",
+        "gave_up-todo",
+        "failed",
+    ],
+)
 async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
     real_redis, released, ending
 ):
@@ -151,7 +163,9 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
             }
         )
         await real_redis.set(EXECUTOR_DIAGNOSTICS_REDIS_KEY, snapshot.model_dump_json())
-        await asyncio.to_thread(scheduler, "dispatch", sid)
+        await asyncio.to_thread(
+            scheduler, "dispatch-interrupt" if ending == "gave_up-todo" else "dispatch", sid
+        )
         runs = await rows("SELECT * FROM runs WHERE task_id=%s", repair["id"])
         assert len(runs) == 1 and runs[0]["story_id"] == sid
         messages = [
@@ -182,6 +196,8 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
             for _, fields in await real_redis.xrange(PO_INPUT_QUEUE)
         ]
         assert any(notice.get("story_id") == sid for notice in notices)
+        if ending.startswith("gave_up"):
+            await assert_delivered_notice_is_stable(api, real_redis, sid, notice)
         assert len(await rows("SELECT id FROM tasks WHERE story_id=%s", sid)) == 2
         assert (await api.get_task(original["id"])).status.value == "done"
         expected_runs = repair["max_iterations"] + 1 if ending == "failed" else 1
@@ -190,6 +206,14 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
         )
     finally:
         await api.close()
+
+
+async def assert_delivered_notice_is_stable(api, redis, sid, notice):
+    notices_before = await redis.xrange(PO_INPUT_QUEUE)
+    await asyncio.to_thread(scheduler, "stuck", sid)
+    await asyncio.to_thread(scheduler, "notice-repeat", sid)
+    assert await api.get(f"stories/{sid}/owner-notification") == notice
+    assert await redis.xrange(PO_INPUT_QUEUE) == notices_before
 
 
 async def assert_clean_merge(api, sid, original_id):
@@ -206,27 +230,28 @@ async def assert_clean_merge(api, sid, original_id):
 
 
 async def finish_repair(api, sid, project_id, repair, run, ending):
-    if ending == "gave_up":
-        from src.consumers import engineering_result_handler
+    if ending.startswith("gave_up"):
+        from src.consumers import _base, engineering_result_handler
 
         stream = RedisStreamClient()
         await stream.connect()
         try:
+            group = f"conflict-reclaim-{sid}"
+            initial = await claim_engineering_entry(stream, sid, group, reclaim=False)
+            assert initial.data["task_id"] == run["id"]
             with patch.object(engineering_result_handler, "api_client", api):
                 original_request = api.request
-                lost = False
 
                 async def interrupted_request(method, path, **kwargs):
-                    nonlocal lost
-                    response = await original_request(method, path, **kwargs)
-                    if method == "POST" and path.endswith("/attempt-outcome") and not lost:
-                        lost = True
-                        raise RuntimeError("synthetic committed settlement interruption")
-                    return response
+                    if method == "POST" and path.endswith("/attempt-outcome"):
+                        if ending == "gave_up-lost":
+                            await original_request(method, path, **kwargs)
+                        raise asyncio.CancelledError("consumer dies at settlement boundary")
+                    return await original_request(method, path, **kwargs)
 
                 with (
                     patch.object(api, "request", interrupted_request),
-                    pytest.raises(RuntimeError, match="settlement interruption"),
+                    pytest.raises(asyncio.CancelledError, match="settlement boundary"),
                 ):
                     await engineering_result_handler.handle_worker_gave_up(
                         run["id"],
@@ -237,9 +262,70 @@ async def finish_repair(api, sid, project_id, repair, run, ending):
                         "",
                         stream,
                     )
-                await engineering_result_handler.handle_worker_gave_up(
-                    run["id"], project_id, repair["id"], sid, "Conflicts need a human", "", stream
+            persisted_run = await api.get(f"runs/{run['id']}")
+            assert persisted_run["status"] == "failed"
+            assert persisted_run["result"]["engineering_status"] == "gave_up"
+            if ending != "gave_up-lost":
+                assert (await api.get_task(repair["id"])).status.value == (
+                    "todo" if ending == "gave_up-todo" else "in_dev"
                 )
+                story = await api.get_story(sid)
+                assert story.status.value == "in_progress"
+                assert (await rows("SELECT owner_notification FROM stories WHERE id=%s", sid))[0][
+                    "owner_notification"
+                ] is None
+            # Native Redis reclaim and the real consumer guard ACK terminal work
+            # without publishing another turn or manually replaying its handler.
+            reclaimed = await claim_engineering_entry(stream, sid, group, reclaim=True)
+            assert reclaimed.reclaimed and reclaimed.message_id == initial.message_id
+            process = AsyncMock()
+            with patch.object(_base, "api_client", api):
+                await _base._process_entry(
+                    reclaimed,
+                    stream,
+                    ENGINEERING_QUEUE,
+                    group,
+                    "engineering",
+                    process,
+                )
+            process.assert_not_awaited()
+            assert not await stream.redis.xpending_range(
+                ENGINEERING_QUEUE,
+                group,
+                initial.message_id,
+                initial.message_id,
+                1,
+            )
+            await asyncio.to_thread(
+                scheduler,
+                "dispatch"
+                if ending == "gave_up-todo"
+                else "stuck-concurrent-lost"
+                if ending == "gave_up-concurrent"
+                else "stuck",
+                sid,
+            )
+            stopped = await api.get_story(sid)
+            notice = await api.get(f"stories/{sid}/owner-notification")
+            assert notice["state"] == notice["admin_state"] == "owed"
+            assert (
+                f"PR #3: repair Task {repair['id']}, Run {run['id']}"
+                in stopped.quarantine_reason["detail"]
+            )
+            assert f"ceiling {repair['max_iterations']}" in stopped.quarantine_reason["detail"]
+            assert (
+                len(
+                    await rows(
+                        "SELECT id FROM task_events WHERE task_id=%s "
+                        "AND details::jsonb ? 'pr_conflict_repair_attempt'",
+                        repair["id"],
+                    )
+                )
+                == 1
+            )
+            await asyncio.to_thread(scheduler, "stuck", sid)
+            assert await api.get(f"stories/{sid}/owner-notification") == notice
+            assert await api.get(f"runs/{run['id']}") == persisted_run
         finally:
             await stream.close()
         assert (await api.get_task(repair["id"])).status.value == "waiting_human_review"
@@ -257,14 +343,6 @@ async def finish_repair(api, sid, project_id, repair, run, ending):
                 json={"status": "failed", "result": {"engineering_status": "failed"}},
             )
             await api.post(f"tasks/{repair['id']}/fail")
-            if iteration == 1:
-                # The released supervisor could lose its first hop's response.
-                # A later native supervision tick must discover this BACKLOG.
-                await api.post(
-                    f"tasks/{repair['id']}/transition",
-                    params={"to_status": "backlog"},
-                    json={"actor": "supervisor"},
-                )
             await asyncio.to_thread(scheduler, "fail-lost" if iteration == 0 else "fail", sid)
             task = await api.get_task(repair["id"])
             assert task.current_iteration == min(iteration + 1, repair["max_iterations"])
@@ -282,3 +360,24 @@ async def finish_repair(api, sid, project_id, repair, run, ending):
         await api.post(f"tasks/{repair['id']}/complete")
         await api.transition_story(sid, "pr_review")
         await asyncio.to_thread(scheduler, "clean" if ending == "clean" else "poll", sid)
+
+
+async def claim_engineering_entry(stream, sid, group, *, reclaim):
+    async with (
+        asyncio.timeout(5),
+        aclosing(
+            stream.consume(
+                ENGINEERING_QUEUE,
+                group,
+                "replacement" if reclaim else "interrupted",
+                auto_ack=False,
+                claim_pending=reclaim,
+                pending_timeout_ms=0,
+                block_ms=10,
+            )
+        ) as entries,
+    ):
+        async for entry in entries:
+            if entry is not None and entry.data.get("story_id") == sid:
+                return entry
+    raise AssertionError("The admitted engineering entry was not discovered")

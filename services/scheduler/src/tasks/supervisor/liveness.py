@@ -30,7 +30,7 @@ from shared.contracts.dto.pr_conflict_repair import (
     PRConflictRepairAttemptOutcome,
 )
 from shared.contracts.dto.product_brief import ProductBriefRead
-from shared.contracts.dto.run import RunDTO, RunType
+from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     EngineeringFailureReason,
@@ -324,18 +324,13 @@ async def supervise_failed_tasks(
 ) -> dict[str, int]:
     """Detect failed tasks and retry or escalate to waiting_human_review.
 
-    FAILED status means technical failure (crash, OOM, timeout) — the worker
-    never explicitly gave up. Supervisor retries if iterations remain, otherwise
-    transitions to WAITING_HUMAN_REVIEW (same as gave_up — needs human).
+    Ordinary technical failures retry while iterations remain. Conflict Tasks
+    submit immutable Run evidence to scoped settlement, which also recognizes
+    a persisted gave_up regardless of the caller's mutable observation.
 
     Returns dict with 'retried' and 'escalated' counts.
     """
     tasks = await api_client.get_tasks_by_status(TaskStatus.FAILED)
-    tasks += [
-        task
-        for task in await api_client.get_tasks_by_status(TaskStatus.BACKLOG)
-        if task.id.startswith("pr-conflict-") and task.status is TaskStatus.BACKLOG
-    ]
     retried = 0
     escalated = 0
     # Choose the story's required cause before any sibling can make a bare stop.
@@ -471,7 +466,7 @@ async def _supervise_failed_task(
     current_iter = task.current_iteration
     max_iter = task.max_iterations
     story_id = task.story_id
-    if task.id.startswith("pr-conflict-") and story_id not in escalated_stories:
+    if task.id.startswith("pr-conflict-"):
         outcome = await settle_pr_repair_attempt(
             api_client,
             story_id,
@@ -849,6 +844,19 @@ async def supervise_stuck_tasks(
         if run is None:
             terminal_run = await select_terminal_engineering_run(api_client, task.id)
             if terminal_run is not None:
+                if task.id.startswith("pr-conflict-") and terminal_run.status is RunStatus.FAILED:
+                    try:
+                        await _supervise_failed_task(
+                            api_client,
+                            redis_client,
+                            task,
+                            logger.bind(task_id=task.id, story_id=task.story_id),
+                            set(),
+                            [terminal_run],
+                        )
+                    except Exception:
+                        logger.exception("conflict_terminal_settlement_failed", task_id=task.id)
+                    continue
                 await replay_terminal_attempt(api_client, task.id, terminal_run, "supervisor")
             continue
         state, worker_id = await attempt_state(redis_client, run, now)

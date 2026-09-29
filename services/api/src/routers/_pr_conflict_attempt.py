@@ -1,6 +1,7 @@
 """The admitted conflict Task's retry and terminal settlement transaction."""
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import (
     StoryFailure,
     StoryFailureCode,
+    bounded_diagnostic,
     story_failure_admin_text,
     story_failure_owner_text,
 )
@@ -44,14 +46,6 @@ def _refuse(message: str):
 
 
 async def _settle_terminal(task, story, command, evidence, result, own_stop, audit, db):
-    if task.status == TaskStatus.BACKLOG.value:
-        for before, after in (
-            (TaskStatus.BACKLOG, TaskStatus.TODO),
-            (TaskStatus.TODO, TaskStatus.IN_DEV),
-        ):
-            validate_transition(before, after)
-            task.status = after.value
-            await create_status_event(task, before, after, "internal_service", audit, db)
     if task.status != TaskStatus.WAITING_HUMAN_REVIEW.value:
         validate_transition(task.status, TaskStatus.WAITING_HUMAN_REVIEW)
         before = task.status
@@ -90,7 +84,10 @@ async def _admission_evidence(
     ]
     if len(admissions) != 1:
         _refuse("The immutable repair admission is missing or ambiguous.")
-    evidence = PRConflictRepairEvidence.model_validate(admissions[0])
+    try:
+        evidence = PRConflictRepairEvidence.model_validate(admissions[0])
+    except ValidationError:
+        _refuse("The immutable repair admission is malformed.")
     repository = await db.get(Repository, evidence.repository_id)
     if (
         task.id != repair_task_id(story.id, evidence.cycle_started_at)
@@ -141,23 +138,13 @@ def _verify_recorded_stop(story):
         _refuse("Recorded repair stop has inconsistent notice obligations.")
 
 
-def _verify_partial_retry(task, events):
-    if task.status != TaskStatus.BACKLOG.value:
-        return
-    # Released status events have no iteration field. The locked Task and
-    # failed Run prove the unchanged iteration; its last native status event
-    # proves the interrupted supervisor hop.
-    hops = [e for e in events if e.event_type == TaskEventType.STATUS_CHANGE.value]
-    if (
-        not hops
-        or hops[-1].from_status != TaskStatus.FAILED.value
-        or hops[-1].to_status != TaskStatus.BACKLOG.value
-        or hops[-1].actor != "supervisor"
-    ):
-        _refuse("BACKLOG has no failed-retry provenance.")
-
-
 async def _retry_task(task, iteration, audit, db):
+    if task.status == TaskStatus.IN_DEV.value:
+        validate_transition(task.status, TaskStatus.FAILED)
+        task.status = TaskStatus.FAILED.value
+        await create_status_event(
+            task, TaskStatus.IN_DEV, TaskStatus.FAILED, "internal_service", audit, db
+        )
     if task.status == TaskStatus.FAILED.value:
         validate_transition(task.status, TaskStatus.BACKLOG)
         task.status = TaskStatus.BACKLOG.value
@@ -169,6 +156,38 @@ async def _retry_task(task, iteration, audit, db):
     task.current_iteration = iteration + 1
     await create_status_event(
         task, TaskStatus.BACKLOG, TaskStatus.TODO, "internal_service", audit, db
+    )
+
+
+async def _start_interrupted_dispatch(task, audit, db):
+    if task.status == TaskStatus.TODO.value:
+        validate_transition(task.status, TaskStatus.IN_DEV)
+        task.status = TaskStatus.IN_DEV.value
+        await create_status_event(
+            task, TaskStatus.TODO, TaskStatus.IN_DEV, "internal_service", audit, db
+        )
+
+
+def _terminal_command(run, command):
+    try:
+        result = EngineeringRunResult.model_validate(run.result)
+    except ValidationError:
+        _refuse("The terminal engineering result is missing or malformed.")
+    if result.allocation_failure_reason is not None or (
+        result.execution is not None
+        and result.execution.execution_phase is EngineeringExecutionPhase.PRE_AGENT_REFUSED
+    ):
+        _refuse("Infrastructure and resource refusals require their native disposition.")
+    if result.engineering_status not in {EngineeringStatus.GAVE_UP, EngineeringStatus.FAILED}:
+        _refuse("The failed Run has no failed/gave_up engineering outcome.")
+    # Immutable evidence, not callback-local observations, decides the result.
+    return result, command.model_copy(
+        update={
+            "disposition": PRConflictRepairAttemptDisposition(result.engineering_status.value),
+            "detail": bounded_diagnostic(run.error_message)
+            if run.error_message
+            else f"Engineering Run {run.id} recorded {result.engineering_status.value}.",
+        }
     )
 
 
@@ -227,23 +246,13 @@ async def settle_pr_conflict_attempt(
     ):
         _refuse("The Run does not belong to this repair Task.")
     iteration = (run.run_metadata or {}).get("iteration")
-    if type(iteration) is not int or iteration != command.expected_iteration:
+    if type(iteration) is not int:
+        _refuse("The Run has no valid iteration identity.")
+    if iteration != command.expected_iteration:
         return read(PRConflictRepairAttemptOutcome.STALE)
-    if run.status != RunStatus.FAILED.value or run.result is None:
+    if run.status != RunStatus.FAILED.value:
         return read(PRConflictRepairAttemptOutcome.STALE)
-    result = EngineeringRunResult.model_validate(run.result)
-    if result.allocation_failure_reason is not None or (
-        result.execution is not None
-        and result.execution.execution_phase is EngineeringExecutionPhase.PRE_AGENT_REFUSED
-    ):
-        _refuse("Infrastructure and resource refusals require their native disposition.")
-    expected = (
-        EngineeringStatus.GAVE_UP
-        if command.disposition is PRConflictRepairAttemptDisposition.GAVE_UP
-        else EngineeringStatus.FAILED
-    )
-    if result.engineering_status is not expected:
-        return read(PRConflictRepairAttemptOutcome.STALE)
+    result, command = _terminal_command(run, command)
     # The ledger is immutable and belongs to this Run. Replays stay harmless
     # even after the next admitted Run has started or finished.
     recorded = _recorded_outcome(events, run.id, command)
@@ -277,17 +286,12 @@ async def settle_pr_conflict_attempt(
         and not own_stop
     ):
         return read(PRConflictRepairAttemptOutcome.STALE)
-    if (
-        command.disposition is PRConflictRepairAttemptDisposition.FAILED
-        and task.status not in {TaskStatus.FAILED.value, TaskStatus.BACKLOG.value}
-        and not (own_stop and task.status == TaskStatus.WAITING_HUMAN_REVIEW.value)
-    ):
-        return read(PRConflictRepairAttemptOutcome.STALE)
-    _verify_partial_retry(task, events)
-    if command.disposition is PRConflictRepairAttemptDisposition.GAVE_UP and task.status not in {
+    if task.status == TaskStatus.BACKLOG.value:
+        _refuse("No native conflict producer leaves a partial BACKLOG retry.")
+    if task.status not in {
+        TaskStatus.TODO.value,
         TaskStatus.IN_DEV.value,
         TaskStatus.FAILED.value,
-        TaskStatus.BACKLOG.value,
         TaskStatus.WAITING_HUMAN_REVIEW.value if own_stop else TaskStatus.IN_DEV.value,
     }:
         return read(PRConflictRepairAttemptOutcome.STALE)
@@ -299,12 +303,13 @@ async def settle_pr_conflict_attempt(
         or command.disposition is PRConflictRepairAttemptDisposition.GAVE_UP
         or iteration >= evidence.max_iterations
     )
+    if not terminal and story.status != StoryStatus.IN_PROGRESS.value:
+        return read(PRConflictRepairAttemptOutcome.STALE)
+    await _start_interrupted_dispatch(task, audit, db)
     if terminal:
         await _settle_terminal(task, story, command, evidence, result, own_stop, audit, db)
         outcome = PRConflictRepairAttemptOutcome.EXHAUSTED
     else:
-        if story.status != StoryStatus.IN_PROGRESS.value:
-            return read(PRConflictRepairAttemptOutcome.STALE)
         await _retry_task(task, iteration, audit, db)
         outcome = PRConflictRepairAttemptOutcome.RETRIED
     db.add(
