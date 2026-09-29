@@ -841,7 +841,7 @@ async def _handle_deploy_retry(
             )
             return DeployRetryAction.RETRIED
         if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
-            await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+            _log_exhausted_grant_intent(lifecycle, log)
             return DeployRetryAction.FAILED
         if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
             log.info("deploy_supervisor_owner_intent_stale_target", source_run_id=run.id)
@@ -1066,18 +1066,20 @@ async def _resume_initial_owner_intent(
     )
 
 
-async def _fail_exhausted_grant_intent(
-    api_client: SchedulerAPIClient,
-    story_id: str,
-    project_id: str,
-    run,
+def _log_exhausted_grant_intent(
+    lifecycle: GrantIntentLifecycleResult,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Turn API admission exhaustion into the ordinary terminal story outcome."""
-    detail = "grant intent deployment retries exhausted"
-    log.warning("deploy_grant_intent_retries_exhausted", run_id=run.id)
-    await api_client.fail_story(story_id)
-    await _notify_admin_failure(run.id, project_id, detail)
+    """API admission committed the matching stop and both owed audiences."""
+    if lifecycle.exhaustion is None:
+        raise ValueError("initial-owner exhaustion requires typed readback")
+    log.warning(
+        "deploy_grant_intent_retries_exhausted",
+        intent_id=lifecycle.intent_id,
+        exhausted_execution_run_id=lifecycle.exhaustion.exhausted_execution_run_id,
+        target_sha=lifecycle.exhaustion.target.sha,
+        retry_action=lifecycle.exhaustion.action,
+    )
 
 
 async def _route_refused_deploy(
@@ -1343,7 +1345,7 @@ async def _handle_deploy_infrastructure_wait(
             log.info("infrastructure_wait_resumed_owner_intent", run_id=run.id)
             return RefusedDeployAction.REDISPATCHED
         if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
-            await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+            _log_exhausted_grant_intent(lifecycle, log)
             return RefusedDeployAction.FAILED
         if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
             log.info("infrastructure_wait_owner_intent_in_flight", run_id=run.id)
@@ -1602,7 +1604,7 @@ async def _redispatch_waiting_deploy(
         # Failed straight out of WAITING_USER_SECRET. Moving the story to
         # DEPLOYING first and then failing it here was two Story transitions on
         # one code path, and the intermediate DEPLOYING had no owner.
-        await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+        _log_exhausted_grant_intent(lifecycle, log)
         return False
 
     # The story leaves WAITING_USER_SECRET exactly once, on the paths that are

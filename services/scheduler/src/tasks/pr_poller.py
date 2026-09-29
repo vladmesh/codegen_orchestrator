@@ -989,14 +989,15 @@ async def poll_merged_prs(
                     run_id=seed_lifecycle.execution_run_id,
                 )
                 if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
-                    # Failed straight out of PR_REVIEW. Moving the story to DEPLOYING
-                    # first and then failing it here was two Story transitions on one
-                    # code path, and the intermediate DEPLOYING had no owner.
-                    await api_client.fail_story(story_id)
-                    await notify_admins_best_effort(
-                        f"Grant intent deployment retries exhausted for story {story_id}",
-                        level="error",
-                        story_id=story_id,
+                    # The API committed the current matching Story stop and
+                    # both owed notices with exhaustion. A stale result grants
+                    # no authority to stop whatever work is now current.
+                    if seed_lifecycle.exhaustion is None:
+                        raise ValueError("initial-owner exhaustion requires typed readback")
+                    log.warning(
+                        "poll_merged_initial_owner_exhausted",
+                        retry_action=seed_lifecycle.exhaustion.action,
+                        exhausted_execution_run_id=seed_lifecycle.exhaustion.exhausted_execution_run_id,
                     )
                     continue
 

@@ -190,8 +190,53 @@ supervisor recovery route use that disposition rather than an intent's
 historical execution id. A lost completion response reconciles the source deploy
 through the ordinary successful-deploy handoff without spending a retry;
 infrastructure and user-secret recovery only claim an intent redispatch when the
-result is `dispatched`, and convert `exhausted` into the normal failed-story and
-admin-alert outcome.
+result is `dispatched`. INITIAL_OWNER exhaustion commits the matching current Story's
+typed failure and both owed notice audiences in API admission; scheduler consumers
+must not issue a second stop or best-effort alert. A stale callback cannot stop new work.
+
+`GET /api/projects/{id}/users/initial-owner-deployment` and the existing intent
+read authorize the credential-derived owner/admin or internal reader and expose
+`GrantIntent.exhaustion`. `GrantIntentLifecycleResult.exhaustion` has the same
+`GrantIntentExhaustion`: typed `initial_owner_deployment_exhausted`, closed count,
+immutable target, exhausted execution Run, and `retry_initial_owner_deployment`
+action with `GrantIntentRetryCommand.expected_execution_run_id`. Zero admission
+has no exhausted Run or usable command. This readback never claims a new dispatch.
+
+`POST /api/projects/{id}/users/grant-intents/{intent_id}/retry` accepts that command
+only from the current credential-derived project owner or administrator. The
+established internal service-on-behalf-of-verified-user transport may carry the
+PO caller; a service alone, bare Telegram header, actor string or lifecycle JSON
+flag cannot grant reset authority. The registered PO read/retry tools carry server
+context and the observed fence unchanged across response loss. Queued means admitted,
+not deployed or active; deployment credentials remain platform provisioned.
+
+Under project/intent/Story/Run locks, applied and live work win. Same-target recovery
+requires the current verified identity and immutable source Run, exact distinct
+head/built SHAs, current closed merged PR and Story cycle, matching native epoch
+admissions, no other live work and the corresponding deployment exhaustion stop.
+Released INITIAL_OWNER Runs without epoch stamps and bare failed Stories remain
+supported only with genuine matching native admissions/PR/cycle evidence and a
+failed landing after the source Run. Free text alone grants nothing. Missing,
+replaced or unrelated evidence refuses before mutation. Archived Stories/projects
+and unrelated quarantines remain protected.
+
+One transaction appends the authenticated actor, prior count/target, command fence
+and prior stop/notice facts to `retry_history`, resets that epoch, returns its matching
+Story to `deploying` without a new cycle, and creates its one immutable deploy Run.
+Prior executions and targets remain history. Repeated commands, including an old
+command replayed after the new epoch exhausts, cannot reopen it. A policy or secret
+fix alone cannot reset committed exhaustion; repeated inactive completion cannot
+downgrade it. The new epoch uses the current configured `deploy.max_deploy_retries`;
+zero remains terminal. Existing PUBLISH_OWED recovery publishes the same real Run
+and reports `in_flight`, not a newly dispatched execution. Publication and notices
+retain their established at-least-once transport semantics.
+
+`StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED`, source `api`, records only
+bounded native intent/attempt/target/count identifiers and the deliberate retry action.
+The API stores it with the matching Story stop and owner/admin owed obligations.
+Generic Story stop bodies cannot claim this API-owned grant exhaustion code.
+Response loss converges without replacing that notice episode. History and PO
+readback explain exhaustion without requesting customer-supplied DEPLOY_* data.
 
 `GrantIntentLifecycleRequest` (`shared/contracts/dto/users_grant.py`) adds an optional
 `merged_pr_number` for the PR poller. It selects evidence, never grants a reset. After its
@@ -209,7 +254,8 @@ inconsistent evidence returns a visible 409 without mutation. A changed SHA with
 authority returns `stale_target`, or `exhausted` if the current epoch already exhausted.
 A verified new merged target may replace even a committed exhausted epoch on the same
 intent: it retains the old target/count, resets only the new target counter and creates
-one immutable Run under the same ceiling. An exhausted same target remains terminal.
+one immutable Run under the same ceiling. An exhausted same target remains terminal
+to automatic callers.
 Generic supervisor, infrastructure and secret recovery supply no merge authority. Publication
 reacquires the existing project/intent locks after the Run commit, serializing concurrent
 owed dispatches without minting another Run or changing prior execution history.

@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Allow owner/admin retry of exhausted initial deployment with an immutable attempt fence;
+  commit its typed Story cause and both owed notices so automatic recovery stays bounded.
+
 - Compare conflict refusal history by immutable event IDs and validate both refusal audits, preserving
   complete records when atomic retry events share a timestamp and the API returns a different order.
 

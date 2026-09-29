@@ -62,6 +62,7 @@ class StoryFailureCode(StrEnum):
     #: The deploy could not compute the required production environment.
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
     PR_CONFLICT_REPAIR_EXHAUSTED = "pr_conflict_repair_exhausted"
+    INITIAL_OWNER_DEPLOYMENT_EXHAUSTED = "initial_owner_deployment_exhausted"
 
 
 class StoryFailure(BaseModel):
@@ -84,6 +85,11 @@ class StoryFailure(BaseModel):
 
 
 _OWNER_WORDS: dict[StoryFailureCode, str] = {
+    StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED: (
+        "Initial deployment stopped: its bounded deployment attempts are exhausted. "
+        "The project owner or an administrator can deliberately retry this deployment. "
+        "Deployment credentials are provisioned by the platform."
+    ),
     StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED: (
         "Work on this change stopped: its pull request still has conflicts after repair."
     ),

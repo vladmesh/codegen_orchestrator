@@ -1,5 +1,21 @@
 # Test Infrastructure
 
+Initial-owner retry regressions are selected by the existing required API and
+LangGraph service jobs. API `test_initial_owner_retry.py` uses real PostgreSQL
+and Redis without a healthy deployment: configured exhaustion, concurrent owner
+retry, immutable targets/Runs, bounded next epoch, old-command replay after fast
+exhaustion, pre-commit cancellation, lost committed response and PUBLISH_OWED
+recovery. Bearer owner/admin, unauthenticated/service-only/foreign/forged commands,
+replaced cycle/PR/SHA/identity, unrelated stops/live work, released bare failure,
+applied and zero-ceiling cases exercise the actual boundary. LangGraph's service
+case drives the real deploy consumer, PR polling, failed/infrastructure/secret
+recovery, native interrupted owner delivery and both audience settlements, then
+the registered PO read/retry tools and the next consumer/supervisor epoch.
+Its 61-second CI wait exercises native notice-claim spacing without editing
+attempt timestamps. PR/image/fleet/admin responses are controlled; no live
+GitHub, worker, platform deployment or production recovery is proved. Local
+validation uses only named broad-unit subsets and the canonical broad wrapper.
+
 Conflict no-Run refusal regressions are selected by the existing required
 `Service Tests (api)` and `Service Tests (langgraph)` jobs. API
 `test_pr_conflict_dispatch_refusal.py` drives the actual paid gate at iteration

@@ -61,6 +61,8 @@ def test_get_all_tools_preserves_tool_identity_and_order() -> None:
         tools_projects.list_projects,
         tools_projects.get_project,
         tools_projects.grant_project_user,
+        tools_projects.get_initial_owner_deployment,
+        tools_projects.retry_initial_owner_deployment,
         tools_projects.set_project_secret,
         tools_projects.transfer_project_ownership,
         tools_projects.teardown_project,

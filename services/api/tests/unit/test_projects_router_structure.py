@@ -104,6 +104,18 @@ def test_projects_route_table_keeps_its_public_surface():
         ),
         (
             "GET",
+            "/api/projects/{project_id}/users/initial-owner-deployment",
+            "get_initial_owner_deployment_api_projects__project_id__users_initial_owner_deployment_get",
+            ("200", "422"),
+        ),
+        (
+            "POST",
+            "/api/projects/{project_id}/users/grant-intents/{intent_id}/retry",
+            "retry_initial_owner_deployment_api_projects__project_id__users_grant_intents__intent_id__retry_post",
+            ("200", "422"),
+        ),
+        (
+            "GET",
             "/api/projects/{project_id}/users/grant-intents/{intent_id}",
             "get_intent_api_projects__project_id__users_grant_intents__intent_id__get",
             ("200", "422"),

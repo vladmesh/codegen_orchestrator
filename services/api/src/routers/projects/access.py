@@ -14,16 +14,25 @@ import structlog
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deployment import DeploymentResult
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import (
+    StoryFailure,
+    StoryFailureCode,
+    story_failure_admin_text,
+    story_failure_owner_text,
+)
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
     GrantIntent,
     GrantIntentDispatchTarget,
+    GrantIntentExhaustion,
     GrantIntentKind,
     GrantIntentLifecycleDisposition,
     GrantIntentLifecycleRequest,
     GrantIntentLifecycleResult,
+    GrantIntentRetryCommand,
     GrantIntentStatus,
 )
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
@@ -50,6 +59,7 @@ from ...dependencies import (
 )
 from ...schemas import GrantUserRequest, OwnershipTransferRequest
 from .._recipients import resolve_project_recipient
+from .._story_helpers import _do_transition, _land_on, _record_story_failure
 from ..projects_guards import check_project_access, load_locked_project
 
 router = APIRouter()
@@ -138,6 +148,7 @@ def _as_dto(intent: UsersGrantIntent) -> GrantIntent:
         applied_at=intent.applied_at,
         execution_run_id=intent.execution_run_id,
         retry_history=intent.retry_history or [],
+        exhaustion=_exhaustion(intent),
     )
 
 
@@ -157,6 +168,219 @@ def _is_exhausted(intent: UsersGrantIntent) -> bool:
         intent.status == GrantIntentStatus.FAILED.value
         and intent.detail == _RETRY_CEILING_EXHAUSTED_DETAIL
     )
+
+
+def _exhaustion(intent: UsersGrantIntent) -> GrantIntentExhaustion | None:
+    if intent.kind != GrantIntentKind.INITIAL_OWNER.value or not _is_exhausted(intent):
+        return None
+    return GrantIntentExhaustion(
+        attempts=intent.attempts,
+        target=GrantIntentDispatchTarget(
+            application_id=intent.target_application_id,
+            deployment_id=intent.target_deployment_id,
+            sha=intent.target_sha,
+        ),
+        exhausted_execution_run_id=intent.execution_run_id,
+        retry_command=(
+            GrantIntentRetryCommand(expected_execution_run_id=intent.execution_run_id)
+            if intent.execution_run_id is not None
+            else None
+        ),
+    )
+
+
+def _exhaustion_failure(intent: UsersGrantIntent) -> StoryFailure:
+    return StoryFailure(
+        code=StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED,
+        source="api",
+        detail=(
+            f"Intent {intent.id}; exhausted attempt {intent.execution_run_id}; "
+            f"target {intent.target_sha}; {intent.attempts} attempts. "
+            "Use retry_initial_owner_deployment after the platform problem is fixed."
+        ),
+    )
+
+
+def _source_matches(project: Project, intent: UsersGrantIntent, run: Run, story: Story) -> bool:
+    """Native current binding, including released Runs predating typed stops."""
+    metadata = run.run_metadata
+    timeline = story.generated_product_timeline
+    if not isinstance(metadata, dict) or not isinstance(timeline, dict):
+        return False
+    pr = timeline.get("pull_request")
+    if not isinstance(pr, dict):
+        return False
+    cycle = story.reopened_at or story.created_at
+    try:
+        merged_at = datetime.fromisoformat(pr["merged_at"])
+        built = GrantIntentDispatchTarget(sha=metadata["deployed_commit_sha"]).sha
+        matches = (
+            cycle <= merged_at <= run.created_at <= datetime.now(UTC)
+            and run.project_id == project.id == story.project_id == intent.project_id
+            and run.user_id == project.owner_id
+            and run.id == intent.execution_run_id
+            and run.type == RunType.DEPLOY.value
+            and run.status in {RunStatus.FAILED.value, RunStatus.COMPLETED.value}
+            and run.story_id == story.id
+            and metadata.get(USERS_GRANT_INTENT_KEY) == intent.id
+            and metadata.get("head_sha") == intent.target_sha == pr.get("head_sha")
+            and built == pr.get("merge_commit_sha")
+            and pr.get("state") == "closed"
+            and type(story.pr_number) is int
+            and story.pr_number == pr.get("number")
+            and intent.target_application_id is None
+            and intent.target_deployment_id is None
+        )
+        if "grant_story_cycle" in metadata:
+            matches = matches and metadata["grant_story_cycle"] == cycle.isoformat()
+        if "grant_pr_number" in metadata:
+            matches = matches and metadata["grant_pr_number"] == story.pr_number
+        return matches
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+async def _current_source_story(
+    db: AsyncSession, project: Project, intent: UsersGrantIntent
+) -> tuple[Run, Story] | None:
+    source = await db.get(Run, intent.execution_run_id) if intent.execution_run_id else None
+    if source is None or source.story_id is None:
+        return None
+    story = await db.scalar(select(Story).where(Story.id == source.story_id).with_for_update())
+    source = await db.scalar(select(Run).where(Run.id == source.id).with_for_update())
+    if story is None or source is None or not _source_matches(project, intent, source, story):
+        return None
+    candidates = (
+        await db.scalars(
+            select(Run).where(Run.project_id == project.id, Run.type == RunType.DEPLOY.value)
+        )
+    ).all()
+    if not _epoch_matches(intent, source, candidates):
+        return None
+    other_live = await db.scalar(
+        select(Run.id)
+        .where(
+            Run.project_id == project.id,
+            Run.id != source.id,
+            Run.status.not_in(
+                [RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value]
+            ),
+        )
+        .limit(1)
+    )
+    return None if other_live is not None else (source, story)
+
+
+def _epoch_matches(intent: UsersGrantIntent, source: Run, candidates: list[Run]) -> bool:
+    """An exhaustion label alone is insufficient: count real native admissions."""
+    epoch = len(intent.retry_history or []) + len(intent.target_history or [])
+    marked = "grant_epoch" in source.run_metadata
+    if marked and (
+        type(source.run_metadata["grant_epoch"]) is not int
+        or source.run_metadata["grant_epoch"] != epoch
+        or source.run_metadata.get("grant_attempt") != intent.attempts
+    ):
+        return False
+    if not marked and intent.retry_history:
+        return False  # INITIAL_OWNER retries have always carried these epoch facts
+    admissions = [
+        run
+        for run in candidates
+        if (
+            isinstance(run.run_metadata, dict)
+            and run.run_metadata.get(USERS_GRANT_INTENT_KEY) == intent.id
+            and run.run_metadata.get("head_sha") == intent.target_sha
+            and (
+                run.run_metadata.get("grant_epoch") == epoch
+                if marked
+                else run.created_at <= source.created_at
+            )
+        )
+    ]
+    if len(admissions) != intent.attempts or source.id not in {run.id for run in admissions}:
+        return False
+    if marked:
+        ordinals = [run.run_metadata.get("grant_attempt") for run in admissions]
+        return all(type(n) is int for n in ordinals) and sorted(ordinals) == list(
+            range(1, intent.attempts + 1)
+        )
+    return True
+
+
+def _matching_exhaustion_stop(story: Story, intent: UsersGrantIntent) -> bool:
+    reason = story.quarantine_reason or {}
+    notice = story.owner_notification
+    failure = _exhaustion_failure(intent)
+    return (
+        story.status == StoryStatus.FAILED.value
+        and isinstance(reason, dict)
+        and reason.get("code") == failure.code.value
+        and reason.get("source") == failure.source
+        and reason.get("detail") == failure.detail
+        and isinstance(notice, dict)
+        and notice.get("story_id") == story.id
+        and notice.get("project_id") == str(story.project_id)
+        and notice.get("terminal_status") == StoryStatus.FAILED.value
+        and notice.get("text") == story_failure_owner_text(failure)
+        and notice.get("admin_text")
+        == story_failure_admin_text(story.id, str(story.project_id), failure)
+    )
+
+
+async def _stop_exhausted_initial_owner(
+    db: AsyncSession,
+    project: Project,
+    intent: UsersGrantIntent,
+    story_id: str | None,
+    head_sha: str,
+    built_sha: str,
+) -> None:
+    evidence = await _current_source_story(db, project, intent)
+    if evidence is None:
+        return
+    source, story = evidence
+    if (story.id, intent.target_sha, source.run_metadata["deployed_commit_sha"]) != (
+        story_id,
+        head_sha,
+        built_sha,
+    ):
+        return
+    if _matching_exhaustion_stop(story, intent):
+        return  # response loss/replay retains the exact notice episode
+    if story.quarantine_reason is not None or story.status not in {
+        StoryStatus.PR_REVIEW.value,
+        StoryStatus.DEPLOYING.value,
+        StoryStatus.WAITING_USER_SECRET.value,
+    }:
+        return
+    _record_story_failure(story, _exhaustion_failure(intent), StoryStatus.FAILED)
+    _do_transition(story, StoryStatus.FAILED)
+
+
+async def _retry_story_for_epoch(
+    db: AsyncSession,
+    project: Project,
+    intent: UsersGrantIntent,
+    story_id: str | None,
+    built_sha: str,
+) -> Story:
+    evidence = await _current_source_story(db, project, intent)
+    if evidence is None:
+        raise HTTPException(status_code=409, detail="retry lacks current immutable deploy evidence")
+    source, story = evidence
+    if source.story_id != story_id or source.run_metadata["deployed_commit_sha"] != built_sha:
+        raise HTTPException(status_code=409, detail="retry source target changed")
+    # Released bare FAILED stops require the genuine current intent/Run/PR
+    # binding and a landing after that Run. Text alone grants no recovery.
+    released_stop = (
+        story.status == StoryStatus.FAILED.value
+        and story.quarantine_reason is None
+        and story.status_entered_at is not None
+        and story.status_entered_at >= source.created_at
+    )
+    if not (_matching_exhaustion_stop(story, intent) or released_stop):
+        raise HTTPException(status_code=409, detail="Story does not carry this deployment stop")
+    return story
 
 
 async def _execution_is_live(db: AsyncSession, intent: UsersGrantIntent) -> Run | None:
@@ -272,6 +496,7 @@ async def _lifecycle(  # noqa: PLR0913
     story_id: str | None,
     explicit_user_retry: bool = False,
     merged_pr_number: int | None = None,
+    retry_command: GrantIntentRetryCommand | None = None,
 ) -> tuple[UsersGrantIntent, Run | None, bool, GrantIntentLifecycleDisposition]:
     """The sole create/lookup/rebind/dispatch-preparation operation.
 
@@ -351,11 +576,31 @@ async def _lifecycle(  # noqa: PLR0913
         return intent, live_run, False, GrantIntentLifecycleDisposition.IN_FLIGHT
 
     ceiling = await _deploy_retry_ceiling(db)
+    retry_story = None
+    if retry_command is not None:
+        if (
+            kind is not GrantIntentKind.INITIAL_OWNER
+            or target_changed
+            or retry_command.expected_execution_run_id != intent.execution_run_id
+            or any(
+                entry.get("expected_execution_run_id") == retry_command.expected_execution_run_id
+                for entry in intent.retry_history or []
+            )
+        ):
+            return intent, None, False, GrantIntentLifecycleDisposition.STALE_TARGET
+        if not _is_exhausted(intent) or ceiling == 0:
+            return intent, None, False, GrantIntentLifecycleDisposition.EXHAUSTED
+        retry_story = await _retry_story_for_epoch(
+            db, project, intent, story_id, deployed_commit_sha
+        )
     if (
-        explicit_user_retry
-        and kind in {GrantIntentKind.ADD_USER, GrantIntentKind.INCOMING_OWNER}
+        (
+            explicit_user_retry
+            and kind in {GrantIntentKind.ADD_USER, GrantIntentKind.INCOMING_OWNER}
+            or retry_command is not None
+        )
         and _is_exhausted(intent)
-        and intent.attempts >= ceiling
+        and (retry_command is not None or intent.attempts >= ceiling)
         and ceiling > 0
     ):
         # Only a new explicit user request can open a same-target retry epoch.
@@ -369,18 +614,46 @@ async def _lifecycle(  # noqa: PLR0913
                 "sha": intent.target_sha,
                 "attempts": intent.attempts,
                 "reason": "explicit_retry",
+                "actor": actor,
+                **(
+                    {
+                        "expected_execution_run_id": retry_command.expected_execution_run_id,
+                        "story_id": retry_story.id,
+                        "story_cycle": (
+                            retry_story.reopened_at or retry_story.created_at
+                        ).isoformat(),
+                        "story_stop": retry_story.quarantine_reason,
+                        "owner_notification": retry_story.owner_notification,
+                    }
+                    if retry_command is not None and retry_story is not None
+                    else {}
+                ),
                 "restarted_at": datetime.now(UTC).isoformat(),
             },
         ]
         intent.attempts = 0
         intent.status = GrantIntentStatus.PUBLISH_OWED.value
         intent.detail = None
+        if retry_story is not None:
+            _land_on(retry_story, StoryStatus.DEPLOYING)
+            retry_story.quarantine_reason = None
 
-    if intent.attempts >= ceiling:
+    if (
+        kind is GrantIntentKind.INITIAL_OWNER and _is_exhausted(intent)
+    ) or intent.attempts >= ceiling:
         intent.status = GrantIntentStatus.FAILED.value
         intent.detail = _RETRY_CEILING_EXHAUSTED_DETAIL
+        if kind is GrantIntentKind.INITIAL_OWNER:
+            await _stop_exhausted_initial_owner(
+                db, project, intent, story_id, target[2], deployed_commit_sha
+            )
         return intent, None, created, GrantIntentLifecycleDisposition.EXHAUSTED
 
+    story = (
+        await db.scalar(select(Story).where(Story.id == story_id).with_for_update())
+        if story_id
+        else None
+    )
     run = Run(
         id=f"deploy-grant-{uuid.uuid4().hex}",
         type=RunType.DEPLOY.value,
@@ -396,6 +669,16 @@ async def _lifecycle(  # noqa: PLR0913
                 DeployAction.CREATE.value if target[0] is None else DeployAction.FEATURE.value
             ),
             USERS_GRANT_INTENT_KEY: intent.id,
+            "grant_attempt": intent.attempts + 1,
+            "grant_epoch": len(intent.retry_history or []) + len(intent.target_history or []),
+            **(
+                {
+                    "grant_story_cycle": (story.reopened_at or story.created_at).isoformat(),
+                    "grant_pr_number": story.pr_number,
+                }
+                if story is not None
+                else {}
+            ),
         },
     )
     db.add(run)
@@ -481,6 +764,7 @@ async def _dispatch_lifecycle(
         status=GrantIntentStatus(intent.status),
         disposition=disposition,
         created=created,
+        exhaustion=_exhaustion(intent),
     )
 
 
@@ -602,13 +886,128 @@ async def resume_initial_owner_intent(
     return await _dispatch_lifecycle(db, redis, project, intent, run, disposition, created)
 
 
+async def _initial_owner(db: AsyncSession, project: Project) -> User:
+    if project.status == ProjectStatus.ARCHIVED.value:
+        raise HTTPException(status_code=409, detail="archived project cannot retry deployment")
+    owner = await db.get(User, project.owner_id)
+    if (
+        owner is None
+        or owner.telegram_id is None
+        or "tg_bot" not in (project.config or {}).get("modules", [])
+    ):
+        raise HTTPException(
+            status_code=409, detail="project has no verified initial Telegram owner"
+        )
+    return owner
+
+
+@router.get("/{project_id}/users/initial-owner-deployment")
+async def get_initial_owner_deployment(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+) -> GrantIntent:
+    project = await load_locked_project(db, project_id)
+    await check_project_access(
+        project, x_telegram_id, db, is_internal=_is_internal, credentials=credentials
+    )
+    owner = await _initial_owner(db, project)
+    intent = await db.get(
+        UsersGrantIntent, _intent_id(GrantIntentKind.INITIAL_OWNER, project.id, owner.telegram_id)
+    )
+    if intent is None:
+        raise HTTPException(status_code=404, detail="initial-owner intent not found")
+    return _as_dto(intent)
+
+
+@router.post("/{project_id}/users/grant-intents/{intent_id}/retry")
+async def retry_initial_owner_deployment(
+    project_id: uuid.UUID,
+    intent_id: str,
+    body: GrantIntentRetryCommand,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+    _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+) -> GrantIntentLifecycleResult:
+    project = await load_locked_project(db, project_id)
+    actor = await check_project_access(
+        project, x_telegram_id, db, is_internal=_is_internal, credentials=credentials
+    )
+    if actor is None:
+        raise HTTPException(
+            status_code=403,
+            detail="deliberate retry requires an authenticated owner or administrator",
+        )
+    owner = await _initial_owner(db, project)
+    intent = await db.scalar(
+        select(UsersGrantIntent).where(UsersGrantIntent.id == intent_id).with_for_update()
+    )
+    if intent is None or intent.project_id != project.id:
+        raise HTTPException(status_code=404, detail="grant intent not found")
+    if (
+        intent.id != _intent_id(GrantIntentKind.INITIAL_OWNER, project.id, owner.telegram_id)
+        or intent.kind != GrantIntentKind.INITIAL_OWNER.value
+        or intent.channel != "telegram"
+        or intent.external_id != str(owner.telegram_id)
+    ):
+        raise HTTPException(
+            status_code=409, detail="intent is not for the current verified project owner"
+        )
+    # Replays retain per-call truth, including owed dispatch recovery. Never
+    # refresh a caller's exhausted-attempt fence from a later durable epoch.
+    if intent.status == GrantIntentStatus.APPLIED.value:
+        return await _dispatch_lifecycle(
+            db, redis, project, intent, None, GrantIntentLifecycleDisposition.ALREADY_APPLIED, False
+        )
+    live = await _execution_is_live(db, intent)
+    if live is not None:
+        return await _dispatch_lifecycle(
+            db, redis, project, intent, live, GrantIntentLifecycleDisposition.IN_FLIGHT, False
+        )
+    if body.expected_execution_run_id != intent.execution_run_id:
+        return await _dispatch_lifecycle(
+            db, redis, project, intent, None, GrantIntentLifecycleDisposition.STALE_TARGET, False
+        )
+    source = await db.get(Run, intent.execution_run_id) if intent.execution_run_id else None
+    if (
+        source is None
+        or not isinstance(source.run_metadata, dict)
+        or "deployed_commit_sha" not in source.run_metadata
+    ):
+        raise HTTPException(
+            status_code=409, detail="exhausted intent lacks an immutable built commit"
+        )
+    intent, run, created, disposition = await _lifecycle(
+        db,
+        project,
+        target_user=owner,
+        kind=GrantIntentKind.INITIAL_OWNER,
+        actor=f"user:{actor.id}",
+        target=(intent.target_application_id, intent.target_deployment_id, intent.target_sha),
+        deployed_commit_sha=source.run_metadata["deployed_commit_sha"],
+        story_id=source.story_id,
+        retry_command=body,
+    )
+    return await _dispatch_lifecycle(db, redis, project, intent, run, disposition, created)
+
+
 @router.get("/{project_id}/users/grant-intents/{intent_id}")
 async def get_intent(
     project_id: uuid.UUID,
     intent_id: str,
     db: AsyncSession = Depends(get_async_session),
-    _internal: None = Depends(require_internal_or_admin),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> GrantIntent:
+    project = await load_locked_project(db, project_id)
+    await check_project_access(
+        project, x_telegram_id, db, is_internal=_is_internal, credentials=credentials
+    )
     intent = await db.get(UsersGrantIntent, intent_id)
     if intent is None or intent.project_id != project_id:
         raise HTTPException(status_code=404, detail="grant intent not found")
@@ -638,6 +1037,9 @@ async def complete_intent(
             status_code=409, detail="grant intent is bound to another execution run"
         )
     if not body.active:
+        if intent.kind == GrantIntentKind.INITIAL_OWNER.value and _is_exhausted(intent):
+            await db.commit()
+            return {"intent_id": intent.id, "status": intent.status}
         intent.status = GrantIntentStatus.RETRYABLE.value
         intent.detail = body.detail or "unverified"
         await db.commit()
