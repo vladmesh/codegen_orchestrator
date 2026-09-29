@@ -288,6 +288,10 @@ test-integration-template-runner:
 test-unit:
 	@uv run bash scripts/test-unit-local.sh
 
+.PHONY: test-backup-db
+test-backup-db:
+	uv run pytest -q tests/integration/backup/test_verified_database_backup.py
+
 # Run service tests for a specific service using its dedicated compose file
 # Usage: make test-service SERVICE=api
 test-service:

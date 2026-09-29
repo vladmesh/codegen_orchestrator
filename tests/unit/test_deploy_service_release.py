@@ -13,7 +13,7 @@ Held down over the real `.github/workflows/deploy.yml`:
 * before it, the releases are pulled and verified concurrently from a staged worktree
   outside the deploy path, and what passed becomes a pending set that no container mounts
   (a stale one is discarded first); a refusal leaves every live thing as it was;
-* inside it, in this order: check the pending set, the secret file, the checkout reset,
+* inside it, in this order: check the pending set, the verified backup, secret file, checkout reset,
   the worker retag (before `up`), the override and `up`, and only then the promotion of
   the records, which rotates the live records and never the pending ones;
 * every compose call from the pull on runs the release override, and every `up` runs
@@ -25,6 +25,7 @@ The steps that decide something are also rendered and run for real, against fake
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -397,7 +398,9 @@ PENDING = ".release-pending"
 # the release of the revision being deployed, with the real record's source hash.
 FAKE_WORKER_PULL = r"""#!/usr/bin/env bash
 [ "${RELEASE_DEFER_RETAG:-}" = true ] || { echo "live worker tags would move" >&2; exit 1; }
-[ "$(cat shared/marker.txt)" = new ] || { echo "not run from the stage" >&2; exit 1; }
+[ "$(cat shared/marker.txt)" = "$FAKE_EXPECTED_MARKER" ] || {
+    echo "not run from the stage" >&2; exit 1;
+}
 touch "${FAKE_HOST}/worker.started"
 for _ in $(seq 50); do [ -f "${FAKE_HOST}/service.started" ] && break; sleep 0.1; done
 [ -f "${FAKE_HOST}/service.started" ] || { echo "worker pull ran alone" >&2; exit 1; }
@@ -406,7 +409,9 @@ printf '{"git_sha": "%s", "source_hash": "%s", "images": {}}\n' \
 exit "${FAKE_WORKER_EXIT:-0}"
 """
 FAKE_SERVICE_PULL = r"""#!/usr/bin/env bash
-[ "$(cat shared/marker.txt)" = new ] || { echo "not run from the stage" >&2; exit 1; }
+[ "$(cat shared/marker.txt)" = "$FAKE_EXPECTED_MARKER" ] || {
+    echo "not run from the stage" >&2; exit 1;
+}
 touch "${FAKE_HOST}/service.started"
 for _ in $(seq 50); do [ -f "${FAKE_HOST}/worker.started" ] && break; sleep 0.1; done
 [ -f "${FAKE_HOST}/worker.started" ] || { echo "service pull ran alone" >&2; exit 1; }
@@ -417,9 +422,24 @@ exit "${FAKE_SERVICE_EXIT:-0}"
 # stdin, as `docker compose exec` does: run ungrouped under `bash -s`, it would swallow
 # the rest of the script.
 FAKE_DOCKER = r"""#!/usr/bin/env bash
-echo "docker $*" >> "${FAKE_HOST}/host.log"
+echo "docker $*" | tr '\n' ' ' >> "${FAKE_HOST}/host.log"
+echo >> "${FAKE_HOST}/host.log"
 [ -f .env ] || { echo "compose has no .env here" >&2; exit 1; }
 case " $* " in
+    *" ps --all -q db "*)
+        [ "${FAKE_BACKUP_FAILURE:-}" = missing ] || printf '%064d\n' 0 ;;
+    *" inspect --format "*)
+        if [ "${FAKE_BACKUP_FAILURE:-}" = stopped ]; then echo false; else echo true; fi ;;
+    *"pg_dump --format=custom"*)
+        [ "$(cat shared/marker.txt)" = "${FAKE_RUNNING_MARKER}" ] || exit 98
+        if [ -f "${FAKE_HOST}/expected-override" ]; then
+            cmp deployed-service-images.compose.yml "${FAKE_HOST}/expected-override" || exit 97
+        fi
+        printf 'PGDMPsynthetic-data'
+        [ "${FAKE_BACKUP_FAILURE:-}" != dump ] ;;
+    *" pg_restore --list "*)
+        cat > /dev/null
+        [ "${FAKE_BACKUP_FAILURE:-}" != list ] ;;
     *" exec "*) cat > /dev/null ;;
     *" up -d --remove-orphans "*) exit "${FAKE_UP_EXIT:-0}" ;;
     *" up "*) exit 0 ;;
@@ -494,6 +514,7 @@ class DeployHost:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.contour = "production"
         self.live = root / "live"
         self.home = root / "home"
         self.home.mkdir()
@@ -537,7 +558,15 @@ class DeployHost:
             (self.live / record).write_text(_running_record(chain, git_sha))
         binaries = root / "bin"
         binaries.mkdir()
-        for name, body in (("docker", FAKE_DOCKER), ("sudo", FAKE_SUDO)):
+        for name, body in (
+            ("docker", FAKE_DOCKER),
+            ("sudo", FAKE_SUDO),
+            (
+                "mktemp",
+                '#!/bin/bash\n[ "${FAKE_BACKUP_FAILURE:-}" != write ] || exit 1\n'
+                'exec /usr/bin/mktemp "$@"\n',
+            ),
+        ):
             (binaries / name).write_text(body)
             (binaries / name).chmod(0o755)
         (root / "config.json").write_text(json.dumps(CONFIG))
@@ -568,6 +597,13 @@ class DeployHost:
             "secrets.GHCR_TOKEN || github.token": "test-token",
             "secrets.GH_APP_PRIVATE_KEY": "the-new-app-key",
             "github.repository_owner": "vladmesh",
+            "inputs.environment": self.contour,
+            "github.workflow_sha": "d" * 40,
+            "github.run_id": "42",
+            "github.run_attempt": "2",
+            "steps.backup-helper.outputs.sha256": hashlib.sha256(
+                (REPO_ROOT / "infra/scripts/backup-db.sh").read_bytes()
+            ).hexdigest(),
         }
 
     def _run(self, script: str, revision: str, stdin: str | None = None, **overrides: str):
@@ -579,6 +615,8 @@ class DeployHost:
             "FAKE_HOST": str(self.root),
             "FAKE_RELEASED_SHA": REAL_RECORD["git_sha"],
             "FAKE_SOURCE_HASH": REAL_RECORD["source_hash"],
+            "FAKE_EXPECTED_MARKER": "old" if revision == self.old else "new",
+            "FAKE_RUNNING_MARKER": _git(self.live, "show", "HEAD:shared/marker.txt"),
             **GIT_ENV,
             **overrides,
         }
@@ -594,7 +632,21 @@ class DeployHost:
 
     def verify(self, revision: str | None = None, **overrides: str):
         """The verify step, as appleboy runs it: a command, stdin unused."""
-        return self._run(_script(_step(PULL_STEP)), revision or self.new, stdin="", **overrides)
+        result = self._run(_script(_step(PULL_STEP)), revision or self.new, stdin="", **overrides)
+        if result.returncode == 0:
+            # Execute the actual runner staging body with a local SSH transport.
+            staging = _step("Stage the workflow backup helper")["run"].replace(
+                "bash infra/scripts/deploy-ssh.sh", "bash -s"
+            )
+            result = self._run(
+                staging,
+                revision or self.new,
+                stdin="",
+                WORKFLOW_BACKUP_HELPER=str(REPO_ROOT / "infra/scripts/backup-db.sh"),
+                GITHUB_OUTPUT=str(self.root / "step-outputs"),
+                **overrides,
+            )
+        return result
 
     def switch(self, revision: str | None = None, **overrides: str):
         """The Switch, as deploy-ssh.sh runs it: `bash -s` reading the script on stdin."""
@@ -635,6 +687,7 @@ def test_the_verify_step_leaves_a_pending_set_and_nothing_live(deploy_host: Depl
     deploy_host.assert_nothing_live_changed(before)
     pending = deploy_host.pending
     assert sorted(path.name for path in pending.iterdir()) == [
+        "backup-db.sh",
         "deployed-service-images.compose.yml",
         "deployed-service-images.json",
         "deployed-worker-images.json",
@@ -783,3 +836,85 @@ def test_a_failed_up_leaves_the_records_unpromoted(deploy_host: DeployHost):
     assert deploy_host.records() == running
     assert deploy_host.pending.is_dir(), "a rerun of the same revision verifies afresh"
     assert _git(deploy_host.live, "rev-parse", "HEAD") == deploy_host.new
+
+
+@pytest.mark.parametrize("failure", ["dump", "list", "write", "missing", "stopped"])
+def test_backup_failure_refuses_switch_before_any_live_write(deploy_host: DeployHost, failure):
+    assert deploy_host.verify().returncode == 0
+    running = deploy_host.records()
+    result = deploy_host.switch(FAKE_BACKUP_FAILURE=failure)
+    assert result.returncode != 0, "a failed backup must stop Switch"
+    deploy_host.assert_nothing_live_changed(running)
+    assert not any("alembic" in line or line.startswith("retag") for line in deploy_host.host_log())
+    assert "archive_list_exit=0" not in result.stdout
+
+
+def test_verified_backup_precedes_image_switch_and_api_start(deploy_host: DeployHost):
+    assert deploy_host.verify().returncode == 0
+    result = deploy_host.switch()
+    assert result.returncode == 0, result.stderr
+    log = deploy_host.host_log()
+    dump = next(i for i, line in enumerate(log) if "pg_dump --format=custom" in line)
+    listed = next(i for i, line in enumerate(log) if "pg_restore --list" in line)
+    retag = next(i for i, line in enumerate(log) if line.startswith("retag"))
+    up = next(i for i, line in enumerate(log) if "up -d --remove-orphans" in line)
+    assert dump < listed < retag < up
+    assert "archive_list_exit=0" in result.stdout and "bytes=" in result.stdout
+
+
+def test_workflow_helper_is_used_when_both_live_and_target_have_broken_backup(
+    deploy_host: DeployHost,
+):
+    # Neither the previous deployed checkout nor the rollback target supplies the
+    # helper. The executing workflow's copy reaches the host without a reset.
+    assert not (deploy_host.live / "infra/scripts/backup-db.sh").exists()
+    assert deploy_host.verify(revision=deploy_host.old).returncode == 0
+    result = deploy_host.switch(revision=deploy_host.old)
+    assert result.returncode == 0, result.stderr
+    assert "archive_list_exit=0" in result.stdout
+
+
+def test_production_cannot_use_empty_stand_bootstrap(deploy_host: DeployHost):
+    assert deploy_host.verify().returncode == 0
+    running = deploy_host.records()
+    result = deploy_host.switch(FAKE_BACKUP_FAILURE="missing")
+    assert result.returncode != 0
+    deploy_host.assert_nothing_live_changed(running)
+
+
+def test_changed_staged_helper_is_refused_before_live_mutation(deploy_host: DeployHost):
+    assert deploy_host.verify().returncode == 0
+    (deploy_host.pending / "backup-db.sh").write_text("exit 0\n")
+    running = deploy_host.records()
+    result = deploy_host.switch()
+    assert result.returncode != 0
+    deploy_host.assert_nothing_live_changed(running)
+
+
+def test_helper_checkout_uses_workflow_sha_without_changing_target_authority():
+    helper = _step("Checkout the workflow backup helper")
+    assert helper["with"]["ref"] == "${{ github.workflow_sha }}"
+    assert helper["with"]["path"] == "workflow-backup-tooling"
+    assert _step("Checkout code")["with"]["ref"] == REVISION
+
+
+def test_backup_resolves_with_old_effective_override_before_replacement(deploy_host: DeployHost):
+    override = deploy_host.live / "deployed-service-images.compose.yml"
+    override.write_text("old effective compose override\n")
+    (deploy_host.root / "expected-override").write_text(override.read_text())
+    assert deploy_host.verify().returncode == 0
+    result = deploy_host.switch()
+    assert result.returncode == 0, result.stderr
+    resolution = next(line for line in deploy_host.host_log() if "ps --all -q db" in line)
+    assert "-f deployed-service-images.compose.yml ps --all -q db" in resolution
+    assert override.read_text() != "old effective compose override\n"
+
+
+def test_absent_stand_database_bootstraps_through_switch_explicitly(deploy_host: DeployHost):
+    deploy_host.contour = "stand"
+    assert deploy_host.verify().returncode == 0
+    result = deploy_host.switch(FAKE_BACKUP_FAILURE="missing")
+    assert result.returncode == 0, result.stderr
+    assert "empty_stand_bootstrap" in result.stdout
+    assert "archive_list_exit=0" not in result.stdout
+    assert any("--force-recreate" in line for line in deploy_host.host_log())

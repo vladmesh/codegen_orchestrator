@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: ${{ inputs.environment }}
     # Only what the deploy actually does: read the worker and service image releases,
     # and the CI run that publishes them. The automatic token stands in for GHCR_TOKEN
@@ -107,6 +107,18 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ env.DEPLOY_REVISION }}
+
+      # Backup policy belongs to the executing workflow, including when revision
+      # selects a release whose backup helper was broken. Keep target consumers
+      # on DEPLOY_REVISION; fetch only this helper from the workflow's exact SHA.
+      - name: Checkout the workflow backup helper
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: workflow-backup-tooling
+          sparse-checkout: infra/scripts/backup-db.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       # A revision from before the service release was consumed has no service puller
       # and no compose override generator, and its compose would build on the host.
@@ -487,6 +499,33 @@ jobs:
             cp scripts/release_switch.py "${pending}.next/release_switch.py"
             mv "${pending}.next" "${pending}"
 
+      - name: Stage the workflow backup helper
+        id: backup-helper
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          WORKFLOW_BACKUP_HELPER: workflow-backup-tooling/infra/scripts/backup-db.sh
+        run: |
+          set -euo pipefail
+          digest=$(sha256sum "${WORKFLOW_BACKUP_HELPER}" | cut -d ' ' -f 1)
+          echo "sha256=${digest}" >> "$GITHUB_OUTPUT"
+          # Code only, on SSH stdin. No checkout reset or container start here.
+          {
+            cat <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          pending=${{ env.DEPLOY_PATH }}/${{ env.RELEASE_PENDING }}
+          test -d "${pending}"
+          base64 -d > "${pending}/backup-db.sh.next" <<'BACKUP_HELPER'
+          REMOTE
+            base64 "${WORKFLOW_BACKUP_HELPER}"
+            cat <<'REMOTE'
+          BACKUP_HELPER
+          chmod 700 "${pending}/backup-db.sh.next"
+          mv "${pending}/backup-db.sh.next" "${pending}/backup-db.sh"
+          REMOTE
+          } | bash infra/scripts/deploy-ssh.sh
+
       # What the deploy is made of, on the record. This does not look the tags up
       # again: it copies back the pending records the step above wrote from the
       # digests it pulled and verified — read before the Switch, so a deploy that
@@ -547,10 +586,12 @@ jobs:
       # reads. No other step, and no script another step calls, writes any of them.
       # One SSH session, one attempt (a dropped connection must not run it twice), in
       # this order:
-      #   1. check the pending set is complete and is this revision's — the only check,
+      #   1. check the pending set is complete and is this revision's,
       #      before any write, run from the pending set's own copy of the helper
       #      because the checkout still holds the previous revision;
-      #   2. the mounted secret file;  3. the checkout, reset to the revision;
+      #   2. verify the workflow helper and back up the existing database, before
+      #      any migrating service starts or effective old configuration changes;
+      #   3. the mounted secret file, then the checkout reset to the revision;
       #   4. worker-base-*:latest from the pending worker record, before `up`, so the
       #      new worker-manager never sees the previous bases;
       #   5. the override, then `up`;
@@ -561,7 +602,7 @@ jobs:
       #      health; paid-work controls are initialize-only, live operator values
       #      win), then the schedulers recreated after the seed and waited for. Their
       #      recreate is an `up`, and `up` happens nowhere but here.
-      # A failure from 2 on leaves the target partially applied: rerun the deploy of
+      # A failure after the backup gate leaves the target partially applied: rerun the deploy of
       # the same revision (every step is idempotent), or deploy the revision of the
       # live current record (docs/DEPLOY.md, "If a deploy fails").
       - name: Switch
@@ -583,6 +624,22 @@ jobs:
           cd "${live}"
           python3 "${pending}/release_switch.py" check --pending "${pending}" \
             --revision ${{ env.DEPLOY_REVISION }}
+
+          echo '${{ steps.backup-helper.outputs.sha256 }}  '"${pending}/backup-db.sh" \
+            | sha256sum --check --status
+          echo 'Backup helper workflow=${{ github.workflow_sha }} target=${{ env.DEPLOY_REVISION }} run=${{ github.run_id }} attempt=${{ github.run_attempt }}'
+          # The checkout and digest override still describe the running release.
+          # The new host .env cannot select the database: the helper resolves the
+          # existing container and reads its actual identity only inside Docker.
+          backup_compose_args='${{ env.COMPOSE_ARGS }}'
+          if [ -f '${{ env.SERVICE_RELEASE_COMPOSE }}' ]; then
+            backup_compose_args="${backup_compose_args} -f ${{ env.SERVICE_RELEASE_COMPOSE }}"
+          fi
+          COMPOSE_DIR="${live}" COMPOSE_ARGS="${backup_compose_args}" \
+            BACKUP_DIR="${live%/*}/backups/orchestrator/predeploy" \
+            BACKUP_KIND=predeploy BACKUP_CONTOUR='${{ inputs.environment }}' \
+            BACKUP_LABEL='run-${{ github.run_id }}-attempt-${{ github.run_attempt }}-${{ env.DEPLOY_REVISION }}' \
+            bash "${pending}/backup-db.sh"
 
           sudo mkdir -p ${{ env.SECRETS_PATH }}
           sudo chown ${{ env.DEPLOY_SSH_USER }}:${{ env.DEPLOY_SSH_USER }} ${{ env.SECRETS_PATH }}

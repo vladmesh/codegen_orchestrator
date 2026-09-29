@@ -435,7 +435,10 @@ DURATION = re.compile(r"^(?P<value>[0-9]+)(?P<unit>[smh]?)$")
 DURATION_UNIT_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600}
 # job -> the docker steps it runs under a bound, by step name.
 BOUNDED_DOCKER_STEPS = {
-    "fast-checks": ["Run Redis capability cleanup regression"],
+    "fast-checks": [
+        "Run Redis capability cleanup regression",
+        "Run verified database backup regression",
+    ],
     "service-image-imports": ["Import every service entrypoint from its production image"],
     "test-service": ["Run service tests"],
     "test-integration": ["Run integration tests"],
@@ -450,6 +453,13 @@ BOUNDED_DOCKER_STEPS = {
     "publish-service-release": ["Verify the candidates and publish the service release marker"],
 }
 REDIS_CLEANUP_COMMAND = "bash scripts/ci-redis-cleanup-regression.sh"
+BACKUP_DB_STEP = "Run verified database backup regression"
+BACKUP_DB_COMMAND = "make test-backup-db"
+BACKUP_DB_PULL_STEP = "Pull backup PostgreSQL image with retry"
+BACKUP_DB_PULL_COMMAND = (
+    "bash scripts/ci-infra.sh retry --step backup-db-pull --cause image-pull --attempt-timeout 30s "
+    "-- docker pull pgvector/pgvector:0.8.6-pg16"
+)
 
 
 def fail(message: str) -> None:
@@ -858,6 +868,13 @@ def claimed_test_paths(jobs: dict[str, Any]) -> dict[str, str]:
         if not (ROOT / test_dir).is_dir():
             fail(f"make test-unit suite {label} points at missing directory {test_dir}")
         claims.setdefault(test_dir, f"make test-unit suite {label}")
+
+    backup = step_by_name(require_job(jobs, "fast-checks"), BACKUP_DB_STEP)
+    if bounded_command(backup) != BACKUP_DB_COMMAND:
+        fail(f"fast-checks must run the backup regression as {BACKUP_DB_COMMAND}")
+    for path in makefile_pytest_paths("test-backup-db"):
+        resolved = resolve_test_path(MAKEFILE, path, None)
+        claims.setdefault(resolved, "fast-checks: make test-backup-db")
 
     for service in matrix_values(require_job(jobs, "test-service"), "service"):
         compose_file = SERVICE_COMPOSE_DIR / f"{service}.yml"
@@ -1789,8 +1806,23 @@ def job_budget_seconds(job_name: str, job: dict[str, Any], leg: dict[str, Any]) 
     return total
 
 
+def assert_backup_db_steps(fast_checks: dict[str, Any]) -> None:
+    """The required host backup regression pulls its image first and stays bounded."""
+    backup_pull = step_by_name(fast_checks, BACKUP_DB_PULL_STEP)
+    if backup_pull.get("run") != BACKUP_DB_PULL_COMMAND:
+        fail("fast-checks must pull the backup PostgreSQL image through a bounded retry")
+    backup = step_by_name(fast_checks, BACKUP_DB_STEP)
+    if bounded_command(backup) != BACKUP_DB_COMMAND:
+        fail(f"fast-checks must run the backup regression as {BACKUP_DB_COMMAND}")
+    steps = fast_checks.get("steps", [])
+    if steps.index(backup_pull) > steps.index(backup):
+        fail("fast-checks must pull its PostgreSQL image before the backup regression")
+
+
 def assert_job_timeouts(jobs: dict[str, Any]) -> None:
     """Every job has a timeout-minutes, and the worst case of its bounded steps fits."""
+    for job_name in BOUNDED_DOCKER_STEPS:
+        require_job(jobs, job_name)
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             fail(f"job {job_name} is not a mapping")
@@ -1805,6 +1837,8 @@ def assert_job_timeouts(jobs: dict[str, Any]) -> None:
                 f"{job_name} timeout-minutes {minutes} is above the "
                 f"{JOB_TIMEOUT_CEILING_MINUTES}-minute ceiling"
             )
+        for step_name in BOUNDED_DOCKER_STEPS.get(job_name, []):
+            bounded_command(step_by_name(job, step_name))
         for step in job.get("steps", []):
             if not isinstance(step, dict):
                 continue
@@ -1831,10 +1865,6 @@ def assert_job_timeouts(jobs: dict[str, Any]) -> None:
                     f"timeout-minutes {minutes}: the job limit would stop it before a bound "
                     "could name the hang"
                 )
-    for job_name, step_names in BOUNDED_DOCKER_STEPS.items():
-        job = require_job(jobs, job_name)
-        for step_name in step_names:
-            bounded_command(step_by_name(job, step_name))
     fast_checks = require_job(jobs, "fast-checks")
     pull = step_by_name(fast_checks, REDIS_PULL_STEP)
     if pull.get("run") != REDIS_PULL_COMMAND:
@@ -1845,6 +1875,7 @@ def assert_job_timeouts(jobs: dict[str, Any]) -> None:
     steps = fast_checks.get("steps", [])
     if steps.index(pull) > steps.index(redis):
         fail("fast-checks must pull its Redis image before it runs it")
+    assert_backup_db_steps(fast_checks)
 
 
 def assert_gate(jobs: dict[str, Any]) -> None:

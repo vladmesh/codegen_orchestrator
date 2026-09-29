@@ -69,7 +69,7 @@ concurrency:
 jobs:
   e2e:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: stand
     # 360m covers 45m provisioning and the longest runner path, mega-live's
     # 281m (scripts/stand_run.py). Lifecycle cleanup has its own 30m job.
@@ -1263,7 +1263,7 @@ jobs:
   cleanup:
     needs: e2e
     if: ${{ always() && github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: stand
     timeout-minutes: 30
     env:
@@ -1400,7 +1400,7 @@ jobs:
 
   ttl-sweep:
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: stand
     env:
       BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}

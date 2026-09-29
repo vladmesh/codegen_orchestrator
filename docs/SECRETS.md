@@ -254,26 +254,37 @@ not the interactive control pane. Keep configs, dumps, old drain logs and copies
 of Redis `/data` outside the checkout, in an operator-owned 0700 directory with
 0600 files. Never attach them to reports. Set `PO_REDIS_BACKUP_DIR` to an absolute,
 external path, `PO_REDIS_RELEASE_SHA` to the full released main SHA, and retain
-the deployment environment's complete `DEPLOY_PATH` and `COMPOSE_ARGS`. The
-default Compose chain is `-f docker-compose.yml -f docker-compose.prod.yml`;
-h01o also has its configured absolute host override. Append the deployment's
-digest override last, in the same project/directory as Deploy:
+the deployment environment's complete `DEPLOY_PATH`. First install the reviewed helpers through
+the later PO [backup operation](DEPLOY.md#later-po-operation-install-and-prove-production-nightly-backup).
+Run every host block, including raw Docker readback, in the owning user's login session. On h01o
+that is vlad/UID 1001, not deploy or an administrator's default Docker context. Set `BACKUP_POLICY`
+to `/home/vlad/.config/codegen-orchestrator/backup.env`; its non-secret configuration supplies
+the checked identity/runtime and full Compose chain, including project `codegen_orchestrator`,
+`/home/vlad/codegen-h01o.override.yml` and the current digest override last. The installed client
+explicitly binds `unix:///run/user/1001/docker.sock` and refuses a missing/mismatched runtime/socket:
 
 ```bash
   set +x
   set -euo pipefail
   umask 077
   : "${DEPLOY_PATH:?}"
-  : "${COMPOSE_ARGS:?}"
+  : "${BACKUP_POLICY:?Reviewed non-secret policy of the owning installation}"
   : "${PO_REDIS_RELEASE_SHA:?}"
   : "${PO_REDIS_BACKUP_DIR:?}"
+  set -a
+  . "$BACKUP_POLICY"
+  set +a
+  test "$(id -un)" = "$BACKUP_USER"
+  test "$(id -u)" = "$BACKUP_UID"
+  test "$DEPLOY_PATH" = "$COMPOSE_DIR"
+  BACKUP_DOCKER=(/usr/local/libexec/backup-db-rootless.sh docker)
   test "${PO_REDIS_BACKUP_DIR:0:1}" = /
   cd "$DEPLOY_PATH"
   case "$PO_REDIS_BACKUP_DIR/" in "$PWD/"*) exit 1 ;; esac
   install -d -m 0700 "$PO_REDIS_BACKUP_DIR"
   po_compose_refresh() {
     read -r -a po_compose_args <<< "$COMPOSE_ARGS"
-    COMPOSE=(docker compose "${po_compose_args[@]}" -f deployed-service-images.compose.yml)
+    COMPOSE=("${BACKUP_DOCKER[@]}" compose --project-directory "$COMPOSE_DIR" "${po_compose_args[@]}")
   }
   po_compose_refresh
   CHECKPOINT_RELEASE_SHA="$PO_REDIS_RELEASE_SHA"
@@ -313,8 +324,8 @@ existing encryption key will remain unchanged in both maintenance containers.
      engineering-worker deploy-worker architect
    po_old_bot_id=$("${COMPOSE[@]}" ps -q telegram_bot)
    test -n "$po_old_bot_id"
-   docker kill --signal SIGTERM "$po_old_bot_id" > /dev/null
-   test "$(docker wait "$po_old_bot_id")" = 0
+   "${BACKUP_DOCKER[@]}" kill --signal SIGTERM "$po_old_bot_id" > /dev/null
+   test "$("${BACKUP_DOCKER[@]}" wait "$po_old_bot_id")" = 0
    ```
 
    Use this read-only group check through the verified old bot digest. It emits
@@ -453,14 +464,11 @@ existing encryption key will remain unchanged in both maintenance containers.
    po_redis_id=$("${COMPOSE[@]}" ps --all -q redis)
    test -n "$po_redis_id"
    install -d -m 0700 "$PO_REDIS_BACKUP_DIR/before-data"
-   docker cp "$po_redis_id:/data/." "$PO_REDIS_BACKUP_DIR/before-data/"
+   "${BACKUP_DOCKER[@]}" cp "$po_redis_id:/data/." "$PO_REDIS_BACKUP_DIR/before-data/"
    "${COMPOSE[@]}" up -d --no-deps --no-build --pull never redis
-   "${COMPOSE[@]}" exec -T db sh -c \
-     'pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' \
-     > "$checkpoint_backup_dir/before-upgrade.dump"
-   test -s "$checkpoint_backup_dir/before-upgrade.dump"
-   "${COMPOSE[@]}" exec -T db pg_restore --list \
-     < "$checkpoint_backup_dir/before-upgrade.dump" > /dev/null
+   BACKUP_DIR="$checkpoint_backup_dir" BACKUP_KIND=maintenance BACKUP_CONTOUR=production \
+     BACKUP_LABEL="before-upgrade-$PO_REDIS_RELEASE_SHA" \
+     /usr/local/libexec/backup-db-rootless.sh backup
    ```
 
    Account for every independent worker/Redis client before asserting quiescence.
@@ -470,6 +478,10 @@ existing encryption key will remain unchanged in both maintenance containers.
    the recovery operator. Old dumps/WAL archives/replicas and pre-RAG-drop copies
    remain restricted secret-bearing artifacts. Do not restore over production or
    delete restricted old artifacts here.
+   Install the reviewed shared helper through the later PO [backup operation](DEPLOY.md#later-po-operation-install-and-prove-production-nightly-backup)
+   first. Record its generated archive path, exact bytes and `archive_list_exit=0`; a private
+   temporary dump is verified before publication. Maintenance names are outside nightly retention.
+   Preserve the archive and unchanged key even after conversion; historical contents are not scrubbed.
 3. Dispatch the actual released Deploy from the authorized control shell:
 
    Fence external admissions independently of containers (the workflow restarts
@@ -480,12 +492,12 @@ existing encryption key will remain unchanged in both maintenance containers.
    ```bash
    po_redis_id=$("${COMPOSE[@]}" ps -q redis)
    test -n "$po_redis_id"
-   po_redis_started=$(docker inspect --format '{{.State.StartedAt}}' "$po_redis_id")
+   po_redis_started=$("${BACKUP_DOCKER[@]}" inspect --format '{{.State.StartedAt}}' "$po_redis_id")
    po_pause_deadline=$(( $(date -u +%s) + 7200 ))
    "${COMPOSE[@]}" exec -T redis redis-cli CLIENT PAUSE 7200000 WRITE
    po_assert_write_fence() {
      test "$("${COMPOSE[@]}" ps -q redis)" = "$po_redis_id"
-     test "$(docker inspect --format '{{.State.StartedAt}}' "$po_redis_id")" = "$po_redis_started"
+     test "$("${BACKUP_DOCKER[@]}" inspect --format '{{.State.StartedAt}}' "$po_redis_id")" = "$po_redis_started"
      test "$(date -u +%s)" -lt "$((po_pause_deadline - 600))"
    }
    po_assert_write_fence
@@ -512,6 +524,14 @@ existing encryption key will remain unchanged in both maintenance containers.
    and calls all-service `up -d --remove-orphans --no-build --pull never`, so the
    earlier stops do not survive it. As soon as Switch runs that `up`, reconstruct
    the full current Compose array and stop only clients unused by Deploy:
+
+   Switch first takes another verified, protected PostgreSQL archive, before resetting the
+   checkout or starting any migration-capable service. Its helper uses only the existing DB
+   container and PostgreSQL tools; it neither contacts Redis, lifts WRITE pause nor starts a
+   quiesced writer. Keep the independent admission fence and WRITE lease uninterrupted, and
+   record the predeploy path/bytes/list result from the durable Deploy log alongside the original
+   maintenance archive. A failed backup prevents Switch; it is not a reason to unpause or skip
+   backup on retry. The executing workflow supplies its reviewed helper even for an older target.
 
    ```bash
    po_compose_refresh
@@ -628,7 +648,7 @@ existing encryption key will remain unchanged in both maintenance containers.
    # Continue after completed save and the recorded successful status/time.
    "${COMPOSE[@]}" stop redis
    install -d -m 0700 "$PO_REDIS_BACKUP_DIR/rewritten-data"
-   docker cp "$po_redis_id:/data/." "$PO_REDIS_BACKUP_DIR/rewritten-data/"
+   "${BACKUP_DOCKER[@]}" cp "$po_redis_id:/data/." "$PO_REDIS_BACKUP_DIR/rewritten-data/"
    "${COMPOSE[@]}" up -d --no-deps --no-build --pull never redis
    ```
 
@@ -793,10 +813,10 @@ fences; a partially applied Switch cannot be completed with a resume command.
    )
    checkpoint_source_hash=$(python3 -c \
      'import json; print(json.load(open("deployed-service-images.json"))["source_hash"])')
-   test "$(docker image inspect --format \
+   test "$("${BACKUP_DOCKER[@]}" image inspect --format \
      '{{index .Config.Labels "org.codegen.worker_source_hash"}}' "$checkpoint_langgraph_image")" \
      = "$checkpoint_source_hash"
-   docker image inspect --format '{{.Id}}' "$checkpoint_langgraph_image"
+   "${BACKUP_DOCKER[@]}" image inspect --format '{{.Id}}' "$checkpoint_langgraph_image"
    "${COMPOSE[@]}" ps --all api langgraph telegram_bot scheduler-pipeline scheduler-infrastructure \
      scheduler-maintenance engineering-worker deploy-worker architect qa-worker worker-manager \
      worker-broker infra-service scaffolder
