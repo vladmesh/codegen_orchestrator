@@ -353,10 +353,7 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
     )
     assert resumed["outcome"] == "reused" and resumed["task_id"] == repair["id"]
     task = await api.get_task(repair["id"])
-    assert (
-        task.current_iteration == int(later)
-        and task.max_iterations == repair["max_iterations"]
-    )
+    assert task.current_iteration == int(later) and task.max_iterations == repair["max_iterations"]
     await asyncio.to_thread(scheduler, "dispatch", sid)
     after = await rows("SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"])
     assert len(after) == len(before_runs) + 1 and after[:-1] == before_runs
