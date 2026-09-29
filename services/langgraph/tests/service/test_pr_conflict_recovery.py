@@ -216,13 +216,30 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(  # noq
         await api.close()
 
 
-def assert_refusal_preserves_task_history(before_events, events):
+def assert_refusal_preserves_task_history(before_events, events, expected_details):
     # Atomic retries share created_at; the events API does not order timestamp ties.
-    # Preserve every field and the two-event delta in immutable event ID order.
-    before_events = sorted(before_events, key=lambda event: event["id"])
-    events = sorted(events, key=lambda event: event["id"])
-    assert len({event["id"] for event in events}) == len(events)
-    assert events[: len(before_events)] == before_events and len(events) == len(before_events) + 2
+    before_by_id = {event["id"]: event for event in before_events}
+    after_by_id = {event["id"]: event for event in events}
+    assert len(before_by_id) == len(before_events)
+    assert len(after_by_id) == len(events)
+    assert before_by_id.keys() <= after_by_id.keys()
+    assert all(after_by_id[event_id] == event for event_id, event in before_by_id.items())
+    added = [event for event in events if event["id"] not in before_by_id]
+    assert len(added) == 2
+    for source, target, actor in [
+        ("todo", "in_dev", "internal_service"),
+        ("in_dev", "waiting_human_review", "dispatcher"),
+    ]:
+        matching = [
+            event
+            for event in added
+            if (event["from_status"], event["to_status"]) == (source, target)
+        ]
+        assert len(matching) == 1
+        event = matching[0]
+        assert event["task_id"] == expected_details["engineering_dispatch_refusal"]["task_id"]
+        assert event["event_type"] == "status_change" and event["iteration"] is None
+        assert event["actor"] == actor and event["details"] == expected_details
 
 
 async def exercise_budget_refusal(api, redis, sid, project, repair, original_id, ending):
@@ -282,7 +299,27 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
         == before_runs
     )
     events = await api.get(f"tasks/{repair['id']}/events")
-    assert_refusal_preserves_task_history(before_events, events)
+    detail = (
+        f"PR #{story.pr_number}: repair Task {repair['id']}, decision {did}, "
+        f"iteration {int(later)}, ceiling {repair['max_iterations']}: "
+        f"engineering_budget_denied. {audits[0]['message']}"
+    )
+    assert story.quarantine_reason["detail"] == detail
+    assert_refusal_preserves_task_history(
+        before_events,
+        events,
+        {
+            "engineering_dispatch_refusal": {
+                "task_id": repair["id"],
+                "decision_id": did,
+                "reason": "engineering_budget_denied",
+            },
+            "detail": detail,
+            # The admission records capacity at decision time; the GET deliberately
+            # omits it. This fixture's enabled zero limit gives exactly zero capacity.
+            "engineering_budget": budget | {"available_microusd": 0},
+        },
+    )
     assert await redis.xrange(ENGINEERING_QUEUE) == publications
     notice = await api.get(f"stories/{sid}/owner-notification")
     assert notice["state"] == notice["admin_state"] == "owed"

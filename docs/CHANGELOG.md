@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
-- Compare conflict refusal history by immutable event IDs, preserving complete records when atomic
-  retry events share a timestamp and the API returns a different order.
+- Compare conflict refusal history by immutable event IDs and validate both refusal audits, preserving
+  complete records when atomic retry events share a timestamp and the API returns a different order.
 
 - Dispose no-Run conflict dispatch refusals with their Task, Story and both notices atomically;
   fence deliberate resume with immutable refusal and retry-bound authority.

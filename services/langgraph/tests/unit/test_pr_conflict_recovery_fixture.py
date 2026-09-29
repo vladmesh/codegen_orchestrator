@@ -21,6 +21,16 @@ from shared.models.run import Run
         ("duplicated_history", False),
         ("duplicated_stop", False),
         ("extra_event", False),
+        ("wrong_refusal_status", False),
+        ("wrong_refusal_type", False),
+        ("wrong_refusal_actor", False),
+        ("wrong_refusal_task", False),
+        ("wrong_refusal_iteration", False),
+        ("wrong_refusal_decision", False),
+        ("wrong_refusal_reason", False),
+        ("wrong_refusal_detail", False),
+        ("wrong_refusal_budget", False),
+        ("additional_refusal_detail", False),
     ],
 )
 def test_budget_refusal_readback_preserves_complete_history_despite_timestamp_ties(
@@ -34,10 +44,14 @@ def test_budget_refusal_readback_preserves_complete_history_despite_timestamp_ti
     before = [
         {
             "id": event_id,
+            "task_id": "pr-conflict-task",
             "created_at": "2026-09-29T14:24:03.512800Z",
+            "updated_at": "2026-09-29T14:24:03.512800Z",
             "event_type": "status_change",
             "from_status": source,
             "to_status": target,
+            "iteration": None,
+            "actor": "internal_service",
             "details": {"attempt_id": "run-0", "iteration": 0},
         }
         for event_id, source, target in [
@@ -47,28 +61,63 @@ def test_budget_refusal_readback_preserves_complete_history_despite_timestamp_ti
             (161, "backlog", "todo"),
         ]
     ]
+    expected_details = {
+        "engineering_dispatch_refusal": {
+            "task_id": "pr-conflict-task",
+            "decision_id": "real-decision",
+            "reason": "engineering_budget_denied",
+        },
+        "detail": "Task pr-conflict-task, decision real-decision: budget denied.",
+        "engineering_budget": {"attempt_id": "real-decision", "outcome": "denied"},
+    }
     after = deepcopy(before)
     after.extend(
         {
             "id": event_id,
+            "task_id": "pr-conflict-task",
             "created_at": "2026-09-29T14:24:04.000000Z",
+            "updated_at": "2026-09-29T14:24:04.000000Z",
             "event_type": "status_change",
             "from_status": source,
             "to_status": target,
-            "details": {"engineering_dispatch_refusal": {"decision_id": "real-decision"}},
+            "iteration": None,
+            "actor": "internal_service" if source == "todo" else "dispatcher",
+            "details": deepcopy(expected_details),
         }
         for event_id, source, target in [
             (163, "todo", "in_dev"),
             (164, "in_dev", "waiting_human_review"),
         ]
     )
-    if change == "response_order":
+    mutations = {
+        "mutated_details": ((1, "details", "iteration"), 1),
+        "mutated_status": ((1, "to_status"), "done"),
+        "wrong_refusal_status": ((-1, "to_status"), "done"),
+        "wrong_refusal_type": ((-1, "event_type"), "note"),
+        "wrong_refusal_actor": ((-1, "actor"), "admin"),
+        "wrong_refusal_task": ((-1, "task_id"), "foreign-task"),
+        "wrong_refusal_iteration": ((-1, "iteration"), 1),
+        "wrong_refusal_decision": (
+            (-1, "details", "engineering_dispatch_refusal", "decision_id"),
+            "unrelated",
+        ),
+        "wrong_refusal_reason": (
+            (-1, "details", "engineering_dispatch_refusal", "reason"),
+            "unrelated",
+        ),
+        "wrong_refusal_detail": ((-1, "details", "detail"), "unrelated"),
+        "wrong_refusal_budget": ((-1, "details", "engineering_budget", "outcome"), "admitted"),
+        "additional_refusal_detail": ((-1, "details", "synthetic_run_id"), "invented-run"),
+    }
+    if change in mutations:
+        path, value = mutations[change]
+        target = after
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+    elif change == "response_order":
         before[:] = [before[1], before[0], *before[2:]]
-        after[:] = [*after[1:4], after[0], *after[4:]]
-    elif change == "mutated_details":
-        after[1]["details"]["iteration"] = 1
-    elif change == "mutated_status":
-        after[1]["to_status"] = "done"
+        after.reverse()
     elif change == "deleted_history":
         after.pop(1)
     elif change == "duplicated_history":
@@ -77,12 +126,11 @@ def test_budget_refusal_readback_preserves_complete_history_despite_timestamp_ti
         after[-1] = deepcopy(after[-2])
     elif change == "extra_event":
         after.append(after[-1] | {"id": 165})
-
     if accepted:
-        recovery.assert_refusal_preserves_task_history(before, after)
+        recovery.assert_refusal_preserves_task_history(before, after, expected_details)
     else:
         with pytest.raises(AssertionError):
-            recovery.assert_refusal_preserves_task_history(before, after)
+            recovery.assert_refusal_preserves_task_history(before, after, expected_details)
 
 
 @pytest.mark.asyncio
