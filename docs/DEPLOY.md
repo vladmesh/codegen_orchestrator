@@ -1180,28 +1180,29 @@ dump is a recovery precondition; it does not automate a migration downgrade or a
 
 ## First-Time Setup
 
+The supported h01o installation already has `vlad` (UID 1001), an enabled rootless Docker
+user service and lingering. Confirm these existing prerequisites; account/daemon creation or
+host isolation changes require a separate operation. Use a login session as that owning user,
+with `/run/user/1001` as its runtime directory. The colocated system daemon is a different workload.
+
 ```bash
-# On the prod server as deploy user:
-
-# 1. Clone the repo
-sudo mkdir -p /opt/codegen_orchestrator
-sudo chown deploy:deploy /opt/codegen_orchestrator
-git clone git@github.com:<org>/codegen_orchestrator.git /opt/codegen_orchestrator
-
-# 2. Create directories
-sudo mkdir -p /opt/secrets /opt/backups/orchestrator
-sudo chown deploy:deploy /opt/secrets /opt/backups/orchestrator
-
-# 3. Prepare a running database before the first production Deploy. Production's
-#    backup gate requires it; only an empty stand has an explicit bootstrap path.
-#    Install/verify the nightly path through the PO operation below after release.
-
-# 5. Check that the deploy user can resolve a tag to a digest. The worker image
-#    verification resolves each published tag once and works from that digest.
-docker buildx imagetools inspect alpine:3.20 --format '{{.Manifest.Digest}}'
-
-# 6. Run first deploy from GitHub Actions, with the production DB already running
+# Only for an authorized initial installation, in vlad's login session:
+test "$(id -un)" = vlad
+test "$(id -u)" = 1001
+test "${XDG_RUNTIME_DIR:?}" = /run/user/1001
+test -S /run/user/1001/docker.sock
+test -O /run/user/1001/docker.sock
+git clone git@github.com:<org>/codegen_orchestrator.git /home/vlad/codegen_orchestrator
+install -d -m 0700 /home/vlad/codegen/secrets /home/vlad/backups/orchestrator
+docker --host unix:///run/user/1001/docker.sock buildx imagetools inspect \
+  alpine:3.20 --format '{{.Manifest.Digest}}'
 ```
+
+Production Deploy requires an already running database before its first invocation; only an
+empty stand has an explicit bootstrap path. Use the production environment's actual
+`DEPLOY_PATH=/home/vlad/codegen_orchestrator`, `DEPLOY_SSH_USER=vlad`,
+`SECRETS_PATH=/home/vlad/codegen/secrets` and Compose host override
+`/home/vlad/codegen-h01o.override.yml`. Install/prove the nightly path below after green release.
 
 ## DB Backup
 
@@ -1224,8 +1225,8 @@ are mode 0600. UTC nanoseconds and a random suffix distinguish concurrent calls/
 serializes publication and retention. Nightly retains only the newest configured count of this
 producer's exact `orchestrator_nightly_<UTC>_<random>.dump` names in its destination; it excludes
 partials, symlinks and every other name. Deploy stores protected archives in
-`<parent of DEPLOY_PATH>/backups/orchestrator/predeploy` (normally
-`/opt/backups/orchestrator/predeploy`), labels them with run ID, attempt and target SHA, and logs
+`<parent of DEPLOY_PATH>/backups/orchestrator/predeploy` (on h01o,
+`/home/vlad/backups/orchestrator/predeploy`), labels them with run ID, attempt and target SHA, and logs
 the executing workflow SHA. Its durable Switch log records host path, exact bytes and
 `archive_list_exit=0` only after success. Archives are never uploaded as CI artifacts.
 
@@ -1240,26 +1241,23 @@ names, dedicated conversion artifacts or historical SQL files, even in a shared 
 
 Execute only on a separate authorized operation after the required green release validation.
 Local disposable test evidence does not establish production DoD 9. No timer installation,
-production backup, deletion or restore is part of this code card. Record the released SHA and
-host, and inspect current state first, without displaying `.env` or archive contents:
+production backup, deletion or restore is part of this code card. The completed h01o relocation
+records `vlad`, UID 1001, `/home/vlad/codegen_orchestrator`, rootless socket
+`unix:///run/user/1001/docker.sock` and `/home/vlad/codegen-h01o.override.yml`. Confirm these
+non-secret facts still match production before changes. Stop on a mismatch and revise the policy
+and operation together; never substitute system Docker. Record the host and released SHA.
 
-```bash
-systemctl cat orchestrator-backup.service orchestrator-backup.timer
-systemctl show orchestrator-backup.service -p FragmentPath -p User -p Group -p EnvironmentFiles
-systemctl show orchestrator-backup.timer -p ActiveState -p NextElapseUSecRealtime -p LastTriggerUSec
-systemctl list-timers --all orchestrator-backup.timer
-sudo stat -c '%a %U:%G %n' /opt/backups/orchestrator /etc/codegen-orchestrator-backup.env
-docker compose version
-```
+Use an actual login session as the owning user for every block below, including readback and
+restore. An administrator must enter that session rather than run Docker under their own account.
+These units belong in that user's systemd manager, not `/etc/systemd/system`. In this scope their
+`Requires=docker.service` refers to the existing rootless user service. Boot operation requires
+that service enabled, `Linger=yes`, a reachable user manager, a private owning runtime and its
+owned socket. [Docker's rootless systemd instructions](https://docs.docker.com/engine/security/rootless/tips/#daemon)
+describe these prerequisites. This operation does not install/restart a daemon or alter isolation;
+if a prerequisite is absent, leave the timer disabled and resolve it separately.
 
-Record absent units/config explicitly; absence is the reason to install, not successful readback.
-Inspect any existing backup policy file privately and compare its Compose directory/files with
-the production environment's actual `DEPLOY_PATH` and `COMPOSE_ARGS`. Include the host override
-(h01o's absolute override if configured), then `deployed-service-images.compose.yml` last. Check
-the currently running DB without starting services; do not print resolved Compose JSON or values.
-The example policy contains no credentials and must be adjusted to the real host chain.
-
-Install/update copies from the reviewed released checkout, independently of future resets:
+Inspect identity, both scopes and current configuration first. Use only the reviewed non-secret
+example as the initial host configuration; never source the application's secret `.env`:
 
 ```bash
 set +x
@@ -1268,83 +1266,205 @@ umask 077
 : "${BACKUP_RELEASE_ROOT:?Absolute reviewed release checkout}"
 : "${BACKUP_RELEASE_SHA:?Full reviewed released main SHA}"
 test "$(git -C "$BACKUP_RELEASE_ROOT" rev-parse HEAD)" = "$BACKUP_RELEASE_SHA"
-sha256sum "$BACKUP_RELEASE_ROOT/infra/scripts/backup-db.sh"
-sudo install -d -m 0755 /usr/local/libexec
-sudo install -m 0755 "$BACKUP_RELEASE_ROOT/infra/scripts/backup-db.sh" \
-  /usr/local/libexec/orchestrator-backup-db.sh.next
-sudo mv /usr/local/libexec/orchestrator-backup-db.sh.next /usr/local/libexec/orchestrator-backup-db.sh
-sudo install -m 0644 "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.service" \
-  /etc/systemd/system/orchestrator-backup.service.next
-sudo mv -Tf /etc/systemd/system/orchestrator-backup.service.next /etc/systemd/system/orchestrator-backup.service
-sudo install -m 0644 "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.timer" \
-  /etc/systemd/system/orchestrator-backup.timer.next
-sudo mv -Tf /etc/systemd/system/orchestrator-backup.timer.next /etc/systemd/system/orchestrator-backup.timer
-# If missing, seed the policy; preserve and update an existing host-specific policy.
-if ! sudo test -f /etc/codegen-orchestrator-backup.env; then
-  sudo install -o root -g deploy -m 0640 \
-    "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.env.example" \
-    /etc/codegen-orchestrator-backup.env
+set -a
+. "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.env.example"
+set +a
+test "$(id -un)" = "$BACKUP_USER"
+test "$(id -u)" = "$BACKUP_UID"
+backup_account_home=$(getent passwd "$BACKUP_USER" | cut -d: -f6)
+test "$COMPOSE_DIR" = "$backup_account_home/codegen_orchestrator"
+test "$BACKUP_RUNTIME_DIR" = "/run/user/$BACKUP_UID"
+test "${XDG_RUNTIME_DIR:?Owning login session runtime}" = "$BACKUP_RUNTIME_DIR"
+backup_policy_dir="$backup_account_home/.config/codegen-orchestrator"
+backup_policy="$backup_policy_dir/backup.env"
+backup_unit_dir="$backup_account_home/.config/systemd/user"
+id
+loginctl show-user "$BACKUP_USER" -p UID -p Linger -p RuntimePath
+test "$(loginctl show-user "$BACKUP_USER" -p Linger --value)" = yes
+systemctl --user is-enabled docker.service
+systemctl --user is-active docker.service
+systemctl --user show docker.service -p FragmentPath -p ActiveState
+# Inventory existing user units; explicitly record absence, not a successful proof.
+if systemctl --user cat orchestrator-backup.service orchestrator-backup.timer; then
+  systemctl --user show orchestrator-backup.service -p FragmentPath -p DropInPaths \
+    -p ExecStart -p EnvironmentFiles -p UMask
+  systemctl --user show orchestrator-backup.timer -p ActiveState -p NextElapseUSecRealtime
+else
+  echo 'backup user unit inventory incomplete: record missing units'
 fi
-sudoedit /etc/codegen-orchestrator-backup.env
-sudo chown root:deploy /etc/codegen-orchestrator-backup.env
-sudo chmod 0640 /etc/codegen-orchestrator-backup.env
-sudo install -d -o deploy -g deploy -m 0700 /opt/backups/orchestrator/nightly
-sudo systemctl daemon-reload
-sudo systemctl enable --now orchestrator-backup.timer
-sudo systemctl start orchestrator-backup.service
+systemctl --user list-timers --all orchestrator-backup.timer
+# Read-only inventory of any obsolete system-scope backup units. An active/enabled
+# one needs separate explicit retirement before enabling this user timer.
+if ! systemctl show orchestrator-backup.service orchestrator-backup.timer \
+    -p LoadState -p ActiveState -p UnitFileState -p FragmentPath; then
+  echo 'system backup unit inventory incomplete: record missing units'
+fi
+for backup_existing in "$backup_policy" "$BACKUP_DIR"; do
+  if test -e "$backup_existing"; then
+    stat -c '%a %U:%G %n' "$backup_existing"
+  else
+    echo "absent=$backup_existing"
+  fi
+done
+"$BACKUP_RELEASE_ROOT/infra/scripts/backup-db-rootless.sh" docker compose version
 ```
 
-For another deployment layout, update the unit's WorkingDirectory and policy paths as well.
-The service runs as deploy with `UMask=0077`, loads only the explicit backup policy and uses the
-root-installed helper. The timer runs at 03:00 UTC with `Persistent=true`. Before enabling it,
-confirm the chosen nightly directory holds only the intended rotatable new nightly set; an
-approved protected archive must use a maintenance/predeploy name or separate directory.
+Record absent units/config explicitly; absence is the reason to install, not successful readback.
+Inspect any existing backup policy file privately and compare its Compose directory/files with
+the production environment's actual deployment settings. The policy explicitly selects project
+`codegen_orchestrator`, the base and production files, `/home/vlad/codegen-h01o.override.yml`,
+then the current `deployed-service-images.compose.yml` last. Do not print resolved Compose JSON,
+application `.env`, database rows or archive listings. Review existing user drop-ins before
+replacing units; an unreviewed identity/client/path override prevents enabling the timer.
 
-Read back the actual oneshot and timer, then verify the recorded archive again:
+Install/update copies from the reviewed released checkout, independently of future resets.
+Only installing the two code helpers needs sudo. Policy, units and destination are installed by
+the owning user, with ownership derived from the checked login identity:
 
 ```bash
-systemctl show orchestrator-backup.service -p Result -p ExecMainStatus -p ExecMainExitTimestamp
-systemctl is-enabled orchestrator-backup.timer
-systemctl is-active orchestrator-backup.timer
-systemctl show orchestrator-backup.timer -p NextElapseUSecRealtime -p LastTriggerUSec
-journalctl -u orchestrator-backup.service --since '10 minutes ago' --no-pager
-# Set from this successful invocation's metadata, not an arbitrary old archive.
-: "${VERIFIED_BACKUP_PATH:?Recorded production host path}"
-test -s "$VERIFIED_BACKUP_PATH"
-stat -c 'bytes=%s mode=%a owner=%U:%G path=%n' "$VERIFIED_BACKUP_PATH"
-stat -c 'mode=%a owner=%U:%G path=%n' "$(dirname "$VERIFIED_BACKUP_PATH")"
-sha256sum /usr/local/libexec/orchestrator-backup-db.sh
+sudo install -d -m 0755 /usr/local/libexec
+for backup_helper in backup-db.sh backup-db-rootless.sh; do
+  sudo install -m 0755 "$BACKUP_RELEASE_ROOT/infra/scripts/$backup_helper" \
+    "/usr/local/libexec/$backup_helper.next"
+  sudo mv -Tf "/usr/local/libexec/$backup_helper.next" "/usr/local/libexec/$backup_helper"
+  cmp "$BACKUP_RELEASE_ROOT/infra/scripts/$backup_helper" "/usr/local/libexec/$backup_helper"
+  test "$(stat -c '%u:%a' "/usr/local/libexec/$backup_helper")" = 0:755
+  sha256sum "/usr/local/libexec/$backup_helper"
+done
+# BEGIN user-owned backup installation
+install -d -m 0700 "$backup_policy_dir" "$backup_unit_dir" "$BACKUP_DIR"
+for backup_unit in orchestrator-backup.service orchestrator-backup.timer; do
+  install -m 0644 "$BACKUP_RELEASE_ROOT/infra/systemd/$backup_unit" "$backup_unit_dir/$backup_unit.next"
+  mv -Tf "$backup_unit_dir/$backup_unit.next" "$backup_unit_dir/$backup_unit"
+done
+if ! test -f "$backup_policy"; then
+  install -m 0600 "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.env.example" "$backup_policy"
+fi
+chmod 0600 "$backup_policy"
+# END user-owned backup installation
+# Review/edit this non-secret policy privately if the confirmed host chain changed.
+# Keep only the documented keys, with syntax shared by bash and EnvironmentFile.
 set -a
-. /etc/codegen-orchestrator-backup.env
+. "$backup_policy"
 set +a
+test "$(id -un)" = "$BACKUP_USER"
+test "$(id -u)" = "$BACKUP_UID"
+test "$COMPOSE_DIR" = "$backup_account_home/codegen_orchestrator"
+test "$BACKUP_RUNTIME_DIR" = "/run/user/$BACKUP_UID"
+test "$BACKUP_DIR" = "$backup_account_home/backups/orchestrator/nightly"
+for backup_private_dir in "$backup_policy_dir" "$backup_unit_dir" "$BACKUP_DIR"; do
+  test ! -L "$backup_private_dir"
+  test "$(stat -c '%u:%a' "$backup_private_dir")" = "$BACKUP_UID:700"
+done
+test ! -L "$backup_policy"
+test "$(stat -c '%u:%a' "$backup_policy")" = "$BACKUP_UID:600"
 read -r -a backup_compose_args <<< "$COMPOSE_ARGS"
 cd "$COMPOSE_DIR"
-backup_db_id=$(docker compose --project-directory "$COMPOSE_DIR" "${backup_compose_args[@]}" ps --all -q db)
-test -n "$backup_db_id"
-if docker exec -i "$backup_db_id" pg_restore --list < "$VERIFIED_BACKUP_PATH" > /dev/null 2>&1; then
+BACKUP_DOCKER=(/usr/local/libexec/backup-db-rootless.sh docker)
+backup_db_id=$("${BACKUP_DOCKER[@]}" compose --project-directory "$COMPOSE_DIR" \
+  "${backup_compose_args[@]}" ps --all -q db)
+[[ "$backup_db_id" =~ ^[0-9a-f]{64}$ ]]
+test "$("${BACKUP_DOCKER[@]}" inspect --format '{{.State.Running}}' "$backup_db_id")" = true
+test "$("${BACKUP_DOCKER[@]}" inspect \
+  --format '{{index .Config.Labels "com.docker.compose.project"}}' "$backup_db_id")" = codegen_orchestrator
+systemctl --user daemon-reload
+systemd-analyze --user verify "$backup_unit_dir/orchestrator-backup.service" \
+  "$backup_unit_dir/orchestrator-backup.timer"
+systemctl --user cat orchestrator-backup.service orchestrator-backup.timer
+systemctl --user show orchestrator-backup.service -p FragmentPath -p DropInPaths \
+  -p ExecStart -p EnvironmentFiles -p UMask -p Requires -p After
+```
+
+Compare the loaded unit and timer with their installed reviewed files and resolve every drop-in
+before proceeding. The unit uses `%h` from the owning user manager to find its mode-0600 policy;
+the Compose root comes only from that policy. Both installed helpers are root-owned code copies.
+The client requires the configured user/UID, a mode-0700 owned runtime and an owned Unix socket,
+sets its exact endpoint and clears inherited context/TLS selectors. Missing/mismatched runtime,
+socket or daemon fails visibly. Its `docker` mode uses an explicit `--host` for independent readback.
+The shared dump helper's publication/retention and Deploy invocation are unchanged.
+
+Before enabling, confirm the nightly directory contains only the intended rotatable new nightly
+set; protected artifacts use maintenance/predeploy names or separate directories. Then:
+
+```bash
+systemctl --user enable --now orchestrator-backup.timer
+systemctl --user start orchestrator-backup.service
+```
+
+Read back that same user's actual oneshot and timer (03:00 UTC, `Persistent=true`), then verify
+the newly recorded archive again in this owning login session with the same installed policy/client:
+
+```bash
+# BEGIN owning-user archive readback
+systemctl --user show orchestrator-backup.service -p Result -p ExecMainStatus -p ExecMainExitTimestamp
+systemctl --user is-enabled orchestrator-backup.timer
+systemctl --user is-active orchestrator-backup.timer
+TZ=UTC systemctl --user list-timers --all orchestrator-backup.timer
+systemctl --user show orchestrator-backup.timer -p NextElapseUSecRealtime -p LastTriggerUSec
+journalctl --user -u orchestrator-backup.service --since '10 minutes ago' --no-pager
+set -a
+. "$backup_policy"
+set +a
+test "$(id -un)" = "$BACKUP_USER"
+test "$(id -u)" = "$BACKUP_UID"
+# Set from this successful invocation's metadata, not an arbitrary old archive.
+: "${VERIFIED_BACKUP_PATH:?Recorded production host path}"
+test "$(dirname "$VERIFIED_BACKUP_PATH")" = "$BACKUP_DIR"
+test -s "$VERIFIED_BACKUP_PATH"
+test ! -L "$VERIFIED_BACKUP_PATH"
+test "$(stat -c '%u:%a' "$VERIFIED_BACKUP_PATH")" = "$BACKUP_UID:600"
+test "$(stat -c '%u:%a' "$BACKUP_DIR")" = "$BACKUP_UID:700"
+stat -c 'bytes=%s mode=%a owner=%U:%G path=%n' "$VERIFIED_BACKUP_PATH"
+stat -c 'mode=%a owner=%U:%G path=%n' "$BACKUP_DIR" "$backup_policy"
+sha256sum /usr/local/libexec/backup-db.sh /usr/local/libexec/backup-db-rootless.sh
+read -r -a backup_compose_args <<< "$COMPOSE_ARGS"
+cd "$COMPOSE_DIR"
+BACKUP_DOCKER=(/usr/local/libexec/backup-db-rootless.sh docker)
+backup_db_id=$("${BACKUP_DOCKER[@]}" compose --project-directory "$COMPOSE_DIR" \
+  "${backup_compose_args[@]}" ps --all -q db)
+[[ "$backup_db_id" =~ ^[0-9a-f]{64}$ ]]
+if "${BACKUP_DOCKER[@]}" exec -i "$backup_db_id" pg_restore --list \
+    < "$VERIFIED_BACKUP_PATH" > /dev/null 2>&1; then
   echo 'archive_list_exit=0'
 else
   echo 'archive_list_exit=1' >&2
   exit 1
 fi
+# END owning-user archive readback
 ```
 
 Attach only metadata: service `Result=success` and `ExecMainStatus=0`, timer enabled/active and
-next UTC run, installed helper SHA-256/release SHA, archive host path, exact bytes, list exit zero,
-directory 0700 and file 0600 owned by deploy. A unit failure, missing next run or unreadable archive
-leaves production proof incomplete. Read back the next scheduled run later to prove the nightly
+next UTC run, installed helpers' SHA-256/release SHA, user-manager scope, `vlad`/UID 1001,
+endpoint `unix:///run/user/1001/docker.sock`, policy/Compose chain, archive host path, exact bytes,
+list exit zero, directory 0700 and file/policy 0600 owned by vlad and its actual primary group.
+A unit failure, missing next run or unreadable archive leaves production proof incomplete.
+Read back the next scheduled run later to prove the nightly
 schedule itself. The production Deploy run must separately show its verified predeploy metadata
 before the first `up`; retaining the earlier maintenance dump does not bypass that gate.
 
 ### Restore into a separate empty database
 
 Use an approved isolated restore target and its complete Compose chain, with compatible PostgreSQL
-tools and access to the unchanged encryption key for application-level readback. This example
-assumes `COMPOSE` is that target's command array. Never restore over production in this card.
+tools and access to the unchanged encryption key for application-level readback. In the owning
+login session, load the isolated target's reviewed non-secret policy (same keys, its own explicit
+Compose project/files and owning runtime), then construct its command through the installed
+client. Confirm the target is authorized and isolated before creating the separate database.
+Never restore over production in this card. The h01o identity/endpoint is vlad/UID 1001 and
+`unix:///run/user/1001/docker.sock`; an operator's context is insufficient.
 
 ```bash
 set +x
 set -euo pipefail
+: "${RESTORE_POLICY:?Reviewed isolated target policy path}"
+set -a
+. "$RESTORE_POLICY"
+set +a
+test "$(id -un)" = "$BACKUP_USER"
+test "$(id -u)" = "$BACKUP_UID"
+read -r -a restore_compose_args <<< "$COMPOSE_ARGS"
+cd "$COMPOSE_DIR"
+COMPOSE=(/usr/local/libexec/backup-db-rootless.sh docker compose \
+  --project-directory "$COMPOSE_DIR" "${restore_compose_args[@]}")
 : "${ARCHIVE:?Restricted custom archive path}"
 : "${RESTORE_DB:?Separate empty disposable database name}"
 "${COMPOSE[@]}" exec -T db pg_restore --list < "$ARCHIVE" > /dev/null
@@ -1373,10 +1493,16 @@ the `revision` input ([Rolling back](#rolling-back)). For manual intervention on
 deployed release through its override and never build:
 
 ```bash
-cd /opt/codegen_orchestrator
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f deployed-service-images.compose.yml"
-$COMPOSE up -d --remove-orphans --no-build --pull never
-$COMPOSE exec -T api alembic upgrade head
+# In the owning login session, after the authorized maintenance backup/fences:
+set -a
+. /home/vlad/.config/codegen-orchestrator/backup.env
+set +a
+read -r -a update_compose_args <<< "$COMPOSE_ARGS"
+cd "$COMPOSE_DIR"
+COMPOSE=(/usr/local/libexec/backup-db-rootless.sh docker compose \
+  --project-directory "$COMPOSE_DIR" "${update_compose_args[@]}")
+"${COMPOSE[@]}" up -d --remove-orphans --no-build --pull never
+"${COMPOSE[@]}" exec -T api alembic upgrade head
 ```
 
 Without `-f deployed-service-images.compose.yml`, compose falls back to the `:local` build names and

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Bind nightly backup and independent readback to h01o's owning rootless user/daemon;
+  install private policy and timer in that user's manager so production proof uses the right database.
 - Publish verified private PostgreSQL archives and gate production Switch before migrations;
   preserve protected backups across rotation and rollback, and pin runners to Ubuntu 24.04.
 - Keep mapped HTTP hosts stable across Python patches and reconcile rejected workflow customizations

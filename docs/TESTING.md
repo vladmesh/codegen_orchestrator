@@ -564,6 +564,13 @@ still completes. They also cover changed helper rejection, rollback to a target 
 and strict production versus absent-stand bootstrap behavior. These regressions are part of
 `make test-unit` and its canonical `python -m shared` broad adapter. The broad adapter covers the
 offline regressions; the separate real PostgreSQL command is required evidence, not a unit receipt.
+`test_backup_rootless.py` loads the recorded h01o policy, checks the user-manager units/UTC timer,
+executes the documented user-owned installation and verifies private policy/destination modes.
+Its owned Unix-socket fixture invokes the installed client and unchanged dump helper with a foreign
+operator context: backup and independent archive readback must select the same configured endpoint.
+Wrong identity, absent/private-runtime failure and missing/symlink/non-socket endpoints fail before
+any Docker call. These tests activate no unit, create no host account and contact no real daemon.
+Offline `systemd-analyze verify` proves unit syntax only, not an executed production timer/oneshot.
 Production timer/install/readback remains the later PO operation in [DEPLOY.md](DEPLOY.md#db-backup).
 
 The backend integration suite (`tests/compose/integration/backend.yml`) runs the API, Redis and

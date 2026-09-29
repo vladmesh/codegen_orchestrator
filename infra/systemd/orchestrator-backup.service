@@ -1,16 +1,11 @@
 [Unit]
 Description=Orchestrator PostgreSQL daily backup
+# Install ONLY in the owning user's manager, beside its rootless docker.service.
 After=docker.service
 Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/libexec/orchestrator-backup-db.sh
-EnvironmentFile=/etc/codegen-orchestrator-backup.env
-WorkingDirectory=/opt/codegen_orchestrator
+ExecStart=/usr/local/libexec/backup-db-rootless.sh backup
+EnvironmentFile=%h/.config/codegen-orchestrator/backup.env
 UMask=0077
-User=deploy
-Group=deploy
-
-[Install]
-WantedBy=multi-user.target
