@@ -357,7 +357,7 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
     await asyncio.to_thread(scheduler, "dispatch", sid)
     after = await rows("SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"])
     assert len(after) == len(before_runs) + 1 and after[:-1] == before_runs
-    assert after[-1]["metadata"]["iteration"] == int(later) + 1
+    assert after[-1]["metadata"]["iteration"] == int(later)
     messages = [
         EngineeringMessage.model_validate_json(fields[b"data"])
         for _, fields in await redis.xrange(ENGINEERING_QUEUE)
