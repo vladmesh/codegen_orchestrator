@@ -1,6 +1,7 @@
 """Telegram Bot service configuration.
 
-Requires: REDIS_URL, API_BASE_URL, TELEGRAM_BOT_TOKEN, LK_DOMAIN, DEFAULT_AGENT_TYPE
+Requires: REDIS_URL, API_BASE_URL, TELEGRAM_BOT_TOKEN, LK_DOMAIN,
+DEFAULT_AGENT_TYPE, TELEGRAM_MAX_CONCURRENT_UPDATES
 """
 
 from functools import lru_cache
@@ -24,6 +25,7 @@ class Settings(BaseSettings):
     redis_url: str = redis_url_field(required=True)
     api_base_url: str = api_base_url_field(required=True)
     telegram_bot_token: str = telegram_token_field()
+    telegram_max_concurrent_updates: int = Field(alias="TELEGRAM_MAX_CONCURRENT_UPDATES", ge=2)
 
     # Worker configuration
     default_agent_type: AgentType = default_agent_type_field()

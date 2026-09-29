@@ -27,6 +27,7 @@ services:
       # this at import time. Without it the container dies on a KeyError.
       INTERNAL_API_KEY: test-internal-api-key-for-service-tests
       LK_DOMAIN: https://lk.test.example.com
+      TELEGRAM_MAX_CONCURRENT_UPDATES: "8"
     # The runner's own tests cannot tell a live bot from a crashed one, so the
     # import that starts this container is a health condition the runner waits on.
     # A bot that cannot import is a red suite, not a green one with a dead service.
@@ -58,6 +59,7 @@ services:
       API_BASE_URL: http://api:8000
       INTERNAL_API_KEY: test-internal-api-key-for-service-tests
       LK_DOMAIN: https://lk.test.example.com
+      TELEGRAM_MAX_CONCURRENT_UPDATES: "8"
       PYTHONPATH: /app
     volumes:
       # Mounted file by file on purpose. Binding the whole service directory

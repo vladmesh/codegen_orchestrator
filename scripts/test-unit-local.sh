@@ -46,6 +46,7 @@ CLEAN_ENV=(
     BROKER_INTERNAL_TOKEN="test-worker-broker-internal-token"
     WORKER_BROKER_INTERNAL_TOKEN="test-worker-broker-internal-token"
     LK_DOMAIN="https://lk.test.example.com"
+    TELEGRAM_MAX_CONCURRENT_UPDATES="8"
     INTERNAL_API_KEY="test-internal-key"
     LK_JWT_SECRET="test-lk-jwt-secret"
     DEFAULT_AGENT_TYPE="claude"

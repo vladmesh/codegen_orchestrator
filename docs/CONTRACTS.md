@@ -872,6 +872,15 @@ are repository-relative.
 
 ### Recipient and PO rules
 
+Telegram admits bounded concurrent updates through PTB's native update processor.
+`TELEGRAM_MAX_CONCURRENT_UPDATES` is required and at least two. The processor holds
+a FIFO asyncio lock for the effective user across authorization and all registered
+handlers, including commands and callbacks. Different users have distinct contexts
+and locks; an idle lock is removed when its last admitted waiter leaves. PTB owns
+admission and shutdown, so this adds no scheduler or persistent user registry.
+PO's existing per-chat graph serialization and protected request streams remain
+the downstream boundary.
+
 Canonical sources: `shared/contracts/recipient.py` and
 `shared/contracts/queues/po.py`.
 
@@ -1018,6 +1027,33 @@ a database lock, persisted request/run identity, or explicit turn/adoption key.
 `XAUTOCLAIM` recovery, DLQ handling, and approximate stream trimming do not
 authorise a consumer to invent a result. The PO consumer additionally tracks
 its in-flight ids so one process does not reclaim its own active dispatch.
+
+Capability executions retain the released live-work keys, 60-second lease and
+Redis-server-time expiry. Renewal atomically refuses expired tokens, even before
+PEL liveness pruning. The existing 10-second refresh cadence also bounds each
+network attempt and the delay between transient connection/timeout retries. A
+local monotonic deadline starts before the last confirmed acquisition/renewal
+request; failed attempts never extend it. A ten-second connection outage fits
+inside this confirmed window. No renewal is accepted after the local deadline.
+Confirmed teardown still cancels the owner. Missing/expired ownership, exhausted
+uncertainty and non-transient errors cancel visibly and retain the pending entry.
+Leased completion and cancellation use one terminal Lua decision: check the
+completed result's settlement, teardown fence and unexpired token against Redis
+TIME, then XACK atomically. Every retry repeats this decision inside the original
+confirmed deadline. A returned result remains authoritative through subsequent
+owner cancellation; only a running process that unwound can settle as cancelled
+work. Unproven external cancellation, unsettled teardown results, known ownership
+loss and exhausted uncertainty prevent ACK. Cancellation without teardown leaves
+the entry pending. An observed teardown continues to constrain a returned result
+even if its key later disappears. Shutdown settlement is additionally bounded by
+the existing ten-second attempt window. A lost ACK reply may mean Redis already
+committed: a subsequent zero XACK is unproven, fences cleanup and never claims
+recovered settlement.
+No durable ACK recovery protocol is introduced. A definitive ACK reply received
+after the conservative local deadline is reported as already applied but cannot
+claim current ownership. Watchers are cancelled and awaited on every exit; bounded
+best-effort failure marking and lease removal cannot mask the primary failure.
+This changes no DTO, stream, schema, key format or released-worker upgrade protocol.
 
 ## Current flow map
 

@@ -5,6 +5,11 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Atomically fence every leased ACK retry with ownership and retained result settlement; expose lost-reply
+  ambiguity and provision the required Telegram concurrency policy on the stand.
+- Telegram dispatches users concurrently while retaining per-user order; live work survives short Redis
+  outages within confirmed lease ownership and refuses expired renewal.
+
 - Bind nightly backup and independent readback to h01o's owning rootless user/daemon;
   install private policy and timer in that user's manager so production proof uses the right database.
 - Publish verified private PostgreSQL archives and gate production Switch before migrations;

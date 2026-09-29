@@ -592,6 +592,34 @@ XREAD and proactive parsing/delivery with harmless Telegram fixtures. No Redis
 writes are mocked in these regressions; the synthetic graph and external bot
 are deterministic. No paid E2E policy or installation adapter changes are needed.
 
+That bot leg also starts the actual production Application with a fake Telegram
+HTTP request boundary, then feeds its update queue. A held PO reply cannot delay
+another user's correlated reply; callback/command/message ordering, admin state,
+middleware refusal, protected canary readback and idle-lock/typing cleanup are
+checked through registered handlers. Fixtures explicitly provision the required
+`TELEGRAM_MAX_CONCURRENT_UPDATES=8` policy.
+
+The LangGraph service leg runs `test_live_work_outage.py` against its isolated
+Redis. A local asyncio TCP proxy drops only the test client's connections for
+at least ten measured seconds, across the production heartbeat. Native Redis
+connection failure, renewed lease, live reclaimed-entry guard and exactly one
+execution/ACK are required; the Redis server is never paused or restarted.
+Expired unpruned leases cannot renew. Unit tests cover monotonic deadline edges,
+repeated/blocked attempts, completion during uncertainty, shutdown and unproven
+external cancellation. The proxy also drops complete terminal commands before
+forwarding, or drops their replies after Redis commits. Native XPENDING and
+failure-key/TTL readback prove that completion cancellation, new teardown,
+removed/expired tokens and unsettled/unmarked results cannot discard work;
+an already applied ACK with a lost reply stays explicitly unproven. Successful
+settled results still ACK once. These tests check watcher, client and proxy
+cleanup; unit tests cover cancellation during watcher/failure-marker awaits and
+late replies at the deadline. Neither contour contacts Telegram or a paid model.
+
+`test_stand_e2e_workflow.py` executes the actual protected environment renderer,
+then native Compose `config --quiet` for the base/prod/stand chain with only PATH
+in the invoking environment. Stand and Deploy explicitly provision concurrency
+policy 8. No stand dispatch, container launch or ambient policy injection occurs.
+
 `tests/compose/integration/backend-dind.yml` covers worker-container creation and execution with
 Docker-in-Docker. `ci.yml` runs it as `test-backend-dind-integration` on every push to `main` and
 when CI is manually dispatched for `main`; it stays out of pull requests, where a privileged

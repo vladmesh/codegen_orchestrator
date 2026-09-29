@@ -361,6 +361,7 @@ jobs:
 
           # LK (user dashboard)
           LK_DOMAIN=${{ secrets.LK_DOMAIN }}
+          TELEGRAM_MAX_CONCURRENT_UPDATES=8
           LK_JWT_SECRET=${{ secrets.LK_JWT_SECRET }}
 
           # Prod secret paths (used by docker-compose.prod.yml)

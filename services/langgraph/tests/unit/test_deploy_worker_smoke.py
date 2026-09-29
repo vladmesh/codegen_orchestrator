@@ -403,7 +403,7 @@ async def test_result_shaped_deploy_error_under_teardown_fences_cleanup_without_
         }
     )
     mock_redis.redis.exists = AsyncMock(return_value=True)  # live:work:cancelled is set
-    mock_redis.redis.eval = AsyncMock(return_value=1)  # lease granted
+    mock_redis.redis.eval = AsyncMock(side_effect=[1, -1])  # acquisition, atomic refusal
     mock_redis.redis.zrem = AsyncMock()
     mock_redis.ack = AsyncMock()
 
