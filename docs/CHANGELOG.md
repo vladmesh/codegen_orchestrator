@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Correct initial-owner CI notice, cancellation and replacement-owner fixtures, and retain the
+  recovery deadline without a pytest plugin so native retry proofs can execute.
+
 - Allow owner/admin retry of exhausted initial deployment with an immutable attempt fence;
   commit its typed Story cause and both owed notices so automatic recovery stays bounded.
 

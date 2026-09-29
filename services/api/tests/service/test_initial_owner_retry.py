@@ -159,6 +159,12 @@ async def _intent(client, epoch, intent_id):
     return response.json()
 
 
+async def _owner_notice(client, story_id):
+    response = await client.get(f"/api/stories/{story_id}/owner-notification")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 async def _messages(redis, project):
     rows = await redis.xrange(DEPLOY_QUEUE)
     messages = [json.loads(fields[b"data"]) for _, fields in rows]
@@ -186,15 +192,13 @@ async def test_same_intent_bounded_epochs_and_old_command_after_fast_exhaustion(
     stopped = (await async_client.get(f"/api/stories/{e['story']}")).json()
     assert stopped["status"] == "failed"
     assert stopped["quarantine_reason"]["code"] == "initial_owner_deployment_exhausted"
-    notice = stopped["owner_notification"]
+    notice = await _owner_notice(async_client, e["story"])
     assert notice["state"] == notice["admin_state"] == "owed"
     assert "retry_initial_owner_deployment" in notice["text"]
     assert CANARY not in json.dumps(exhausted) + json.dumps(notice)
     repeated = await _call(async_client, e["lifecycle"], e["body"])
     assert repeated == exhausted
-    assert (await async_client.get(f"/api/stories/{e['story']}")).json()[
-        "owner_notification"
-    ] == notice
+    assert await _owner_notice(async_client, e["story"]) == notice
     await _ceiling(async_client, 3)
     assert (await _call(async_client, e["lifecycle"], e["body"]))["disposition"] == "exhausted"
     await _ceiling(async_client, 2)
@@ -251,6 +255,7 @@ async def test_retry_interruptions_keep_one_real_epoch(
     command = exhausted["exhaustion"]["retry_command"]
     before = await _intent(async_client, e, exhausted["intent_id"])
     story_before = (await async_client.get(f"/api/stories/{e['story']}")).json()
+    notice_before = await _owner_notice(async_client, e["story"])
     if mode == "publication":
         stream = get_redis_client()
         publish = stream.publish_message
@@ -280,12 +285,22 @@ async def test_retry_interruptions_keep_one_real_epoch(
             raise asyncio.CancelledError()
 
         monkeypatch.setattr(access, "_dispatch_lifecycle", interrupted)
-        with pytest.raises(ConnectionError if mode == "lost_response" else asyncio.CancelledError):
+        # BaseHTTPMiddleware observes a cancelled handler as an ended stream;
+        # the actual ASGI transport raises this exact error before a response.
+        with pytest.raises(
+            ConnectionError if mode == "lost_response" else RuntimeError,
+            match=(
+                "controlled committed response loss"
+                if mode == "lost_response"
+                else r"^No response returned\.$"
+            ),
+        ):
             await e["human"].post(path, json=command)
         monkeypatch.setattr(access, "_dispatch_lifecycle", dispatch)
         if mode == "rollback":
             assert await _intent(async_client, e, exhausted["intent_id"]) == before
             assert (await async_client.get(f"/api/stories/{e['story']}")).json() == story_before
+            assert await _owner_notice(async_client, e["story"]) == notice_before
             assert len(await _messages(redis_client, e["project"])) == 2
         replay = await _call(e["human"], path, command)
         assert replay["disposition"] == ("dispatched" if mode == "rollback" else "in_flight")
@@ -396,8 +411,13 @@ async def test_current_native_evidence_fences_recovery(
     elif replacement == "unrelated_stop":
         story.quarantine_reason = {"reason": "unrelated quarantine"}
     elif replacement == "owner":
+        replacement_owner = (
+            await async_client.post(
+                "/api/users/", json={"telegram_id": uuid.uuid4().int % 1_000_000_000}
+            )
+        ).json()
         project = await access.load_locked_project(db_session, uuid.UUID(e["project"]))
-        project.owner_id = None
+        project.owner_id = replacement_owner["id"]
     elif replacement == "kind":
         intent.kind = "add_user"
     elif replacement == "identity":

@@ -12,7 +12,10 @@ case drives the real deploy consumer, PR polling, failed/infrastructure/secret
 recovery, native interrupted owner delivery and both audience settlements, then
 the registered PO read/retry tools and the next consumer/supervisor epoch.
 Its 61-second CI wait exercises native notice-claim spacing without editing
-attempt timestamps. PR/image/fleet/admin responses are controlled; no live
+attempt timestamps; the Python runtime bounds each case to 180 seconds without
+a pytest-timeout dependency. API notice assertions read the native notification
+endpoint, and cancellation verifies the actual ASGI error plus complete rollback.
+PR/image/fleet/admin responses are controlled; no live
 GitHub, worker, platform deployment or production recovery is proved. Local
 validation uses only named broad-unit subsets and the canonical broad wrapper.
 

@@ -136,9 +136,15 @@ async def assert_exhaustion_event(real_redis, story):
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(180)
 @pytest.mark.parametrize("route", ["retry", "poll", "infrastructure", "secret"])
 async def test_native_exhaustion_notice_and_po_retry(public_project, real_redis, route):
+    # The service image has no pytest-timeout plugin. Keep the same bound with
+    # the installed Python runtime rather than an unregistered marker.
+    async with asyncio.timeout(180):
+        await _native_exhaustion_notice_and_po_retry(public_project, real_redis, route)
+
+
+async def _native_exhaustion_notice_and_po_retry(public_project, real_redis, route):
     api, stream, project, story = public_project
     owner = await api.get(f"users/{(await api.get(f'projects/{project}'))['owner_id']}")
     await api.post(
