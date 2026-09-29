@@ -544,7 +544,7 @@ async def _dispose_conflict_refusal(task, story, decision_id, started, command, 
         task, before, TaskStatus.WAITING_HUMAN_REVIEW, command.origin.value, audit, db
     )
     task.failure_metadata = {**(task.failure_metadata or {}), **audit}
-    if disposition.reason is EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED:
+    if disposition.reason == EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED:
         # A denied reservation has no Run or executed iteration. Keep the repair
         # Task and its ceiling intact; the same repair command can release this
         # specific wait after the owner restores capacity.

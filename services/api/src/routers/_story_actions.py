@@ -428,7 +428,7 @@ async def _budget_wait_decision(
         refusal = EngineeringDispatchRefusalDisposition.model_validate(saved)
     except ValueError:
         _repair_conflict("The recorded budget refusal is malformed.")
-    if refusal.reason is not EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED:
+    if refusal.reason != EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED:
         return None
     if refusal.task_id != task.id:
         _repair_conflict("The budget refusal belongs to another Task.")
@@ -467,7 +467,7 @@ async def _budget_wait_decision(
         or (audit.command_payload or {}).get("task_id") != task.id
         or (audit.command_payload or {}).get("story_id") != story.id
         or reservation is None
-        or reservation.outcome is not EngineeringBudgetAdmissionOutcome.DENIED
+        or reservation.outcome != EngineeringBudgetAdmissionOutcome.DENIED
         or reservation.task_id != task.id
         or reservation.story_id != story.id
         or reservation.project_id != story.project_id

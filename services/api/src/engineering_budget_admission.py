@@ -164,7 +164,7 @@ async def engineering_budget_has_capacity(user_id: int, db: AsyncSession) -> boo
         .where(EngineeringBudgetPolicy.user_id == user_id)
         .with_for_update()
     )
-    if policy is None or policy.state is EngineeringBudgetPolicyState.DISABLED:
+    if policy is None or policy.state == EngineeringBudgetPolicyState.DISABLED:
         return True
     known_spend = int(
         await db.scalar(
