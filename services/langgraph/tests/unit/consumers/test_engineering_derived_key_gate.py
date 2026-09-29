@@ -31,7 +31,7 @@ COMMIT = "c0ffee0000000000000000000000000000000000"
 TASK_ID = "eng-1"
 PLANNING_TASK_ID = "task-42"
 REASON = (
-    "the platform cannot compute PUBLIC_BASE_URL; remove it, make it optional with a safe "
+    "the platform cannot compute UNSUPPORTED_DERIVED_URL; remove it, make it optional with a safe "
     "default, or use a user_secret if the user supplies it; see the capability manifest's "
     "derived keys"
 )
@@ -167,12 +167,12 @@ def _task_transitions(api) -> list[str]:
 
 @pytest.mark.asyncio
 @patch("src.consumers.engineering_result_handler.set_story_worker", new_callable=AsyncMock)
-class TestStory92b433c8:
-    async def test_a_required_public_base_url_fails_engineering_and_creates_no_deploy(
+class TestUncomputableRequiredKeys:
+    async def test_a_required_unknown_key_fails_engineering_and_creates_no_deploy(
         self, _set_worker, monkeypatch, api, mock_redis
     ):
         github = _repository(
-            monkeypatch, _with_backend_entry("PUBLIC_BASE_URL", _derived(required=True))
+            monkeypatch, _with_backend_entry("UNSUPPORTED_DERIVED_URL", _derived(required=True))
         )
 
         out = await _succeed(mock_redis)
@@ -185,7 +185,7 @@ class TestStory92b433c8:
         assert terminal["error_message"] == REASON
         result = EngineeringRunResult.model_validate(terminal["result"])
         assert result.failure_reason is EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY
-        assert result.uncomputable_derived_keys == ["PUBLIC_BASE_URL"]
+        assert result.uncomputable_derived_keys == ["UNSUPPORTED_DERIVED_URL"]
         failed = [
             c for c in mock_redis.publish_flat.await_args_list if c.args[1]["event"] == "failed"
         ]
@@ -194,7 +194,9 @@ class TestStory92b433c8:
     async def test_a_task_attempt_is_failed_for_the_supervisor_to_retry(
         self, _set_worker, monkeypatch, api, mock_redis
     ):
-        _repository(monkeypatch, _with_backend_entry("PUBLIC_BASE_URL", _derived(required=True)))
+        _repository(
+            monkeypatch, _with_backend_entry("UNSUPPORTED_DERIVED_URL", _derived(required=True))
+        )
 
         await _succeed(mock_redis, planning_task_id=PLANNING_TASK_ID)
 
@@ -202,7 +204,7 @@ class TestStory92b433c8:
         assert _deploy_runs(api) == [] and _deploy_publishes(mock_redis) == []
 
     async def test_every_uncomputable_key_is_named(self, _set_worker, monkeypatch, api, mock_redis):
-        files = _with_backend_entry("PUBLIC_BASE_URL", _derived(required=True))
+        files = _with_backend_entry("UNSUPPORTED_DERIVED_URL", _derived(required=True))
         backend = yaml.safe_load(files["services/backend/env.contract.yaml"])
         backend["entries"]["WEBHOOK_URL"] = _derived(required=True)
         files["services/backend/env.contract.yaml"] = yaml.safe_dump(backend)
@@ -211,15 +213,29 @@ class TestStory92b433c8:
         await _succeed(mock_redis)
 
         result = EngineeringRunResult.model_validate(_terminal_run_patch(api)["result"])
-        assert result.uncomputable_derived_keys == ["PUBLIC_BASE_URL", "WEBHOOK_URL"]
+        assert result.uncomputable_derived_keys == ["UNSUPPORTED_DERIVED_URL", "WEBHOOK_URL"]
         message = _terminal_run_patch(api)["error_message"]
-        assert "cannot compute PUBLIC_BASE_URL;" in message
+        assert "cannot compute UNSUPPORTED_DERIVED_URL;" in message
         assert "cannot compute WEBHOOK_URL;" in message
 
 
 @pytest.mark.asyncio
 @patch("src.consumers.engineering_result_handler.set_story_worker", new_callable=AsyncMock)
 class TestContractsThatStillDeploy:
+    async def test_required_public_base_url_passes_engineering_and_dispatches_deploy(
+        self, _set_worker, monkeypatch, api, mock_redis
+    ):
+        github = _repository(
+            monkeypatch, _with_backend_entry("PUBLIC_BASE_URL", _derived(required=True))
+        )
+        out = await _succeed(mock_redis)
+        assert out["status"] == "success"
+        assert github.refs == {COMMIT}
+        assert len(_deploy_runs(api)) == 1
+        [published] = _deploy_publishes(mock_redis)
+        assert published.args[1].head_sha == COMMIT
+        assert _terminal_run_patch(api)["status"] == RunStatus.COMPLETED.value
+
     async def test_the_kit_contract_deploys_exactly_as_before(
         self, _set_worker, monkeypatch, api, mock_redis
     ):
@@ -246,7 +262,7 @@ class TestContractsThatStillDeploy:
     async def test_an_uncomputable_key_the_deploy_skips_is_allowed(
         self, _set_worker, monkeypatch, api, mock_redis, entry
     ):
-        _repository(monkeypatch, _with_backend_entry("PUBLIC_BASE_URL", entry))
+        _repository(monkeypatch, _with_backend_entry("UNSUPPORTED_DERIVED_URL", entry))
 
         out = await _succeed(mock_redis)
 

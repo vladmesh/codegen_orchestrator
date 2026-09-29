@@ -18,14 +18,15 @@ from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.env_overrides import env_overrides_digest
 from shared.contracts.queues.deploy import DeployOutcome
-from shared.contracts.service_ports import is_http_health_port_service
 from shared.diagnostics import redact_diagnostic
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
 from ...runtime_identity import project_spec_runtime_slug
+from .deploy_workflow import require_backend_workflow
 from .dotenv_builder import build_dotenv, encode_dotenv
 from .image_gate import ImagesNotPublishedError, image_references, verify_published_images
+from .secret_resolver import SecretResolutionError, backend_allocation, backend_base_url
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -473,7 +474,6 @@ class DeployerNode(FunctionalNode):
     def _extract_deploy_params(self, state: DevOpsState) -> dict | None:
         """Extract and validate deployment parameters from state. Returns None on error."""
         project_spec = state.get("project_spec") or {}
-        allocated_resources = state.get("allocated_resources", {})
 
         repo_info = state.get("repo_info") or {}
         repo_url = repo_info.get("html_url", "")
@@ -481,14 +481,7 @@ class DeployerNode(FunctionalNode):
             return None
 
         parts = repo_url.rstrip("/").split("/")
-        deploy_resource = next(
-            (
-                resource
-                for resource in allocated_resources.values()
-                if is_http_health_port_service(resource.get("service_name"))
-            ),
-            {},
-        )
+        deploy_resource = backend_allocation(state)
 
         return {
             "owner": parts[-2],
@@ -591,7 +584,17 @@ class DeployerNode(FunctionalNode):
             await api_client.get_server_ssh_key(server_handle),
         )
 
-    async def run(self, state: DevOpsState) -> dict:  # noqa: PLR0911
+    async def run(self, state: DevOpsState) -> dict:
+        """Preserve typed endpoint refusal before any external deploy effect."""
+        try:
+            return await self._deploy(state)
+        except SecretResolutionError as error:
+            return {
+                "errors": [str(error)],
+                "resolution_outcome": DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+            }
+
+    async def _deploy(self, state: DevOpsState) -> dict:  # noqa: PLR0911
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
         run_id = state.get("run_id")
@@ -643,6 +646,8 @@ class DeployerNode(FunctionalNode):
 
             if await self._run_cancelled(run_id):
                 return {"deployment_result": {"status": "cancelled"}}
+
+            await require_backend_workflow(github, owner, repo, server_ip, deployed_commit_sha)
 
             # 0. Nothing is deployed before the deployed commit's images are
             # read back. The references come from the resolved environment, so
@@ -811,7 +816,7 @@ class DeployerNode(FunctionalNode):
                 diagnostic_secrets=diagnostic_secrets,
             )
 
-            deployed_url = f"http://{server_ip}:{port}"
+            deployed_url = backend_base_url(state)
             suffix = " (after rerun)" if rerun else ""
             return {
                 "deployment_result": {
@@ -832,22 +837,7 @@ class DeployerNode(FunctionalNode):
             }
 
         except (RuntimeError, TimeoutError) as e:
-            if type(e).__name__ in _CANCELLATION_ERRORS:
-                if type(e).__name__ == "WorkflowCancellationUnprovenError":
-                    raise
-                logger.info("deploy_workflow_cancelled", project_id=project_id, run_id=run_id)
-                return {"deployment_result": {"status": "cancelled"}}
-
-            error_prefix = (
-                "Deploy timeout" if isinstance(e, TimeoutError) else "Deploy workflow failed"
-            )
-            return {
-                "deployment_result": {
-                    "status": "failed",
-                    "error": redact_diagnostic(e, secrets=diagnostic_secrets),
-                },
-                "errors": [f"{error_prefix}: {redact_diagnostic(e, secrets=diagnostic_secrets)}"],
-            }
+            return self._workflow_failure(e, project_id, run_id, diagnostic_secrets)
 
         except Exception as e:
             logger.error(
@@ -861,3 +851,21 @@ class DeployerNode(FunctionalNode):
                 },
                 "errors": [f"Deployment error: {redact_diagnostic(e, secrets=diagnostic_secrets)}"],
             }
+
+    @staticmethod
+    def _workflow_failure(error, project_id, run_id, diagnostic_secrets):
+        if isinstance(error, SecretResolutionError):
+            raise error
+        if type(error).__name__ in _CANCELLATION_ERRORS:
+            if type(error).__name__ == "WorkflowCancellationUnprovenError":
+                raise error
+            logger.info("deploy_workflow_cancelled", project_id=project_id, run_id=run_id)
+            return {"deployment_result": {"status": "cancelled"}}
+        error_prefix = (
+            "Deploy timeout" if isinstance(error, TimeoutError) else "Deploy workflow failed"
+        )
+        reason = redact_diagnostic(error, secrets=diagnostic_secrets)
+        return {
+            "deployment_result": {"status": "failed", "error": reason},
+            "errors": [f"{error_prefix}: {reason}"],
+        }

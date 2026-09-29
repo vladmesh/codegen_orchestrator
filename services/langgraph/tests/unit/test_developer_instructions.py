@@ -84,8 +84,9 @@ class TestDeveloperInstructions:
         listed = set(re.findall(r"`([A-Z_*]+)`", rule))
 
         assert {entry.key for entry in load_manifest().derived_keys} <= listed
-        assert all(is_computable_derived_key(key) for key in listed - {"PUBLIC_BASE_URL"})
-        assert not is_computable_derived_key("PUBLIC_BASE_URL")
+        assert all(is_computable_derived_key(key) for key in listed)
+        assert "PUBLIC_BASE_URL" in listed
+        assert not is_computable_derived_key("UNSUPPORTED_DERIVED_URL")
         assert (
             "the platform cannot compute it; remove it, make it optional with a safe default, "
             "or use a `user_secret` if the user supplies it"

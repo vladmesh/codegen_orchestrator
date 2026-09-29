@@ -10,7 +10,7 @@ services:
     build:
       context: ../../..
       dockerfile: tests/compose/integration/Dockerfile.template
-    command: ["pytest", "tests/integration/template/test_copier_generates_project.py", "tests/integration/template/test_pinned_template.py", "-v"]
+    command: ["pytest", "tests/integration/template/test_copier_generates_project.py", "tests/integration/template/test_pinned_template.py", "tests/integration/template/test_released_deploy_upgrade.py", "-v"]
     environment:
       - PYTHONUNBUFFERED=1
       # Use GitHub URL - copier will clone it

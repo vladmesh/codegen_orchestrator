@@ -38,6 +38,7 @@ from shared.contracts.dto.settings_seed import (
     SettingSeedOutcome,
 )
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
     GrantIntentLifecycleDisposition,
@@ -357,6 +358,19 @@ async def _route_deploy_outcome(
         return DeploySupervisorAction.WAITING
 
     if outcome in _TERMINAL_FAILURE_OUTCOMES:
+        if outcome is DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED:
+            await api_client.stop_story(
+                story_id,
+                "fail",
+                StoryFailure(
+                    code=StoryFailureCode.ENVIRONMENT_RESOLUTION_FAILED,
+                    source="scheduler",
+                    detail=result.error_details
+                    or "Required deployment environment could not be resolved",
+                ),
+                actor="deploy_supervisor",
+            )
+            return DeploySupervisorAction.FAILED
         await _handle_deploy_give_up(api_client, story_id, project_id, run, log)
         return DeploySupervisorAction.FAILED
 

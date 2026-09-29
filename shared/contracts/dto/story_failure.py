@@ -59,6 +59,8 @@ class StoryFailureCode(StrEnum):
     PLANNING_FAILED = "planning_failed"
     #: Engineering produced no new code, or GitHub refused a PR with no commits.
     NO_NEW_COMMIT = "no_new_commit"
+    #: The deploy could not compute the required production environment.
+    ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
 
 
 class StoryFailure(BaseModel):
@@ -95,6 +97,10 @@ _OWNER_WORDS: dict[StoryFailureCode, str] = {
     ),
     StoryFailureCode.NO_NEW_COMMIT: (
         "Work on this change stopped: nothing was produced to merge or deploy."
+    ),
+    StoryFailureCode.ENVIRONMENT_RESOLUTION_FAILED: (
+        "Deployment of this change stopped: "
+        "the platform could not resolve its required environment."
     ),
 }
 

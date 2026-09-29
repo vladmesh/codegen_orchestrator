@@ -845,7 +845,8 @@ async def _route_deploy_result(
     redis: RedisStreamClient,
 ) -> dict:
     """Map one DevOps-subgraph result to the deploy worker's durable typed outcome."""
-    if result.get("deployment_result", {}).get("status") == "cancelled":
+    deployment_result = result.get("deployment_result")
+    if deployment_result is not None and deployment_result.get("status") == "cancelled":
         logger.info("deploy_job_cancelled_during_actions", task_id=msg.task_id)
         await api_client.patch(
             f"runs/{msg.task_id}",

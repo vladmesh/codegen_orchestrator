@@ -14,11 +14,13 @@ import httpx
 import structlog
 
 from shared.contracts.dto.project import ServiceModule
+from shared.contracts.queues.deploy import DeployOutcome
 from shared.diagnostics import redact_diagnostic
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode, RetryPolicy
 from ...runtime_identity import SERVICE_BASE_DIR, project_spec_runtime_slug
+from .secret_resolver import SecretResolutionError, backend_allocation, backend_http_url
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -32,6 +34,18 @@ BOT_API_BASE = "https://api.telegram.org"
 # Compose service names on the deployed project match the module names
 TG_BOT_SERVICE = ServiceModule.TG_BOT.value
 SMOKE_CHECKED_MODULES = (ServiceModule.BACKEND, ServiceModule.TG_BOT)
+
+
+def _backend_resource(state, modules):
+    if ServiceModule.BACKEND not in modules:
+        return None
+    resources = state.get("allocated_resources", {})
+    if isinstance(resources, dict) and not any(
+        isinstance(resource, dict) and resource.get("service_name") == "backend"
+        for resource in resources.values()
+    ):
+        return None
+    return backend_allocation(state)
 
 
 class TgBotCheckFailed(Exception):
@@ -67,18 +81,33 @@ class SmokeTesterNode(FunctionalNode):
         )
 
     async def run(self, state: DevOpsState) -> dict:
+        """Refuse invalid backend state before HTTP or diagnostic SSH handoff."""
+        try:
+            return await self._smoke(state)
+        except SecretResolutionError as error:
+            return {
+                "errors": [str(error)],
+                "resolution_outcome": DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+            }
+
+    async def _smoke(self, state: DevOpsState) -> dict:
         """Run smoke tests for all deployed modules."""
         project_spec = state.get("project_spec") or {}
         config = project_spec.get("config") or {}
         modules = config.get("modules", [])
         allocated_resources = state.get("allocated_resources", {})
         diagnostic_secrets = _resolved_secret_values(state)
+        backend = _backend_resource(state, modules)
 
         checks = []
         errors = []
 
         for module in modules:
-            resource = self._find_resource(allocated_resources, module)
+            resource = (
+                backend
+                if module == ServiceModule.BACKEND
+                else self._find_resource(allocated_resources, module)
+            )
             if not resource:
                 logger.warning("smoke_no_resource", module=module)
                 # A module we know how to check but cannot reach stays unverified,
@@ -220,7 +249,7 @@ class SmokeTesterNode(FunctionalNode):
         self, server_ip: str, port: int, diagnostic_secrets: Iterable[str] = ()
     ) -> dict:
         """GET /health with retries."""
-        url = f"http://{server_ip}:{port}/health"
+        url = backend_http_url(server_ip, port) + "/health"
         last_error = None
 
         async with httpx.AsyncClient() as client:

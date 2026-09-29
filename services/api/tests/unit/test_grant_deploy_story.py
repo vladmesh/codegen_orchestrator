@@ -41,6 +41,7 @@ def _intent(kind: GrantIntentKind) -> UsersGrantIntent:
         target_sha=HEAD_SHA,
         status=GrantIntentStatus.PUBLISH_OWED.value,
         attempts=1,
+        execution_run_id="deploy-grant-cec48072",
     )
 
 
@@ -66,6 +67,8 @@ async def _published(dispatch) -> DeployMessage:
     redis.publish_message = AsyncMock()
     db = MagicMock()
     db.commit = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock())
+    db.refresh = AsyncMock()
     with patch.object(
         access,
         "resolve_project_recipient",

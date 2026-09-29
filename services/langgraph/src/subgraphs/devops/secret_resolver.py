@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from ipaddress import ip_address
+from ipaddress import IPv6Address, ip_address
 import json
 import os
 import secrets as secrets_module
@@ -71,6 +71,65 @@ def _enabled_modules(project_spec: dict, state: DevOpsState) -> str:
     return ",".join(modules)
 
 
+def backend_allocation(state: DevOpsState) -> dict:
+    """The single validated backend allocation used for deployment and self links."""
+    try:
+        if not isinstance(state.get("allocated_resources", {}), dict):
+            raise SecretResolutionError("Invalid backend allocation mapping")
+        endpoint = SecretResolverNode._find_allocation(state, "backend")
+        if endpoint is None:
+            raise SecretResolutionError("Missing allocation for service backend")
+    except SecretResolutionError as error:
+        raise SecretResolutionError(f"PUBLIC_BASE_URL: {error}") from error
+    backend_http_url(*endpoint)
+    return next(
+        resource
+        for resource in state["allocated_resources"].values()
+        if isinstance(resource, dict) and resource.get("service_name") == "backend"
+    )
+
+
+def backend_base_url(state: DevOpsState) -> str:
+    """Plain HTTP at the allocated address; IPv6 literals require URL brackets."""
+    allocation = backend_allocation(state)
+    return backend_http_url(allocation["server_ip"], allocation["port"])
+
+
+def backend_http_url(server_ip: str, port: int) -> str:
+    """Validate the effective address before formatting the HTTP consumer's host."""
+    try:
+        address = ip_address(server_ip)
+    except ValueError as error:
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend address is invalid") from error
+    effective = (address.ipv4_mapped or address) if isinstance(address, IPv6Address) else address
+    if (
+        effective.is_loopback
+        or effective.is_unspecified
+        or effective.is_multicast
+        or (isinstance(address, IPv6Address) and address.scope_id)
+    ):
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend address is unusable")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= _MAX_TCP_PORT:
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend port is invalid")
+    if isinstance(address, IPv6Address):
+        # Keep existing hexadecimal self URLs stable when Python changes the
+        # spelling of IPv4-mapped IPv6Address.compressed across patch releases.
+        mapped = address.ipv4_mapped
+        host = (
+            f"::ffff:{int(mapped) >> 16:x}:{int(mapped) & 0xFFFF:x}"
+            if mapped is not None
+            else address.compressed
+        )
+        host = f"[{host}]"
+    else:
+        host = address.compressed
+    return f"http://{host}:{port}"
+
+
+def _public_base_url(project_spec: dict, state: DevOpsState) -> str:
+    return backend_base_url(state)
+
+
 #: Derived keys computed from the project and deploy context, by name. With
 #: `_STATIC_SECRETS`, `_PORT_SERVICE_MAP` and the `IMAGE_KEY_SUFFIX` family this is
 #: every derived key a deploy can resolve; `docs/platform_capabilities.yaml` lists
@@ -81,6 +140,7 @@ CONTEXT_DERIVED_SECRETS: dict[str, Callable[[dict, DevOpsState], str]] = {
     "POSTGRES_DB": _postgres_db,
     "COMPOSE_PROJECT_NAME": _runtime_slug,
     "ENABLED_MODULES": _enabled_modules,
+    "PUBLIC_BASE_URL": _public_base_url,
 }
 
 #: A derived key ending in this names the published image of one product service.
@@ -340,7 +400,8 @@ class SecretResolverNode(FunctionalNode):
             raise SecretResolutionError("project slug is required for secret resolution")
         return project_id, project_spec
 
-    def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
+    @staticmethod
+    def _find_allocation(state: DevOpsState, service_name: str) -> tuple[str, int] | None:
         """Look up allocated server IP and port for a service.
 
         Searches allocated_resources by matching service_name field.

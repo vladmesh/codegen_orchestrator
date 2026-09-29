@@ -55,7 +55,11 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantUpdate,
 )
 from shared.contracts.dto.user import UserDTO
-from shared.contracts.dto.users_grant import GrantIntentLifecycleResult
+from shared.contracts.dto.users_grant import (
+    GrantIntentKind,
+    GrantIntentLifecycleRequest,
+    GrantIntentLifecycleResult,
+)
 from shared.contracts.dto.work_admission import PaidRunStartCommand, PaidRunStartRead
 from src.config import get_settings
 
@@ -193,17 +197,24 @@ class SchedulerAPIClient(InternalAPIClient):
         return RunDTO.model_validate(resp.json())
 
     async def resume_initial_owner_grant(
-        self, project_id: str, *, story_id: str, head_sha: str, deployed_commit_sha: str
+        self,
+        project_id: str,
+        *,
+        story_id: str,
+        head_sha: str,
+        deployed_commit_sha: str,
+        merged_pr_number: int | None = None,
     ) -> GrantIntentLifecycleResult:
         resp = await self.request(
             "POST",
             f"projects/{project_id}/users/grant-intents/lifecycle",
-            json={
-                "kind": "initial_owner",
-                "story_id": story_id,
-                "head_sha": head_sha,
-                "deployed_commit_sha": deployed_commit_sha,
-            },
+            json=GrantIntentLifecycleRequest(
+                kind=GrantIntentKind.INITIAL_OWNER,
+                story_id=story_id,
+                head_sha=head_sha,
+                deployed_commit_sha=deployed_commit_sha,
+                merged_pr_number=merged_pr_number,
+            ).model_dump(mode="json", exclude_none=True),
         )
         return GrantIntentLifecycleResult.model_validate(resp.json())
 

@@ -5,6 +5,7 @@ WORKDIR /app
 # Install git (required by copier) and curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install test dependencies
@@ -13,6 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy tests (usually mounted, but good for caching)
 COPY tests/integration/template /app/tests/integration/template
+COPY scripts/__init__.py scripts/template_pin.py scripts/system_configs.yaml /app/scripts/
+COPY services/langgraph/src/subgraphs/devops/deploy_workflow.py /app/services/langgraph/src/subgraphs/devops/deploy_workflow.py
 
 ENV PYTHONPATH=/app
 

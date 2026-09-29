@@ -12,6 +12,7 @@ import structlog
 
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
+from shared.contracts.dto.story_failure import bounded_diagnostic
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.redis import RedisStreamClient
 
@@ -42,6 +43,8 @@ async def _handle_deploy_failure(
     WAITING_FOR_USER_SECRET outcome, `missing_user_secrets` carries the
     structured keys the scheduler asks the user for.
     """
+    if deploy_outcome is DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED:
+        error_msg = bounded_diagnostic(error_msg)
     run_result = DeployRunResult(
         deploy_outcome=deploy_outcome,
         error_details=error_msg,

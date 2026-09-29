@@ -58,6 +58,49 @@ failure without a generic outcome. The Langgraph runner carries scheduler source
 real supervision in a separate Python process against the consumer's persisted planned result;
 API, Langgraph and scheduler changes all select this Langgraph service leg in CI.
 
+`services/langgraph/tests/service/test_public_deploy.py` uses that same selected CI leg:
+the real DevOps graph and deploy consumer persist an unknown required derived-key failure,
+then the real scheduler commits its typed story stop and recovers owner delivery after an
+interrupted Redis publication. The current merged PR poller, with deterministic GitHub App
+and successful publication fixtures, crosses the real lifecycle API after committed grant
+exhaustion. PostgreSQL/Redis readback proves immutable prior Runs, separate head/built SHAs,
+one bounded replacement epoch and one dispatch under concurrent admission. Missing, malformed,
+stale-cycle and mismatched evidence fail closed. API service tests retain the ordinary
+target-reset and safety assertions with current-merge evidence and test observation forgery
+through a public bearer. Pure Langgraph tests cover IPv4/IPv6, backend selection, sensitivity,
+invalid endpoints and a deterministic resolver-to-dotenv-to-successful-deploy handoff.
+No live GitHub mutation, paid provider or stand is used.
+
+The public-deploy service cases also persist mapped loopback/unspecified/multicast
+refusal and the unupgraded IPv6 workflow cause through the same Run, transactional
+story stop and interrupted/owed owner delivery. Content fixtures exercise actual
+GitHub App JWT verification, token exchange and authenticated raw-content reads
+at the built SHA. Unknown/disabled/comment-only/customized executable source and
+committed workflow rejections refuse before mutations. Healthy graph fixtures
+use installed HTTPX request construction with a controlled nonconnecting transport:
+resolved dotenv, deployed URL and `/health` agree for IPv4, native and mapped IPv6.
+Run API and Langgraph suites sequentially on their isolated shared DB/Redis; their
+retry controls are test fixtures and must not race.
+
+`uv run python -m pytest tests/integration/template/test_released_deploy_upgrade.py -q`
+renders the exact preceding annotated kit release, commits owned synthetic app,
+spec and environment bytes, updates to the production pin on a review branch,
+and reads all owned bytes back. A nonoverlapping workflow name survives; an overlapping
+runner hunk produces `.rej` despite zero exit/new answers and can include the owned name
+in the same rejection. The test reviews every rejected customization, restores the name,
+accepts the released runner, and reads back and commits the complete workflow. Released copy-shell
+command capture and installed `ssh -G`/`scp -S` verify native/mapped IPv6 host parsing in default SFTP and
+legacy SCP modes without connecting. Both the template integration runner and the
+selected CI baseline compatibility leg run this regression.
+
+`make test-template-compat ARTIFACT_DIR=<isolated path>` runs the production pin's
+actual generation/setup (root/service frozen sync), lint/tests, worker probe/call,
+access denial and package recipe. Its JSON records source/ref/resolved SHA, completed
+phases and container/network/volume cleanup readback. The selected CI baseline uses
+the same command under `ci-infra.sh bound`. No noop replacement, live product update,
+external appleboy execution, remote SSH authentication, registry publication, paid
+pipeline or production deployment is covered by these checks.
+
 ## Pre-push Hook
 
 Runs automatically before `git push`:

@@ -1,5 +1,6 @@
 """Service coverage for the durable intent lifecycle, separate from Runs."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 import uuid
 
@@ -10,6 +11,81 @@ from shared.tests.ssh_key_fixtures import fleet_private_key
 
 BUILT_SHA = "e" * 40
 REBOUND_BUILT_SHA = "f" * 40
+
+
+async def _current_merged_replacement(client, project_id):
+    """A new automatic target is authorized by the current published merge."""
+    story = (
+        await client.post(
+            "/api/stories/", json={"project_id": project_id, "title": "Merged repair"}
+        )
+    ).json()
+    story_id = story["id"]
+    for action in ("start", "pr_review"):
+        response = await client.post(f"/api/stories/{story_id}/{action}")
+        assert response.status_code == 200, response.text
+    repo = (await client.get("/api/repositories/", params={"project_id": project_id})).json()[0]
+    timeline = {
+        "pull_request": {
+            "number": 42,
+            "state": "closed",
+            "merged_at": datetime.now(UTC).isoformat(),
+            "head_sha": "b" * 40,
+            "merge_commit_sha": REBOUND_BUILT_SHA,
+        },
+        "latest_ci_observation": {
+            "ci_run_id": 12345,
+            "ci_status": "completed",
+            "ci_conclusion": "success",
+        },
+        "ci_runs": [
+            {
+                "id": 12345,
+                "branch": "main",
+                "head_sha": REBOUND_BUILT_SHA,
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ],
+        "deploy_observation": {
+            "story_id": story_id,
+            "project_id": project_id,
+            "repository_url": repo["git_url"],
+            "observed_at": datetime.now(UTC).isoformat(),
+        },
+    }
+    response = await client.patch(
+        f"/api/stories/{story_id}", json={"pr_number": 42, "generated_product_timeline": timeline}
+    )
+    assert response.status_code == 200, response.text
+    return {"story_id": story_id, "merged_pr_number": 42}
+
+
+@pytest.mark.asyncio
+async def test_public_caller_cannot_write_trusted_merged_deploy_observation(async_client):
+    from httpx import ASGITransport, AsyncClient
+
+    from src.dependencies import create_lk_jwt
+    from src.main import app
+
+    project_id, owner, _, _, _, _ = await _target(async_client)
+    request = await _current_merged_replacement(async_client, project_id)
+    path = f"/api/stories/{request['story_id']}"
+    original = (await async_client.get(path)).json()
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {create_lk_jwt(owner['id'])}"},
+    ) as public:
+        ordinary = await public.patch(path, json={"title": "Owner's ordinary update"})
+        assert ordinary.status_code == 200
+        forged = await public.patch(
+            path, json={"generated_product_timeline": original["generated_product_timeline"]}
+        )
+    assert forged.status_code == 403
+    assert (await async_client.get(path)).json()["generated_product_timeline"] == original[
+        "generated_product_timeline"
+    ]
 
 
 class _PublishRedis:
@@ -378,7 +454,8 @@ async def test_target_rebind_starts_a_fresh_bounded_retry_epoch(async_client):
             json={
                 "kind": "initial_owner",
                 "head_sha": "b" * 40,
-                "deployed_commit_sha": BUILT_SHA,
+                "deployed_commit_sha": REBOUND_BUILT_SHA,
+                **await _current_merged_replacement(async_client, project_id),
             },
         )
     finally:
@@ -471,7 +548,8 @@ async def test_automatic_stale_recovery_after_replacement_returns_no_dispatch(as
             json={
                 "kind": "initial_owner",
                 "head_sha": "b" * 40,
-                "deployed_commit_sha": BUILT_SHA,
+                "deployed_commit_sha": REBOUND_BUILT_SHA,
+                **await _current_merged_replacement(async_client, project_id),
             },
         )
         await async_client.post(
@@ -532,7 +610,8 @@ async def test_automatic_backwards_target_history_rebind_is_refused(async_client
             json={
                 "kind": "initial_owner",
                 "head_sha": "b" * 40,
-                "deployed_commit_sha": BUILT_SHA,
+                "deployed_commit_sha": REBOUND_BUILT_SHA,
+                **await _current_merged_replacement(async_client, project_id),
             },
         )
         await async_client.post(
@@ -597,7 +676,8 @@ async def test_alternating_automatic_stale_shas_terminate_without_extra_publish(
             json={
                 "kind": "initial_owner",
                 "head_sha": "b" * 40,
-                "deployed_commit_sha": BUILT_SHA,
+                "deployed_commit_sha": REBOUND_BUILT_SHA,
+                **await _current_merged_replacement(async_client, project_id),
             },
         )
         stale_while_live = await async_client.post(

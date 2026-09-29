@@ -816,6 +816,7 @@ async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_g
         story_id="story-1",
         head_sha="a" * 40,
         deployed_commit_sha="e" * 40,
+        merged_pr_number=42,
     )
     api.create_run.assert_not_awaited()
     redis.publish_message.assert_not_awaited()

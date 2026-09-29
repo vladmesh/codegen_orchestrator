@@ -536,6 +536,12 @@ jobs:
         timeout-minutes: 3
         uses: ./.github/actions/setup-uv-with-retry
 
+      - name: Verify released product upgrades
+        if: matrix.candidate == false
+        run: >-
+          bash scripts/ci-infra.sh bound --step compatibility-upgrade --timeout 3m --
+          uv run python -m pytest tests/integration/template/test_released_deploy_upgrade.py -q
+
       - name: Run baseline compatibility smoke
         if: matrix.candidate == false
         run: >-
