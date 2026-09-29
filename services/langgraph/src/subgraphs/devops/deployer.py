@@ -23,6 +23,7 @@ from shared.diagnostics import redact_diagnostic
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
 from ...runtime_identity import project_spec_runtime_slug
+from .deploy_workflow import require_backend_workflow
 from .dotenv_builder import build_dotenv, encode_dotenv
 from .image_gate import ImagesNotPublishedError, image_references, verify_published_images
 from .secret_resolver import SecretResolutionError, backend_allocation, backend_base_url
@@ -646,6 +647,8 @@ class DeployerNode(FunctionalNode):
             if await self._run_cancelled(run_id):
                 return {"deployment_result": {"status": "cancelled"}}
 
+            await require_backend_workflow(github, owner, repo, server_ip, deployed_commit_sha)
+
             # 0. Nothing is deployed before the deployed commit's images are
             # read back. The references come from the resolved environment, so
             # this asks about exactly the tags the target will pull, and it runs
@@ -834,22 +837,7 @@ class DeployerNode(FunctionalNode):
             }
 
         except (RuntimeError, TimeoutError) as e:
-            if type(e).__name__ in _CANCELLATION_ERRORS:
-                if type(e).__name__ == "WorkflowCancellationUnprovenError":
-                    raise
-                logger.info("deploy_workflow_cancelled", project_id=project_id, run_id=run_id)
-                return {"deployment_result": {"status": "cancelled"}}
-
-            error_prefix = (
-                "Deploy timeout" if isinstance(e, TimeoutError) else "Deploy workflow failed"
-            )
-            return {
-                "deployment_result": {
-                    "status": "failed",
-                    "error": redact_diagnostic(e, secrets=diagnostic_secrets),
-                },
-                "errors": [f"{error_prefix}: {redact_diagnostic(e, secrets=diagnostic_secrets)}"],
-            }
+            return self._workflow_failure(e, project_id, run_id, diagnostic_secrets)
 
         except Exception as e:
             logger.error(
@@ -863,3 +851,21 @@ class DeployerNode(FunctionalNode):
                 },
                 "errors": [f"Deployment error: {redact_diagnostic(e, secrets=diagnostic_secrets)}"],
             }
+
+    @staticmethod
+    def _workflow_failure(error, project_id, run_id, diagnostic_secrets):
+        if isinstance(error, SecretResolutionError):
+            raise error
+        if type(error).__name__ in _CANCELLATION_ERRORS:
+            if type(error).__name__ == "WorkflowCancellationUnprovenError":
+                raise error
+            logger.info("deploy_workflow_cancelled", project_id=project_id, run_id=run_id)
+            return {"deployment_result": {"status": "cancelled"}}
+        error_prefix = (
+            "Deploy timeout" if isinstance(error, TimeoutError) else "Deploy workflow failed"
+        )
+        reason = redact_diagnostic(error, secrets=diagnostic_secrets)
+        return {
+            "deployment_result": {"status": "failed", "error": reason},
+            "errors": [f"{error_prefix}: {reason}"],
+        }

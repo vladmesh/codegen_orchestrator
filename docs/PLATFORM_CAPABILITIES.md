@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 7, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 8, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -31,12 +31,14 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ## Technical detail
 
-Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `f23460c62fa3508858c0552557b2860af09f2656`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
+Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `04e2d94826f0dd6b46be3d7345b46cdd677db7ed`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
 
 Code it was read from:
 
 - `services/langgraph/src/subgraphs/devops/deployer.py`
 - `services/langgraph/src/subgraphs/devops/secret_resolver.py`
+- `services/langgraph/src/subgraphs/devops/deploy_workflow.py`
+- `services/langgraph/src/subgraphs/devops/smoke.py`
 - `services/langgraph/src/allocations.py`
 - `services/langgraph/src/consumers/deploy.py`
 - `services/langgraph/src/agents/po/tools_projects.py`
@@ -51,7 +53,7 @@ Code it was read from:
 
 #### Plain HTTP self links
 
-How: Required production derived `PUBLIC_BASE_URL` resolves from the single trusted backend allocation to the same HTTP endpoint the deployer reports, with bracketed IPv6 literals. Missing, invalid or ambiguous allocations fail with that key named. This supplies an address only; domain allocation, TLS, frontend and inbound webhook capabilities remain unsupported.
+How: Required derived `PUBLIC_BASE_URL` is the single backend's HTTP endpoint shared by resolver, deployer and smoke; IPv6 is bracketed. Missing/ambiguous allocations and effective native/mapped loopback, unspecified or multicast addresses fail with the key named. IPv6 deploy reads released executable transport at the built commit, refusing unverified workflows or .rej with DEPLOY_HOST named. Existing products need a reviewed kit update and reconciled merge. No domain/TLS/frontend/inbound webhook capability is added.
 
 #### Telegram bot
 
@@ -113,7 +115,7 @@ Why: Postgres and Redis get host ports allocated, but production compose publish
 
 Why: Nothing snapshots or copies the `db_data` volume; it lives only on the product's server.
 
-### Kit at f23460c62fa3
+### Kit at 04e2d94826f0
 
 Modules:
 

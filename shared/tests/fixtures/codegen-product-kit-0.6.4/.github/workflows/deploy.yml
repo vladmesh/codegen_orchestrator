@@ -5,7 +5,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -19,13 +19,31 @@ jobs:
 
       - name: Copy compose files to server
         run: |
+          set -euo pipefail
           SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=30 -i ~/.ssh/deploy_key"
-          HOST="${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}"
-          TARGET="/opt/services/${{ secrets.PROJECT_NAME }}/infra"
+          DEPLOY_USER="${{ secrets.DEPLOY_USER }}"
+          DEPLOY_HOST="${{ secrets.DEPLOY_HOST }}"
+          PROJECT_NAME="${{ secrets.PROJECT_NAME }}"
+          : "${DEPLOY_USER:?DEPLOY_USER is not set}"
+          : "${DEPLOY_HOST:?DEPLOY_HOST is not set}"
+          : "${PROJECT_NAME:?PROJECT_NAME is not set}"
+          case "$DEPLOY_HOST" in
+            *'['*|*']'*)
+              echo "DEPLOY_HOST must be a raw host without brackets" >&2
+              exit 1
+              ;;
+          esac
+          HOST="$DEPLOY_USER@$DEPLOY_HOST"
+          SCP_HOST="$HOST"
+          # SCP's host:path grammar needs brackets around IPv6; SSH uses the raw host.
+          case "$DEPLOY_HOST" in
+            *:*) SCP_HOST="$DEPLOY_USER@[$DEPLOY_HOST]" ;;
+          esac
+          TARGET="/opt/services/$PROJECT_NAME/infra"
           for attempt in 1 2 3; do
             echo "SCP attempt $attempt/3"
             if ssh $SSH_OPTS "$HOST" "mkdir -p $TARGET" && \
-               scp $SSH_OPTS infra/compose.base.yml infra/compose.prod.yml "$HOST:$TARGET/"; then
+               scp $SSH_OPTS infra/compose.base.yml infra/compose.prod.yml "$SCP_HOST:$TARGET/"; then
               echo "SCP succeeded"
               exit 0
             fi

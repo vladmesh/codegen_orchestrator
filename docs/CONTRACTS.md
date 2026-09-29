@@ -1372,10 +1372,13 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.6.3` tag, which dereferences to
-`f23460c62fa3508858c0552557b2860af09f2656`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.6.3` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.6.4` tag, object
+`2fe1dc027834d4118eff21af81dc942909aa7ebf`, which dereferences to
+`04e2d94826f0dd6b46be3d7345b46cdd677db7ed`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.6.4` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`.
+It represents the committed checkout: generated ignored `.env` and `TASK.md`
+are omitted; every versioned rendered file retains the producer's bytes.
 Its main-push image workflow runs frozen root sync, frozen `services/backend`
 sync, and generation in that order before building either service image.
 The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
@@ -1386,6 +1389,29 @@ Existing Copier products retain owned ORM files: their later update must reconci
 `User.id`, `UserChannel.user_id`, and `Setting.subject_id` and apply the forward
 migration. Downgrade refuses data or sequence values outside int32. This pin
 changes new-product scaffolding; it does not migrate deployed products.
+The generated deployment runs on `ubuntu-24.04`, keeps `DEPLOY_HOST` raw for
+native SSH and appleboy/ssh-action, and brackets IPv6 only in the native SCP
+remote destination. The same two compose files, target, options and three
+attempts remain. Root tooling and its lock resolve the released commit; backend
+and bot retain their own frozen service environments. Application/tooling
+versions remain `0.1.0`; minimum Copier remains `9.0.0`.
+
+Existing products need a reviewed Copier update on a clean review branch:
+`copier update --defaults --trust --vcs-ref=0.6.4 --conflict=rej`. Preserve selected
+modules and owned application/spec/environment bytes, back up ignored real
+environment data through the product's restricted procedure, and compare its
+bytes locally without exposing credentials. Read back answers/source, tooling
+revision, both frozen environments and the full workflow. An exit of zero and
+new answers can coexist with `.rej`: Copier installs the candidate workflow
+while retaining rejected local hunks in the artifact and committed predecessor.
+Reconcile each hunk deliberately, retain reviewed unrelated customizations,
+resolve rejection artifacts and validate the product before its normal reviewed
+merge and image publication. No bulk updater or remote workflow patch exists.
+The immutable [release notes](https://github.com/vladmesh/codegen-product-kit/blob/04e2d94826f0dd6b46be3d7345b46cdd677db7ed/docs/releases/0.6.4.md)
+and generated `infra/README.md` describe this boundary; the release document's
+preparation heading predates publication, whose annotated identity above was
+independently read back. External action execution, remote authentication and
+production deployment are outside the nonconnecting validation boundary.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
 (`tests/live/pipeline_helpers.py`, still overridable per run by
@@ -1675,11 +1701,41 @@ an entry only when it is optional.
 
 Required production derived `PUBLIC_BASE_URL` is the allocated backend's plain HTTP address
 and port. Resolver and deployer use the same single backend allocation, independent of resource
-ordering; standard-library IP validation and bracketed IPv6 formatting apply. Absent, invalid
+ordering; standard-library IP validation and bracketed IPv6 formatting apply. The effective
+`ipv4_mapped` address must also pass the same loopback/unspecified/multicast refusal; scoped
+IPv6 remains unusable. Usable mapped/native IPv6 and private addresses retain their existing
+allocation policy. Resolver, deployer and actual HTTP smoke reuse that validation; smoke adds
+exactly one `/health` suffix. Absent, invalid
 or ambiguous endpoints fail `environment_resolution_failed` naming `PUBLIC_BASE_URL`.
 Overrides cannot replace derived values. The canonical derived entry stays non-sensitive;
 other entry kinds retain their declared sensitivity routing. This supplies no domain, TLS,
 frontend or webhook guarantee.
+
+For IPv6 allocations, `DeployerNode` uses the authenticated
+`GitHubAppClient.get_file_contents` at the full `deployed_commit_sha` to read
+`.github/workflows/deploy.yml` and its `.rej` before credentials, repository secret
+writes, fencing, temporary tags, dispatch or rerun. IPv4 keeps its existing
+admission boundary. `deploy_workflow.py` recognizes a bounded released executable
+shape: sole unconditional `deploy` job, `workflow_dispatch`, `ubuntu-24.04` and
+the released checkout/key/copy/SSH-action steps in order. A SHA-256 digest of
+those parsed steps, excluding presentation names, is tested against the actual
+pin render. It includes shell bodies, action inputs and env expressions, so raw
+SSH/action host, bracketed SCP host, compose files, target and retry semantics
+are established by executable source. Workflow/job/step names, outer YAML
+comments/formatting, permissions and job timeout can differ. Extra jobs/steps,
+conditionals, aliases, duplicate keys, shell defaults, environment overrides or
+unrecognized executable variants refuse; no general shell interpreter is used.
+
+Missing/unreadable source, an invalid built SHA, unknown transport or a retained
+workflow `.rej` yields `ENVIRONMENT_RESOLUTION_FAILED` with a bounded cause naming
+`.github/workflows/deploy.yml`, `DEPLOY_HOST` and the required reviewed kit update.
+Source and HTTP exception bodies never enter diagnostics. Neither answers/version
+markers, comments nor a fixed unselected step establish admission. The existing
+typed Run and atomic scheduler StoryFailure/owed owner notices preserve this
+cause. Reruns remain bound to the same verified built SHA, existing dispatch lease,
+publication check, cancellation and temporary-tag cleanup. A subsequent current
+merged/published updated target still needs the API-owned grant replacement
+authority described above; changing a marker or caller flag cannot reopen it.
 
 `handle_engineering_success` reads the commit's environment contract with the
 deploy's own loader (`env_contract_loader._fetch_env_contract`, at the commit

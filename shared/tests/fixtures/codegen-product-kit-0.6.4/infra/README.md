@@ -114,6 +114,32 @@ so co-located apps on the same host must each pick a unique host port.
 Integration-test mode uses `infra/compose.tests.integration.yml` directly
 through `make test-integration`.
 
+## Deployment host and workflow updates
+
+The generated `.github/workflows/deploy.yml` runs on `ubuntu-24.04`. Configure its
+`DEPLOY_HOST` secret as the raw allocated IPv4/IPv6 address, without brackets.
+`DEPLOY_USER` and `PROJECT_NAME` are also required for the compose-copy step.
+SSH and ssh-action receive the raw host; native SCP brackets IPv6 only in its
+remote destination. Both compose files are copied to
+`/opt/services/PROJECT_NAME/infra/`, with three attempts and 15/30 second waits.
+
+A scaffolding pin update does not change existing repositories. After kit 0.6.4
+is published, update a clean committed product on a review branch:
+
+```bash
+uvx copier update --defaults --trust --vcs-ref=0.6.4 --conflict=rej
+git status --short
+git diff -- .github/workflows/deploy.yml .copier-answers.yml pyproject.toml uv.lock
+```
+
+Keep the selected modules. Back up ignored environment data through the product's
+normal restricted procedure and read back retained owned files without logging secrets.
+Copier can exit successfully with rejected local customizations in `.rej` files;
+the candidate file is installed and the rejected local hunks require review.
+Reconcile all conflicts before deployment, then verify the runner, raw SSH/action
+host, SCP brackets, compose sources, target directory and retries. Run the
+product's normal setup/lint/typecheck/tests and commit the reviewed update.
+
 ## Parallel run isolation
 
 Set a unique Compose project name when running multiple generated projects on

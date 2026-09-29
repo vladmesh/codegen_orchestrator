@@ -393,9 +393,13 @@ def test_template_fixture_content_matches_its_pinned_render():
         "python_version": "3.12",
         "task_description": "",
     }
+    # The vendored fixture represents a committed product checkout. Copier's
+    # ignored runtime environment/task guide must not enter its provenance.
+    assert not (fixture / ".env").exists()
+    assert not (fixture / "TASK.md").exists()
     assert (
         fixture_tree_digest(fixture)
-        == "8a24822fb07737c59415a845e8e1679c628f68d80bff7c34a14c097df80e9363"
+        == "8013818c0782175827c0a25fc20e2d331b7e81da84df5f0815aa389d2ca6a8fb"
     )
 
 

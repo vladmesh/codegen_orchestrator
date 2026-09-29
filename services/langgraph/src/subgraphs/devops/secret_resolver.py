@@ -79,16 +79,9 @@ def backend_allocation(state: DevOpsState) -> dict:
         endpoint = SecretResolverNode._find_allocation(state, "backend")
         if endpoint is None:
             raise SecretResolutionError("Missing allocation for service backend")
-        address = ip_address(endpoint[0])
-        if (
-            address.is_loopback
-            or address.is_unspecified
-            or address.is_multicast
-            or (isinstance(address, IPv6Address) and address.scope_id)
-        ):
-            raise SecretResolutionError("Invalid allocation for service backend: unusable address")
     except SecretResolutionError as error:
         raise SecretResolutionError(f"PUBLIC_BASE_URL: {error}") from error
+    backend_http_url(*endpoint)
     return next(
         resource
         for resource in state["allocated_resources"].values()
@@ -99,9 +92,27 @@ def backend_allocation(state: DevOpsState) -> dict:
 def backend_base_url(state: DevOpsState) -> str:
     """Plain HTTP at the allocated address; IPv6 literals require URL brackets."""
     allocation = backend_allocation(state)
-    address = ip_address(allocation["server_ip"])
+    return backend_http_url(allocation["server_ip"], allocation["port"])
+
+
+def backend_http_url(server_ip: str, port: int) -> str:
+    """Validate the effective address before formatting the HTTP consumer's host."""
+    try:
+        address = ip_address(server_ip)
+    except ValueError as error:
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend address is invalid") from error
+    effective = (address.ipv4_mapped or address) if isinstance(address, IPv6Address) else address
+    if (
+        effective.is_loopback
+        or effective.is_unspecified
+        or effective.is_multicast
+        or (isinstance(address, IPv6Address) and address.scope_id)
+    ):
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend address is unusable")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= _MAX_TCP_PORT:
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend port is invalid")
     host = f"[{address.compressed}]" if isinstance(address, IPv6Address) else address.compressed
-    return f"http://{host}:{allocation['port']}"
+    return f"http://{host}:{port}"
 
 
 def _public_base_url(project_spec: dict, state: DevOpsState) -> str:
