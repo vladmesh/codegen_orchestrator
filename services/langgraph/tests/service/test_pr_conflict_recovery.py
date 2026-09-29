@@ -341,18 +341,21 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
             "version": policy["version"],
         },
     )
-    # Existing authenticated internal/admin recovery deliberately grants the
-    # next iteration and ceiling; money alone cannot resume a parked Task.
-    refused = await api.post(
-        "work-admission/engineering-dispatches", json={"task_id": repair["id"]}
-    )
-    assert refused["reason"] == "task_not_dispatchable"
+    # The supported repair admission reopens a refusal-only budget wait in the
+    # same cycle, preserving its executed-iteration count and ceiling.
     resumed = await api.post(
-        f"tasks/{repair['id']}/resume", json={"guidance": "Policy capacity restored", "retries": 4}
+        f"stories/{sid}/repair-pr-conflicts",
+        json={
+            "project_id": project["id"],
+            "pr_number": story.pr_number,
+            "cycle_started_at": story.created_at.isoformat(),
+        },
     )
+    assert resumed["outcome"] == "reused" and resumed["task_id"] == repair["id"]
+    task = await api.get_task(repair["id"])
     assert (
-        resumed["current_iteration"] == int(later) + 1
-        and resumed["max_iterations"] == int(later) + 5
+        task.current_iteration == int(later)
+        and task.max_iterations == repair["max_iterations"]
     )
     await asyncio.to_thread(scheduler, "dispatch", sid)
     after = await rows("SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"])
