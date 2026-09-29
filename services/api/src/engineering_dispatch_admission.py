@@ -527,6 +527,11 @@ async def _dispose_conflict_refusal(task, story, decision_id, started, command, 
         f"iteration {task.current_iteration}, ceiling {task.max_iterations}: "
         f"{disposition.reason.value}. {started.admission.message}"
     )
+    if disposition.reason == EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED:
+        detail = bounded_diagnostic(
+            f"PR #{story.pr_number} repair Task {task.id} is waiting for engineering "
+            f"budget (decision {decision_id}). {started.admission.message}"
+        )
     audit = {
         ENGINEERING_DISPATCH_REFUSAL_KEY: disposition.model_dump(mode="json"),
         "detail": detail,
@@ -548,21 +553,17 @@ async def _dispose_conflict_refusal(task, story, decision_id, started, command, 
         # A denied reservation has no Run or executed iteration. Keep the repair
         # Task and its ceiling intact; the same repair command can release this
         # specific wait after the owner restores capacity.
-        budget_detail = bounded_diagnostic(
-            f"PR #{story.pr_number} repair Task {task.id} is waiting for engineering "
-            f"budget (decision {decision_id}). {started.admission.message}"
-        )
         story.quarantine_reason = {
             "reason": disposition.reason.value,
             "task_id": task.id,
             "decision_id": decision_id,
-            "detail": budget_detail,
+            "detail": detail,
         }
         story.owner_notification = preserve_po_settlement(
             story.owner_notification,
             OwnerNotification(
                 event=OwnerNotificationEvent.STORY_BLOCKED,
-                text=f"{budget_detail} Raise the engineering budget and retry this PR repair.",
+                text=f"{detail} Raise the engineering budget and retry this PR repair.",
                 story_id=story.id,
                 project_id=str(story.project_id),
                 terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
@@ -570,7 +571,7 @@ async def _dispose_conflict_refusal(task, story, decision_id, started, command, 
                 expected_task_statuses=(TaskStatus.WAITING_HUMAN_REVIEW,),
                 state=OwnerNotificationState.OWED,
                 owed_at=datetime.now(UTC),
-                admin_text=budget_detail,
+                admin_text=detail,
                 admin_state=OwnerNotificationState.OWED,
             ),
         ).model_dump(mode="json")
