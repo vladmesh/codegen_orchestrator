@@ -523,6 +523,111 @@ async def test_zero_ceiling_remains_terminal_after_policy_fix(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("interference", ["none", "wrong_pr", "unrelated_stop", "live_run"])
+async def test_zero_ceiling_stops_current_merged_story_without_a_run(
+    async_client, initial_epoch, redis_client, db_session, interference
+):
+    e = initial_epoch
+    story = (await async_client.get(f"/api/stories/{e['story']}")).json()
+    repo = (
+        await async_client.get("/api/repositories/", params={"project_id": e["project"]})
+    ).json()[0]
+    timeline = story["generated_product_timeline"] | {
+        "latest_ci_observation": {
+            "ci_run_id": 12345,
+            "ci_status": "completed",
+            "ci_conclusion": "success",
+        },
+        "ci_runs": [
+            {
+                "id": 12345,
+                "branch": "main",
+                "head_sha": BUILT,
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ],
+        "deploy_observation": {
+            "story_id": e["story"],
+            "project_id": e["project"],
+            "repository_url": repo["git_url"],
+            "observed_at": datetime.now(UTC).isoformat(),
+        },
+    }
+    response = await async_client.patch(
+        f"/api/stories/{e['story']}", json={"generated_product_timeline": timeline}
+    )
+    assert response.status_code == 200, response.text
+    if interference == "unrelated_stop":
+        row = await db_session.get(Story, e["story"])
+        row.quarantine_reason = {"reason": "unrelated quarantine"}
+        await db_session.commit()
+    elif interference == "live_run":
+        db_session.add(
+            Run(
+                id=f"unrelated-{uuid.uuid4().hex}",
+                project_id=uuid.UUID(e["project"]),
+                story_id=e["story"],
+                type="deploy",
+                status="queued",
+            )
+        )
+        await db_session.commit()
+    await _ceiling(async_client, 0)
+    body = e["body"] | {"merged_pr_number": 43 if interference == "wrong_pr" else 42}
+    before = (await async_client.get(f"/api/stories/{e['story']}")).json()
+    if interference == "wrong_pr":
+        refused = await async_client.post(e["lifecycle"], json=body)
+        assert refused.status_code == 409
+        assert (await async_client.get(f"/api/stories/{e['story']}")).json() == before
+        assert await _messages(redis_client, e["project"]) == []
+        return
+    exhausted = await _call(async_client, e["lifecycle"], body)
+    assert exhausted["disposition"] == "exhausted"
+    assert exhausted["exhaustion"]["attempts"] == 0
+    assert exhausted["exhaustion"]["exhausted_execution_run_id"] is None
+    assert exhausted["exhaustion"]["retry_command"] is None
+    if interference != "none":
+        assert (await async_client.get(f"/api/stories/{e['story']}")).json() == before
+        assert await _messages(redis_client, e["project"]) == []
+        return
+    stopped = (await async_client.get(f"/api/stories/{e['story']}")).json()
+    assert stopped["status"] == "failed"
+    assert stopped["quarantine_reason"]["code"] == "initial_owner_deployment_exhausted"
+    notice = await _owner_notice(async_client, e["story"])
+    assert notice["state"] == notice["admin_state"] == "owed"
+    assert await _messages(redis_client, e["project"]) == []
+    assert await _call(async_client, e["lifecycle"], body) == exhausted
+    assert await _owner_notice(async_client, e["story"]) == notice
+    await _ceiling(async_client, 2)
+    assert (await _call(async_client, e["lifecycle"], body))["disposition"] == "exhausted"
+    assert await _messages(redis_client, e["project"]) == []
+
+
+@pytest.mark.asyncio
+async def test_premature_human_retry_refuses_without_reset(
+    async_client, initial_epoch, redis_client
+):
+    e = initial_epoch
+    admitted = await _call(async_client, e["lifecycle"], e["body"])
+    source = admitted["execution_run_id"]
+    await _fail_run(async_client, source)
+    response = await async_client.post(
+        f"/api/projects/{e['project']}/users/grant-intents/{admitted['intent_id']}/complete",
+        json={"execution_run_id": source, "active": False},
+    )
+    assert response.status_code == 200, response.text
+    before = await _intent(async_client, e, admitted["intent_id"])
+    assert before["status"] == "retryable" and before["attempts"] == 1
+    path = f"/api/projects/{e['project']}/users/grant-intents/{admitted['intent_id']}/retry"
+    refused = await e["human"].post(path, json={"expected_execution_run_id": source})
+    assert refused.status_code == 409
+    assert "not exhausted" in refused.json()["detail"]
+    assert await _intent(async_client, e, admitted["intent_id"]) == before
+    assert len(await _messages(redis_client, e["project"])) == 1
+
+
+@pytest.mark.asyncio
 async def test_applied_and_live_win(async_client, initial_epoch, redis_client):
     e = initial_epoch
     admitted = await _call(async_client, e["lifecycle"], e["body"])

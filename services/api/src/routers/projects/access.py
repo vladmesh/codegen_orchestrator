@@ -7,7 +7,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -16,6 +16,7 @@ from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deployment import DeploymentResult
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import (
     StoryFailure,
@@ -35,7 +36,7 @@ from shared.contracts.dto.users_grant import (
     GrantIntentRetryCommand,
     GrantIntentStatus,
 )
-from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
+from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOutcome, DeployTrigger
 from shared.models import (
     Application,
     Deployment,
@@ -201,7 +202,14 @@ def _exhaustion_failure(intent: UsersGrantIntent) -> StoryFailure:
     )
 
 
-def _source_matches(project: Project, intent: UsersGrantIntent, run: Run, story: Story) -> bool:
+def _source_matches(
+    project: Project,
+    intent: UsersGrantIntent,
+    run: Run,
+    story: Story,
+    *,
+    allow_owed: bool = False,
+) -> bool:
     """Native current binding, including released Runs predating typed stops."""
     metadata = run.run_metadata
     timeline = story.generated_product_timeline
@@ -212,6 +220,11 @@ def _source_matches(project: Project, intent: UsersGrantIntent, run: Run, story:
         return False
     cycle = story.reopened_at or story.created_at
     try:
+        cancelled_with_result = (
+            run.status == RunStatus.CANCELLED.value
+            and run.result is not None
+            and DeployRunResult.model_validate(run.result).deploy_outcome is DeployOutcome.CANCELLED
+        )
         merged_at = datetime.fromisoformat(pr["merged_at"])
         built = GrantIntentDispatchTarget(sha=metadata["deployed_commit_sha"]).sha
         matches = (
@@ -220,7 +233,11 @@ def _source_matches(project: Project, intent: UsersGrantIntent, run: Run, story:
             and run.user_id == project.owner_id
             and run.id == intent.execution_run_id
             and run.type == RunType.DEPLOY.value
-            and run.status in {RunStatus.FAILED.value, RunStatus.COMPLETED.value}
+            and (
+                run.status in {RunStatus.FAILED.value, RunStatus.COMPLETED.value}
+                or cancelled_with_result
+                or (allow_owed and run.status == RunStatus.QUEUED.value and run.result is None)
+            )
             and run.story_id == story.id
             and metadata.get(USERS_GRANT_INTENT_KEY) == intent.id
             and metadata.get("head_sha") == intent.target_sha == pr.get("head_sha")
@@ -236,19 +253,30 @@ def _source_matches(project: Project, intent: UsersGrantIntent, run: Run, story:
         if "grant_pr_number" in metadata:
             matches = matches and metadata["grant_pr_number"] == story.pr_number
         return matches
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, ValidationError):
         return False
 
 
 async def _current_source_story(
-    db: AsyncSession, project: Project, intent: UsersGrantIntent
+    db: AsyncSession, project: Project, intent: UsersGrantIntent, *, allow_owed: bool = False
 ) -> tuple[Run, Story] | None:
     source = await db.get(Run, intent.execution_run_id) if intent.execution_run_id else None
     if source is None or source.story_id is None:
         return None
     story = await db.scalar(select(Story).where(Story.id == source.story_id).with_for_update())
     source = await db.scalar(select(Run).where(Run.id == source.id).with_for_update())
-    if story is None or source is None or not _source_matches(project, intent, source, story):
+    if (
+        story is None
+        or source is None
+        or not _source_matches(project, intent, source, story, allow_owed=allow_owed)
+    ):
+        return None
+    if allow_owed and (
+        source.status != RunStatus.QUEUED.value
+        or story.status != StoryStatus.DEPLOYING.value
+        or story.quarantine_reason is not None
+        or project.status == ProjectStatus.ARCHIVED.value
+    ):
         return None
     candidates = (
         await db.scalars(
@@ -334,7 +362,40 @@ async def _stop_exhausted_initial_owner(
     story_id: str | None,
     head_sha: str,
     built_sha: str,
+    merged_pr_number: int | None = None,
 ) -> None:
+    if intent.attempts == 0 and intent.execution_run_id is None:
+        if merged_pr_number is None or project.status == ProjectStatus.ARCHIVED.value:
+            return
+        story = await db.scalar(select(Story).where(Story.id == story_id).with_for_update())
+        if (
+            story is None
+            or story.project_id != project.id
+            or story.status != StoryStatus.PR_REVIEW.value
+            or story.quarantine_reason is not None
+            or intent.target_sha != head_sha
+            or intent.target_application_id is not None
+            or intent.target_deployment_id is not None
+        ):
+            return
+        other_live = await db.scalar(
+            select(Run.id)
+            .where(
+                Run.project_id == project.id,
+                Run.status.not_in(
+                    [RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value]
+                ),
+            )
+            .limit(1)
+        )
+        if other_live is not None:
+            return
+        await _require_current_merged_target(
+            db, project, story_id, merged_pr_number, head_sha, built_sha
+        )
+        _record_story_failure(story, _exhaustion_failure(intent), StoryStatus.FAILED)
+        _do_transition(story, StoryStatus.FAILED)
+        return
     evidence = await _current_source_story(db, project, intent)
     if evidence is None:
         return
@@ -484,7 +545,7 @@ async def _require_current_merged_target(
         )
 
 
-async def _lifecycle(  # noqa: PLR0913
+async def _lifecycle(  # noqa: PLR0913, C901
     db: AsyncSession,
     project: Project,
     *,
@@ -497,6 +558,7 @@ async def _lifecycle(  # noqa: PLR0913
     explicit_user_retry: bool = False,
     merged_pr_number: int | None = None,
     retry_command: GrantIntentRetryCommand | None = None,
+    expected_execution_run_id: str | None = None,
 ) -> tuple[UsersGrantIntent, Run | None, bool, GrantIntentLifecycleDisposition]:
     """The sole create/lookup/rebind/dispatch-preparation operation.
 
@@ -511,6 +573,8 @@ async def _lifecycle(  # noqa: PLR0913
         )
     ).scalar_one_or_none()
     created = intent is None
+    if expected_execution_run_id is not None and intent is None:
+        raise HTTPException(status_code=409, detail="owed execution is no longer current")
     if intent is None:
         intent = UsersGrantIntent(
             id=intent_id,
@@ -533,6 +597,21 @@ async def _lifecycle(  # noqa: PLR0913
     elif intent.status == GrantIntentStatus.APPLIED.value:
         return intent, None, False, GrantIntentLifecycleDisposition.ALREADY_APPLIED
     target_changed = _target_changed(intent, target)
+    if expected_execution_run_id is not None:
+        evidence = (
+            await _current_source_story(db, project, intent, allow_owed=True)
+            if intent.status == GrantIntentStatus.PUBLISH_OWED.value
+            and intent.execution_run_id == expected_execution_run_id
+            and not target_changed
+            else None
+        )
+        if (
+            evidence is None
+            or evidence[0].id != expected_execution_run_id
+            or evidence[0].story_id != story_id
+            or evidence[0].run_metadata["deployed_commit_sha"] != deployed_commit_sha
+        ):
+            raise HTTPException(status_code=409, detail="owed execution is no longer current")
     if not explicit_user_retry and target_changed:
         # Automatic lifecycle callers carry source-Run metadata. It must never
         # replace a current execution or revive a target this intent has
@@ -588,7 +667,9 @@ async def _lifecycle(  # noqa: PLR0913
             )
         ):
             return intent, None, False, GrantIntentLifecycleDisposition.STALE_TARGET
-        if not _is_exhausted(intent) or ceiling == 0:
+        if not _is_exhausted(intent):
+            raise HTTPException(status_code=409, detail="initial-owner deployment is not exhausted")
+        if ceiling == 0:
             return intent, None, False, GrantIntentLifecycleDisposition.EXHAUSTED
         retry_story = await _retry_story_for_epoch(
             db, project, intent, story_id, deployed_commit_sha
@@ -645,7 +726,7 @@ async def _lifecycle(  # noqa: PLR0913
         intent.detail = _RETRY_CEILING_EXHAUSTED_DETAIL
         if kind is GrantIntentKind.INITIAL_OWNER:
             await _stop_exhausted_initial_owner(
-                db, project, intent, story_id, target[2], deployed_commit_sha
+                db, project, intent, story_id, target[2], deployed_commit_sha, merged_pr_number
             )
         return intent, None, created, GrantIntentLifecycleDisposition.EXHAUSTED
 
@@ -882,6 +963,7 @@ async def resume_initial_owner_intent(
         deployed_commit_sha=body.deployed_commit_sha,
         story_id=body.story_id,
         merged_pr_number=body.merged_pr_number,
+        expected_execution_run_id=body.expected_execution_run_id,
     )
     return await _dispatch_lifecycle(db, redis, project, intent, run, disposition, created)
 

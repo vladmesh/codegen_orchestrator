@@ -193,6 +193,12 @@ infrastructure and user-secret recovery only claim an intent redispatch when the
 result is `dispatched`. INITIAL_OWNER exhaustion commits the matching current Story's
 typed failure and both owed notice audiences in API admission; scheduler consumers
 must not issue a second stop or best-effort alert. A stale callback cannot stop new work.
+At a zero ceiling, the poller's persisted current-cycle merged PR, CI and image
+observation let API admission stop the matching PR-review Story without a Run;
+stale PRs, unrelated stops and live work grant no such transition. A terminal
+cancelled deploy is an exhausted source only with its validated typed
+`DeployRunResult.deploy_outcome=cancelled`; a resultless superseded cancellation
+does not supply that evidence.
 
 `GET /api/projects/{id}/users/initial-owner-deployment` and the existing intent
 read authorize the credential-derived owner/admin or internal reader and expose
@@ -230,6 +236,12 @@ downgrade it. The new epoch uses the current configured `deploy.max_deploy_retri
 zero remains terminal. Existing PUBLISH_OWED recovery publishes the same real Run
 and reports `in_flight`, not a newly dispatched execution. Publication and notices
 retain their established at-least-once transport semantics.
+The deploying supervisor discovers an owed queued initial-owner Run after the
+handoff grace interval and invokes the same locked lifecycle with
+`GrantIntentLifecycleRequest.expected_execution_run_id`. The API requires that
+exact current queued Run, intent, Story and target before publication; the
+request cannot create an intent or admit another Run. A human command against
+`retryable` with remaining admissions refuses with 409 and preserves its epoch.
 
 `StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED`, source `api`, records only
 bounded native intent/attempt/target/count identifiers and the deliberate retry action.

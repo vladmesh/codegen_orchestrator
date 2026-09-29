@@ -27,6 +27,9 @@ class GrantIntentLifecycleRequest(BaseModel):
     head_sha: CommitSha | None = None
     deployed_commit_sha: CommitSha | None = None
     merged_pr_number: int | None = Field(default=None, gt=0)
+    # Internal recovery of a committed, still-owed immutable Run. Never opens
+    # an epoch or refreshes the deliberate human retry fence.
+    expected_execution_run_id: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class GrantIntentStatus(StrEnum):

@@ -36,7 +36,7 @@ async def run():
     api.list_stories_owing_owner_notification = selected_notices
     api.list_runs_owing_owner_notification = AsyncMock(return_value=[])
     try:
-        if mode in {"retry", "infrastructure"}:
+        if mode in {"retry", "infrastructure", "cancelled"}:
             # Fleet-readiness response is controlled, not a live host proof.
             with patch(
                 "src.tasks.supervisor.deploy._admissible_target_exists",
@@ -44,6 +44,13 @@ async def run():
             ):
                 counts = await supervise_deploying_stories(api, stream)
             assert counts["failed"] == 1
+        elif mode == "owed":
+            # The original API publish has returned its transport failure.
+            # Advance only the handoff grace interval; retain native API/Redis.
+            with patch("src.tasks.supervisor.deploy._qa_handoff_recovery_minutes", return_value=0):
+                for _ in range(2):
+                    counts = await supervise_deploying_stories(api, stream)
+                    assert all(count == 0 for count in counts.values())
         elif mode == "secret":
             counts = await supervise_deploying_stories(api, stream)
             assert counts["waiting"] == 1

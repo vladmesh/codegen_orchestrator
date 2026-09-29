@@ -11,6 +11,9 @@ applied and zero-ceiling cases exercise the actual boundary. LangGraph's service
 case drives the real deploy consumer, PR polling, failed/infrastructure/secret
 recovery, native interrupted owner delivery and both audience settlements, then
 the registered PO read/retry tools and the next consumer/supervisor epoch.
+Additional service cases assert a trusted zero-ceiling Story stop without a Run,
+explicit refusal while retryable, a typed lock-contended cancelled Run, and
+native scheduler discovery after Redis refuses publication of a committed retry.
 Its 61-second CI wait exercises native notice-claim spacing without editing
 attempt timestamps; the Python runtime bounds each case to 180 seconds without
 a pytest-timeout dependency. API notice assertions read the native notification

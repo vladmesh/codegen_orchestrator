@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Recover owed initial-owner Run publication through the deploying supervisor; stop trusted zero-admission
+  and typed cancelled exhaustion, and refuse premature human retry without resetting its epoch.
+
 - Correct initial-owner CI notice, cancellation and replacement-owner fixtures, and retain the
   recovery deadline without a pytest plugin so native retry proofs can execute.
 

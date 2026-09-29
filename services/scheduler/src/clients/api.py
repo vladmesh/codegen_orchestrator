@@ -59,6 +59,7 @@ from shared.contracts.dto.temporary_access import (
 )
 from shared.contracts.dto.user import UserDTO
 from shared.contracts.dto.users_grant import (
+    GrantIntent,
     GrantIntentKind,
     GrantIntentLifecycleRequest,
     GrantIntentLifecycleResult,
@@ -207,6 +208,7 @@ class SchedulerAPIClient(InternalAPIClient):
         head_sha: str,
         deployed_commit_sha: str,
         merged_pr_number: int | None = None,
+        expected_execution_run_id: str | None = None,
     ) -> GrantIntentLifecycleResult:
         resp = await self.request(
             "POST",
@@ -217,9 +219,15 @@ class SchedulerAPIClient(InternalAPIClient):
                 head_sha=head_sha,
                 deployed_commit_sha=deployed_commit_sha,
                 merged_pr_number=merged_pr_number,
+                expected_execution_run_id=expected_execution_run_id,
             ).model_dump(mode="json", exclude_none=True),
         )
         return GrantIntentLifecycleResult.model_validate(resp.json())
+
+    async def get_users_grant_intent(self, project_id: str, intent_id: str) -> GrantIntent:
+        """Read the durable binding before trying an owed owner-grant handoff."""
+        resp = await self.request("GET", f"projects/{project_id}/users/grant-intents/{intent_id}")
+        return GrantIntent.model_validate(resp.json())
 
     async def latest_deployed_commit_sha(self, application_id: int) -> str | None:
         """The built commit the newest successful deployment of one application put there.

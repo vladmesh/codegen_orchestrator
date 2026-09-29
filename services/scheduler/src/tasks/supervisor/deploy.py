@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 import uuid
 
+import httpx
 from pydantic import ValidationError
 import structlog
 
@@ -41,8 +42,10 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
+    GrantIntentKind,
     GrantIntentLifecycleDisposition,
     GrantIntentLifecycleResult,
+    GrantIntentStatus,
 )
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.deploy import (
@@ -272,6 +275,14 @@ async def _supervise_deploying_story(
     if run is None:
         return DeploySupervisorAction.NONE
 
+    # An initial-owner retry lands the Story on DEPLOYING before the queued
+    # grant's publication. Discover a committed owed handoff here; the API
+    # lifecycle owns its locked publish and never mints a replacement Run.
+    if run.status is RunStatus.QUEUED and await _recover_initial_owner_grant_handoff(
+        api_client, project_id, story_id, run, log
+    ):
+        return DeploySupervisorAction.NONE
+
     # A recheck deploy persists the exact message before publication. A process
     # can die after that commit, so a queued recheck without its dispatch stamp
     # is recoverable. Other queued deploys have no reconstructable handoff.
@@ -392,6 +403,64 @@ def _log_redeploy_reason(
     }.get(outcome)
     if event is not None:
         log.info(event, run_id=run.id)
+
+
+async def _recover_initial_owner_grant_handoff(
+    api_client: SchedulerAPIClient,
+    project_id: str,
+    story_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Let the locked API lifecycle publish an admitted owner Run still owed."""
+    metadata = getattr(run, "run_metadata", None) or {}
+    intent_id = metadata.get(USERS_GRANT_INTENT_KEY)
+    if (
+        metadata.get("triggered_by") != "users_grant_intent"
+        or not isinstance(intent_id, str)
+        or not intent_id.startswith("users-grant-initial_owner-")
+    ):
+        return False
+    age_minutes = (datetime.now(UTC) - _parse_datetime(run.created_at)).total_seconds() / 60
+    if age_minutes < _qa_handoff_recovery_minutes():
+        return True  # the original publisher still owns its handoff window
+    try:
+        intent = await api_client.get_users_grant_intent(project_id, intent_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == httpx.codes.NOT_FOUND:
+            return True
+        raise
+    if (
+        intent.kind is not GrantIntentKind.INITIAL_OWNER
+        or intent.project_id != project_id
+        or intent.id != intent_id
+        or intent.status is not GrantIntentStatus.PUBLISH_OWED
+        or intent.execution_run_id != run.id
+        or intent.target_sha != metadata.get("head_sha")
+    ):
+        return True
+    try:
+        lifecycle = await _resume_initial_owner_intent(
+            api_client,
+            project_id,
+            story_id,
+            run,
+            intent.target_sha,
+            expected_execution_run_id=run.id,
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {httpx.codes.CONFLICT, httpx.codes.SERVICE_UNAVAILABLE}:
+            log.info("deploy_owner_owed_handoff_pending", run_id=run.id)
+            return True
+        raise
+    if (
+        lifecycle is None
+        or lifecycle.intent_id != intent.id
+        or lifecycle.disposition is not GrantIntentLifecycleDisposition.IN_FLIGHT
+    ):
+        raise ValueError("fenced owner handoff returned an unexpected lifecycle result")
+    log.info("deploy_owner_owed_handoff_reconciled", run_id=run.id, status=lifecycle.status.value)
+    return True
 
 
 async def _recover_recheck_deploy_handoff(
@@ -1042,7 +1111,13 @@ def _deploy_run_deployed_commit_sha(run) -> str | None:
 
 
 async def _resume_initial_owner_intent(
-    api_client: SchedulerAPIClient, project_id: str, story_id: str, run, head_sha: str
+    api_client: SchedulerAPIClient,
+    project_id: str,
+    story_id: str,
+    run,
+    head_sha: str,
+    *,
+    expected_execution_run_id: str | None = None,
 ) -> GrantIntentLifecycleResult | None:
     """Recover only the API-owned initial-owner intent referenced by this run.
 
@@ -1062,6 +1137,11 @@ async def _resume_initial_owner_intent(
             story_id=story_id,
             head_sha=head_sha,
             deployed_commit_sha=deployed_commit_sha,
+            **(
+                {"expected_execution_run_id": expected_execution_run_id}
+                if expected_execution_run_id is not None
+                else {}
+            ),
         )
     )
 

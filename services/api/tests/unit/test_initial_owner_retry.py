@@ -4,9 +4,14 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
+from fastapi import HTTPException
 import pytest
 
-from shared.contracts.dto.users_grant import GrantIntentLifecycleDisposition
+from shared.contracts.dto.users_grant import (
+    GrantIntentKind,
+    GrantIntentLifecycleDisposition,
+    GrantIntentRetryCommand,
+)
 from shared.models import Project, Run, Story, User, UsersGrantIntent
 from src.routers.projects import access
 from src.schemas.story import StoryStopTransition
@@ -133,6 +138,88 @@ def test_released_source_still_requires_native_admissions():
     assert access._source_matches(project, intent, run, story)
     assert access._epoch_matches(intent, run, [run])
     assert not access._epoch_matches(intent, run, [])
+
+
+@pytest.mark.parametrize(
+    "result,accepted",
+    [
+        ({"deploy_outcome": "cancelled"}, True),
+        (None, False),
+        ({"deploy_outcome": "retry"}, False),
+        ({"deploy_outcome": "cancelled", "invented": True}, False),
+    ],
+)
+def test_cancelled_source_requires_typed_terminal_deploy_result(result, accepted):
+    project, intent, run, story = _evidence()
+    run.status = "cancelled"
+    run.result = result
+    assert access._source_matches(project, intent, run, story) is accepted
+
+
+@pytest.mark.asyncio
+async def test_zero_admissions_stop_only_the_current_trusted_merged_story(monkeypatch):
+    project, intent, _, story = _evidence()
+    intent.status = "publish_owed"
+    intent.execution_run_id = None
+    intent.attempts = 0
+    story.status = "pr_review"
+    db = MagicMock()
+    db.scalar = AsyncMock(side_effect=[story, None])
+    row = MagicMock()
+    row.scalar_one_or_none.return_value = intent
+    db.execute = AsyncMock(return_value=row)
+    db.flush = AsyncMock()
+    db.get = AsyncMock(return_value=None)
+    monkeypatch.setattr(access, "_deploy_retry_ceiling", AsyncMock(return_value=0))
+    trusted = AsyncMock()
+    monkeypatch.setattr(access, "_require_current_merged_target", trusted)
+    actual, run, _, disposition = await access._lifecycle(
+        db,
+        project,
+        target_user=User(id=7, telegram_id=84),
+        kind=GrantIntentKind.INITIAL_OWNER,
+        actor="deploy_lifecycle",
+        target=(None, None, intent.target_sha),
+        deployed_commit_sha="b" * 40,
+        story_id=story.id,
+        merged_pr_number=story.pr_number,
+    )
+    assert run is None and disposition is GrantIntentLifecycleDisposition.EXHAUSTED
+    assert actual.execution_run_id is None and actual.attempts == 0
+    assert story.status == "failed"
+    assert story.quarantine_reason["code"] == "initial_owner_deployment_exhausted"
+    assert story.owner_notification["state"] == story.owner_notification["admin_state"] == "owed"
+    trusted.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_premature_human_retry_refuses_before_reset_or_run(monkeypatch):
+    project, intent, _, _ = _evidence()
+    intent.status = "retryable"
+    intent.attempts = 1
+    db = MagicMock()
+    row = MagicMock()
+    row.scalar_one_or_none.return_value = intent
+    db.execute = AsyncMock(return_value=row)
+    db.flush = AsyncMock()
+    monkeypatch.setattr(access, "_execution_is_live", AsyncMock(return_value=None))
+    monkeypatch.setattr(access, "_deploy_retry_ceiling", AsyncMock(return_value=3))
+    with pytest.raises(HTTPException) as exc:
+        await access._lifecycle(
+            db,
+            project,
+            target_user=User(id=7, telegram_id=84),
+            kind=GrantIntentKind.INITIAL_OWNER,
+            actor="user:7",
+            target=(None, None, intent.target_sha),
+            deployed_commit_sha="b" * 40,
+            story_id="native-story",
+            retry_command=GrantIntentRetryCommand(expected_execution_run_id="native-run"),
+        )
+    assert exc.value.status_code == 409
+    assert intent.status == "retryable" and intent.attempts == 1
+    assert intent.retry_history == []
+    db.flush.assert_not_awaited()
 
 
 @pytest.mark.asyncio
