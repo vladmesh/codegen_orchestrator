@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Assert zero-ceiling replay preserves the exhausted intent and notice episode while reporting
+  the per-call created flag accurately, so CI distinguishes replay from first intent creation.
+
 - Recover owed initial-owner Run publication through the deploying supervisor; stop trusted zero-admission
   and typed cancelled exhaustion, and refuse premature human retry without resetting its epoch.
 

@@ -597,7 +597,9 @@ async def test_zero_ceiling_stops_current_merged_story_without_a_run(
     notice = await _owner_notice(async_client, e["story"])
     assert notice["state"] == notice["admin_state"] == "owed"
     assert await _messages(redis_client, e["project"]) == []
-    assert await _call(async_client, e["lifecycle"], body) == exhausted
+    repeated = await _call(async_client, e["lifecycle"], body)
+    assert exhausted["created"] is True and repeated["created"] is False
+    assert repeated | {"created": True} == exhausted
     assert await _owner_notice(async_client, e["story"]) == notice
     await _ceiling(async_client, 2)
     assert (await _call(async_client, e["lifecycle"], body))["disposition"] == "exhausted"
