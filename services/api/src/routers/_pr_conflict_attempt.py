@@ -75,7 +75,6 @@ async def _settle_terminal(task, story, command, evidence, result, own_stop, aud
 async def _admission_evidence(
     task: Task,
     story: Story,
-    command: PRConflictRepairAttemptCommand,
     events: list[TaskEvent],
     db: AsyncSession,
 ) -> PRConflictRepairEvidence:
@@ -100,8 +99,6 @@ async def _admission_evidence(
         or repository.role != "primary"
         or evidence.story_id != story.id
         or evidence.project_id != story.project_id
-        or evidence.pr_number != command.pr_number
-        or cycle_stamp(evidence.cycle_started_at) != cycle_stamp(command.cycle_started_at)
         or task.max_iterations != evidence.max_iterations
     ):
         _refuse("The repair admission does not prove this bounded Task.")
@@ -230,7 +227,11 @@ async def settle_pr_conflict_attempt(
             select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
         )
     ).all()
-    evidence = await _admission_evidence(task, story, command, events, db)
+    evidence = await _admission_evidence(task, story, events, db)
+    if evidence.pr_number != command.pr_number or cycle_stamp(
+        evidence.cycle_started_at
+    ) != cycle_stamp(command.cycle_started_at):
+        _refuse("The repair admission does not prove this bounded Task.")
     runs = (
         await db.scalars(
             select(Run).where(Run.story_id == story.id).order_by(Run.id).with_for_update()

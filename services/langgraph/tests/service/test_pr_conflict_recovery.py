@@ -62,6 +62,7 @@ async def rows(query, *args):
         "gave_up-concurrent",
         "gave_up-todo",
         "failed",
+        "failed-late-start",
     ],
 )
 async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
@@ -163,9 +164,7 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
             }
         )
         await real_redis.set(EXECUTOR_DIAGNOSTICS_REDIS_KEY, snapshot.model_dump_json())
-        await asyncio.to_thread(
-            scheduler, "dispatch-interrupt" if ending == "gave_up-todo" else "dispatch", sid
-        )
+        delayed_dispatch = await begin_dispatch(real_redis, sid, ending)
         runs = await rows("SELECT * FROM runs WHERE task_id=%s", repair["id"])
         assert len(runs) == 1 and runs[0]["story_id"] == sid
         messages = [
@@ -176,7 +175,9 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
         assert len(messages) == 1 and messages[0].planning_task_id == repair["id"]
         assert messages[0].task_id == runs[0]["id"]
         assert messages[0].branch == f"story/{sid}"
-        await finish_repair(api, sid, project["id"], repair, runs[0], ending)
+        await finish_admitted_repair(
+            api, real_redis, sid, project["id"], repair, runs[0], ending, delayed_dispatch
+        )
         if ending == "clean":
             await assert_clean_merge(api, sid, original["id"])
             return
@@ -196,11 +197,11 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(
             for _, fields in await real_redis.xrange(PO_INPUT_QUEUE)
         ]
         assert any(notice.get("story_id") == sid for notice in notices)
-        if ending.startswith("gave_up"):
+        if ending.startswith("gave_up") or ending == "failed-late-start":
             await assert_delivered_notice_is_stable(api, real_redis, sid, notice)
         assert len(await rows("SELECT id FROM tasks WHERE story_id=%s", sid)) == 2
         assert (await api.get_task(original["id"])).status.value == "done"
-        expected_runs = repair["max_iterations"] + 1 if ending == "failed" else 1
+        expected_runs = repair["max_iterations"] + 1 if ending.startswith("failed") else 1
         assert (
             len(await rows("SELECT id FROM runs WHERE task_id=%s", repair["id"])) == expected_runs
         )
@@ -214,6 +215,90 @@ async def assert_delivered_notice_is_stable(api, redis, sid, notice):
     await asyncio.to_thread(scheduler, "notice-repeat", sid)
     assert await api.get(f"stories/{sid}/owner-notification") == notice
     assert await redis.xrange(PO_INPUT_QUEUE) == notices_before
+
+
+async def begin_dispatch(redis, sid, ending):
+    if ending == "failed-late-start":
+        delayed = asyncio.create_task(asyncio.to_thread(scheduler, "dispatch-pause-start", sid))
+        assert await redis.blpop(f"conflict-start-ready:{sid}", timeout=10)
+        return delayed
+    await asyncio.to_thread(
+        scheduler, "dispatch-interrupt" if ending == "gave_up-todo" else "dispatch", sid
+    )
+    return None
+
+
+async def finish_admitted_repair(api, redis, sid, pid, repair, run, ending, delayed):
+    if delayed is None:
+        await finish_repair(api, sid, pid, repair, run, ending)
+        return
+    await fail_before_original_start(api, redis, sid, repair, run, delayed)
+    await asyncio.to_thread(scheduler, "dispatch-start-lost", sid)
+    next_runs = await rows("SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"])
+    assert len(next_runs) == 2
+    assert next_runs[0]["run_metadata"]["iteration"] == 0
+    assert next_runs[1]["run_metadata"]["iteration"] == 1
+    messages = [
+        EngineeringMessage.model_validate_json(fields[b"data"])
+        for _, fields in await redis.xrange(ENGINEERING_QUEUE)
+    ]
+    messages = [message for message in messages if message.story_id == sid]
+    assert len(messages) == 2
+    assert {message.task_id for message in messages} == {run["id"] for run in next_runs}
+    await finish_repair(api, sid, pid, repair, next_runs[1], "failed")
+
+
+async def fail_before_original_start(api, redis, sid, repair, run, delayed_dispatch):
+    from src.consumers import _base, engineering_result_handler
+
+    stream = RedisStreamClient()
+    await stream.connect()
+    try:
+        assert (await api.get_task(repair["id"])).status.value == "todo"
+        group = f"conflict-fast-failure-{sid}"
+        entry = await claim_engineering_entry(stream, sid, group, reclaim=False)
+        assert entry.data["task_id"] == run["id"]
+
+        async def early_failure(data, connection):
+            return await engineering_result_handler.fail_job(
+                data["task_id"],
+                "Early technical failure",
+                data["planning_task_id"],
+                redis=connection,
+                story_id=data["story_id"],
+                turn_result_consumed=True,
+            )
+
+        with (
+            patch.object(_base, "api_client", api),
+            patch.object(engineering_result_handler, "api_client", api),
+        ):
+            await _base._process_entry(
+                entry, stream, ENGINEERING_QUEUE, group, "engineering", early_failure
+            )
+        task = await api.get_task(repair["id"])
+        assert (task.status.value, task.current_iteration) == ("todo", 1)
+        persisted = await api.get(f"runs/{run['id']}")
+        assert persisted["status"] == "failed" and persisted["run_metadata"]["iteration"] == 0
+        events = await api.get(f"tasks/{repair['id']}/events")
+        assert sum("pr_conflict_repair_attempt" in e["details"] for e in events) == 1
+        publications = await redis.xrange(ENGINEERING_QUEUE)
+        await redis.rpush(f"conflict-start-release:{sid}", "release")
+        await delayed_dispatch
+        task = await api.get_task(repair["id"])
+        assert (task.status.value, task.current_iteration) == ("todo", 1)
+        await asyncio.to_thread(scheduler, "stuck", sid)
+        assert await api.get(f"runs/{run['id']}") == persisted
+        assert await redis.xrange(ENGINEERING_QUEUE) == publications
+        assert (await api.get_story(sid)).status.value == "in_progress"
+        assert (await rows("SELECT owner_notification FROM stories WHERE id=%s", sid))[0][
+            "owner_notification"
+        ] is None
+    finally:
+        # Always release and join the finite CI fixture process on assertion failure.
+        await redis.rpush(f"conflict-start-release:{sid}", "release")
+        await delayed_dispatch
+        await stream.close()
 
 
 async def assert_clean_merge(api, sid, original_id):
@@ -330,8 +415,9 @@ async def finish_repair(api, sid, project_id, repair, run, ending):
             await stream.close()
         assert (await api.get_task(repair["id"])).status.value == "waiting_human_review"
     elif ending == "failed":
-        for iteration in range(repair["max_iterations"] + 1):
-            if iteration:
+        first_iteration = (await api.get_task(repair["id"])).current_iteration
+        for iteration in range(first_iteration, repair["max_iterations"] + 1):
+            if iteration > first_iteration:
                 await asyncio.to_thread(scheduler, "dispatch", sid)
                 run = (
                     await rows(

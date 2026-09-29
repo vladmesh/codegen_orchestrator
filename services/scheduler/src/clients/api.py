@@ -18,6 +18,8 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionRead,
 )
 from shared.contracts.dto.engineering_dispatch import (
+    EngineeringAttemptStartCommand,
+    EngineeringAttemptStartRead,
     EngineeringDispatchCommand,
     EngineeringDispatchRead,
 )
@@ -706,6 +708,16 @@ class SchedulerAPIClient(InternalAPIClient):
             json={"actor": actor, "details": details or {}},
         )
         return TaskDTO.model_validate(resp.json())
+
+    async def start_engineering_attempt(
+        self, command: EngineeringAttemptStartCommand
+    ) -> EngineeringAttemptStartRead:
+        resp = await self.request(
+            "POST",
+            "work-admission/engineering-dispatches/start",
+            json=command.model_dump(mode="json"),
+        )
+        return EngineeringAttemptStartRead.model_validate(resp.json())
 
     async def park_task_waiting_resources(
         self, task_id: str, command: TaskResourceWaitCommand

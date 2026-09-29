@@ -113,6 +113,7 @@ async def start_task(
     task = await get_task_for_update(task_id, db)
 
     # Allow start from backlog (auto-promote to todo first) or from todo
+    _refuse_unfenced_conflict_start(task)
     if task.status == TaskStatus.BACKLOG:
         await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, {}, db)
         task.status = TaskStatus.TODO
@@ -402,6 +403,8 @@ async def transition_task(
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
 
+    if to_status == TaskStatus.IN_DEV:
+        _refuse_unfenced_conflict_start(task)
     validate_transition(task.status, to_status)
 
     old_status = task.status
@@ -412,6 +415,11 @@ async def transition_task(
 
     logger.info("task_transitioned", task_id=task.id, from_s=old_status, to_s=to_status)
     return to_read(task)
+
+
+def _refuse_unfenced_conflict_start(task: Task) -> None:
+    if task.id.startswith("pr-conflict-"):
+        raise HTTPException(409, detail={"code": "conflict_start_requires_admitted_attempt"})
 
 
 @action_router.post("/{task_id}/spawn-worker")

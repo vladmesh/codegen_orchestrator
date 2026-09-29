@@ -13,6 +13,33 @@ from .engineering_execution import EngineeringInfrastructureParkDisposition
 from .work_admission import PaidRunStartRead, WorkAdmissionReason
 
 
+class EngineeringAttemptStartOutcome(StrEnum):
+    STARTED = "started"
+    REUSED = "reused"
+    SETTLED = "settled"
+    STALE = "stale"
+    TERMINAL_PENDING = "terminal_pending"
+    PRIORITY_PENDING = "priority_pending"
+    COMPLETED = "completed"
+
+
+class EngineeringAttemptStartCommand(BaseModel):
+    """Fence a conflict Task handoff with the Run admission already created."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+
+
+class EngineeringAttemptStartRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: EngineeringAttemptStartOutcome
+    task_id: str
+    run_id: str
+
+
 class EngineeringDispatchOutcome(StrEnum):
     """What this tick may do with the task it asked about."""
 

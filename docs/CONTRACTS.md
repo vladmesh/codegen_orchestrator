@@ -321,6 +321,29 @@ Run; a terminal identity is not reopened. A publish failure has an unknown
 broker outcome, so the committed Run and reservation remain recoverable rather
 than being cancelled speculatively.
 
+`POST /work-admission/engineering-dispatches/start` accepts
+`EngineeringAttemptStartCommand` from an internal service or administrator.
+The command names only Task and admitted Run; actor text grants no authority.
+The API uses dispatch admission's Task-roster, Story, Project, Run lock ladder
+and re-reads the repair admission, cycle, PR, iteration and settlement ledger.
+Only the same current live attempt can start; repeated starts return `reused`.
+A settled attempt returns `settled`, a replaced attempt/cycle/PR returns `stale`,
+and a failed terminal attempt returns `terminal_pending`, all without writes.
+TODO terminal work remains discoverable by dispatch's scoped outcome recovery.
+No response restores TODO from an old ledger or changes a newer live attempt.
+Matching completed-Run recovery commits the native completion hops together
+under this fence and returns `completed`, without replaying a generic start.
+This command creates no Run, reservation, publication or notice.
+
+Conflict dispatch publication, its repeated start request and live/prior-attempt
+recovery use this command. Generic Task `start` and transitions to `in_dev`
+refuse admitted conflict Tasks. Proven infrastructure/resource terminal evidence
+returns `priority_pending` and restores only matching IN_DEV discovery under
+the same fence, then defers to the existing native stuck priority routing.
+Operator spawn retains admission locks and commits its start before publication;
+conflict spawn cannot override a live attempt or revive settled/replaced work.
+Unavailable or stale scoped responses never fall back to a Task-only start.
+
 Internal/admin callers can read the immutable admission fact at
 `GET /api/work-admission/paid-runs/{run_id}/admission` and the corresponding
 reservation outcome at `GET /api/engineering-budget-policies/admissions/{attempt_id}`.

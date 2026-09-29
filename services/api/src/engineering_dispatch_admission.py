@@ -34,6 +34,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_dispatch import (
     PAID_WORK_REFUSALS,
+    EngineeringAttemptStartCommand,
+    EngineeringAttemptStartOutcome,
+    EngineeringAttemptStartRead,
     EngineeringDispatchCommand,
     EngineeringDispatchOutcome,
     EngineeringDispatchRead,
@@ -42,6 +45,7 @@ from shared.contracts.dto.engineering_dispatch import (
 )
 from shared.contracts.dto.engineering_execution import (
     ENGINEERING_INFRASTRUCTURE_KEY,
+    EngineeringExecutionPhase,
     EngineeringInfrastructurePark,
     EngineeringInfrastructureParkDisposition,
     EngineeringInfrastructureRefusal,
@@ -61,7 +65,7 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionOutcome,
 )
 from shared.contracts.worker_turn import AttemptTurnMetadata
-from shared.models import Run, Task, WorkAdmissionAudit
+from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
 
 from .infrastructure_park import (
     PARKABLE_TASK_HOPS,
@@ -168,6 +172,163 @@ async def _lock_engineering_runs(task_ids: list[str], db: AsyncSession) -> list[
             )
         ).all()
     )
+
+
+async def _lock_dispatch_tasks(task_id: str, db: AsyncSession):
+    """Rung 1 shared by admission and its delayed handoff."""
+    from .routers._task_helpers import get_task_for_update
+
+    blocker_id, story_id = await _peek_edges(task_id, db)
+    roster = set()
+    if story_id:
+        roster = set((await db.scalars(select(Task.id).where(Task.story_id == story_id))).all())
+    locked = {}
+    for member in sorted(({task_id, blocker_id} | roster) - {None}):
+        locked[member] = await get_task_for_update(member, db)
+    return locked[task_id], locked, blocker_id, story_id
+
+
+async def start_engineering_attempt(
+    command: EngineeringAttemptStartCommand, db: AsyncSession
+) -> EngineeringAttemptStartRead:
+    """Commit only the current admitted conflict attempt's handoff."""
+    from shared.contracts.dto.pr_conflict_repair import PR_CONFLICT_REPAIR_ATTEMPT_KEY, cycle_stamp
+
+    from .routers._pr_conflict_attempt import _admission_evidence, _refuse
+    from .routers._story_helpers import _get_story_for_update
+    from .routers.projects_guards import load_locked_project
+
+    def read(outcome):
+        return EngineeringAttemptStartRead(
+            outcome=outcome, task_id=command.task_id, run_id=command.run_id
+        )
+
+    task, locked, _, story_id = await _lock_dispatch_tasks(command.task_id, db)
+    if not task.id.startswith("pr-conflict-") or not task.story_id:
+        _refuse("The admitted-attempt start requires a conflict repair Task.")
+    if task.story_id != story_id:
+        return read(EngineeringAttemptStartOutcome.STALE)
+    story = await _get_story_for_update(story_id, db)
+    roster = set((await db.scalars(select(Task.id).where(Task.story_id == story_id))).all())
+    if roster - set(locked):
+        return read(EngineeringAttemptStartOutcome.STALE)
+    project = await load_locked_project(db, task.project_id)
+    if story.project_id != project.id:
+        _refuse("The repair Task belongs to another project/story.")
+    runs = await _lock_engineering_runs(sorted(locked), db)
+    run = next((r for r in runs if r.id == command.run_id), None)
+    if run is None:
+        _refuse("The Run does not belong to this admitted repair.")
+    if (
+        run.task_id != task.id
+        or run.story_id != story.id
+        or run.project_id != project.id
+        or run.type != RunType.ENGINEERING.value
+    ):
+        _refuse("The Run does not belong to this repair Task.")
+    events = list(
+        (
+            await db.scalars(
+                select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
+            )
+        ).all()
+    )
+    evidence = await _admission_evidence(task, story, events, db)
+    if (
+        cycle_stamp(evidence.cycle_started_at) != cycle_stamp(story.reopened_at or story.created_at)
+        or evidence.pr_number != story.pr_number
+    ):
+        return read(EngineeringAttemptStartOutcome.STALE)
+    iteration = (run.run_metadata or {}).get("iteration")
+    if type(iteration) is not int:
+        _refuse("The Run has no valid iteration identity.")
+    if any(
+        e.details.get(PR_CONFLICT_REPAIR_ATTEMPT_KEY, {}).get("attempt_id") == run.id
+        for e in events
+    ):
+        return read(EngineeringAttemptStartOutcome.SETTLED)
+    if (
+        iteration != task.current_iteration
+        or any(
+            r.id != run.id
+            and not (r.run_metadata or {}).get("pre_handoff_aborted")
+            and (
+                r.status in _LIVE_RUN_STATUSES
+                or (
+                    r.task_id == task.id
+                    and type((r.run_metadata or {}).get("iteration")) is int
+                    and r.run_metadata["iteration"] >= iteration
+                )
+            )
+            for r in runs
+        )
+        or story.status != StoryStatus.IN_PROGRESS.value
+        or task.status not in {TaskStatus.TODO.value, TaskStatus.IN_DEV.value}
+        or ENGINEERING_INFRASTRUCTURE_KEY in (task.failure_metadata or {})
+        or ENGINEERING_INFRASTRUCTURE_KEY in (story.quarantine_reason or {})
+        or (run.run_metadata or {}).get("pre_handoff_aborted")
+    ):
+        return read(EngineeringAttemptStartOutcome.STALE)
+    return read(await _apply_current_handoff(task, run, db))
+
+
+async def _apply_current_handoff(
+    task: Task, run: Run, db: AsyncSession
+) -> EngineeringAttemptStartOutcome:
+    """Apply only evidence already fenced by start_engineering_attempt's locks."""
+    from .routers._pr_conflict_attempt import _refuse
+    from .routers._task_helpers import create_status_event, validate_transition
+
+    if run.status == RunStatus.FAILED.value:
+        from .routers._pr_conflict_attempt import _start_interrupted_dispatch
+
+        result = _terminal_engineering_result(run)
+        if result.allocation_failure_reason is not None or (
+            result.execution is not None
+            and result.execution.execution_phase is EngineeringExecutionPhase.PRE_AGENT_REFUSED
+        ):
+            await _start_interrupted_dispatch(task, {"run_id": run.id}, db)
+            return EngineeringAttemptStartOutcome.PRIORITY_PENDING
+    if run.status not in _LIVE_RUN_STATUSES and run.status != RunStatus.COMPLETED.value:
+        return EngineeringAttemptStartOutcome.TERMINAL_PENDING
+    if run.status in _LIVE_RUN_STATUSES and task.status == TaskStatus.IN_DEV.value:
+        return EngineeringAttemptStartOutcome.REUSED
+    if run.status == RunStatus.COMPLETED.value:
+        from shared.contracts.dto.engineering import EngineeringStatus
+
+        result = _terminal_engineering_result(run)
+        if result.engineering_status is not EngineeringStatus.DONE:
+            _refuse("The completed Run has no successful engineering outcome.")
+    # A matching finished success owes the native completion, not another
+    # publisher's start. Commit all its legal hops under the same fence.
+    hops = []
+    if task.status == TaskStatus.TODO.value:
+        hops.append(TaskStatus.IN_DEV)
+    if run.status == RunStatus.COMPLETED.value:
+        hops.extend([TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE])
+    for after in hops:
+        before = task.status
+        validate_transition(before, after)
+        task.status = after.value
+        await create_status_event(task, before, after, "internal_service", {"run_id": run.id}, db)
+    return (
+        EngineeringAttemptStartOutcome.COMPLETED
+        if run.status == RunStatus.COMPLETED.value
+        else EngineeringAttemptStartOutcome.STARTED
+    )
+
+
+def _terminal_engineering_result(run):
+    from pydantic import ValidationError
+
+    from shared.contracts.dto.run_result import EngineeringRunResult
+
+    from .routers._pr_conflict_attempt import _refuse
+
+    try:
+        return EngineeringRunResult.model_validate(run.result)
+    except ValidationError:
+        _refuse("The terminal engineering result is missing or malformed.")
 
 
 def _attempts_of(task_id: str, runs: list[Run]) -> list[Run]:
@@ -478,7 +639,6 @@ async def admit_engineering_dispatch(
     # Deferred: `src.routers` imports this module for its endpoint, and the
     # locking row readers cards 1237 and this one declared live under it.
     # Importing them here keeps that one cycle out of module import order.
-    from .routers._task_helpers import get_task_for_update
     from .routers.projects_guards import load_locked_project
 
     overrides = _Overrides(command)
@@ -488,19 +648,13 @@ async def admit_engineering_dispatch(
     # entity — purely to learn which rows to take. Which rows: the candidate,
     # the task it declares as its blocker, and, when it belongs to a story, that
     # story's whole roster, because the story fence decides from sibling rows.
-    peeked_blocker_id, peeked_story_id = await _peek_edges(command.task_id, db)
-    peeked_roster: set[str] = set()
-    if peeked_story_id:
-        peeked_roster = set(
-            (await db.scalars(select(Task.id).where(Task.story_id == peeked_story_id))).all()
-        )
-    locked: dict[str, Task] = {}
-    for task_id in sorted(({command.task_id, peeked_blocker_id} | peeked_roster) - {None}):
-        locked[task_id] = await get_task_for_update(task_id, db)
-    task = locked[command.task_id]
+    task, locked, peeked_blocker_id, peeked_story_id = await _lock_dispatch_tasks(
+        command.task_id, db
+    )
 
-    if task.status != TaskStatus.TODO.value and not overrides.clears(
-        EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE
+    if task.status != TaskStatus.TODO.value and (
+        task.id.startswith("pr-conflict-")
+        or not overrides.clears(EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE)
     ):
         return _refused(EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE, overrides)
 
@@ -570,15 +724,37 @@ async def admit_engineering_dispatch(
     # --- rung 4: the attempt rows the last two conditions read --------------
     runs = await _lock_engineering_runs(sorted(locked), db)
 
-    story_refusal = _story_fence(task, sibling_ids, locked, runs, overrides)
+    story_refusal = None
+    if task.id.startswith("pr-conflict-"):
+        from shared.contracts.dto.pr_conflict_repair import cycle_stamp
+
+        from .routers._pr_conflict_attempt import _admission_evidence
+        from .routers._story_helpers import _get_story_for_update
+
+        story = await _get_story_for_update(task.story_id, db)
+        events = list(
+            (await db.scalars(select(TaskEvent).where(TaskEvent.task_id == task.id))).all()
+        )
+        evidence = await _admission_evidence(task, story, events, db)
+        if (
+            story.status != StoryStatus.IN_PROGRESS.value
+            or story.pr_number != evidence.pr_number
+            or cycle_stamp(story.reopened_at or story.created_at)
+            != cycle_stamp(evidence.cycle_started_at)
+        ):
+            story_refusal = _refused(EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE, overrides)
+
+    if story_refusal is None:
+        story_refusal = _story_fence(task, sibling_ids, locked, runs, overrides)
     if story_refusal is not None:
         return story_refusal
 
     # Evaluated whether or not the caller may walk past it, so an override is
     # recorded only when it actually walked past something.
     prior = _prior_attempt(task, _attempts_of(task.id, runs), initiating_run_id)
-    if prior is not None and not overrides.clears(
-        EngineeringDispatchRefusal.LIVE_ATTEMPT_IN_FLIGHT
+    if prior is not None and (
+        task.id.startswith("pr-conflict-")
+        or not overrides.clears(EngineeringDispatchRefusal.LIVE_ATTEMPT_IN_FLIGHT)
     ):
         return prior.model_copy(update={"overridden": list(overrides.applied)})
 

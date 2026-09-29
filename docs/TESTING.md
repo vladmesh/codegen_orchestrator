@@ -25,6 +25,12 @@ and before scoped settlement, then use real Redis PEL reclaim and the consumer
 guard followed by native stuck/failed-supervisor ticks. They also cover lost
 committed responses, concurrent recovery, unchanged immutable Runs, one ledger
 event and delivery to both audiences without another episode on later ticks.
+The `failed-late-start` variants suspend dispatch after Redis publication and
+release its real API start after the actual early failure consumer commits
+TODO/iteration 1. Native ticks then admit exactly one next Run and continue
+the bounded retry history. API `test_pr_conflict_attempt_start.py` covers both
+start/settlement orders, duplicated/lost responses, terminal and replaced-work
+fences, unchanged holds/history/notices and refusal of generic start bypasses.
 API service cases prove terminal evidence outranks callback observations from
 `in_dev` and interrupted-dispatch `todo`, reject malformed/unrelated evidence,
 and interleave cycle/PR replacement between discovery and locked settlement.

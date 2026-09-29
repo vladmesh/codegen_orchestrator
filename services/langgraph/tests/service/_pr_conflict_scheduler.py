@@ -78,9 +78,15 @@ async def exercise():
             assert await dispatch_todo_tasks(api, stream) == 0
         elif mode == "dispatch-interrupt":
             with patch.object(
-                api, "transition_task", AsyncMock(side_effect=OSError("status write unavailable"))
+                api,
+                "start_engineering_attempt",
+                AsyncMock(side_effect=OSError("status write unavailable")),
             ):
                 assert await dispatch_todo_tasks(api, stream) == 0
+        elif mode == "dispatch-pause-start":
+            await delayed_dispatch_start(api, stream)
+        elif mode == "dispatch-start-lost":
+            await dispatch_with_lost_start(api, stream)
         elif mode == "fail-lost":
             request = api.request
             lost = False
@@ -123,6 +129,40 @@ async def exercise():
     finally:
         await stream.close()
         await api.close()
+
+
+async def delayed_dispatch_start(api, stream):
+    start = api.start_engineering_attempt
+
+    async def delayed_start(command):
+        # XADD has completed; release this real start only after the
+        # actual consumer's failed Run and retry transaction commit.
+        await stream.redis.rpush(f"conflict-start-ready:{STORY}", command.run_id)
+        assert await stream.redis.blpop(f"conflict-start-release:{STORY}", timeout=10)
+        result = await start(command)
+        assert result.outcome.value == "settled"
+        return result
+
+    with patch.object(api, "start_engineering_attempt", delayed_start):
+        assert await dispatch_todo_tasks(api, stream) == 0
+
+
+async def dispatch_with_lost_start(api, stream):
+    start = api.start_engineering_attempt
+    lost = False
+
+    async def lost_start(command):
+        nonlocal lost
+        result = await start(command)
+        if not lost:
+            lost = True
+            raise OSError("committed start response lost")
+        assert result.outcome.value == "reused"
+        return result
+
+    with patch.object(api, "start_engineering_attempt", lost_start):
+        assert await dispatch_todo_tasks(api, stream) == 1
+    assert lost
 
 
 async def concurrent_terminal_recovery(api, stream):

@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.contracts.dto.engineering_dispatch import (
     ENGINEERING_TASK_NOT_FOUND,
     ENGINEERING_TASK_REQUIRES_ADMISSION,
+    EngineeringAttemptStartCommand,
+    EngineeringAttemptStartRead,
     EngineeringDispatchCommand,
     EngineeringDispatchRead,
 )
@@ -38,7 +40,7 @@ from ..dependencies import (
     require_bearer_admin,
     require_internal_or_admin,
 )
-from ..engineering_dispatch_admission import admit_engineering_dispatch
+from ..engineering_dispatch_admission import admit_engineering_dispatch, start_engineering_attempt
 from ..executor_diagnostics import (
     current_executor_diagnostic,
     current_executor_snapshot,
@@ -401,5 +403,16 @@ async def admit_engineering_dispatch_endpoint(
     written whether it admitted or not.
     """
     decision = await admit_engineering_dispatch(command, db)
+    await db.commit()
+    return decision
+
+
+@router.post("/engineering-dispatches/start", response_model=EngineeringAttemptStartRead)
+async def start_engineering_attempt_endpoint(
+    command: EngineeringAttemptStartCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> EngineeringAttemptStartRead:
+    decision = await start_engineering_attempt(command, db)
     await db.commit()
     return decision

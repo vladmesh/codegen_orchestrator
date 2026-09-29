@@ -19,6 +19,8 @@ import structlog
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
 from shared.contracts.dto.engineering_dispatch import (
+    EngineeringAttemptStartCommand,
+    EngineeringAttemptStartOutcome,
     EngineeringDispatchCommand,
     EngineeringDispatchOutcome,
     EngineeringDispatchRead,
@@ -159,7 +161,7 @@ async def _recover_dispatched_task(
         ):
             # Restore only discovery; the next stuck sweep applies native
             # infrastructure/resource priority before any repair settlement.
-            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            await _transition_to_in_dev(api_client, task_id, run.id, log)
             log.info("conflict_refusal_deferred_to_supervision", run_id=run.id)
             return
         if run.story_id is None:
@@ -173,6 +175,9 @@ async def _recover_dispatched_task(
             PRConflictRepairAttemptDisposition.FAILED,
         )
         log.info("conflict_dispatch_outcome_settled", run_id=run.id, outcome=outcome.outcome.value)
+        return
+    if task_id.startswith("pr-conflict-"):
+        await _transition_to_in_dev(api_client, task_id, run.id, log)
         return
     await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
     for status in terminal_task_statuses(run):
@@ -205,6 +210,9 @@ async def _execute_repair(
         run_id=decision.run_id,
         iteration=task.current_iteration,
     )
+    if task.id.startswith("pr-conflict-"):
+        started = await _transition_to_in_dev(api_client, task.id, decision.run_id, log)
+        return started and decision.repair in _DISPATCH_COMPLETING
     await api_client.transition_task(task.id, TaskStatus.IN_DEV, "dispatcher")
     return decision.repair in _DISPATCH_COMPLETING
 
@@ -400,16 +408,30 @@ async def _transition_to_in_dev(
     todo. If both attempts fail, the admission point's live-attempt repair
     finishes the transition on the next tick.
     """
+
+    async def start():
+        if not task_id.startswith("pr-conflict-"):
+            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            return True
+        decision = await api_client.start_engineering_attempt(
+            EngineeringAttemptStartCommand(task_id=task_id, run_id=run_id)
+        )
+        log.info("conflict_attempt_start", run_id=run_id, outcome=decision.outcome.value)
+        return decision.outcome in {
+            EngineeringAttemptStartOutcome.STARTED,
+            EngineeringAttemptStartOutcome.REUSED,
+            EngineeringAttemptStartOutcome.COMPLETED,
+        }
+
     try:
-        await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+        return await start()
     except Exception:
         log.warning("task_transition_retry", run_id=run_id, exc_info=True)
         try:
-            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            return await start()
         except Exception:
             log.exception("task_transition_failed", run_id=run_id)
             return False
-    return True
 
 
 async def dispatch_todo_tasks(

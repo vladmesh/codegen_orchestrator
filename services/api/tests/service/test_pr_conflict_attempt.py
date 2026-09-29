@@ -30,8 +30,11 @@ async def failed_attempt(client, db, fixture, *, ceiling=False, gave_up=False):
     )
     assert response.json()["outcome"] == "admitted", response.text
     rid = response.json()["run_id"]
-    response = await client.post(f"/api/tasks/{tid}/start")
+    response = await client.post(
+        "/api/work-admission/engineering-dispatches/start", json={"task_id": tid, "run_id": rid}
+    )
     assert response.status_code == 200, response.text
+    assert response.json()["outcome"] == "started", response.text
     response = await client.patch(
         f"/api/runs/{rid}",
         json={

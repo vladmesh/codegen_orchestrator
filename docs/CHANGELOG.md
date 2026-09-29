@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Fence admitted conflict starts with immutable Run and settlement evidence, so delayed dispatch
+  cannot overwrite an atomic retry or revive settled work.
+
 - Recover terminal conflict Runs through scoped settlement before generic Task replay, so interrupted
   refusals owe both notices and immutable Run evidence decides the bounded ending.
 
