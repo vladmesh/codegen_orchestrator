@@ -86,6 +86,7 @@ from ..infrastructure_park import (
 from ..owner_notification_settlement import preserve_po_settlement
 from ..schemas.story import StoryRead, StoryTransition
 from ..work_admission import abort_paid_run_pre_handoff
+from ._pr_conflict_attempt import router as pr_conflict_attempt_router
 from ._story_helpers import (
     _do_transition,
     _get_story_for_update,
@@ -102,6 +103,7 @@ logger = structlog.get_logger()
 _LIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED.value, RunStatus.RUNNING.value})
 
 action_router = APIRouter()
+action_router.include_router(pr_conflict_attempt_router)
 PR_CONFLICT_GITHUB = GitHubAppClient
 
 

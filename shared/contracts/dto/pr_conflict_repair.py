@@ -7,7 +7,11 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
+
 PR_CONFLICT_REPAIR_KEY = "pr_conflict_repair"
+PR_CONFLICT_REPAIR_ATTEMPT_KEY = "pr_conflict_repair_attempt"
 
 
 def cycle_stamp(moment: datetime) -> datetime:
@@ -52,3 +56,39 @@ class PRConflictRepairRead(BaseModel):
     pr_number: int
     max_iterations: int
     reason: str | None = None
+
+
+class PRConflictRepairAttemptDisposition(StrEnum):
+    FAILED = "failed"
+    GAVE_UP = "gave_up"
+
+
+class PRConflictRepairAttemptCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: uuid.UUID
+    pr_number: int = Field(gt=0)
+    cycle_started_at: datetime
+    task_id: str = Field(min_length=1)
+    attempt_id: str = Field(min_length=1)
+    expected_iteration: int = Field(ge=0)
+    disposition: PRConflictRepairAttemptDisposition
+    detail: str = Field(min_length=1, max_length=2000)
+
+
+class PRConflictRepairAttemptOutcome(StrEnum):
+    RETRIED = "retried"
+    REUSED = "reused"
+    EXHAUSTED = "exhausted"
+    STALE = "stale"
+
+
+class PRConflictRepairAttemptRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: PRConflictRepairAttemptOutcome
+    task_id: str
+    attempt_id: str
+    current_iteration: int
+    task_status: TaskStatus
+    story_status: StoryStatus

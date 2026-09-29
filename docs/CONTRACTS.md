@@ -55,10 +55,25 @@ live unrelated work and unrelated quarantines fail without mutation. GitHub
 read failures remain visible failures. This route never resets a task budget,
 force-pushes, merges a dirty PR or replans the story.
 
-The failed-task supervisor and engineering `gave_up` handler use the immutable
-admission event to record this same named, durable stop before settling the
-repair Task. A transport failure retains the next visit; a superseded cycle or
-unrelated quarantine cannot stop current work. The existing no-new-commit,
+`POST /api/stories/{id}/repair-pr-conflicts/attempt-outcome` accepts
+`PRConflictRepairAttemptCommand` from an internal service or administrator and
+returns `PRConflictRepairAttemptRead`. The command names the admitted Task,
+failed engineering Run, its iteration, project, PR and immutable admission
+cycle, plus `failed` or `gave_up`. Task, Story, Project and related Run locks
+fence the decision in one transaction. Replaced cycles/PRs and older attempts
+return `stale` without changing current work or notices; client reads grant no
+settlement authority. Malformed or unrelated admission/Run evidence refuses.
+
+For an ordinary failed repair below the recorded ceiling, its next iteration
+and `todo` state commit together, with an immutable per-attempt settlement event.
+Lost responses and concurrent repeats reuse that event without another increment
+or Run. A proven legacy partial `backlog` retry with the same failed iteration
+and no live attempt is completed by this command; supervision scans only admitted
+conflict Tasks for this recovery. Unrelated retry policy is unchanged.
+
+At the ceiling or on `gave_up`, repair Task settlement, the named durable Story
+stop and both owed notice audiences commit together. Replay reconciles the same
+settlement without another stop/notice episode. The existing no-new-commit,
 infrastructure and resource-wait dispositions retain priority. Owner/admin
 delivery uses the existing owed-notification sweep.
 
@@ -66,7 +81,16 @@ Worker checkout fast-forwards a synchronized story tip to freshly fetched
 default only when both local and fetched remote work are contained there.
 Unmerged work stays; divergence and tracked dirty work fail visibly. Native
 non-force publication and readback finish preparation before the turn baseline
-is recorded, so advancing the base is not engineering output.
+is recorded, so advancing the base is not engineering output. Before a first
+turn, both spawn and reclaim reconcile the Run with native prepared HEAD and
+the worker's creation ownership. The Run retains the prepared worker/attempt
+identity atomically with its baseline. A previous remote lookup alone cannot
+survive this handoff as authoritative preparation evidence. A persisted turn
+keeps its saved baseline on adoption, including after a lost response; it never
+replaces that baseline with a post-agent head. Missing or inconsistent worker,
+Run or preparation identity fails before another turn is published. Ordinary
+later attempts on a reused worker retain their own pre-turn baseline rather
+than the checkout baseline of the worker's earlier creator attempt.
 
 `services/api/src/dependencies.py` and `services/api/src/routers/_recipients.py`
 resolve the caller once. An LK bearer acts only as the token subject. An

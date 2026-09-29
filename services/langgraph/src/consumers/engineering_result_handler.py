@@ -11,6 +11,7 @@ import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairAttemptDisposition
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import (
@@ -26,7 +27,7 @@ from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.empty_engineering_stop import ensure_empty_story_stop
 from shared.notifications import notify_admins_best_effort
-from shared.pr_conflict_repair import stop_failed_pr_repair
+from shared.pr_conflict_repair import settle_pr_repair_attempt
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
 from shared.redis.client import decode_redis_fields
@@ -385,26 +386,13 @@ async def handle_worker_gave_up(
     if planning_task_id and planning_task_id.startswith("pr-conflict-"):
         if story_id is None:
             raise RuntimeError("An admitted conflict repair requires its story")
-        await stop_failed_pr_repair(
+        await settle_pr_repair_attempt(
             api_client,
             story_id,
             planning_task_id,
             task_id,
             f"The worker declined repair: {bounded_diagnostic(reason)}",
-            "engineering",
-        )
-        task = await api_client.get_task(planning_task_id)
-        if task.status != TaskStatus.WAITING_HUMAN_REVIEW:
-            await api_client.post(
-                f"tasks/{planning_task_id}/transition",
-                params={"to_status": TaskStatus.WAITING_HUMAN_REVIEW.value},
-                json={"actor": "engineering-worker"},
-            )
-        await api_client.patch(
-            f"tasks/{planning_task_id}", json={"failure_metadata": {"reason": reason}}
-        )
-        await _write_task_event(
-            api_client, planning_task_id, "note", {"action": "worker_gave_up", "reason": reason}
+            PRConflictRepairAttemptDisposition.GAVE_UP,
         )
         return settlement
 

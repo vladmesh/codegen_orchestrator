@@ -213,15 +213,19 @@ async def finish_repair(api, sid, project_id, repair, run, ending):
         await stream.connect()
         try:
             with patch.object(engineering_result_handler, "api_client", api):
-                original_patch = api.patch
+                original_request = api.request
+                lost = False
 
-                async def interrupted_patch(path, **kwargs):
-                    if path == f"tasks/{repair['id']}":
-                        raise RuntimeError("synthetic Task settlement interruption")
-                    return await original_patch(path, **kwargs)
+                async def interrupted_request(method, path, **kwargs):
+                    nonlocal lost
+                    response = await original_request(method, path, **kwargs)
+                    if method == "POST" and path.endswith("/attempt-outcome") and not lost:
+                        lost = True
+                        raise RuntimeError("synthetic committed settlement interruption")
+                    return response
 
                 with (
-                    patch.object(api, "patch", interrupted_patch),
+                    patch.object(api, "request", interrupted_request),
                     pytest.raises(RuntimeError, match="settlement interruption"),
                 ):
                     await engineering_result_handler.handle_worker_gave_up(
@@ -253,7 +257,15 @@ async def finish_repair(api, sid, project_id, repair, run, ending):
                 json={"status": "failed", "result": {"engineering_status": "failed"}},
             )
             await api.post(f"tasks/{repair['id']}/fail")
-            await asyncio.to_thread(scheduler, "fail", sid)
+            if iteration == 1:
+                # The released supervisor could lose its first hop's response.
+                # A later native supervision tick must discover this BACKLOG.
+                await api.post(
+                    f"tasks/{repair['id']}/transition",
+                    params={"to_status": "backlog"},
+                    json={"actor": "supervisor"},
+                )
+            await asyncio.to_thread(scheduler, "fail-lost" if iteration == 0 else "fail", sid)
             task = await api.get_task(repair["id"])
             assert task.current_iteration == min(iteration + 1, repair["max_iterations"])
             assert task.status.value == (

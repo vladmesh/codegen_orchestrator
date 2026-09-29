@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Reconcile reclaimed checkout baselines before worker turns; atomically fence conflict retries and
+  terminal settlement to their admitted cycle and Run so lost responses cannot strand or stop new work.
+
 - Advance merged story branches without discarding local work; admit one bounded dirty-PR repair
   through normal dispatch, including authenticated recovery of the released dirty quarantine.
 

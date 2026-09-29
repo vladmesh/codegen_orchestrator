@@ -76,6 +76,22 @@ async def exercise():
         elif mode == "dispatch":
             assert await dispatch_todo_tasks(api, stream) == 1
             assert await dispatch_todo_tasks(api, stream) == 0
+        elif mode == "fail-lost":
+            request = api.request
+            lost = False
+
+            async def lose_committed_response(method, path, **kwargs):
+                nonlocal lost
+                response = await request(method, path, **kwargs)
+                if method == "POST" and path.endswith("/attempt-outcome") and not lost:
+                    lost = True
+                    raise OSError("synthetic committed retry response loss")
+                return response
+
+            with patch.object(api, "request", lose_committed_response):
+                assert await supervise_failed_tasks(api, stream) == {"retried": 0, "escalated": 0}
+            assert lost
+            assert await supervise_failed_tasks(api, stream) == {"retried": 0, "escalated": 0}
         elif mode == "fail":
             outcome = await supervise_failed_tasks(api, stream)
             assert outcome["retried"] + outcome["escalated"] == 1, outcome
