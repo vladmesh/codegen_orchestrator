@@ -1,5 +1,6 @@
 """The derived self address is the authoritative backend HTTP endpoint."""
 
+from ipaddress import IPv6Address
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -9,6 +10,7 @@ from shared.contracts.queues.deploy import DeployOutcome
 from src.subgraphs.devops.secret_resolver import (
     SecretResolverNode,
     TypedSecretResolutionError,
+    backend_http_url,
     is_computable_derived_key,
 )
 
@@ -56,6 +58,15 @@ async def test_public_url_uses_backend_and_declared_sensitivity(address, expecte
     result = await SecretResolverNode().run(public_state(resources))
     assert result["non_secret_values"]["PUBLIC_BASE_URL"] == expected
     assert "PUBLIC_BASE_URL" not in result["secret_values"]
+
+
+@pytest.mark.parametrize("address", ["::ffff:192.0.2.42", "::ffff:c000:22a"])
+@pytest.mark.parametrize("compressed", ["::ffff:c000:22a", "::ffff:192.0.2.42"])
+def test_mapped_http_url_spelling_is_stable_across_python_patch_versions(address, compressed):
+    # Python 3.12.14 renders mapped addresses in dotted form; earlier patches
+    # render hexadecimal. The public endpoint's existing spelling stays exact.
+    with patch.object(IPv6Address, "compressed", property(lambda _: compressed)):
+        assert backend_http_url(address, 8080) == "http://[::ffff:c000:22a]:8080"
 
 
 @pytest.mark.asyncio

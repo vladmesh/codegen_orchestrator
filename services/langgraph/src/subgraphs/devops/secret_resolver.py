@@ -111,7 +111,18 @@ def backend_http_url(server_ip: str, port: int) -> str:
         raise SecretResolutionError("PUBLIC_BASE_URL: backend address is unusable")
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= _MAX_TCP_PORT:
         raise SecretResolutionError("PUBLIC_BASE_URL: backend port is invalid")
-    host = f"[{address.compressed}]" if isinstance(address, IPv6Address) else address.compressed
+    if isinstance(address, IPv6Address):
+        # Keep existing hexadecimal self URLs stable when Python changes the
+        # spelling of IPv4-mapped IPv6Address.compressed across patch releases.
+        mapped = address.ipv4_mapped
+        host = (
+            f"::ffff:{int(mapped) >> 16:x}:{int(mapped) & 0xFFFF:x}"
+            if mapped is not None
+            else address.compressed
+        )
+        host = f"[{host}]"
+    else:
+        host = address.compressed
     return f"http://{host}:{port}"
 
 

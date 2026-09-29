@@ -136,11 +136,18 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("address", ["192.0.2.42", "2001:db8::42", "::ffff:192.0.2.42"])
+@pytest.mark.parametrize(
+    ("address", "expected_host"),
+    [
+        ("192.0.2.42", "192.0.2.42"),
+        ("2001:db8::42", "2001:db8::42"),
+        ("::ffff:192.0.2.42", "::ffff:c000:22a"),
+    ],
+)
 @patch("src.subgraphs.devops.deployer.GitHubAppClient")
 @patch("src.subgraphs.devops.deployer.api_client")
 async def test_resolved_public_address_reaches_dotenv_and_success_url(
-    mock_api, mock_gh_cls, base_state, address
+    mock_api, mock_gh_cls, base_state, address, expected_host
 ):
     from src.subgraphs.devops.graph import create_devops_subgraph
     from tests.unit.test_public_base_url import public_state
@@ -191,7 +198,8 @@ async def test_resolved_public_address_reaches_dotenv_and_success_url(
     assert len(requests) == 1
     assert str(requests[0].url) == result["deployed_url"] + "/health"
     assert requests[0].url.host == httpx.URL(result["deployed_url"]).host
-    assert requests[0].url.host == ip_address(address).compressed
+    assert requests[0].url.host == expected_host
+    assert ip_address(requests[0].url.host) == ip_address(address)
     assert requests[0].url.port == 8080
     assert requests[0].url.path == "/health"
 

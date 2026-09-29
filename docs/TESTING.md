@@ -85,10 +85,11 @@ retry controls are test fixtures and must not race.
 `uv run python -m pytest tests/integration/template/test_released_deploy_upgrade.py -q`
 renders the exact preceding annotated kit release, commits owned synthetic app,
 spec and environment bytes, updates to the production pin on a review branch,
-and reads all owned bytes back. It proves a workflow name survives and an overlapping
-runner hunk produces `.rej` despite zero exit/new answers, then explicitly reconciles
-and commits the complete updated workflow. Released copy-shell command capture and
-installed `ssh -G`/`scp -S` verify native/mapped IPv6 host parsing in default SFTP and
+and reads all owned bytes back. A nonoverlapping workflow name survives; an overlapping
+runner hunk produces `.rej` despite zero exit/new answers and can include the owned name
+in the same rejection. The test reviews every rejected customization, restores the name,
+accepts the released runner, and reads back and commits the complete workflow. Released copy-shell
+command capture and installed `ssh -G`/`scp -S` verify native/mapped IPv6 host parsing in default SFTP and
 legacy SCP modes without connecting. Both the template integration runner and the
 selected CI baseline compatibility leg run this regression.
 

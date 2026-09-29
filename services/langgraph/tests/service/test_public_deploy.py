@@ -472,9 +472,12 @@ def merged_updated_workflow(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("address", ["2001:db8::42", "::ffff:192.0.2.42"])
+@pytest.mark.parametrize(
+    ("address", "expected_host"),
+    [("2001:db8::42", "2001:db8::42"), ("::ffff:192.0.2.42", "::ffff:c000:22a")],
+)
 async def test_reviewed_updated_merge_recovers_exhausted_intent_and_finishes_smoke(
-    public_project, real_redis, tmp_path, address
+    public_project, real_redis, tmp_path, address, expected_host
 ):
     api, stream, project_id, story_id = public_project
     await api.post(
@@ -633,7 +636,9 @@ async def test_reviewed_updated_merge_recovers_exhausted_intent_and_finishes_smo
         assert str(requests[0].url) == result["non_secret_values"]["PUBLIC_BASE_URL"] + "/health"
         assert result["deployed_url"] == result["non_secret_values"]["PUBLIC_BASE_URL"]
         assert requests[0].url.host == httpx.URL(result["deployed_url"]).host
-        assert requests[0].url.host == ip_address(address).compressed
+        assert requests[0].url.host == expected_host and ip_address(
+            requests[0].url.host
+        ) == ip_address(address)
         assert github.reads == [
             ("/repos/fixture/public/contents/.github/workflows/deploy.yml", built),
             ("/repos/fixture/public/contents/.github/workflows/deploy.yml.rej", built),

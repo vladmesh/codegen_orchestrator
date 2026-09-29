@@ -1705,7 +1705,8 @@ ordering; standard-library IP validation and bracketed IPv6 formatting apply. Th
 `ipv4_mapped` address must also pass the same loopback/unspecified/multicast refusal; scoped
 IPv6 remains unusable. Usable mapped/native IPv6 and private addresses retain their existing
 allocation policy. Resolver, deployer and actual HTTP smoke reuse that validation; smoke adds
-exactly one `/health` suffix. Absent, invalid
+exactly one `/health` suffix. Mapped IPv6 HTTP hosts retain their hexadecimal spelling across
+Python patch releases, even when `IPv6Address.compressed` changes to dotted notation. Absent, invalid
 or ambiguous endpoints fail `environment_resolution_failed` naming `PUBLIC_BASE_URL`.
 Overrides cannot replace derived values. The canonical derived entry stays non-sensitive;
 other entry kinds retain their declared sensitivity routing. This supplies no domain, TLS,

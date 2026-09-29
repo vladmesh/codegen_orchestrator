@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Keep mapped HTTP hosts stable across Python patches and reconcile rejected workflow customizations
+  in released-kit upgrade checks so CI exercises the same deployed endpoint and reviewed update.
 - Validate effective mapped self addresses and IPv6 smoke; adopt released kit transport and refuse
   unverified existing workflows until a reviewed update so accepted endpoints can finish deployment.
 - Derived `PUBLIC_BASE_URL` uses the deployed HTTP endpoint; resolver failures reach owners,

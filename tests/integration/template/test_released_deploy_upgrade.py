@@ -125,6 +125,27 @@ def native_host(product, tmp_path, destination, legacy=False):
     return args[args.index("--") + 1]
 
 
+def reconcile_owned_workflow(product, previous):
+    """Review the two known local changes; retain the name and released runner."""
+    rejected = product / (str(WORKFLOW) + ".rej")
+    rejection = rejected.read_text()
+    assert "+    runs-on: self-hosted" in rejection
+    additions = {
+        line[1:]
+        for line in rejection.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    }
+    assert additions <= {"name: Owned deploy", "    runs-on: self-hosted"}
+    before = yaml.load(git(product, "show", f"{previous}:{WORKFLOW}"), Loader=yaml.BaseLoader)  # noqa: S506
+    assert before["name"] == "Owned deploy"
+    assert before["jobs"]["deploy"]["runs-on"] == "self-hosted"
+    path = product / WORKFLOW
+    # Git versions can reject the name in the same hunk as the runner. Restore
+    # that committed customization explicitly before the final full readback.
+    path.write_text(path.read_text().replace("name: Deploy", "name: Owned deploy", 1))
+    rejected.unlink()
+
+
 @pytest.fixture
 def released_product(tmp_path):
     product = tmp_path / "product"
@@ -211,20 +232,15 @@ def test_published_update_retains_owned_bytes_and_requires_reconciliation(
     assert answers["modules"] == "backend,tg_bot"
     assert f"codegen-product-kit.git@{RELEASE_SHA}" in (product / "pyproject.toml").read_text()
     assert f"rev={RELEASE_SHA}#{RELEASE_SHA}" in (product / "uv.lock").read_text()
+    if overlap:
+        reconcile_owned_workflow(product, previous)
     updated = workflow(product)
     assert updated["name"] == "Owned deploy"
     assert updated["jobs"]["deploy"]["runs-on"] == "ubuntu-24.04"
     assert updated["jobs"]["deploy"]["steps"][3]["with"]["host"] == "${{ secrets.DEPLOY_HOST }}"
     assert executable_digest(product) == admission_digest()
-    rejected = product / (str(WORKFLOW) + ".rej")
-    if overlap:
-        assert rejected.exists()
-        assert "+    runs-on: self-hosted" in rejected.read_text()
-        assert "runs-on: self-hosted" in git(product, "show", f"{previous}:{WORKFLOW}")
-        # Deliberate reconciliation accepts the released runner; owned name and
-        # bytes above remain. The rejection must be resolved before a merge.
-        rejected.unlink()
     assert not list(product.rglob("*.rej"))
+    assert before == {name: (product / name).read_bytes() for name in owned}
     for host in ("192.0.2.42", "2001:db8::42", "::ffff:192.0.2.42"):
         ssh, scp = capture_copy(product, tmp_path, host)
         config = run(["ssh", "-G", *ssh[:-1]], product)
