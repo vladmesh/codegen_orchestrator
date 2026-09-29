@@ -11,6 +11,7 @@ import sys
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token-for-unit-tests")
+os.environ.setdefault("TELEGRAM_MAX_CONCURRENT_UPDATES", "8")
 
 # Add /app to sys.path so that 'src' module can be imported.
 app_path = Path("/app")

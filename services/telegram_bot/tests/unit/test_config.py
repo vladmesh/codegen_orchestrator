@@ -42,3 +42,13 @@ def test_bot_token_stays_required(monkeypatch):
 
     with pytest.raises(ValueError, match="telegram_bot_token"):
         Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("value", [None, "0", "1", "invalid"])
+def test_concurrent_update_policy_is_required_and_at_least_two(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("TELEGRAM_MAX_CONCURRENT_UPDATES", raising=False)
+    else:
+        monkeypatch.setenv("TELEGRAM_MAX_CONCURRENT_UPDATES", value)
+    with pytest.raises(ValueError, match="TELEGRAM_MAX_CONCURRENT_UPDATES"):
+        Settings(_env_file=None)

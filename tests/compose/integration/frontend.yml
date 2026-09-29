@@ -41,6 +41,7 @@ services:
       - TELEGRAM_BOT_TOKEN=test_token
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
       - LK_DOMAIN=https://lk.test
+      - TELEGRAM_MAX_CONCURRENT_UPDATES=8
     depends_on:
       api:
         condition: service_healthy

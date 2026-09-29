@@ -181,17 +181,36 @@ class TestCheckMessageStaleness:
 class TestTerminalConsumerMessages:
     @pytest.mark.asyncio()
     async def test_live_work_watchdog_cancels_owner_when_redis_check_fails(self):
-        from src.consumers._live_work import _cancel_on_live_teardown
+        from src.consumers._live_work import execute_live_work
 
         redis = MagicMock()
         redis.redis.exists = AsyncMock(side_effect=RuntimeError("redis unavailable"))
         redis.redis.set = AsyncMock()
-        owner = MagicMock()
+        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.zrem = AsyncMock()
+        redis.ack = AsyncMock()
 
-        with patch("src.consumers._live_work.asyncio.sleep", new=AsyncMock()):
-            await _cancel_on_live_teardown(redis, "project-1", "lease-1", owner)
+        cancelled = asyncio.Event()
 
-        owner.cancel.assert_called_once()
+        async def process():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0.01):
+            with pytest.raises(asyncio.CancelledError):
+                await execute_live_work(
+                    redis,
+                    queue="queue",
+                    group="group",
+                    message_id="1-0",
+                    project_id="project-1",
+                    process=process,
+                )
+
+        assert cancelled.is_set()
+        redis.ack.assert_not_awaited()
         redis.redis.set.assert_awaited_once()
 
     @pytest.mark.asyncio()

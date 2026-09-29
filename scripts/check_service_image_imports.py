@@ -87,6 +87,7 @@ IMPORT_ENV = {
     "HEALTH_CHECK_INTERVAL": "60",
     "INTERNAL_API_KEY": "test-internal-key",
     "LK_DOMAIN": "https://lk.test.example.com",
+    "TELEGRAM_MAX_CONCURRENT_UPDATES": "8",
     "LK_JWT_SECRET": "test-lk-jwt-secret",
     "OPENAI_API_KEY": "sk-test-not-real",
     "ORCHESTRATOR_HOSTNAME": "localhost",

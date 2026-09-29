@@ -457,8 +457,8 @@ class TestReclaimGuards:
             return {"status": "completed"}
 
         redis = _redis(consume)
-        # ZCARD 0 on the liveness read, then the job's own lease registers.
-        redis.redis.eval = AsyncMock(side_effect=[0, 1])
+        # ZCARD 0, acquisition, then the completion ownership confirmation.
+        redis.redis.eval = AsyncMock(side_effect=[0, 1, 1])
 
         with patch("src.consumers._base.RedisStreamClient", return_value=redis):
             await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=2)

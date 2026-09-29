@@ -52,6 +52,7 @@ from .proactive import (  # noqa: E402
     process_proactive_entry,
     send_text,
 )
+from .update_processor import UserUpdateProcessor  # noqa: E402
 
 logger = structlog.get_logger()
 
@@ -498,7 +499,12 @@ def main() -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
     app = (
-        Application.builder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
+        Application.builder()
+        .token(token)
+        .concurrent_updates(UserUpdateProcessor(get_settings().telegram_max_concurrent_updates))
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
     )
 
     # Command handlers
