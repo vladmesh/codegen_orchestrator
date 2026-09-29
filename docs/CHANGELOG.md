@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Revalidate initial-owner retry against current deploy policy at locked API read and command boundaries;
+  keep terminal Story and notice wording stable so policy changes cannot promise unavailable retry.
+
 - Derive initial-owner retry guidance from the verified exhausted Run across readback, notices
   and PO capabilities: zero admissions offer no action, while fenced terminal Runs retain it.
 

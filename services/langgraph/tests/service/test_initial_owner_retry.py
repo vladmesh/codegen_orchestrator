@@ -156,10 +156,13 @@ async def test_terminal_cancelled_owner_deploy_exhausts_and_can_retry(public_pro
             scheduler("cancelled", story)
             stopped = await story_row(story)
             assert stopped["quarantine_reason"]["code"] == "initial_owner_deployment_exhausted"
-            assert "retry_initial_owner_deployment" in stopped["quarantine_reason"]["detail"]
+            assert (
+                "authenticated current initial-owner deployment readback"
+                in stopped["quarantine_reason"]["detail"]
+            )
             assert stopped["owner_notification"]["state"] == "owed"
             assert stopped["owner_notification"]["admin_state"] == "owed"
-            assert "retry_initial_owner_deployment" in stopped["owner_notification"]["text"]
+            assert "retry_initial_owner_deployment" not in stopped["owner_notification"]["text"]
             intent_id = run["run_metadata"]["users_grant_intent"]
             intent = await api.get_users_grant_intent(project, intent_id)
             assert intent.attempts == 1 and intent.execution_run_id == source
@@ -185,6 +188,78 @@ async def test_terminal_cancelled_owner_deploy_exhausts_and_can_retry(public_pro
                 if json.loads(data[b"data"])["project_id"] == project
             ]
             assert [entry["task_id"] for entry in attempts] == [source, current.execution_run_id]
+        finally:
+            await api.post(
+                "system-configs/",
+                json={"key": "deploy.max_deploy_retries", "value": 3, "category": "deploy"},
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["retry", "cancelled"])
+async def test_policy_zero_before_native_exhaustion_stops_without_a_command(
+    public_project, real_redis, route
+):
+    async with asyncio.timeout(90):
+        api, stream, project, story = public_project
+        owner = await api.get(f"users/{(await api.get(f'projects/{project}'))['owner_id']}")
+        await api.post(
+            "system-configs/",
+            json={"key": "deploy.max_deploy_retries", "value": 1, "category": "deploy"},
+        )
+        try:
+            source, _ = await failed_source(api, stream, project, story, owner, route)
+            run = await api.get(f"runs/{source}")
+            assert run["status"] == ("cancelled" if route == "cancelled" else "failed")
+            assert run["result"]["deploy_outcome"] == route
+            await api.post(
+                "system-configs/",
+                json={"key": "deploy.max_deploy_retries", "value": 0, "category": "deploy"},
+            )
+            scheduler(route, story)
+            stopped = await story_row(story)
+            assert stopped["status"] == "failed"
+            assert stopped["quarantine_reason"]["code"] == "initial_owner_deployment_exhausted"
+            notice = stopped["owner_notification"]
+            assert notice["state"] == notice["admin_state"] == "owed"
+            assert "retry_initial_owner_deployment" not in json.dumps(stopped)
+            intent_id = run["run_metadata"]["users_grant_intent"]
+            intent = await api.get_users_grant_intent(project, intent_id)
+            assert intent.attempts == 1 and intent.execution_run_id == source
+            assert intent.exhaustion.exhausted_execution_run_id == source
+            assert intent.exhaustion.action is None and intent.exhaustion.retry_command is None
+            config = {"configurable": {"telegram_chat_id": str(owner["telegram_id"])}}
+            with patch("src.agents.po.tools_projects._get_api", return_value=api):
+                readback = json.loads(
+                    await tools_projects.get_initial_owner_deployment.ainvoke(
+                        {"project_id": project}, config=config
+                    )
+                )
+                assert readback["exhaustion"]["action"] is None
+                refusal = await tools_projects.retry_initial_owner_deployment.ainvoke(
+                    {
+                        "project_id": project,
+                        "intent_id": intent_id,
+                        "expected_execution_run_id": source,
+                    },
+                    config=config,
+                )
+                assert "exhausted" in refusal
+            assert (await story_row(story)) == stopped
+            assert (await api.get(f"runs/{source}")) == run
+            scheduler("notice", story)
+            delivered = await story_row(story)
+            assert delivered["owner_notification"]["state"] == "delivered"
+            assert delivered["owner_notification"]["admin_state"] == "delivered"
+            await api.post(
+                "system-configs/",
+                json={"key": "deploy.max_deploy_retries", "value": 1, "category": "deploy"},
+            )
+            scheduler(route, story)
+            available = await api.get_users_grant_intent(project, intent_id)
+            assert available.exhaustion.retry_command.expected_execution_run_id == source
+            assert (await story_row(story))["owner_notification"] == delivered["owner_notification"]
+            assert len(available.retry_history) == 0
         finally:
             await api.post(
                 "system-configs/",
@@ -353,7 +428,9 @@ async def assert_exhaustion_event(real_redis, story):
     event = next(
         e for e in events if e.get("story_id") == story and "exhausted" in e.get("text", "")
     )
-    assert "retry_initial_owner_deployment" in event["text"] and CANARY not in json.dumps(event)
+    assert "retry_initial_owner_deployment" not in event["text"]
+    assert "authenticated current initial-owner deployment readback" in event["text"]
+    assert CANARY not in json.dumps(event)
 
 
 @pytest.mark.asyncio
@@ -380,11 +457,14 @@ async def _native_exhaustion_notice_and_po_retry(  # noqa: PLR0915
         stopped = await story_row(story)
         assert stopped["status"] == "failed"
         assert stopped["quarantine_reason"]["code"] == "initial_owner_deployment_exhausted"
-        assert "retry_initial_owner_deployment" in stopped["quarantine_reason"]["detail"]
+        assert (
+            "authenticated current initial-owner deployment readback"
+            in stopped["quarantine_reason"]["detail"]
+        )
         notice = stopped["owner_notification"]
         assert notice["state"] == notice["admin_state"] == "owed"
         assert source in notice["text"] and HEAD in notice["text"]
-        assert "retry_initial_owner_deployment" in notice["text"]
+        assert "retry_initial_owner_deployment" not in notice["text"] + notice["admin_text"]
         assert CANARY not in json.dumps(stopped)
         scheduler("notice_interrupt", story)
         interrupted = await story_row(story)
@@ -397,8 +477,34 @@ async def _native_exhaustion_notice_and_po_retry(  # noqa: PLR0915
         assert settled["owner_notification"]["owed_at"] == notice["owed_at"]
         assert settled["owner_notification"]["state"] == "delivered"
         assert settled["owner_notification"]["admin_state"] == "delivered"
+        await api.post(
+            "system-configs/",
+            json={"key": "deploy.max_deploy_retries", "value": 0, "category": "deploy"},
+        )
+        config = {"configurable": {"telegram_chat_id": str(owner["telegram_id"])}}
         with patch("src.agents.po.tools_projects._get_api", return_value=api):
-            config = {"configurable": {"telegram_chat_id": str(owner["telegram_id"])}}
+            unavailable = json.loads(
+                await tools_projects.get_initial_owner_deployment.ainvoke(
+                    {"project_id": project}, config=config
+                )
+            )
+            assert unavailable["exhaustion"]["action"] is None
+            assert unavailable["exhaustion"]["retry_command"] is None
+            refused = await tools_projects.retry_initial_owner_deployment.ainvoke(
+                {
+                    "project_id": project,
+                    "intent_id": unavailable["id"],
+                    "expected_execution_run_id": source,
+                },
+                config=config,
+            )
+            assert "exhausted" in refused
+        assert (await story_row(story))["owner_notification"] == settled["owner_notification"]
+        await api.post(
+            "system-configs/",
+            json={"key": "deploy.max_deploy_retries", "value": 1, "category": "deploy"},
+        )
+        with patch("src.agents.po.tools_projects._get_api", return_value=api):
             readback = await tools_projects.get_initial_owner_deployment.ainvoke(
                 {"project_id": project}, config=config
             )

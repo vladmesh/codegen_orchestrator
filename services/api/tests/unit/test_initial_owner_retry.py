@@ -18,6 +18,11 @@ from src.routers.projects import access
 from src.schemas.story import StoryStopTransition
 
 
+@pytest.fixture(autouse=True)
+def positive_deploy_policy(monkeypatch):
+    monkeypatch.setattr(access, "_deploy_retry_ceiling", AsyncMock(return_value=2))
+
+
 @pytest.mark.asyncio
 async def test_exhausted_initial_owner_result_names_the_fenced_deliberate_action(monkeypatch):
     project, intent, run, story = _evidence()
@@ -129,6 +134,66 @@ async def test_exhausted_action_requires_the_matching_story_stop_after_landing(m
     assert landed.action == "retry_initial_owner_deployment"
     story.quarantine_reason = {"reason": "unrelated quarantine"}
     assert (await access._exhaustion(db, project, intent)).action is None
+
+
+@pytest.mark.asyncio
+async def test_current_policy_controls_readback_without_changing_the_terminal_notice(monkeypatch):
+    project, intent, run, story = _evidence()
+    intent.status = "failed"
+    intent.detail = "deployment retry ceiling exhausted"
+    story.status = "deploying"
+    monkeypatch.setattr(access, "_current_source_story", AsyncMock(return_value=(run, story)))
+    ceiling = AsyncMock(return_value=2)
+    monkeypatch.setattr(access, "_deploy_retry_ceiling", ceiling)
+    db = MagicMock()
+    admitted = await access._exhaustion(db, project, intent, for_stop=True)
+    access._record_story_failure(
+        story, access._exhaustion_failure(intent, admitted), access.StoryStatus.FAILED
+    )
+    access._do_transition(story, access.StoryStatus.FAILED)
+    original_reason = story.quarantine_reason.copy()
+    original_notice = story.owner_notification.copy()
+    assert admitted.retry_command.expected_execution_run_id == run.id
+    assert "retry_initial_owner_deployment" not in original_reason["detail"]
+    assert "retry_initial_owner_deployment" not in original_notice["text"]
+
+    ceiling.return_value = 0
+    unavailable = await access._exhaustion(db, project, intent)
+    assert unavailable.action is None and unavailable.retry_command is None
+    assert story.quarantine_reason == original_reason
+    assert story.owner_notification == original_notice
+
+    ceiling.return_value = 2
+    restored = await access._exhaustion(db, project, intent)
+    assert restored.retry_command.expected_execution_run_id == run.id
+
+
+@pytest.mark.asyncio
+async def test_zero_admission_stays_exhausted_when_policy_rises(monkeypatch):
+    project, intent, _, story = _evidence()
+    intent.status = "failed"
+    intent.detail = "deployment retry ceiling exhausted"
+    intent.execution_run_id = None
+    intent.attempts = 0
+    db = MagicMock()
+    row = MagicMock()
+    row.scalar_one_or_none.return_value = intent
+    db.execute = AsyncMock(return_value=row)
+    db.get = AsyncMock(return_value=None)
+    monkeypatch.setattr(access, "_deploy_retry_ceiling", AsyncMock(return_value=2))
+    result = await access._lifecycle(
+        db,
+        project,
+        target_user=User(id=7, telegram_id=84),
+        kind=GrantIntentKind.INITIAL_OWNER,
+        actor="deploy_lifecycle",
+        target=(None, None, intent.target_sha),
+        deployed_commit_sha="b" * 40,
+        story_id=story.id,
+    )
+    assert result[1] is None
+    assert result[3] is GrantIntentLifecycleDisposition.EXHAUSTED
+    assert intent.execution_run_id is None and intent.attempts == 0
 
 
 @pytest.mark.parametrize(

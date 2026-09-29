@@ -192,10 +192,13 @@ async def test_same_intent_bounded_epochs_and_old_command_after_fast_exhaustion(
     stopped = (await async_client.get(f"/api/stories/{e['story']}")).json()
     assert stopped["status"] == "failed"
     assert stopped["quarantine_reason"]["code"] == "initial_owner_deployment_exhausted"
-    assert "retry_initial_owner_deployment" in stopped["quarantine_reason"]["detail"]
+    assert (
+        "authenticated current initial-owner deployment readback"
+        in stopped["quarantine_reason"]["detail"]
+    )
     notice = await _owner_notice(async_client, e["story"])
     assert notice["state"] == notice["admin_state"] == "owed"
-    assert "retry_initial_owner_deployment" in notice["text"]
+    assert "retry_initial_owner_deployment" not in notice["text"] + notice["admin_text"]
     assert CANARY not in json.dumps(exhausted) + json.dumps(notice)
     repeated = await _call(async_client, e["lifecycle"], e["body"])
     assert repeated == exhausted
@@ -239,6 +242,46 @@ async def test_same_intent_bounded_epochs_and_old_command_after_fast_exhaustion(
     current = await _intent(e["human"], e, exhausted["intent_id"])
     assert current["attempts"] == 2 and len(current["retry_history"]) == 1
     assert len(await _messages(redis_client, e["project"])) == 4
+
+
+@pytest.mark.asyncio
+async def test_current_policy_revalidates_a_stopped_exhausted_epoch(
+    async_client, initial_epoch, redis_client
+):
+    e = initial_epoch
+    exhausted, runs = await _exhaust(async_client, e)
+    intent_id = exhausted["intent_id"]
+    path = f"/api/projects/{e['project']}/users/grant-intents/{intent_id}/retry"
+    command = exhausted["exhaustion"]["retry_command"]
+    story = (await async_client.get(f"/api/stories/{e['story']}")).json()
+    notice = await _owner_notice(async_client, e["story"])
+    source = (await async_client.get(f"/api/runs/{runs[-1]}")).json()
+    assert command == {"expected_execution_run_id": runs[-1]}
+
+    # The owner saw a valid command, but the policy changed before POST.
+    await _ceiling(async_client, 0)
+    owner = await _intent(e["human"], e, intent_id)
+    admin = await _intent(async_client, e, intent_id)
+    current = (await _call(async_client, e["lifecycle"], e["body"]))["exhaustion"]
+    for readback in (owner["exhaustion"], admin["exhaustion"], current):
+        assert readback["attempts"] == 2
+        assert readback["exhausted_execution_run_id"] == runs[-1]
+        assert readback["action"] is None and readback["retry_command"] is None
+    refused = await _call(e["human"], path, command)
+    assert refused["disposition"] == "exhausted"
+    assert refused["exhaustion"] == current
+    assert await _intent(e["human"], e, intent_id) == owner
+    assert (await async_client.get(f"/api/stories/{e['story']}")).json() == story
+    assert await _owner_notice(async_client, e["story"]) == notice
+    assert (await async_client.get(f"/api/runs/{runs[-1]}")).json() == source
+    assert len(await _messages(redis_client, e["project"])) == 2
+
+    await _ceiling(async_client, 2)
+    restored = await _intent(e["human"], e, intent_id)
+    assert restored["exhaustion"]["retry_command"] == command
+    assert await _owner_notice(async_client, e["story"]) == notice
+    assert (await _call(e["human"], path, command))["disposition"] == "dispatched"
+    assert len(await _messages(redis_client, e["project"])) == 3
 
 
 @pytest.mark.asyncio
@@ -457,6 +500,9 @@ async def test_current_native_evidence_fences_recovery(
         intent_id = admitted["intent_id"]
     await db_session.commit()
     before = await _intent(async_client, e, exhausted["intent_id"])
+    if replacement == "identity":
+        assert before["exhaustion"]["action"] is None
+        assert before["exhaustion"]["retry_command"] is None
     path = f"/api/projects/{e['project']}/users/grant-intents/{intent_id}/retry"
     response = await e["human"].post(path, json=exhausted["exhaustion"]["retry_command"])
     assert response.status_code in {403, 404, 409}, response.text

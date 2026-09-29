@@ -207,11 +207,15 @@ read authorize the credential-derived owner/admin or internal reader and expose
 immutable target, and any verified exhausted execution Run. The locked API
 lifecycle checks the current admitted Run, owner, Story and epoch before exposing
 `retry_initial_owner_deployment` with
-`GrantIntentRetryCommand.expected_execution_run_id`. Zero admission has no
-exhausted Run, action or command, including after a policy increase. The same
-typed decision supplies Story detail, both notice texts and PO readback;
-the static Story renderer makes no unconditional retry promise. This readback
-never claims a new dispatch.
+`GrantIntentRetryCommand.expected_execution_run_id` only while the effective
+locked `deploy.max_deploy_retries` ceiling is positive. Zero admission has no
+exhausted Run, action or command, including after a policy increase. A real
+exhausted Run retains its history when policy becomes zero, but current API and
+PO readbacks offer no action or command. A later positive policy restores only
+a still-fenced offer; it never resets the intent automatically. Story failure
+and both owed notice texts are stable historical explanations that direct readers
+to authenticated current readback, without promising an executable command.
+This readback never claims a new dispatch.
 
 `POST /api/projects/{id}/users/grant-intents/{intent_id}/retry` accepts that command
 only from the current credential-derived project owner or administrator. The
@@ -238,7 +242,9 @@ Prior executions and targets remain history. Repeated commands, including an old
 command replayed after the new epoch exhausts, cannot reopen it. A policy or secret
 fix alone cannot reset committed exhaustion; repeated inactive completion cannot
 downgrade it. The new epoch uses the current configured `deploy.max_deploy_retries`;
-zero remains terminal. Existing PUBLISH_OWED recovery publishes the same real Run
+zero refuses before any reset, Run or Story change. A policy update between GET
+and POST therefore returns a typed non-actionable exhaustion. Existing
+PUBLISH_OWED recovery publishes the same real Run
 and reports `in_flight`, not a newly dispatched execution. Publication and notices
 retain their established at-least-once transport semantics.
 The deploying supervisor discovers an owed queued initial-owner Run after the
@@ -249,10 +255,10 @@ request cannot create an intent or admit another Run. A human command against
 `retryable` with remaining admissions refuses with 409 and preserves its epoch.
 
 `StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED`, source `api`, records only
-bounded native intent/attempt/target/count identifiers. It names the deliberate
-retry action only when typed exhaustion has a verified immutable Run fence;
-otherwise it says same-target retry is unavailable and asks an administrator
-for next steps.
+bounded native intent/attempt/target/count identifiers. Its durable wording
+explains exhaustion and directs the owner/PO to authenticated current readback;
+zero admission also states that no Run was admitted and same-target retry is
+unavailable for that epoch. It never embeds a policy-sensitive action.
 The API stores it with the matching Story stop and owner/admin owed obligations.
 Generic Story stop bodies cannot claim this API-owned grant exhaustion code.
 Response loss converges without replacing that notice episode. History and PO

@@ -223,29 +223,27 @@ async def _exhaustion(
             or story.quarantine_reason is not None
         ):
             command = None
+    if command is not None and await _deploy_retry_ceiling(db) == 0:
+        command = None
     if command is None and decision.action is not None:
         return decision.model_copy(update={"action": None, "retry_command": None})
     return decision
 
 
 def _exhaustion_failure(intent: UsersGrantIntent, decision: GrantIntentExhaustion) -> StoryFailure:
-    if decision.retry_command is not None:
+    if decision.attempts > 0:
         detail = (
             f"Intent {intent.id}; exhausted attempt {intent.execution_run_id}; "
             f"target {intent.target_sha}; {intent.attempts} attempts. "
-            "Use retry_initial_owner_deployment after the platform problem is fixed."
-        )
-    elif decision.attempts == 0:
-        detail = (
-            f"Intent {intent.id}; target {intent.target_sha}; no deployment Run was admitted. "
-            "Same-target retry is unavailable for this exhausted target. "
-            "Ask an administrator for next steps."
+            "Check the authenticated current initial-owner deployment readback "
+            "for available actions."
         )
     else:
         detail = (
-            f"Intent {intent.id}; target {intent.target_sha}; {intent.attempts} attempts. "
-            "No current immutable deployment Run fence supports same-target retry. "
-            "Ask an administrator for next steps."
+            f"Intent {intent.id}; target {intent.target_sha}; no deployment Run was admitted. "
+            "Same-target retry is unavailable for this exhausted target. "
+            "Check the authenticated current initial-owner deployment readback "
+            "for available actions."
         )
     return StoryFailure(
         code=StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED,
@@ -312,6 +310,15 @@ def _source_matches(
 async def _current_source_story(
     db: AsyncSession, project: Project, intent: UsersGrantIntent, *, allow_owed: bool = False
 ) -> tuple[Run, Story] | None:
+    owner = await db.get(User, project.owner_id)
+    if (
+        owner is None
+        or owner.telegram_id is None
+        or intent.id != _intent_id(GrantIntentKind.INITIAL_OWNER, project.id, owner.telegram_id)
+        or intent.channel != "telegram"
+        or intent.external_id != str(owner.telegram_id)
+    ):
+        return None
     source = await db.get(Run, intent.execution_run_id) if intent.execution_run_id else None
     if source is None or source.story_id is None:
         return None
