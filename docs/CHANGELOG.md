@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Verify a policy increase on an exhausted Story through lifecycle replay, proving no automatic
+  reset without asking the deploying scheduler to process a terminal Story.
+
 - Revalidate initial-owner retry against current deploy policy at locked API read and command boundaries;
   keep terminal Story and notice wording stable so policy changes cannot promise unavailable retry.
 

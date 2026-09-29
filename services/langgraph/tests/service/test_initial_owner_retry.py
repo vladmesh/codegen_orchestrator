@@ -255,7 +255,17 @@ async def test_policy_zero_before_native_exhaustion_stops_without_a_command(
                 "system-configs/",
                 json={"key": "deploy.max_deploy_retries", "value": 1, "category": "deploy"},
             )
-            scheduler(route, story)
+            replay = await api.post(
+                f"projects/{project}/users/grant-intents/lifecycle",
+                json={
+                    "kind": "initial_owner",
+                    "story_id": story,
+                    "head_sha": HEAD,
+                    "deployed_commit_sha": BUILT,
+                },
+            )
+            assert replay["disposition"] == "exhausted"
+            assert replay["exhaustion"]["retry_command"] == {"expected_execution_run_id": source}
             available = await api.get_users_grant_intent(project, intent_id)
             assert available.exhaustion.retry_command.expected_execution_run_id == source
             assert (await story_row(story))["owner_notification"] == delivered["owner_notification"]
