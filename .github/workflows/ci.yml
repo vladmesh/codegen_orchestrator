@@ -44,7 +44,7 @@ concurrency:
 jobs:
   detect-changes:
     name: Detect Changed Services
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -157,7 +157,7 @@ jobs:
   # and is required by merge-gate.
   lint:
     name: Lint (Ruff)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
@@ -196,7 +196,7 @@ jobs:
 
   fast-checks:
     name: Fast Checks (Unit Tests)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
@@ -240,6 +240,14 @@ jobs:
       - name: Run Redis capability cleanup regression
         run: bash scripts/ci-infra.sh bound --step redis-cleanup --timeout 3m -- bash scripts/ci-redis-cleanup-regression.sh
 
+      - name: Pull backup PostgreSQL image with retry
+        run: >-
+          bash scripts/ci-infra.sh retry --step backup-db-pull --cause image-pull --attempt-timeout 30s
+          -- docker pull pgvector/pgvector:0.8.6-pg16
+
+      - name: Run verified database backup regression
+        run: bash scripts/ci-infra.sh bound --step backup-db --timeout 1m -- make test-backup-db
+
       - name: Expose CI infrastructure failure
         id: infra
         if: always() && hashFiles('scripts/ci-infra.sh') != ''
@@ -247,7 +255,7 @@ jobs:
 
   ci-contract:
     name: CI Contract
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
@@ -284,7 +292,7 @@ jobs:
   # an image's sources changed, and on every push to main whatever changed.
   service-image-imports:
     name: Service Image Entrypoint Imports
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     needs: [detect-changes, lint, ci-contract]
     if: >-
@@ -333,7 +341,7 @@ jobs:
   # merge-gate accepts only because the plan says so.
   test-service:
     name: Service Tests (${{ matrix.service }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 55
     needs: [detect-changes, lint, ci-contract]
     if: >-
@@ -416,7 +424,7 @@ jobs:
 
   test-integration:
     name: Integration Tests (${{ matrix.suite }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     needs: [detect-changes, lint, ci-contract]
     if: >-
@@ -508,7 +516,7 @@ jobs:
 
   template-compatibility:
     name: Template Compatibility (${{ matrix.entry }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [lint, ci-contract]
     if: needs.lint.result == 'success' && needs.ci-contract.result == 'success'
@@ -576,7 +584,7 @@ jobs:
 
   web-checks:
     name: Web Checks (${{ matrix.app }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: detect-changes
     if: needs.detect-changes.outputs.web == 'true' || needs.detect-changes.outputs.ci == 'true' || github.event_name == 'workflow_dispatch'
@@ -618,7 +626,7 @@ jobs:
   # that record, handed over through the same job output, or refuses.
   test-backend-dind-integration:
     name: Backend Docker-in-Docker Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 55
     needs: [lint, ci-contract, build-worker-images]
     if: >-
@@ -711,7 +719,7 @@ jobs:
   # publish-worker-images (which commits it) read. It runs wherever the DinD suite runs.
   build-worker-images:
     name: Build Worker Base Image Candidates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -768,7 +776,7 @@ jobs:
   # Push to main only, so a pull request never gets packages: write and never waits.
   build-service-images:
     name: Build Service Image Candidates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     # Nothing downstream of this job repeats its marker in the gate; like the release
@@ -808,7 +816,7 @@ jobs:
 
   merge-gate:
     name: Required CI Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs:
       - detect-changes
@@ -914,7 +922,7 @@ jobs:
   # right end but a late and confusing one.
   publish-worker-images:
     name: Publish Worker Base Images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: [merge-gate, build-worker-images]
     if: >-
@@ -976,7 +984,7 @@ jobs:
   # tag that does not resolve. The deploy runs this release by digest (docs/DEPLOY.md).
   publish-service-release:
     name: Publish Service Image Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [merge-gate, build-service-images]
     if: >-

@@ -25,6 +25,9 @@ uv run python -m shared            # accepts the same flags, e.g. `--serial`
 # Service (Docker, single service)
 make test-service SERVICE=api
 
+# Real backup script, isolated Compose PostgreSQL and separate restored database
+make test-backup-db
+
 # Integration (Docker Compose, full stack)
 make test-integration          # All (auto-discovers tests/compose/integration/*.yml)
 make test-integration-backend  # Backend tests without nested Docker
@@ -184,7 +187,8 @@ described in [DEPLOY.md](DEPLOY.md#service-images-are-a-release-too).
 
 The docker jobs (`service-image-imports`, both test matrices, `template-compatibility` and the DinD
 suite) wait for `lint` (Ruff format and lint, about 15 s) and `CI Contract`, not for the unit suite.
-`fast-checks` runs the unit suite, the offline live regressions and the Redis regression beside them
+`fast-checks` runs the unit suite, the offline live regressions, Redis regression and isolated
+PostgreSQL backup/restore regression beside them
 from the start of the run, and `merge-gate` still requires it; a lint failure still stops the heavy
 fan-out before any image is built.
 
@@ -246,11 +250,12 @@ log and as a line in its own summary, so a reader of the gate alone sees it.
 |-----|------|-------|------------------|
 | `lint`, `fast-checks`, `ci-contract` | `install-uv` | `uv-download`, `uv-download-timeout` | `pip install uv`, 3 attempts of at most 60 s each, 10 s then 20 s apart |
 | `fast-checks` | `redis-pull` | `image-pull`, `image-pull-timeout` | `docker pull` of the Redis image the cleanup regression runs, 3 attempts of at most 90 s each |
+| `fast-checks` | `backup-db-pull` | `image-pull`, `image-pull-timeout` | `docker pull pgvector/pgvector:0.8.6-pg16`, 3 attempts of at most 30 s each |
 | `test-integration/template`, `template-compatibility/<entry>` | `setup-uv` | `uv-download` | `astral-sh/setup-uv`, 3 attempts (`.github/actions/setup-uv-with-retry`) |
 | `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration`, `build-service-images` | `setup-buildx` | `buildx-registry`, `buildx-registry-timeout` | creating and booting a docker-container Buildx builder, which pulls `moby/buildkit`: 3 attempts of at most 120 s each (`.github/actions/setup-buildx-with-retry`) |
 | `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `pull-images` | `image-pull`, `image-pull-timeout` | `docker pull` of every image the suite's compose file runs without building it, 3 attempts of at most 90 s per image, before the tests start |
 | `build-worker-images`, `test-backend-dind-integration` | `build-candidates`, `integration-tests` | `claude-installer-fetch` | the Claude installer fetch in `worker-base-claude/Dockerfile` (curl, 3 retries); on exhaustion the build prints `CI-INFRA-CAUSE=claude-installer-fetch` and `ci-infra.sh watch` maps that line to the marker. In CI only `build-worker-images` builds the chain; the DinD suite pulls it, and keeps the watch for a local run that builds |
-| `fast-checks`, `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `build-worker-images`, `publish-worker-images`, `build-service-images`, `publish-service-release` | `redis-cleanup`, `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish`, `build-candidates` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
+| `fast-checks`, `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `build-worker-images`, `publish-worker-images`, `build-service-images`, `publish-service-release` | `redis-cleanup`, `backup-db`, `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish`, `build-candidates` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
 
 A cause ending in `-timeout` means the last attempt did not fail but hung until its bound stopped
 it; a hung attempt is a failed attempt, and the next one starts after it. Only the bound's own timer
@@ -315,7 +320,7 @@ Buildx bootstrap (120 s attempts), 6.5 minutes per image pulled (90 s attempts),
 |-----|------------------|--------------------------|-----------|--------------------|
 | `detect-changes` | 0.1 min | — | 5 | — |
 | `lint` | new (Ruff took 8 s inside `fast-checks`) | 11 | 15 | — |
-| `fast-checks` | 3.5 min (unit tests 2.9) | 40 | 45 | Redis pull 3 × 90 s; Redis regression 3 min |
+| `fast-checks` | 3.5 min (unit tests 2.9); local backup proof 4.7 s | 45 | 45 | Redis pull 3 × 90 s/regression 3 min; backup DB pull 3 × 30 s/restore 1 min |
 | `ci-contract` | 0.8 min | 11 | 15 | — |
 | `service-image-imports` | 6.6 min (import step 6.0) | 32.5 | 35 | Buildx 3 × 120 s; imports 15 min |
 | `test-service/<leg>` | 8.7 min (tests 8.4) | 50 (`scheduler` and `langgraph`, 3 images) | 55 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
@@ -536,6 +541,30 @@ credentials then reach qa-worker alone, through its own env file. `mega-noop` ne
 and renders with the values empty. `scripts/make_stand_session.py` authorizes a new stand session.
 
 ## Integration Test Architecture
+
+`make test-backup-db` runs `tests/integration/backup/test_verified_database_backup.py` on the host,
+using only a uniquely named disposable Compose PostgreSQL project, tmpfs data and two explicit
+Compose files. It seeds representative application and LangGraph checkpoint/blob/write canaries,
+executes the actual `infra/scripts/backup-db.sh` with deliberately wrong new host DB credentials,
+lists the custom archive, restores it into a separate disposable database and proves four matching
+counts. Logs contain only archive path/bytes/list status and counts. Teardown drops the restored
+database, removes the synthetic archive and removes the project's container/network/volumes.
+It needs Docker/Compose and the pinned PostgreSQL image, with no production, stand or model access.
+Fast Checks pulls the image with bounded retry and runs the target under a one-minute bound,
+retaining the existing 45-minute job budget. The CI contract claims this exact test file from its
+Makefile command and requires the bounded step. All first-party workflows pin `ubuntu-24.04`.
+
+`tests/unit/test_backup_db.py` executes the same shell boundary with deterministic Docker failures:
+missing configuration/identity/connectivity, stopped DB, dump/empty/list failures, unwritable
+destination, private permissions, concurrent reruns and bounded nightly-only rotation. Existing
+release-host fixtures in `test_deploy_service_release.py` execute the actual helper staging body
+and Switch over SSH-style stdin: backup failure cannot reset, retag, replace the override, start
+the API, migrate or promote; successful dump/list precede those writes and scheduler readiness
+still completes. They also cover changed helper rejection, rollback to a target without the helper
+and strict production versus absent-stand bootstrap behavior. These regressions are part of
+`make test-unit` and its canonical `python -m shared` broad adapter. The broad adapter covers the
+offline regressions; the separate real PostgreSQL command is required evidence, not a unit receipt.
+Production timer/install/readback remains the later PO operation in [DEPLOY.md](DEPLOY.md#db-backup).
 
 The backend integration suite (`tests/compose/integration/backend.yml`) runs the API, Redis and
 LangGraph paths that do not create worker containers. It runs on relevant pull requests.

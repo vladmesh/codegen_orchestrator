@@ -110,6 +110,15 @@ def test_makefile_pytest_paths_read_a_host_run_without_its_flag_values(gate):
     assert paths == ["tests/integration/template/test_stage5_mock_smoke.py"]
 
 
+def test_verified_backup_regression_is_claimed_by_required_fast_checks(gate):
+    jobs = gate.load_workflow()["jobs"]
+    claims = gate.claimed_test_paths(jobs)
+    assert (
+        gate.claiming_target(claims, "tests/integration/backup/test_verified_database_backup.py")
+        == "fast-checks: make test-backup-db"
+    )
+
+
 @pytest.fixture
 def image_tree(gate, tmp_path, monkeypatch):
     """The gate pointed at an empty tree, with the repository's exclusions dropped."""
@@ -632,8 +641,8 @@ def test_a_longer_retry_attempt_bound_is_counted_three_times(gate):
     pull = gate.step_by_name(jobs["fast-checks"], "Pull Redis image with retry")
     pull["run"] = pull["run"].replace("--attempt-timeout 90s", "--attempt-timeout 300s")
 
-    # The Ruff steps moved to the lint job, so fast-checks counts two minutes fewer.
-    with pytest.raises(SystemExit, match="fast-checks can take 50.5 minutes"):
+    # The backup image retry and restore regression add five minutes to the budget.
+    with pytest.raises(SystemExit, match="fast-checks can take 55.5 minutes"):
         gate.assert_job_timeouts(jobs)
 
 

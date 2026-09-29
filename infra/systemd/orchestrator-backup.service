@@ -5,8 +5,10 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/codegen_orchestrator/infra/scripts/backup-db.sh
-EnvironmentFile=/opt/codegen_orchestrator/.env
+ExecStart=/usr/local/libexec/orchestrator-backup-db.sh
+EnvironmentFile=/etc/codegen-orchestrator-backup.env
+WorkingDirectory=/opt/codegen_orchestrator
+UMask=0077
 User=deploy
 Group=deploy
 

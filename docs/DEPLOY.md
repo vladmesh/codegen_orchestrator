@@ -692,7 +692,7 @@ Deploy is triggered manually via GitHub Actions:
 2. The workflow: validates the revision, waits for its worker and service releases, writes `.env`,
    stages that revision on the host and pulls and verifies both image releases of it concurrently
    from the stage into a pending set — and only then, in one `Switch` step, changes the host:
-   writes the secret file, resets the deploy path to the revision, retags the worker base images,
+   verifies a custom database archive, writes the secret file, resets the deploy path to the revision, retags the worker base images,
    starts the services from the service release by digest (nothing is built on the host), promotes
    the release records, and runs migrations, the health check, the config seed and the scheduler
    wait in the released containers. It then reconciles deploy targets and cleans up old images
@@ -996,12 +996,21 @@ test pins that against the real `deploy.yml`.
   release does not contain fails the deploy there instead of being built. What passed becomes the
   **pending set**, `<deploy path>/.release-pending/` (untracked, mounted by no container): both
   records, the override, and the revision's own `scripts/release_switch.py`.
+  A separate runner checkout at `github.workflow_sha` supplies only `backup-db.sh`, staged on SSH
+  stdin into that pending directory with mode 0700. Switch checks its SHA-256 against the runner's
+  digest. Target release consumers remain on `DEPLOY_REVISION`; backup policy comes from the
+  executing workflow even on first upgrade or rollback to a release with the old broken helper.
 - **Switch** is one SSH session under `set -euo pipefail`, in this order:
   1. `release_switch.py check`, run from the pending set's copy (the checkout still holds the
      previous revision): the pending set is complete, both records are of this revision, the worker
      and service records carry one tree's source hash, and the override names only images of the
-     service release. This is the only check, and it precedes every write.
-  2. The mounted secret file `/opt/secrets/github_app.pem`.
+     service release. This precedes every write.
+  2. Verify the workflow helper's digest and run its [database backup gate](#db-backup), using the
+     existing checkout, full contour Compose chain and current digest override if present. This
+     runs before replacing that override, resetting the checkout or starting the migrating API.
+     Production requires an existing running DB; it never bootstraps without a dump. Only a stand
+     with no DB container at all logs `empty_stand_bootstrap`; a stopped/unavailable DB fails.
+     Then write the mounted secret file `/opt/secrets/github_app.pem`.
   3. `git reset --hard <revision>` in the deploy path.
   4. `infra/scripts/retag-worker-images.sh` moves `worker-base-*:latest` to the pending worker
      record's digests — before `up`, so the new worker-manager never sees the previous bases. The
@@ -1021,8 +1030,10 @@ run that fails in the switch still shows what it was about to start.
 - **The live `deployed-*.json` records are the only truth** of what was last brought up
   successfully. A pending set never overrides them and is never rotated into `previous`.
 - Every deploy's verify step discards any pending set an earlier attempt left.
-- A failure before step 2 of the switch changes nothing live: production keeps running what it ran.
-- A failure after step 2 leaves the host **target partially applied** (for example new code checked
+- A pending/helper/backup failure changes no live release, images, secret file or services. A failed
+  dump publishes no final archive and rotates nothing. A successful backup remains protected even
+  if a subsequent switch operation fails; reruns create a distinct archive.
+- A failure after the backup gate, from the secret write onward, leaves the host **target partially applied** (for example new code checked
   out, or new containers up, with the records still naming the last successful release). Recover by
   rerunning the deploy of the same revision — every step of the switch is idempotent — or by
   deploying the revision of the live current record (`git_sha` in `deployed-service-images.json`).
@@ -1145,7 +1156,7 @@ target reconcile all use that one revision. To roll back:
 3. To come back, dispatch Deploy again with `revision` set to the newer SHA, or empty for the tip of
    the branch the workflow is dispatched from.
 
-Two limits:
+Three limits:
 
 - **A revision released before this workflow consumed service releases is refused** by the step
   `Refuse a revision that predates pulled service releases`, before any wait and before the host is
@@ -1162,6 +1173,11 @@ Two limits:
   `git diff <target>..<current> -- services/api/migrations`; if it is not empty, downgrade the
   database first, from the current release, or do not roll back.
 
+Rollback through the current workflow still takes a verified predeploy archive using its own
+helper, regardless of the target's backup script. The installed nightly helper and units are
+copies outside the checkout, so resetting to a prior release cannot replace them. The database
+dump is a recovery precondition; it does not automate a migration downgrade or authorize a restore.
+
 ## First-Time Setup
 
 ```bash
@@ -1176,29 +1192,179 @@ git clone git@github.com:<org>/codegen_orchestrator.git /opt/codegen_orchestrato
 sudo mkdir -p /opt/secrets /opt/backups/orchestrator
 sudo chown deploy:deploy /opt/secrets /opt/backups/orchestrator
 
-# 3. Install DB backup timer
-sudo ln -sf /opt/codegen_orchestrator/infra/systemd/orchestrator-backup.service /etc/systemd/system/
-sudo ln -sf /opt/codegen_orchestrator/infra/systemd/orchestrator-backup.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now orchestrator-backup.timer
-
-# 4. Verify timer
-systemctl list-timers orchestrator-backup
+# 3. Prepare a running database before the first production Deploy. Production's
+#    backup gate requires it; only an empty stand has an explicit bootstrap path.
+#    Install/verify the nightly path through the PO operation below after release.
 
 # 5. Check that the deploy user can resolve a tag to a digest. The worker image
 #    verification resolves each published tag once and works from that digest.
 docker buildx imagetools inspect alpine:3.20 --format '{{.Manifest.Digest}}'
 
-# 6. Run first deploy from GitHub Actions
+# 6. Run first deploy from GitHub Actions, with the production DB already running
 ```
 
 ## DB Backup
 
-- Automatic: daily at 03:00 via systemd timer
-- Manual: `sudo /opt/codegen_orchestrator/infra/scripts/backup-db.sh`
-- Location: `/opt/backups/orchestrator/`
-- Retention: last 7 backups
-- Restore: `gunzip -c backup.sql.gz | docker compose exec -T db psql -U $POSTGRES_USER $POSTGRES_DB`
+`infra/scripts/backup-db.sh` is the shared nightly, predeploy and maintenance boundary. It resolves
+exactly one existing `db` container with `docker compose --project-directory ... ps --all -q db`,
+requires it running and reads `POSTGRES_USER`, `POSTGRES_DB` and `POSTGRES_PASSWORD` only inside it.
+The newly written host `.env` does not supply dump identity. `pg_dump --format=custom` includes
+every schema, including LangGraph. The same container's compatible `pg_restore --list` verifies
+the nonempty private temporary file before an atomic rename publishes it. Failures log only a
+named operation; database stderr and archive listings are suppressed. No password enters argv.
+
+Configuration is explicit: absolute `COMPOSE_DIR` and `BACKUP_DIR`, whitespace-separated
+`COMPOSE_ARGS` (paths cannot contain spaces), `BACKUP_CONTOUR=production|stand`, and
+`BACKUP_KIND=nightly|predeploy|maintenance`. Nightly requires `BACKUP_RETAIN=1..365`. Protected
+predeploy/maintenance runs require a nonempty `BACKUP_LABEL` of at most 160 letters, digits,
+periods, underscores or hyphens, beginning with a letter/digit. There is no SQL fallback.
+
+Directories are owned by the invoking user and mode 0700; archives and the serialization lock
+are mode 0600. UTC nanoseconds and a random suffix distinguish concurrent calls/reruns. The lock
+serializes publication and retention. Nightly retains only the newest configured count of this
+producer's exact `orchestrator_nightly_<UTC>_<random>.dump` names in its destination; it excludes
+partials, symlinks and every other name. Deploy stores protected archives in
+`<parent of DEPLOY_PATH>/backups/orchestrator/predeploy` (normally
+`/opt/backups/orchestrator/predeploy`), labels them with run ID, attempt and target SHA, and logs
+the executing workflow SHA. Its durable Switch log records host path, exact bytes and
+`archive_list_exit=0` only after success. Archives are never uploaded as CI artifacts.
+
+Old `orchestrator_*.sql.gz` files were produced by the released gzip-SQL script and are consumed
+only by the explicit legacy restore procedure below. Pre-conversion database dumps can contain
+plaintext secrets. Both sets remain restricted recovery artifacts; this change neither scrubs nor
+deletes them. Their removal needs a separately approved historical-artifact retention decision
+after replacement recovery evidence. New nightly rotation cannot select predeploy/maintenance
+names, dedicated conversion artifacts or historical SQL files, even in a shared directory.
+
+### Later PO operation: install and prove production nightly backup
+
+Execute only on a separate authorized operation after the required green release validation.
+Local disposable test evidence does not establish production DoD 9. No timer installation,
+production backup, deletion or restore is part of this code card. Record the released SHA and
+host, and inspect current state first, without displaying `.env` or archive contents:
+
+```bash
+systemctl cat orchestrator-backup.service orchestrator-backup.timer
+systemctl show orchestrator-backup.service -p FragmentPath -p User -p Group -p EnvironmentFiles
+systemctl show orchestrator-backup.timer -p ActiveState -p NextElapseUSecRealtime -p LastTriggerUSec
+systemctl list-timers --all orchestrator-backup.timer
+sudo stat -c '%a %U:%G %n' /opt/backups/orchestrator /etc/codegen-orchestrator-backup.env
+docker compose version
+```
+
+Record absent units/config explicitly; absence is the reason to install, not successful readback.
+Inspect any existing backup policy file privately and compare its Compose directory/files with
+the production environment's actual `DEPLOY_PATH` and `COMPOSE_ARGS`. Include the host override
+(h01o's absolute override if configured), then `deployed-service-images.compose.yml` last. Check
+the currently running DB without starting services; do not print resolved Compose JSON or values.
+The example policy contains no credentials and must be adjusted to the real host chain.
+
+Install/update copies from the reviewed released checkout, independently of future resets:
+
+```bash
+set +x
+set -euo pipefail
+umask 077
+: "${BACKUP_RELEASE_ROOT:?Absolute reviewed release checkout}"
+: "${BACKUP_RELEASE_SHA:?Full reviewed released main SHA}"
+test "$(git -C "$BACKUP_RELEASE_ROOT" rev-parse HEAD)" = "$BACKUP_RELEASE_SHA"
+sha256sum "$BACKUP_RELEASE_ROOT/infra/scripts/backup-db.sh"
+sudo install -d -m 0755 /usr/local/libexec
+sudo install -m 0755 "$BACKUP_RELEASE_ROOT/infra/scripts/backup-db.sh" \
+  /usr/local/libexec/orchestrator-backup-db.sh.next
+sudo mv /usr/local/libexec/orchestrator-backup-db.sh.next /usr/local/libexec/orchestrator-backup-db.sh
+sudo install -m 0644 "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.service" \
+  /etc/systemd/system/orchestrator-backup.service.next
+sudo mv -Tf /etc/systemd/system/orchestrator-backup.service.next /etc/systemd/system/orchestrator-backup.service
+sudo install -m 0644 "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.timer" \
+  /etc/systemd/system/orchestrator-backup.timer.next
+sudo mv -Tf /etc/systemd/system/orchestrator-backup.timer.next /etc/systemd/system/orchestrator-backup.timer
+# If missing, seed the policy; preserve and update an existing host-specific policy.
+if ! sudo test -f /etc/codegen-orchestrator-backup.env; then
+  sudo install -o root -g deploy -m 0640 \
+    "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.env.example" \
+    /etc/codegen-orchestrator-backup.env
+fi
+sudoedit /etc/codegen-orchestrator-backup.env
+sudo chown root:deploy /etc/codegen-orchestrator-backup.env
+sudo chmod 0640 /etc/codegen-orchestrator-backup.env
+sudo install -d -o deploy -g deploy -m 0700 /opt/backups/orchestrator/nightly
+sudo systemctl daemon-reload
+sudo systemctl enable --now orchestrator-backup.timer
+sudo systemctl start orchestrator-backup.service
+```
+
+For another deployment layout, update the unit's WorkingDirectory and policy paths as well.
+The service runs as deploy with `UMask=0077`, loads only the explicit backup policy and uses the
+root-installed helper. The timer runs at 03:00 UTC with `Persistent=true`. Before enabling it,
+confirm the chosen nightly directory holds only the intended rotatable new nightly set; an
+approved protected archive must use a maintenance/predeploy name or separate directory.
+
+Read back the actual oneshot and timer, then verify the recorded archive again:
+
+```bash
+systemctl show orchestrator-backup.service -p Result -p ExecMainStatus -p ExecMainExitTimestamp
+systemctl is-enabled orchestrator-backup.timer
+systemctl is-active orchestrator-backup.timer
+systemctl show orchestrator-backup.timer -p NextElapseUSecRealtime -p LastTriggerUSec
+journalctl -u orchestrator-backup.service --since '10 minutes ago' --no-pager
+# Set from this successful invocation's metadata, not an arbitrary old archive.
+: "${VERIFIED_BACKUP_PATH:?Recorded production host path}"
+test -s "$VERIFIED_BACKUP_PATH"
+stat -c 'bytes=%s mode=%a owner=%U:%G path=%n' "$VERIFIED_BACKUP_PATH"
+stat -c 'mode=%a owner=%U:%G path=%n' "$(dirname "$VERIFIED_BACKUP_PATH")"
+sha256sum /usr/local/libexec/orchestrator-backup-db.sh
+set -a
+. /etc/codegen-orchestrator-backup.env
+set +a
+read -r -a backup_compose_args <<< "$COMPOSE_ARGS"
+cd "$COMPOSE_DIR"
+backup_db_id=$(docker compose --project-directory "$COMPOSE_DIR" "${backup_compose_args[@]}" ps --all -q db)
+test -n "$backup_db_id"
+if docker exec -i "$backup_db_id" pg_restore --list < "$VERIFIED_BACKUP_PATH" > /dev/null 2>&1; then
+  echo 'archive_list_exit=0'
+else
+  echo 'archive_list_exit=1' >&2
+  exit 1
+fi
+```
+
+Attach only metadata: service `Result=success` and `ExecMainStatus=0`, timer enabled/active and
+next UTC run, installed helper SHA-256/release SHA, archive host path, exact bytes, list exit zero,
+directory 0700 and file 0600 owned by deploy. A unit failure, missing next run or unreadable archive
+leaves production proof incomplete. Read back the next scheduled run later to prove the nightly
+schedule itself. The production Deploy run must separately show its verified predeploy metadata
+before the first `up`; retaining the earlier maintenance dump does not bypass that gate.
+
+### Restore into a separate empty database
+
+Use an approved isolated restore target and its complete Compose chain, with compatible PostgreSQL
+tools and access to the unchanged encryption key for application-level readback. This example
+assumes `COMPOSE` is that target's command array. Never restore over production in this card.
+
+```bash
+set +x
+set -euo pipefail
+: "${ARCHIVE:?Restricted custom archive path}"
+: "${RESTORE_DB:?Separate empty disposable database name}"
+"${COMPOSE[@]}" exec -T db pg_restore --list < "$ARCHIVE" > /dev/null
+"${COMPOSE[@]}" exec -T db sh -eu -c '
+  : "${POSTGRES_USER:?}" "${POSTGRES_DB:?}" "${POSTGRES_PASSWORD:?}"
+  test "$1" != "$POSTGRES_DB"
+  export PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
+  createdb "$1"
+  exec pg_restore --exit-on-error --dbname "$1"
+' sh "$RESTORE_DB" < "$ARCHIVE"
+```
+
+Verify the intended application and `langgraph` table counts and harmless canaries through the
+restored database, without logging rows. Dispose of only the authorized test target after readback.
+Legacy gzip SQL is a distinct restricted format, not input to `pg_restore`: after creating the
+approved separate empty database, explicitly use `gunzip -c "$LEGACY_SQL_ARCHIVE"` piped into
+`"${COMPOSE[@]}" exec -T db sh -eu -c 'export PGUSER="$POSTGRES_USER"
+PGPASSWORD="$POSTGRES_PASSWORD"; test "$1" != "$POSTGRES_DB";
+exec psql -v ON_ERROR_STOP=1 -d "$1"' sh "$RESTORE_DB"`. Do not fall back to SQL when custom
+verification fails, restore historical data over production, or infer that retained dumps were scrubbed.
 
 ## Updating
 

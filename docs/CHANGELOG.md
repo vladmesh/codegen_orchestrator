@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Publish verified private PostgreSQL archives and gate production Switch before migrations;
+  preserve protected backups across rotation and rollback, and pin runners to Ubuntu 24.04.
 - Keep mapped HTTP hosts stable across Python patches and reconcile rejected workflow customizations
   in released-kit upgrade checks so CI exercises the same deployed endpoint and reviewed update.
 - Validate effective mapped self addresses and IPv6 smoke; adopt released kit transport and refuse

@@ -455,12 +455,10 @@ existing encryption key will remain unchanged in both maintenance containers.
    install -d -m 0700 "$PO_REDIS_BACKUP_DIR/before-data"
    docker cp "$po_redis_id:/data/." "$PO_REDIS_BACKUP_DIR/before-data/"
    "${COMPOSE[@]}" up -d --no-deps --no-build --pull never redis
-   "${COMPOSE[@]}" exec -T db sh -c \
-     'pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' \
-     > "$checkpoint_backup_dir/before-upgrade.dump"
-   test -s "$checkpoint_backup_dir/before-upgrade.dump"
-   "${COMPOSE[@]}" exec -T db pg_restore --list \
-     < "$checkpoint_backup_dir/before-upgrade.dump" > /dev/null
+   COMPOSE_DIR="$DEPLOY_PATH" COMPOSE_ARGS="$COMPOSE_ARGS -f deployed-service-images.compose.yml" \
+     BACKUP_DIR="$checkpoint_backup_dir" BACKUP_KIND=maintenance BACKUP_CONTOUR=production \
+     BACKUP_LABEL="before-upgrade-$PO_REDIS_RELEASE_SHA" \
+     /usr/local/libexec/orchestrator-backup-db.sh
    ```
 
    Account for every independent worker/Redis client before asserting quiescence.
@@ -470,6 +468,10 @@ existing encryption key will remain unchanged in both maintenance containers.
    the recovery operator. Old dumps/WAL archives/replicas and pre-RAG-drop copies
    remain restricted secret-bearing artifacts. Do not restore over production or
    delete restricted old artifacts here.
+   Install the reviewed shared helper through the later PO [backup operation](DEPLOY.md#later-po-operation-install-and-prove-production-nightly-backup)
+   first. Record its generated archive path, exact bytes and `archive_list_exit=0`; a private
+   temporary dump is verified before publication. Maintenance names are outside nightly retention.
+   Preserve the archive and unchanged key even after conversion; historical contents are not scrubbed.
 3. Dispatch the actual released Deploy from the authorized control shell:
 
    Fence external admissions independently of containers (the workflow restarts
@@ -512,6 +514,14 @@ existing encryption key will remain unchanged in both maintenance containers.
    and calls all-service `up -d --remove-orphans --no-build --pull never`, so the
    earlier stops do not survive it. As soon as Switch runs that `up`, reconstruct
    the full current Compose array and stop only clients unused by Deploy:
+
+   Switch first takes another verified, protected PostgreSQL archive, before resetting the
+   checkout or starting any migration-capable service. Its helper uses only the existing DB
+   container and PostgreSQL tools; it neither contacts Redis, lifts WRITE pause nor starts a
+   quiesced writer. Keep the independent admission fence and WRITE lease uninterrupted, and
+   record the predeploy path/bytes/list result from the durable Deploy log alongside the original
+   maintenance archive. A failed backup prevents Switch; it is not a reason to unpause or skip
+   backup on retry. The executing workflow supplies its reviewed helper even for an older target.
 
    ```bash
    po_compose_refresh
