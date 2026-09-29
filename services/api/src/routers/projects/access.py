@@ -128,7 +128,7 @@ def _intent_id(kind: GrantIntentKind, project_id: uuid.UUID, telegram_id: int) -
     return f"users-grant-{kind.value}-{project_id.hex}-{telegram_id}"
 
 
-def _as_dto(intent: UsersGrantIntent) -> GrantIntent:
+async def _as_dto(db: AsyncSession, project: Project, intent: UsersGrantIntent) -> GrantIntent:
     return GrantIntent(
         id=intent.id,
         kind=GrantIntentKind(intent.kind),
@@ -149,7 +149,7 @@ def _as_dto(intent: UsersGrantIntent) -> GrantIntent:
         applied_at=intent.applied_at,
         execution_run_id=intent.execution_run_id,
         retry_history=intent.retry_history or [],
-        exhaustion=_exhaustion(intent),
+        exhaustion=await _exhaustion(db, project, intent),
     )
 
 
@@ -171,10 +171,27 @@ def _is_exhausted(intent: UsersGrantIntent) -> bool:
     )
 
 
-def _exhaustion(intent: UsersGrantIntent) -> GrantIntentExhaustion | None:
+async def _exhaustion(
+    db: AsyncSession,
+    project: Project,
+    intent: UsersGrantIntent,
+    *,
+    for_stop: bool = False,
+) -> GrantIntentExhaustion | None:
+    """One typed decision for the current exhausted epoch and its retry fence."""
     if intent.kind != GrantIntentKind.INITIAL_OWNER.value or not _is_exhausted(intent):
         return None
-    return GrantIntentExhaustion(
+    evidence = (
+        await _current_source_story(db, project, intent)
+        if intent.attempts > 0 and intent.execution_run_id is not None
+        else None
+    )
+    command = (
+        GrantIntentRetryCommand(expected_execution_run_id=evidence[0].id)
+        if evidence is not None and project.status != ProjectStatus.ARCHIVED.value
+        else None
+    )
+    decision = GrantIntentExhaustion(
         attempts=intent.attempts,
         target=GrantIntentDispatchTarget(
             application_id=intent.target_application_id,
@@ -182,23 +199,58 @@ def _exhaustion(intent: UsersGrantIntent) -> GrantIntentExhaustion | None:
             sha=intent.target_sha,
         ),
         exhausted_execution_run_id=intent.execution_run_id,
-        retry_command=(
-            GrantIntentRetryCommand(expected_execution_run_id=intent.execution_run_id)
-            if intent.execution_run_id is not None
-            else None
-        ),
+        action="retry_initial_owner_deployment" if command is not None else None,
+        retry_command=command,
     )
+    if command is not None:
+        story = evidence[1]
+        if story.status == StoryStatus.FAILED.value:
+            released_stop = (
+                story.quarantine_reason is None
+                and story.status_entered_at is not None
+                and story.status_entered_at >= evidence[0].created_at
+            )
+            if not (released_stop or _matching_exhaustion_stop(story, intent, decision)):
+                command = None
+        elif (
+            not for_stop
+            or story.status
+            not in {
+                StoryStatus.PR_REVIEW.value,
+                StoryStatus.DEPLOYING.value,
+                StoryStatus.WAITING_USER_SECRET.value,
+            }
+            or story.quarantine_reason is not None
+        ):
+            command = None
+    if command is None and decision.action is not None:
+        return decision.model_copy(update={"action": None, "retry_command": None})
+    return decision
 
 
-def _exhaustion_failure(intent: UsersGrantIntent) -> StoryFailure:
-    return StoryFailure(
-        code=StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED,
-        source="api",
-        detail=(
+def _exhaustion_failure(intent: UsersGrantIntent, decision: GrantIntentExhaustion) -> StoryFailure:
+    if decision.retry_command is not None:
+        detail = (
             f"Intent {intent.id}; exhausted attempt {intent.execution_run_id}; "
             f"target {intent.target_sha}; {intent.attempts} attempts. "
             "Use retry_initial_owner_deployment after the platform problem is fixed."
-        ),
+        )
+    elif decision.attempts == 0:
+        detail = (
+            f"Intent {intent.id}; target {intent.target_sha}; no deployment Run was admitted. "
+            "Same-target retry is unavailable for this exhausted target. "
+            "Ask an administrator for next steps."
+        )
+    else:
+        detail = (
+            f"Intent {intent.id}; target {intent.target_sha}; {intent.attempts} attempts. "
+            "No current immutable deployment Run fence supports same-target retry. "
+            "Ask an administrator for next steps."
+        )
+    return StoryFailure(
+        code=StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED,
+        source="api",
+        detail=detail,
     )
 
 
@@ -335,10 +387,12 @@ def _epoch_matches(intent: UsersGrantIntent, source: Run, candidates: list[Run])
     return True
 
 
-def _matching_exhaustion_stop(story: Story, intent: UsersGrantIntent) -> bool:
+def _matching_exhaustion_stop(
+    story: Story, intent: UsersGrantIntent, decision: GrantIntentExhaustion
+) -> bool:
     reason = story.quarantine_reason or {}
     notice = story.owner_notification
-    failure = _exhaustion_failure(intent)
+    failure = _exhaustion_failure(intent, decision)
     return (
         story.status == StoryStatus.FAILED.value
         and isinstance(reason, dict)
@@ -393,7 +447,9 @@ async def _stop_exhausted_initial_owner(
         await _require_current_merged_target(
             db, project, story_id, merged_pr_number, head_sha, built_sha
         )
-        _record_story_failure(story, _exhaustion_failure(intent), StoryStatus.FAILED)
+        decision = await _exhaustion(db, project, intent, for_stop=True)
+        assert decision is not None and decision.retry_command is None
+        _record_story_failure(story, _exhaustion_failure(intent, decision), StoryStatus.FAILED)
         _do_transition(story, StoryStatus.FAILED)
         return
     evidence = await _current_source_story(db, project, intent)
@@ -406,7 +462,9 @@ async def _stop_exhausted_initial_owner(
         built_sha,
     ):
         return
-    if _matching_exhaustion_stop(story, intent):
+    decision = await _exhaustion(db, project, intent, for_stop=True)
+    assert decision is not None
+    if _matching_exhaustion_stop(story, intent, decision):
         return  # response loss/replay retains the exact notice episode
     if story.quarantine_reason is not None or story.status not in {
         StoryStatus.PR_REVIEW.value,
@@ -414,7 +472,7 @@ async def _stop_exhausted_initial_owner(
         StoryStatus.WAITING_USER_SECRET.value,
     }:
         return
-    _record_story_failure(story, _exhaustion_failure(intent), StoryStatus.FAILED)
+    _record_story_failure(story, _exhaustion_failure(intent, decision), StoryStatus.FAILED)
     _do_transition(story, StoryStatus.FAILED)
 
 
@@ -431,6 +489,9 @@ async def _retry_story_for_epoch(
     source, story = evidence
     if source.story_id != story_id or source.run_metadata["deployed_commit_sha"] != built_sha:
         raise HTTPException(status_code=409, detail="retry source target changed")
+    decision = await _exhaustion(db, project, intent)
+    if decision is None or decision.retry_command is None:
+        raise HTTPException(status_code=409, detail="exhausted target has no current retry command")
     # Released bare FAILED stops require the genuine current intent/Run/PR
     # binding and a landing after that Run. Text alone grants no recovery.
     released_stop = (
@@ -439,7 +500,7 @@ async def _retry_story_for_epoch(
         and story.status_entered_at is not None
         and story.status_entered_at >= source.created_at
     )
-    if not (_matching_exhaustion_stop(story, intent) or released_stop):
+    if not (_matching_exhaustion_stop(story, intent, decision) or released_stop):
         raise HTTPException(status_code=409, detail="Story does not carry this deployment stop")
     return story
 
@@ -782,6 +843,7 @@ async def _dispatch_lifecycle(
     # _lifecycle is the one admission transaction. Commit a terminal or
     # in-flight result before returning, and commit every new Run before its
     # publish. This keeps each reported durable state re-readable.
+    exhaustion = await _exhaustion(db, project, intent)
     if run is None:
         await db.commit()
     if run is not None and intent.status == GrantIntentStatus.PUBLISH_OWED.value:
@@ -845,7 +907,7 @@ async def _dispatch_lifecycle(
         status=GrantIntentStatus(intent.status),
         disposition=disposition,
         created=created,
-        exhaustion=_exhaustion(intent),
+        exhaustion=exhaustion,
     )
 
 
@@ -1001,7 +1063,7 @@ async def get_initial_owner_deployment(
     )
     if intent is None:
         raise HTTPException(status_code=404, detail="initial-owner intent not found")
-    return _as_dto(intent)
+    return await _as_dto(db, project, intent)
 
 
 @router.post("/{project_id}/users/grant-intents/{intent_id}/retry")
@@ -1093,7 +1155,7 @@ async def get_intent(
     intent = await db.get(UsersGrantIntent, intent_id)
     if intent is None or intent.project_id != project_id:
         raise HTTPException(status_code=404, detail="grant intent not found")
-    return _as_dto(intent)
+    return await _as_dto(db, project, intent)
 
 
 @router.post("/{project_id}/users/grant-intents/{intent_id}/complete")

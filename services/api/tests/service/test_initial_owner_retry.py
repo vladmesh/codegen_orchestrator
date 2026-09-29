@@ -192,6 +192,7 @@ async def test_same_intent_bounded_epochs_and_old_command_after_fast_exhaustion(
     stopped = (await async_client.get(f"/api/stories/{e['story']}")).json()
     assert stopped["status"] == "failed"
     assert stopped["quarantine_reason"]["code"] == "initial_owner_deployment_exhausted"
+    assert "retry_initial_owner_deployment" in stopped["quarantine_reason"]["detail"]
     notice = await _owner_notice(async_client, e["story"])
     assert notice["state"] == notice["admin_state"] == "owed"
     assert "retry_initial_owner_deployment" in notice["text"]
@@ -511,6 +512,7 @@ async def test_zero_ceiling_remains_terminal_after_policy_fix(
     e = initial_epoch
     await _ceiling(async_client, 0)
     zero = await _call(async_client, e["lifecycle"], e["body"])
+    assert zero["exhaustion"]["action"] is None
     assert zero["exhaustion"]["retry_command"] is None
     path = f"/api/projects/{e['project']}/users/grant-intents/{zero['intent_id']}/retry"
     response = await _call(e["human"], path, {"expected_execution_run_id": "no-such-attempt"})
@@ -586,6 +588,7 @@ async def test_zero_ceiling_stops_current_merged_story_without_a_run(
     assert exhausted["disposition"] == "exhausted"
     assert exhausted["exhaustion"]["attempts"] == 0
     assert exhausted["exhaustion"]["exhausted_execution_run_id"] is None
+    assert exhausted["exhaustion"]["action"] is None
     assert exhausted["exhaustion"]["retry_command"] is None
     if interference != "none":
         assert (await async_client.get(f"/api/stories/{e['story']}")).json() == before
@@ -594,15 +597,26 @@ async def test_zero_ceiling_stops_current_merged_story_without_a_run(
     stopped = (await async_client.get(f"/api/stories/{e['story']}")).json()
     assert stopped["status"] == "failed"
     assert stopped["quarantine_reason"]["code"] == "initial_owner_deployment_exhausted"
+    assert "same-target retry is unavailable" in stopped["quarantine_reason"]["detail"].lower()
+    assert "retry_initial_owner_deployment" not in stopped["quarantine_reason"]["detail"]
     notice = await _owner_notice(async_client, e["story"])
     assert notice["state"] == notice["admin_state"] == "owed"
+    assert "same-target retry is unavailable" in notice["text"].lower()
+    assert "retry_initial_owner_deployment" not in notice["text"] + notice["admin_text"]
+    assert "can deliberately retry" not in notice["text"]
+    readback = await _intent(e["human"], e, exhausted["intent_id"])
+    assert readback["exhaustion"] == exhausted["exhaustion"]
     assert await _messages(redis_client, e["project"]) == []
     repeated = await _call(async_client, e["lifecycle"], body)
     assert exhausted["created"] is True and repeated["created"] is False
     assert repeated | {"created": True} == exhausted
     assert await _owner_notice(async_client, e["story"]) == notice
     await _ceiling(async_client, 2)
-    assert (await _call(async_client, e["lifecycle"], body))["disposition"] == "exhausted"
+    raised = await _call(async_client, e["lifecycle"], body)
+    assert raised["disposition"] == "exhausted"
+    assert raised["exhaustion"]["action"] is None
+    assert raised["exhaustion"]["retry_command"] is None
+    assert await _owner_notice(async_client, e["story"]) == notice
     assert await _messages(redis_client, e["project"]) == []
 
 

@@ -83,8 +83,19 @@ class GrantIntentExhaustion(BaseModel):
     attempts: int = Field(ge=0)
     target: GrantIntentDispatchTarget
     exhausted_execution_run_id: str | None
-    action: Literal["retry_initial_owner_deployment"] = "retry_initial_owner_deployment"
+    action: Literal["retry_initial_owner_deployment"] | None
     retry_command: GrantIntentRetryCommand | None
+
+    @model_validator(mode="after")
+    def _action_requires_current_run_fence(self) -> "GrantIntentExhaustion":
+        if (self.action is None) != (self.retry_command is None):
+            raise ValueError("exhaustion action and retry command must agree")
+        if self.retry_command is not None and (
+            self.exhausted_execution_run_id != self.retry_command.expected_execution_run_id
+            or self.attempts == 0
+        ):
+            raise ValueError("retry command requires the exhausted admitted Run")
+        return self
 
 
 class GrantIntentLifecycleResult(BaseModel):

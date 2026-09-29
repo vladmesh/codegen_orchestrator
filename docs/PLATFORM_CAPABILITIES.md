@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 9, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 10, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -16,7 +16,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 - **Actions on a schedule or later.** The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
 - **Settings without a new version.** The owner later changes settings, such as the list of languages or the texts, without a new version of the bot.
 - **Connecting to other services.** The bot connects to other online services, such as AI, weather or spreadsheets, with a key the user provides; AI in the bot runs on the user's own key.
-- **Who can use the bot.** At first only the customer can use the bot; everyone else is ignored. The customer can give permanent access to specific Telegram users, and it starts working once the running bot confirms it. The customer can also hand the bot over to another Telegram user. Taking access back and opening the bot to everyone are not available yet. The owner or admin can retry exhausted initial deployment.
+- **Who can use the bot.** At first only the customer can use the bot; everyone else is ignored. The customer can give permanent access to specific Telegram users, and it starts working once the running bot confirms it. The customer can also hand the bot over to another Telegram user. Taking access back and opening the bot to everyone are not available yet. The owner or admin can retry exhausted initial deployment only when the platform offers a retry action for a failed attempt.
 
 ### Cannot
 
@@ -77,7 +77,7 @@ How: Product servers allow all outgoing traffic (ufw default allow outgoing). Th
 
 #### Who can use the bot
 
-How: Kit core `users` (grant, revoke, resolve by channel and external id); the bot admits a Telegram user only when the backend resolves that identity with status `active`. The platform records a durable grant intent (`initial_owner` on the first deploy, `add_user` from the PO's `grant_project_user`, `incoming_owner` from `transfer_project_ownership`) that the deploy worker applies and reads back. The PO has no revoke tool and there is no public or mode-switch setting. Owner/admin retry opens a bounded epoch.
+How: Kit core `users` resolves Telegram identities; only backend-confirmed `active` users enter the bot. The platform tracks durable `initial_owner` (first deploy), `add_user` (PO grant) and `incoming_owner` (PO transfer) intents, applied and checked by the worker. No PO revoke or public/mode-switch tool. Only an admitted terminal Run permits bounded owner/admin retry; zero admissions do not.
 
 ### Why each limitation holds
 

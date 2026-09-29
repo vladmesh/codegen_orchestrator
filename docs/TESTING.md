@@ -14,6 +14,9 @@ the registered PO read/retry tools and the next consumer/supervisor epoch.
 Additional service cases assert a trusted zero-ceiling Story stop without a Run,
 explicit refusal while retryable, a typed lock-contended cancelled Run, and
 native scheduler discovery after Redis refuses publication of a committed retry.
+The zero-admission poll/readback case also verifies no API or PO retry action,
+the stored Story reason and both owed audience texts, delivery, replay and
+policy-raise stickiness; positive failed/cancelled cases retain the fenced action.
 Its 61-second CI wait exercises native notice-claim spacing without editing
 attempt timestamps; the Python runtime bounds each case to 180 seconds without
 a pytest-timeout dependency. API notice assertions read the native notification

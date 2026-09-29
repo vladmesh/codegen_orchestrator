@@ -277,10 +277,11 @@ async def transfer_project_ownership(
 
 @tool
 async def get_initial_owner_deployment(project_id: str, *, config: RunnableConfig) -> str:
-    """Read initial deployment history and the exact exhausted-attempt retry command.
+    """Read initial deployment history and any exact exhausted-attempt retry command.
 
-    Deployment credentials are platform provisioned. When exhausted, explain
-    the bounded failure and offer retry_initial_owner_deployment to the owner.
+    Deployment credentials are platform provisioned. Offer
+    retry_initial_owner_deployment only when exhaustion.action and
+    exhaustion.retry_command are present; zero admissions offer neither.
     """
     response = await _get_api().get_raw(
         f"projects/{project_id}/users/initial-owner-deployment", headers=_user_headers(config)

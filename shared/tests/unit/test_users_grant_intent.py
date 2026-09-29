@@ -4,11 +4,36 @@ import pytest
 from shared.contracts.dto.users_grant import (
     GrantIntent,
     GrantIntentDispatchTarget,
+    GrantIntentExhaustion,
     GrantIntentKind,
     GrantIntentLifecycleDisposition,
     GrantIntentLifecycleResult,
+    GrantIntentRetryCommand,
     GrantIntentStatus,
 )
+
+
+def test_exhaustion_action_requires_the_admitted_run_fence():
+    zero = GrantIntentExhaustion(
+        attempts=0,
+        target=GrantIntentDispatchTarget(sha="a" * 40),
+        exhausted_execution_run_id=None,
+        action=None,
+        retry_command=None,
+    )
+    assert zero.action is None and zero.retry_command is None
+    with pytest.raises(ValidationError, match="action and retry command must agree"):
+        GrantIntentExhaustion.model_validate(
+            zero.model_dump(mode="json") | {"action": "retry_initial_owner_deployment"}
+        )
+    with pytest.raises(ValidationError, match="exhausted admitted Run"):
+        GrantIntentExhaustion(
+            attempts=0,
+            target=GrantIntentDispatchTarget(sha="a" * 40),
+            exhausted_execution_run_id=None,
+            action="retry_initial_owner_deployment",
+            retry_command=GrantIntentRetryCommand(expected_execution_run_id="invented-run"),
+        )
 
 
 def test_grant_intent_is_non_secret_and_binds_one_immutable_target():

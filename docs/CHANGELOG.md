@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Derive initial-owner retry guidance from the verified exhausted Run across readback, notices
+  and PO capabilities: zero admissions offer no action, while fenced terminal Runs retain it.
+
 - Assert zero-ceiling replay preserves the exhausted intent and notice episode while reporting
   the per-call created flag accurately, so CI distinguishes replay from first intent creation.
 

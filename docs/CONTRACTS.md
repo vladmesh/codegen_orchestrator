@@ -204,9 +204,14 @@ does not supply that evidence.
 read authorize the credential-derived owner/admin or internal reader and expose
 `GrantIntent.exhaustion`. `GrantIntentLifecycleResult.exhaustion` has the same
 `GrantIntentExhaustion`: typed `initial_owner_deployment_exhausted`, closed count,
-immutable target, exhausted execution Run, and `retry_initial_owner_deployment`
-action with `GrantIntentRetryCommand.expected_execution_run_id`. Zero admission
-has no exhausted Run or usable command. This readback never claims a new dispatch.
+immutable target, and any verified exhausted execution Run. The locked API
+lifecycle checks the current admitted Run, owner, Story and epoch before exposing
+`retry_initial_owner_deployment` with
+`GrantIntentRetryCommand.expected_execution_run_id`. Zero admission has no
+exhausted Run, action or command, including after a policy increase. The same
+typed decision supplies Story detail, both notice texts and PO readback;
+the static Story renderer makes no unconditional retry promise. This readback
+never claims a new dispatch.
 
 `POST /api/projects/{id}/users/grant-intents/{intent_id}/retry` accepts that command
 only from the current credential-derived project owner or administrator. The
@@ -244,7 +249,10 @@ request cannot create an intent or admit another Run. A human command against
 `retryable` with remaining admissions refuses with 409 and preserves its epoch.
 
 `StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED`, source `api`, records only
-bounded native intent/attempt/target/count identifiers and the deliberate retry action.
+bounded native intent/attempt/target/count identifiers. It names the deliberate
+retry action only when typed exhaustion has a verified immutable Run fence;
+otherwise it says same-target retry is unavailable and asks an administrator
+for next steps.
 The API stores it with the matching Story stop and owner/admin owed obligations.
 Generic Story stop bodies cannot claim this API-owned grant exhaustion code.
 Response loss converges without replacing that notice episode. History and PO

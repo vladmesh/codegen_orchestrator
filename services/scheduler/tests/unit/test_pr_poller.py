@@ -847,6 +847,7 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
             "attempts": 3,
             "target": {"sha": "a" * 40},
             "exhausted_execution_run_id": "run-1",
+            "action": "retry_initial_owner_deployment",
             "retry_command": {"expected_execution_run_id": "run-1"},
         },
     }
