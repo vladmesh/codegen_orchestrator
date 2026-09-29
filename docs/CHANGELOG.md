@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-29
 
+- Admit provider-absent, unreachable, unmanaged and off-allowlist Time4VPS history in production preflight;
+  retain blocking drift for live inventory, authorized targets and unsettled rows.
+
 - Verify a policy increase on an exhausted Story through lifecycle replay, proving no automatic
   reset without asking the deploying scheduler to process a terminal Story.
 
