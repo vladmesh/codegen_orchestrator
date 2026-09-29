@@ -133,10 +133,19 @@ After old writers settle, the following count-only preflight must have every
 count zero. It deliberately excludes *all* `pending_setup`, `provisioning` and
 `force_rebuild` rows, including unauthorized rows. Every managed row must satisfy
 `target_readiness_reconcilable` and have an address. Every allowlisted provider ID
-must already have exactly one managed, completed database row. The full provider
-inventory must match existing Time4VPS rows, identities and management flags.
+must already have exactly one managed, completed database row. Every provider
+inventory entry must match a Time4VPS row, identity and management flag; every
+row must match provider inventory unless it meets the settled-history rule below.
 Settle drift using the existing supported procedures before this window; do not
 patch statuses, remove authorization or hide a target to pass these checks.
+
+An already-`unreachable` Time4VPS row with a valid provider ID, `is_managed=false`,
+and an ID outside the allowlist is settled history when that ID is absent from
+provider inventory. It grants no provisioning or readiness authority and needs
+no provider target to reconcile; retain the row. A managed or allowlisted row,
+any other status, a malformed ID, duplicate rows, or any provider-present
+identity/management mismatch remains blocking drift. Provider inventory entries
+without a row and allowlist entries without a completed managed row also block.
 
 After initializing the dedicated operator script below, run this through the
 verified old scheduler image, with its existing API credentials,
@@ -147,7 +156,7 @@ step 2 stopped it). Keep output restricted outside the checkout:
 "${COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python scheduler-infrastructure -c '
 import asyncio, json, sys
 from shared.contracts.dto.server import ServerStatus
-from shared.provisioning_policy import TIME4VPS_PROVIDER, managed_provider_ids, provider_operation_is_authorized
+from shared.provisioning_policy import TIME4VPS_PROVIDER, managed_provider_ids, normalize_provider_id, provider_operation_is_authorized
 from shared.server_admission import IN_PROGRESS_TARGET_STATUSES, target_readiness_reconcilable
 from src.clients.api import api_client
 from src.tasks.server_sync import get_time4vps_client
@@ -155,6 +164,10 @@ from src.tasks.server_sync import get_time4vps_client
 def po_maintenance_counts(servers, provider_servers, managed_ids):
     def completed(row):
         return target_readiness_reconcilable(row) and bool(row.public_ip or row.host)
+    def settled_absent(row):
+        return (row.status == ServerStatus.UNREACHABLE and not row.is_managed
+            and row.provider_id is not None and row.provider_id not in managed_ids
+            and normalize_provider_id(row.provider, row.provider_id) == row.provider_id)
     rows = [s for s in servers if s.provider == TIME4VPS_PROVIDER]
     by_id = {}
     for row in rows:
@@ -162,7 +175,7 @@ def po_maintenance_counts(servers, provider_servers, managed_ids):
     provider_ids = [str(p.id) for p in provider_servers]
     drift = len(provider_ids) - len(set(provider_ids))
     drift += sum(len(v) != 1 for v in by_id.values())
-    drift += sum(s.provider_id not in provider_ids for s in rows)
+    drift += sum(s.provider_id not in provider_ids and not settled_absent(s) for s in rows)
     for item in provider_servers:
         matches = by_id.get(str(item.id), [])
         if len(matches) != 1:
