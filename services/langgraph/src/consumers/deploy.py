@@ -441,12 +441,13 @@ async def _deploy_failure_terminal(
 async def _claim_deploy_job(
     msg: DeployMessage,
     redis: RedisStreamClient,
-    lock_token: str,
+    lock_token: str | None = None,
 ) -> DeployTerminal | None:
     """Acquire the project deploy lock and atomically move the run to RUNNING."""
     task_id = msg.task_id
     project_id = msg.project_id
     lock_key = f"deploy:{project_id}:lock"
+    lock_token = lock_token or f"{task_id}:{uuid4().hex}"
 
     acquired = await redis.redis.set(lock_key, lock_token, nx=True, ex=_deploy_lock_ttl())
     if not acquired:
