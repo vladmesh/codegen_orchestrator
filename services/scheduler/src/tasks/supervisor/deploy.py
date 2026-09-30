@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
+import uuid
 
 import httpx
 from pydantic import ValidationError
@@ -51,7 +52,6 @@ from shared.contracts.queues.deploy import (
     DeployAction,
     DeployMessage,
     DeployOutcome,
-    DeployTrigger,
 )
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.qa import QAMessage
@@ -67,7 +67,7 @@ if TYPE_CHECKING:
 
 from ... import startup
 from .._recipients import resolve_project_recipient
-from ..deploy_dispatch import deploy_run_id, dispatch_deploy, recover_deploy_handoff
+from ..deploy_dispatch import DeployHandoff, deploy_run_id, dispatch_deploy, recover_deploy_handoff
 from ..owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
@@ -1054,19 +1054,21 @@ async def _redispatch_deploy_under_bound(  # noqa: PLR0913
     await dispatch_deploy(
         api_client,
         redis_client,
-        run_id=new_run_id,
-        project_id=project_id,
-        story_id=story_id,
-        recipient=retry_recipient,
-        action=DeployAction.FEATURE,
-        head_sha=head_sha,
-        deployed_commit_sha=deployed_commit_sha,
-        run_metadata={
-            "triggered_by": "supervisor_retry",
-            "attempt": attempts,
-            "head_sha": head_sha,
-            "deployed_commit_sha": deployed_commit_sha,
-        },
+        DeployHandoff(
+            run_id=new_run_id,
+            project_id=project_id,
+            story_id=story_id,
+            recipient=retry_recipient,
+            action=DeployAction.FEATURE,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
+            run_metadata={
+                "triggered_by": "supervisor_retry",
+                "attempt": attempts,
+                "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
+            },
+        ),
     )
     log.info(
         "deploy_supervisor_retry",
@@ -1439,19 +1441,21 @@ async def _handle_deploy_infrastructure_wait(
     await dispatch_deploy(
         api_client,
         redis_client,
-        run_id=new_run_id,
-        project_id=project_id,
-        story_id=story_id,
-        recipient=recipient,
-        action=DeployAction.FEATURE,
-        head_sha=head_sha,
-        deployed_commit_sha=deployed_commit_sha,
-        run_metadata={
-            "triggered_by": "supervisor_infrastructure_wait",
-            "head_sha": head_sha,
-            "deployed_commit_sha": deployed_commit_sha,
-            INFRASTRUCTURE_WAIT_STARTED_KEY: waiting_since.isoformat(),
-        },
+        DeployHandoff(
+            run_id=new_run_id,
+            project_id=project_id,
+            story_id=story_id,
+            recipient=recipient,
+            action=DeployAction.FEATURE,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
+            run_metadata={
+                "triggered_by": "supervisor_infrastructure_wait",
+                "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
+                INFRASTRUCTURE_WAIT_STARTED_KEY: waiting_since.isoformat(),
+            },
+        ),
     )
     log.info("deploy_infrastructure_wait_redispatched", run_id=run.id, new_run_id=new_run_id)
     return RefusedDeployAction.REDISPATCHED
@@ -1703,19 +1707,21 @@ async def _redispatch_waiting_deploy(
     await dispatch_deploy(
         api_client,
         redis_client,
-        run_id=new_run_id,
-        project_id=project_id,
-        story_id=story_id,
-        recipient=secret_recipient,
-        action=DeployAction.FEATURE,
-        head_sha=head_sha,
-        deployed_commit_sha=deployed_commit_sha,
-        run_metadata={
-            "triggered_by": "supervisor_user_secret",
-            "head_sha": head_sha,
-            "deployed_commit_sha": deployed_commit_sha,
-        },
-        transition_action="deploy",
+        DeployHandoff(
+            run_id=new_run_id,
+            project_id=project_id,
+            story_id=story_id,
+            recipient=secret_recipient,
+            action=DeployAction.FEATURE,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
+            run_metadata={
+                "triggered_by": "supervisor_user_secret",
+                "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
+            },
+            transition_action="deploy",
+        ),
     )
     log.info("waiting_user_secret_redispatched", story_id=story_id, new_run_id=new_run_id)
     return True
