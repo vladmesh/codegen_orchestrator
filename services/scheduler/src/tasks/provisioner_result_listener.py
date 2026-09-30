@@ -13,6 +13,7 @@ import structlog
 from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
+from shared.diagnostics import safe_validation_errors
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
@@ -71,7 +72,7 @@ async def handle_provisioner_entry(client, msg) -> None:
     try:
         result = ProvisionerResult.model_validate(msg.data)
     except ValidationError as e:
-        errors = {"errors": e.errors(include_url=False, include_input=False)}
+        errors = {"errors": safe_validation_errors(e)}
         logger.error(
             "provisioner_result_invalid_quarantined",
             entry_id=msg.message_id,
