@@ -152,7 +152,6 @@ async def test_lock_released_on_success(
     assert lock_key == "deploy:proj-1:lock"
     assert lock_token == mock_redis.redis.set.await_args.args[1]
     assert lock_token.startswith("deploy-lock-1:")
-    assert lock_token != "deploy-lock-1"
 
 
 @pytest.mark.asyncio
