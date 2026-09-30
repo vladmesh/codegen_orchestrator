@@ -151,8 +151,7 @@ async def _handle_failure(result: ProvisionerResult, log) -> None:
         if e.response.status_code == httpx.codes.NOT_FOUND:
             log.warning("server_not_found_in_api", server_handle=result.server_handle)
         elif (
-            e.response.status_code == httpx.codes.TOO_MANY_REQUESTS
-            or e.response.status_code >= 500
+            e.response.status_code == httpx.codes.TOO_MANY_REQUESTS or e.response.status_code >= 500
         ):
             raise
         else:
