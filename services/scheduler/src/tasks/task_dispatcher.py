@@ -1,12 +1,9 @@
-"""Task Dispatcher — dispatches todo tasks, completes stories, supervises pipeline.
+"""Task Dispatcher — admits and dispatches engineering work.
 
-Responsibilities:
-A) Ask the admission point about every todo task, publish the message for each
-   attempt it admits, and act on the typed answer for each one it does not.
-B) Find stories where all tasks are done → complete story + trigger deploy.
-C) Supervise pipeline: detect stuck states, retry or fail-fast.
-
-Runs as a periodic scheduler job (every 30s).
+The dispatcher owns one responsibility: ask the durable admission point about
+TODO tasks and hand admitted work to the engineering queue. Scaffold triggering,
+story completion, lifecycle supervision, PR/CI routing and QA routing run in
+independent scheduler-pipeline loops with their own failure boundaries.
 """
 
 from __future__ import annotations
@@ -47,22 +44,11 @@ from .owner_notifications import (
     owe_owner_notification,
     owe_story_owner_notification,
 )
-from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
     _parse_owner_repo,
     _trigger_next_story,
     complete_stories,
 )
-from .supervisor import (
-    supervise_deploying_stories,
-    supervise_failed_tasks,
-    supervise_stuck_stories,
-    supervise_stuck_tasks,
-    supervise_testing_stories,
-    supervise_waiting_resource_tasks,
-    supervise_waiting_user_secret_stories,
-)
-from .temporary_access import supervise_temporary_access
 from .worker_liveness import terminal_task_statuses
 
 if TYPE_CHECKING:
@@ -74,7 +60,6 @@ __all__ = [
     "_trigger_next_story",
     "complete_stories",
     "dispatch_todo_tasks",
-    "supervise_temporary_access",
     "task_dispatcher_loop",
 ]
 
@@ -494,7 +479,7 @@ async def dispatch_todo_tasks(
 
 
 async def task_dispatcher_loop() -> None:
-    """Periodic loop: dispatch tasks + complete stories every 30s."""
+    """Periodically dispatch admitted engineering tasks."""
     from ..clients.api import api_client
 
     redis_client = RedisStreamClient()
@@ -505,80 +490,8 @@ async def task_dispatcher_loop() -> None:
     try:
         while True:
             try:
-                scaffolds = await trigger_scaffolds(api_client, redis_client)
                 dispatched = await dispatch_todo_tasks(api_client, redis_client)
-                completed = await complete_stories(api_client, redis_client)
-                # Supervisor checks
-                stuck_stories = await supervise_stuck_stories(api_client, redis_client)
-                stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
-                failed_tasks = await supervise_failed_tasks(api_client, redis_client)
-                waiting_resources = await supervise_waiting_resource_tasks(api_client, redis_client)
-                deploying = await supervise_deploying_stories(api_client, redis_client)
-                waiting_secret = await supervise_waiting_user_secret_stories(
-                    api_client, redis_client
-                )
-                testing = await supervise_testing_stories(api_client, redis_client)
-                temporary_access = {}
-
-                # Always log the cycle summary for observability
-                logger.info(
-                    "dispatcher_cycle",
-                    tasks_dispatched=dispatched,
-                    stories_completed=completed,
-                    scaffolds_triggered=scaffolds,
-                )
-                supervisor_active = (
-                    stuck_stories.get("retried", 0)
-                    + stuck_stories.get("failed", 0)
-                    + stuck_tasks.get("timed_out", 0)
-                    + failed_tasks.get("retried", 0)
-                    + failed_tasks.get("escalated", 0)
-                    + waiting_resources.get("resumed", 0)
-                    + waiting_resources.get("expired", 0)
-                    + deploying.get("tested", 0)
-                    + deploying.get("retried", 0)
-                    + deploying.get("redispatched", 0)
-                    + deploying.get("waiting", 0)
-                    + deploying.get("escalated", 0)
-                    + deploying.get("failed", 0)
-                    + waiting_secret.get("redispatched", 0)
-                    + waiting_secret.get("failed", 0)
-                    + testing.get("completed", 0)
-                    + testing.get("redispatched", 0)
-                    + testing.get("failed", 0)
-                    + temporary_access.get("dispatched", 0)
-                    + temporary_access.get("released", 0)
-                    + temporary_access.get("revoked", 0)
-                    + temporary_access.get("revoke_failed", 0)
-                    + temporary_access.get("escalated", 0)
-                )
-                if supervisor_active:
-                    logger.info(
-                        "supervisor_cycle",
-                        stories_retried=stuck_stories.get("retried", 0),
-                        stories_failed=stuck_stories.get("failed", 0),
-                        tasks_timed_out=stuck_tasks.get("timed_out", 0),
-                        tasks_retried=failed_tasks.get("retried", 0),
-                        tasks_escalated=failed_tasks.get("escalated", 0),
-                        deploy_tested=deploying.get("tested", 0),
-                        deploy_retried=deploying.get("retried", 0),
-                        deploy_redispatched=deploying.get("redispatched", 0),
-                        deploy_waiting_user_secret=deploying.get("waiting", 0),
-                        deploy_escalated=deploying.get("escalated", 0),
-                        deploy_failed=deploying.get("failed", 0),
-                        user_secret_redispatched=waiting_secret.get("redispatched", 0),
-                        user_secret_failed=waiting_secret.get("failed", 0),
-                        qa_completed=testing.get("completed", 0),
-                        qa_redispatched=testing.get("redispatched", 0),
-                        qa_failed=testing.get("failed", 0),
-                        temporary_access_dispatched=temporary_access.get("dispatched", 0),
-                        temporary_access_released=temporary_access.get("released", 0),
-                        temporary_access_revoked=temporary_access.get("revoked", 0),
-                        temporary_access_expired=temporary_access.get("expired", 0),
-                        # Still being chased vs. given up on and handed to a human.
-                        temporary_access_revoke_failed=temporary_access.get("revoke_failed", 0),
-                        temporary_access_escalated=temporary_access.get("escalated", 0),
-                    )
+                logger.info("dispatcher_cycle", tasks_dispatched=dispatched)
             except Exception:
                 logger.exception("dispatcher_cycle_error")
             await asyncio.sleep(_dispatch_interval())
