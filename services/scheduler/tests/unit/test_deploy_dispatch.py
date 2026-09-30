@@ -14,6 +14,7 @@ from src.tasks._recipients import Recipient
 from src.tasks.deploy_dispatch import (
     DEPLOY_HANDOFF_DISPATCHED_AT_KEY,
     DEPLOY_HANDOFF_MESSAGE_KEY,
+    DeployHandoff,
     deploy_run_id,
     dispatch_deploy,
     recover_deploy_handoff,
@@ -54,15 +55,17 @@ async def test_dispatch_persists_run_before_story_transition_and_publish():
     message = await dispatch_deploy(
         api,
         redis,
-        run_id="deploy-poll-stable",
-        project_id="project-1",
-        story_id="story-1",
-        recipient=Recipient(telegram_chat_id="42"),
-        action=DeployAction.FEATURE,
-        head_sha="a" * 40,
-        deployed_commit_sha="b" * 40,
-        run_metadata={"triggered_by": "pr_poll"},
-        transition_action="deploy",
+        DeployHandoff(
+            run_id="deploy-poll-stable",
+            project_id="project-1",
+            story_id="story-1",
+            recipient=Recipient(telegram_chat_id="42"),
+            action=DeployAction.FEATURE,
+            head_sha="a" * 40,
+            deployed_commit_sha="b" * 40,
+            run_metadata={"triggered_by": "pr_poll"},
+            transition_action="deploy",
+        ),
     )
 
     assert calls == ["create", "transition", "publish", "stamp"]
@@ -83,15 +86,17 @@ async def test_failed_run_persistence_leaves_story_and_queue_untouched():
         await dispatch_deploy(
             api,
             redis,
-            run_id="deploy-poll-stable",
-            project_id="project-1",
-            story_id="story-1",
-            recipient=Recipient(telegram_chat_id="42"),
-            action=DeployAction.CREATE,
-            head_sha="a" * 40,
-            deployed_commit_sha="b" * 40,
-            run_metadata={"triggered_by": "pr_poll"},
-            transition_action="deploy",
+            DeployHandoff(
+                run_id="deploy-poll-stable",
+                project_id="project-1",
+                story_id="story-1",
+                recipient=Recipient(telegram_chat_id="42"),
+                action=DeployAction.CREATE,
+                head_sha="a" * 40,
+                deployed_commit_sha="b" * 40,
+                run_metadata={"triggered_by": "pr_poll"},
+                transition_action="deploy",
+            ),
         )
 
     api.transition_story.assert_not_awaited()
