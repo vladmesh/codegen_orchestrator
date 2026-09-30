@@ -8,7 +8,7 @@ Every agent is a LangGraph node with its own set of tools and its own specializa
 
 **Role**: the central coordinator. Manages the project lifecycle through API tools, the single point of communication with the user.
 
-**Implementation**: LangGraph `create_react_agent` in `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container. Conversation state is persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); without `CHECKPOINT_DATABASE_URL` it uses in-memory `MemorySaver`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) into a running summary in `state["context"]`.
+**Implementation**: LangGraph `create_react_agent` in `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container. Conversation state is persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`). The production PO consumer requires `CHECKPOINT_DATABASE_URL` and refuses startup without it; in-memory `MemorySaver` is limited to tests and explicit one-shot graph construction. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) into a running summary in `state["context"]`.
 
 **Model**: the PO and its summarizer each answer through their own [LLM channel chain](#-llm-channel-chain-architect-po-po-summarizer) (`po`, `po_summarizer`).
 

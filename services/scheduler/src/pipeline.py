@@ -8,8 +8,12 @@ from shared.log_config import setup_logging
 
 from . import runtime
 from .startup import PIPELINE_REQUIRED_KEYS
+from .tasks.lifecycle_supervision_loop import lifecycle_supervision_loop
 from .tasks.owner_notification_loop import owner_notification_loop
 from .tasks.pr_ci_loop import pr_ci_loop
+from .tasks.qa_routing_loop import qa_routing_loop
+from .tasks.scaffold_loop import scaffold_loop
+from .tasks.story_completion_loop import story_completion_loop
 from .tasks.story_supervision_loop import story_supervision_loop
 from .tasks.task_dispatcher import task_dispatcher_loop
 from .tasks.temporary_access_loop import temporary_access_loop
@@ -25,6 +29,10 @@ async def main() -> None:
     await runtime.run_workers(
         [
             ("task_dispatcher", task_dispatcher_loop),
+            ("scaffold", scaffold_loop),
+            ("story_completion", story_completion_loop),
+            ("lifecycle_supervision", lifecycle_supervision_loop),
+            ("qa_routing", qa_routing_loop),
             ("pr_ci", pr_ci_loop),
             ("worker_reconciliation", worker_reconciliation_loop),
             ("temporary_access", temporary_access_loop),
