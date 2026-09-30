@@ -44,6 +44,7 @@ def mock_redis():
     r.redis.xadd = AsyncMock()
     r.redis.set = AsyncMock(return_value=True)  # lock acquired
     r.redis.delete = AsyncMock()
+    r.redis.eval = AsyncMock(return_value=1)
     r.redis.incr = AsyncMock(return_value=1)
     r.redis.expire = AsyncMock()
     r.redis.exists = AsyncMock(return_value=False)  # no live teardown fence
@@ -342,8 +343,9 @@ async def test_unproven_cancellation_propagates_not_masked_as_failure(
 
     # Never patched the run into a terminal failed/give-up state.
     assert not [c for c in mock_api.patch.call_args_list if "failed" in str(c)]
-    # Deploy lock released via finally so the next attempt can proceed.
-    mock_redis.redis.delete.assert_awaited_once()
+    # Deploy lock released via atomic owner-fenced compare-and-delete.
+    mock_redis.redis.eval.assert_awaited_once()
+    mock_redis.redis.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -403,7 +405,9 @@ async def test_result_shaped_deploy_error_under_teardown_fences_cleanup_without_
         }
     )
     mock_redis.redis.exists = AsyncMock(return_value=True)  # live:work:cancelled is set
-    mock_redis.redis.eval = AsyncMock(side_effect=[1, -1])  # acquisition, atomic refusal
+    mock_redis.redis.eval = AsyncMock(
+        side_effect=[1, 1, -1]
+    )  # live-work acquisition, deploy-lock release, atomic refusal
     mock_redis.redis.zrem = AsyncMock()
     mock_redis.ack = AsyncMock()
 
