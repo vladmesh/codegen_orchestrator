@@ -5,9 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-01
 
-- Make LK bearer authorization deny-by-default at the API boundary: a valid dashboard token reaches
-  only routes with an explicit bearer-aware owner/admin/current-user guard, while unclassified
-  routes remain internal-only even after successful token authentication.
+- Make LK bearer authorization deny-by-default: valid dashboard tokens reach only routes with an
+  explicit owner/admin/current-user bearer guard; unclassified routes remain internal-only.
 
 ## 2026-09-30
 
