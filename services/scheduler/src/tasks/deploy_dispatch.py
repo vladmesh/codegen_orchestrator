@@ -13,8 +13,9 @@ from shared.queues import DEPLOY_QUEUE
 from ._recipients import Recipient
 
 if TYPE_CHECKING:
-    from ..clients.api import SchedulerAPIClient
     from shared.redis import RedisStreamClient
+
+    from ..clients.api import SchedulerAPIClient
 
 DEPLOY_HANDOFF_MESSAGE_KEY = "deploy_handoff_message"
 DEPLOY_HANDOFF_DISPATCHED_AT_KEY = "deploy_handoff_dispatched_at"
@@ -114,6 +115,8 @@ async def recover_deploy_handoff(
         return False
     if isinstance(created_at, str):
         created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
     age_minutes = (datetime.now(UTC) - created_at).total_seconds() / 60
     if age_minutes < minimum_age_minutes:
         return False
