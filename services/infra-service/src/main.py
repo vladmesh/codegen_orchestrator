@@ -22,6 +22,7 @@ from shared.contracts.dto.server import (
 from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.crypto import SecretsCipher
+from shared.diagnostics import safe_validation_errors
 from shared.log_config import setup_logging
 from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
@@ -401,7 +402,7 @@ async def _handle_stream_message(client, msg) -> None:
             msg.message_id,
             data=msg.data,
             failure=DLQ_FAILURE_VALIDATION,
-            reason={"errors": error.errors(include_url=False, include_input=False)},
+            reason={"errors": safe_validation_errors(error)},
         )
         return
 
