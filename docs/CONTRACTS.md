@@ -1235,7 +1235,13 @@ helpers and must classify the entry before acknowledging it.
 | restart or abandoned consumer | reclaim compatible PEL entries through the configured claim path |
 | trimmed or missing pending entry | treat as a bounded recovery fact, not a successful completion |
 
-Delivery is at least once. Consumer idempotency belongs to the durable owner:
+Delivery is at least once. Reclaiming consumers use a durable PEL delivery
+ceiling (five deliveries by default unless the queue declares a narrower bound);
+once exhausted, the entry is quarantined to the same DLQ before ACK instead of
+being executed forever. Cancellation never spends this budget: it propagates and
+leaves the entry pending for the normal ownership/reclaim path.
+
+Consumer idempotency belongs to the durable owner:
 a database lock, persisted request/run identity, or explicit turn/adoption key.
 `XAUTOCLAIM` recovery, DLQ handling, and approximate stream trimming do not
 authorise a consumer to invent a result. The PO consumer additionally tracks
