@@ -405,7 +405,7 @@ async def _budget_wait_decision(
     task: Task, story: Story, reason: dict, db: AsyncSession
 ) -> str | None:
     """Prove a current no-Run budget wait from native, durable admission facts."""
-    from ._pr_conflict_attempt import _pending_dispatch_refusal
+    from ._pr_conflict_attempt import _pending_dispatch_refusal, _verify_recorded_stop
 
     if (
         task.status != TaskStatus.WAITING_HUMAN_REVIEW.value
@@ -449,6 +449,7 @@ async def _budget_wait_decision(
         or refusal.decision_id not in reason.get("detail", "")
     ):
         return None
+    _verify_recorded_stop(story)
     audit = await db.scalar(
         select(WorkAdmissionAudit).where(
             WorkAdmissionAudit.reference_id == refusal.decision_id,

@@ -237,6 +237,31 @@ async def test_released_zero_iteration_exhausted_label_with_budget_only_history_
 
 
 @pytest.mark.asyncio
+async def test_legacy_budget_label_requires_its_native_owner_notice(
+    async_client, db_session, dirty_story
+):
+    sid, tid, policy_url, _ = await ready_task(async_client, db_session, dirty_story, False)
+    refused = await async_client.post(DISPATCH, json={"task_id": tid})
+    decision_id = refused.json()["refusal_disposition"]["decision_id"]
+    story = await db_session.get(Story, sid, populate_existing=True)
+    story.quarantine_reason = StoryFailure(
+        code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
+        source="scheduler",
+        detail=f"PR #3 repair Task {tid}, decision {decision_id}, iteration 0: unrelated stop.",
+    ).model_dump(mode="json")
+    await db_session.commit()
+    response = await async_client.post(
+        f"/api/stories/{sid}/repair-pr-conflicts",
+        headers=bearer(int(policy_url.rsplit("/", 1)[1])),
+        json=dirty_story[1],
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["message"] == (
+        "Recorded repair stop has inconsistent notice obligations."
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("later", [False, True], ids=["iteration0", "bounded-retry"])
 async def test_budget_refusal_is_atomic_once_and_same_cycle_repair_creates_real_run(
     async_client, db_session, dirty_story, later
