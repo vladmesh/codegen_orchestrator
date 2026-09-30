@@ -46,10 +46,11 @@ async def _scan_keys(redis, pattern: str) -> list[str]:
 
 def _worker_id_from_stream(key: str) -> str | None:
     """Return the worker id for a worker input/output stream."""
-    parts = key.split(":")
-    if len(parts) == 3 and parts[0] == "worker" and parts[2] in {"input", "output"}:
-        return parts[1]
-    return None
+    match key.split(":"):
+        case ["worker", worker_id, "input" | "output"]:
+            return worker_id
+        case _:
+            return None
 
 
 async def _clean_orphan_streams(
