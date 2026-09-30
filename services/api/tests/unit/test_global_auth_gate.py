@@ -195,7 +195,11 @@ async def test_a_bearer_token_that_is_not_ours_is_not_an_identity():
 @pytest.mark.parametrize("is_admin", [False, True])
 async def test_valid_lk_bearer_cannot_enter_an_internal_only_route(is_admin):
     """Authentication alone never grants the broad internal API surface."""
-    user = User(id=700 + int(is_admin), telegram_id=9700 + int(is_admin), is_admin=is_admin)
+    user = User(
+        id=700 + int(is_admin),
+        telegram_id=9700 + int(is_admin),
+        is_admin=is_admin,
+    )
     session = AsyncMock()
 
     async def execute(*_args, **_kwargs):
