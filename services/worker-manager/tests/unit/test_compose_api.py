@@ -91,6 +91,16 @@ def client(tmp_path):
         yield c, runner, redis
 
 
+class TestComposeTimeoutBudget:
+    def test_rejects_timeout_that_can_outlive_the_proxy_chain(self, client):
+        c, _, _ = client
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["ps"], "timeout": 841},
+        )
+        assert response.status_code == 422
+
+
 class TestComposeApi:
     def test_broker_authenticated_creation_uses_the_real_runner_plan(self, tmp_path):
         workspace = tmp_path / "project" / "workspace"
