@@ -615,6 +615,7 @@ class TestDeployerNodeFailures:
     async def test_handles_workflow_failure(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
+        gh.set_repository_secrets.return_value = 9
         mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
         mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
         gh.wait_for_workflow_completion.side_effect = RuntimeError(
@@ -636,6 +637,7 @@ class TestDeployerNodeFailures:
     async def test_handles_timeout(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
+        gh.set_repository_secrets.return_value = 9
         mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
         mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
         gh.wait_for_workflow_completion.side_effect = TimeoutError(
