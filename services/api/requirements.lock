@@ -87,7 +87,7 @@ pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.15.0
     # via api (services/api/pyproject.toml)
-pyjwt==2.13.0
+pyjwt==2.15.0
     # via api (services/api/pyproject.toml)
 pynacl==1.6.2
     # via api (services/api/pyproject.toml)
