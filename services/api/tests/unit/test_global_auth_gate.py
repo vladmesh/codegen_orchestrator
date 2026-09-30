@@ -16,8 +16,8 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from src.database import get_async_session
 from shared.models import User
+from src.database import get_async_session
 from src.dependencies import (
     ANONYMOUS_ROUTES,
     create_lk_jwt,
