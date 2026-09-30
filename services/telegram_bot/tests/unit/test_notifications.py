@@ -174,7 +174,9 @@ async def test_no_notification_when_no_admins(raw_redis, stream_client, mock_bot
 
 
 @pytest.mark.asyncio
-async def test_invalid_provisioner_result_is_quarantined(raw_redis, stream_client, mock_bot, admin_ids):
+async def test_invalid_provisioner_result_is_quarantined(
+    raw_redis, stream_client, mock_bot, admin_ids
+):
     notifier = ProvisionerNotifier(client=stream_client, admin_ids=admin_ids)
     task = await notifier.start(mock_bot)
     await asyncio.sleep(0.2)
