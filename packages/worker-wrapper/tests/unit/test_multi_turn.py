@@ -1,5 +1,6 @@
 """Tests for wrapper multi-turn support (Iteration 1: worker-reuse-ci-fix)."""
 
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakeredis import FakeAsyncRedis
@@ -218,6 +219,17 @@ class TestGitPullBeforeTurn:
                     text=True,
                     timeout=60,
                 )
+
+    @pytest.mark.asyncio
+    async def test_git_pull_timeout_does_not_crash(self, config, broker_client):
+        """A slow product remote cannot kill the multi-turn wrapper."""
+        with patch("worker_wrapper.wrapper.WORKSPACE_DIR", "/workspace"):
+            wrapper = WorkerWrapper(config, broker_client=broker_client)
+            with (
+                patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git pull", 60)),
+                patch.object(wrapper, "_get_git_branch", return_value="main"),
+            ):
+                await wrapper._git_pull()
 
     @pytest.mark.asyncio
     async def test_git_pull_failure_does_not_crash(self, config, broker_client):

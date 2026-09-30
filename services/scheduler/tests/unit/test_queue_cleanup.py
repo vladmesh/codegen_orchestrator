@@ -12,6 +12,7 @@ def mock_redis_client():
     """Mock RedisStreamClient with underlying redis."""
     client = AsyncMock()
     client.redis = AsyncMock()
+    client.redis.exists = AsyncMock(return_value=False)
     client.connect = AsyncMock()
     client.close = AsyncMock()
     return client
@@ -75,6 +76,29 @@ class TestCleanOrphanStreams:
 
         assert cleaned == 2
         assert redis.delete.call_count == 2
+
+    @pytest.mark.asyncio()
+    async def test_idle_worker_streams_are_kept_while_worker_metadata_exists(
+        self, mock_redis_client
+    ):
+        """A long-running turn must not lose its stream/group just because Redis is idle."""
+        from src.tasks.queue_cleanup import _clean_orphan_streams
+
+        redis = mock_redis_client.redis
+        redis.scan.side_effect = [
+            (0, []),
+            (0, ["worker:live-123:input"]),
+            (0, ["worker:live-123:output"]),
+        ]
+        redis.exists.return_value = True
+        redis.object.return_value = 3600
+
+        cleaned = await _clean_orphan_streams(mock_redis_client, idle_threshold_s=600)
+
+        assert cleaned == 0
+        assert redis.exists.await_count == 2
+        redis.object.assert_not_awaited()
+        redis.delete.assert_not_awaited()
 
     @pytest.mark.asyncio()
     async def test_scan_pagination(self, mock_redis_client):
