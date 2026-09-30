@@ -4,7 +4,7 @@ import hashlib
 import hmac
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import structlog
 
 from shared.contracts.worker_control_plane import (
@@ -20,10 +20,13 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/api/worker", tags=["compose"])
 
 
+MAX_COMPOSE_PHASE_TIMEOUT_SECONDS = 840
+
+
 class ComposeRequest(BaseModel):
     args: list[str]
     cwd: str = "."
-    timeout: int = 120
+    timeout: int = Field(default=120, ge=1, le=MAX_COMPOSE_PHASE_TIMEOUT_SECONDS)
 
 
 class ComposeResponse(BaseModel):
