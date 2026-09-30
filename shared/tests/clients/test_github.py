@@ -1212,6 +1212,34 @@ async def test_completed_workflow_skips_teardown_cancel_check(authed_client):
 
 
 @pytest.mark.asyncio
+async def test_completed_run_id_skips_teardown_cancel_check(authed_client):
+    """A terminal run-id read wins over a stale or failing teardown check."""
+    authed_client.get_token = AsyncMock(return_value="token")
+    response = MagicMock()
+    response.json.return_value = {
+        "id": 42,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://example.test/runs/42",
+        "head_sha": "a" * 40,
+    }
+    authed_client._make_request = AsyncMock(return_value=response)
+    cancel_check = AsyncMock(side_effect=httpx.ConnectError("stale teardown check"))
+
+    result = await authed_client.wait_for_run_completion(
+        "my-org",
+        "my-repo",
+        42,
+        timeout_seconds=10,
+        poll_interval=0,
+        cancel_check=cancel_check,
+    )
+
+    assert result["conclusion"] == "success"
+    cancel_check.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_wait_for_run_reports_external_cancellation_as_cancelled(authed_client):
     """The run-id waiter must match the workflow waiter instead of reporting a retryable failure."""
     authed_client.get_token = AsyncMock(return_value="token")
