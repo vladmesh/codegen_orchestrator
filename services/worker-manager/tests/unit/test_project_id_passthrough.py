@@ -622,7 +622,7 @@ class TestWorkspaceGC:
         await redis.sadd("workspace:active_projects", "active-proj")
         await redis.hset(
             "worker:meta:w1",
-            mapping={"project_id": "active-proj"},
+            mapping={"project_id": "active-proj", "repo_id": "repo-active"},
         )
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -632,7 +632,7 @@ class TestWorkspaceGC:
         mock_stat.st_mtime = old_mtime
 
         with (
-            patch("src.garbage_collector.os.listdir", return_value=["active-proj"]),
+            patch("src.garbage_collector.os.listdir", return_value=["repo-active"]),
             patch("src.garbage_collector.Path") as mock_path_cls,
             patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
         ):
@@ -642,6 +642,25 @@ class TestWorkspaceGC:
 
             await manager.garbage_collect_workspaces()
 
+        mock_rm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workspace_gc_skips_non_repository_workspace_entries(self, mock_docker):
+        """QA scratch and compose-plan directories belong to other lifecycle cleanup."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with (
+            patch(
+                "src.garbage_collector.os.listdir",
+                return_value=[".compose-plans", "qa-worker-1"],
+            ),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
+        ):
+            await manager.garbage_collect_workspaces(max_age_hours=0)
+
+        mock_path_cls.assert_not_called()
         mock_rm.assert_not_called()
 
     @pytest.mark.asyncio

@@ -5,13 +5,15 @@ Listens to provisioner:results stream and notifies admins about server status.
 
 import asyncio
 
+from pydantic import ValidationError
 import structlog
 from telegram import Bot
 
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
+from shared.diagnostics import safe_validation_errors
 from shared.queues import PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP
-from shared.redis import RedisStreamClient
+from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 
 logger = structlog.get_logger()
 
@@ -44,7 +46,8 @@ class ProvisionerNotifier:
                 PROVISIONER_RESULTS,
                 TELEGRAM_BOT_GROUP,
                 CONSUMER_NAME,
-                auto_ack=True,
+                auto_ack=False,
+                claim_pending=True,
             ):
                 if not self._running:
                     break
@@ -52,12 +55,43 @@ class ProvisionerNotifier:
                     continue
                 try:
                     await self._handle_message(bot, msg.message_id, msg.data)
-                except Exception as e:
+                except ValidationError as exc:
+                    logger.error(
+                        "provisioner_notification_invalid_quarantined",
+                        msg_id=msg.message_id,
+                        error_count=exc.error_count(),
+                    )
+                    await self.client.reject_entry(
+                        PROVISIONER_RESULTS,
+                        TELEGRAM_BOT_GROUP,
+                        msg.message_id,
+                        data=msg.data,
+                        failure=DLQ_FAILURE_VALIDATION,
+                        reason={"errors": safe_validation_errors(exc)},
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if await self.client.reject_if_exhausted(
+                        PROVISIONER_RESULTS,
+                        TELEGRAM_BOT_GROUP,
+                        msg.message_id,
+                        data=msg.data,
+                        reason={"error": "provisioner notification repeatedly failed"},
+                    ):
+                        logger.error(
+                            "provisioner_notification_delivery_exhausted",
+                            msg_id=msg.message_id,
+                            error_type=type(exc).__name__,
+                        )
+                        continue
                     logger.error(
                         "provisioner_message_error",
                         msg_id=msg.message_id,
-                        error=str(e),
+                        error_type=type(exc).__name__,
                     )
+                else:
+                    await self.client.ack(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, msg.message_id)
         except asyncio.CancelledError:
             pass
 

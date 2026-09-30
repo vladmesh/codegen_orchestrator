@@ -63,5 +63,9 @@ class WorkerBrokerClient:
         response.raise_for_status()
 
     async def compose(self, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        response = await self._client.post(f"{self._worker_url}/infra/compose", json=request)
+        response = await self._client.post(
+            f"{self._worker_url}/infra/compose",
+            json=request,
+            timeout=1740,
+        )
         return response.status_code, response.json()

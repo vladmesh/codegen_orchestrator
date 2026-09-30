@@ -104,6 +104,8 @@ class TestCompletedResultPush:
         assert run.call_args_list[0].args[0][3] == "--end-of-options"
         assert run.call_args_list[4].args[0] == [
             "/usr/bin/git",
+            "-c",
+            "core.hooksPath=/dev/null",
             "push",
             "origin",
             f"HEAD:refs/heads/{branch}",
@@ -250,7 +252,7 @@ class TestCompletedResultPush:
 
         assert result is None
         assert error == f"Worker commit {head_sha} could not be verified on origin/{branch}."
-        assert run.call_args_list[4].args[0][1:3] == ["push", "origin"]
+        assert run.call_args_list[4].args[0][3:5] == ["push", "origin"]
         assert not any("--force" in call.args[0] for call in run.call_args_list)
 
     @pytest.mark.asyncio

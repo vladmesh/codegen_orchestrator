@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
+from src.tasks import provisioner_result_listener as listener
 from src.tasks.provisioner_result_listener import handle_provisioner_entry
 
 
@@ -19,8 +21,13 @@ class FakeClient:
 
     def __init__(self) -> None:
         self.acked: list[str] = []
+        self.rejected: list[str] = []
 
     async def ack(self, stream: str, group: str, message_id: str) -> None:
+        self.acked.append(message_id)
+
+    async def reject_entry(self, stream, group, message_id, **kwargs) -> None:
+        self.rejected.append(message_id)
         self.acked.append(message_id)
 
 
@@ -28,8 +35,8 @@ def _entry(message_id: str, data: dict) -> SimpleNamespace:
     return SimpleNamespace(message_id=message_id, data=data)
 
 
-async def test_invalid_status_is_acked_and_discarded(monkeypatch):
-    """A legacy/invalid status ('error') fails validation and must be ACKed."""
+async def test_invalid_status_is_quarantined_then_acked(monkeypatch):
+    """A legacy/invalid status is terminal but remains visible in the DLQ."""
     processed: list = []
 
     async def _spy(result):
@@ -42,7 +49,8 @@ async def test_invalid_status_is_acked_and_discarded(monkeypatch):
 
     await handle_provisioner_entry(client, poison)
 
-    assert client.acked == ["10-0"]  # terminal ACK, no reclaim loop
+    assert client.rejected == ["10-0"]
+    assert client.acked == ["10-0"]  # terminal ACK only after quarantine
     assert processed == []  # never dispatched downstream
 
 
@@ -62,6 +70,29 @@ async def test_valid_message_is_processed_then_acked(monkeypatch):
     assert len(processed) == 1
     assert processed[0].server_handle == "h"
     assert client.acked == ["11-0"]
+
+
+async def test_transient_api_503_is_not_acked(monkeypatch):
+    """A server-side API failure remains pending for bounded redelivery."""
+    request = httpx.Request("PATCH", "http://api/servers/h")
+    response = httpx.Response(503, request=request)
+
+    async def _update(*_args, **_kwargs):
+        raise httpx.HTTPStatusError("unavailable", request=request, response=response)
+
+    monkeypatch.setattr(listener.api_client, "update_server", _update)
+
+    client = FakeClient()
+    entry = _entry(
+        "11-5",
+        {"request_id": "r", "status": "failed", "server_handle": "h", "errors": ["boom"]},
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await handle_provisioner_entry(client, entry)
+
+    assert client.acked == []
+    assert client.rejected == []
 
 
 async def test_processing_error_is_not_acked(monkeypatch):

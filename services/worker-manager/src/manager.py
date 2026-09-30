@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -901,7 +902,7 @@ class WorkerManager:
                 ),
                 transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
             )
-            self._prune_transcripts()
+            await asyncio.to_thread(self._prune_transcripts)
 
             ws_path = self._set_worker_workspace(config, workspace_path, repo_id)
 
@@ -931,7 +932,8 @@ class WorkerManager:
                 )
                 container_env.update(egress.env_vars)
 
-            workspace_mod.prepare_worker_paths(
+            await asyncio.to_thread(
+                workspace_mod.prepare_worker_paths,
                 workspace_path=config.workspace_host_path,
                 transcript_path=config.transcript_host_path,
             )

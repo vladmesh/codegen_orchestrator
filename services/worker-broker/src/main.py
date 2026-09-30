@@ -291,7 +291,9 @@ async def compose(
     await _worker(
         redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.INFRA_COMPOSE
     )
-    async with httpx.AsyncClient(timeout=180) as client:
+    # Worker-manager may run compose config + execution, each with an 840s ceiling.
+    # Keep this hop below the wrapper shim's 1800s deadline but above both phases.
+    async with httpx.AsyncClient(timeout=1740) as client:
         response = await client.post(
             f"{settings.WORKER_MANAGER_URL}/api/worker/{worker_id}/infra/compose",
             json=request,
