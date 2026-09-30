@@ -481,24 +481,6 @@ class ActionsMixin:
                     await asyncio.sleep(poll_interval)
                     continue
 
-                if cancel_check:
-                    try:
-                        cancel_requested = await cancel_check()
-                    except Exception as exc:
-                        # A failed check cannot tell teardown from a healthy run, so
-                        # the dispatched run stays live and unproven. Fail closed on
-                        # the same signal as an unverified cancellation.
-                        raise WorkflowCancellationUnprovenError(
-                            f"Workflow {workflow_file} run {run['id']} cancellation "
-                            "check could not be evaluated"
-                        ) from exc
-                    if cancel_requested:
-                        # Never returns normally: raises WorkflowCancelledError once the
-                        # stop is proven, WorkflowCancellationUnprovenError otherwise.
-                        await self._cancel_and_confirm_workflow_run(
-                            owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
-                        )
-
                 if run["status"] == "completed":
                     if run["conclusion"] == "success":
                         logger.info(
@@ -528,6 +510,24 @@ class ActionsMixin:
                         f"Workflow {workflow_file} failed: {run['conclusion']}. "
                         f"See: {run['html_url']}\n{failure_logs}"
                     )
+
+                if cancel_check:
+                    try:
+                        cancel_requested = await cancel_check()
+                    except Exception as exc:
+                        # A failed check cannot tell teardown from a healthy run, so
+                        # the dispatched run stays live and unproven. Fail closed on
+                        # the same signal as an unverified cancellation.
+                        raise WorkflowCancellationUnprovenError(
+                            f"Workflow {workflow_file} run {run['id']} cancellation "
+                            "check could not be evaluated"
+                        ) from exc
+                    if cancel_requested:
+                        # Never returns normally: raises WorkflowCancelledError once the
+                        # stop is proven, WorkflowCancellationUnprovenError otherwise.
+                        await self._cancel_and_confirm_workflow_run(
+                            owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
+                        )
 
                 logger.info(
                     "workflow_in_progress",
@@ -898,16 +898,22 @@ class ActionsMixin:
                             run_id=run_id,
                         )
                         return result
-                    else:
-                        # Fetch failure details for better error context
-                        try:
-                            failure_logs = await self.get_workflow_failure_logs(owner, repo, run_id)
-                        except Exception:
-                            failure_logs = "(could not fetch failure details)"
-                        raise RuntimeError(
-                            f"Workflow run {run_id} failed: {run.get('conclusion')}. "
-                            f"See: {run['html_url']}\n{failure_logs}"
+                    if run.get("conclusion") == "cancelled":
+                        logger.info(
+                            "workflow_run_cancelled_externally",
+                            run_id=run_id,
                         )
+                        raise WorkflowCancelledError(f"Workflow run {run_id} was cancelled")
+
+                    # Fetch failure details for better error context
+                    try:
+                        failure_logs = await self.get_workflow_failure_logs(owner, repo, run_id)
+                    except Exception:
+                        failure_logs = "(could not fetch failure details)"
+                    raise RuntimeError(
+                        f"Workflow run {run_id} failed: {run.get('conclusion')}. "
+                        f"See: {run['html_url']}\n{failure_logs}"
+                    )
 
                 logger.info(
                     "workflow_run_in_progress",
