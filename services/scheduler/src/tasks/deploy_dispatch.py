@@ -103,6 +103,7 @@ async def dispatch_deploy(
     )
     return message
 
+
 async def recover_deploy_handoff(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
