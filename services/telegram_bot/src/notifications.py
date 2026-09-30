@@ -11,6 +11,7 @@ from telegram import Bot
 
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
+from shared.diagnostics import safe_validation_errors
 from shared.queues import PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP
 from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 
@@ -66,7 +67,7 @@ class ProvisionerNotifier:
                         msg.message_id,
                         data=msg.data,
                         failure=DLQ_FAILURE_VALIDATION,
-                        reason={"errors": exc.errors(include_url=False, include_input=False)},
+                        reason={"errors": safe_validation_errors(exc)},
                     )
                 except asyncio.CancelledError:
                     raise
