@@ -17,6 +17,7 @@ def mock_redis():
     r.redis.xadd = AsyncMock()
     r.redis.set = AsyncMock(return_value=True)  # lock acquired by default
     r.redis.delete = AsyncMock()
+    r.redis.eval = AsyncMock(return_value=1)
     r.redis.incr = AsyncMock(return_value=1)
     r.redis.expire = AsyncMock()
     r.redis.exists = AsyncMock(return_value=False)  # no live teardown fence
@@ -121,6 +122,8 @@ async def test_lock_not_acquired_cancels_deploy(mock_redis, mock_api):
         c for c in mock_api.patch.call_args_list if "runs/" in str(c) and "cancelled" in str(c)
     ]
     assert len(cancel_calls) == 1
+    mock_redis.redis.eval.assert_awaited_once()
+    mock_redis.redis.delete.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -140,7 +143,16 @@ async def test_lock_released_on_success(
 
     await process_deploy_job(_job(), mock_redis)
 
-    mock_redis.redis.delete.assert_called_once_with("deploy:proj-1:lock")
+    mock_redis.redis.delete.assert_not_called()
+    mock_redis.redis.eval.assert_awaited_once()
+    script, numkeys, lock_key, lock_token = mock_redis.redis.eval.await_args.args
+    assert "redis.call('GET', KEYS[1]) == ARGV[1]" in script
+    assert "redis.call('DEL', KEYS[1])" in script
+    assert numkeys == 1
+    assert lock_key == "deploy:proj-1:lock"
+    assert lock_token == mock_redis.redis.set.await_args.args[1]
+    assert lock_token.startswith("deploy-lock-1:")
+    assert lock_token != "deploy-lock-1"
 
 
 @pytest.mark.asyncio
@@ -160,7 +172,8 @@ async def test_lock_released_on_failure(
     result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
-    mock_redis.redis.delete.assert_called_once_with("deploy:proj-1:lock")
+    mock_redis.redis.eval.assert_awaited_once()
+    mock_redis.redis.delete.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -174,4 +187,5 @@ async def test_lock_released_on_exception(mock_redis, mock_api, mock_allocations
         result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
-    mock_redis.redis.delete.assert_called_once_with("deploy:proj-1:lock")
+    mock_redis.redis.eval.assert_awaited_once()
+    mock_redis.redis.delete.assert_not_called()
