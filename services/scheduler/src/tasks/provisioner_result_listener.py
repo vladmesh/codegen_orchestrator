@@ -15,7 +15,7 @@ from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
-from shared.redis import RedisStreamClient
+from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 from src.clients.api import api_client
 
 logger = structlog.get_logger(__name__)
@@ -42,6 +42,18 @@ async def provisioner_results_worker() -> None:
             try:
                 await handle_provisioner_entry(client, msg)
             except Exception:
+                if await client.reject_if_exhausted(
+                    PROVISIONER_RESULTS,
+                    SCHEDULER_CONSUMER_GROUP,
+                    msg.message_id,
+                    data=msg.data,
+                    reason={"error": "provisioner result processing repeatedly failed"},
+                ):
+                    logger.error(
+                        "provisioner_result_delivery_exhausted",
+                        entry_id=msg.message_id,
+                    )
+                    continue
                 logger.exception("provisioner_result_processing_error", entry_id=msg.message_id)
     finally:
         await client.close()
@@ -51,22 +63,28 @@ async def provisioner_results_worker() -> None:
 async def handle_provisioner_entry(client, msg) -> None:
     """Validate, process, and ACK a single provisioner:results entry.
 
-    A message that fails schema validation can never succeed on retry. Since the
-    consumer reclaims pending (unacked) entries, leaving it unacked would poison
-    the loop forever. So a validation failure is terminal: log it loudly as the
-    human signal and ACK it away. Processing errors (e.g. a transient API call)
-    propagate unacked so the entry stays in the PEL and gets retried.
+    A message that fails schema validation can never succeed on retry, so it is
+    quarantined before ACK. Processing errors (e.g. a transient API call)
+    propagate unacked so the entry stays in the PEL and gets retried up to the
+    worker's durable delivery ceiling.
     """
     try:
         result = ProvisionerResult.model_validate(msg.data)
     except ValidationError as e:
+        errors = {"errors": e.errors(include_url=False, include_input=False)}
         logger.error(
-            "provisioner_result_invalid_discarded",
+            "provisioner_result_invalid_quarantined",
             entry_id=msg.message_id,
-            data=msg.data,
-            error=str(e),
+            error_count=e.error_count(),
         )
-        await client.ack(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, msg.message_id)
+        await client.reject_entry(
+            PROVISIONER_RESULTS,
+            SCHEDULER_CONSUMER_GROUP,
+            msg.message_id,
+            data=msg.data,
+            failure=DLQ_FAILURE_VALIDATION,
+            reason=errors,
+        )
         return
 
     await process_provisioner_result(result)
@@ -132,9 +150,11 @@ async def _handle_failure(result: ProvisionerResult, log) -> None:
     except httpx.HTTPStatusError as e:
         if e.response.status_code == httpx.codes.NOT_FOUND:
             log.warning("server_not_found_in_api", server_handle=result.server_handle)
+        elif e.response.status_code == httpx.codes.TOO_MANY_REQUESTS or e.response.status_code >= 500:
+            raise
         else:
             log.error(
-                "api_update_failed",
+                "api_update_permanent_failure",
                 status_code=e.response.status_code,
                 error=str(e),
             )
