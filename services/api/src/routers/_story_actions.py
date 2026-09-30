@@ -442,6 +442,7 @@ async def _budget_wait_decision(
     if reason.get("reason") == EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED.value:
         if reason.get("task_id") != task.id or reason.get("decision_id") != refusal.decision_id:
             _repair_conflict("The budget wait does not match its admission decision.")
+        _verify_budget_wait_stop(story, task, status_events[-1])
     elif (
         reason.get("code") != StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED.value
         or task.current_iteration != 0
@@ -486,6 +487,56 @@ async def _budget_wait_decision(
     if reason.get("reason") == "story_failure" and runs:
         return None
     return refusal.decision_id
+
+
+def _verify_budget_wait_stop(story: Story, task: Task, refusal_event: TaskEvent) -> None:
+    """Require the Story stop and notice written by the native refusal transaction."""
+    detail = refusal_event.details.get("detail")
+    reason = story.quarantine_reason or {}
+    notice = OwnerNotification.model_validate(story.owner_notification)
+    if (
+        not isinstance(detail, str)
+        or reason.get("detail") != detail
+        or notice.event is not OwnerNotificationEvent.STORY_BLOCKED
+        or notice.text != f"{detail} Raise the engineering budget and retry this PR repair."
+        or notice.admin_text != detail
+        or notice.story_id != story.id
+        or notice.project_id != str(story.project_id)
+        or notice.terminal_status is not StoryStatus.WAITING_HUMAN_REVIEW
+        or notice.task_id != task.id
+        or notice.expected_task_statuses != (TaskStatus.WAITING_HUMAN_REVIEW,)
+        or notice.state is not OwnerNotificationState.OWED
+        or notice.admin_state is not OwnerNotificationState.OWED
+    ):
+        _repair_conflict("Recorded budget wait has inconsistent stop evidence.")
+
+
+async def _native_budget_wait_task(story: Story, db: AsyncSession) -> Task | None:
+    """Find a refusal-owned wait that lifecycle routes must not replace."""
+    from ._pr_conflict_attempt import _pending_dispatch_refusal
+
+    task_result = await db.execute(
+        select(Task).where(
+            Task.story_id == story.id,
+            Task.status == TaskStatus.WAITING_HUMAN_REVIEW.value,
+        )
+    )
+    tasks = task_result.scalars().all()
+    for task in tasks:
+        event_result = await db.execute(
+            select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
+        )
+        events = list(event_result.scalars().all())
+        saved = _pending_dispatch_refusal(events)
+        if saved is None:
+            continue
+        try:
+            refusal = EngineeringDispatchRefusalDisposition.model_validate(saved)
+        except ValueError:
+            continue
+        if refusal.reason is EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED:
+            return task
+    return None
 
 
 async def _observe_dirty_pr(

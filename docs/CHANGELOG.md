@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-30
+
+- Keep native budget waits bound to their refusal notice and out of generic Story lifecycle stops,
+  so caller-controlled Story edits cannot reopen a PR repair.
+
 ## 2026-09-29
 
 - Park budget-denied PR repairs as an owner-visible wait and re-admit proven no-Run Tasks

@@ -65,7 +65,7 @@ from ..schemas.story import (
 )
 from ._owner_notice_settlement import notice_router
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
-from ._story_actions import action_router
+from ._story_actions import _native_budget_wait_task, action_router
 from ._story_diagnostics import diagnostics_router
 from ._story_helpers import (
     _do_transition,
@@ -789,6 +789,11 @@ async def human_review_story(
     """Move a blocked active story to the visible human-review queue."""
     body = body or StoryStopTransition()
     story = await _get_story_for_update(story_id, db)
+    if await _native_budget_wait_task(story, db) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A native engineering budget wait must be resumed through PR repair admission.",
+        )
     await _record_qa_routing(story, body.qa_run_id, StoryStatus.WAITING_HUMAN_REVIEW, db)
     _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
     if body.failure is not None:
@@ -812,6 +817,12 @@ async def start_story(
 ) -> StoryRead:
     body = body or StoryTransition()
     story = await _get_story_for_update(story_id, db)
+
+    if await _native_budget_wait_task(story, db) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A native engineering budget wait must be resumed through PR repair admission.",
+        )
 
     if story.blocked_by_story_id:
         blocker = await _get_story(story.blocked_by_story_id, db)

@@ -262,6 +262,53 @@ async def test_legacy_budget_label_requires_its_native_owner_notice(
 
 
 @pytest.mark.asyncio
+async def test_native_budget_wait_cannot_be_replaced_by_story_lifecycle_stop(
+    async_client, db_session, dirty_story
+):
+    sid, tid, _, _ = await ready_task(async_client, db_session, dirty_story, False)
+    refused = await async_client.post(DISPATCH, json={"task_id": tid})
+    assert refused.status_code == 200, refused.text
+    changed = await async_client.patch(
+        f"/api/stories/{sid}", json={"quarantine_reason": {"reason": "unrelated"}}
+    )
+    assert changed.status_code == 200, changed.text
+    started = await async_client.post(f"/api/stories/{sid}/start")
+    assert started.status_code == 409, started.text
+    assert "native engineering budget wait" in started.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_native_budget_reason_with_replaced_notice_is_refused(
+    async_client, db_session, dirty_story
+):
+    sid, tid, policy_url, _ = await ready_task(async_client, db_session, dirty_story, False)
+    refused = await async_client.post(DISPATCH, json={"task_id": tid})
+    assert refused.status_code == 200, refused.text
+    story = await db_session.get(Story, sid, populate_existing=True)
+    story.owner_notification = OwnerNotification(
+        event=OwnerNotificationEvent.STORY_BLOCKED,
+        text="An unrelated stop.",
+        story_id=sid,
+        project_id=str(story.project_id),
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        state=OwnerNotificationState.OWED,
+        owed_at=datetime.now(UTC),
+        admin_text="An unrelated stop.",
+        admin_state=OwnerNotificationState.OWED,
+    ).model_dump(mode="json")
+    await db_session.commit()
+    response = await async_client.post(
+        f"/api/stories/{sid}/repair-pr-conflicts",
+        headers=bearer(int(policy_url.rsplit("/", 1)[1])),
+        json=dirty_story[1],
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["message"] == (
+        "Recorded budget wait has inconsistent stop evidence."
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("later", [False, True], ids=["iteration0", "bounded-retry"])
 async def test_budget_refusal_is_atomic_once_and_same_cycle_repair_creates_real_run(
     async_client, db_session, dirty_story, later
