@@ -12,6 +12,7 @@ import pytest
 import pytest_asyncio
 
 from shared.contracts.queues.provisioner import ProvisionerResult
+from shared.queues import TELEGRAM_BOT_GROUP
 from shared.redis import RedisStreamClient, dlq_stream
 from src.notifications import ProvisionerNotifier
 
@@ -191,7 +192,7 @@ async def test_invalid_provisioner_result_is_quarantined(raw_redis, stream_clien
     except asyncio.CancelledError:
         pass
 
-    pending = await raw_redis.xpending("provisioner:results", "telegram-bot")
+    pending = await raw_redis.xpending("provisioner:results", TELEGRAM_BOT_GROUP)
     assert pending["pending"] == 0
     assert await raw_redis.xlen(dlq_stream("provisioner:results")) == 1
     mock_bot.send_message.assert_not_called()
