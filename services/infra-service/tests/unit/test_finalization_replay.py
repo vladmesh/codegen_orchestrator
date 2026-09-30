@@ -83,6 +83,8 @@ class FakeClient:
         self.replay_present_at_publish = []
         self.consume_args = None
         self.closed = False
+        self.rejected = []
+        self.exhausted = False
 
     async def connect(self):
         pass
@@ -103,6 +105,28 @@ class FakeClient:
 
     async def ack(self, stream, group, message_id):
         self.acked.append(message_id)
+
+    async def reject_entry(self, stream, group, message_id, **kwargs):
+        self.rejected.append((stream, group, message_id, kwargs))
+        self.acked.append(message_id)
+
+    async def reject_if_exhausted(self, stream, group, message_id, **kwargs):
+        return self.exhausted
+
+
+@pytest.mark.asyncio
+async def test_invalid_provisioner_message_is_quarantined():
+    client = FakeClient()
+    invalid = SimpleNamespace(
+        message_id="bad-1",
+        reclaimed=False,
+        data={"server_handle": 123},
+    )
+
+    await worker._handle_stream_message(client, invalid)
+
+    assert [item[2] for item in client.rejected] == ["bad-1"]
+    assert client.acked == ["bad-1"]
 
 
 def _message(*, reclaimed: bool, message_id: str = "1-0"):

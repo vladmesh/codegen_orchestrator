@@ -22,6 +22,7 @@ from shared.contracts.dto.server import (
 from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.crypto import SecretsCipher
+from shared.diagnostics import safe_validation_errors
 from shared.log_config import setup_logging
 from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
@@ -29,7 +30,7 @@ from shared.provisioning_policy import (
     validate_provider_policies,
 )
 from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
-from shared.redis import RedisStreamClient
+from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 
 from .provisioner.api_client import finalize_provisioning
 from .provisioner.handlers import FinalizationOutcomeUnknown
@@ -387,9 +388,25 @@ async def _retry_saved_finalization(client, msg, job, raw: str | bytes) -> None:
 
 async def _handle_stream_message(client, msg) -> None:
     """Handle one new or reclaimed stream delivery through its durable short circuits."""
-    job = None
     try:
         job = ProvisionerMessage.model_validate(msg.data)
+    except ValidationError as error:
+        logger.error(
+            "provisioner_message_invalid_quarantined",
+            entry_id=msg.message_id,
+            error_count=error.error_count(),
+        )
+        await client.reject_entry(
+            PROVISIONER_QUEUE,
+            INFRA_GROUP,
+            msg.message_id,
+            data=msg.data,
+            failure=DLQ_FAILURE_VALIDATION,
+            reason={"errors": safe_validation_errors(error)},
+        )
+        return
+
+    try:
         state = _decode_hash(await client.redis.hgetall(_outage_key(msg.message_id)))
         if state:
             await _retry_saved_incident(client, msg, job, state)
@@ -419,12 +436,23 @@ async def _handle_stream_message(client, msg) -> None:
         await client.redis.delete(replay_key)
         logger.debug("job_acked", entry_id=msg.message_id)
     except IncidentPersistenceError as error:
-        if job is None:
-            raise
         await _handle_incident_outage(client, msg, job, error)
     except FinalizationOutcomeUnknown:
         logger.warning("provisioning_finalization_redelivery_pending", entry_id=msg.message_id)
     except Exception as exc:
+        if await client.reject_if_exhausted(
+            PROVISIONER_QUEUE,
+            INFRA_GROUP,
+            msg.message_id,
+            data=msg.data,
+            reason={"error": "provisioning processing repeatedly failed"},
+        ):
+            logger.error(
+                "provisioner_delivery_exhausted",
+                entry_id=msg.message_id,
+                error_type=type(exc).__name__,
+            )
+            return
         logger.error(
             "job_processing_error",
             entry_id=msg.message_id,

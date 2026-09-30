@@ -30,7 +30,7 @@ from shared.log_config import setup_logging
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.notifications import notify_admins_best_effort
 from shared.queues import SCAFFOLD_GROUP, SCAFFOLD_QUEUE
-from shared.redis import RedisStreamClient
+from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 from src.clients.api import get_api_client
 from src.config import get_settings
 from src.scaffold import run_ensure_workspace, run_scaffold
@@ -444,15 +444,47 @@ async def run_worker() -> None:
                 continue
             try:
                 bind_message_context(msg.data)
+                try:
+                    ScaffoldMessage.model_validate(msg.data)
+                except ValidationError as exc:
+                    logger.warning(
+                        "scaffold_invalid_message_quarantined",
+                        entry_id=msg.message_id,
+                        errors=safe_validation_errors(exc),
+                    )
+                    await redis.reject_entry(
+                        SCAFFOLD_QUEUE,
+                        SCAFFOLD_GROUP,
+                        msg.message_id,
+                        data=msg.data,
+                        failure=DLQ_FAILURE_VALIDATION,
+                        reason={"errors": safe_validation_errors(exc)},
+                    )
+                    continue
                 result = await process_scaffold_job(msg.data, redis)
                 msg.data.update(result)
                 await redis.ack(SCAFFOLD_QUEUE, SCAFFOLD_GROUP, msg.message_id)
                 logger.debug("job_acked", entry_id=msg.message_id)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
+                if await redis.reject_if_exhausted(
+                    SCAFFOLD_QUEUE,
+                    SCAFFOLD_GROUP,
+                    msg.message_id,
+                    data=msg.data,
+                    reason={"error": "scaffold processing repeatedly failed"},
+                ):
+                    logger.error(
+                        "scaffold_delivery_exhausted",
+                        entry_id=msg.message_id,
+                        error_type=type(e).__name__,
+                    )
+                    continue
                 logger.error(
                     "job_processing_error",
                     entry_id=msg.message_id,
-                    error=str(e),
+                    error_type=type(e).__name__,
                 )
             finally:
                 # Clear inflight marker so the scheduler can re-trigger if needed

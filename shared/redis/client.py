@@ -76,6 +76,11 @@ DLQ_SUFFIX = ":dlq"
 
 DLQ_FAILURE_DECODE = "decode_error"
 DLQ_FAILURE_VALIDATION = "validation_error"
+DLQ_FAILURE_DELIVERY_EXHAUSTED = "delivery_exhausted"
+
+# A consumer may override this for a queue with a deliberately different
+# retry budget, but unbounded PEL redelivery is never the default.
+DEFAULT_MAX_DELIVERIES = 5
 
 # Redis 7 adds deleted IDs to XAUTOCLAIM's response.
 _XAUTOCLAIM_WITH_DELETED_LEN = 3
@@ -248,6 +253,59 @@ class RedisStreamClient:
             return 0
         return int(entries[0]["times_delivered"])
 
+    async def reject_entry(
+        self,
+        stream: str,
+        group: str,
+        message_id: str,
+        *,
+        data: dict[str, Any],
+        failure: str,
+        reason: Any,
+    ) -> None:
+        """Quarantine a terminal entry and ACK it only after the DLQ write succeeds.
+
+        Untyped consumers use the same DLQ ordering as consume_typed. The
+        original stream entry remains pending when quarantine itself fails.
+        """
+        await self._reject_entry(
+            stream,
+            group,
+            message_id,
+            fields={"data": json.dumps(data)},
+            failure=failure,
+            reason=reason,
+        )
+
+    async def reject_if_exhausted(
+        self,
+        stream: str,
+        group: str,
+        message_id: str,
+        *,
+        data: dict[str, Any],
+        max_deliveries: int = DEFAULT_MAX_DELIVERIES,
+        reason: Any | None = None,
+    ) -> bool:
+        """Stop processing an entry once its durable PEL delivery budget is spent.
+
+        Returns True when this delivery must not be processed again. A failed
+        quarantine leaves the entry pending so a later reclaim retries the
+        quarantine instead of repeating the failing side effect.
+        """
+        deliveries = await self.delivery_count(stream, group, message_id)
+        if deliveries <= max_deliveries:
+            return False
+        await self.reject_entry(
+            stream,
+            group,
+            message_id,
+            data=data,
+            failure=DLQ_FAILURE_DELIVERY_EXHAUSTED,
+            reason=reason or {"deliveries": deliveries, "max_deliveries": max_deliveries},
+        )
+        return True
+
     async def ensure_consumer_group(self, stream: str, group: str) -> None:
         """Ensure a consumer group exists for the stream.
 
@@ -413,7 +471,7 @@ class RedisStreamClient:
 
             except asyncio.CancelledError:
                 logger.info("consumer_cancelled", consumer=consumer)
-                break
+                raise
             except RedisTimeoutError:
                 # A blocking read reaching a transport timeout is an idle poll,
                 # not a fatal consumer error. Yield control and keep polling.
