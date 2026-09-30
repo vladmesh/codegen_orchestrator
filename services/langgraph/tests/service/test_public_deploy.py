@@ -1,6 +1,7 @@
 """Resolver/consumer and merged repair cross the real API, PostgreSQL and Redis."""
 
 import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 import json
@@ -36,49 +37,63 @@ UNKNOWN_KEY = "UNKNOWN_REQUIRED_SELF_ADDRESS"
 CANARY = "123456789:AA-public-deploy-secret-canary"
 
 
-@pytest.fixture
-async def public_project():
-    api = LanggraphAPIClient()
-    api.base_url = os.environ["TEST_API_BASE_URL"]
-    telegram_id = uuid.uuid4().int % 1_000_000_000
-    await api.post("users/", json={"telegram_id": telegram_id, "username": f"public_{telegram_id}"})
-    project = await api.post(
-        "projects/",
-        json={
-            "title": "Public deploy",
-            "initiating_run_id": "public-fixture",
-            "config": {"modules": ["backend", "tg_bot"]},
-        },
-        headers={"X-Telegram-ID": str(telegram_id)},
-    )
-    project_id = project["id"]
-    await api.post(
-        "repositories/",
-        json={
-            "project_id": project_id,
-            "name": "public",
-            "git_url": "https://github.com/fixture/public.git",
-            "role": "primary",
-        },
-    )
-    story = await api.post(
-        "stories/", json={"project_id": project_id, "title": "Public deployment"}
-    )
-    await api.transition_story(story["id"], "start")
-    await api.transition_story(story["id"], "pr_review")
-    await api.patch(f"stories/{story['id']}", json={"pr_number": 42})
-    stream = RedisStreamClient()
-    await stream.connect()
+async def delete_public_project(api, project_id):
     try:
-        yield api, stream, project_id, story["id"]
-    finally:
         async with await AsyncConnection.connect(os.environ["TEST_DATABASE_URL"]) as db:
             await db.execute(
                 "DELETE FROM users_grant_intents WHERE project_id=%s", (uuid.UUID(project_id),)
             )
+    finally:
         await api.delete(f"projects/{project_id}")
-        await api.close()
-        await stream.close()
+
+
+@asynccontextmanager
+async def public_project_context():
+    # Register cleanup as resources are acquired, including a failed setup.
+    async with AsyncExitStack() as stack:
+        api = LanggraphAPIClient()
+        stack.push_async_callback(api.close)
+        api.base_url = os.environ["TEST_API_BASE_URL"]
+        telegram_id = uuid.uuid4().int % 1_000_000_000
+        await api.post(
+            "users/", json={"telegram_id": telegram_id, "username": f"public_{telegram_id}"}
+        )
+        project = await api.post(
+            "projects/",
+            json={
+                "title": "Public deploy",
+                "initiating_run_id": "public-fixture",
+                "config": {"modules": ["backend", "tg_bot"]},
+            },
+            headers={"X-Telegram-ID": str(telegram_id)},
+        )
+        project_id = project["id"]
+        stack.push_async_callback(delete_public_project, api, project_id)
+        await api.post(
+            "repositories/",
+            json={
+                "project_id": project_id,
+                "name": "public",
+                "git_url": "https://github.com/fixture/public.git",
+                "role": "primary",
+            },
+        )
+        story = await api.post(
+            "stories/", json={"project_id": project_id, "title": "Public deployment"}
+        )
+        await api.transition_story(story["id"], "start")
+        await api.transition_story(story["id"], "pr_review")
+        await api.patch(f"stories/{story['id']}", json={"pr_number": 42})
+        stream = RedisStreamClient()
+        stack.push_async_callback(stream.close)
+        await stream.connect()
+        yield api, stream, project_id, story["id"]
+
+
+@pytest.fixture
+async def public_project():
+    async with public_project_context() as project:
+        yield project
 
 
 def scheduler(mode, story_id, **extra):
