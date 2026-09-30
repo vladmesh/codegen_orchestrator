@@ -342,7 +342,9 @@ def _dependant_explicitly_accepts_bearer(dependant) -> bool:
     call = dependant.call
     if call is _optional_bearer_scheme or call is _bearer_scheme or call is get_lk_user:
         return True
-    return any(_dependant_explicitly_accepts_bearer(child) for child in dependant.dependencies)
+    return any(
+        _dependant_explicitly_accepts_bearer(child) for child in dependant.dependencies
+    )
 
 
 def route_explicitly_accepts_bearer(route: APIRoute) -> bool:
