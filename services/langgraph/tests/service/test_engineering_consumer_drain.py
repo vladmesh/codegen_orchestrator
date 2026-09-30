@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import secrets
 from unittest.mock import AsyncMock, patch
 
@@ -52,5 +53,6 @@ async def test_drain_after_an_idle_slot_reservation_does_not_start_a_real_redis_
             assert processed == []
     finally:
         worker.cancel()
-        await asyncio.wait_for(worker, timeout=2)
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker, timeout=2)
         await real_redis.delete(queue)
