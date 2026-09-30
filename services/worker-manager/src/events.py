@@ -32,10 +32,33 @@ class DockerEventsListener:
         self._events_stream = None
 
     async def start(self):
-        """Listen for Docker container die events in a background thread."""
+        """Listen for Docker container die events, reconnecting after stream failures."""
         self._running = True
+        reconnect_delay = 1.0
         logger.info("docker_events_listener_started")
 
+        try:
+            while self._running:
+                try:
+                    await self._listen_once()
+                    if self._running:
+                        logger.warning("docker_events_stream_closed")
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:  # noqa: BLE001 — reconnect is the availability boundary
+                    if self._running:
+                        logger.error("docker_events_stream_error", error=str(exc))
+
+                if not self._running:
+                    break
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 30.0)
+        finally:
+            self._running = False
+            logger.info("docker_events_listener_stopped")
+
+    async def _listen_once(self) -> None:
+        """Consume one Docker event stream until it closes or fails."""
         client = docker.from_env()
         self._events_stream = client.events(
             decode=True,
@@ -51,15 +74,14 @@ class DockerEventsListener:
         queue: asyncio.Queue = asyncio.Queue()
 
         def _pump_events():
-            """Read blocking Docker events stream in a thread, push to async queue."""
             try:
                 for event in self._events_stream:
                     if not self._running:
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, event)
-            except Exception as e:  # noqa: BLE001 — thread bridge reports any Docker stream failure
+            except Exception as exc:  # noqa: BLE001 — hand the stream failure to the async loop
                 if self._running:
-                    loop.call_soon_threadsafe(queue.put_nowait, {"_error": str(e)})
+                    loop.call_soon_threadsafe(queue.put_nowait, {"_error": str(exc)})
 
         pump_future = loop.run_in_executor(executor, _pump_events)
 
@@ -71,32 +93,28 @@ class DockerEventsListener:
                     continue
 
                 if "_error" in event:
-                    logger.error("docker_events_stream_error", error=event["_error"])
-                    break
+                    raise RuntimeError(event["_error"])
 
                 try:
                     await self._handle_event(event)
-                except Exception as e:  # noqa: BLE001 — one malformed event must not stop the stream
-                    logger.error("docker_event_handler_error", error=str(e))
-        except asyncio.CancelledError:
-            pass
+                except Exception as exc:  # noqa: BLE001 — one malformed event must not stop the stream
+                    logger.error("docker_event_handler_error", error=str(exc))
         finally:
-            self._running = False
             if self._events_stream:
                 try:
                     self._events_stream.close()
-                except Exception as e:  # noqa: BLE001 — best-effort resource cleanup
-                    logger.debug("cleanup_events_stream_close_error", error=str(e))
+                except Exception as exc:  # noqa: BLE001 — best-effort resource cleanup
+                    logger.debug("cleanup_events_stream_close_error", error=str(exc))
+            self._events_stream = None
             try:
                 client.close()
-            except Exception as e:  # noqa: BLE001 — best-effort resource cleanup
-                logger.debug("cleanup_docker_client_close_error", error=str(e))
+            except Exception as exc:  # noqa: BLE001 — best-effort resource cleanup
+                logger.debug("cleanup_docker_client_close_error", error=str(exc))
             try:
                 await pump_future
-            except Exception as e:  # noqa: BLE001 — best-effort resource cleanup
-                logger.debug("cleanup_pump_future_error", error=str(e))
+            except Exception as exc:  # noqa: BLE001 — best-effort resource cleanup
+                logger.debug("cleanup_pump_future_error", error=str(exc))
             executor.shutdown(wait=False)
-            logger.info("docker_events_listener_stopped")
 
     def stop(self):
         """Stop listening."""
