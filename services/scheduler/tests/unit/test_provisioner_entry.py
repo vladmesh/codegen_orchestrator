@@ -70,6 +70,32 @@ async def test_valid_message_is_processed_then_acked(monkeypatch):
     assert client.acked == ["11-0"]
 
 
+async def test_transient_api_503_is_not_acked(monkeypatch):
+    """A server-side API failure remains pending for bounded redelivery."""
+    import httpx
+    from src.tasks import provisioner_result_listener as listener
+
+    request = httpx.Request("PATCH", "http://api/servers/h")
+    response = httpx.Response(503, request=request)
+
+    async def _update(*_args, **_kwargs):
+        raise httpx.HTTPStatusError("unavailable", request=request, response=response)
+
+    monkeypatch.setattr(listener.api_client, "update_server", _update)
+
+    client = FakeClient()
+    entry = _entry(
+        "11-5",
+        {"request_id": "r", "status": "failed", "server_handle": "h", "errors": ["boom"]},
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await handle_provisioner_entry(client, entry)
+
+    assert client.acked == []
+    assert client.rejected == []
+
+
 async def test_processing_error_is_not_acked(monkeypatch):
     """A transient processing failure stays unacked so it gets retried."""
 
