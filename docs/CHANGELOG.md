@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-30
 
+- Persist scheduler deploy Runs and exact queue handoffs before Story transitions, with stable attempt IDs and queued-handoff recovery so dispatch failures cannot strand DEPLOYING stories.
+
 - Report every LangGraph service-test setup, call and teardown duration to measure native
   notification waits separately from fixture and CI overhead.
 
