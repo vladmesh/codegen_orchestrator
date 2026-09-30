@@ -739,7 +739,7 @@ async def test_registry_secrets_that_were_not_refreshed_block_the_merge(  # noqa
     owe.assert_awaited_once()
     deliver.assert_awaited_once()
     notify.assert_awaited_once()
-    api.create_run.assert_not_awaited()
+    api.create_run_if_absent.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
 
 
@@ -818,7 +818,7 @@ async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_g
         deployed_commit_sha="e" * 40,
         merged_pr_number=42,
     )
-    api.create_run.assert_not_awaited()
+    api.create_run_if_absent.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
 
 
@@ -867,7 +867,7 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
     # nothing to finish it.
     api.transition_story.assert_not_awaited()
     notify.assert_not_awaited()
-    api.create_run.assert_not_awaited()
+    api.create_run_if_absent.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
 
 
@@ -905,7 +905,7 @@ async def test_applied_initial_owner_intent_does_not_skip_a_later_create_deploy(
 
     assert await poll_merged_prs(api, redis) == 1
 
-    api.create_run.assert_awaited_once()
+    api.create_run_if_absent.assert_awaited_once()
     deploy_msg = redis.publish_message.call_args.args[1]
     assert deploy_msg.head_sha == "b" * 40
     assert deploy_msg.story_id == story.id
@@ -1460,7 +1460,7 @@ async def test_no_deploy_run_exists_while_the_projects_ci_is_still_building(mock
 
     assert await poll_merged_prs(api, redis) == 0
 
-    api.create_run.assert_not_awaited()
+    api.create_run_if_absent.assert_not_awaited()
     api.transition_story.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
     timeline = api.update_story.await_args.args[1]["generated_product_timeline"]
@@ -1537,7 +1537,7 @@ async def test_a_ci_run_that_never_published_refuses_the_story_typed_and_durably
     assert reason["failed_jobs"][0]["failed_steps"] == ["Build image"]
     assert "ci.yml run 900" in reason["detail"]
     api.transition_story.assert_awaited_once_with("story-1", "human-review")
-    api.create_run.assert_not_awaited()
+    api.create_run_if_absent.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
     api.fail_story.assert_not_awaited()
     notify.assert_awaited_once()
@@ -1573,7 +1573,7 @@ async def test_the_deploy_names_the_merge_commit_not_the_pull_request_head(mock_
     deploy_msg = redis.publish_message.call_args[0][1]
     assert deploy_msg.head_sha == "a" * 40
     assert deploy_msg.deployed_commit_sha == "e" * 40
-    run_metadata = api.create_run.await_args[0][0]["run_metadata"]
+    run_metadata = api.create_run_if_absent.await_args[0][0]["run_metadata"]
     assert run_metadata["head_sha"] == "a" * 40
     assert run_metadata["deployed_commit_sha"] == "e" * 40
 
@@ -1600,7 +1600,7 @@ async def test_a_merge_with_no_merge_commit_deploys_nothing(mock_gh_cls):
     assert await poll_merged_prs(api, redis) == 0
 
     gh.get_latest_workflow_run.assert_not_awaited()
-    api.create_run.assert_not_awaited()
+    api.create_run_if_absent.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
 
 
