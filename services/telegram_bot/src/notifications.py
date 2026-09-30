@@ -90,9 +90,7 @@ class ProvisionerNotifier:
                         error_type=type(exc).__name__,
                     )
                 else:
-                    await self.client.ack(
-                        PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, msg.message_id
-                    )
+                    await self.client.ack(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, msg.message_id)
         except asyncio.CancelledError:
             pass
 
