@@ -295,8 +295,9 @@ All consumers read through the unified `RedisStreamClient.consume()` / `consume_
 
 **Terminal reject / bounded redelivery** — stream consumers do not silently discard poison work:
 1. Validation/permanent failures are copied to `{stream}:dlq`, then ACKed only after that copy succeeds.
-2. Transient failures stay pending and are reclaimed. The common default ceiling is five deliveries;
-   queues may declare a narrower bound when their delivery contract requires it.
+2. Transient processing failures stay pending and are reclaimed. The common default ceiling is five
+   deliveries; queues may declare a narrower bound. Explicit durable state waits keep their own settlement
+   contract and are not counted as failed processing attempts.
 3. Exhaustion is quarantined before ACK. Cancellation propagates without spending the delivery budget.
 4. Notification consumers that require delivery evidence use manual ACK + reclaim rather than ACK-on-read.
 
