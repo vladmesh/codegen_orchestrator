@@ -15,7 +15,7 @@ import pytest_asyncio
 
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.queues import PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
-from shared.redis.client import RedisStreamClient
+from shared.redis.client import RedisStreamClient, dlq_stream
 from src.proactive import (
     PROACTIVE_MAX_ATTEMPTS,
     PROACTIVE_MAX_DELIVERIES,
@@ -170,6 +170,7 @@ class TestEntryOutcomes:
         alert.assert_awaited_once()
         assert "story-7" in alert.await_args.args[0]
         assert await _pending_ids(client) == []
+        assert await client.redis.xlen(dlq_stream(PO_PROACTIVE_QUEUE)) == 1
 
 
 class TestLegacyAddressing:
