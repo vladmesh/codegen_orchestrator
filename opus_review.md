@@ -10,7 +10,7 @@
 | Репозиторий | `vladmesh/codegen_orchestrator` |
 | Проверенный коммит | `3cb6dceafcd302439ebbe5b392194bf7d0b324be` (`main`, merge PR #674, 2026-09-30 14:09 +0200) |
 | Дата аудита | 2026-09-30 |
-| Актуализировано по `main` | `a5fa185dc021eb177c5d6010086771c34365d9bc` (squash PR #682, 2026-09-30 UTC) |
+| Актуализировано по `main` | `1a01b9a3ceeb1ad05c088de5fbb919c8be8d2a77` (squash PR #683, 2026-09-30 UTC) |
 | Метод | 10 параллельных read-only субагентов с явными границами (api; langgraph consumers/clients; langgraph agents/nodes/subgraphs/llm/prompts; scheduler; worker-manager + worker-broker + worker-wrapper; infra-service + scaffolder + telegram_bot + фронтенды; shared; scripts/infra/CI/compose/tests; межсервисные контракты; документация). Итоговая сверка и выборочная ручная перепроверка — автором отчёта. |
 | Инструменты | чтение кода, `git grep`, AST-анализ Python 3.13 (длины функций, импорт-граф, карта роутов), `alembic upgrade head` + `compare_metadata` на временном Postgres (вне репозитория), скрипты в scratch-каталоге вне репозитория |
 
@@ -39,9 +39,9 @@
 6. **Схема БД расходится с моделями** (5 «лишних» колонок в `temporary_access_grants`, 2 частичных уникальных индекса отсутствуют в моделях): `make makemigrations` (autogenerate) предложит удалить защитные индексы (§7.4).
 7. **Инцидентные дефекты** (раздел 9): PR #680 закрыл выпуск deploy при неполной записи secrets и снятие чужой deploy-блокировки; PR #679 закрыл deploy-handoff ordering; PR #681 закрыл lifecycle/workspace correctness; PR #682 закрыл бесконечный poison-redelivery, преждевременный ACK транзиентного provisioning API failure и проглатывание `CancelledError`. Открыты, среди прочего: неработающая очистка очередей проекта; доступ LK-токена к внутренним маршрутам API; retry Task через промежуточный BACKLOG.
 
-### 1.2.1 Актуализация после четырёх итераций (2026-09-30 UTC)
+### 1.2.1 Актуализация после пяти итераций (2026-09-30 UTC)
 
-После исходного аудита в `main` смёржены четыре итерации:
+После исходного аудита в `main` смёржены пять итераций:
 
 - **PR #679**, squash `0c4cec3561c8c0913d9bda1344702b2d71ba149f` — закрыты **A5** и **§9.11**:
   scheduler использует единый deploy-handoff seam для PR-poller, retry, infrastructure-resume и
@@ -71,10 +71,16 @@
   `CancelledError` снова пробрасывается наружу. Полная CI-матрица, LangGraph service suite и
   Required CI Gate прошли зелёными. Механический `StreamCodec`/split `redis/client.py` сознательно
   не смешан с correctness и перенесён в shared/residual PR 12.
+- **PR #683**, squash `1a01b9a3ceeb1ad05c088de5fbb919c8be8d2a77` — закрыт **§9.4**:
+  LK bearer после успешной аутентификации допускается только на маршруты, где сам `APIRoute`
+  объявляет отдельную bearer-aware owner/admin/current-user dependency; неразмеченные маршруты
+  теперь internal-only by default, а `X-Internal-Key` сохраняет сервисную поверхность. Анонимный
+  allowlist не расширился. Route-registry regressions фиксируют deny-by-default, а API/LangGraph
+  service tests, integration legs и Required CI Gate прошли зелёными.
 
 Остальные находки ниже считаются открытыми, если явно не помечены **DONE/CLOSED**. Полный повторный
-аудит всего дерева после #682 не выполнялся; актуализация здесь — дельта по четырём смёрженным
-итерациям и обновлённая укрупнённая нарезка оставшейся работы.
+аудит всего дерева после #683 не выполнялся; актуализация здесь — дельта по пяти смёрженным
+итерациям и заново собранная укрупнённая нарезка оставшейся работы.
 
 ### 1.3 Топ приоритетных находок
 
@@ -83,7 +89,7 @@
 | T1 | **DONE #680** — deploy fail-closed при неполной записи GitHub-секретов | баг | P0 | 9.1 |
 | T2 | **DONE #680** — deploy-lock освобождается только владельцем lease-token | баг | P0 | 9.2 |
 | T3 | **DONE #681** — cleanup каналов живого воркера fenced по `worker:meta`, а не только IDLETIME | баг | P0 | 9.3 |
-| T4 | ~100 маршрутов API не имеют авторизации сверх глобального гейта, который пропускает любой LK-bearer | безопасность | P0 | 9.4 |
+| T4 | **DONE #683** — LK bearer допускается только на явно bearer-aware маршруты; остальное internal-only | безопасность | P0 | 9.4 |
 | T5 | **DONE #681** — workspace GC разделяет project_id/repo_id и защищает repo активного воркера | баг | P1 | 9.5 |
 | T6 | Разделить `docs/CONTRACTS.md`, вывести CHANGELOG из «обязательного чтения» | контекст | P1 | 5.9, 8 |
 | T7 | Типизированный `WorkerTurnInput`, удалить мёртвый `developer_worker.py` | контракт | P1 | 7.1 |
@@ -568,7 +574,7 @@ tests и Required CI Gate, прошёл. Чисто механический `St
 
 ### 8.4 Проверено и корректно (ФАКТ)
 
-Имена очередей и групп в CONTRACTS.md:1070-1083; `ANONYMOUS_ROUTES` и тест глобального гейта; «десять циклов» scheduler-pipeline; маршруты `/api/...` в документах (все 61); все `make <target>` в документации существуют; все 51 `secrets.*` в `deploy.yml` описаны в DEPLOY.md; 30 внутренних якорей документов разрешаются.
+Имена очередей и групп в CONTRACTS.md:1070-1083; `ANONYMOUS_ROUTES`, bearer-aware route classification и тест глобального гейта после #683; «десять циклов» scheduler-pipeline; маршруты `/api/...` в документах (все 61); все `make <target>` в документации существуют; все 51 `secrets.*` в `deploy.yml` описаны в DEPLOY.md; 30 внутренних якорей документов разрешаются.
 
 ---
 
@@ -590,8 +596,16 @@ PR #681 закрыл гипотезу как реальный unsafe cleanup pat
 пока существует `worker:meta:{id}`; orphaned streams по-прежнему удаляются по idle threshold.
 Регрессия покрывает час простоя живого worker-stream без `OBJECT IDLETIME`/DELETE.
 
-### 9.4 LK-токен допускается к внутренним маршрутам API — СРЕДНЯЯ (ФАКТ по коду; ФАКТ по смягчению)
-`require_authenticated_caller` пропускает любой валидный LK JWT (`services/api/src/dependencies.py:356-360`). AST-скан: ~100 маршрутов без авторизации сверх гейта, например `GET /api/users` (`routers/users.py:204-209` — список всех пользователей), `POST /api/applications/{id}/stop|undeploy|redeploy`, `/from-repo` (`applications.py:456,503,536,718`), переходы story (`stories.py:784-1183`), CRUD задач, `POST /api/runs`. Смягчение: публичный nginx user-dashboard проксирует только `/api/lk/` (`services/user-dashboard/nginx.conf:19-31`), т.е. нужна сетевая доступность порта API. ARCHITECTURE.md:101 («authentication, not authorization») не упоминает эту поверхность.
+### 9.4 **DONE #683** — LK-токен больше не открывает внутренние маршруты API
+PR #683 разделил application-wide authentication и route authorization. Валидный `X-Internal-Key`
+по-прежнему аутентифицирует внутренний сервис; валидный LK JWT после проверки подписи допускается
+к handler только если соответствующий `APIRoute` имеет отдельную bearer-aware dependency вне
+глобального гейта (`get_lk_user`, owner/current-user/admin guard через dependency tree). Маршрут без
+такого opt-in теперь internal-only by default; это закрывает прежнюю поверхность вроде `GET /api/users`
+и CRUD/operational routes, где одного валидного LK bearer раньше было достаточно. Анонимный allowlist
+остаётся ровно `GET /`, `GET /health`, `POST /api/lk/auth/token`. Registry/regression tests фиксируют
+классификацию representative routes и отдельно доказывают, что даже admin LK token не превращается
+в сервисный credential.
 
 ### 9.5 **DONE #681** — Workspace GC project_id/repo_id
 PR #681 разделил две области идентификаторов: `workspace:active_projects` остаётся project_id fence,
@@ -675,7 +689,9 @@ ACK; после durable delivery ceiling повторяющийся сбой qua
 
 Цель этой нарезки — не делать PR на каждый пункт аудита. Один PR закрывает одну крупную границу
 ответственности и забирает соседние баги/дедупликации, если они имеют тот же failure domain.
-Ориентир — **12 PR на весь аудит**, включая уже завершённые первые четыре итерации. Низкоприоритетные
+Ориентир остаётся **12 PR на весь аудит**, включая уже завершённые первые пять итераций. После #683
+остаток пересобран так, чтобы correctness/contract work не смешивался с giant-file mechanics, а
+финальный platform sweep не поглощал локальные scheduler/LangGraph/API проблемы. Низкоприоритетные
 наблюдения не получают отдельного PR: они входят в ближайший тематический кластер либо закрываются
 явным решением «не делать».
 
@@ -685,23 +701,23 @@ ACK; после durable delivery ceiling повторяющийся сбой qua
 | 2 | **DONE — #680** | **Deploy execution safety** | §9.1 fail-closed при записи GitHub secrets; §9.2 owner-fenced atomic release deploy lock; §9.16h cancellation/wait terminal guards; §9.16ab перепроверен и закрыт как не-баг | полный PR CI green; LangGraph service tests green; Required CI Gate green |
 | 3 | **DONE — #681** | **Worker lifecycle & workspace safety** | §9.3 live worker-stream cleanup fence; §9.5 project_id/repo_id workspace GC; §9.16b/c; worker-manager часть §9.16d; §9.16s wrapper robustness | полный PR CI + Required CI Gate green; correctness отделён от механической декомпозиции |
 | 4 | **DONE — #682** | **Queue delivery semantics** | A8 + §7.2; §9.6 invalid provisioner poison; §9.10 transient API ACK; §9.16i CancelledError; terminal DLQ→ACK + durable delivery ceiling | полный PR CI green; LangGraph service suite + Required CI Gate green; механический StreamCodec вынесен из correctness boundary |
-| 5 | OPEN | **API authorization boundary** | §9.4: LK JWT не должен давать доступ к internal/admin surfaces; route inventory + explicit authorization classes/tests | отдельный security PR; публичные /lk/* совместимы; route-gate тест покрывает весь FastAPI registry |
-| 6 | OPEN | **DB + Run contract correctness** | A9 + A10 + §9.9: model/migration drift, partial indexes, alembic check, типизация Run status/type | Review Trigger: schema/shared contracts; compare_metadata == 0; invalid status → 422 |
-| 7 | OPEN | **Documentation/context reduction** | A1+A2, D1–D5, NODES/LOGGING/SECRETS drift; CONTRACTS index + docs/contracts/*; CHANGELOG archive/navigation; runbooks | обязательное чтение ≤15k токенов; doc-link/anchor/tests green |
-| 8 | OPEN | **Scheduler simplification & decomposition** | A3 periodic loop; A11; безопасные scheduler дедупликации; разрез supervisor/deploy.py и pr_poller.py; §9.16a/aa; локальные scheduler N+1 | log event names/state-machine order invariant; full scheduler tests; основные модули ≲600 LOC где разумно |
-| 9 | OPEN | **LangGraph decomposition & dead code** | разрез _qa_runner.py, architect.py, qa.py, deploy.py, worker_spawner.py, deployer.py; A13/A14 где доказанно dead/safe; langgraph часть §6.6; мелкие k/l/m | без compatibility re-export; codemod patch targets; service tests + consumer invariants |
-| 10 | OPEN | **Worker contracts + decomposition** | A7 typed WorkerTurnInput; удалить мёртвый developer_worker.py; A12 builders для worker/workspace/po-response keys; worker-related dead DTO/code; перенесённый из PR 3 механический разрез `worker-manager/manager.py` и `worker-wrapper/wrapper.py` по швам §5.6 | Review Trigger для shared/contracts; producer→broker→wrapper serialization; сначала builders/contracts, затем extraction + patch-target codemod без изменения lifecycle semantics |
-| 11 | OPEN | **API domain extraction + large-router cleanup** | A6; вынести helpers из routers/; разрез projects/access.py, stories.py, _story_actions.py, servers.py, runs.py, applications.py; §9.7/9.12 и локальные o/p/q | lock ordering неизменен; 0 функционально-локальных imports routers.* из admission; API service tests green |
-| 12 | OPEN | **CI/infra/shared/residual sweep** | A16–A20, оставшийся §6.6 dead code, compose/Makefile/check-ci-gate/live-harness splits, механический `shared/redis/client.py` → validation/DLQ + `StreamCodec` split из §5.8, оставшаяся infra-service часть §9.16d (Ansible subprocess), §9.13–9.16 residual UX/perf/CI findings (n/r/t/u/v/w/x/y/z/ad/ae), shared GitHub _actions.py cleanup и frontend contract drift | при фактическом diff >~1500–2000 LOC этот кластер допускается разделить; async Ansible boundary characterization; make ci-contract, normalized compose config, scripts/frontend tests |
+| 5 | **DONE — #683** | **API authorization boundary** | §9.4: LK JWT допускается только на явно bearer-aware routes; internal-only default для неразмеченных endpoints; registry regressions | полный PR CI green; API + LangGraph service suites + Required CI Gate green; /lk/* и explicit admin/owner bearer flows совместимы |
+| 6 | OPEN — NEXT | **DB + Run contract correctness** | A9 + A10 + §9.9: model/migration drift, partial indexes, `alembic check`, типизация Run status/type и безопасная совместимость persisted values | Review Trigger: schema/shared contracts; `compare_metadata == 0`; invalid status/type → 422; миграция не удаляет защитные индексы |
+| 7 | OPEN | **Documentation/context reduction** | A1+A2, D1–D5, NODES/LOGGING/SECRETS drift; CONTRACTS index + `docs/contracts/*`; CHANGELOG archive/navigation; исправление auth boundary docs после #683 | обязательное чтение ≤15k токенов; doc-link/anchor/tests green; канон не дублируется между индексом и leaf docs |
+| 8 | OPEN | **Scheduler/runtime simplification** | A3 periodic loop; A11; scheduler-часть A4/§6.2 client dedupe; разрез `supervisor/deploy.py` и `pr_poller.py`; §9.16a/aa; scheduler-local N+1 из n | log event names/state-machine order invariant; full scheduler tests; extraction идёт после characterisation, основные orchestration modules ≲600 LOC где разумно |
+| 9 | OPEN | **LangGraph boundary cleanup** | разрез `_qa_runner.py`, architect/qa/deploy/worker_spawner/deployer; доказанный LangGraph dead code A13/A14; §9.16j/k/l/m/ac/ae где относится к agent runtime; LangGraph-local N+1 | не тащить secrets в LLM/checkpoints; без compatibility re-export; patch targets/codemod обновлены; service tests + consumer invariants green |
+| 10 | OPEN | **Worker contracts + decomposition** | A7 typed `WorkerTurnInput`; удалить мёртвый `developer_worker.py`; A12 builders для worker/workspace/po-response keys; worker dead DTO/code; перенесённый из #681 разрез `worker-manager/manager.py` и `worker-wrapper/wrapper.py` | Review Trigger для shared/contracts; producer→broker→wrapper serialization; сначала vocabulary/contracts, затем extraction без изменения lifecycle semantics |
+| 11 | OPEN | **API domain correctness + extraction** | A6; helpers из routers/; разрез `projects/access.py`, stories/_story_actions, servers, runs, applications; §9.7/9.12, o/p/q; §9.16f для project config/labels с cross-service characterization | lock ordering неизменен; RMW не теряет concurrent config keys; 0 функционально-локальных imports `routers.*` из admission; API service tests green |
+| 12 | OPEN | **Platform/CI/infra residual sweep** | A16–A20; оставшийся §6.6 dead code; compose/Makefile/check-ci-gate/live-harness splits; механический `shared/redis/client.py` → validation/DLQ + `StreamCodec`; infra Ansible async часть §9.16d; scaffolder §9.16e/y; GitHub-client g; notification r; CI t/u/v/w/x/z/ad; frontend contract drift | correctness fixes идут перед mechanics; async/process boundaries characterization; `make ci-contract`, normalized compose, scripts/frontend tests; если meaningful diff приближается к ~2k, низкоприоритетную механику явно defer/no-do вместо искусственного 13-го PR |
 
 ### 10.1 Что изменилось относительно исходного плана
 
 - Старые шаги 0–14 были безопасной последовательностью техник, но не реалистичной PR-нарезкой:
   только giant-file splits там фактически означали много отдельных PR.
 - Новая нарезка считает один failure domain одной итерацией и складывает туда его баги,
-  дедупликации и декомпозицию. Поэтому A5 и §9.11 закрылись одним PR #679, а deploy execution
-  safety (§9.1, §9.2, §9.16h) — одним PR #680; worker lifecycle correctness (§9.3, §9.5,
-  §9.16b/c, часть d, s) — PR #681; queue delivery correctness (A8, §9.6, §9.10, §9.16i) — PR #682; §9.16ab после проверки закрыт как не-баг.
+  дедупликации и декомпозицию. Поэтому A5 и §9.11 закрылись одним PR #679, deploy execution
+  safety (§9.1, §9.2, §9.16h) — PR #680, worker lifecycle correctness — #681, queue delivery
+  correctness — #682, а API authorization boundary (§9.4) — #683; §9.16ab после проверки закрыт как не-баг.
 - P0/P1 correctness и security идут раньше чистого уменьшения LOC/контекста, кроме документации:
   docs вынесены в отдельный ранний PR, потому что они увеличивают стоимость каждой последующей итерации.
 - PR #681 подтвердил полезность отдельного correctness boundary: механический разрез `manager.py`/`wrapper.py`
@@ -710,10 +726,13 @@ ACK; после durable delivery ceiling повторяющийся сбой qua
 - PR #682 повторил тот же принцип: correctness queue semantics закрыты без рискованного механического
   `StreamCodec` refactor. Теперь этот split опирается на характеризационные/service tests и живёт в PR 12
   рядом с остальными shared/infra механическими разрезами.
-- Shared-contract и DB изменения не смешиваются с механическими разрезами: для них остаются Review Trigger
-  и отдельные rollback boundaries.
-- Если внутри PR 12 остаток окажется слишком разнородным или >~2k LOC meaningful diff, он единственный
-  кандидат на деление; тогда общий план станет 13 PR, а не искусственно огромным финальным sweep.
+- После #683 локальные residual findings вынесены из бывшего «всё остальное» PR 12 к владельцам failure
+  domain: scheduler N+1 — в PR 8, agent-runtime j/k/l/m — в PR 9, config/port/redeploy correctness — в PR 11.
+  PR 12 оставлен только для platform/CI/infra/shared mechanics и связанных correctness gaps.
+- Shared-contract и DB изменения не смешиваются с giant-file mechanics: для PR 6 и PR 10 остаются Review
+  Trigger и отдельные rollback boundaries. Финальный ориентир остаётся 12 PR; если PR 12 приблизится к
+  ~2k meaningful LOC, низкоприоритетная механика должна быть явно deferred/no-do, а не раздувать sweep
+  или автоматически создавать 13-ю итерацию.
 
 ## 11. Неопределённости, ограничения и намеренно отвергнутые абстракции
 
@@ -722,7 +741,7 @@ ACK; после durable delivery ceiling повторяющийся сбой qua
 - Только статический анализ; сервисы, Docker, CI, make, Ansible, фронтенд-сборка не запускались (исключение — временный Postgres вне репозитория для сравнения миграций с моделями).
 - Содержимое `tests/live/*` (~48 k строк) детально не ревьюилось — оценены только размер и роль.
 - Оценки токенов — chars/4 без реального токенайзера (±20–25%); оценки LOC — по AST/строкам целевых диапазонов, без фактического выполнения рефакторинга.
-- Баги с пометкой ГИПОТЕЗА (9.16e/f/z/ac и др.) требуют рантайм-подтверждения; после #682 наиболее важным из них остаётся 9.16f (потеря ключей `config`).
+- Баги с пометкой ГИПОТЕЗА (9.16e/f/z/ac и др.) требуют рантайм-подтверждения; после #683 наиболее важным из них остаётся 9.16f (потеря ключей `config`).
 - Внешние потребители API (кроме фронтендов и сервисов репозитория) не известны — влияет на безопасность удаления `PUT /api/projects/{id}` и типизации `RunUpdate`.
 - Не проверялись: продуктовый шаблон `codegen-product-kit`, содержимое GitHub-секретов/окружений, производственные данные (наличие строк с `run.project_id IS NULL` и т.п.).
 
