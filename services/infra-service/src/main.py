@@ -29,7 +29,7 @@ from shared.provisioning_policy import (
     validate_provider_policies,
 )
 from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
-from shared.redis import RedisStreamClient
+from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 
 from .provisioner.api_client import finalize_provisioning
 from .provisioner.handlers import FinalizationOutcomeUnknown
@@ -418,6 +418,20 @@ async def _handle_stream_message(client, msg) -> None:
         await _publish_and_ack(client, msg, result)
         await client.redis.delete(replay_key)
         logger.debug("job_acked", entry_id=msg.message_id)
+    except ValidationError as error:
+        logger.error(
+            "provisioner_message_invalid_quarantined",
+            entry_id=msg.message_id,
+            error_count=error.error_count(),
+        )
+        await client.reject_entry(
+            PROVISIONER_QUEUE,
+            INFRA_GROUP,
+            msg.message_id,
+            data=msg.data,
+            failure=DLQ_FAILURE_VALIDATION,
+            reason={"errors": error.errors(include_url=False, include_input=False)},
+        )
     except IncidentPersistenceError as error:
         if job is None:
             raise
@@ -425,6 +439,19 @@ async def _handle_stream_message(client, msg) -> None:
     except FinalizationOutcomeUnknown:
         logger.warning("provisioning_finalization_redelivery_pending", entry_id=msg.message_id)
     except Exception as exc:
+        if await client.reject_if_exhausted(
+            PROVISIONER_QUEUE,
+            INFRA_GROUP,
+            msg.message_id,
+            data=msg.data,
+            reason={"error": "provisioning processing repeatedly failed"},
+        ):
+            logger.error(
+                "provisioner_delivery_exhausted",
+                entry_id=msg.message_id,
+                error_type=type(exc).__name__,
+            )
+            return
         logger.error(
             "job_processing_error",
             entry_id=msg.message_id,
