@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 import structlog
 
@@ -56,6 +57,18 @@ from .deploy_result_handler import (
 logger = structlog.get_logger(__name__)
 
 _config: ConfigStore | None = None
+
+_COMPARE_AND_DELETE_DEPLOY_LOCK = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
+async def _release_deploy_lock(redis: RedisStreamClient, lock_key: str, lock_token: str) -> None:
+    """Release only the lock lease acquired by this deploy invocation."""
+    await redis.redis.eval(_COMPARE_AND_DELETE_DEPLOY_LOCK, 1, lock_key, lock_token)
 
 
 def _deploy_lock_ttl() -> int:
@@ -428,13 +441,14 @@ async def _deploy_failure_terminal(
 async def _claim_deploy_job(
     msg: DeployMessage,
     redis: RedisStreamClient,
+    lock_token: str,
 ) -> DeployTerminal | None:
     """Acquire the project deploy lock and atomically move the run to RUNNING."""
     task_id = msg.task_id
     project_id = msg.project_id
     lock_key = f"deploy:{project_id}:lock"
 
-    acquired = await redis.redis.set(lock_key, task_id, nx=True, ex=_deploy_lock_ttl())
+    acquired = await redis.redis.set(lock_key, lock_token, nx=True, ex=_deploy_lock_ttl())
     if not acquired:
         logger.info(
             "deploy_lock_not_acquired",
@@ -979,8 +993,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         return live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
 
     lock_key = f"deploy:{project_id}:lock"
+    lock_token = f"{task_id}:{uuid4().hex}"
     try:
-        claimed = await _claim_deploy_job(msg, redis)
+        claimed = await _claim_deploy_job(msg, redis, lock_token)
         if claimed is not None:
             return claimed.response
 
@@ -1030,7 +1045,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         )
         return (await _deploy_failure_terminal(msg, redis, str(error))).response
     finally:
-        await redis.redis.delete(lock_key)
+        await _release_deploy_lock(redis, lock_key, lock_token)
 
 
 def main():
