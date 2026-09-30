@@ -1,6 +1,6 @@
 """Scaffold trigger — ensures workspace readiness before pipeline proceeds.
 
-Runs as part of the task_dispatcher_loop cycle.
+Runs from the independent scaffold scheduler loop.
 
 For DRAFT projects: publishes mode=full (copier + make setup + git push).
 For ACTIVE projects with TODO tasks: publishes mode=ensure (clone + setup if missing).
