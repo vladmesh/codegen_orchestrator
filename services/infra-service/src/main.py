@@ -387,9 +387,25 @@ async def _retry_saved_finalization(client, msg, job, raw: str | bytes) -> None:
 
 async def _handle_stream_message(client, msg) -> None:
     """Handle one new or reclaimed stream delivery through its durable short circuits."""
-    job = None
     try:
         job = ProvisionerMessage.model_validate(msg.data)
+    except ValidationError as error:
+        logger.error(
+            "provisioner_message_invalid_quarantined",
+            entry_id=msg.message_id,
+            error_count=error.error_count(),
+        )
+        await client.reject_entry(
+            PROVISIONER_QUEUE,
+            INFRA_GROUP,
+            msg.message_id,
+            data=msg.data,
+            failure=DLQ_FAILURE_VALIDATION,
+            reason={"errors": error.errors(include_url=False, include_input=False)},
+        )
+        return
+
+    try:
         state = _decode_hash(await client.redis.hgetall(_outage_key(msg.message_id)))
         if state:
             await _retry_saved_incident(client, msg, job, state)
@@ -418,23 +434,7 @@ async def _handle_stream_message(client, msg) -> None:
         await _publish_and_ack(client, msg, result)
         await client.redis.delete(replay_key)
         logger.debug("job_acked", entry_id=msg.message_id)
-    except ValidationError as error:
-        logger.error(
-            "provisioner_message_invalid_quarantined",
-            entry_id=msg.message_id,
-            error_count=error.error_count(),
-        )
-        await client.reject_entry(
-            PROVISIONER_QUEUE,
-            INFRA_GROUP,
-            msg.message_id,
-            data=msg.data,
-            failure=DLQ_FAILURE_VALIDATION,
-            reason={"errors": error.errors(include_url=False, include_input=False)},
-        )
     except IncidentPersistenceError as error:
-        if job is None:
-            raise
         await _handle_incident_outage(client, msg, job, error)
     except FinalizationOutcomeUnknown:
         logger.warning("provisioning_finalization_redelivery_pending", entry_id=msg.message_id)
