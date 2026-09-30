@@ -466,7 +466,7 @@ async def test_owner_notification_loop_continues_after_sweep_failure_and_closes_
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
     from src.clients import api as api_module
-    from src.tasks import owner_notification_loop, task_dispatcher
+    from src.tasks import owner_notification_loop
     from src.tasks.owner_notifications import OwnerNotificationOutcome
 
     assert set(_OWNER_NOTIFICATION_COUNTS) == {
@@ -626,7 +626,7 @@ async def test_story_supervision_sweeps_fail_independently_within_a_cycle(monkey
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
     from src.clients import api as api_module
-    from src.tasks import story_supervision_loop, task_dispatcher
+    from src.tasks import story_supervision_loop
 
     api = AsyncMock()
     redis = AsyncMock()
