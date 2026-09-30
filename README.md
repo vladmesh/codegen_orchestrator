@@ -58,7 +58,7 @@ Stage by stage: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes and thei
 | `telegram_bot` | The user interface; owns PO sessions. |
 | `langgraph` | The PO agent and the Engineering/DevOps subgraphs. |
 | `architect` | Splits a story into tasks. Its own container, not part of the scheduler. |
-| `scheduler-pipeline` | Ordered task, story, PR/CI, supervisor, notification, QA and access lifecycle. |
+| `scheduler-pipeline` | Task/story lifecycle plus independent PR/CI, supervision, notification, QA and access loops. |
 | `scheduler-infrastructure` | Server sync, health checks, provisioning triggers and result recovery. |
 | `scheduler-maintenance` | GitHub sync, analytics aggregation and queue cleanup. |
 | `scaffolder` | Prepares the repository: copier, `make setup`, first push. Runs before the architect. |
