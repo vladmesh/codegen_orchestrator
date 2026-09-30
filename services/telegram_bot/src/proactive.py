@@ -236,5 +236,16 @@ async def process_proactive_entry(
         return ProactiveOutcome.DELIVERED
 
     await _alert_delivery_exhausted(proactive, deliveries=deliveries, error=error)
-    await client.ack(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, msg.message_id)
+    await client.reject_entry(
+        PO_PROACTIVE_QUEUE,
+        PO_PROACTIVE_GROUP,
+        msg.message_id,
+        data=msg.data,
+        failure=DLQ_FAILURE_DELIVERY_EXHAUSTED,
+        reason={
+            "deliveries": deliveries,
+            "attempts": PROACTIVE_MAX_ATTEMPTS,
+            "error": error,
+        },
+    )
     return ProactiveOutcome.EXHAUSTED
