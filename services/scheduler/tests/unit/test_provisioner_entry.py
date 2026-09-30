@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
+from src.tasks import provisioner_result_listener as listener
 from src.tasks.provisioner_result_listener import handle_provisioner_entry
 
 
@@ -72,9 +74,6 @@ async def test_valid_message_is_processed_then_acked(monkeypatch):
 
 async def test_transient_api_503_is_not_acked(monkeypatch):
     """A server-side API failure remains pending for bounded redelivery."""
-    import httpx
-    from src.tasks import provisioner_result_listener as listener
-
     request = httpx.Request("PATCH", "http://api/servers/h")
     response = httpx.Response(503, request=request)
 
