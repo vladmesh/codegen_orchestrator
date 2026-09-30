@@ -294,10 +294,12 @@ holding the key does not open a stranger's project, run or admin endpoint. A ser
 that names no user is unrestricted, as before. `resolve_actor` in
 `services/api/src/dependencies.py` is where that is decided; every access guard asks it.
 
-Without the key — or an LK bearer token — nothing reaches a handler at all: every route
+Without the key or an explicitly authorized LK bearer, nothing reaches a handler: every route
 except `GET /`, `GET /health` and `POST /api/lk/auth/token` is closed by
-`require_authenticated_caller`. So the key is required by anything that talks to the API,
-including `make seed`, the scripts under `infra/scripts/` and the admin frontend's nginx
+`require_authenticated_caller`. `X-Internal-Key` may enter the authenticated service surface;
+an LK bearer may enter only routes that declare a second bearer-aware owner/admin/current-user
+dependency. Routes without one are internal-only by default. So the key is required by internal
+services such as `make seed`, the scripts under `infra/scripts/` and the admin frontend's nginx
 proxy, which stamps it into the requests it forwards. `X-Telegram-ID` alone is refused, and
 `is_admin` on `POST /api/users` is accepted only from an internal caller — a container that
 can reach the API's port can no longer write itself an administrator.

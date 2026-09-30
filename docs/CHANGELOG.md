@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-01
+
+- Make LK bearer authorization deny-by-default: valid dashboard tokens reach only routes with an
+  explicit owner/admin/current-user bearer guard; unclassified routes remain internal-only.
+
 ## 2026-09-30
 
 - Quarantine malformed and repeatedly failing Redis work before ACK, preserve transient failures for
