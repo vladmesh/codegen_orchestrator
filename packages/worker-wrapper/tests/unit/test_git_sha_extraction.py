@@ -104,6 +104,8 @@ class TestCompletedResultPush:
         assert run.call_args_list[0].args[0][3] == "--end-of-options"
         assert run.call_args_list[4].args[0] == [
             "/usr/bin/git",
+            "-c",
+            "core.hooksPath=/dev/null",
             "push",
             "origin",
             f"HEAD:refs/heads/{branch}",
