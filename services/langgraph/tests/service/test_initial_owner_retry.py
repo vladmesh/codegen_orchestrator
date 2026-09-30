@@ -5,6 +5,7 @@ delivery observations are synthetic. There is no live deployment or worker.
 """
 
 import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 import json
 import os
@@ -12,17 +13,22 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
+from typing import NamedTuple
 from unittest.mock import patch
 
 import pytest
+import pytest_asyncio
 from structlog.testing import capture_logs
 
+from shared.contracts.dto.owner_notification import OWNER_NOTIFICATION_ATTEMPT_INTERVAL
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
 from shared.contracts.queues.po import unprotect_po_payload
 from shared.queues import DEPLOY_QUEUE, PO_INPUT_QUEUE
+from shared.redis import RedisStreamClient
 from src.agents.po import tools, tools_projects
 from src.allocations import AllocationError
+from src.clients.api import LanggraphAPIClient
 from src.consumers.deploy import (
     _claim_deploy_job,
     _record_infrastructure_wait,
@@ -33,6 +39,7 @@ from tests.service.test_public_deploy import (  # noqa: F401
     CANARY,
     HEAD,
     public_project as existing_public_project,
+    public_project_context,
     story_row,
 )
 
@@ -443,18 +450,58 @@ async def assert_exhaustion_event(real_redis, story):
     assert CANARY not in json.dumps(event)
 
 
+NATIVE_RECOVERY_ROUTES = ("retry", "poll", "infrastructure", "secret")
+
+
+class PreparedRecovery(NamedTuple):
+    project: str
+    story: str
+    owner: dict
+    source: str
+    message: DeployMessage
+    notice: dict
+    interrupted: dict
+
+
+@asynccontextmanager
+async def prepared_recovery_batch(routes):
+    async with AsyncExitStack() as stack:
+        cases = {}
+        for route in routes:
+            try:
+                # One failed preparation is reported by its own parametrized
+                # test; the other routes still prepare and finish normally.
+                async with asyncio.timeout(180):
+                    project = await stack.enter_async_context(public_project_context())
+                    cases[route] = await _prepare_native_recovery(project, route)
+            except Exception as error:
+                cases[route] = error
+        if any(not isinstance(case, Exception) for case in cases.values()):
+            # All claims are real and already persisted. Waiting after the
+            # last preparation lets their native 60-second intervals overlap.
+            await asyncio.sleep(61)
+        yield cases
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def native_recoveries():
+    async with prepared_recovery_batch(NATIVE_RECOVERY_ROUTES) as cases:
+        yield cases
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", ["retry", "poll", "infrastructure", "secret"])
-async def test_native_exhaustion_notice_and_po_retry(public_project, real_redis, route):
+@pytest.mark.parametrize("route", NATIVE_RECOVERY_ROUTES)
+async def test_native_exhaustion_notice_and_po_retry(native_recoveries, real_redis, route):
     # The service image has no pytest-timeout plugin. Keep the same bound with
     # the installed Python runtime rather than an unregistered marker.
     async with asyncio.timeout(180):
-        await _native_exhaustion_notice_and_po_retry(public_project, real_redis, route)
+        prepared = native_recoveries[route]
+        if isinstance(prepared, Exception):
+            raise prepared
+        await _finish_native_recovery(prepared, real_redis)
 
 
-async def _native_exhaustion_notice_and_po_retry(  # noqa: PLR0915
-    public_project, real_redis, route
-):
+async def _prepare_native_recovery(public_project, route):
     api, stream, project, story = public_project
     owner = await api.get(f"users/{(await api.get(f'projects/{project}'))['owner_id']}")
     await api.post(
@@ -479,11 +526,41 @@ async def _native_exhaustion_notice_and_po_retry(  # noqa: PLR0915
         scheduler("notice_interrupt", story)
         interrupted = await story_row(story)
         assert interrupted["owner_notification"]["state"] == "owed"
-        # Exercise the real claim interval in CI. No status, attempt or claim
-        # timestamp is edited to get past the native delivery bound.
-        await asyncio.sleep(61)
+        assert interrupted["owner_notification"]["last_attempt_at"] is not None
+        # A visit before the native interval cannot claim or publish again.
+        scheduler("notice", story)
+        assert (await story_row(story))["owner_notification"] == interrupted["owner_notification"]
+        return PreparedRecovery(project, story, owner, source, message, notice, interrupted)
+    finally:
+        await api.post(
+            "system-configs/",
+            json={"key": "deploy.max_deploy_retries", "value": 3, "category": "deploy"},
+        )
+
+
+async def _finish_native_recovery(prepared, real_redis):
+    # The module fixture owns its clients on its own loop. Each result uses
+    # fresh clients on the test's loop and transfers only persisted identities.
+    async with AsyncExitStack() as stack:
+        api = LanggraphAPIClient()
+        stack.push_async_callback(api.close)
+        api.base_url = os.environ["TEST_API_BASE_URL"]
+        stream = RedisStreamClient()
+        stack.push_async_callback(stream.close)
+        await stream.connect()
+        await _complete_native_recovery(api, stream, prepared, real_redis)
+
+
+async def _complete_native_recovery(api, stream, prepared, real_redis):  # noqa: PLR0915
+    project, story, owner, source, message, notice, interrupted = prepared
+    try:
         scheduler("notice", story)
         settled = await story_row(story)
+        previous_claim = datetime.fromisoformat(
+            interrupted["owner_notification"]["last_attempt_at"]
+        )
+        next_claim = datetime.fromisoformat(settled["owner_notification"]["last_attempt_at"])
+        assert next_claim - previous_claim >= OWNER_NOTIFICATION_ATTEMPT_INTERVAL
         assert settled["owner_notification"]["owed_at"] == notice["owed_at"]
         assert settled["owner_notification"]["state"] == "delivered"
         assert settled["owner_notification"]["admin_state"] == "delivered"
