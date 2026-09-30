@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-30
 
+- Finish scheduler-pipeline decomposition: engineering dispatch, scaffold, story completion, lifecycle
+  supervision and QA routing now run behind independent failure boundaries.
+
 - Run merged-PR handling and CI-failure routing in their own scheduler loop, so dispatcher failures
   cannot delay deploy routing and one PR/CI path cannot suppress the other.
 
