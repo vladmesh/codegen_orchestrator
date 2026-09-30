@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 
 from shared.contracts.queues.provisioner import ProvisionerResult
-from shared.redis import RedisStreamClient
+from shared.redis import RedisStreamClient, dlq_stream
 from src.notifications import ProvisionerNotifier
 
 
@@ -169,6 +169,31 @@ async def test_no_notification_when_no_admins(raw_redis, stream_client, mock_bot
     except asyncio.CancelledError:
         pass
 
+    mock_bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_invalid_provisioner_result_is_quarantined(raw_redis, stream_client, mock_bot, admin_ids):
+    notifier = ProvisionerNotifier(client=stream_client, admin_ids=admin_ids)
+    task = await notifier.start(mock_bot)
+    await asyncio.sleep(0.2)
+
+    await stream_client.publish(
+        "provisioner:results",
+        {"request_id": "bad-1", "status": "error", "server_handle": "srv-bad"},
+    )
+    await asyncio.sleep(0.3)
+
+    await notifier.stop()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    pending = await raw_redis.xpending("provisioner:results", "telegram-bot")
+    assert pending["pending"] == 0
+    assert await raw_redis.xlen(dlq_stream("provisioner:results")) == 1
     mock_bot.send_message.assert_not_called()
 
 
