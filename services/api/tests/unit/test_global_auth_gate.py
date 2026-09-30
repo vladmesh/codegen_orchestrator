@@ -17,7 +17,13 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.database import get_async_session
-from src.dependencies import ANONYMOUS_ROUTES, get_raw_redis
+from shared.models import User
+from src.dependencies import (
+    ANONYMOUS_ROUTES,
+    create_lk_jwt,
+    get_raw_redis,
+    route_explicitly_accepts_bearer,
+)
 from src.main import app
 
 # A body every write route can be handed. It is nonsense for all of them, which
@@ -91,6 +97,33 @@ def test_the_route_table_is_not_empty():
     assert len(GUARDED_ROUTES) > 50
 
 
+def _route(path: str, method: str) -> APIRoute:
+    for context in iter_route_contexts(app.routes):
+        route = context.original_route
+        if (
+            isinstance(route, APIRoute)
+            and context.path == path
+            and method in context.methods
+        ):
+            return route
+    raise AssertionError(f"route not found: {method} {path}")
+
+
+def test_bearer_access_is_an_explicit_route_property():
+    """Representative surfaces pin the deny-by-default classification.
+
+    A route with no bearer-aware dependency is internal-only even though the
+    application gate can authenticate a token. Owner/admin routes opt in through
+    their existing dependency trees rather than through a second hand-written
+    path allowlist.
+    """
+    assert not route_explicitly_accepts_bearer(_route("/api/users/", "GET"))
+    assert not route_explicitly_accepts_bearer(_route("/api/tasks/", "GET"))
+    assert route_explicitly_accepts_bearer(_route("/api/projects/", "GET"))
+    assert route_explicitly_accepts_bearer(_route("/api/lk/projects", "GET"))
+    assert route_explicitly_accepts_bearer(_route("/api/debug/queues", "GET"))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("method", "path"), GUARDED_ROUTES, ids=lambda v: str(v))
 async def test_every_route_outside_the_allowlist_refuses_an_anonymous_caller(method, path):
@@ -156,6 +189,67 @@ async def test_a_bearer_token_that_is_not_ours_is_not_an_identity():
         resp = await client.get("/api/projects/", headers={"Authorization": "Bearer not-a-jwt"})
 
     assert resp.status_code == HTTPStatus.UNAUTHORIZED, resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_admin", [False, True])
+async def test_valid_lk_bearer_cannot_enter_an_internal_only_route(is_admin):
+    """Authentication alone never grants the broad internal API surface."""
+    user = User(id=700 + int(is_admin), telegram_id=9700 + int(is_admin), is_admin=is_admin)
+    session = AsyncMock()
+
+    async def execute(*_args, **_kwargs):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = user
+        return result
+
+    session.execute = execute
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(
+                "/api/users/",
+                headers={"Authorization": f"Bearer {create_lk_jwt(user.id)}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == HTTPStatus.FORBIDDEN, resp.text
+    assert resp.json()["detail"] == "Bearer access is not permitted for this route"
+
+
+@pytest.mark.asyncio
+async def test_valid_lk_bearer_still_reaches_an_owner_scoped_route():
+    user = User(id=711, telegram_id=9711, is_admin=False)
+    session = AsyncMock()
+
+    async def execute(*_args, **_kwargs):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = user
+        result.scalars.return_value.all.return_value = []
+        return result
+
+    session.execute = execute
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(
+                "/api/projects/",
+                headers={"Authorization": f"Bearer {create_lk_jwt(user.id)}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == HTTPStatus.OK, resp.text
+    assert resp.json() == []
 
 
 @pytest.mark.asyncio
