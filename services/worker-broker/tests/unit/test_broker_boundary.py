@@ -197,6 +197,7 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(upstream)
+
     def client_factory(**kwargs):
         client_timeouts.append(kwargs.get("timeout"))
         return real_async_client(transport=transport, **kwargs)
