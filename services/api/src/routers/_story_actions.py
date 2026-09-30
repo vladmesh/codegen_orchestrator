@@ -449,7 +449,8 @@ async def _budget_wait_decision(
         or refusal.decision_id not in reason.get("detail", "")
     ):
         return None
-    _verify_recorded_stop(story)
+    if reason.get("reason") == "story_failure":
+        _verify_recorded_stop(story)
     audit = await db.scalar(
         select(WorkAdmissionAudit).where(
             WorkAdmissionAudit.reference_id == refusal.decision_id,
