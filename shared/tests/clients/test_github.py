@@ -1185,6 +1185,55 @@ async def test_an_externally_cancelled_run_is_not_reported_as_a_failure(authed_c
     authed_client.get_workflow_failure_logs.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_completed_workflow_skips_teardown_cancel_check(authed_client):
+    """Once GitHub says completed, teardown cannot cancel or invalidate that terminal result."""
+    completed = {
+        "id": 42,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://example.test/runs/42",
+    }
+    authed_client.get_latest_workflow_run = AsyncMock(return_value=completed)
+    authed_client.cancel_workflow_run = AsyncMock()
+    cancel_check = AsyncMock(return_value=True)
+
+    result = await authed_client.wait_for_workflow_completion(
+        "my-org",
+        "my-repo",
+        "deploy.yml",
+        poll_interval=0,
+        cancel_check=cancel_check,
+    )
+
+    assert result == completed
+    cancel_check.assert_not_awaited()
+    authed_client.cancel_workflow_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_run_reports_external_cancellation_as_cancelled(authed_client):
+    """The run-id waiter must match the workflow waiter instead of reporting a retryable failure."""
+    authed_client.get_token = AsyncMock(return_value="token")
+    response = MagicMock()
+    response.json.return_value = {
+        "id": 42,
+        "status": "completed",
+        "conclusion": "cancelled",
+        "html_url": "https://example.test/runs/42",
+        "head_sha": "a" * 40,
+    }
+    authed_client._make_request = AsyncMock(return_value=response)
+    authed_client.get_workflow_failure_logs = AsyncMock(return_value="should not be read")
+
+    with pytest.raises(WorkflowCancelledError):
+        await authed_client.wait_for_run_completion(
+            "my-org", "my-repo", 42, timeout_seconds=10, poll_interval=0
+        )
+
+    authed_client.get_workflow_failure_logs.assert_not_awaited()
+
+
 # --- repository-scoped installation tokens ---
 
 
