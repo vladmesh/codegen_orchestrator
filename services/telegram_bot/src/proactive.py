@@ -30,7 +30,12 @@ from shared.contracts.recipient import (
 )
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
-from shared.redis.client import RedisStreamClient, StreamMessage
+from shared.redis.client import (
+    DLQ_FAILURE_DELIVERY_EXHAUSTED,
+    DLQ_FAILURE_VALIDATION,
+    RedisStreamClient,
+    StreamMessage,
+)
 from shared.telegram_text import split_telegram_text
 
 logger = structlog.get_logger()
@@ -196,7 +201,14 @@ async def process_proactive_entry(
                 entry_id=msg.message_id,
                 data=po_alert_identifiers(msg.data),
             )
-        await client.ack(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, msg.message_id)
+        await client.reject_entry(
+            PO_PROACTIVE_QUEUE,
+            PO_PROACTIVE_GROUP,
+            msg.message_id,
+            data=msg.data,
+            failure=DLQ_FAILURE_VALIDATION,
+            reason={"error": "invalid proactive notification"},
+        )
         return ProactiveOutcome.REJECTED
 
     if deliveries > PROACTIVE_MAX_DELIVERIES:
@@ -208,7 +220,14 @@ async def process_proactive_entry(
             deliveries=deliveries,
             error=f"entry redelivered {deliveries} times without completing",
         )
-        await client.ack(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, msg.message_id)
+        await client.reject_entry(
+            PO_PROACTIVE_QUEUE,
+            PO_PROACTIVE_GROUP,
+            msg.message_id,
+            data=msg.data,
+            failure=DLQ_FAILURE_DELIVERY_EXHAUSTED,
+            reason={"deliveries": deliveries, "max_deliveries": PROACTIVE_MAX_DELIVERIES},
+        )
         return ProactiveOutcome.EXHAUSTED
 
     error = await attempt_proactive_delivery(bot, proactive)
