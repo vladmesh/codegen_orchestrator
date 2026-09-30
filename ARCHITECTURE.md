@@ -30,13 +30,13 @@ A three-level abstraction for product management:
 
 **Pipeline** (the scheduler + scaffolder services) automatically prepares the project and decomposes a Story into Tasks:
 1. The PO creates a Project + Repository + Story
-2. The Task Dispatcher (every 30s) finds a draft project with stories → publishes a `ScaffoldMessage` (mode=full) to `scaffold:queue`
+2. The scaffold loop (every 30s) finds a draft project with stories → publishes a `ScaffoldMessage` (mode=full) to `scaffold:queue`
 3. The Scaffolder runs copier + make setup + git push, saves the tree to the DB, sets `project.status = active`
    - For existing projects: the ensure-workspace gate (mode=ensure) checks that the workspace exists before dispatching tasks
 4. The PO publishes an `ArchitectMessage` to `architect:queue`
 5. The Architect Consumer calls the LLM, which sees the tree of the scaffolded project → creates tasks only for the diff (the business logic)
 6. The Task Dispatcher finds unblocked tasks, creates Runs, publishes to `engineering:queue`
-7. Once all tasks are done — a PR story/* → main, merged by the PR poller after writing the registry secrets → deploy → QA → story completed
+7. The story-completion loop observes all tasks done and opens the story/* → main PR; the PR/CI loop merges it after writing registry secrets, lifecycle supervision routes deploy results, and the QA loop settles testing
 
 The Story / Task / Run / `TaskEvent` entities in the API describe work on **client** projects; they are created and maintained by the pipeline itself (PO, Architect, Task Dispatcher, workers).
 
@@ -74,7 +74,7 @@ taken from the default value.
 | `worker-broker` | The only service on both control-plane and worker networks. Authenticates per-worker credentials and brokers worker streams, sessions, status and Compose requests. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
-| `scheduler-pipeline` | Six loops, each its own failure boundary: `task_dispatcher` (one ordered tick: scaffold and engineering admission, story completion, supervisors, QA routing), `pr_ci` (merged-PR handling and CI-failure routing), `worker_reconciliation`, `temporary_access` cleanup, `owner_notifications` recovery and `story_supervision` (state-age watchdog, stage notices). A container of the shared `scheduler` image |
+| `scheduler-pipeline` | Ten loops with independent failure boundaries: `task_dispatcher` (engineering admission/dispatch), `scaffold`, `story_completion`, `lifecycle_supervision`, `qa_routing`, `pr_ci` (merged-PR handling and CI-failure routing), `worker_reconciliation`, `temporary_access` cleanup, `owner_notifications` recovery and `story_supervision` (state-age watchdog, stage notices). A container of the shared `scheduler` image |
 | `scheduler-infrastructure` | Fail-closed Time4VPS server sync, health checks, provisioner trigger and restart-safe result consumption. A container of the shared `scheduler` image |
 | `scheduler-maintenance` | GitHub project sync, analytics aggregation and queue cleanup. A container of the shared `scheduler` image |
 | `infra-service` | An Ansible runner and SSH operations |
@@ -129,7 +129,7 @@ graph TD
 
     API --> |"data"| DB[(PostgreSQL)]
 
-    Dispatcher[Task Dispatcher<br/>scheduler-pipeline, 30s poll] --> |"draft project + stories"| ScaffoldQueue[scaffold:queue]
+    ScaffoldLoop[Scaffold loop<br/>scheduler-pipeline, 30s poll] --> |"draft project + stories"| ScaffoldQueue[scaffold:queue]
     ScaffoldQueue --> Scaffolder[Scaffolder Service]
     Scaffolder --> |"copier + make setup + git push"| API
     Scaffolder --> |"saves tree, status=scaffolded"| API
@@ -140,7 +140,8 @@ graph TD
 
     Dispatcher --> |"finds unblocked tasks"| API
     Dispatcher --> |"XADD engineering:queue"| EngQueue[engineering:queue]
-    Dispatcher --> |"story complete → PR story/* → main, poller merges"| DeployQueue
+    StoryCompletion[Story completion loop] --> |"all tasks done → PR story/* → main"| API
+    PRCI[PR/CI loop] --> |"merge current PR → deploy"| DeployQueue
 
     EngQueue --> EngConsumer[Engineering Consumer]
     EngConsumer --> EngGraph[Engineering Subgraph]
@@ -148,14 +149,14 @@ graph TD
     DeployQueue --> DepConsumer[Deploy Consumer]
     DepConsumer --> DepGraph[DevOps Subgraph]
     DepGraph --> |"run.result = DeployOutcome"| API
-    Dispatcher --> |"supervise: deploy SUCCESS → QA"| QAQueue[qa:queue]
+    Lifecycle[Lifecycle supervision loop] --> |"deploy SUCCESS → QA"| QAQueue[qa:queue]
     QAQueue --> QAConsumer[QA Consumer]
     QAConsumer --> |"assigned subscription executor"| QAResult{QA Pass?}
 
     %% Feedback Loops
     EngGraph --> |"task done → API"| API
     QAResult --> |"run.result = QAOutcome"| API
-    Dispatcher --> |"supervise: QA FAILED → fix task"| EngQueue
+    QARouting[QA routing loop] --> |"QA FAILED → fix task"| API
     Dispatcher -.-> |"story completed → po:proactive"| Bot
 ```
 
@@ -173,7 +174,7 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        ├──► API (create_project, create_repo, set_secret, create_story, ...)
                        │
                        │    Task Dispatcher (scheduler-pipeline, 30s poll)
-                       │      ├──► draft project + stories → XADD scaffold:queue
+                       │      Scaffold loop ─► draft project + stories → XADD scaffold:queue
                        │      │                                │
                        │      │                    Scaffolder Service
                        │      │                    │ copier + make setup + git push
@@ -185,8 +186,8 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        │                              ▼
                        │                           API: create tasks with blocked_by chains
                        │                              │
-                       │      ├──► XADD engineering:queue → Engineering Subgraph
-                       │      └──► story complete → XADD deploy:queue + po:proactive
+                       │      Task Dispatcher ─► XADD engineering:queue → Engineering Subgraph
+                       │      Story completion ─► PR review; PR/CI loop ─► XADD deploy:queue
                        ├──► XADD deploy:queue → DevOps Subgraph
                        └──► XADD po:response:{request_id} {text}
                                   │
