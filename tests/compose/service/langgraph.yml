@@ -115,7 +115,7 @@ services:
       dockerfile: services/langgraph/Dockerfile.test
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
-    command: ["pytest", "tests/service/", "-v"]
+    command: ["pytest", "tests/service/", "-v", "-ra", "--durations=0", "--durations-min=0"]
     environment:
       - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0

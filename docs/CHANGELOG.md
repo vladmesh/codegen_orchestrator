@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-30
 
+- Report every LangGraph service-test setup, call and teardown duration to measure native
+  notification waits separately from fixture and CI overhead.
+
 - Combine reviewed Python and frontend dependency fixes; pin PyJWT 2.15 in the API image
   to reject malformed JWT claims, and run admin frontend tests on the image's Node version in CI.
 
