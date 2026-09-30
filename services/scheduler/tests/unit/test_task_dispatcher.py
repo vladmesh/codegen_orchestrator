@@ -312,8 +312,6 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
         "trigger_scaffolds": 0,
         "dispatch_todo_tasks": 0,
         "complete_stories": 0,
-        "poll_merged_prs": 0,
-        "poll_ci_failures": None,
         "supervise_stuck_stories": {"retried": 0, "failed": 0},
         "supervise_stuck_tasks": {"timed_out": 0},
         "supervise_waiting_resource_tasks": {"resumed": 0, "expired": 0},
@@ -359,9 +357,8 @@ async def test_dispatcher_loop_continues_after_tick_failure_without_sweeping(mon
     monkeypatch.setattr(task_dispatcher, "logger", log)
     scaffold = AsyncMock(side_effect=[RuntimeError("tick failed"), 0])
     monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
-    for name in ("dispatch_todo_tasks", "complete_stories", "poll_merged_prs"):
+    for name in ("dispatch_todo_tasks", "complete_stories"):
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=0))
-    monkeypatch.setattr(task_dispatcher, "poll_ci_failures", AsyncMock())
     for name in (
         "supervise_stuck_stories",
         "supervise_stuck_tasks",
@@ -467,9 +464,8 @@ async def test_temporary_access_loop_logs_zero_count_cycle(monkeypatch):
 
 def _mock_dispatcher_tick(monkeypatch, task_dispatcher, *, scaffold):
     monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
-    for name in ("dispatch_todo_tasks", "complete_stories", "poll_merged_prs"):
+    for name in ("dispatch_todo_tasks", "complete_stories"):
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=0))
-    monkeypatch.setattr(task_dispatcher, "poll_ci_failures", AsyncMock())
     for name in (
         "supervise_stuck_stories",
         "supervise_stuck_tasks",
@@ -2407,7 +2403,7 @@ class TestPollMergedPRs:
     async def test_triggers_create_deploy_for_first_story(self, api_client, redis_client):
         """First story merge -> action='create'."""
 
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
             _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=42)
@@ -2450,7 +2446,7 @@ class TestPollMergedPRs:
     ):
         """Project with a completed story -> action='feature'."""
 
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
             _story(id="story-2", project_id=PROJ_ID, status="pr_review", pr_number=43)
@@ -2487,7 +2483,7 @@ class TestPollMergedPRs:
     async def test_no_action_when_pr_not_merged(self, api_client, redis_client):
         """Story in pr_review with open (not merged) PR -> no action."""
 
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
             _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=42)
@@ -2515,7 +2511,7 @@ class TestPollMergedPRs:
     @pytest.mark.asyncio
     async def test_no_action_when_no_stories_in_pr_review(self, api_client, redis_client):
         """No stories in pr_review -> nothing to poll."""
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = []
 
@@ -2527,7 +2523,7 @@ class TestPollMergedPRs:
     async def test_continues_on_github_error(self, api_client, redis_client):
         """GitHub API error for one story doesn't block others."""
 
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         proj2_id = "00000000-0000-0000-0000-000000000002"
         api_client.get_stories_by_status.return_value = [

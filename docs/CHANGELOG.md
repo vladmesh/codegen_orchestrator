@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-30
+
+- Run merged-PR handling and CI-failure routing in their own scheduler loop, so dispatcher failures
+  cannot delay deploy routing and one PR/CI path cannot suppress the other.
+
 ## 2026-09-29
 
 - Admit provider-absent, unreachable, unmanaged and off-allowlist Time4VPS history in production preflight;

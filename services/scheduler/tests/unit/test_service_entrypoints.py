@@ -224,6 +224,7 @@ async def test_pipeline_starts_without_loki(monkeypatch):
     workers = run_workers.await_args.args[0]
     assert [(name, worker) for name, worker in workers] == [
         ("task_dispatcher", pipeline.task_dispatcher_loop),
+        ("pr_ci", pipeline.pr_ci_loop),
         ("worker_reconciliation", pipeline.worker_reconciliation_loop),
         ("temporary_access", pipeline.temporary_access_loop),
         ("owner_notifications", pipeline.owner_notification_loop),
@@ -256,6 +257,7 @@ async def test_worker_inventory_is_complete_and_disjoint(monkeypatch):
 
     assert set().union(*inventories.values()) == {
         "task_dispatcher",
+        "pr_ci",
         "worker_reconciliation",
         "temporary_access",
         "owner_notifications",
