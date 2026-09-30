@@ -64,7 +64,9 @@ async def test_cancellation_propagates_without_spending_delivery_budget():
 
     with (
         patch.object(_base, "_check_message_staleness", new=AsyncMock(return_value=False)),
-        patch.object(_base, "execute_live_work", new=AsyncMock(side_effect=asyncio.CancelledError())),
+        patch.object(
+            _base, "execute_live_work", new=AsyncMock(side_effect=asyncio.CancelledError())
+        ),
         pytest.raises(asyncio.CancelledError),
     ):
         await _base._process_entry(msg, redis, "architect:queue", "g", "architect", AsyncMock())
