@@ -19,8 +19,13 @@ class FakeClient:
 
     def __init__(self) -> None:
         self.acked: list[str] = []
+        self.rejected: list[str] = []
 
     async def ack(self, stream: str, group: str, message_id: str) -> None:
+        self.acked.append(message_id)
+
+    async def reject_entry(self, stream, group, message_id, **kwargs) -> None:
+        self.rejected.append(message_id)
         self.acked.append(message_id)
 
 
@@ -28,8 +33,8 @@ def _entry(message_id: str, data: dict) -> SimpleNamespace:
     return SimpleNamespace(message_id=message_id, data=data)
 
 
-async def test_invalid_status_is_acked_and_discarded(monkeypatch):
-    """A legacy/invalid status ('error') fails validation and must be ACKed."""
+async def test_invalid_status_is_quarantined_then_acked(monkeypatch):
+    """A legacy/invalid status is terminal but remains visible in the DLQ."""
     processed: list = []
 
     async def _spy(result):
@@ -42,7 +47,8 @@ async def test_invalid_status_is_acked_and_discarded(monkeypatch):
 
     await handle_provisioner_entry(client, poison)
 
-    assert client.acked == ["10-0"]  # terminal ACK, no reclaim loop
+    assert client.rejected == ["10-0"]
+    assert client.acked == ["10-0"]  # terminal ACK only after quarantine
     assert processed == []  # never dispatched downstream
 
 
