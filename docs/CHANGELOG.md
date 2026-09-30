@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-30
 
+- Combine reviewed Python and frontend dependency fixes; pin PyJWT 2.15 in the API image
+  to reject malformed JWT claims, and run admin frontend tests on the image's Node version in CI.
+
 - Finish scheduler-pipeline decomposition: engineering dispatch, scaffold, story completion, lifecycle
   supervision and QA routing now run behind independent failure boundaries.
 
