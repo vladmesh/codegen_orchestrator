@@ -16,6 +16,7 @@ import structlog
 import yaml
 
 from shared.diagnostics import redact_diagnostic
+from shared.git_not_found_retry import git_repository_not_found, retry_delay_after
 from src.validation import ScaffoldInputError, validate_modules, validate_project_name
 
 logger = structlog.get_logger(__name__)
@@ -79,6 +80,46 @@ def _git_auth_env(token: str) -> dict[str, str]:
 
 def _failure_detail(stderr: str, stdout: str, token: str) -> str:
     return redact_diagnostic(stderr or stdout, secrets=(token,))
+
+
+_ORIGIN_MAIN = "refs/remotes/origin/main"
+
+
+async def _fetch_new_remote(workspace: Path, token: str, log) -> tuple[int, str, str, int]:
+    """Fetch origin until it serves `main`, waiting out GitHub's post-create lag.
+
+    The repository was created with `auto_init`, so a served repository always has
+    `main`. Only "not found" answers and a fetch without `origin/main` are treated as
+    "not served yet" and retried with backoff; any other failure returns at once.
+    Returns (returncode, stdout, stderr, attempts).
+    """
+    env = _git_auth_env(token)
+    attempt = 0
+    while True:
+        attempt += 1
+        rc, out, err = await _run_cmd(["git", "fetch", "origin"], cwd=workspace, env=env)
+        if rc == 0:
+            has_main, _, _ = await _run_cmd(
+                ["git", "rev-parse", "--verify", "--quiet", _ORIGIN_MAIN], cwd=workspace
+            )
+            if has_main == 0:
+                if attempt > 1:
+                    log.info("scaffold_fetch_ready", attempts=attempt)
+                return rc, out, err, attempt
+            rc, out, err = 1, "", "origin has no main branch yet\n"
+        elif not git_repository_not_found(err, out):
+            return rc, out, err, attempt
+
+        delay = retry_delay_after(attempt)
+        if delay is None:
+            return rc, out, err, attempt
+        log.warning(
+            "scaffold_fetch_retry",
+            attempt=attempt,
+            delay_seconds=delay,
+            error=_failure_detail(err, out, token),
+        )
+        await asyncio.sleep(delay)
 
 
 async def _nothing_to_commit(workspace: Path) -> bool:
@@ -161,10 +202,8 @@ async def run_scaffold(  # noqa: PLR0915
         result.error = f"Git init/fetch failed: {detail}"
         log.error("scaffold_clone_failed", error=detail)
         return result
-    rc, out, err = await _run_cmd(
-        ["git", "fetch", "origin"], cwd=workspace, env=_git_auth_env(github_token)
-    )
-    result.commands_log.append(f"git init+fetch: rc={rc}")
+    rc, out, err, attempts = await _fetch_new_remote(workspace, github_token, log)
+    result.commands_log.append(f"git init+fetch: rc={rc} attempts={attempts}")
     if rc != 0:
         detail = _failure_detail(err, out, github_token)
         result.error = f"Git init/fetch failed: {detail}"

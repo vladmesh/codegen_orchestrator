@@ -18,13 +18,16 @@ services:
           SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["sh", "-c", "trap 'exit 0' TERM INT; python -c 'import src.main'; sleep infinity & wait"]
     environment:
+      DEFAULT_AGENT_TYPE: claude
       TELEGRAM_BOT_TOKEN: "123:test"
       REDIS_URL: redis://redis:6379/0
+      SECRETS_ENCRYPTION_KEY: wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       API_BASE_URL: http://api:8000
       # The bot reaches the API through the shared internal transport, which reads
       # this at import time. Without it the container dies on a KeyError.
       INTERNAL_API_KEY: test-internal-api-key-for-service-tests
       LK_DOMAIN: https://lk.test.example.com
+      TELEGRAM_MAX_CONCURRENT_UPDATES: "8"
     # The runner's own tests cannot tell a live bot from a crashed one, so the
     # import that starts this container is a health condition the runner waits on.
     # A bot that cannot import is a red suite, not a green one with a dead service.
@@ -49,11 +52,14 @@ services:
         args:
           SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
+      DEFAULT_AGENT_TYPE: claude
       REDIS_URL: redis://redis:6379/0
+      SECRETS_ENCRYPTION_KEY: wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       TELEGRAM_BOT_TOKEN: "123:test"
       API_BASE_URL: http://api:8000
       INTERNAL_API_KEY: test-internal-api-key-for-service-tests
       LK_DOMAIN: https://lk.test.example.com
+      TELEGRAM_MAX_CONCURRENT_UPDATES: "8"
       PYTHONPATH: /app
     volumes:
       # Mounted file by file on purpose. Binding the whole service directory
@@ -67,7 +73,7 @@ services:
       - ../../../services/telegram_bot/pytest.ini:/app/pytest.ini
       - ../../../shared:/app/shared
     working_dir: /app
-    command: ["pytest", "tests/service", "-v", "-s", "--asyncio-mode=auto"]
+    command: ["pytest", "tests/service", "tests/integration/po_transport", "-v", "-s", "--asyncio-mode=auto"]
     depends_on:
       redis:
         condition: service_healthy

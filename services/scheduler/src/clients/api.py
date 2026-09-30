@@ -18,6 +18,8 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionRead,
 )
 from shared.contracts.dto.engineering_dispatch import (
+    EngineeringAttemptStartCommand,
+    EngineeringAttemptStartRead,
     EngineeringDispatchCommand,
     EngineeringDispatchRead,
 )
@@ -26,22 +28,42 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureParkRead,
 )
 from shared.contracts.dto.incident import IncidentDTO
-from shared.contracts.dto.owner_notification import OwnerNotification
+from shared.contracts.dto.lifecycle_wait import (
+    TaskResourceResumeCommand,
+    TaskResourceResumeRead,
+    TaskResourceWaitCommand,
+    TaskResourceWaitRead,
+    UserSecretWaitCommand,
+    UserSecretWaitRead,
+)
+from shared.contracts.dto.owner_notification import (
+    OwnerNotification,
+    OwnerNotificationAttemptClaim,
+)
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairCommand, PRConflictRepairRead
 from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.run_result import QARunResult
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
+from shared.contracts.dto.state_wait import StateWaitExpiryCommand, StateWaitExpiryRead
 from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story_failure import StoryFailure
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.temporary_access import (
+    QA_ROUTING_PENDING,
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantDTO,
     TemporaryAccessGrantUpdate,
 )
 from shared.contracts.dto.user import UserDTO
-from shared.contracts.dto.users_grant import GrantIntentLifecycleResult
+from shared.contracts.dto.users_grant import (
+    GrantIntent,
+    GrantIntentKind,
+    GrantIntentLifecycleRequest,
+    GrantIntentLifecycleResult,
+)
 from shared.contracts.dto.work_admission import PaidRunStartCommand, PaidRunStartRead
 from src.config import get_settings
 
@@ -58,10 +80,6 @@ class SchedulerAPIClient(InternalAPIClient):
 
     def __init__(self) -> None:
         super().__init__(get_settings().api_base_url)
-
-    async def ingest_rag(self, body: bytes, headers: dict) -> dict:
-        resp = await self.request("POST", "rag/ingest", content=body, headers=headers)
-        return resp.json()
 
     # --- Projects ---
 
@@ -183,19 +201,33 @@ class SchedulerAPIClient(InternalAPIClient):
         return RunDTO.model_validate(resp.json())
 
     async def resume_initial_owner_grant(
-        self, project_id: str, *, story_id: str, head_sha: str, deployed_commit_sha: str
+        self,
+        project_id: str,
+        *,
+        story_id: str,
+        head_sha: str,
+        deployed_commit_sha: str,
+        merged_pr_number: int | None = None,
+        expected_execution_run_id: str | None = None,
     ) -> GrantIntentLifecycleResult:
         resp = await self.request(
             "POST",
             f"projects/{project_id}/users/grant-intents/lifecycle",
-            json={
-                "kind": "initial_owner",
-                "story_id": story_id,
-                "head_sha": head_sha,
-                "deployed_commit_sha": deployed_commit_sha,
-            },
+            json=GrantIntentLifecycleRequest(
+                kind=GrantIntentKind.INITIAL_OWNER,
+                story_id=story_id,
+                head_sha=head_sha,
+                deployed_commit_sha=deployed_commit_sha,
+                merged_pr_number=merged_pr_number,
+                expected_execution_run_id=expected_execution_run_id,
+            ).model_dump(mode="json", exclude_none=True),
         )
         return GrantIntentLifecycleResult.model_validate(resp.json())
+
+    async def get_users_grant_intent(self, project_id: str, intent_id: str) -> GrantIntent:
+        """Read the durable binding before trying an owed owner-grant handoff."""
+        resp = await self.request("GET", f"projects/{project_id}/users/grant-intents/{intent_id}")
+        return GrantIntent.model_validate(resp.json())
 
     async def latest_deployed_commit_sha(self, application_id: int) -> str | None:
         """The built commit the newest successful deployment of one application put there.
@@ -284,6 +316,20 @@ class SchedulerAPIClient(InternalAPIClient):
     async def update_story_owner_notification(self, story_id: str, notification: dict) -> None:
         """Persist one delivery attempt against a story-backed completion record."""
         await self.request("PATCH", f"stories/{story_id}/owner-notification", json=notification)
+
+    async def claim_story_owner_notification_attempt(
+        self, story_id: str
+    ) -> OwnerNotificationAttemptClaim:
+        """Ask the API for one delivery attempt on a story-backed record."""
+        resp = await self.request("POST", f"stories/{story_id}/owner-notification/attempt")
+        return OwnerNotificationAttemptClaim.model_validate(resp.json())
+
+    async def claim_run_owner_notification_attempt(
+        self, run_id: str
+    ) -> OwnerNotificationAttemptClaim:
+        """Ask the API for one delivery attempt on a run-backed record."""
+        resp = await self.request("POST", f"runs/{run_id}/owner-notification/attempt")
+        return OwnerNotificationAttemptClaim.model_validate(resp.json())
 
     async def update_run(self, run_id: str, data: dict) -> None:
         """Patch run fields (status, error_message, result)."""
@@ -429,28 +475,36 @@ class SchedulerAPIClient(InternalAPIClient):
         error: str,
         run_error_message: str,
         run_result: QARunResult,
-    ) -> TemporaryAccessGrantDTO:
+    ) -> TemporaryAccessGrantDTO | None:
         """Give up on a quiet revoke: the QA run carries the failure, in one write.
 
         The run that borrowed the identity is where the cleanup incident is
         recorded, so the record of what happened to the access is next to the run
         it was lent to rather than in a log line. It is not what decides the
-        story: by the time the sweep runs out of attempts the story has been
-        routed on the product verdict QA gave, and a completed one is not
-        reopened by anything written here.
+        story: while the QA run has a verdict its story has not routed yet, the
+        API refuses the escalation and this returns None, so the incident is
+        only ever written after the story consumed that verdict.
 
         Doing this through the ordinary run patch would be refused, and rightly —
         that path is where a stale worker verdict would overwrite a supervisor's.
         """
-        resp = await self.request(
-            "POST",
-            f"temporary-access-grants/{grant_id}/escalate",
-            json={
-                "error": error,
-                "run_error_message": run_error_message,
-                "run_result": run_result.model_dump(mode="json"),
-            },
-        )
+        try:
+            resp = await self.request(
+                "POST",
+                f"temporary-access-grants/{grant_id}/escalate",
+                json={
+                    "error": error,
+                    "run_error_message": run_error_message,
+                    "run_result": run_result.model_dump(mode="json"),
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            if (
+                exc.response.status_code == httpx.codes.CONFLICT
+                and exc.response.json().get("detail") == QA_ROUTING_PENDING
+            ):
+                return None
+            raise
         return TemporaryAccessGrantDTO.model_validate(resp.json())
 
     async def update_temporary_access_grant(
@@ -499,12 +553,20 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("POST", f"stories/{story_id}/fail", json={"actor": "supervisor"})
         return StoryDTO.model_validate(resp.json())
 
-    async def wait_user_secret_story(self, story_id: str) -> StoryDTO:
-        """Park a deploying story in WAITING_USER_SECRET until the secret appears."""
+    async def park_waiting_user_secret(
+        self, story_id: str, command: UserSecretWaitCommand
+    ) -> UserSecretWaitRead:
+        """Park a deploying story in WAITING_USER_SECRET, owing the owner the ask.
+
+        The transition and the ask on the deploy Run commit in one API
+        transaction; a repeat returns `already_waiting` with the Run's ask.
+        """
         resp = await self.request(
-            "POST", f"stories/{story_id}/wait-user-secret", json={"actor": "supervisor"}
+            "POST",
+            f"stories/{story_id}/park-waiting-user-secret",
+            json=command.model_dump(mode="json"),
         )
-        return StoryDTO.model_validate(resp.json())
+        return UserSecretWaitRead.model_validate(resp.json())
 
     async def retry_story_after_ci_failure(self, story_id: str) -> StoryDTO:
         """Hand a story whose CI run failed back to engineering in one server-side move.
@@ -519,6 +581,14 @@ class SchedulerAPIClient(InternalAPIClient):
             json={"actor": "scheduler"},
         )
         return StoryDTO.model_validate(resp.json())
+
+    async def repair_story_pr_conflicts(
+        self, story_id: str, command: PRConflictRepairCommand
+    ) -> PRConflictRepairRead:
+        resp = await self.request(
+            "POST", f"stories/{story_id}/repair-pr-conflicts", json=command.model_dump(mode="json")
+        )
+        return PRConflictRepairRead.model_validate(resp.json())
 
     async def park_infrastructure_refusal(
         self, story_id: str, command: EngineeringInfrastructureParkCommand
@@ -535,15 +605,50 @@ class SchedulerAPIClient(InternalAPIClient):
         )
         return EngineeringInfrastructureParkRead.model_validate(resp.json())
 
-    async def transition_story(self, story_id: str, action: str) -> StoryDTO:
+    async def expire_state_wait(
+        self, story_id: str, command: StateWaitExpiryCommand
+    ) -> StateWaitExpiryRead:
+        """End one expired wait, only if the story is still where it was observed.
+
+        The API compares the expected status and anchor on the locked rows and
+        either commits reason, owed owner record and transition together, or
+        writes nothing and names the mismatch; a repeat returns `already_ended`.
+        """
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/expire-state-wait",
+            json=command.model_dump(mode="json"),
+        )
+        return StateWaitExpiryRead.model_validate(resp.json())
+
+    async def transition_story(
+        self, story_id: str, action: str, *, qa_run_id: str | None = None
+    ) -> StoryDTO:
         """Apply one Story transition. action: 'start', 'complete', 'archive'.
 
         Single hops only.  A move that needs more than one hop is a composite
         action in ``services/api/src/routers/_story_actions.py`` and gets its
         own client method above; never call this twice for the same story.
+
+        ``qa_run_id`` names the terminal QA run whose verdict this move routes;
+        the API stamps that run as routed in the same transaction.
         """
+        body: dict[str, str] = {"actor": "architect"}
+        if qa_run_id is not None:
+            body["qa_run_id"] = qa_run_id
+        resp = await self.request("POST", f"stories/{story_id}/{action}", json=body)
+        return StoryDTO.model_validate(resp.json())
+
+    async def stop_story(
+        self, story_id: str, action: str, failure: StoryFailure, *, actor: str
+    ) -> StoryDTO:
+        """Commit a story stop, its reason and both notification obligations together."""
+        if action not in {"fail", "human-review"}:
+            raise ValueError(f"{action} is not a stopping story action")
         resp = await self.request(
-            "POST", f"stories/{story_id}/{action}", json={"actor": "architect"}
+            "POST",
+            f"stories/{story_id}/{action}",
+            json={"actor": actor, "failure": failure.model_dump(mode="json")},
         )
         return StoryDTO.model_validate(resp.json())
 
@@ -611,6 +716,42 @@ class SchedulerAPIClient(InternalAPIClient):
             json={"actor": actor, "details": details or {}},
         )
         return TaskDTO.model_validate(resp.json())
+
+    async def start_engineering_attempt(
+        self, command: EngineeringAttemptStartCommand
+    ) -> EngineeringAttemptStartRead:
+        resp = await self.request(
+            "POST",
+            "work-admission/engineering-dispatches/start",
+            json=command.model_dump(mode="json"),
+        )
+        return EngineeringAttemptStartRead.model_validate(resp.json())
+
+    async def park_task_waiting_resources(
+        self, task_id: str, command: TaskResourceWaitCommand
+    ) -> TaskResourceWaitRead:
+        """Park a refused engineering task in WAITING_RESOURCES in one API transaction.
+
+        The wait's facts, the transition and — when the park starts the wait —
+        the owed announcement on the refused Run commit together.
+        """
+        resp = await self.request(
+            "POST",
+            f"tasks/{task_id}/park-waiting-resources",
+            json=command.model_dump(mode="json"),
+        )
+        return TaskResourceWaitRead.model_validate(resp.json())
+
+    async def resume_task_from_resource_wait(
+        self, task_id: str, command: TaskResourceResumeCommand
+    ) -> TaskResourceResumeRead:
+        """Release a waiting task to TODO and owe the "resumed" notice, atomically."""
+        resp = await self.request(
+            "POST",
+            f"tasks/{task_id}/resume-from-resource-wait",
+            json=command.model_dump(mode="json"),
+        )
+        return TaskResourceResumeRead.model_validate(resp.json())
 
     async def create_task_event(self, task_id: str, event: dict) -> TaskEventDTO:
         resp = await self.request("POST", f"tasks/{task_id}/events", json=event)

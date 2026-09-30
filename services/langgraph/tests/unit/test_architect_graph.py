@@ -9,31 +9,19 @@ import pytest
 
 
 class TestCreateArchitectGraph:
-    @patch("src.agents.architect.graph.ChatOpenAI")
-    def test_graph_compiles(self, mock_chat):
-        mock_chat.return_value = MagicMock()
+    def test_graph_compiles(self):
         from src.agents.architect.graph import create_architect_graph
 
-        graph = create_architect_graph(
-            model="test-model",
-            base_url="http://localhost:1234",
-            api_key="test-key",
-        )
+        graph = create_architect_graph(MagicMock())
 
         assert graph is not None
         # Graph should have nodes
         assert len(graph.nodes) > 0
 
-    @patch("src.agents.architect.graph.ChatOpenAI")
-    def test_graph_has_agent_node(self, mock_chat):
-        mock_chat.return_value = MagicMock()
+    def test_graph_has_agent_node(self):
         from src.agents.architect.graph import create_architect_graph
 
-        graph = create_architect_graph(
-            model="test-model",
-            base_url="http://localhost:1234",
-            api_key="test-key",
-        )
+        graph = create_architect_graph(MagicMock())
 
         node_names = set(graph.nodes.keys())
         assert "agent" in node_names
@@ -171,18 +159,11 @@ class TestPlanningIdentityIsInjectedIntoTools:
             ]
         )
 
-        with (
-            patch("src.agents.architect.graph.ChatOpenAI", return_value=model),
-            patch("src.agents.architect.tools.api_client") as api,
-        ):
+        with patch("src.agents.architect.tools.api_client") as api:
             api.create_task = AsyncMock(return_value=make_task(id="task-new", title="New task"))
             from src.agents.architect.graph import create_architect_graph
 
-            graph = create_architect_graph(
-                model="test-model",
-                base_url="http://localhost:1234",
-                api_key="test-key",
-            )
+            graph = create_architect_graph(model)
             await graph.ainvoke(
                 {
                     "messages": [{"role": "user", "content": "Decompose story story-abc."}],

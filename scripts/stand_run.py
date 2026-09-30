@@ -22,17 +22,21 @@ lessons are the reason this file exists:
   runner that sourced `.env` into its own environment pins the executor it is
   trying to change. Every compose call here is made with that name removed.
 
-* **A run outlives the SSH session that starts it.** A mega takes ten minutes,
-  a matrix an hour; both are longer than a connection reliably lives. Start this
-  detached (`setsid nohup`) and read the log it names.
+* **A run outlives the SSH session that starts it.** A mega takes tens of
+  minutes, a live one hours; both are longer than a connection reliably lives.
+  Start this detached (`setsid nohup`) and read the log it names.
+
+* **The stand runs the pulled release, never a build.** Every compose call here
+  carries the service release override bring-up generated, named by
+  `STAND_SERVICE_RELEASE_COMPOSE` (the workflow sets it), and a recreate runs
+  `up --no-build --pull never`. A run without the override is refused.
 
 Suites are a table, not code paths, so a new one is a line:
 
     ./scripts/stand_run.py --suite mega-noop
-    ./scripts/stand_run.py --suite mega-llm --worker codex --qa claude
+    ./scripts/stand_run.py --suite mega-live --worker codex --qa claude
     ./scripts/stand_run.py --suite mega-brief --worker codex --qa claude
     ./scripts/stand_run.py --suite mega-brief-package --worker codex --qa claude
-    ./scripts/stand_run.py --suite matrix
     ./scripts/stand_run.py --suite tests/live/test_api_crud.py
 """
 
@@ -56,9 +60,13 @@ from xml.etree import ElementTree
 
 import yaml
 
+from scripts import clean_live_tests
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
+from shared.live_contour import CONTOURS
 from shared.stand_deadlines import (
+    CUSTOM_TARGET_TIMEOUT_SECONDS,
+    LIVE_SUITE_TIMEOUT_SECONDS,
     MEGA_BRIEF_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
@@ -87,22 +95,38 @@ READINESS_POLL_SECONDS = 5
 # the container itself was already answering itself. An in-container probe would
 # have passed and the suite would still have failed.
 SUITE_API_BASE_URL = "http://localhost:8000"
+# The contour every child of the runner is started in: the suites, preflight and
+# the sweep.
+STAND_CONTOUR = CONTOURS["stand"]
 API_HEALTH_PATH = "/health"
 API_HEALTH_OK_STATUS = 200
 # Every compose verb that can leave a container running. Each one has to go
 # through the gate, so that "recreate" and "wait" cannot be separated by a
 # future caller who only needs the first half.
 COMPOSE_LIFECYCLE_COMMANDS = ("up", "start", "restart")
+# The stand runs the tested release: the workflow's bring-up pulls the service
+# release of the run's SHA and generates the deploy's compose override from it
+# (scripts/service_release.py compose-override), and nothing on the host carries a
+# `codegen-orchestrator/*:local` image. Without that override a recreate here would
+# find no image and build the service from this checkout — an untested build, on the
+# stand, which is what the release exists to end. So every compose call of the
+# runner carries the override, the one verb it brings containers up with carries
+# the deploy's release policy, and a run without the override is refused.
+SERVICE_RELEASE_OVERRIDE_ENV = "STAND_SERVICE_RELEASE_COMPOSE"
+COMPOSE_RELEASE_POLICY = ("--no-build", "--pull", "never")
+# Verbs that build, pull, or start a container without taking that policy (`start`
+# and `restart` accept no `--no-build`); the runner has no use for any of them.
+COMPOSE_REFUSED_COMMANDS = ("build", "create", "pull", "run", "start", "restart")
 #: Set only inside `recreate_and_wait`; `_compose` refuses a lifecycle verb
 #: outside it. This is what makes the gate the only door rather than the
 #: politest one.
 _INSIDE_RECREATE_GATE = False
-# The noop lifecycle's cap is not stated here: it is derived in
-# `shared/stand_deadlines.py` from the waits themselves, so the runner, its test
-# and `tests/live/README.md` cannot drift apart again. Since card 1316 the
-# lifecycle runs two stories on one project, which is what moved it.
-LLM_SUITE_TIMEOUT_SECONDS = 3600
-CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
+# Neither level-1 lifecycle cap is stated here: `mega-noop`'s and `mega-live`'s
+# are derived in `shared/stand_deadlines.py` from the waits themselves, so the
+# runner, its test and `tests/live/README.md` cannot drift apart again. Since
+# card 1316 the lifecycle runs two stories on one project, which is what moved it.
+# `CUSTOM_TARGET_TIMEOUT_SECONDS` lives there too: the ordinary live test bound is
+# ordered under it.
 PREFLIGHT_TIMEOUT_SECONDS = 300
 SWEEP_TIMEOUT_SECONDS = 300
 
@@ -144,12 +168,14 @@ BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS = (
 # about seven minutes; the minimal replacement is expected to need 2–3 minutes,
 # pending a live confirmation. The overall provisioning bound remains unchanged.
 STAND_PROVISIONING_TIMEOUT_SECONDS = 2700
-# A matrix has four 60-minute LLM cells.  Each cell can require a full executor
-# switch; runner preflight and the fail-closed sweep have their own bounds.
-MATRIX_RUNNER_TIMEOUT_SECONDS = (
+# `mega-live` switches the QA executor once — a recreate with its readiness wait,
+# then the resolver's confirmation — before its one pytest cell, and has the same
+# preflight and fail-closed sweep as every suite.
+LIVE_RUNNER_TIMEOUT_SECONDS = (
     PREFLIGHT_TIMEOUT_SECONDS
-    + len(("claude", "codex")) ** 2
-    * (LLM_SUITE_TIMEOUT_SECONDS + READINESS_TIMEOUT_SECONDS + EXECUTOR_SWITCH_TIMEOUT_SECONDS)
+    + READINESS_TIMEOUT_SECONDS
+    + EXECUTOR_SWITCH_TIMEOUT_SECONDS
+    + LIVE_SUITE_TIMEOUT_SECONDS
     + SWEEP_TIMEOUT_SECONDS
 )
 # The workflow has work before its bounded provisioning phase (checkout, uv,
@@ -158,7 +184,7 @@ MATRIX_RUNNER_TIMEOUT_SECONDS = (
 STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS = 600
 STAND_JOB_RESERVE_SECONDS = 480
 # 360 minutes covers 45m provisioning + 10m workflow reserve + the longest
-# runner path + an 8m job reserve. The longest path is the matrix (274m); the
+# runner path + an 8m job reserve. The longest path is `mega-live` (281m); the
 # Product Brief runners are 76m and 96m, and `mega-noop` is 171m. Every one of
 # those is checked against this cap in `scripts/tests/test_stand_run.py`, and
 # `tests/unit/test_documented_stand_budgets.py` checks that the minutes stated
@@ -203,21 +229,33 @@ class Suite:
     cleanup_grace_seconds: int = 0
     #: A short process-group grace after the backstop interrupts a wedged suite.
     termination_grace_seconds: int = PROCESS_GROUP_TERMINATION_GRACE_SECONDS
+    #: The suite deploys the level-1 Telegram-bot product. With `llm`, its QA
+    #: executor opens the QA Telegram session, which the workflow proves before
+    #: any spend (scripts/stand_telethon_preflight.py).
+    telegram_bot_product: bool = False
     description: str = ""
 
 
 SUITES: dict[str, Suite] = {
     "mega-noop": Suite(
         target="tests/live/test_full_pipeline.py::TestFullPipeline",
+        telegram_bot_product=True,
         llm=False,
         timeout_seconds=NOOP_SUITE_TIMEOUT_SECONDS,
-        description="the full pipeline with a noop worker: infrastructure and deploy, no agents",
+        description=(
+            "level 1: the two-story lifecycle with the scripted developer and deterministic QA, "
+            "no model call"
+        ),
     ),
-    "mega-llm": Suite(
-        target="tests/live/test_full_pipeline.py::TestFullPipelineLLM",
+    "mega-live": Suite(
+        target="tests/live/test_full_pipeline.py::TestFullPipeline",
+        telegram_bot_product=True,
         llm=True,
-        timeout_seconds=LLM_SUITE_TIMEOUT_SECONDS,
-        description="the full pipeline with a real coding agent and a real QA executor",
+        timeout_seconds=LIVE_SUITE_TIMEOUT_SECONDS,
+        description=(
+            "level 2: the same two-story lifecycle with a real developer (--worker) and a real "
+            "QA executor (--qa)"
+        ),
     ),
     "mega-brief": Suite(
         target="tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
@@ -240,15 +278,9 @@ SUITES: dict[str, Suite] = {
             "architect plans, the worker installs, and central QA judges on its own route"
         ),
     ),
-    "matrix": Suite(
-        target="tests/live/test_full_pipeline.py::TestFullPipelineLLM",
-        llm=True,
-        combinations=tuple((qa, worker) for qa in AGENTS for worker in AGENTS),
-        timeout_seconds=LLM_SUITE_TIMEOUT_SECONDS,
-        description="every QA executor against every worker agent",
-    ),
 }
-SUITE_ALIASES = {"mega": "mega-noop", "llm": "mega-llm"}
+# No alias names a paid suite: a paid run is always asked for by its own name.
+SUITE_ALIASES = {"mega": "mega-noop"}
 LLM_ENV_NAMES = ("LIVE_LLM_QA", "LIVE_QA_AGENT_TYPE", "LIVE_WORKER_AGENT_TYPE")
 LIVE_EVIDENCE_OUTPUT_DIR_ENV = "LIVE_EVIDENCE_OUTPUT_DIR"
 LIVE_RELAY_LINE_MAX_CHARS = 4096
@@ -302,6 +334,25 @@ def write_qa_executor(env_path: Path, executor: str) -> None:
     env_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
 
+def suite_environment(suite: Suite, *, qa: str, worker: str) -> dict[str, str]:
+    """What one suite's pytest child is told about its agents, and nothing else.
+
+    The one place a suite name becomes the child's agent environment. A suite
+    that spends no model is given nothing: `run_pytest` removes every
+    `LLM_ENV_NAMES` entry the parent or the deployed `.env` carries before this
+    is applied, so `mega-noop`'s developer resolves to `noop` whatever the
+    caller exported. A paid suite is given exactly the pair it was asked for,
+    with QA always an executor.
+    """
+    if not suite.llm:
+        return {}
+    return {
+        "LIVE_LLM_QA": "1",
+        "LIVE_QA_AGENT_TYPE": qa,
+        "LIVE_WORKER_AGENT_TYPE": worker,
+    }
+
+
 def matrix_row(suite_name: str, qa: str, worker: str, status: str, seconds: int) -> str:
     return f"{suite_name}\t{qa}\t{worker}\t{status}\t{seconds}\n"
 
@@ -311,9 +362,9 @@ def write_junit_report(
 ) -> None:
     """Write the stable JUnit companion for the human-readable TSV report.
 
-    Pytest's own JUnit output is awkward for the matrix because each invocation
-    would replace the previous file.  This report describes the runner's
-    combinations instead: one deterministic testcase per requested pair.
+    Pytest's own JUnit output describes tests, not the run the runner made of
+    them.  This report describes the runner's cells instead: one deterministic
+    testcase per requested pair.
     """
     failures = sum(status != "passed" for _qa, _worker, status, _seconds in results)
     suite = ElementTree.Element(
@@ -343,15 +394,109 @@ def write_junit_report(
     )
 
 
+class ReleaseOverrideMissing(RuntimeError):
+    """The stand's service release override is not there to run compose with."""
+
+
+def service_release_override() -> Path:
+    """The compose override bring-up generated from the pulled service release.
+
+    Named by `STAND_SERVICE_RELEASE_COMPOSE`, which the workflow sets for the
+    runner; a relative name is the file bring-up wrote in the checkout. Missing
+    either way is a refusal, never a fallback to compose's own build.
+    """
+    name = os.environ.get(SERVICE_RELEASE_OVERRIDE_ENV, "").strip()
+    if not name:
+        raise ReleaseOverrideMissing(
+            f"{SERVICE_RELEASE_OVERRIDE_ENV} is not set: the stand runs the pulled service "
+            "release through the compose override bring-up generated, and without it compose "
+            "would build the services from this checkout"
+        )
+    path = Path(name)
+    if not path.is_absolute():
+        path = REPO / path
+    if not path.is_file():
+        raise ReleaseOverrideMissing(
+            f"{SERVICE_RELEASE_OVERRIDE_ENV}={name} names no file ({path}): the service release "
+            "override bring-up generates is missing, and without it compose would build the "
+            "services from this checkout"
+        )
+    return path
+
+
+def sweep_environment(env: dict[str, str]) -> dict[str, str]:
+    """The environment the post-suite sweep runs with, and the one checked at entry.
+
+    `API_BASE_URL` is the runner's own stand endpoint and outranks anything
+    exported or in `.env`: the suites build their clients on
+    `SUITE_API_BASE_URL` and read no variable, so any other value would sweep an
+    API the suites never used — and the deployed `.env` names the container
+    network's `http://api:8000`, which the host cannot reach.
+    """
+    return {
+        **os.environ,
+        **env,
+        "LIVE_CONTOUR": STAND_CONTOUR.name,
+        clean_live_tests.API_BASE_URL_ENV: SUITE_API_BASE_URL,
+    }
+
+
+def sweep_requirements_refusal(env: dict[str, str], log) -> str | None:
+    """The report status a run whose sweep could not start is refused with, or None.
+
+    The sweep's own requirement list is asked, against the environment the sweep
+    will be given: run 35945831487 passed 39 tests in 20 minutes and was then red
+    because the sweep had no `API_BASE_URL`.
+    """
+    missing = clean_live_tests.missing_sweep_requirements(sweep_environment(env), STAND_CONTOUR)
+    if missing:
+        log(f"refused: the post-suite sweep cannot run without {', '.join(missing)}")
+        return "sweep_requirements_missing"
+    return None
+
+
+def release_override_refusal(log) -> str | None:
+    """The report status a run without its release override is refused with, or None."""
+    try:
+        override = service_release_override()
+    except ReleaseOverrideMissing as refusal:
+        log(f"refused: {refusal}")
+        return "release_override_missing"
+    log(f"service release override={override}")
+    return None
+
+
+def entry_refusal(env: dict[str, str], log, *, sweeps: bool) -> str | None:
+    """What a run is refused with before anything is spent on it, or None.
+
+    A recreate without the release override would build on the stand, and a
+    suite that needs none is still not run on a host whose bring-up left no
+    override behind. A sweep that could not start would make even a green suite
+    red, so a run that will sweep is refused for that here as well.
+    """
+    refused = release_override_refusal(log)
+    if refused is None and sweeps:
+        refused = sweep_requirements_refusal(env, log)
+    return refused
+
+
 def _compose(env: dict[str, str], *args: str, capture: bool = False) -> subprocess.CompletedProcess:
     if args and args[0] in COMPOSE_LIFECYCLE_COMMANDS and not _INSIDE_RECREATE_GATE:
         raise RuntimeError(
             f"docker compose {args[0]!r} brings containers up; call recreate_and_wait() so the "
             "runner waits for what it started instead of racing it"
         )
+    if args and args[0] in COMPOSE_REFUSED_COMMANDS or "--build" in args:
+        raise RuntimeError(
+            f"docker compose {' '.join(args[:1])!r} with {args[1:]!r} could build or pull on the "
+            "stand; the runner brings containers up only with `up "
+            f"{' '.join(COMPOSE_RELEASE_POLICY)}` from the pulled service release"
+        )
     command = ["docker", "compose"]
-    for name in COMPOSE_FILES:
+    for name in (*COMPOSE_FILES, str(service_release_override())):
         command += ["-f", name]
+    if args and args[0] == "up":
+        args = (args[0], *COMPOSE_RELEASE_POLICY, *args[1:])
     command += list(args)
     return subprocess.run(  # noqa: S603
         command,
@@ -473,6 +618,12 @@ def api_serves_health() -> bool:
         return False
 
 
+#: The consumers that do not start through `run_queue_worker`, and the line each
+#: logs once it reads its queue. `langgraph` runs the PO consumer itself
+#: (services/langgraph/src/consumers/po.py), which says `po_consumer_started`.
+STARTUP_LINES = {"langgraph": "po_consumer_started"}
+
+
 def consumer_past_startup(env: dict[str, str], service: str) -> bool:
     """Has a queue consumer finished starting, rather than merely being up?
 
@@ -481,10 +632,12 @@ def consumer_past_startup(env: dict[str, str], service: str) -> bool:
     configuration — that is, once it is actually reading its queue. Before that
     line the container is running and the work the suite queues would sit
     unclaimed. The recreate removed the previous container, so these logs belong
-    to the one just started.
+    to the one just started. A consumer with a start of its own names its line in
+    `STARTUP_LINES`.
     """
     result = _compose(env, "logs", "--no-color", service, capture=True)
-    return result.returncode == 0 and f"{service}_started" in result.stdout
+    line = STARTUP_LINES.get(service, f"{service}_started")
+    return result.returncode == 0 and line in result.stdout
 
 
 def service_is_ready(env: dict[str, str], service: str) -> bool:
@@ -672,7 +825,7 @@ def sweep(env: dict[str, str], log) -> bool:
             # of the repository root, and `shared` then cannot be imported.
             ["uv", "run", "python", "-m", "scripts.clean_live_tests"],  # noqa: S607
             cwd=REPO,
-            env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
+            env=sweep_environment(env),
             capture_output=True,
             text=True,
             timeout=SWEEP_TIMEOUT_SECONDS,
@@ -686,24 +839,40 @@ def sweep(env: dict[str, str], log) -> bool:
     return result.returncode == 0
 
 
+def sweep_only(env: dict[str, str]) -> int:
+    """`make stand-clean`: the run's sweep alone, with its environment and entry check."""
+    if sweep_requirements_refusal(env, print) is not None:
+        return 2
+    return 0 if sweep(env, print) else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run an e2e suite on the stand.",
         epilog=(
             "suites: "
             + "; ".join(f"{name} — {s.description}" for name, s in SUITES.items())
-            + "; legacy aliases: mega → mega-noop, llm → mega-llm"
+            + "; legacy alias: mega → mega-noop"
         ),
     )
-    parser.add_argument("--suite", required=True, help="a named suite, or any pytest target")
+    entry = parser.add_mutually_exclusive_group(required=True)
+    entry.add_argument("--suite", help="a named suite, or any pytest target")
+    entry.add_argument(
+        "--sweep-only",
+        action="store_true",
+        help="run only the stand sweep, with the environment and checks a run gives it",
+    )
     parser.add_argument("--worker", choices=AGENTS, default="claude")
     parser.add_argument("--qa", choices=AGENTS, default="codex")
     parser.add_argument("--skip-preflight", action="store_true")
     parser.add_argument("--skip-sweep", action="store_true", help="leave resources for inspection")
     args = parser.parse_args()
 
-    canonical_suite_name, suite = resolve_suite(args.suite)
     env = read_env_file(REPO / ".env")
+    if args.sweep_only:
+        return sweep_only(env)
+
+    canonical_suite_name, suite = resolve_suite(args.suite)
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = RUN_ROOT / f"{canonical_suite_name.replace('/', '_')}-{stamp}"
@@ -728,9 +897,12 @@ def main() -> int:
     report.write_text("suite\tqa_agent\tworker_agent\tstatus\tduration_seconds\n", encoding="utf-8")
     results: list[tuple[str, str, str, int]] = []
 
-    if not args.skip_preflight and not preflight(env, log):
+    refused = entry_refusal(env, log, sweeps=not args.skip_sweep)
+    if refused is None and not args.skip_preflight and not preflight(env, log):
         log("preflight refused the run")
-        results.append((args.qa, args.worker, "preflight_failed", 0))
+        refused = "preflight_failed"
+    if refused is not None:
+        results.append((args.qa, args.worker, refused, 0))
         with report.open("a", encoding="utf-8") as handle:
             handle.write(matrix_row(canonical_suite_name, *results[-1]))
         write_junit_report(run_dir / "junit.xml", canonical_suite_name, results)
@@ -740,21 +912,15 @@ def main() -> int:
 
     failed = 0
     for qa, worker in combinations:
-        extra: dict[str, str] = {}
-        if suite.llm:
-            if not ensure_qa_executor(env, qa, log):
-                with report.open("a", encoding="utf-8") as handle:
-                    handle.write(
-                        matrix_row(canonical_suite_name, qa, worker, "qa_executor_switch_failed", 0)
-                    )
-                results.append((qa, worker, "qa_executor_switch_failed", 0))
-                failed += 1
-                continue
-            extra = {
-                "LIVE_LLM_QA": "1",
-                "LIVE_QA_AGENT_TYPE": qa,
-                "LIVE_WORKER_AGENT_TYPE": worker,
-            }
+        if suite.llm and not ensure_qa_executor(env, qa, log):
+            with report.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    matrix_row(canonical_suite_name, qa, worker, "qa_executor_switch_failed", 0)
+                )
+            results.append((qa, worker, "qa_executor_switch_failed", 0))
+            failed += 1
+            continue
+        extra = suite_environment(suite, qa=qa, worker=worker)
 
         started = time.monotonic()
         log(f"running qa={qa} worker={worker}")

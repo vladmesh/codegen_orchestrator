@@ -29,6 +29,11 @@ def _deploy_job() -> dict:
     return _workflow()["jobs"]["deploy"]
 
 
+def _script(step: dict) -> str:
+    """The script a step runs: its own `run`, or the remote script of an ssh action."""
+    return step.get("run") or step["with"]["script"]
+
+
 def _steps_with_ssh() -> list[dict]:
     return [step for step in _deploy_job()["steps"] if "username" in step.get("with", {})]
 
@@ -98,7 +103,7 @@ def test_the_bot_token_never_reaches_another_contour():
     leaving the token unset for the stand would hand it production's.
     """
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    env_script = steps["Write .env to server"]["with"]["script"]
+    env_script = _script(steps["Write .env to server"])
 
     gated = (
         "TELEGRAM_BOT_TOKEN=${{ inputs.environment == 'production' "
@@ -135,18 +140,16 @@ def test_the_written_env_is_verified_not_the_inputs():
     guard = steps["Verify the deployed contour carries only its own credentials"]
 
     assert guard["if"] == PRODUCTION_ONLY.replace("==", "!=")
-    assert "${{ env.DEPLOY_PATH }}/.env" in guard["with"]["script"]
-    assert "MANAGED_SERVER_IDS_DECLARED" in guard["with"]["script"]
-    assert "exit 1" in guard["with"]["script"]
+    assert "${{ env.DEPLOY_PATH }}/.env" in _script(guard)
+    assert "MANAGED_SERVER_IDS_DECLARED" in _script(guard)
+    assert "exit 1" in _script(guard)
 
 
 def test_deploy_and_provider_policy_use_the_same_runtime_allowlist_key():
     """A deploy cannot demote every managed row by writing an obsolete key."""
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    env_script = steps["Write .env to server"]["with"]["script"]
-    deployed_guard = steps["Verify the deployed contour carries only its own credentials"]["with"][
-        "script"
-    ]
+    env_script = _script(steps["Write .env to server"])
+    deployed_guard = _script(steps["Verify the deployed contour carries only its own credentials"])
 
     expected_env_entry = (
         f"{TIME4VPS_MANAGED_IDS_ENV}=${{{{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}}}"
@@ -158,7 +161,7 @@ def test_deploy_and_provider_policy_use_the_same_runtime_allowlist_key():
 def test_the_contour_reaches_the_server_env():
     """Services and the sweep read their contour from the deployed .env."""
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    env_script = steps["Write .env to server"]["with"]["script"]
+    env_script = _script(steps["Write .env to server"])
 
     assert "LIVE_CONTOUR=${{ vars.LIVE_CONTOUR }}" in env_script
 
@@ -176,7 +179,7 @@ def test_a_contour_needs_no_registry_credential_of_its_own():
     scoped to this repository. Production keeps using its own secret.
     """
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    pull = steps["Pull and verify worker base images for this revision"]
+    pull = steps["Pull and verify this revision's worker and service releases"]
 
     assert "GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}'" in pull["with"]["script"]
     assert _deploy_job()["permissions"]["packages"] == "read"
@@ -192,11 +195,10 @@ def test_a_run_says_which_contour_it_deployed():
 
 
 def test_scheduler_readiness_runs_after_system_config_seed():
+    # Both are part of the Switch, the one step that runs compose `up`.
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    names = list(steps)
-    readiness = steps["Wait for scheduler services"]
+    script = _script(steps["Switch"])
 
-    script = readiness["with"]["script"]
-    assert "up -d --force-recreate --no-deps --wait --wait-timeout 180" in script
+    readiness = script.index("up -d --force-recreate --no-deps --wait --wait-timeout 180")
     assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in script
-    assert names.index("Apply system configs") < names.index("Wait for scheduler services")
+    assert script.index("seed_system_configs.py") < readiness

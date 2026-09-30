@@ -107,37 +107,36 @@ def api_base_url_field(required: bool = True):
     )
 
 
-def telegram_token_field(required: bool = True):
+def telegram_token_field():
     """Telegram bot token field definition."""
-    if required:
-        return Field(
-            ...,
-            description="Telegram Bot API token",
-        )
     return Field(
-        default="",
-        description="Telegram Bot API token (optional)",
+        ...,
+        description="Telegram Bot API token",
     )
 
 
 def default_agent_type_field():
     """Default agent type field definition.
 
-    Can be set via `DEFAULT_AGENT_TYPE` environment variable.
-    Valid values: "claude", "factory", or "codex"
-    Defaults to "claude".
+    Required: set via the `DEFAULT_AGENT_TYPE` environment variable. It selects the
+    engineering executor, so it is production policy with no fallback.
     """
     return Field(
-        default="claude",
+        ...,
         alias="DEFAULT_AGENT_TYPE",
         description="Default AI agent to use (claude, factory, or codex)",
     )
 
 
 def internal_api_key_field():
-    """Shared service token for internal API calls (X-Internal-Key header)."""
+    """Shared service token for internal API calls (X-Internal-Key header).
+
+    An empty key would make an empty `X-Internal-Key` header a valid credential,
+    so it is refused at startup.
+    """
     return Field(
         ...,
         alias="INTERNAL_API_KEY",
+        min_length=1,
         description="Secret token internal services use to authenticate against the API",
     )

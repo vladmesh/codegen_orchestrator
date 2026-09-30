@@ -46,7 +46,10 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import math
 import re
+
+from shared.git_not_found_retry import retry_delay_after
 
 # ── The deploy path a Run took ───────────────────────────────────────────
 
@@ -119,6 +122,7 @@ def deploy_path_mismatches(record: dict, *, expected: str) -> list[str]:
 CHECKOUT_START_EVENT = "checkout_branch_start"
 CHECKOUT_COMPLETE_EVENT = "checkout_branch_complete"
 CHECKOUT_FAILED_EVENT = "checkout_branch_failed"
+CHECKOUT_RETRY_EVENT = "checkout_branch_retry"
 
 
 #: A structlog record rendered by `ConsoleRenderer` instead of `JSONRenderer`:
@@ -220,11 +224,25 @@ def manager_log_coverage(log_text: str) -> dict:
     }
 
 
+def _non_negative_number(value: object) -> int | float | None:
+    """Normalize console and JSON retry fields; keep invalid fields invalid."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number) if number.is_integer() else number
+
+
 def checkout_records(log_text: str, *, branch: str) -> list[dict]:
     """Every `checkout_branch` the manager ran for one branch, oldest first.
 
-    One record per attempt: when it started, when it ended, how long it took and
-    whether it ended by failing. A start with no ending is kept as itself — that
+    One record per worker checkout: when it started, when it ended, how long it
+    took, its internal repository-not-found retries, and whether it failed.
+    A start with no ending is kept as itself — that
     is exactly the shape `issue:028670f21dbd138ccd04` produced, the exec timeout
     that killed the worker before any completion line could be written — and a
     caller that needs an ending says so rather than reading `duration_seconds`
@@ -234,12 +252,27 @@ def checkout_records(log_text: str, *, branch: str) -> list[dict]:
     open_by_worker: dict[str, dict] = {}
     for record in _log_records(log_text):
         event = record.get("event")
-        if event not in {CHECKOUT_START_EVENT, CHECKOUT_COMPLETE_EVENT, CHECKOUT_FAILED_EVENT}:
+        if event not in {
+            CHECKOUT_START_EVENT,
+            CHECKOUT_COMPLETE_EVENT,
+            CHECKOUT_FAILED_EVENT,
+            CHECKOUT_RETRY_EVENT,
+        }:
             continue
         if record.get("branch") != branch:
             continue
         worker_id = str(record.get("worker_id"))
         moment = _log_moment(record)
+        if event == CHECKOUT_RETRY_EVENT:
+            attempt = open_by_worker.get(worker_id)
+            if attempt is not None:
+                attempt["retries"].append(
+                    {
+                        "attempt": _non_negative_number(record.get("attempt")),
+                        "delay_seconds": _non_negative_number(record.get("delay_seconds")),
+                    }
+                )
+            continue
         if event == CHECKOUT_START_EVENT:
             attempt = {
                 "branch": branch,
@@ -248,6 +281,7 @@ def checkout_records(log_text: str, *, branch: str) -> list[dict]:
                 "completed_at": None,
                 "duration_seconds": None,
                 "failed": False,
+                "retries": [],
             }
             attempts.append(attempt)
             open_by_worker[worker_id] = attempt
@@ -264,6 +298,7 @@ def checkout_records(log_text: str, *, branch: str) -> list[dict]:
                 "completed_at": None,
                 "duration_seconds": None,
                 "failed": False,
+                "retries": [],
             }
             attempts.append(attempt)
         attempt["completed_at"] = record.get("timestamp")
@@ -286,14 +321,24 @@ def checkout_records(log_text: str, *, branch: str) -> list[dict]:
 def checkout_mismatches(attempts: list[dict], *, branch: str, bound_seconds: float) -> list[str]:
     """Why the first checkout of this branch is not the one a green run has.
 
-    Only the *first* attempt is judged. A second one exists only because the
-    first failed, and the automatic retry succeeding in four seconds is precisely
+    Only the *first* worker checkout is judged. A second one exists only because the
+    first failed, and a second worker succeeding in four seconds is precisely
     what hid `issue:028670f21dbd138ccd04` on production for two runs.
     """
     if not attempts:
         return [f"the manager ran no checkout_branch for {branch} in the log this run read"]
     first = attempts[0]
     reasons = []
+    retries = first.get("retries", [])
+    valid_retries = all(
+        retry["attempt"] == index
+        and retry["delay_seconds"] == retry_delay_after(index)
+        and retry["delay_seconds"] is not None
+        for index, retry in enumerate(retries, start=1)
+    )
+    if not valid_retries:
+        reasons.append(f"the first checkout of {branch} logged an invalid retry schedule")
+    retry_wait = sum(retry["delay_seconds"] for retry in retries) if valid_retries else 0
     if first["failed"]:
         reasons.append(f"the first checkout of {branch} failed on worker {first['worker_id']}")
     if first["completed_at"] is None:
@@ -306,10 +351,10 @@ def checkout_mismatches(attempts: list[dict], *, branch: str, bound_seconds: flo
             f"the first checkout of {branch} has no readable duration: "
             f"started_at={first['started_at']!r} completed_at={first['completed_at']!r}"
         )
-    elif first["duration_seconds"] > bound_seconds:
+    elif first["duration_seconds"] > bound_seconds + retry_wait:
         reasons.append(
             f"the first checkout of {branch} took {first['duration_seconds']}s, over the "
-            f"{bound_seconds}s bound"
+            f"{bound_seconds + retry_wait}s bound"
         )
     if len(attempts) > 1:
         reasons.append(

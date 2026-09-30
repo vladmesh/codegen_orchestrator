@@ -99,6 +99,7 @@ async def test_checkout_timeout_after_ack_names_its_step_in_the_worker_error():
                 api_key="test-api-key",
                 instructions="required instructions",
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
                 branch="story/story-ea07a289",
             )
 

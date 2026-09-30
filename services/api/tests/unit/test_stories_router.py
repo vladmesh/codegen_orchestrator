@@ -44,8 +44,11 @@ def _make_story(**overrides):
         "generated_product_timeline": None,
         "operator_acceptance": None,
         "operator_recheck": None,
+        "unverified_decisions": [],
         "reopened_at": None,
+        "status_entered_at": None,
         "owner_notification": None,
+        "planning": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -312,6 +315,87 @@ async def test_update_story():
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert story.title == "Updated title"
+
+
+@pytest.mark.asyncio
+async def test_a_patch_of_other_fields_leaves_the_status_entry_time():
+    """Editorial writes move ``updated_at``, never when the story entered its status."""
+    entered = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
+    story = _make_story(id="story-abc", status="waiting_human_review", status_entered_at=entered)
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.patch(
+            "/api/stories/story-abc",
+            json={"title": "Renamed", "quarantine_reason": {"note": "later"}, "priority": 3},
+        )
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status_entered_at == entered
+    served = resp.json()["status_entered_at"].replace("Z", "+00:00")
+    assert datetime.fromisoformat(served) == entered
+
+
+@pytest.mark.asyncio
+async def test_the_status_entry_time_cannot_be_patched():
+    story = _make_story(id="story-abc")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.patch(
+            "/api/stories/story-abc", json={"status_entered_at": "2026-01-01T00:00:00+00:00"}
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    assert story.status_entered_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_transition_stamps_when_the_story_entered_its_status():
+    before = datetime.now(UTC)
+    story = _make_story(
+        id="story-abc", status="created", status_entered_at=datetime(2026, 9, 1, tzinfo=UTC)
+    )
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/start")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "in_progress"
+    assert before <= story.status_entered_at <= datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_a_created_story_records_when_it_entered_created():
+    before = datetime.now(UTC)
+    session = _mock_session()
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post(
+            "/api/stories/",
+            json={"title": "User login", "project_id": "00000000-0000-0000-0000-000000000001"},
+        )
+
+    assert resp.status_code == 201  # noqa: PLR2004
+    story = session.add.call_args[0][0]
+    assert before <= story.status_entered_at <= datetime.now(UTC)
 
 
 # --- Action endpoints (status transitions) ---
@@ -812,37 +896,6 @@ async def test_complete_story_invalid_transition():
 
 
 @pytest.mark.asyncio
-async def test_wait_user_secret_story():
-    story = _make_story(id="story-abc", status="deploying")
-    session = _mock_session(scalar_one_or_none=story)
-    _override_session(session)
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(
-        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
-    ) as client:
-        resp = await client.post("/api/stories/story-abc/wait-user-secret")
-
-    assert resp.status_code == 200  # noqa: PLR2004
-    assert story.status == "waiting_user_secret"
-
-
-@pytest.mark.asyncio
-async def test_wait_user_secret_story_invalid_transition():
-    story = _make_story(id="story-abc", status="testing")
-    session = _mock_session(scalar_one_or_none=story)
-    _override_session(session)
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(
-        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
-    ) as client:
-        resp = await client.post("/api/stories/story-abc/wait-user-secret")
-
-    assert resp.status_code == 422  # noqa: PLR2004
-
-
-@pytest.mark.asyncio
 async def test_archive_story():
     story = _make_story(id="story-abc", status="completed")
     session = _mock_session(scalar_one_or_none=story)
@@ -1144,3 +1197,209 @@ async def test_test_story_invalid_from_created():
         resp = await client.post("/api/stories/story-abc/test")
 
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_a_qa_completion_owes_the_checks_that_ran_and_the_unverified_ones():
+    """The story_completed record carries the completing run's facts, structured."""
+    unverified = {
+        "name": "criterion not verifiable by QA: - POST /api/transactions returns 201",
+        "reason": "needs an HTTP write",
+        "origin": "withheld",
+    }
+    story = _make_story(id="story-abc", status="testing")
+    qa_run = MagicMock(
+        id="qa-abc",
+        type="qa",
+        story_id="story-abc",
+        status="completed",
+        result={
+            "qa_outcome": "passed",
+            "passed_checks": ["GET /health returns 200"],
+            "unverified_checks": [unverified],
+        },
+        run_metadata={
+            QA_HANDOFF_KEY: QAHandoffPlan(
+                qa_message=QAMessage(
+                    story_id="story-abc",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    initiating_run_id="deploy-abc",
+                    telegram_chat_id="1",
+                    deployed_url="https://verified.example.com",
+                    application_id=42,
+                    acceptance_criteria="works",
+                    run_id="qa-abc",
+                )
+            ).model_dump(mode="json")
+        },
+    )
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = qa_run
+    application_result = MagicMock()
+    application_result.scalar_one_or_none.return_value = "running"
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result, application_result]
+    session.get = AsyncMock(return_value=qa_run)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/complete", json={"qa_run_id": "qa-abc"})
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.owner_notification["event"] == "story_completed"
+    assert story.owner_notification["qa_verification"] == {
+        "qa_run_id": "qa-abc",
+        "passed_checks": ["GET /health returns 200"],
+        "unverified_checks": [unverified],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_completion_no_qa_run_names_carries_no_qa_facts():
+    story = _make_story(id="story-abc", status="in_progress")
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = None
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result]
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/complete")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.owner_notification["qa_verification"] is None
+
+
+# --- The user's answer to unverified checks ---
+
+_UNVERIFIED = {
+    "name": "Telegram: a reminder email arrives",
+    "reason": "needs an email inbox",
+    "origin": "executor",
+}
+
+
+def _answering_session(story, qa_run):
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = qa_run
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result]
+    _override_session(session)
+    return session
+
+
+def _routed_qa_run(**result):
+    return MagicMock(
+        id="qa-abc",
+        result={"qa_outcome": "passed", "passed_checks": ["GET /health returns 200"], **result},
+    )
+
+
+async def _answer(body: dict):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        return await client.post("/api/stories/story-abc/unverified-decisions", json=body)
+
+
+@pytest.mark.asyncio
+async def test_an_answer_is_recorded_against_the_last_routed_qa_run():
+    story = _make_story(id="story-abc", status="completed")
+    session = _answering_session(story, _routed_qa_run(unverified_checks=[_UNVERIFIED]))
+
+    resp = await _answer(
+        {
+            "decision": "accept_unverified",
+            "check_names": [_UNVERIFIED["name"]],
+            "recorded_by": "po",
+        }
+    )
+
+    assert resp.status_code == HTTPStatus.OK
+    [recorded] = resp.json()["unverified_decisions"]
+    assert recorded["decision"] == "accept_unverified"
+    assert recorded["check_names"] == [_UNVERIFIED["name"]]
+    assert recorded["qa_run_id"] == "qa-abc"
+    assert recorded["recorded_by"] == "po"
+    assert recorded["decided_at"]
+    # Recorded and nothing else: the story stays where it was.
+    assert story.status == "completed"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_later_answer_is_appended_never_written_over():
+    earlier = {
+        "decision": "change_requirement",
+        "check_names": [_UNVERIFIED["name"]],
+        "qa_run_id": "qa-abc",
+        "decided_at": "2026-09-25T10:00:00Z",
+        "recorded_by": "po",
+    }
+    story = _make_story(id="story-abc", status="completed", unverified_decisions=[earlier])
+    _answering_session(story, _routed_qa_run(unverified_checks=[_UNVERIFIED]))
+
+    resp = await _answer(
+        {
+            "decision": "accept_unverified",
+            "check_names": [_UNVERIFIED["name"]],
+            "recorded_by": "po",
+        }
+    )
+
+    assert resp.status_code == HTTPStatus.OK
+    decisions = resp.json()["unverified_decisions"]
+    assert [d["decision"] for d in decisions] == ["change_requirement", "accept_unverified"]
+    assert decisions[0]["decided_at"].startswith("2026-09-25T10:00:00")
+
+
+@pytest.mark.asyncio
+async def test_a_check_the_run_did_not_leave_unverified_is_refused():
+    story = _make_story(id="story-abc", status="completed")
+    session = _answering_session(story, _routed_qa_run(unverified_checks=[_UNVERIFIED]))
+
+    resp = await _answer(
+        {"decision": "accept_unverified", "check_names": ["invented"], "recorded_by": "po"}
+    )
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "invented" in resp.json()["detail"]
+    assert story.unverified_decisions == []
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_story_without_a_routed_qa_run_has_nothing_to_answer():
+    story = _make_story(id="story-abc", status="in_progress")
+    session = _answering_session(story, None)
+
+    resp = await _answer(
+        {"decision": "accept_unverified", "check_names": ["anything"], "recorded_by": "po"}
+    )
+
+    assert resp.status_code == HTTPStatus.CONFLICT
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_decision_is_refused_before_the_story_is_read():
+    session = _mock_session()
+    _override_session(session)
+
+    resp = await _answer({"decision": "rerun", "check_names": ["x"], "recorded_by": "po"})
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    session.execute.assert_not_awaited()

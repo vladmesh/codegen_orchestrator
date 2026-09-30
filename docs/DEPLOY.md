@@ -5,6 +5,24 @@
 - Ubuntu 22.04+ with Docker Engine 24+ and Docker Compose v2.24+
 - `deploy` user with `docker` group membership and sudo access
 - Directories: `/opt/codegen_orchestrator` (git clone), `/opt/secrets`, `/opt/backups/orchestrator`
+- A contour on another layout sets the GitHub environment variables `DEPLOY_SSH_USER`,
+  `DEPLOY_PATH`, `SECRETS_PATH` and `COMPOSE_ARGS` (an extra `-f <absolute path>` override
+  for host-specific mounts, such as a rootless daemon's socket); the defaults are the
+  values above
+- `HOST_UID` / `HOST_GID` (environment variables, default `1000`): the uid:gid the api
+  container runs as. The deploy writes the GitHub App key with mode 0600 owned by the SSH
+  user, so the api has to run as that user: its uid on a root daemon, `0` on a rootless
+  daemon (container root is the rootless user). The deploy fails after `up` when the api
+  cannot read the key
+- `HOST_CLAUDE_DIR` / `HOST_CODEX_HOME` must be owned by the worker user (uid:gid `1000:1000`) as the
+  Docker daemon sees it: `1000:1000` on a root daemon, the rootless user's subuid base + 999 on a rootless
+  one (for `vlad:165536:65536` that is `166535:166535`, e.g. `docker run --rm -u 0 -v "$HOST_CLAUDE_DIR":/p
+  --entrypoint chown worker-base-claude:latest -R 1000:1000 /p`). Owned by the host user itself, the
+  profile is root inside the container, the wrapper exits on "CLAUDE_CONFIG_DIR is not writable" and
+  every developer worker dies during `checkout_branch`. The same `HOST_CODEX_HOME` is also mounted
+  read-write into `langgraph` and `architect` for their `codex` LLM channel; they run the Codex CLI as
+  the profile's owner, so this one ownership serves all three consumers. A root-owned profile is
+  refused there too (`llm_channel_ready` … `missing_credential`)
 - Git clone: `git clone <repo> /opt/codegen_orchestrator`
 - Ports 80/443 open (Caddy handles TLS)
 
@@ -300,7 +318,6 @@ is never passed into coding-worker containers.
 |--------|-------------|
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
-| `OPEN_ROUTER_KEY` | OpenRouter API key |
 | `PO_LLM_MODEL` | PO agent model name (`openai/gpt-5.6-sol`) |
 | `PO_LLM_BASE_URL` | PO agent LLM base URL |
 | `PO_LLM_API_KEY` | PO agent LLM API key |
@@ -314,10 +331,39 @@ Numeric PO summarization tuning is not environment or secret configuration. Prod
 `llm.summarization_max_summary_tokens` from required system config seeded by
 `scripts/system_configs.yaml`.
 
-The `PO_LLM_*` and `ARCHITECT_LLM_*` triples are all-or-nothing: an agent starts only when
-every var of its group carries a value, so leaving one of the three empty silently keeps that
-agent out of the pipeline. `services/langgraph/src/config/agent_llm_env.py` is the single source
-of truth for the groups.
+The `PO_LLM_*` and `ARCHITECT_LLM_*` triples configure the `openrouter` channel of each agent's
+LLM channel chain (default `codex`, `claude`, `openrouter`; see
+[NODES.md](NODES.md#-llm-channel-chain-architect-po-po-summarizer)). A triple is all-or-nothing for
+that channel: with one var empty the channel fails as a missing credential and the chain moves on.
+Only an agent with no configured channel at all (nor `LLM_CODEX_HOME`, nor
+`CLAUDE_CODE_OAUTH_TOKEN`, nor its OpenRouter triple) is refused or disabled.
+`services/langgraph/src/config/agent_llm_env.py` is the single source of truth for the groups.
+The subscription channels need no setting of their own in production:
+
+- `codex`: the langgraph image carries the Codex CLI at the Codex worker image's pin. Compose mounts
+  `HOST_CODEX_HOME` — the very profile the Codex workers use, never a copy — read-write at
+  `/llm-codex-home` in `langgraph` and `architect` and sets `LLM_CODEX_HOME` to it; with
+  `HOST_CODEX_HOME` unset, `LLM_CODEX_HOME` renders empty and the channel is unconfigured. The CLI
+  runs as the profile owner under the workers' `.codegen-codex.lock` (see
+  [coding-agents.md](coding-agents.md#dedicated-chatgpt-session-profile)).
+- `claude`: the image carries Claude Code at the Claude worker image's pin. The deploy writes the
+  optional `CLAUDE_CODE_OAUTH_TOKEN` environment secret (a `claude setup-token` subscription token)
+  into `.env`, and compose passes it to `langgraph` and `architect`; empty, the channel is
+  unconfigured. The CLI runs as `nobody` with a fresh temporary HOME per call.
+
+Each agent logs `llm_channel_ready` once per channel at startup (see
+[LOGGING.md](LOGGING.md#langgraph-worker)): `status` is `ready` or the failure class a call would
+hit first, with its `reason` and the installed `cli_version`. That log is the readback of a
+deploy: `docker compose logs langgraph architect | grep llm_channel_ready`.
+
+The `langgraph` process also reads the OpenRouter balance (`GET <PO_LLM_BASE_URL>/credits`) on a
+schedule and alerts administrators below `llm.openrouter_balance_alert_usd`. OpenRouter documents
+that endpoint as needing a management key: the deploy writes the optional
+`OPENROUTER_MANAGEMENT_KEY` environment secret into `.env`, and compose passes it to `langgraph`
+only. Empty, the check sends `PO_LLM_API_KEY`. The readback is `docker compose logs langgraph |
+grep -E 'openrouter_balance'`: `openrouter_balance_check_started` names the `key_source`, then
+either `openrouter_balance` (the balance and whether an alert was sent) or
+`openrouter_balance_read_failed` with a 401/403, alerted as "set OPENROUTER_MANAGEMENT_KEY".
 
 ### GitHub Integration
 
@@ -339,7 +385,7 @@ interchangeable:
 
 - `GH_APP_PRIVATE_KEY` — the GitHub secret, holding the PEM itself.
 - `GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem` — the host path the deploy writes that PEM to
-  (mode 0600).
+  (mode 0600, owned by the SSH user; the api reads it as `HOST_UID`, see Server Prerequisites).
 - `GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem` — the in-container path the service
   reads.
 
@@ -353,6 +399,7 @@ them in the repository environment. Services fail fast when the in-container pat
 | Secret | Description |
 |--------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `TELEGRAM_MAX_CONCURRENT_UPDATES` | Required integer >= 2; Deploy and the protected stand renderer provision 8 simultaneous updates, retaining per-user handler order |
 | `ADMIN_TELEGRAM_IDS` | Comma-separated admin Telegram IDs |
 | `TELEGRAM_ID_ADMIN` | Primary admin Telegram ID (for seeding) |
 | `TELETHON_API_ID` | Telegram API ID for the QA runtime's Telethon client |
@@ -394,7 +441,16 @@ would otherwise sign dashboard tokens with a known key.
 |--------|-------------|
 | `FACTORY_API_KEY` | Factory.ai API key |
 | `HOST_CLAUDE_DIR` | Path to `.claude` directory on prod server |
-| `HOST_CODEX_HOME` | Path to the dedicated file-backed Codex profile described in `docs/coding-agents.md` |
+| `HOST_CODEX_HOME` | Path to the dedicated file-backed Codex profile described in `docs/coding-agents.md`; also the `codex` LLM channel of `langgraph` and `architect` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Optional. Claude subscription token for the `claude` LLM channel of `langgraph` and `architect` (not for workers) |
+| `OPENROUTER_MANAGEMENT_KEY` | Optional. OpenRouter management key for the `langgraph` balance check (`GET /credits`); empty, the check uses `PO_LLM_API_KEY` |
+
+`DEFAULT_AGENT_TYPE` is required and has no default. It is policy rather than a credential, so it
+is a GitHub Environment **variable** (`vars.DEFAULT_AGENT_TYPE`), set on every contour this workflow
+deploys, e.g. `DEFAULT_AGENT_TYPE=claude`; accepted values are `claude`, `factory` and `codex`. The
+deploy writes it into the server `.env`, and its preflight refuses to run when it is empty. A blank
+value also stops `docker compose config`, and api, langgraph and telegram_bot fail at startup
+without it. It decides the coding agent of a project created without an explicit choice.
 
 ### Admin UI
 
@@ -443,33 +499,53 @@ ends as `qa_executor_unavailable` — a QA-infrastructure outcome that names the
 what it said, alerts administrators and sends the story to human review, never a product defect.
 Health-only criteria run with no executor at all.
 
-**What the QA container can reach.** It has a shell, and that shell reaches nothing of the platform:
-no SSH key, no fleet key, no Telegram session, no provider key, no repository. Its whole route to
-the deployment is one injected command (`/workspace/qa`) that posts named calls to the per-run
-capability endpoint, which performs them from `qa-worker` with the run's borrowed `qa-observer`
-identity. The endpoint accepts GET-only HTTP calls, reads inside the deployment's physical root,
-and read-only docker sub-commands against the deployment's own containers — the same closed set as
-before.
+**What the QA container can reach.** It is a sandbox: a shell with `python3`, `curl` and Telethon
+(image capability `qa_sandbox`), and it holds nothing of the platform — no SSH key, no fleet key, no
+provider key, no repository, no platform secret in its environment or mounts. Everything SSH-based
+on the target stays behind one injected command (`/workspace/qa`) that posts named calls to the
+per-run capability endpoint, which performs them from `qa-worker` with the run's borrowed
+`qa-observer` identity: reads inside the deployment's physical root, read-only docker sub-commands
+against the deployment's own containers, and loopback GETs. The sandbox has no route to the target's
+port 22.
 
-That the container *cannot* go around this is a property of its network, not of the prompt. The QA
-executor is attached to `codegen_qa_egress` and to nothing else, and that network is declared
-`internal: true`: it has no route to the deployment's public URL, to the fleet, or to the internet.
-Reachable on it are the run's capability endpoint (`qa-worker`), the worker broker — the runtime's
-own control channel — and one per-run egress proxy. That proxy speaks `CONNECT` only, to the
-assigned CLI's model backend and nothing else (`QA_CLAUDE_BACKEND_HOSTS` /
-`QA_CODEX_BACKEND_HOSTS`), so it can carry the model traffic the CLI needs and cannot carry a
-request to the application. `worker-manager` proves the network is internal before it creates
-anything, proves the proxy is listening before the executor exists, and proves the started
-container is attached to that single network — any of those failing fails the run closed as a
-QA-infrastructure outcome rather than starting an unrestricted container. Proxy variables are set
-in the executor's environment for the CLI's convenience; stripping them reaches less, not more.
+What it reaches directly is a property of its network, not of the prompt. The QA executor is
+attached to `codegen_qa_egress` and to nothing else, and that network is declared `internal: true`:
+it has no route to the fleet, the platform's services or the internet. Reachable on it are the run's
+capability endpoint (`qa-worker`), the worker broker — the runtime's own control channel — and one
+per-run egress proxy. That proxy speaks `CONNECT` only and opens exactly three things: the assigned
+CLI's model backend (`QA_CLAUDE_BACKEND_HOSTS` / `QA_CODEX_BACKEND_HOSTS`), the host of the run's
+deployed public URL on the URL's port (or 443 and 80), and Telegram's MTProto data centres
+(`TELEGRAM_MTPROTO_NETWORKS` in `qa_egress.py`, matched as IP networks). The deploy target travels
+as data on the create request (`WorkerConfig.qa_target_url`) and is refused before anything exists
+when it is empty, carries userinfo, or names the platform (a direct host, a single-label or local
+name, a loopback/link-local/private literal). **Reads and writes are split between two layers.**
+The network does not tell a GET from a POST: a tunnel to the deploy target carries either. Direct
+application-API writes stay forbidden by policy and evidence, not routing — the QA instructions
+allow the executor's own scripts GETs only, and the runner's write guard
+(`_forbidden_application_write`) still fails a run whose report, result or transcript shows a
+direct write — until product-data isolation (ephemeral product stands, the next sprint) exists.
+A plain-`http://` target is reached through the same proxy with a
+CONNECT tunnel (`curl --proxytunnel -x "$HTTPS_PROXY" http://…`). `worker-manager` proves the network
+is internal before it creates anything, proves the proxy is listening before the executor exists,
+and proves the started container is attached to that single network — any of those failing fails
+the run closed as a QA-infrastructure outcome rather than starting an unrestricted container.
 
-The runner's write scan over the tool trace and the container's transcript is still there, and it
-still fails the run closed with a residual-state record. It is now a second layer over an enforced
-boundary rather than the boundary itself. `services/worker-manager/tests/service/test_qa_egress_boundary.py`
-proves it against a real daemon: a recording application, a real executor container, `POST`/`PUT`/
-`PATCH`/`DELETE` from `curl` and from Python with the proxy configuration stripped, and zero write
-requests in the application's own ledger.
+The QA Telegram account reaches the sandbox only after `qa-worker` proves it for that run
+(`shared.telethon_identity.prove_qa_identity`, the stand preflight's own check: authorized and
+`get_me().id == QA_TEST_TELEGRAM_ID`). The executor fetches it with `qa telegram_identity`, which
+reads it from the run's capability endpoint with the run token and writes it to a 0600 file in the
+container's home; it never crosses a Redis stream, a log line or the Run, and `qa-worker` scrubs its
+value from the transcript, report and verdict. A session that fails the proof is never handed over:
+the run continues exactly as a run without Telethon credentials, with the reason in
+`Run.run_metadata.qa_telegram_identity`.
+
+`services/worker-manager/tests/service/test_qa_sandbox_boundary.py` proves the boundary against a
+real daemon on an executor built by `create_worker_with_capabilities`: no platform secret in its
+env, the CLI's auth directory as its only secret mount, the internal network alone, the target, a
+Telegram address and the backend tunnelled (the network layer carries a write too; the policy
+layer is what forbids it), every other destination refused,
+nothing reachable without the proxy. `test_qa_egress_boundary.py` proves that a host the run does
+not name receives no request at all.
 
 **Which identity a run uses.** Not `servers.ssh_user`: that column is the administrative account the
 fleet key opens (`root` on every row `server_sync` creates, and on the dynamic stand target too —
@@ -611,16 +687,51 @@ the host cannot back up. Every task is a state, so re-running it changes nothing
 
 Deploy is triggered manually via GitHub Actions:
 
-1. Go to Actions > "Deploy to Production" > Run workflow
-2. The workflow: writes `.env` and secret files, checks out the dispatched revision, pulls and
-   verifies the worker base images of that revision, builds service images, starts services, runs
-   migrations, verifies health
+1. Go to Actions > "Deploy" > Run workflow, pick the environment, and leave `revision` empty to
+   deploy the commit the workflow is dispatched on (or give a released SHA: see
+   [Rolling back](#rolling-back))
+2. The workflow: validates the revision, waits for its worker and service releases, writes `.env`,
+   stages that revision on the host and pulls and verifies both image releases of it concurrently
+   from the stage into a pending set — and only then, in one `Switch` step, changes the host:
+   verifies a custom database archive, writes the secret file, resets the deploy path to the revision, retags the worker base images,
+   starts the services from the service release by digest (nothing is built on the host), promotes
+   the release records, and runs migrations, the health check, the config seed and the scheduler
+   wait in the released containers. It then reconciles deploy targets and cleans up old images
+
+### The deploy waits for its release, and survives one SSH timeout
+
+Before any step touches the host, the runner checks out the deployed revision and checks that it
+has both a worker release marker and a service release marker (`scripts/wait_release.py --chain
+worker --chain service`, probing read-only through `pull-worker-images.sh` and
+`pull-service-images.sh` with `RELEASE_VALIDATION_ONLY=true`). A deploy dispatched right after a
+merge does not fail while that commit's push-to-main CI run is still publishing: while the run is
+queued or in progress the check re-probes every 30 s, for at most `RELEASE_WAIT_SECONDS` (45
+minutes, set in `deploy.yml`, one deadline for both chains). It refuses at once, before the host,
+when waiting cannot help:
+
+| exit | meaning |
+| --- | --- |
+| 20 | no push-to-main `ci.yml` run for this SHA (e.g. a branch that was never merged) |
+| 21 | the CI run completed without success (failed, cancelled, timed out) |
+| 22 | the CI run succeeded but the SHA has no marker: look at its Publish Worker Base Images or Publish Service Image Release job (the message names it) |
+| 23 | the 45 minutes passed with the run still going: dispatch again once it finishes |
+| 24 | the GitHub API did not answer three times in a row |
+| 10-13 (worker), 11 (service) | the registry failed three times in a row (the probe's own codes) |
+| any other probe code | the release exists but is refused (a broken record, a wrong source hash): final |
+
+The file-only steps — writing `.env`, checking the written `.env`, reading back the pending release
+records — reach the host through `infra/scripts/deploy-ssh.sh`. It retries only a failed connection
+(ssh exit 255), at most three attempts with a 10 s/20 s backoff, and never re-runs a remote script
+that failed on its own. The `Switch` goes through the same helper, because it carries the GitHub App
+key and its script must travel on stdin, but with `DEPLOY_SSH_ATTEMPTS=1`: a dropped connection may
+leave its first run going, and the switch must never run twice at once. The verify step, reconcile
+and cleanup keep a single attempt.
 
 ### Worker base images are a release chain
 
-Every green commit on `main` publishes the whole worker chain to GHCR under that commit's SHA
-(`publish-worker-images` in `.github/workflows/ci.yml`, via `infra/scripts/publish-worker-images.sh`).
-The tag is the SHA; nothing publishes a mutable `:latest`.
+Every green commit on `main` gets a worker release: a marker `worker-base-release:<sha>` that names
+the digests of the whole chain (`infra/scripts/publish-worker-images.sh`, run by
+`.github/workflows/ci.yml`). Nothing publishes a mutable `:latest`.
 
 On `main`, "green" includes the required `test-backend-dind-integration` job in the same CI DAG.
 `merge-gate` consumes that result before `publish-worker-images` is eligible to run, so a failed,
@@ -629,22 +740,101 @@ The expensive job remains skipped outside `main`; that skip is accepted only the
 release authorization.
 
 **The release is the marker, not the tags.** Four tag pushes cannot be one registry transaction, so
-a pushed tag does not mean a commit was released. After all four images resolve, the publish job
-writes one more object — `worker-base-release:<sha>`, carrying the digest record of that release
-(git SHA, source hash, and every image's `<repository>@sha256:…`). That single write is the
-release, and it is the only thing the deploy consults.
+a pushed tag does not mean anything was released. A marker is one more object, written last, that
+carries the digest record of the release (a key, the source hash, and every image's
+`<repository>@sha256:…`) as a base64 JSON label. That single write is the release, and a marker is
+the only thing a deploy or a stand consults.
 
-| what the registry has for a SHA | what happens |
-| --- | --- |
-| a marker | released and frozen: re-verify the digests it names, record them, push nothing, exit 0 |
-| no marker | not released, whatever image tags exist: build, verify each source hash, push all four, then write the marker |
-| a marker naming an image that is gone or built from other sources | refused (exit 7 or 10), never repaired |
+**The images are keyed by content.** What the four images bake is exactly the trees of the worker
+source hash (`scripts/shared_freshness.py hash`), so two commits with the same hash need the same
+images. The release therefore has two markers in the same repository, with one record shape and
+one validator:
 
-The middle row is what a run that failed or was cancelled between two pushes leaves behind. Those
-tags are inert residue, not a half-release: nothing will ever deploy them, and **rerunning the
-publish job completes that SHA with nobody deleting anything in the registry**. Once the marker
-exists the SHA is frozen — rebuilding an already-released commit pushes nothing by design, because
-the digests the marker names are what a deploy verifies and replacing them would change what an
+| marker | written | names |
+| --- | --- | --- |
+| `worker-base-release:source-<hash>` | once per source hash, by the first green commit that built it | the chain it built; the record's key (`git_sha`) is `source-<hash>` |
+| `worker-base-release:<sha>` | for every green push to `main` | the digests of its hash's release; the record's key is the SHA |
+
+Deploy and the stand keep resolving by revision (`pull-worker-images.sh`, `scripts/wait_release.py`,
+the stand's pre-create check): they read the commit marker, whose record has exactly the shape it
+had before content keying.
+
+**The invariant covers revisions released after content keying.** Every commit released since
+then with the same hash resolves to identical digests: the first green push of a hash builds it
+once and commits `source-<hash>`, and every commit of that hash, the first one included, names
+exactly those digests. So production and a stand pull the same images for the same content.
+
+Revisions released before content keying are outside it, on purpose:
+
+- Such a revision has a commit marker and no hash marker. It keeps its own original digests, is
+  never rewritten, and still resolves for a deploy or a rollback.
+- Nothing adopts an old commit marker as the release of its hash. Several old revisions of one hash
+  carry different digest sets (each push built its own), and choosing one of them as "the" content
+  would be a guess.
+- So the first push after the change of a hash that only old revisions carry builds that hash once
+  more and commits `source-<hash>`; later commits of the hash alias that release. That costs at
+  most one build per hash during the transition.
+- An old revision and a newer one of the same hash may therefore name different digests. Old
+  releases are only rollback targets, and no consumer compares them with newer ones.
+
+**Two jobs, one writer of the markers.** Candidate tags without a marker are inert, so the chain is
+built before the gate and only committed after it, the shape of the service release below:
+
+- `build-worker-images` (push or dispatch on `main`, no `needs`, `packages: write`) runs beside the
+  suites (`publish-worker-images.sh candidates`). If the commit or its hash is already released, it
+  re-verifies that release and hands its digests on, building and pushing nothing. Otherwise it
+  builds the chain once (`make rebuild-worker-images`, the only Claude installer fetch of the push),
+  checks every image's source hash label, pushes the four images in parallel under the SHA tag, and
+  resolves each tag once. Its output `candidates` is the record of those digests.
+- `test-backend-dind-integration` needs that job and pulls exactly that record into DinD by digest
+  (`WORKER_BASE_IMAGE_SOURCE=candidates`); it builds no chain of its own. The fixture checks each
+  image's source hash label and gives the images the local names its build path would, the
+  content-hash child tags included. A local run with no candidates builds from the tree as before.
+- `publish-worker-images` runs after the `Required CI Gate` (`always() &&
+  needs.merge-gate.result == 'success'`, push to `main`) and builds nothing
+  (`publish-worker-images.sh release`). It reads the same `candidates` output and commits exactly
+  those digests: a fresh hash gets its hash marker and then the commit marker; an already released
+  hash only the commit marker, the *alias*.
+
+**Tested equals released.** The release stage never names digests the DinD suite did not test. If
+the commit or the hash is already released with other digests than the tested ones (two pushes of
+one new tree raced and each built its own chain), it refuses with exit 14 and writes nothing;
+rerunning the whole workflow makes its candidate stage hand the committed release to the suites,
+and the alias follows. The CI contract (`scripts/check-ci-gate.py`) pins that the DinD step and the
+release step read the one `needs.build-worker-images.outputs.candidates`, and that the post-gate
+job runs no build.
+
+| what the registry has | `candidates` | `release` |
+| --- | --- | --- |
+| a commit marker | re-verify it, hand its digests on, push nothing | re-verify it; it must name the tested digests (exit 14); record it, push nothing |
+| a hash marker, no commit marker | re-verify it, hand its digests on, build and push nothing | re-verify it; it must name the tested digests (exit 14); write the commit marker |
+| neither (the registry answers 404 for both manifests) | build, verify each source hash, push all four, hand them on | pull every tested digest and check its source hash (exit 8, 2), write the hash marker, then the commit marker |
+| a marker that is not a valid record of its release, or names an image that is gone or built from other sources | refused (exit 10 or 7), never repaired; nothing is built | refused (exit 10 or 7), never repaired |
+| no answer: credentials refused, transport, rate limit, 5xx | the key may be released: nothing is built or pushed (exit 11) | nothing is pushed (exit 11) |
+
+A failed candidate push is exit 4, a handed-over record that is not a record of this commit's chain
+exit 13, and a failed marker build or push exit 12. The lookup, the record validation and the
+re-verification of a released key live once in `infra/scripts/release-chain.sh` and are the same
+for the service release below:
+
+- **Is the key released?** `release_marker_lookup` asks the registry API (token, then the marker's
+  manifest) and has three answers. Only a typed 404 on the manifest is *absent*, and only *absent*
+  leads to any push. A failed `buildx imagetools inspect` is never read as absence: an auth or
+  transport failure reads the same as a missing tag.
+- **Is the record this release?** `release_marker_images` refuses a record of another key or
+  another source hash than the tree's, of another schema version (service chain), naming another
+  set of images, naming an image outside this registry or not by digest, or whose `repository` and
+  `digest` fields contradict its `reference`. The release stage reads the handed-over candidate
+  record with the same validator.
+- **Does it still hold?** `release_verify_committed` pulls the marker and every image it names by
+  digest and requires each to carry the tree's non-empty source hash.
+
+A run that failed or was cancelled between two pushes leaves candidate tags behind. They are inert
+residue, not a half-release: nothing will ever deploy them, and **rerunning the failed jobs completes
+that SHA with nobody deleting anything in the registry**. A release stage that died after the hash
+marker and before the commit marker is completed by its rerun as an alias. Once a marker exists its
+key is frozen — rebuilding an already-released commit or hash pushes nothing by design, because the
+digests the marker names are what a deploy verifies and replacing them would change what an
 already-recorded release means.
 
 The deploy resolves the marker of the revision it is deploying *first*, pulls the digests that
@@ -660,68 +850,664 @@ all name the `<repository>@sha256:…` the marker holds. The pull writes its rec
 the deploy copies that file back into the run summary and an artifact, so what is reported as
 deployed is the release that was verified rather than a second lookup of a mutable tag.
 
-So a commit can only be deployed once its CI publish job has released it. Deploying an unreleased
-revision is refused rather than falling back to a different worker release.
+So a commit can only be deployed once its CI publish job has released it — with fresh images or as
+an alias of its hash's release. Deploying an unreleased revision is refused rather than falling back
+to a different worker release.
 
 The ephemeral Stand E2E workflow applies the same rule before it invokes
-BitLaunch preflight or creation, or creates a DNS record. It checks the exact
-workflow SHA's release marker through `pull-worker-images.sh` in read-only
-validation mode. A missing marker is reported as `release_not_published` with
-retry-after-post-merge-publication guidance; authentication, transport,
-rate-limit, and registry-tool errors remain distinct failures. The workflow
-does not wait and does not build worker images on a billed Stand machine. After
-the gate passes, the Stand only pulls and fully verifies that immutable release.
+BitLaunch preflight or creation, or creates a DNS record. It waits, boundedly
+(ten minutes), for both the worker and the service release of the workflow SHA
+with `scripts/wait_release.py --chain worker --chain service`, then pulls and
+verifies the exact worker chain on the runner for its Codex check. A revision
+that is not released is refused with retry-after-post-merge-publication
+guidance; authentication, transport, rate-limit, and registry-tool errors
+remain distinct failures. Nothing is built on a billed Stand machine: it pulls
+the service release and runs it through the same compose override as the deploy
+(`--no-build --pull never`), and it pulls only the worker images its suites run
+with `WORKER_IMAGE_SUBSET="worker-base-common worker-base-claude worker-base-codex"`.
+The subset option verifies the marker's record whole, then pulls, retags and records
+only the named images; unset, it is the whole chain the deploy pulls, and it cannot
+be combined with `RELEASE_DEFER_RETAG`. Both pullers fetch a release's images
+concurrently.
 
-## First-Time Setup
+### Service images are a release too
 
-```bash
-# On the prod server as deploy user:
+Every green commit on `main` also publishes the control-plane service images as one immutable
+release keyed by that commit's SHA, with the worker chain's protocol and helpers
+(`infra/scripts/release-chain.sh`). The deploy workflow runs exactly that release and builds
+nothing on the host ([below](#the-deploy-runs-the-service-release-by-digest)). The ephemeral Stand
+E2E workflow still builds on its machine; switching it is later work.
 
-# 1. Clone the repo
-sudo mkdir -p /opt/codegen_orchestrator
-sudo chown deploy:deploy /opt/codegen_orchestrator
-git clone git@github.com:<org>/codegen_orchestrator.git /opt/codegen_orchestrator
+**What is published.** One image per production Dockerfile, listed once in
+`infra/scripts/service-images.sh`: `api`, `langgraph` (which also serves architect,
+engineering-worker, deploy-worker and qa-worker), `scheduler` (all three schedulers),
+`infra-service`, `telegram_bot`, `worker-manager`, `worker-broker`, `scaffolder`,
+`admin-frontend` and `user-dashboard`. A unit test fails when a production Dockerfile or a
+`docker-compose.yml` build target is missing from that list or listed twice. Each image is
+built with `--build-arg SOURCE_HASH=$(python3 scripts/shared_freshness.py hash)`, so it carries a
+non-empty `org.codegen.worker_source_hash`, and pushed as
+`ghcr.io/<owner>/codegen-orchestrator/<image>:<sha>`. No mutable `latest` or branch tag is part of
+the contract. The buildx layer cache lives in its own repository,
+`ghcr.io/<owner>/codegen-orchestrator/service-build-cache:<image>`; it is a cache, never an image to
+run.
 
-# 2. Create directories
-sudo mkdir -p /opt/secrets /opt/backups/orchestrator
-sudo chown deploy:deploy /opt/secrets /opt/backups/orchestrator
+**What an image installs is its lock.** Every Python image installs its third-party dependencies
+from its own `services/<svc>/requirements.lock` (`pip install -r`, with a pip cache mount), in a
+layer before `COPY shared` and `COPY …/src`, and resolves nothing else: the service's own code runs
+from `PYTHONPATH=/app` and is not pip-installed. So a released image carries exactly the versions CI
+tested, and a `shared/` or `src/` edit reuses the dependency layer. The locks come from
+`make lock-deps` (`uv pip compile services/<svc>/pyproject.toml`), which covers every service; a
+`pyproject.toml` change goes with a regenerated lock. infra-service's Ansible collections
+(`services/infra-service/ansible/requirements.yml`) are exact versions too, installed in a layer
+before its source. The two frontends need no Python lock: `npm ci` installs `package-lock.json`
+exactly and fails when it disagrees with `package.json`.
 
-# 3. Install DB backup timer
-sudo ln -sf /opt/codegen_orchestrator/infra/systemd/orchestrator-backup.service /etc/systemd/system/
-sudo ln -sf /opt/codegen_orchestrator/infra/systemd/orchestrator-backup.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now orchestrator-backup.timer
+The `service-image-imports` job, which already builds every Python image on each pull request,
+enforces this with no build of its own (`scripts/check_service_image_imports.py`, the comparison in
+`scripts/service_image_locks.py`). In each image it has just built it reads the installed
+distributions and fails the `Required CI Gate` on:
 
-# 4. Verify timer
-systemctl list-timers orchestrator-backup
+- **drift** — an installed distribution the lock does not pin, a pinned one that is missing, or one
+  at another version, each named with the image, the package and both versions. Only `pip`,
+  `setuptools`, `wheel` and the service's own package are ignored;
+- **a stale lock** — a `pyproject.toml` requirement, followed through every installed distribution's
+  own requirements and extras, that the installed (that is, locked) set does not satisfy.
 
-# 5. Check that the deploy user can resolve a tag to a digest. The worker image
-#    verification resolves each published tag once and works from that digest.
-docker buildx imagetools inspect alpine:3.20 --format '{{.Manifest.Digest}}'
+Before any build it also fails when an image of `infra/scripts/service-images.sh` is neither a
+Python image it checks nor an `npm ci` frontend. The cheap half of the freshness check runs earlier,
+in `make test-unit` (`scripts/tests/test_service_image_locks.py`): every lock pins each direct
+`pyproject.toml` requirement at a version it allows, `make lock-deps` generates every lock, and each
+Dockerfile installs its lock with a cache mount before any source.
 
-# 6. Run first deploy from GitHub Actions
-```
+**Two jobs, one writer of the release.** Both run on push to `main` only, so a pull request gets
+no `packages: write` and waits for neither.
 
-## DB Backup
+- `build-service-images` builds and pushes every image under the SHA tag, beside the test jobs, so
+  the release does not lengthen the critical path. What it pushes are *candidates*: they may
+  belong to a red commit, and nothing may treat them as released.
+- `publish-service-release` runs after the `Required CI Gate`, only when the gate succeeded (the
+  same `always() && needs.merge-gate.result == 'success'` as `publish-worker-images`). It resolves
+  every candidate tag once, pulls that digest, and requires its source hash label to be the tree's
+  non-empty hash. Only then does it write the release marker,
+  `ghcr.io/<owner>/codegen-orchestrator/service-release:<sha>`. It is the only step that writes the
+  marker, and a unit test pins that against `ci.yml`.
 
-- Automatic: daily at 03:00 via systemd timer
-- Manual: `sudo /opt/codegen_orchestrator/infra/scripts/backup-db.sh`
-- Location: `/opt/backups/orchestrator/`
-- Retention: last 7 backups
-- Restore: `gunzip -c backup.sql.gz | docker compose exec -T db psql -U $POSTGRES_USER $POSTGRES_DB`
+**The marker holds** a base64 JSON record in the label `org.codegen.service_release` (and the same
+file as `/service-images.json`): `schema_version` (1), `git_sha`, `source_hash`, and for every image
+its `repository`, `digest` and `reference` (`<repository>@sha256:…`). The same record is uploaded
+as the run artifact `service-images-<sha>` and printed in the job summary.
 
-## Updating
+| what the registry has for a SHA | `candidates` | `release` |
+| --- | --- | --- |
+| a marker | re-verifies the release it names, pushes nothing, exit 0 | re-verifies the release it names and records it, pushes nothing, exit 0 |
+| no marker (the registry answers 404 for its manifest) | builds and pushes every candidate, over any residue | verifies every candidate, then writes the marker |
+| a marker that is unreadable or not a valid record of this release, or names an image that is gone (exit 10), or an image with a wrong or empty source hash (exit 7) | refused, pushes nothing | refused, never repaired |
+| no answer from the registry (exit 11) | pushes nothing | pushes nothing |
 
-Standard deploys happen via the GitHub Actions workflow. For manual intervention:
+Both stages run the same re-verification of a released SHA (`release_verify_committed`), so a
+candidate job never reports success over a broken committed release. A failed marker build or push
+is exit 12.
+
+Candidate tags without a marker are inert: a run that failed between two pushes, or a commit whose
+gate went red, leaves them behind, and a rerun pushes over them. The release job refuses, and writes
+no marker, when a candidate tag does not resolve (exit 8), carries another tree's source hash
+(exit 2) or none (exit 3); a failed candidate build is exit 4. So a failed or partial publish is
+recovered by rerunning the failed jobs, with nobody deleting anything in the registry.
+
+### The deploy runs the service release by digest
+
+`infra/scripts/pull-service-images.sh` is the consuming half of the service chain, the counterpart
+of `pull-worker-images.sh`, and reuses `release-chain.sh` rather than repeating it. For the deployed
+revision it asks `release_marker_lookup` (with a read-only `pull` token), then runs
+`release_verify_committed`: the marker is pulled by digest, its record validated whole, and every
+image it names pulled by digest and required to carry the checkout's non-empty
+`org.codegen.worker_source_hash`. Only then does it write anything: the record of the verified
+release at the `DIGEST_FILE` it is given (the deploy's pending set), and the local name
+`codegen-orchestrator/<image>:<sha>` for each image. It rotates no record: which release is current
+and which previous is decided only by the `Switch`, after `up` (below).
+
+| exit | meaning |
+| --- | --- |
+| 1 | usage: a variable is missing, or the revision is not a full 40-character SHA |
+| 7 | a released image carries a wrong or empty source hash |
+| 8 | the verified release could not be recorded on the host |
+| 9 | no release marker for this revision (registry 404): it was never released as a whole |
+| 10 | the marker is unreadable, not a valid record of this release, or names an image that is gone |
+| 11 | the registry could not say whether the revision is released |
+
+**Verify, then one switch.** Live host state is exactly: the `/opt/secrets` files, the deploy
+path's tracked checkout, the `worker-base-*:latest` tags worker-manager builds from, the running
+compose project, the release records (`deployed-{worker,service}-images.json` and
+`previous-deployed-{worker,service}-images.json`) and the compose override `up` reads
+(`deployed-service-images.compose.yml`). It changes in one step, `Switch`, and nowhere else; a unit
+test pins that against the real `deploy.yml`.
+
+- **Verify** (`Pull and verify this revision's worker and service releases`) writes nothing live.
+  It first discards any pending set an earlier attempt left, fetches the revision into the live
+  repository (into `.git` only) and stages it as a git worktree at `~/.codegen-release-stage` of the
+  SSH user — outside the deploy path and every mount; a stage a crashed run left is replaced, and the
+  stage is removed however the step ends. From the stage it runs the worker pull
+  (`pull-worker-images.sh` with `RELEASE_DEFER_RETAG=true`, so no `:latest` name moves), the service
+  pull and a pull of any third-party image compose names by tag that the host does not have yet
+  (`--ignore-buildable --policy missing`) concurrently, and fails if any of them fails. Then
+  `scripts/service_release.py compose-override` generates the override from the service record and
+  the contour's resolved compose configuration: every service compose would build locally (all
+  `codegen-orchestrator/<image>:local` services, both frontends included) gets
+  `image: <repository>@sha256:…` from the record, and compose checks the result. A build service the
+  release does not contain fails the deploy there instead of being built. What passed becomes the
+  **pending set**, `<deploy path>/.release-pending/` (untracked, mounted by no container): both
+  records, the override, and the revision's own `scripts/release_switch.py`.
+  A separate runner checkout at `github.workflow_sha` supplies only `backup-db.sh`, staged on SSH
+  stdin into that pending directory with mode 0700. Switch checks its SHA-256 against the runner's
+  digest. Target release consumers remain on `DEPLOY_REVISION`; backup policy comes from the
+  executing workflow even on first upgrade or rollback to a release with the old broken helper.
+- **Switch** is one SSH session under `set -euo pipefail`, in this order:
+  1. `release_switch.py check`, run from the pending set's copy (the checkout still holds the
+     previous revision): the pending set is complete, both records are of this revision, the worker
+     and service records carry one tree's source hash, and the override names only images of the
+     service release. This precedes every write.
+  2. Verify the workflow helper's digest and run its [database backup gate](#db-backup), using the
+     existing checkout, full contour Compose chain and current digest override if present. This
+     runs before replacing that override, resetting the checkout or starting the migrating API.
+     Production requires an existing running DB; it never bootstraps without a dump. Only a stand
+     with no DB container at all logs `empty_stand_bootstrap`; a stopped/unavailable DB fails.
+     Then write the mounted secret file `/opt/secrets/github_app.pem`.
+  3. `git reset --hard <revision>` in the deploy path.
+  4. `infra/scripts/retag-worker-images.sh` moves `worker-base-*:latest` to the pending worker
+     record's digests — before `up`, so the new worker-manager never sees the previous bases. The
+     old manager sees the new ones for the seconds until `up` (before this, for the whole host build).
+  5. The override is installed at its live path, then `up -d --remove-orphans --no-build --pull never`.
+  6. Only after `up` succeeded, `release_switch.py promote`: the live current records become the
+     previous ones (the existing rotations, no-ops for the same revision or source hash) and the
+     pending records become current by atomic rename.
+  7. Migrations and the config seeder in the released api container (after its health check), then
+     the schedulers are recreated after the seed and waited for — the only other `up`, so it lives here.
+
+The record step, the artifact upload and the run summary read the pending set, before the switch: a
+run that fails in the switch still shows what it was about to start.
+
+#### If a deploy fails
+
+- **The live `deployed-*.json` records are the only truth** of what was last brought up
+  successfully. A pending set never overrides them and is never rotated into `previous`.
+- Every deploy's verify step discards any pending set an earlier attempt left.
+- A pending/helper/backup failure changes no live release, images, secret file or services. A failed
+  dump publishes no final archive and rotates nothing. A successful backup remains protected even
+  if a subsequent switch operation fails; reruns create a distinct archive.
+- A failure after the backup gate, from the secret write onward, leaves the host **target partially applied** (for example new code checked
+  out, or new containers up, with the records still naming the last successful release). Recover by
+  rerunning the deploy of the same revision — every step of the switch is idempotent — or by
+  deploying the revision of the live current record (`git_sha` in `deployed-service-images.json`).
+- Cleanup runs only after a successful switch, keeps the promoted current and previous releases and
+  every image a container uses, so a failed attempt deletes nothing.
+- **What makes a deploy green is the Switch** (and, in production, the target reconcile), confirmed
+  by the readback below. Cleanup is best-effort: a cleanup problem is a warning on the run, never a
+  failed deploy, and never a reason to redeploy.
+
+Every compose call after the switch adds `-f deployed-service-images.compose.yml`, and every `up`
+runs with `--no-build --pull never`, so compose runs the pulled digests and nothing else. Migrations
+and the config seeder run in the api container `up` started from the release; nothing is built for
+them.
+
+Plain `docker compose` without that override (development) builds locally exactly as before, and
+keeps its source bind-mounts.
+
+### Production runs image code only
+
+No container of a deploy contour reads code from the host checkout. `docker-compose.yml` bind-mounts
+each service's source over what its image baked, so a developer's edit runs on restart;
+`docker-compose.prod.yml` resets every one of those mounts (`volumes: !reset []`, or `!override` with
+only the runtime mounts), and the stand overlay stacks on top of it. What runs is exactly the released
+digest the override names. The checkout on the host is still reset to the deployed revision, because
+compose reads its files and the third-party configuration under `infra/` from it, but no container
+runs its code.
+
+The mounts production keeps are runtime state, not source: the GitHub App key
+(`${GITHUB_APP_PEM_PATH}` at `/app/keys/github_app.pem`, read-only), `/data/workspaces`, the worker
+transcripts, the docker socket, `HOST_CLAUDE_DIR` / `HOST_CODEX_HOME` for worker-manager, the
+`uv-cache` volume and the named data volumes, and the configuration files of the third-party images
+(Caddy, Loki, Promtail, Grafana, the database init script). `tests/unit/test_production_compose_mounts.py`
+renders the prod and stand stacks with `docker compose config` and fails on a source mount, or on a
+runtime mount that went missing.
+
+What production reads from the paths it no longer mounts is in the images at the same paths:
+
+| path | read in production by | carried by |
+| --- | --- | --- |
+| `/app/src`, `/app/shared` (every service) | the service process itself | `COPY services/<svc>/src ./src`, `COPY shared ./shared` in each Dockerfile |
+| `/app/migrations`, `/app/alembic.ini` (api) | `alembic upgrade head` in the Switch and the api entrypoint | `COPY services/api/migrations`, `COPY services/api/alembic.ini` |
+| `/app/scripts` (api) | the Switch's config seeder, `scripts/danger_prod_reset.py`'s agent and system config seeders, the stand bring-up | `COPY scripts/seed_system_configs.py scripts/system_configs.yaml scripts/system_configs.service_test.yaml scripts/seed_agent_configs.py scripts/agent_configs.yaml /app/scripts/` |
+| `/app/ansible` (infra-service) | Reconcile (`src.provisioner.target_readiness`) and the provisioning playbooks, through `/app/ansible/playbooks` and `ansible.cfg` beside it | `COPY services/infra-service/ansible /app/ansible` |
+
+The api image carries only the scripts production runs, not all of `scripts/`; a unit test fails if
+a caller in `deploy.yml`, `stand-e2e.yml`, the api entrypoint or `danger_prod_reset.py` names a
+`/app/scripts/` file the image does not copy. The freshness check follows: a service is exempt from
+comparing its image's `org.codegen.worker_source_hash` only while every contour that runs it mounts
+`./shared` over the baked copy, which no production contour does ([REBUILD.md](REBUILD.md)).
+
+**The PO's check after a deploy.** Read-only, on the host, in the deploy path:
 
 ```bash
 cd /opt/codegen_orchestrator
-git pull origin main
-docker compose -f docker-compose.yml -f docker-compose.prod.yml build
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alembic upgrade head
-docker image prune -f
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f deployed-service-images.compose.yml"
+$COMPOSE config --format json > /tmp/compose-live.json
+python3 scripts/service_release.py readback --compose-config /tmp/compose-live.json \
+  --record deployed-service-images.json --deploy-path "$PWD"
 ```
+
+(on the stand, add `-f docker-compose.stand.yml` before the override). Checkout source is any bind
+mount source under the deploy path other than `infra/` and `secrets/`, so `services/`, `shared/` and
+`scripts/` among them. It exits non-zero, one `FAIL` line per reason, unless all four hold:
+
+- no service of the resolved configuration bind-mounts checkout source;
+- no container of the compose project bind-mounts checkout source. That is every container
+  `docker ps -a --filter label=com.docker.compose.project=<project>` lists: running or only created,
+  build service or third-party image (caddy, promtail, …), and orphans of a service the
+  configuration no longer names, which keep the mounts they were created with and are marked
+  `(orphan)`. `OK <n> containers of project <project> mount no checkout source` confirms it;
+- each running container of a build service runs the image the service record's digest names
+  (`docker image inspect <reference>` gives the same ID as the container's `Image`);
+- that image carries a non-empty `org.codegen.worker_source_hash` equal to the record's
+  `source_hash`.
+
+A build service scaled to zero (the stand's `telegram_bot`) is reported as `SKIP`. The same facts by
+hand: `$COMPOSE config | grep -E 'source: .*/(services|shared|scripts)'` prints nothing,
+`docker ps -aq --filter label=com.docker.compose.project=<project> | xargs docker inspect --format
+'{{.Name}}{{range .Mounts}} {{.Type}}:{{.Source}}{{end}}'` lists no bind under the deploy path
+outside `infra/` and `secrets/`, and
+`docker inspect --format '{{.Image}} {{index .Config.Labels "org.codegen.worker_source_hash"}}'
+<container>` against `docker image inspect --format '{{.Id}}' <record reference>`.
+
+**Cleanup** runs last, bounded to 10 minutes, after the deploy is live. `scripts/service_release.py
+cleanup` keeps every service image of the current and the previous record and any image a container
+uses, and removes the rest of the chain's images — older releases and the `:local` images earlier
+host builds left. A missing or unreadable record removes nothing. `scripts/cleanup_worker_images.py`
+keeps the current and previous worker generations the same way, and a dangling-image prune follows;
+there is no build cache to prune any more.
+
+Both cleanups remove what they decided by **image ID**, each image on its own, among the images on
+the host at that moment. Docker refuses an ID that several repositories name, so such an image is
+untagged name by name as it is named then, and the last name removes it. Nothing already gone is an
+error: an image that vanished, or a name docker dropped along with another (untagging the last tag of
+a repository drops that repository's digest references), is logged `GONE ... reason=already_gone` and
+skipped. An image docker refuses because a container uses it is kept (`KEEP ... reason=docker_refused`);
+any other failure is a `FAIL <id>` line, the rest are still removed, and the script exits non-zero.
+
+**Cleanup is best-effort and never fails the deploy.** The step runs through `deploy-ssh.sh` with one
+attempt; on the host each command (worker cleanup, service cleanup, prune) runs whatever the one before
+it did. Each non-zero exit — and an SSH session that could not run at all — becomes a GitHub warning
+annotation (`Cleanup failed`) and a line under "Cleanup warnings" in the run summary, naming the
+command and its exit code; the log above it has the per-image lines. The step still exits 0, and it is
+`continue-on-error`, so even its timeout leaves the job green. A deploy that is green with a cleanup
+warning is live and correct; stale images may remain until the next deploy's cleanup, or the same
+commands run by hand in the deploy path (add `--dry-run` to only print the decisions).
+
+### Rolling back
+
+The `revision` input of the Deploy workflow deploys any released `main` SHA through the current
+workflow: the runner checkout, both release waits, the host checkout, both pulls, the records and the
+target reconcile all use that one revision. To roll back:
+
+1. Find the SHA to return to: `git_sha` in `previous-deployed-service-images.json` in the deploy
+   path on the host — the release that was current before the last successful switch — or the
+   `deployed-service-images-<sha>` artifact of an earlier Deploy run that succeeded.
+2. Dispatch Deploy for the same environment with `revision` set to that full SHA. Its release is
+   already published, so the wait passes at once; its images are usually still on the host, because
+   cleanup keeps the previous release.
+3. To come back, dispatch Deploy again with `revision` set to the newer SHA, or empty for the tip of
+   the branch the workflow is dispatched from.
+
+Three limits:
+
+- **A revision released before this workflow consumed service releases is refused** by the step
+  `Refuse a revision that predates pulled service releases`, before any wait and before the host is
+  touched: its tree has no `infra/scripts/pull-service-images.sh` (and its compose would build on the
+  host). That includes the revisions that only published a service release (from main's 7f93d8b7 on)
+  up to the merge of this change. Roll back only to a revision deployed by this workflow.
+- **A revision before image-code-only production mounts its source again.** Its own
+  `docker-compose.prod.yml` still carries the source mounts. That is still a correct rollback — the
+  switch resets the checkout to that revision, so the mounted code is the code its images carry — but
+  the readback above reports those mounts until the next deploy of a newer revision.
+- **Migrations only go forward.** The deploy runs `alembic upgrade head` in the api container of the
+  target revision. Rolling back across a migration fails at `Run migrations` after `up` has already
+  started the older services. Before a rollback, check
+  `git diff <target>..<current> -- services/api/migrations`; if it is not empty, downgrade the
+  database first, from the current release, or do not roll back.
+
+Rollback through the current workflow still takes a verified predeploy archive using its own
+helper, regardless of the target's backup script. The installed nightly helper and units are
+copies outside the checkout, so resetting to a prior release cannot replace them. The database
+dump is a recovery precondition; it does not automate a migration downgrade or authorize a restore.
+
+## First-Time Setup
+
+The supported h01o installation already has `vlad` (UID 1001), an enabled rootless Docker
+user service and lingering. Confirm these existing prerequisites; account/daemon creation or
+host isolation changes require a separate operation. Use a login session as that owning user,
+with `/run/user/1001` as its runtime directory. The colocated system daemon is a different workload.
+
+```bash
+# Only for an authorized initial installation, in vlad's login session:
+test "$(id -un)" = vlad
+test "$(id -u)" = 1001
+test "${XDG_RUNTIME_DIR:?}" = /run/user/1001
+test -S /run/user/1001/docker.sock
+test -O /run/user/1001/docker.sock
+git clone git@github.com:<org>/codegen_orchestrator.git /home/vlad/codegen_orchestrator
+install -d -m 0700 /home/vlad/codegen/secrets /home/vlad/backups/orchestrator
+docker --host unix:///run/user/1001/docker.sock buildx imagetools inspect \
+  alpine:3.20 --format '{{.Manifest.Digest}}'
+```
+
+Production Deploy requires an already running database before its first invocation; only an
+empty stand has an explicit bootstrap path. Use the production environment's actual
+`DEPLOY_PATH=/home/vlad/codegen_orchestrator`, `DEPLOY_SSH_USER=vlad`,
+`SECRETS_PATH=/home/vlad/codegen/secrets` and Compose host override
+`/home/vlad/codegen-h01o.override.yml`. Install/prove the nightly path below after green release.
+
+## DB Backup
+
+`infra/scripts/backup-db.sh` is the shared nightly, predeploy and maintenance boundary. It resolves
+exactly one existing `db` container with `docker compose --project-directory ... ps --all -q db`,
+requires it running and reads `POSTGRES_USER`, `POSTGRES_DB` and `POSTGRES_PASSWORD` only inside it.
+The newly written host `.env` does not supply dump identity. `pg_dump --format=custom` includes
+every schema, including LangGraph. The same container's compatible `pg_restore --list` verifies
+the nonempty private temporary file before an atomic rename publishes it. Failures log only a
+named operation; database stderr and archive listings are suppressed. No password enters argv.
+
+Configuration is explicit: absolute `COMPOSE_DIR` and `BACKUP_DIR`, whitespace-separated
+`COMPOSE_ARGS` (paths cannot contain spaces), `BACKUP_CONTOUR=production|stand`, and
+`BACKUP_KIND=nightly|predeploy|maintenance`. Nightly requires `BACKUP_RETAIN=1..365`. Protected
+predeploy/maintenance runs require a nonempty `BACKUP_LABEL` of at most 160 letters, digits,
+periods, underscores or hyphens, beginning with a letter/digit. There is no SQL fallback.
+
+Directories are owned by the invoking user and mode 0700; archives and the serialization lock
+are mode 0600. UTC nanoseconds and a random suffix distinguish concurrent calls/reruns. The lock
+serializes publication and retention. Nightly retains only the newest configured count of this
+producer's exact `orchestrator_nightly_<UTC>_<random>.dump` names in its destination; it excludes
+partials, symlinks and every other name. Deploy stores protected archives in
+`<parent of DEPLOY_PATH>/backups/orchestrator/predeploy` (on h01o,
+`/home/vlad/backups/orchestrator/predeploy`), labels them with run ID, attempt and target SHA, and logs
+the executing workflow SHA. Its durable Switch log records host path, exact bytes and
+`archive_list_exit=0` only after success. Archives are never uploaded as CI artifacts.
+
+Old `orchestrator_*.sql.gz` files were produced by the released gzip-SQL script and are consumed
+only by the explicit legacy restore procedure below. Pre-conversion database dumps can contain
+plaintext secrets. Both sets remain restricted recovery artifacts; this change neither scrubs nor
+deletes them. Their removal needs a separately approved historical-artifact retention decision
+after replacement recovery evidence. New nightly rotation cannot select predeploy/maintenance
+names, dedicated conversion artifacts or historical SQL files, even in a shared directory.
+
+### Later PO operation: install and prove production nightly backup
+
+Execute only on a separate authorized operation after the required green release validation.
+Local disposable test evidence does not establish production DoD 9. No timer installation,
+production backup, deletion or restore is part of this code card. The completed h01o relocation
+records `vlad`, UID 1001, `/home/vlad/codegen_orchestrator`, rootless socket
+`unix:///run/user/1001/docker.sock` and `/home/vlad/codegen-h01o.override.yml`. Confirm these
+non-secret facts still match production before changes. Stop on a mismatch and revise the policy
+and operation together; never substitute system Docker. Record the host and released SHA.
+
+Use an actual login session as the owning user for every block below, including readback and
+restore. An administrator must enter that session rather than run Docker under their own account.
+These units belong in that user's systemd manager, not `/etc/systemd/system`. In this scope their
+`Requires=docker.service` refers to the existing rootless user service. Boot operation requires
+that service enabled, `Linger=yes`, a reachable user manager, a private owning runtime and its
+owned socket. [Docker's rootless systemd instructions](https://docs.docker.com/engine/security/rootless/tips/#daemon)
+describe these prerequisites. This operation does not install/restart a daemon or alter isolation;
+if a prerequisite is absent, leave the timer disabled and resolve it separately.
+
+Inspect identity, both scopes and current configuration first. Use only the reviewed non-secret
+example as the initial host configuration; never source the application's secret `.env`:
+
+```bash
+set +x
+set -euo pipefail
+umask 077
+: "${BACKUP_RELEASE_ROOT:?Absolute reviewed release checkout}"
+: "${BACKUP_RELEASE_SHA:?Full reviewed released main SHA}"
+test "$(git -C "$BACKUP_RELEASE_ROOT" rev-parse HEAD)" = "$BACKUP_RELEASE_SHA"
+set -a
+. "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.env.example"
+set +a
+test "$(id -un)" = "$BACKUP_USER"
+test "$(id -u)" = "$BACKUP_UID"
+backup_account_home=$(getent passwd "$BACKUP_USER" | cut -d: -f6)
+test "$COMPOSE_DIR" = "$backup_account_home/codegen_orchestrator"
+test "$BACKUP_RUNTIME_DIR" = "/run/user/$BACKUP_UID"
+test "${XDG_RUNTIME_DIR:?Owning login session runtime}" = "$BACKUP_RUNTIME_DIR"
+backup_policy_dir="$backup_account_home/.config/codegen-orchestrator"
+backup_policy="$backup_policy_dir/backup.env"
+backup_unit_dir="$backup_account_home/.config/systemd/user"
+id
+loginctl show-user "$BACKUP_USER" -p UID -p Linger -p RuntimePath
+test "$(loginctl show-user "$BACKUP_USER" -p Linger --value)" = yes
+systemctl --user is-enabled docker.service
+systemctl --user is-active docker.service
+systemctl --user show docker.service -p FragmentPath -p ActiveState
+# Inventory existing user units; explicitly record absence, not a successful proof.
+if systemctl --user cat orchestrator-backup.service orchestrator-backup.timer; then
+  systemctl --user show orchestrator-backup.service -p FragmentPath -p DropInPaths \
+    -p ExecStart -p EnvironmentFiles -p UMask
+  systemctl --user show orchestrator-backup.timer -p ActiveState -p NextElapseUSecRealtime
+else
+  echo 'backup user unit inventory incomplete: record missing units'
+fi
+systemctl --user list-timers --all orchestrator-backup.timer
+# Read-only inventory of any obsolete system-scope backup units. An active/enabled
+# one needs separate explicit retirement before enabling this user timer.
+if ! systemctl show orchestrator-backup.service orchestrator-backup.timer \
+    -p LoadState -p ActiveState -p UnitFileState -p FragmentPath; then
+  echo 'system backup unit inventory incomplete: record missing units'
+fi
+for backup_existing in "$backup_policy" "$BACKUP_DIR"; do
+  if test -e "$backup_existing"; then
+    stat -c '%a %U:%G %n' "$backup_existing"
+  else
+    echo "absent=$backup_existing"
+  fi
+done
+"$BACKUP_RELEASE_ROOT/infra/scripts/backup-db-rootless.sh" docker compose version
+```
+
+Record absent units/config explicitly; absence is the reason to install, not successful readback.
+Inspect any existing backup policy file privately and compare its Compose directory/files with
+the production environment's actual deployment settings. The policy explicitly selects project
+`codegen_orchestrator`, the base and production files, `/home/vlad/codegen-h01o.override.yml`,
+then the current `deployed-service-images.compose.yml` last. Do not print resolved Compose JSON,
+application `.env`, database rows or archive listings. Review existing user drop-ins before
+replacing units; an unreviewed identity/client/path override prevents enabling the timer.
+
+Install/update copies from the reviewed released checkout, independently of future resets.
+Only installing the two code helpers needs sudo. Policy, units and destination are installed by
+the owning user, with ownership derived from the checked login identity:
+
+```bash
+sudo install -d -m 0755 /usr/local/libexec
+for backup_helper in backup-db.sh backup-db-rootless.sh; do
+  sudo install -m 0755 "$BACKUP_RELEASE_ROOT/infra/scripts/$backup_helper" \
+    "/usr/local/libexec/$backup_helper.next"
+  sudo mv -Tf "/usr/local/libexec/$backup_helper.next" "/usr/local/libexec/$backup_helper"
+  cmp "$BACKUP_RELEASE_ROOT/infra/scripts/$backup_helper" "/usr/local/libexec/$backup_helper"
+  test "$(stat -c '%u:%a' "/usr/local/libexec/$backup_helper")" = 0:755
+  sha256sum "/usr/local/libexec/$backup_helper"
+done
+# BEGIN user-owned backup installation
+install -d -m 0700 "$backup_policy_dir" "$backup_unit_dir" "$BACKUP_DIR"
+for backup_unit in orchestrator-backup.service orchestrator-backup.timer; do
+  install -m 0644 "$BACKUP_RELEASE_ROOT/infra/systemd/$backup_unit" "$backup_unit_dir/$backup_unit.next"
+  mv -Tf "$backup_unit_dir/$backup_unit.next" "$backup_unit_dir/$backup_unit"
+done
+if ! test -f "$backup_policy"; then
+  install -m 0600 "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.env.example" "$backup_policy"
+fi
+chmod 0600 "$backup_policy"
+# END user-owned backup installation
+# Review/edit this non-secret policy privately if the confirmed host chain changed.
+# Keep only the documented keys, with syntax shared by bash and EnvironmentFile.
+set -a
+. "$backup_policy"
+set +a
+test "$(id -un)" = "$BACKUP_USER"
+test "$(id -u)" = "$BACKUP_UID"
+test "$COMPOSE_DIR" = "$backup_account_home/codegen_orchestrator"
+test "$BACKUP_RUNTIME_DIR" = "/run/user/$BACKUP_UID"
+test "$BACKUP_DIR" = "$backup_account_home/backups/orchestrator/nightly"
+for backup_private_dir in "$backup_policy_dir" "$backup_unit_dir" "$BACKUP_DIR"; do
+  test ! -L "$backup_private_dir"
+  test "$(stat -c '%u:%a' "$backup_private_dir")" = "$BACKUP_UID:700"
+done
+test ! -L "$backup_policy"
+test "$(stat -c '%u:%a' "$backup_policy")" = "$BACKUP_UID:600"
+read -r -a backup_compose_args <<< "$COMPOSE_ARGS"
+cd "$COMPOSE_DIR"
+BACKUP_DOCKER=(/usr/local/libexec/backup-db-rootless.sh docker)
+backup_db_id=$("${BACKUP_DOCKER[@]}" compose --project-directory "$COMPOSE_DIR" \
+  "${backup_compose_args[@]}" ps --all -q db)
+[[ "$backup_db_id" =~ ^[0-9a-f]{64}$ ]]
+test "$("${BACKUP_DOCKER[@]}" inspect --format '{{.State.Running}}' "$backup_db_id")" = true
+test "$("${BACKUP_DOCKER[@]}" inspect \
+  --format '{{index .Config.Labels "com.docker.compose.project"}}' "$backup_db_id")" = codegen_orchestrator
+systemctl --user daemon-reload
+systemd-analyze --user verify "$backup_unit_dir/orchestrator-backup.service" \
+  "$backup_unit_dir/orchestrator-backup.timer"
+systemctl --user cat orchestrator-backup.service orchestrator-backup.timer
+systemctl --user show orchestrator-backup.service -p FragmentPath -p DropInPaths \
+  -p ExecStart -p EnvironmentFiles -p UMask -p Requires -p After
+```
+
+Compare the loaded unit and timer with their installed reviewed files and resolve every drop-in
+before proceeding. The unit uses `%h` from the owning user manager to find its mode-0600 policy;
+the Compose root comes only from that policy. Both installed helpers are root-owned code copies.
+The client requires the configured user/UID, a mode-0700 owned runtime and an owned Unix socket,
+sets its exact endpoint and clears inherited context/TLS selectors. Missing/mismatched runtime,
+socket or daemon fails visibly. Its `docker` mode uses an explicit `--host` for independent readback.
+The shared dump helper's publication/retention and Deploy invocation are unchanged.
+
+Before enabling, confirm the nightly directory contains only the intended rotatable new nightly
+set; protected artifacts use maintenance/predeploy names or separate directories. Then:
+
+```bash
+systemctl --user enable --now orchestrator-backup.timer
+systemctl --user start orchestrator-backup.service
+```
+
+Read back that same user's actual oneshot and timer (03:00 UTC, `Persistent=true`), then verify
+the newly recorded archive again in this owning login session with the same installed policy/client:
+
+```bash
+# BEGIN owning-user archive readback
+systemctl --user show orchestrator-backup.service -p Result -p ExecMainStatus -p ExecMainExitTimestamp
+systemctl --user is-enabled orchestrator-backup.timer
+systemctl --user is-active orchestrator-backup.timer
+TZ=UTC systemctl --user list-timers --all orchestrator-backup.timer
+systemctl --user show orchestrator-backup.timer -p NextElapseUSecRealtime -p LastTriggerUSec
+journalctl --user -u orchestrator-backup.service --since '10 minutes ago' --no-pager
+set -a
+. "$backup_policy"
+set +a
+test "$(id -un)" = "$BACKUP_USER"
+test "$(id -u)" = "$BACKUP_UID"
+# Set from this successful invocation's metadata, not an arbitrary old archive.
+: "${VERIFIED_BACKUP_PATH:?Recorded production host path}"
+test "$(dirname "$VERIFIED_BACKUP_PATH")" = "$BACKUP_DIR"
+test -s "$VERIFIED_BACKUP_PATH"
+test ! -L "$VERIFIED_BACKUP_PATH"
+test "$(stat -c '%u:%a' "$VERIFIED_BACKUP_PATH")" = "$BACKUP_UID:600"
+test "$(stat -c '%u:%a' "$BACKUP_DIR")" = "$BACKUP_UID:700"
+stat -c 'bytes=%s mode=%a owner=%U:%G path=%n' "$VERIFIED_BACKUP_PATH"
+stat -c 'mode=%a owner=%U:%G path=%n' "$BACKUP_DIR" "$backup_policy"
+sha256sum /usr/local/libexec/backup-db.sh /usr/local/libexec/backup-db-rootless.sh
+read -r -a backup_compose_args <<< "$COMPOSE_ARGS"
+cd "$COMPOSE_DIR"
+BACKUP_DOCKER=(/usr/local/libexec/backup-db-rootless.sh docker)
+backup_db_id=$("${BACKUP_DOCKER[@]}" compose --project-directory "$COMPOSE_DIR" \
+  "${backup_compose_args[@]}" ps --all -q db)
+[[ "$backup_db_id" =~ ^[0-9a-f]{64}$ ]]
+if "${BACKUP_DOCKER[@]}" exec -i "$backup_db_id" pg_restore --list \
+    < "$VERIFIED_BACKUP_PATH" > /dev/null 2>&1; then
+  echo 'archive_list_exit=0'
+else
+  echo 'archive_list_exit=1' >&2
+  exit 1
+fi
+# END owning-user archive readback
+```
+
+Attach only metadata: service `Result=success` and `ExecMainStatus=0`, timer enabled/active and
+next UTC run, installed helpers' SHA-256/release SHA, user-manager scope, `vlad`/UID 1001,
+endpoint `unix:///run/user/1001/docker.sock`, policy/Compose chain, archive host path, exact bytes,
+list exit zero, directory 0700 and file/policy 0600 owned by vlad and its actual primary group.
+A unit failure, missing next run or unreadable archive leaves production proof incomplete.
+Read back the next scheduled run later to prove the nightly
+schedule itself. The production Deploy run must separately show its verified predeploy metadata
+before the first `up`; retaining the earlier maintenance dump does not bypass that gate.
+
+### Restore into a separate empty database
+
+Use an approved isolated restore target and its complete Compose chain, with compatible PostgreSQL
+tools and access to the unchanged encryption key for application-level readback. In the owning
+login session, load the isolated target's reviewed non-secret policy (same keys, its own explicit
+Compose project/files and owning runtime), then construct its command through the installed
+client. Confirm the target is authorized and isolated before creating the separate database.
+Never restore over production in this card. The h01o identity/endpoint is vlad/UID 1001 and
+`unix:///run/user/1001/docker.sock`; an operator's context is insufficient.
+
+```bash
+set +x
+set -euo pipefail
+: "${RESTORE_POLICY:?Reviewed isolated target policy path}"
+set -a
+. "$RESTORE_POLICY"
+set +a
+test "$(id -un)" = "$BACKUP_USER"
+test "$(id -u)" = "$BACKUP_UID"
+read -r -a restore_compose_args <<< "$COMPOSE_ARGS"
+cd "$COMPOSE_DIR"
+COMPOSE=(/usr/local/libexec/backup-db-rootless.sh docker compose \
+  --project-directory "$COMPOSE_DIR" "${restore_compose_args[@]}")
+: "${ARCHIVE:?Restricted custom archive path}"
+: "${RESTORE_DB:?Separate empty disposable database name}"
+"${COMPOSE[@]}" exec -T db pg_restore --list < "$ARCHIVE" > /dev/null
+"${COMPOSE[@]}" exec -T db sh -eu -c '
+  : "${POSTGRES_USER:?}" "${POSTGRES_DB:?}" "${POSTGRES_PASSWORD:?}"
+  test "$1" != "$POSTGRES_DB"
+  export PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
+  createdb "$1"
+  exec pg_restore --exit-on-error --dbname "$1"
+' sh "$RESTORE_DB" < "$ARCHIVE"
+```
+
+Verify the intended application and `langgraph` table counts and harmless canaries through the
+restored database, without logging rows. Dispose of only the authorized test target after readback.
+Legacy gzip SQL is a distinct restricted format, not input to `pg_restore`: after creating the
+approved separate empty database, explicitly use `gunzip -c "$LEGACY_SQL_ARCHIVE"` piped into
+`"${COMPOSE[@]}" exec -T db sh -eu -c 'export PGUSER="$POSTGRES_USER"
+PGPASSWORD="$POSTGRES_PASSWORD"; test "$1" != "$POSTGRES_DB";
+exec psql -v ON_ERROR_STOP=1 -d "$1"' sh "$RESTORE_DB"`. Do not fall back to SQL when custom
+verification fails, restore historical data over production, or infer that retained dumps were scrubbed.
+
+## Updating
+
+Standard deploys happen via the GitHub Actions workflow, and a rollback is the same workflow with
+the `revision` input ([Rolling back](#rolling-back)). For manual intervention on the host, run the
+deployed release through its override and never build:
+
+```bash
+# In the owning login session, after the authorized maintenance backup/fences:
+set -a
+. /home/vlad/.config/codegen-orchestrator/backup.env
+set +a
+read -r -a update_compose_args <<< "$COMPOSE_ARGS"
+cd "$COMPOSE_DIR"
+COMPOSE=(/usr/local/libexec/backup-db-rootless.sh docker compose \
+  --project-directory "$COMPOSE_DIR" "${update_compose_args[@]}")
+"${COMPOSE[@]}" up -d --remove-orphans --no-build --pull never
+"${COMPOSE[@]}" exec -T api alembic upgrade head
+```
+
+Without `-f deployed-service-images.compose.yml`, compose falls back to the `:local` build names and
+would build from the checkout.
 
 ### What the production overlay adds
 
@@ -734,7 +1520,8 @@ the four LangGraph agent consumers (`architect`, `engineering-worker`,
 `deploy-worker`, `qa-worker`) are deliberately left unsized until their
 footprint is measured. Every service in `docker-compose.yml` must have an entry
 in the overlay, and `tests/unit/test_production_compose_limits.py` fails if one
-does not.
+does not. The overlay also resets every source bind-mount, so production runs
+image code only ([Production runs image code only](#production-runs-image-code-only)).
 
 `worker-manager` and `worker-broker` are one control plane and roll out
 together — which the command above does, and the deploy workflow does the same.

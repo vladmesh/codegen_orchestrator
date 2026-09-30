@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+from shared.contracts.dto.qa_verification import QAUnverifiedCheck, QAVerificationFacts
 from shared.contracts.dto.settings_seed import (
     SETTINGS_SEED_CONVERGENT_FAILURES,
     SettingSeedOutcome,
@@ -47,13 +48,17 @@ class AllocationFailureReason(StrEnum):
 class EngineeringFailureReason(StrEnum):
     """Stable classifications for an engineering run that produced nothing usable."""
 
-    # The worker reported a commit that is not new work on the story branch: it
-    # is already on the repository default branch, which is where the branch's
-    # base and every already-deployed commit live. Nothing can be merged or
-    # deployed from such a run, and the story PR GitHub would refuse with 422
-    # "No commits between" can never be opened, so the run is failed here with
-    # its own name instead of being accepted as a success that stalls later.
+    # The worker reported success, but its commit adds no file change over the
+    # story branch head the attempt started from (`pre_attempt_head_sha` on the
+    # attempt): it is that head, a commit behind it — the branch base, an
+    # already-deployed commit, an earlier task's commit — or commits that net out
+    # to nothing. Nothing was produced, so the run is failed with its own name
+    # instead of being accepted as a success nobody did.
     NO_NEW_COMMIT = "no_new_commit"
+    # The commit's environment contract declares a required production `derived`
+    # key the platform cannot compute, so any deploy of it would fail in the
+    # secret resolver. The keys travel in `uncomputable_derived_keys`.
+    UNCOMPUTABLE_DERIVED_KEY = "uncomputable_derived_key"
 
 
 class DeploySkipReason(StrEnum):
@@ -71,6 +76,15 @@ class DeploySkipReason(StrEnum):
     ALREADY_DEPLOYED_SAME_SHA = "already_deployed_same_sha"
 
 
+def uncomputable_derived_keys_reason(keys: list[str]) -> str:
+    """What the developer is told about required derived keys the platform cannot compute."""
+    return "\n".join(
+        f"the platform cannot compute {key}; remove it, make it optional with a safe default, "
+        "or use a user_secret if the user supplies it; see the capability manifest's derived keys"
+        for key in keys
+    )
+
+
 class EngineeringRunResult(BaseModel):
     """Result of an engineering run (written by the engineering result handler)."""
 
@@ -84,12 +98,26 @@ class EngineeringRunResult(BaseModel):
     #: has a classification the pipeline routes or a person reads. ``None`` is
     #: the ordinary case: a technical failure whose message is the whole story.
     failure_reason: EngineeringFailureReason | None = None
+    #: The required derived keys an `uncomputable_derived_key` failure names, and
+    #: only then; the next attempt at the task is told each of them.
+    uncomputable_derived_keys: list[str] | None = None
     commit_sha: str | None = None
     selected_modules: list[str] | None = None
     test_results: dict | None = None
     allocation_failure_reason: AllocationFailureReason | None = None
     allocation_required_ram_mb: int | None = None
     allocation_min_disk_mb: int | None = None
+
+    @model_validator(mode="after")
+    def _keys_name_an_uncomputable_derived_key_failure(self) -> EngineeringRunResult:
+        names_keys = bool(self.uncomputable_derived_keys)
+        is_that_failure = self.failure_reason is EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY
+        if names_keys != is_that_failure:
+            raise ValueError(
+                "uncomputable_derived_keys is required with, and only with, "
+                "failure_reason uncomputable_derived_key"
+            )
+        return self
 
 
 class MissingUserSecret(BaseModel):
@@ -260,8 +288,14 @@ class QAFailedCheckCause(StrEnum):
     """Closed set of reasons one QA check failed.
 
     Only `product` is evidence about the product and may reach an engineering
-    fix task. `qa_capability` is a criterion QA has no tool for (an HTTP write,
-    a photo upload); `qa_access` is the product refusing the QA identity.
+    fix task. `qa_capability` is a criterion QA has no tool for, or one it never
+    performs (`shared.contracts.qa_capabilities`); `qa_access` is the product
+    refusing the QA identity.
+
+    `qa_capability` is the executor's word for a check it could not run. The QA
+    runner never settles a Run with one in `failed_checks`: it records it as
+    unverified (`QARunResult.unverified_checks`). A stored result written before
+    that still reads as it was written.
     """
 
     PRODUCT = "product"
@@ -334,9 +368,10 @@ class QABlockerCategory(StrEnum):
     # taken back while the run was still using it.
     QA_ACCESS_GRANT_FAILED = "qa_access_grant_failed"
     QA_ACCESS_EXPIRED = "qa_access_expired"
-    # QA ran and every failed check was a criterion it had no tool for or a
-    # product refusing the QA identity. No product judgement exists, so no fix
-    # attempt may be spent on it.
+    # QA ran and every failed check was the product refusing the QA identity
+    # (`qa_access`). No product judgement exists, so no fix attempt may be spent
+    # on it. A check QA had no tool for is never this: it is unverified
+    # (`QARunResult.unverified_checks`) and does not block the story.
     QA_CHECKS_UNVERIFIABLE = "qa_checks_unverifiable"
     UNKNOWN = "unknown"
 
@@ -473,6 +508,73 @@ class QAStateChange(BaseModel):
     cleanup: QAStateChangeCleanup
 
 
+class QAProbePlatform(StrEnum):
+    """The executor surface a retained QA probe exercised."""
+
+    TELEGRAM = "telegram"
+    HTTP = "http"
+    WEB = "web"
+
+
+class QAProbeFileKind(StrEnum):
+    """How `qa probe` ran a probe file: `python3 FILE` or `sh FILE`."""
+
+    PY = "py"
+    SH = "sh"
+
+
+class QAProbeRun(BaseModel):
+    """One executor-authored probe, retained by the QA runner in call order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    platform: QAProbePlatform
+    name: str = Field(min_length=1)
+    source: str
+    arguments: list[str]
+    stdout: str
+    stderr: str
+    exit_status: int
+    duration_ms: int = Field(ge=0)
+    source_truncated: bool = False
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    #: The probe file's kind as the `qa` CLI ran it. ``None`` on records made
+    #: before the CLI reported it; such a record is evidence only and never
+    #: enters the probe library, which has to know how to run what it offers.
+    file_kind: QAProbeFileKind | None = None
+
+
+class QAProbeLibraryOffered(BaseModel):
+    """One probe the runner wrote into a QA executor's library directory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    platform: QAProbePlatform
+    name: str = Field(min_length=1)
+    #: ``"seed"`` for a platform-shipped entry, else the id of the passed QA Run
+    #: whose probe the project library stored.
+    origin: str = Field(min_length=1)
+
+
+class QAProbeLibraryOffer(BaseModel):
+    """What probe library a QA run's executor was offered, and why not more.
+
+    The run then proceeds with the platform seeds alone when either note is
+    set: `read_failure` when the project's stored entries could not be read,
+    `build_failure` when they were read but could not be laid out as one
+    executor's library (a name that is not a library name, a repeated path,
+    too many files or an index over its budget).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    offered: list[QAProbeLibraryOffered] = Field(default_factory=list)
+    read_failure: str | None = None
+    build_failure: str | None = None
+
+
 class QARunResult(BaseModel):
     """Result of a QA run (written by the QA consumer)."""
 
@@ -481,12 +583,30 @@ class QARunResult(BaseModel):
     qa_outcome: QAOutcome
     summary: str | None = None
     failed_checks: list[QAFailedCheck] = Field(default_factory=list)
+    #: The names of the checks this run performed and passed. Empty on a result
+    #: written before it was recorded, and on a blocked run.
+    passed_checks: list[str] = Field(default_factory=list)
+    #: Checks QA could not run (cause `qa_capability`), taken out of the verdict
+    #: by the QA runner: never a failure, never a pass. A run whose only other
+    #: checks passed is `passed` with these listed.
+    unverified_checks: list[QAUnverifiedCheck] = Field(default_factory=list)
     report: str | None = None
     qa_attempt: int | None = None
     deployed_url: str | None = None
     error: str | None = None
     blocker: QABlocker | None = None
     telegram_probe_evidence: list[QATelegramProbeEvidence] = Field(default_factory=list)
+    #: Executor-authored probes retained by the QA runner in the order their
+    #: `qa probe` record calls arrived. ``[]`` means the executor ran and the
+    #: writer held its probe record but none were recorded. ``None`` means this
+    #: terminal writer held no probe record, and claims nothing about an
+    #: executor that may have been in flight, matching `executor_transcript`.
+    probe_runs: list[QAProbeRun] | None = None
+    #: The probe library the consumer prepared for this run's executor. Set
+    #: whenever `run_qa_centrally` returned, including a result that failed
+    #: before the executor started; ``None`` when the run ended before the
+    #: library was prepared (a preflight blocker) or the runner raised.
+    probe_library: QAProbeLibraryOffer | None = None
     state_changes: list[QAStateChange] = Field(default_factory=list)
     #: The QA executor's own account of the run, as the QA runner saw it over the
     #: worker's output stream (`QAExecutorRun.transcript`, bounded there), with
@@ -506,6 +626,14 @@ class QARunResult(BaseModel):
     #: Readers state which writer settled the Run without one; they do not
     #: conclude silence from it.
     executor_transcript: str | None = None
+
+    def verification_facts(self, qa_run_id: str) -> QAVerificationFacts:
+        """What this run checked and could not, as the settling owner event carries it."""
+        return QAVerificationFacts(
+            qa_run_id=qa_run_id,
+            passed_checks=list(self.passed_checks),
+            unverified_checks=list(self.unverified_checks),
+        )
 
     @model_validator(mode="after")
     def _outcome_matches_state_traces(self) -> QARunResult:

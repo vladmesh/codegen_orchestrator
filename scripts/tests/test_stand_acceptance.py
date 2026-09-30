@@ -1,5 +1,7 @@
+import base64
 from datetime import UTC, datetime, timedelta
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -1008,6 +1010,33 @@ def test_redaction_scan_covers_handoff_logs_and_bare_known_secret_values(tmp_pat
     errors = scan_artifact(handoff, canaries=("bare-value",))
 
     assert errors == ["candidate contains a supplied redaction canary"]
+
+
+@pytest.mark.parametrize("name", ["TELETHON_SESSION", "TELETHON_API_HASH"])
+def test_admission_refuses_an_artifact_carrying_the_qa_telegram_session(tmp_path, name):
+    """The stand hands qa-worker the QA session; no uploaded artifact may carry it."""
+    session = "1" + base64.urlsafe_b64encode(os.urandom(263)).decode()
+    environment = {**_protected_environment(), name: session}
+    handoff = tmp_path / "handoff"
+    run = handoff / "run"
+    run.mkdir(parents=True)
+    (handoff / "machines.json").write_text("{}\n", encoding="utf-8")
+    (run / "suite-services.log").write_text(
+        f"qa-worker  | telethon client started with {session}\n", encoding="utf-8"
+    )
+    status = tmp_path / "admission-status.json"
+
+    admitted = admit_artifact_from_environment(handoff, status_path=status, environ=environment)
+
+    assert admitted is False
+    recorded = status.read_text(encoding="utf-8")
+    assert json.loads(recorded)["issues"] == [
+        {
+            "path": "run/suite-services.log",
+            "reason": "candidate contains a supplied protected value",
+        }
+    ]
+    assert session not in recorded
 
 
 def test_admission_accepts_public_stand_configuration_and_real_shaped_manifest(tmp_path):

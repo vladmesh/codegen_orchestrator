@@ -8,6 +8,8 @@ committed, what `PATCH /stories/{id}` is refused, and what the administrator
 overview reports.
 """
 
+from datetime import datetime
+
 from fastapi import status
 from httpx import AsyncClient
 import pytest
@@ -149,6 +151,38 @@ async def test_patch_refuses_to_write_waiting_on(async_client: AsyncClient, _tas
     committed = await async_client.get(f"/api/stories/{story_id}")
     assert committed.json()["title"] == "Patched waiting_on"
     assert committed.json()["waiting_on"] == StoryWaitingOn.CI
+
+
+@pytest.mark.asyncio
+async def test_the_status_entry_time_moves_only_with_the_status(
+    async_client: AsyncClient, _tasks_project
+) -> None:
+    """`status_entered_at` is stamped by each landing; editorial writes leave it."""
+    story_id = await _create_story(async_client, "Entered status")
+    created = (await async_client.get(f"/api/stories/{story_id}")).json()
+    assert created["status_entered_at"] is not None
+
+    started = await async_client.post(f"/api/stories/{story_id}/start", json={"actor": "po"})
+    entered = started.json()["status_entered_at"]
+    assert datetime.fromisoformat(entered) >= datetime.fromisoformat(created["status_entered_at"])
+
+    patched = await async_client.patch(
+        f"/api/stories/{story_id}",
+        json={"title": "Renamed later", "quarantine_reason": {"note": "written later"}},
+    )
+    assert patched.status_code == status.HTTP_200_OK, patched.text
+    committed = (await async_client.get(f"/api/stories/{story_id}")).json()
+    assert committed["title"] == "Renamed later"
+    assert committed["status_entered_at"] == entered
+    assert committed["updated_at"] != created["updated_at"]
+
+    refused = await async_client.patch(
+        f"/api/stories/{story_id}", json={"status_entered_at": "2026-01-01T00:00:00+00:00"}
+    )
+    assert refused.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT, refused.text
+    assert (await async_client.get(f"/api/stories/{story_id}")).json()[
+        "status_entered_at"
+    ] == entered
 
 
 @pytest.mark.asyncio

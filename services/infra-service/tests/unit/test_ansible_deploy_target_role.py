@@ -3,9 +3,12 @@
 import os
 from pathlib import Path
 import pwd
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import uuid
 
 import pytest
@@ -14,10 +17,34 @@ import yaml
 ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
 ROLE_TASKS = ANSIBLE_DIR / "roles" / "deploy_target" / "tasks" / "main.yml"
 SOFTWARE_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "provision_software.yml"
+# Two applies leave 30 seconds for setup, assertions and cleanup under pytest's 90s limit.
+ANSIBLE_TIMEOUT_SECONDS = 30
+PRIVILEGED_TIMEOUT_SECONDS = 10
 
 
 def _task_named(tasks: list[dict], name: str) -> dict:
     return next(task for task in tasks if task["name"] == name)
+
+
+def _run_bounded(command: list[str], timeout: int, **kwargs) -> subprocess.CompletedProcess:
+    started = time.monotonic()
+    try:
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.monotonic() - started
+        # TimeoutExpired can contain bytes even when text=True, or None before output.
+        stdout = (
+            exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout
+        )
+        stderr = (
+            exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+        )
+        pytest.fail(
+            f"{command[0]} timed out after {elapsed:.2f}s (limit {timeout}s)\n"
+            f"command: {shlex.join(command)}\n"
+            f"stdout:\n{stdout or ''}\nstderr:\n{stderr or ''}",
+            pytrace=False,
+        )
 
 
 class TestDeployTargetBootstrap:
@@ -70,6 +97,7 @@ class TestDeployTargetPermissions:
 - hosts: localhost
   connection: local
   become: true
+  gather_facts: false
   vars:
     deploy_user: DEPLOY_USER
     services_root: SERVICES_ROOT
@@ -80,10 +108,34 @@ class TestDeployTargetPermissions:
         )
 
         try:
+            # Keep account creation out of the role's permissions proof. An empty
+            # skeleton and no login logs avoid unrelated runner-image setup work.
+            skeleton = tmp_path / "empty-skeleton"
+            skeleton.mkdir()
+            self._run_privileged(
+                [
+                    "useradd",
+                    "--system",
+                    "--user-group",
+                    "--no-log-init",
+                    "--create-home",
+                    "--skel",
+                    str(skeleton),
+                    "--home-dir",
+                    f"/home/{deploy_user}",
+                    "--shell",
+                    "/bin/bash",
+                    "--groups",
+                    "docker",
+                    deploy_user,
+                ]
+            )
             self._run_privileged(["mkdir", "-p", str(services_root / "personal_site")])
             self._run_privileged(["chown", "root:root", str(services_root / "personal_site")])
             self._run_privileged(["chmod", "0755", str(services_root / "personal_site")])
 
+            # Account setup must finish before Ansible enters the user task.
+            assert pwd.getpwnam(deploy_user).pw_shell == "/bin/bash"
             self._apply_role(playbook)
             self._apply_role(playbook)
 
@@ -113,17 +165,25 @@ class TestDeployTargetPermissions:
                 != 0
             )
         finally:
-            self._run_privileged(["userdel", "-r", deploy_user], check=False)
-            self._run_privileged(["rm", "-rf", str(services_root)], check=False)
+            try:
+                self._run_privileged(["userdel", "-r", deploy_user], check=False)
+            finally:
+                self._run_privileged(["rm", "-rf", str(services_root)], check=False)
 
     @staticmethod
     def _apply_role(playbook: Path) -> None:
-        result = subprocess.run(
-            ["ansible-playbook", "-i", "localhost,", str(playbook)],
+        result = _run_bounded(
+            ["ansible-playbook", "-vvv", "-i", "localhost,", str(playbook)],
+            timeout=ANSIBLE_TIMEOUT_SECONDS,
             cwd=ANSIBLE_DIR,
-            capture_output=True,
-            env={**os.environ, "ANSIBLE_STDOUT_CALLBACK": "default"},
-            text=True,
+            env={
+                **os.environ,
+                "ANSIBLE_STDOUT_CALLBACK": "default",
+                # Local modules use the tested Python, not runner-image discovery.
+                "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+                # Avoid staging modules and repeated local subprocesses on busy runners.
+                "ANSIBLE_PIPELINING": "true",
+            },
         )
         assert result.returncode == 0, result.stdout + result.stderr
 
@@ -136,4 +196,75 @@ class TestDeployTargetPermissions:
     @staticmethod
     def _run_privileged(command: list[str], check: bool = True):
         prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
-        return subprocess.run([*prefix, *command], check=check, capture_output=True, text=True)
+        result = _run_bounded([*prefix, *command], timeout=PRIVILEGED_TIMEOUT_SECONDS)
+        if check:
+            assert result.returncode == 0, (
+                f"{shlex.join(command)} exited {result.returncode}\n{result.stdout}{result.stderr}"
+            )
+        return result
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [(b"partial task output\n", b"sudo diagnostic\n"), ("task output", "diagnostic"), (None, None)],
+)
+def test_apply_role_timeout_reports_output_and_elapsed_time(tmp_path, mocker, stdout, stderr):
+    run = mocker.patch.object(
+        subprocess,
+        "run",
+        side_effect=subprocess.TimeoutExpired("ansible-playbook", 30, output=stdout, stderr=stderr),
+    )
+    mocker.patch("time.monotonic", side_effect=[100.0, 130.25])
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        TestDeployTargetPermissions._apply_role(tmp_path / "playbook.yml")
+
+    message = str(failure.value)
+    assert "ansible-playbook timed out after 30.25s (limit 30s)" in message
+    for label, output in (("stdout", stdout), ("stderr", stderr)):
+        expected = output.decode() if isinstance(output, bytes) else output or ""
+        assert f"{label}:\n{expected}" in message
+    assert run.call_args.kwargs["timeout"] == 30
+
+
+def test_apply_role_uses_test_python_without_discovery(tmp_path, monkeypatch):
+    # Runner images can contain Python versions other than the test environment's.
+    alternate_python = tmp_path / "python3.14"
+    alternate_python.write_text("#!/bin/sh\necho unexpected interpreter discovery >&2\nexit 1\n")
+    alternate_python.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    playbook = tmp_path / "interpreter.yml"
+    playbook.write_text(
+        """
+- hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  tasks:
+    - ansible.builtin.ping:
+"""
+    )
+
+    TestDeployTargetPermissions._apply_role(playbook)
+
+
+def test_privileged_setup_timeout_reports_command_output_and_elapsed_time(mocker):
+    mocker.patch("os.geteuid", return_value=0)
+    run = mocker.patch.object(
+        subprocess,
+        "run",
+        side_effect=subprocess.TimeoutExpired(
+            "useradd", 10, output=b"setup output\n", stderr=b"account database locked\n"
+        ),
+    )
+    mocker.patch("time.monotonic", side_effect=[100.0, 110.25])
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        TestDeployTargetPermissions._run_privileged(["useradd", "disposable-user"])
+
+    message = str(failure.value)
+    assert "useradd timed out after 10.25s (limit 10s)" in message
+    assert "disposable-user" in message
+    assert "stdout:\nsetup output\n" in message
+    assert "stderr:\naccount database locked\n" in message
+    assert run.call_args.kwargs["timeout"] == 10

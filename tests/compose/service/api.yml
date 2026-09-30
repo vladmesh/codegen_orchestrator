@@ -9,6 +9,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["/entrypoint.sh"]
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
@@ -60,6 +61,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/service/", "-v"]
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - API_URL=http://api:8000
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0

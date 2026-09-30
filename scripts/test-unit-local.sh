@@ -46,9 +46,23 @@ CLEAN_ENV=(
     BROKER_INTERNAL_TOKEN="test-worker-broker-internal-token"
     WORKER_BROKER_INTERNAL_TOKEN="test-worker-broker-internal-token"
     LK_DOMAIN="https://lk.test.example.com"
+    TELEGRAM_MAX_CONCURRENT_UPDATES="8"
     INTERNAL_API_KEY="test-internal-key"
     LK_JWT_SECRET="test-lk-jwt-secret"
+    DEFAULT_AGENT_TYPE="claude"
     DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test"
+)
+
+# Every unit test is bounded, so a hang fails in minutes with the test's node id,
+# its pending asyncio tasks and every thread's stack (scripts/unit_test_timeout.py)
+# instead of running into the CI step timeout with no output. The thread method
+# works when the event loop itself is stuck. A test that legitimately needs longer
+# carries its own `@pytest.mark.timeout`, which takes precedence over this default.
+UNIT_TEST_TIMEOUT_SECONDS=90
+TIMEOUT_ARGS=(
+    -p scripts.unit_test_timeout
+    --timeout="$UNIT_TEST_TIMEOUT_SECONDS"
+    --timeout-method=thread
 )
 
 # --- Serial mode (original behavior, verbose) ---
@@ -72,7 +86,7 @@ run_tests_serial() {
     local workdir="${pythonpath:-$ROOT}"
     if (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${extra_args[@]}") 2>&1; then
+       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${extra_args[@]}") 2>&1; then
         PASSED+=("$label")
     else
         FAILED+=("$label")
@@ -102,14 +116,14 @@ run_tests_parallel() {
     local rc=0
     (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" --tb=short -q "${extra_args[@]}") \
+       python -m pytest "$ROOT/$test_dir" --tb=short -q "${TIMEOUT_ARGS[@]}" "${extra_args[@]}") \
        > "$LOGDIR/$label.log" 2>&1 || rc=$?
     echo "$rc" > "$LOGDIR/$label.rc"
 }
 
 # --- Shared test list ---
 
-OFFLINE_LIVE_IGNORE_ARGS="--ignore=tests/live/test_api_crud.py --ignore=tests/live/test_capability_cleanup_redis.py --ignore=tests/live/test_ci_prompt.py --ignore=tests/live/test_deploy_infra.py --ignore=tests/live/test_full_pipeline.py --ignore=tests/live/test_product_brief_pipeline.py --ignore=tests/live/test_product_brief_package_pipeline.py --ignore=tests/live/test_health.py --ignore=tests/live/test_parallel_engineering.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_sprint_dod.py --ignore=tests/live/test_streams.py --ignore=tests/live/test_supervisor.py"
+OFFLINE_LIVE_IGNORE_ARGS="--ignore=tests/live/test_api_crud.py --ignore=tests/live/test_capability_cleanup_redis.py --ignore=tests/live/test_ci_prompt.py --ignore=tests/live/test_deploy_infra.py --ignore=tests/live/test_full_pipeline.py --ignore=tests/live/test_product_brief_pipeline.py --ignore=tests/live/test_product_brief_package_pipeline.py --ignore=tests/live/test_health.py --ignore=tests/live/test_llm_channel_failover.py --ignore=tests/live/test_parallel_engineering.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_sprint_dod.py --ignore=tests/live/test_streams.py --ignore=tests/live/test_supervisor.py"
 
 # Every entry here is a CI claim on a test directory, and it covers that directory
 # recursively: scripts/check-ci-gate.py walks the tree and fails when a file pytest

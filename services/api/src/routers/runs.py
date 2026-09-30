@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -22,15 +22,19 @@ from shared.contracts.dto.deploy_dispatch import (
     DispatchSupersede,
     DispatchWithdrawal,
 )
-from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput, QAAccountingFact
+from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
 from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_KEY,
+    OwnerNotification,
+    OwnerNotificationAttemptClaim,
     OwnerNotificationState,
 )
+from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.models import EngineeringAttemptLedger, Project, Run, User
+from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Project, Run, User
 
 from ..database import get_async_session
 from ..dependencies import (
@@ -39,7 +43,12 @@ from ..dependencies import (
     require_internal_or_admin,
     resolve_actor,
 )
-from ..engineering_budget_admission import finalize_engineering_reservation
+from ..engineering_budget_admission import (
+    finalize_engineering_reservation,
+    release_pre_handoff_reservation,
+)
+from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
+from ..owner_notification_settlement import preserve_po_settlement
 from ..schemas import RunCreate, RunRead, RunUpdate
 
 logger = structlog.get_logger()
@@ -116,6 +125,7 @@ async def _record_engineering_attempt(
     existing = await db.scalar(
         select(EngineeringAttemptLedger.id).where(EngineeringAttemptLedger.run_id == run.id)
     )
+
     if existing is not None:
         return
     facts = attempt or EngineeringAttemptLedgerInput()
@@ -129,6 +139,7 @@ async def _record_engineering_attempt(
             task_id=run.task_id,
             user_id=project.owner_id if project is not None else None,
             owner_attribution="resolved" if project is not None else "unknown",
+            role=run.type,
             occurred_at=run.completed_at or datetime.now(UTC),
             provider=facts.provider,
             model=facts.model,
@@ -141,6 +152,41 @@ async def _record_engineering_attempt(
             cost_source=facts.cost_source.value,
         )
     )
+
+
+async def _settle_terminal_accounting(
+    run: Run,
+    engineering_attempt: EngineeringAttemptLedgerInput | None,
+    qa_accounting: QAAccountingFact | None,
+    db: AsyncSession,
+) -> None:
+    """Write the first terminal fact and settle its hold under the Run lock."""
+    if run.status not in _TERMINAL_RUN_STATUSES:
+        return
+    if run.type == RunType.ENGINEERING.value:
+        await _record_engineering_attempt(run, engineering_attempt, db)
+        facts = engineering_attempt or EngineeringAttemptLedgerInput()
+        await finalize_engineering_reservation(run.id, facts.cost_microusd, db)
+    elif run.type == RunType.QA.value:
+        if qa_accounting is None:
+            logger.warning("qa_terminal_accounting_fact_missing", run_id=run.id)
+        if qa_accounting is not None and qa_accounting.executor_started:
+            reservation = await db.scalar(
+                select(EngineeringBudgetReservation).where(
+                    EngineeringBudgetReservation.attempt_id == run.id
+                )
+            )
+            # An in-flight run admitted before this deploy has no reservation.
+            # A repeated terminal delivery cannot reopen a released hold.
+            if (
+                reservation is not None
+                and reservation.state is not EngineeringBudgetReservationState.RELEASED
+            ):
+                await _record_engineering_attempt(run, qa_accounting.attempt, db)
+                facts = qa_accounting.attempt or EngineeringAttemptLedgerInput()
+                await finalize_engineering_reservation(run.id, facts.cost_microusd, db)
+        else:
+            await release_pre_handoff_reservation(run.id, db)
 
 
 async def _check_run_access(
@@ -176,6 +222,38 @@ async def _check_run_access(
         )
 
 
+def _refuse_reserved_metadata(metadata: dict) -> None:
+    """Refuse a caller-supplied imitation of the QA routing fact.
+
+    Whether a story consumed a QA verdict is ``Run.qa_routed_at``, which only
+    the routing story transition writes and no run schema accepts. Metadata
+    never proves it; the key is refused so nothing can look as if it did.
+    """
+    if QA_ROUTED_KEY in metadata:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "reserved_run_metadata", "key": QA_ROUTED_KEY},
+        )
+
+
+def _refuse_superseded_owner_notification(existing: dict, update: dict) -> None:
+    """Refuse an owner-notification write from an attempt older than the stored one."""
+    incoming = update.get(OWNER_NOTIFICATION_KEY)
+    if incoming is None:
+        return
+    try:
+        record = OwnerNotification.model_validate(incoming)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{OWNER_NOTIFICATION_KEY} is not an owner notification: {exc}",
+        ) from exc
+    refuse_superseded_write(existing.get(OWNER_NOTIFICATION_KEY), record)
+    update[OWNER_NOTIFICATION_KEY] = preserve_po_settlement(
+        existing.get(OWNER_NOTIFICATION_KEY), record
+    ).model_dump(mode="json")
+
+
 @router.post("/", response_model=RunRead, status_code=status.HTTP_201_CREATED)
 async def create_run(
     run: RunCreate,
@@ -188,6 +266,7 @@ async def create_run(
             status_code=status.HTTP_409_CONFLICT,
             detail="Paid coding-agent runs must use the paid-run start command",
         )
+    _refuse_reserved_metadata(run.run_metadata)
     run_data = run.model_dump()
     if run.project_id is not None:
         project = await db.get(Project, run.project_id)
@@ -550,7 +629,9 @@ async def update_run(
             )
     requested_status = update_data.get("status")
     engineering_attempt = run_update.engineering_attempt
+    qa_accounting = run_update.qa_accounting
     update_data.pop("engineering_attempt", None)
+    update_data.pop("qa_accounting", None)
     if engineering_attempt is not None and run.type != RunType.ENGINEERING.value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -560,6 +641,13 @@ async def update_run(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="engineering_attempt is only valid with a terminal engineering status",
+        )
+    if qa_accounting is not None and (
+        run.type != RunType.QA.value or requested_status not in _TERMINAL_RUN_STATUSES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="qa_accounting is only valid with a terminal QA status",
         )
 
     # A terminal run has produced its outcome and nothing may start work for it
@@ -620,6 +708,9 @@ async def update_run(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Run executor decision is immutable after paid-run creation",
             )
+        if isinstance(metadata_update, dict):
+            _refuse_reserved_metadata(metadata_update)
+            _refuse_superseded_owner_notification(existing_metadata, metadata_update)
 
     for field, value in update_data.items():
         if field == "run_metadata" and value is not None:
@@ -630,13 +721,8 @@ async def update_run(
         else:
             setattr(run, field, value)
 
-    # This is deliberately the only ledger writer. Every terminal engineering
-    # path, including cancellation and a repeated worker delivery, uses the
-    # same Run lock and transaction.
-    if run.type == RunType.ENGINEERING.value and run.status in _TERMINAL_RUN_STATUSES:
-        await _record_engineering_attempt(run, engineering_attempt, db)
-        facts = engineering_attempt or EngineeringAttemptLedgerInput()
-        await finalize_engineering_reservation(run.id, facts.cost_microusd, db)
+    # This is deliberately the only ledger writer, under the terminal Run lock.
+    await _settle_terminal_accounting(run, engineering_attempt, qa_accounting, db)
 
     await db.commit()
     await db.refresh(run)
@@ -649,6 +735,27 @@ async def update_run(
     )
 
     return run
+
+
+@router.post("/{run_id}/owner-notification/attempt", response_model=OwnerNotificationAttemptClaim)
+async def claim_run_owner_notification_attempt(
+    run_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> OwnerNotificationAttemptClaim:
+    """Grant one delivery attempt on the run's owner notification, or refuse it.
+
+    Granted only while the record owes some audience and its last attempt is at
+    least `OWNER_NOTIFICATION_ATTEMPT_INTERVAL` old; the check and the stamp are
+    one write under the run lock, so of two callers asking at the same moment
+    exactly one is granted, whichever code path each of them is.
+    """
+    run = await _lock_run(run_id, db)
+    claim, stamped = claim_attempt((run.run_metadata or {}).get(OWNER_NOTIFICATION_KEY))
+    if stamped is not None:
+        run.run_metadata = {**(run.run_metadata or {}), OWNER_NOTIFICATION_KEY: stamped}
+    await db.commit()
+    return claim
 
 
 def _claimed_at(run: Run) -> datetime | None:

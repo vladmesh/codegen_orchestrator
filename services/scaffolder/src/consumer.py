@@ -16,8 +16,14 @@ import httpx
 from pydantic import ValidationError
 import structlog
 
+from shared.clients.github import (
+    GitHubAppClient,
+    RegistrySecretsNotRefreshedError,
+    registry_repository_secrets,
+)
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode, in_work_cycle
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.diagnostics import redact_diagnostic, safe_validation_errors
 from shared.log_config import setup_logging
@@ -26,7 +32,6 @@ from shared.notifications import notify_admins_best_effort
 from shared.queues import SCAFFOLD_GROUP, SCAFFOLD_QUEUE
 from shared.redis import RedisStreamClient
 from src.clients.api import get_api_client
-from src.clients.github import get_github_client
 from src.config import get_settings
 from src.scaffold import run_ensure_workspace, run_scaffold
 from src.spec_extractor import extract_specs_summary
@@ -136,19 +141,20 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     settings = get_settings()
 
     try:
-        # Get GitHub token
-        github = get_github_client()
-        org = os.environ.get("GITHUB_ORG", "")
-        if not org:
-            raise RuntimeError("GITHUB_ORG environment variable is not set")
-        repo_full_name = f"{org}/{msg.project_name}"
-        github_token = await github.get_org_token(org)
+        # One GitHub HTTP pool spans every GitHub call of this operation and is
+        # closed on success, failure and cancellation alike.
+        async with GitHubAppClient() as github:
+            org = os.environ.get("GITHUB_ORG", "")
+            if not org:
+                raise RuntimeError("GITHUB_ORG environment variable is not set")
+            repo_full_name = f"{org}/{msg.project_name}"
+            github_token = await github.get_org_token(org)
 
-        # Route by mode
-        args = (msg, repo_full_name, github, github_token, api, settings, log)
-        if msg.mode == "ensure":
-            return await _process_ensure_mode(*args)
-        return await _process_full_mode(*args)
+            # Route by mode
+            args = (msg, repo_full_name, github, github_token, api, settings, log)
+            if msg.mode == "ensure":
+                return await _process_ensure_mode(*args)
+            return await _process_full_mode(*args)
 
     except Exception as exc:
         error = redact_diagnostic(exc)
@@ -190,30 +196,18 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
         update_fields["provider_repo_id"] = github_repo.id
     await api.update_repository(msg.repository_id, **update_fields)
 
-    # Set registry secrets so CI build-and-push can work from first commit
-    registry_url = os.environ.get("ORCHESTRATOR_HOSTNAME", "")
-    registry_user = os.environ.get("REGISTRY_USER", "")
-    registry_password = os.environ.get("REGISTRY_PASSWORD", "")
-    if all([registry_url, registry_user, registry_password]):
+    # Set registry secrets so CI build-and-push can work from first commit. The PR
+    # poller writes them again before every merge, so this is not the only chance.
+    try:
+        registry_secrets = registry_repository_secrets()
+    except RegistrySecretsNotRefreshedError as error:
+        log.warning("registry_secrets_skipped", detail=error.detail)
+    else:
         github_token_for_secrets = await github.get_org_token(org)
         count = await github.set_repository_secrets(
-            org,
-            msg.project_name,
-            {
-                "REGISTRY_URL": registry_url,
-                "REGISTRY_USER": registry_user,
-                "REGISTRY_PASSWORD": registry_password,
-            },
-            token=github_token_for_secrets,
+            org, msg.project_name, registry_secrets, token=github_token_for_secrets
         )
         log.info("registry_secrets_set", count=count)
-    else:
-        log.warning(
-            "registry_secrets_skipped",
-            has_url=bool(registry_url),
-            has_user=bool(registry_user),
-            has_password=bool(registry_password),
-        )
 
     # Run scaffold
     result = await run_scaffold(
@@ -262,31 +256,56 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
 
-    # Fail only stories that never started, so architect/dispatcher don't keep waiting.
-    # Work already in flight (in_progress, review, deploy, testing, waiting_*) and work
-    # already finished (completed, archived) is not defective because this scaffold run
-    # failed, and failing it destroys user-visible state that nothing rolls back.
+    await _fail_stories_waiting_on_scaffold(msg, result.error or "unknown error", api, log)
+    return {"status": "failed", "error": result.error or "unknown error"}
+
+
+async def _fail_stories_waiting_on_scaffold(msg, error: str, api, log) -> None:
+    """Fail every story whose only work so far was waiting for this scaffold.
+
+    That is a story still in ``created``, and one an architect already took to
+    ``in_progress`` while it waited for the repository but that has no task in
+    its current work cycle: nothing was built for it, and nothing will be,
+    because ``scaffold_trigger`` never retries a project carrying
+    ``scaffold_error``. Leaving it in ``in_progress`` is what made its owner hear
+    "work continues" for as long as anybody asked.
+
+    Work that has tasks, or already left ``in_progress`` (review, deploy,
+    testing, waiting_*), or finished (completed, archived) is not defective
+    because this scaffold run failed, and failing it destroys user-visible state
+    that nothing rolls back. Each failure carries the typed reason, so the story
+    itself says why it stopped and its owner is owed the cause.
+    """
+    failure = StoryFailure(code=StoryFailureCode.SCAFFOLD_FAILED, source="scaffolder", detail=error)
     try:
         stories = await api.get_stories_by_project(msg.project_id)
         failed_ids = []
         skipped_ids = []
         for story in stories:
-            if story.status != StoryStatus.CREATED:
+            if not await _waits_only_on_scaffold(story, api):
                 skipped_ids.append(story.id)
                 continue
-            await api.fail_story(story.id)
+            await api.fail_story(story.id, failure)
             failed_ids.append(story.id)
-            log.info("scaffold_story_failed", story_id=story.id)
+            log.info("scaffold_story_failed", story_id=story.id, story_status=story.status)
         log.info(
             "scaffold_stories_failed_summary",
             failed_count=len(failed_ids),
+            failed_story_ids=failed_ids,
             skipped_count=len(skipped_ids),
             skipped_story_ids=skipped_ids,
         )
     except Exception:
         log.warning("failed_to_fail_stories_on_scaffold_error", exc_info=True)
 
-    return {"status": "failed", "error": result.error or "unknown error"}
+
+async def _waits_only_on_scaffold(story, api) -> bool:
+    if story.status == StoryStatus.CREATED:
+        return True
+    if story.status != StoryStatus.IN_PROGRESS:
+        return False
+    tasks = await api.get_tasks_by_story(story.id)
+    return not any(in_work_cycle(task.created_at, story.reopened_at, task.status) for task in tasks)
 
 
 async def _verify_repo_auto_merge(msg, github, api, org, project_config, log) -> None:

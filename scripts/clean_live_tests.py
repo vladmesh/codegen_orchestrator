@@ -1,4 +1,6 @@
 # ruff: noqa: S608
+import argparse
+from collections.abc import Mapping
 from contextlib import contextmanager
 import json
 import os
@@ -8,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 
-CLEANUP_API_URL = "http://localhost:8000"
 HTTP_OK = 200
 ORCHESTRATOR_ROOT = os.environ.get("ORCHESTRATOR_ROOT")
 if not ORCHESTRATOR_ROOT:
@@ -24,11 +25,12 @@ if _LIVE_HELPERS not in sys.path:
 import db_teardown  # noqa: E402
 from live_harness import run_user_sweep_predicate  # noqa: E402
 
-from shared.live_contour import current_contour  # noqa: E402
+from shared.live_contour import Contour, current_contour  # noqa: E402
 from shared.live_harness_cleanup import (  # noqa: E402
     REMOTE_CLEANUP_SCRIPT,
     build_remote_cleanup_command,
     build_remote_residue_command,
+    cleanup_target_skip_reason,
     managed_cleanup_targets,
     tolerant_prefix_pattern,
     validate_managed_cleanup_target,
@@ -55,6 +57,33 @@ _STACK_NAME_PATTERN = re.compile(
 
 class CleanupFailure(RuntimeError):
     """Live cleanup could not prove that all test-owned resources are absent."""
+
+
+API_BASE_URL_ENV = "API_BASE_URL"
+INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
+# The stand's targets are BitLaunch machines its own run created, and cleanup
+# admits one only by the run tag stamped on it (`cleanup_target_skip_reason`).
+# Without the tag every target is skipped and the sweep fails on "no managed
+# cleanup target" — after the suite, not before it.
+STAND_RUN_TAG_ENV = "STAND_RUN_TAG"
+
+
+def sweep_requirements(contour: Contour) -> tuple[str, ...]:
+    """Every variable a sweep of this contour cannot run without.
+
+    The one list: `main` refuses on it before touching anything, and the stand
+    runner asks it before it spends a suite, so a new requirement added here is
+    enforced at both entries without a second copy to forget.
+    """
+    names = (API_BASE_URL_ENV, INTERNAL_API_KEY_ENV)
+    if contour.name == "stand":
+        names += (STAND_RUN_TAG_ENV,)
+    return names
+
+
+def missing_sweep_requirements(environ: Mapping[str, str], contour: Contour) -> list[str]:
+    """The requirements of `sweep_requirements` this environment leaves empty."""
+    return [name for name in sweep_requirements(contour) if not (environ.get(name) or "").strip()]
 
 
 def print_step(msg):
@@ -176,9 +205,10 @@ def verify_no_residue(project_ids: list[str] | None = None):
         raise CleanupFailure(f"live-test residue remains: {details}")
 
 
-def _build_conditions(alias: str | None = None):
+def _build_conditions(alias: str | None = None, prefixes: list[str] | None = None):
     column = f"{alias}.title" if alias else "title"
-    return " OR ".join([f"{column} LIKE '{p}-%'" for p in PROJECT_PREFIXES])
+    selected = PROJECT_PREFIXES if prefixes is None else prefixes
+    return " OR ".join([f"{column} LIKE '{p}-%'" for p in selected])
 
 
 def manifest_project_ids() -> set[str]:
@@ -212,8 +242,7 @@ def internal_api_client():
     """
     import httpx
 
-    headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
-    return httpx.AsyncClient(base_url=CLEANUP_API_URL, timeout=20, headers=headers)
+    return httpx.AsyncClient(base_url=_api_base_url(), timeout=20, headers=_internal_api_headers())
 
 
 def manifest_context(data: dict) -> dict:
@@ -382,8 +411,12 @@ def recover_ownership_manifests() -> None:
         raise CleanupFailure("unproven manifest resources: " + "; ".join(failures))
 
 
-def get_test_projects():
-    conditions = _build_conditions()
+def get_test_projects(
+    prefixes: list[str] | None = None,
+    *,
+    fail_closed: bool = False,
+):
+    conditions = _build_conditions(prefixes=prefixes)
     sql = f"SELECT id, title, slug FROM projects WHERE {conditions};"  # noqa: S608
     res = run_cmd(
         [
@@ -404,6 +437,8 @@ def get_test_projects():
         ]
     )
     if res.returncode != 0:
+        if fail_closed:
+            raise CleanupFailure(f"project inventory failed: {res.stderr.strip()}")
         print(f"Failed to fetch projects: {res.stderr}")
         return []
 
@@ -418,17 +453,26 @@ def get_test_projects():
         expected_columns = 3
         if len(parts) == expected_columns:
             projects.append({"id": parts[0], "title": parts[1], "slug": parts[2]})
+        elif fail_closed:
+            raise CleanupFailure(f"project inventory returned a malformed row: {line!r}")
     return projects
 
 
-def contour_repo_residue(names: list[str]) -> list[str]:
+def contour_repo_residue(names: list[str], slug_prefixes: list[str] | None = None) -> list[str]:
     """Repository names in the organization this contour owns.
 
     Repositories are named by project slug, so this matches the same truncated
     prefixes a deployed stack is matched by, and the same 32-hex project id — a
     repository merely starting like a test project is not residue.
     """
-    return sorted(name for name in names if _STACK_NAME_PATTERN.match(name))
+    pattern = _STACK_NAME_PATTERN
+    if slug_prefixes is not None:
+        pattern = re.compile(
+            "^("
+            + "|".join(tolerant_prefix_pattern(prefix) for prefix in slug_prefixes)
+            + ")[0-9a-f]{32}"
+        )
+    return sorted(name for name in names if pattern.match(name))
 
 
 def list_org_repositories() -> list[str]:
@@ -658,18 +702,28 @@ def clean_redis_queues(project_ids):
 
 def _internal_api_headers() -> dict[str, str]:
     try:
-        internal_key = os.environ["INTERNAL_API_KEY"]
+        internal_key = os.environ[INTERNAL_API_KEY_ENV]
     except KeyError as exc:
-        raise CleanupFailure("INTERNAL_API_KEY is required for remote server cleanup") from exc
+        raise CleanupFailure(
+            f"{INTERNAL_API_KEY_ENV} is required for remote server cleanup"
+        ) from exc
     return {"X-Internal-Key": internal_key}
 
 
-def _fetch_remote_servers() -> list[dict]:
+def _api_base_url() -> str:
+    base_url = os.environ.get(API_BASE_URL_ENV)
+    if not base_url or not base_url.strip():
+        raise CleanupFailure(f"{API_BASE_URL_ENV} is required for live-test cleanup and inventory")
+    return base_url
+
+
+def _observe_remote_servers() -> tuple[list[dict], list[tuple[str, str]]]:
+    """Read the registered servers once, retaining policy exclusions for inventory."""
     import httpx
 
     try:
         with httpx.Client(
-            base_url=CLEANUP_API_URL, headers=_internal_api_headers(), timeout=10
+            base_url=_api_base_url(), headers=_internal_api_headers(), timeout=10
         ) as client:
             resp = client.get("/api/servers/")
             if resp.status_code != HTTP_OK:
@@ -679,14 +733,27 @@ def _fetch_remote_servers() -> list[dict]:
             servers = resp.json()
             if not isinstance(servers, list):
                 raise CleanupFailure("server list fetch returned a non-list response")
+            skipped = []
+            for server in servers:
+                reason = cleanup_target_skip_reason(server)
+                if reason is not None:
+                    handle = server.get("handle") if isinstance(server, Mapping) else None
+                    if not isinstance(handle, str) or not handle.strip():
+                        handle = "<unknown handle>"
+                    skipped.append((handle, reason))
             targets = managed_cleanup_targets(servers)
-            if not targets:
-                raise CleanupFailure("server list fetch returned no managed cleanup target")
-            return [validate_managed_cleanup_target(target) for target in targets]
+            return [validate_managed_cleanup_target(target) for target in targets], skipped
     except CleanupFailure:
         raise
     except Exception as exc:
         raise CleanupFailure(f"server list fetch failed: {exc}") from exc
+
+
+def _fetch_remote_servers() -> list[dict]:
+    targets, _ = _observe_remote_servers()
+    if not targets:
+        raise CleanupFailure("server list fetch returned no managed cleanup target")
+    return targets
 
 
 def _fetch_remote_server_key(handle: str) -> str:
@@ -694,7 +761,7 @@ def _fetch_remote_server_key(handle: str) -> str:
 
     try:
         with httpx.Client(
-            base_url=CLEANUP_API_URL, headers=_internal_api_headers(), timeout=10
+            base_url=_api_base_url(), headers=_internal_api_headers(), timeout=10
         ) as client:
             resp = client.get(f"/api/servers/{handle}/ssh-key")
             if resp.status_code != HTTP_OK:
@@ -777,7 +844,9 @@ def stack_names_from_residue(findings: list[str]) -> set[str]:
     return names
 
 
-def collect_remote_residue() -> dict[str, list[str]]:
+def collect_remote_residue(
+    slug_prefixes: list[str] | None = None, *, servers: list[dict] | None = None
+) -> dict[str, list[str]]:
     """Inventory live-test stacks on every target, independent of the database.
 
     The DB-driven sweep can only clean slugs it still has rows for, so a run that
@@ -786,8 +855,10 @@ def collect_remote_residue() -> dict[str, list[str]]:
     target directly.
     """
     residue: dict[str, list[str]] = {}
-    command = build_remote_residue_command(DEPLOY_SLUG_PREFIXES)
-    for server in _fetch_remote_servers():
+    command = build_remote_residue_command(
+        DEPLOY_SLUG_PREFIXES if slug_prefixes is None else slug_prefixes
+    )
+    for server in _fetch_remote_servers() if servers is None else servers:
         with _server_key_file(server["handle"]) as key_path:
             result = _ssh(server, key_path, command)
         if result.returncode != 0:
@@ -799,6 +870,229 @@ def collect_remote_residue() -> dict[str, list[str]]:
         if findings:
             residue[server["handle"]] = findings
     return residue
+
+
+def inventory_projects(prefixes: list[str]) -> list[dict[str, str]]:
+    """Read the project rows whose titles carry an inventory prefix."""
+    return get_test_projects(prefixes, fail_closed=True)
+
+
+def _inventory_slug_prefixes(prefixes: list[str]) -> list[str]:
+    slug_prefix_by_title = dict(zip(PROJECT_PREFIXES, DEPLOY_SLUG_PREFIXES, strict=True))
+    return [slug_prefix_by_title[prefix] for prefix in prefixes]
+
+
+def inventory_github_repositories(prefixes: list[str]) -> list[str]:
+    """Read organization repositories matching the selected slug prefixes."""
+    return contour_repo_residue(list_org_repositories(), _inventory_slug_prefixes(prefixes))
+
+
+def inventory_remote_stacks(
+    prefixes: list[str],
+) -> tuple[dict[str, list[str]], list[tuple[str, str]], int, str | None]:
+    """Scan eligible targets and retain the skipped registered servers."""
+    targets, skipped = _observe_remote_servers()
+    try:
+        stacks = collect_remote_residue(_inventory_slug_prefixes(prefixes), servers=targets)
+    except Exception as exc:
+        return {}, skipped, len(targets), str(exc)
+    return (
+        stacks,
+        skipped,
+        len(targets),
+        None,
+    )
+
+
+def _inventory_redis_command(*args: str) -> str:
+    result = run_cmd(["docker", "compose", "exec", "-T", "redis", "redis-cli", *args])
+    if result.returncode != 0:
+        raise CleanupFailure(f"Redis inventory failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def inventory_redis(projects: list[dict[str, str]]) -> tuple[list[str], list[str]]:
+    """Read capability entries and worker metadata owned by selected projects."""
+    live_path = str(Path(ORCHESTRATOR_ROOT) / "tests" / "live")
+    if live_path not in sys.path:
+        sys.path.insert(0, live_path)
+    from capability_cleanup import find_owned_capability_messages
+
+    project_ids = {project["id"] for project in projects}
+    capability_messages: list[str] = []
+    for project_id in sorted(project_ids):
+        try:
+            messages = find_owned_capability_messages(
+                project_id, set(), command=_inventory_redis_command
+            )
+        except Exception as exc:
+            raise CleanupFailure(f"capability inventory failed: {exc}") from exc
+        capability_messages.extend(
+            f"{project_id}: {message.stream}/{message.message_id}" for message in messages
+        )
+
+    worker_meta: list[str] = []
+    for key in _inventory_redis_command("--scan", "--pattern", "worker:meta:*").splitlines():
+        key = key.strip()
+        if not key:
+            continue
+        fields = _inventory_redis_command("--raw", "HGETALL", key).splitlines()
+        if len(fields) % 2:
+            raise CleanupFailure(f"worker metadata inventory returned malformed fields for {key}")
+        metadata = dict(zip(fields[::2], fields[1::2], strict=True))
+        if metadata.get("project_id") in project_ids:
+            worker_meta.append(key)
+    return sorted(capability_messages), sorted(worker_meta)
+
+
+def inventory_local_docker(prefixes: list[str]) -> list[str]:
+    """Read local containers whose names carry one selected title prefix."""
+    result = run_cmd(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--format",
+            "{{.Names}}",
+            "--filter",
+            f"name={'|'.join(prefixes)}",
+        ]
+    )
+    if result.returncode != 0:
+        raise CleanupFailure(f"local Docker inventory failed: {result.stderr.strip()}")
+    return sorted(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+
+def _inventory_repository_ids(prefixes: list[str]) -> set[str]:
+    result = run_cmd(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "db",
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "orchestrator",
+            "-t",
+            "-A",
+            "-c",
+            "SELECT r.id FROM repositories r "
+            "JOIN projects p ON p.id = r.project_id "
+            f"WHERE {_build_conditions('p', prefixes)};",
+        ]
+    )
+    if result.returncode != 0:
+        raise CleanupFailure(f"local workspace inventory failed: {result.stderr.strip()}")
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def _inventory_directory_entries(path: Path) -> list[Path]:
+    try:
+        return list(path.iterdir())
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise CleanupFailure(f"local workspace inventory could not read {path}: {exc}") from exc
+
+
+def inventory_local_workspaces(projects: list[dict[str, str]], prefixes: list[str]) -> list[str]:
+    """Read selected project checkouts and prefix-named scratch workspaces on this host."""
+    del projects  # Repository ids, not an assumed title-to-path mapping, own checkout names.
+    repository_ids = _inventory_repository_ids(prefixes)
+    workspaces = [
+        str(entry)
+        for entry in _inventory_directory_entries(Path("/data/workspaces"))
+        if entry.name in repository_ids
+    ]
+    slug_prefixes = _inventory_slug_prefixes(prefixes)
+    workspaces.extend(
+        str(entry)
+        for entry in _inventory_directory_entries(Path("/tmp/codegen/workspaces"))  # noqa: S108
+        if any(prefix in entry.name for prefix in [*prefixes, *slug_prefixes])
+    )
+    return sorted(workspaces)
+
+
+def _print_inventory_surface(name: str, findings: list[str]) -> None:
+    print(f"{name}: {len(findings)}")
+    for finding in findings:
+        print(f"  - {finding}")
+
+
+def inventory(prefixes: list[str] | None = None) -> int:
+    """Read every sweep surface and return a fail-closed residue verdict."""
+    selected = PROJECT_PREFIXES if prefixes is None else prefixes
+    invalid = sorted(set(selected) - set(PROJECT_PREFIXES))
+    if not selected or invalid:
+        print(f"inventory_prefixes: unreadable (allowed prefixes: {', '.join(PROJECT_PREFIXES)})")
+        return 1
+
+    has_failure = False
+
+    def inspect(name: str, collect, render=lambda value: value):
+        nonlocal has_failure
+        try:
+            value = collect()
+        except Exception as exc:
+            has_failure = True
+            print(f"{name}: unreadable ({exc})")
+            return None
+        findings = render(value)
+        _print_inventory_surface(name, findings)
+        if findings:
+            has_failure = True
+        return value
+
+    project_rows = inspect(
+        "database_projects",
+        lambda: inventory_projects(selected),
+        lambda rows: [
+            f"{project['title']} ({project['id']}, {project['slug']})" for project in rows
+        ],
+    )
+    inspect("github_repositories", lambda: inventory_github_repositories(selected))
+    try:
+        stacks, skipped, eligible_count, scan_error = inventory_remote_stacks(selected)
+    except Exception as exc:
+        has_failure = True
+        print(f"deployed_stacks: unreadable ({exc})")
+    else:
+        findings = [f"{handle}: {finding}" for handle, items in stacks.items() for finding in items]
+        if scan_error is not None:
+            print(f"deployed_stacks: unreadable ({scan_error})")
+            has_failure = True
+        elif skipped and not eligible_count:
+            print("deployed_stacks: skipped")
+            has_failure = True
+        else:
+            _print_inventory_surface("deployed_stacks", findings)
+            if findings:
+                has_failure = True
+        print(f"deployed_stacks_skipped_servers: {len(skipped)}")
+        for handle, reason in skipped:
+            print(f"  - {handle}: {reason}")
+    if project_rows is None:
+        print("redis_capability_messages: unreadable (database projects unreadable)")
+        print("redis_worker_meta: unreadable (database projects unreadable)")
+    else:
+        try:
+            capability_messages, worker_meta = inventory_redis(project_rows)
+        except Exception as exc:
+            has_failure = True
+            print(f"redis: unreadable ({exc})")
+            print("redis_capability_messages: unreadable (Redis inventory failed)")
+            print("redis_worker_meta: unreadable (Redis inventory failed)")
+        else:
+            _print_inventory_surface("redis_capability_messages", capability_messages)
+            _print_inventory_surface("redis_worker_meta", worker_meta)
+            if capability_messages or worker_meta:
+                has_failure = True
+    inspect("local_docker_containers", lambda: inventory_local_docker(selected))
+    inspect("local_workspaces", lambda: inventory_local_workspaces(project_rows or [], selected))
+    return int(has_failure)
 
 
 def clean_remote_servers(project_slugs: list[str] | None = None):
@@ -942,6 +1236,12 @@ scan_and_clean()
 
 
 def main():
+    missing = missing_sweep_requirements(os.environ, CONTOUR)
+    if missing:
+        raise CleanupFailure(
+            f"live-test cleanup of the {CONTOUR.name} contour cannot run: "
+            + "; ".join(f"{name} is required" for name in missing)
+        )
     manifest_projects = manifest_project_ids()
 
     print_step("Recovering ownership manifests")
@@ -994,4 +1294,21 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Sweep or inventory live-test residue.")
+    parser.add_argument(
+        "--inventory",
+        action="store_true",
+        help="read every sweep surface without changing it",
+    )
+    parser.add_argument(
+        "--prefix",
+        action="append",
+        choices=PROJECT_PREFIXES,
+        help="one contour prefix to inventory; defaults to every current-contour prefix",
+    )
+    args = parser.parse_args()
+    if args.inventory:
+        raise SystemExit(inventory(args.prefix))
+    if args.prefix:
+        parser.error("--prefix requires --inventory")
     main()

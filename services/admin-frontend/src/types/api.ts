@@ -41,10 +41,34 @@ export interface Story {
   generated_product_timeline?: Record<string, unknown> | null
   operator_acceptance?: StoryAcceptance | null
   operator_recheck?: StoryRecheck | null
+  unverified_decisions?: StoryUnverifiedDecision[]
   reopened_at?: string | null
+  status_entered_at?: string | null
   pr_number?: number | null
+  planning?: StoryPlanning | null
   created_at: string
   updated_at?: string | null
+}
+
+export interface StoryFailure {
+  reason?: 'story_failure'
+  code: 'scaffold_failed' | 'scaffold_timeout' | 'planning_failed' | 'no_new_commit' | 'environment_resolution_failed' | 'pr_conflict_repair_exhausted' | 'initial_owner_deployment_exhausted'
+  source: string
+  detail: string
+  observed_at?: string
+}
+
+export interface StoryPlanning {
+  channels?: string[]
+  channel_failures?: string[]
+  state: 'planned' | 'retrying' | 'parked'
+  failed_attempts: number
+  max_retries?: number | null
+  next_attempt_at?: string | null
+  last_failure?: StoryFailure | null
+  planning_attempt_id?: string | null
+  reopen?: boolean
+  recorded_at: string
 }
 
 export type StoryType = 'product' | 'technical'
@@ -87,6 +111,14 @@ export interface StoryRecheck {
   application_id: number
   run_id: string
   rechecked_quarantine_reason: Record<string, unknown>
+}
+
+export interface StoryUnverifiedDecision {
+  decision: 'accept_unverified' | 'change_requirement'
+  check_names: string[]
+  qa_run_id: string
+  decided_at: string
+  recorded_by: string
 }
 
 export interface Task {
@@ -646,6 +678,15 @@ export interface ExecutorDiagnosticConfirmation {
   expires_at: string
 }
 
+// Ordered LLM channel chain of an LLM-backed agent (null = codex, claude, openrouter)
+export type LLMChannel = 'codex' | 'claude' | 'openrouter'
+
+export interface LLMChannelConfig {
+  channel: LLMChannel
+  model?: string | null
+  timeout_seconds?: number | null
+}
+
 // Agent configuration (prompts, model settings)
 export interface AgentConfig {
   id: string
@@ -658,6 +699,7 @@ export interface AgentConfig {
   model_identifier?: string
   openrouter_site_url?: string | null
   openrouter_app_name?: string | null
+  llm_channels?: LLMChannelConfig[] | null
   version: number
   created_at: string
   updated_at?: string | null
@@ -673,4 +715,5 @@ export interface AgentConfigUpdate {
   model_identifier?: string | null
   openrouter_site_url?: string | null
   openrouter_app_name?: string | null
+  llm_channels?: LLMChannelConfig[] | null
 }

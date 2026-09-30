@@ -23,7 +23,7 @@ from enum import StrEnum
 
 import structlog
 
-from shared.contracts.queues.po import POProactiveMessage, from_flat_fields
+from shared.contracts.queues.po import POProactiveMessage, from_flat_fields, po_alert_identifiers
 from shared.contracts.recipient import (
     alert_legacy_recipient_field,
     has_legacy_recipient_field,
@@ -31,6 +31,7 @@ from shared.contracts.recipient import (
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
 from shared.redis.client import RedisStreamClient, StreamMessage
+from shared.telegram_text import split_telegram_text
 
 logger = structlog.get_logger()
 
@@ -57,12 +58,36 @@ class ProactiveOutcome(StrEnum):
     REJECTED = "rejected"
 
 
-async def send_message_to_chat(bot, chat_id: int, text: str) -> None:
-    """Send text to a Telegram chat, falling back to plain text on markup errors."""
-    try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-    except Exception:
-        await bot.send_message(chat_id=chat_id, text=text)
+class SendProgress:
+    """How many chunks of one text Telegram has already accepted.
+
+    Passed again to ``send_text`` for the same text, it makes the next call
+    resume from the first chunk not yet accepted instead of starting over.
+
+    A plain class, not a dataclass: the integration suite loads this module by
+    path without registering it in ``sys.modules``, where ``@dataclass`` fails.
+    """
+
+    def __init__(self) -> None:
+        self.sent = 0
+
+
+async def send_text(bot, chat_id: int, text: str, progress: SendProgress | None = None) -> None:
+    """Send user-bound text to a Telegram chat: the one way the bot does it.
+
+    The text is cut by ``split_telegram_text`` (on ``MESSAGE_BREAK``, then under
+    Telegram's limit, each chunk well-formed HTML) and the chunks are sent in
+    order. Each chunk is tried as HTML and, if Telegram refuses that, as plain
+    text. A chunk refused both ways raises, and ``progress`` still counts the
+    chunks sent before it.
+    """
+    progress = progress if progress is not None else SendProgress()
+    for chunk in split_telegram_text(text)[progress.sent :]:
+        try:
+            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
+        except Exception:
+            await bot.send_message(chat_id=chat_id, text=chunk)
+        progress.sent += 1
 
 
 async def attempt_proactive_delivery(bot, proactive: POProactiveMessage) -> str | None:
@@ -75,14 +100,19 @@ async def attempt_proactive_delivery(bot, proactive: POProactiveMessage) -> str 
     """
     chat_id = int(proactive.telegram_chat_id)
     last_error: Exception | None = None
+    # Shared by the attempts below, so a retry resumes at the chunk that failed
+    # and the user never gets an accepted chunk twice. It lives only as long as
+    # this delivery: an entry redelivered after the bot died starts over.
+    progress = SendProgress()
 
     for attempt in range(1, PROACTIVE_MAX_ATTEMPTS + 1):
         try:
-            await send_message_to_chat(bot, chat_id, proactive.text)
+            await send_text(bot, chat_id, proactive.text, progress)
             logger.info(
                 "proactive_message_sent",
                 telegram_chat_id=chat_id,
                 attempts=attempt,
+                chunks=progress.sent,
                 text_length=len(proactive.text),
             )
             return None
@@ -90,21 +120,29 @@ async def attempt_proactive_delivery(bot, proactive: POProactiveMessage) -> str 
             last_error = e
             logger.warning(
                 "proactive_message_send_failed",
-                error=str(e),
+                error_type=type(e).__name__,
                 telegram_chat_id=chat_id,
                 attempt=attempt,
                 max_attempts=PROACTIVE_MAX_ATTEMPTS,
+                chunks_sent=progress.sent,
             )
             if attempt < PROACTIVE_MAX_ATTEMPTS:
                 await asyncio.sleep(PROACTIVE_RETRY_DELAY_S * attempt)
 
-    return str(last_error)
+    return type(last_error).__name__
 
 
 async def _alert_delivery_exhausted(
     proactive: POProactiveMessage, *, deliveries: int, error: str
 ) -> None:
     """Report a notification the user will never receive."""
+    identifiers = po_alert_identifiers(proactive.model_dump())
+    proactive = proactive.model_copy(
+        update={
+            field: identifiers.get(field, "")
+            for field in ("telegram_chat_id", "owner_user_id", "event", "story_id", "project_id")
+        }
+    )
     logger.error(
         "proactive_message_delivery_exhausted",
         error=error,
@@ -144,16 +182,19 @@ async def process_proactive_entry(
 
     try:
         proactive = from_flat_fields(msg.data, POProactiveMessage)
+        # Refuse an unusable address before int() can render the rejected value.
+        int(proactive.telegram_chat_id)
     except Exception as e:
         logger.error(
             "proactive_message_invalid",
-            error=str(e),
+            error_type=type(e).__name__,
             entry_id=msg.message_id,
-            telegram_chat_id=msg.data.get("telegram_chat_id"),
         )
         if has_legacy_recipient_field(msg.data):
             await alert_legacy_recipient_field(
-                source=PO_PROACTIVE_QUEUE, entry_id=msg.message_id, data=msg.data
+                source=PO_PROACTIVE_QUEUE,
+                entry_id=msg.message_id,
+                data=po_alert_identifiers(msg.data),
             )
         await client.ack(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, msg.message_id)
         return ProactiveOutcome.REJECTED

@@ -18,7 +18,7 @@ from .port_allocation import PortAllocation
 from .product_brief import ProductBrief, RequirementCoverage
 from .project import Project
 from .promo_code import PromoCode
-from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGScope
+from .qa_probe import QAProbe
 from .repository import Repository
 from .resource import Resource
 from .run import Run
@@ -30,6 +30,7 @@ from .task import Task, TaskEvent
 from .temporary_access_grant import TemporaryAccessGrant
 from .user import User
 from .users_grant_intent import UsersGrantIntent
+from .verification_gap import VerificationGap
 from .work_admission_audit import WorkAdmissionAudit
 
 __all__ = [
@@ -43,11 +44,6 @@ __all__ = [
     "Brainstorm",
     "Project",
     "Resource",
-    "RAGChunk",
-    "RAGConversationSummary",
-    "RAGDocument",
-    "RAGMessage",
-    "RAGScope",
     "Repository",
     "Run",
     "Server",
@@ -56,6 +52,7 @@ __all__ = [
     "PortAllocation",
     "ProductBrief",
     "PromoCode",
+    "QAProbe",
     "RequirementCoverage",
     "Task",
     "TaskEvent",
@@ -63,6 +60,7 @@ __all__ = [
     "APIKey",
     "User",
     "UsersGrantIntent",
+    "VerificationGap",
     "WorkAdmissionAudit",
     "Incident",
     "IncidentStatus",

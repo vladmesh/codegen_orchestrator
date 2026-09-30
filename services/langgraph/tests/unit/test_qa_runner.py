@@ -11,7 +11,11 @@ import respx
 
 from shared.contracts.acceptance import HealthCriterion
 from shared.contracts.dto.run_result import QABlockerCategory
-from src.consumers._qa_runner import parse_qa_result, run_health_checks
+from src.consumers._qa_runner import (
+    parse_qa_result,
+    run_health_checks,
+    settle_unverified_checks,
+)
 from src.prompts.qa import build_qa_prompt
 
 
@@ -32,10 +36,13 @@ class TestBuildQAPrompt:
         assert "cannot write to the application" in prompt
 
     def test_prompt_never_offers_a_shell_or_a_second_target(self):
-        """The rules must match the calls: the shell reaches nothing, one deployment."""
+        """The rules must match the sandbox: the target URL and Telegram, one deployment."""
         prompt = build_qa_prompt("- GET /health returns 200", "https://api.example.com")
+        flat = " ".join(prompt.split())
 
-        assert "You have a shell, and it reaches nothing" in prompt
+        assert "You have a shell in a sandbox" in prompt
+        assert "a script you write reaches exactly two places" in flat
+        assert "Nothing else — the fleet, the internet, another port" in flat
         assert "exactly one deployment" in prompt
         # Nothing from the on-target runtime survives in the prompt.
         assert "claude" not in prompt.lower()
@@ -100,7 +107,10 @@ class TestBuildQAPrompt:
         # by the runtime and reachable only through one tool.
         assert "TELETHON_SESSION" not in prompt
         assert "StringSession" not in prompt
-        assert "never hold the account's credentials" in prompt
+        # A probe of its own gets the account only as the file the CLI writes.
+        assert "`qa telegram_identity` writes for your Telethon client; never print that file" in (
+            " ".join(prompt.split())
+        )
 
     def test_bot_prompt_forbids_reporting_telegram_checks_as_blocked(self):
         prompt = build_qa_prompt(
@@ -120,9 +130,10 @@ class TestBuildQAPrompt:
 
         assert '"cause": "product" | "qa_capability" | "qa_access"' in prompt
         assert "Every failed check carries a `cause`" in prompt
-        assert "HTTP write" in prompt and "photo upload" in prompt
-        assert "needs a photo, file or other media sent to the bot is one of these" in prompt
-        assert "fails with cause `qa_capability`" in prompt
+        flat = " ".join(prompt.split())
+        assert '`qa_capability` — the criterion needs an action "What you can check" does' in flat
+        assert "photo upload" not in prompt
+        assert "fails with cause `qa_capability`" in flat
         assert "fails with cause `qa_access`" in prompt
         assert prompt.count("it is never a product failure") == 2
 
@@ -246,7 +257,7 @@ class TestParseQAResult:
         assert result.blocker is None
         assert result.checks[0]["cause"] == cause
 
-    @pytest.mark.parametrize("cause", ["qa_capability", "qa_access", "product"])
+    @pytest.mark.parametrize("cause", ["qa_access", "product"])
     def test_a_passing_verdict_with_a_failed_check_is_invalid_and_never_passes(self, cause):
         raw = json.dumps(
             {
@@ -270,6 +281,35 @@ class TestParseQAResult:
         assert result.checks == []
         assert result.blocker is not None
         assert result.blocker.category == QABlockerCategory.UNKNOWN
+
+    @pytest.mark.parametrize("executor_pass", [True, False])
+    def test_a_verdict_whose_only_failures_qa_could_not_run_is_accepted(self, executor_pass):
+        """`qa_capability` is neither failure nor pass: the executor's `pass` may say either."""
+        raw = json.dumps(
+            {
+                "pass": executor_pass,
+                "checks": [
+                    {"name": "health", "pass": True, "detail": "200"},
+                    {
+                        "name": "create transaction",
+                        "pass": False,
+                        "detail": "no tool for POST /api/transactions",
+                        "cause": "qa_capability",
+                    },
+                ],
+                "summary": "everything QA could test works",
+            }
+        )
+
+        result = settle_unverified_checks(parse_qa_result(raw))
+
+        assert result.blocker is None
+        assert result.passed is True
+        assert result.checks == [{"name": "health", "pass": True, "detail": "200"}]
+        [unverified] = result.unverified_checks
+        assert unverified.name == "create transaction"
+        assert unverified.reason == "no tool for POST /api/transactions"
+        assert unverified.origin.value == "executor"
 
     def test_a_failing_verdict_with_every_check_passed_is_invalid(self):
         raw = json.dumps(

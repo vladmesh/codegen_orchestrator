@@ -3,8 +3,8 @@
 `langchain-openai` keys its gpt-5 parameter rules on `model.startswith("gpt-5")`,
 so the vendor-prefixed OpenRouter id gets none of them: whatever the payload
 carries is what OpenRouter receives. These tests run the graphs the consumers
-build, with the real `ChatOpenAI`, and capture the HTTP request bodies at the
-transport (no network).
+build, on a channel chain whose one channel is openrouter — the real `ChatOpenAI`
+— and capture the HTTP request bodies at the transport (no network).
 
 The allowed keys are OpenRouter's `supported_parameters` for the model
 (`GET https://openrouter.ai/api/v1/models`, 2026-09-15): no `temperature`,
@@ -16,13 +16,16 @@ deprecated there and rejected by reasoning models).
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from langchain_core.messages import HumanMessage
 import pytest
 import respx
 
+from shared.contracts.dto.llm_channel import LLMChannel, LLMChannelConfig
 from src.agents.architect.graph import create_architect_graph
 from src.agents.po.graph import create_po_graph
+from src.llm import LLMAgent, build_agent_llm
 
 MODEL = "openai/gpt-5.6-sol"
 BASE_URL = "https://openrouter.test/api/v1"
@@ -93,6 +96,21 @@ def openrouter():
         yield bodies
 
 
+_OPENROUTER_ONLY = [LLMChannelConfig(channel=LLMChannel.OPENROUTER)]
+
+
+def _settings(summarization_model: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        architect_llm_model=MODEL,
+        architect_llm_base_url=BASE_URL,
+        architect_llm_api_key="test-key",
+        po_llm_model=MODEL,
+        po_llm_base_url=BASE_URL,
+        po_llm_api_key="test-key",
+        summarization_model=summarization_model,
+    )
+
+
 def _assert_accepted_by_openrouter(body: dict) -> None:
     assert body["model"] == MODEL
     assert not SAMPLING & body.keys(), body.keys()
@@ -102,7 +120,9 @@ def _assert_accepted_by_openrouter(body: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_the_architect_request_carries_tools_and_no_sampling_parameter(openrouter):
-    graph = create_architect_graph(model=MODEL, base_url=BASE_URL, api_key="test-key")
+    graph = create_architect_graph(
+        build_agent_llm(LLMAgent.ARCHITECT, _OPENROUTER_ONLY, _settings())
+    )
 
     await graph.ainvoke(
         {
@@ -127,11 +147,10 @@ async def test_the_architect_request_carries_tools_and_no_sampling_parameter(ope
 async def test_po_main_and_summarizer_requests_carry_no_sampling_parameter(
     openrouter, summarization_model
 ):
+    settings = _settings(summarization_model)
     graph = await create_po_graph(
-        model=MODEL,
-        base_url=BASE_URL,
-        api_key="test-key",
-        summarization_model=summarization_model,
+        llm=build_agent_llm(LLMAgent.PO, _OPENROUTER_ONLY, settings),
+        summarization_llm=build_agent_llm(LLMAgent.PO_SUMMARIZER, _OPENROUTER_ONLY, settings),
         summarization_max_tokens=256,
         summarization_trigger_tokens=128,
         summarization_max_summary_tokens=MAX_SUMMARY_TOKENS,

@@ -316,7 +316,7 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      asked. Before this a run that failed one of them left a reader nothing to
 #      read: stand run 35486586267 failed both and the document named neither.
 # v22: `stage_notices` carries, for each of the run's two stories, the
-#      `story_stage` events its owner was sent while it was in work
+#      `story_stage` events published to po:input while it was in work
 #      (issue:b28d93), or the reason they could not be read.
 # v23: `story_merge_artifacts` carries each level-1 story's merged file set
 #      and the verdict that it contains only the declared product change.
@@ -2145,6 +2145,16 @@ def qa_cell(ctx: dict) -> dict:
     `claude` twice.
     """
     collector: RunEvidenceCollector = ctx["run_evidence"]
+    qa_run_record = ctx.get("qa_run_record") or {}
+    location_refusals_accepted = []
+    if qa_run_record:
+        # Imported here, and only for a run whose QA Run record was read: the location
+        # proof reaches `scripts.template_pin` through `level1_change_set`, and the backend
+        # DinD suite builds artifacts from this module without `scripts/` on its path.
+        # A run with no record accepts no refusal, so skipping the call changes nothing.
+        from level1_location_proof import accepted_location_refusals
+
+        location_refusals_accepted = accepted_location_refusals(qa_run_record)
     cell = {
         "mode": "llm_executor" if ctx.get("qa_requires_executor") else "deterministic_health",
         "executor_requested": ctx.get("qa_agent_type_requested"),
@@ -2160,6 +2170,10 @@ def qa_cell(ctx: dict) -> dict:
         # Where that record was read: inside the QA wait, or by the last read
         # before teardown for a run that left the phase before the wait.
         "run_record_source": ctx.get("qa_run_lookup"),
+        # The unverified location checks `mega-live`'s location proof accepted,
+        # each with the kind of refusal it rested on — today only the seed's own
+        # argument refusal of an out-of-range coordinate. Empty for every other run.
+        "location_refusals_accepted": location_refusals_accepted,
     }
     qa_run = ctx.get("qa_run")
     if qa_run is not None:
@@ -2284,6 +2298,14 @@ def qa_run_facts(run: dict) -> dict:
         "executor_decision": (run.get("run_metadata") or {}).get(EXECUTOR_DECISION_METADATA_KEY),
         "deployed_url": result.get("deployed_url"),
         "failed_checks": result.get("failed_checks") or [],
+        # What the executor checked and could not, and the probes it ran in its
+        # sandbox, as the runner retained them: source, arguments, output and
+        # exit status. `mega-live`'s location proof is read from these, so the
+        # artifact of a paid run shows the probe that proved it (or did not).
+        "passed_checks": result.get("passed_checks") or [],
+        "unverified_checks": result.get("unverified_checks") or [],
+        "probe_runs": result.get("probe_runs"),
+        "probe_library": result.get("probe_library"),
         "blocker": (
             {
                 "category": blocker.get("category"),
@@ -4005,7 +4027,7 @@ def second_story(ctx: dict) -> dict:
 
 
 STAGE_NOTICES_NOTE = (
-    "The story_stage events each story's owner was sent while it was in work, read "
+    "The story_stage events published internally while each story was in work, read "
     "off po:input after the story ended: the stage, what it waited on, the "
     "magnitude of the wait and whether it was an entry or a repeat after the quiet "
     "interval — beside the stages the harness itself sampled the story in and the "

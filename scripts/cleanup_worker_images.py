@@ -5,7 +5,9 @@ The deployment writes immutable image references to its release record.  This
 script trusts those records, not image creation dates: a missing or malformed
 record means no worker image is deleted.  Docker still receives ordinary,
 non-forced removals, so it independently refuses any image a container starts
-using after the inventory was read.
+using after the inventory was read.  Each image is removed by its ID and on its
+own: one that is already gone is logged and skipped, and a failure is reported
+per image without stopping the rest.
 """
 
 from __future__ import annotations
@@ -164,7 +166,13 @@ def _worker_images(run_docker: Callable[[list[str]], str]) -> list[Image]:
     )
     raw_images: list[dict[str, Any]] = []
     for image_id in image_ids:
-        raw = json.loads(run_docker(["image", "inspect", image_id]))
+        try:
+            raw = json.loads(run_docker(["image", "inspect", image_id]))
+        except subprocess.CalledProcessError as error:
+            if not _is_gone(error):
+                raise
+            print(f"GONE {image_id} reason=already_gone")
+            continue
         if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
             raise RuntimeError(f"Docker returned an unusable image inspection for {image_id}")
         raw_images.append(raw[0])
@@ -226,13 +234,62 @@ def _container_image_ids(run_docker: Callable[[list[str]], str]) -> set[str]:
     return image_ids
 
 
+def _docker_message(error: subprocess.CalledProcessError) -> str:
+    return " ".join(" ".join(str(value).split()) for value in (error.stdout, error.stderr) if value)
+
+
+def _is_gone(error: subprocess.CalledProcessError) -> bool:
+    message = _docker_message(error).lower()
+    return "no such image" in message or "no such object" in message
+
+
+def _is_multi_repository(error: subprocess.CalledProcessError) -> bool:
+    return "referenced in multiple repositories" in _docker_message(error).lower()
+
+
 def _is_docker_refusal(error: subprocess.CalledProcessError) -> bool:
-    message = "\n".join(
-        str(value) for value in (error.stdout, error.stderr) if value is not None
-    ).lower()
+    message = _docker_message(error).lower()
     return (
         "conflict:" in message or "being used" in message or "has dependent child images" in message
     )
+
+
+def _remove_image(image_id: str, run_docker: Callable[[list[str]], str]) -> str:
+    """Remove one image by ID, tolerating that it or any of its names is already gone.
+
+    Returns the outcome line. Only a failure docker neither explains as an image that is gone
+    nor refuses as one in use starts with ``FAIL``.
+    """
+    try:
+        run_docker(["image", "rm", image_id])
+        return f"REMOVED {image_id}"
+    except subprocess.CalledProcessError as error:
+        if _is_gone(error):
+            return f"GONE {image_id} reason=already_gone"
+        if not _is_multi_repository(error):
+            if _is_docker_refusal(error):
+                return f"KEEP {image_id} reason=docker_refused"
+            return f"FAIL {image_id} error={_docker_message(error) or error}"
+    # Docker refuses an ID several repositories name, so each name it has now is untagged on
+    # its own, and the last one removes the image.
+    try:
+        raw = json.loads(run_docker(["image", "inspect", image_id]))
+    except subprocess.CalledProcessError as error:
+        if _is_gone(error):
+            return f"GONE {image_id} reason=already_gone"
+        return f"FAIL {image_id} error={_docker_message(error) or error}"
+    names = (raw[0].get("RepoTags") or []) + (raw[0].get("RepoDigests") or [])
+    for name in names:
+        try:
+            run_docker(["image", "rm", name])
+        except subprocess.CalledProcessError as error:
+            if _is_gone(error):
+                print(f"GONE {image_id} reference={name} reason=already_gone")
+            elif _is_docker_refusal(error):
+                return f"KEEP {image_id} reason=docker_refused"
+            else:
+                return f"FAIL {image_id} reference={name} error={_docker_message(error) or error}"
+    return f"REMOVED {image_id}"
 
 
 def cleanup_worker_images(
@@ -241,8 +298,12 @@ def cleanup_worker_images(
     previous_release_record: Path,
     dry_run: bool,
     run_docker: Callable[[list[str]], str] = _run_docker,
-) -> CleanupPlan:
-    """Print the retention decision, then remove only its stale worker images."""
+) -> list[str]:
+    """Print the retention decision, then remove only its stale worker images.
+
+    Each image is removed by its ID and on its own, so one that is gone, in use or failing
+    does not stop the others. Returns the IDs of the images that failed to be removed.
+    """
     images = _worker_images(run_docker)
     running_image_ids = _container_image_ids(run_docker)
     plan = plan_cleanup(
@@ -252,31 +313,31 @@ def cleanup_worker_images(
         running_image_ids=running_image_ids,
     )
     print(render_plan(plan))
+    failed: list[str] = []
     if not dry_run:
         for item in plan.remove:
-            try:
-                run_docker(["image", "rm", item.image_id])
-            except subprocess.CalledProcessError as error:
-                if not _is_docker_refusal(error):
-                    raise
-                print(
-                    f"KEEP {item.image_id} reason=docker_refused source_hash={item.source_hash}",
-                    file=sys.stdout,
-                )
-    return plan
+            outcome = _remove_image(item.image_id, run_docker)
+            print(f"{outcome} source_hash={item.source_hash}")
+            if outcome.startswith("FAIL "):
+                failed.append(item.image_id)
+    return failed
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-record", type=Path, required=True)
     parser.add_argument("--previous-release-record", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
-    cleanup_worker_images(
+    args = parser.parse_args(argv)
+    failed = cleanup_worker_images(
         release_record=args.release_record,
         previous_release_record=args.previous_release_record,
         dry_run=args.dry_run,
+        run_docker=_run_docker,
     )
+    if failed:
+        print(f"{len(failed)} stale worker images were not removed", file=sys.stderr)
+        return 1
     return 0
 
 

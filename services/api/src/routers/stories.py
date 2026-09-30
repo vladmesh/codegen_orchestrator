@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -12,12 +13,14 @@ import structlog
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.owner_notification import (
     OwnerNotification,
+    OwnerNotificationAttemptClaim,
     OwnerNotificationState,
 )
 from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
+from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QARunResult
 from shared.contracts.dto.story import (
     StoryRecheck,
     StoryRecheckMode,
@@ -36,7 +39,16 @@ from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_accept_result_actor, get_redis_client, require_internal_or_admin
+from ..dependencies import (
+    _optional_bearer_scheme,
+    get_accept_result_actor,
+    get_redis_client,
+    is_internal_service,
+    require_internal_or_admin,
+    resolve_actor,
+)
+from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
+from ..owner_notification_settlement import preserve_po_settlement
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
     StoryAccept,
@@ -45,12 +57,25 @@ from ..schemas.story import (
     StoryOwnerNotificationRead,
     StoryRead,
     StoryReopen,
+    StoryStopTransition,
     StoryTransition,
+    StoryUnverifiedDecision,
+    StoryUnverifiedDecisionCreate,
     StoryUpdate,
 )
+from ._owner_notice_settlement import notice_router
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
 from ._story_actions import action_router
-from ._story_helpers import _do_transition, _get_story, _get_story_for_update, _land_on
+from ._story_diagnostics import diagnostics_router
+from ._story_helpers import (
+    _do_transition,
+    _get_story,
+    _get_story_for_update,
+    _land_on,
+    _record_qa_routing,
+    _record_story_failure,
+)
+from ._story_planning import planning_router
 from .applications import _make_deploy_run_id
 
 logger = structlog.get_logger()
@@ -58,7 +83,10 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/stories", tags=["stories"])
 # The composite (multi-hop) Story moves live in their own declared module and
 # are served under the same /stories prefix as the single-hop actions here.
+router.include_router(notice_router)
 router.include_router(action_router)
+router.include_router(diagnostics_router)
+router.include_router(planning_router)
 
 _DEFAULT_COMPLETION_NOTIFICATION_TEXT = (
     "The story is finished. Tell the user the good news that their product is ready."
@@ -152,6 +180,7 @@ async def create_story(
         priority=body.priority,
         blocked_by_story_id=body.blocked_by_story_id,
         created_by=body.created_by,
+        unverified_decisions=[],
         created_at=now,
         updated_at=now,
     )
@@ -255,9 +284,30 @@ async def update_story_owner_notification(
 ) -> OwnerNotification:
     """Settle the story-backed completion notification after one delivery attempt."""
     story = await _get_story_for_update(story_id, db)
+    refuse_superseded_write(story.owner_notification, notification)
+    notification = preserve_po_settlement(story.owner_notification, notification)
     story.owner_notification = notification.model_dump(mode="json")
     await db.commit()
     return notification
+
+
+@router.post("/{story_id}/owner-notification/attempt", response_model=OwnerNotificationAttemptClaim)
+async def claim_story_owner_notification_attempt(
+    story_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> OwnerNotificationAttemptClaim:
+    """Grant one delivery attempt on the story's owner notification, or refuse it.
+
+    The story-backed twin of the run claim: the owed-and-due check and the
+    ``last_attempt_at`` stamp are one write under the story row lock.
+    """
+    story = await _get_story_for_update(story_id, db)
+    claim, stamped = claim_attempt(story.owner_notification)
+    if stamped is not None:
+        story.owner_notification = stamped
+    await db.commit()
+    return claim
 
 
 @router.get("/{story_id}", response_model=StoryRead)
@@ -274,7 +324,19 @@ async def update_story(
     story_id: str,
     body: StoryUpdate,
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> StoryRead:
+    timeline = body.generated_product_timeline
+    if isinstance(timeline, dict) and "deploy_observation" in timeline:
+        actor = await resolve_actor(
+            is_internal=_is_internal, telegram_id=x_telegram_id, credentials=credentials, db=db
+        )
+        if actor is not None:
+            raise HTTPException(
+                status_code=403, detail="merged deploy observations require the internal producer"
+            )
     story = await _get_story_for_update(story_id, db)
 
     update_data = body.model_dump(exclude_unset=True)
@@ -285,6 +347,76 @@ async def update_story(
     await db.refresh(story)
 
     logger.info("story_updated", story_id=story.id, fields=list(update_data.keys()))
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+async def _last_routed_qa_run(story: Story, db: AsyncSession) -> Run | None:
+    """The last QA run whose verdict this story routed: the one its owner was told about."""
+    return (
+        (
+            await db.execute(
+                select(Run)
+                .where(
+                    Run.story_id == story.id,
+                    Run.type == RunType.QA.value,
+                    Run.qa_routed_at.is_not(None),
+                )
+                .order_by(Run.qa_routed_at.desc(), Run.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+@router.post("/{story_id}/unverified-decisions", response_model=StoryRead)
+async def record_unverified_decision(
+    story_id: str,
+    body: StoryUnverifiedDecisionCreate,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    """Append the user's answer to the checks QA could not run on this story.
+
+    The answer is to the last QA run the story routed, and names only checks
+    that run left unverified. It is recorded and nothing else: no status
+    changes, and nothing is reopened or rerun.
+    """
+    story = await _get_story_for_update(story_id, db)
+    run = await _last_routed_qa_run(story, db)
+    if run is None or not isinstance(run.result, dict):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"story {story_id} has no settled QA run whose unverified checks to answer",
+        )
+    unverified = [check.name for check in QARunResult.model_validate(run.result).unverified_checks]
+    unknown = [name for name in body.check_names if name not in unverified]
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"QA run {run.id} left no unverified check named {unknown}; "
+                f"its unverified checks are {unverified}"
+            ),
+        )
+    decision = StoryUnverifiedDecision(
+        decision=body.decision,
+        check_names=body.check_names,
+        qa_run_id=run.id,
+        decided_at=datetime.now(UTC),
+        recorded_by=body.recorded_by,
+    )
+    # A new list, so the JSON column is written; the earlier answers stay as they were.
+    story.unverified_decisions = [*story.unverified_decisions, decision.model_dump(mode="json")]
+    await db.commit()
+    await db.refresh(story)
+    logger.info(
+        "story_unverified_decision_recorded",
+        story_id=story.id,
+        decision=decision.decision,
+        qa_run_id=run.id,
+        check_names=decision.check_names,
+    )
     return StoryRead.model_validate(story, from_attributes=True)
 
 
@@ -417,21 +549,48 @@ async def _completion_notification_text(
     )
 
 
+async def _completing_qa_verification(
+    qa_run_id: str | None, db: AsyncSession
+) -> QAVerificationFacts | None:
+    """What the passed QA run completing this story checked and could not.
+
+    ``None`` when no QA verdict completes it: an operator acceptance, or a
+    completion that names no QA run. The run was already checked to be this
+    story's terminal QA verdict by `_record_qa_routing`.
+    """
+    if qa_run_id is None:
+        return None
+    run = await db.get(Run, qa_run_id)
+    if run is None or not isinstance(run.result, dict):
+        return None
+    result = QARunResult.model_validate(run.result)
+    if result.qa_outcome != QAOutcome.PASSED:
+        return None
+    return result.verification_facts(run.id)
+
+
 async def _owe_completed_story_notification(
     story: Story,
     db: AsyncSession,
     *,
     acceptance: StoryAcceptance | None = None,
+    qa_run_id: str | None = None,
 ) -> None:
     """Attach the completion obligation to the story in its transition transaction."""
-    story.owner_notification = OwnerNotification(
-        event=OwnerNotificationEvent.STORY_COMPLETED,
-        text=await _completion_notification_text(story, db, acceptance=acceptance),
-        story_id=story.id,
-        project_id=str(story.project_id),
-        terminal_status=StoryStatus.COMPLETED,
-        state=OwnerNotificationState.OWED,
-        owed_at=datetime.now(UTC),
+    story.owner_notification = preserve_po_settlement(
+        story.owner_notification,
+        OwnerNotification(
+            event=OwnerNotificationEvent.STORY_COMPLETED,
+            text=await _completion_notification_text(story, db, acceptance=acceptance),
+            story_id=story.id,
+            project_id=str(story.project_id),
+            terminal_status=StoryStatus.COMPLETED,
+            state=OwnerNotificationState.OWED,
+            owed_at=datetime.now(UTC),
+            qa_verification=(
+                None if acceptance is not None else await _completing_qa_verification(qa_run_id, db)
+            ),
+        ),
     ).model_dump(mode="json")
 
 
@@ -440,9 +599,10 @@ async def _complete_story(
     db: AsyncSession,
     *,
     acceptance: StoryAcceptance | None = None,
+    qa_run_id: str | None = None,
 ) -> StoryRead:
     """The one completion transaction used by ordinary and accepted-result routes."""
-    await _owe_completed_story_notification(story, db, acceptance=acceptance)
+    await _owe_completed_story_notification(story, db, acceptance=acceptance, qa_run_id=qa_run_id)
     _do_transition(story, StoryStatus.COMPLETED)
     if acceptance is not None:
         story.operator_acceptance = acceptance.model_dump(mode="json")
@@ -623,36 +783,24 @@ async def _require_running_acceptance_target(story: Story, db: AsyncSession) -> 
 @router.post("/{story_id}/human-review", response_model=StoryRead)
 async def human_review_story(
     story_id: str,
-    body: StoryTransition | None = None,
+    body: StoryStopTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     """Move a blocked active story to the visible human-review queue."""
-    body = body or StoryTransition()
+    body = body or StoryStopTransition()
     story = await _get_story_for_update(story_id, db)
+    await _record_qa_routing(story, body.qa_run_id, StoryStatus.WAITING_HUMAN_REVIEW, db)
     _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+    if body.failure is not None:
+        _record_story_failure(story, body.failure, StoryStatus.WAITING_HUMAN_REVIEW)
     await db.commit()
     await db.refresh(story)
-    logger.info("story_waiting_human_review", story_id=story.id, actor=body.actor)
-    return StoryRead.model_validate(story, from_attributes=True)
-
-
-@router.post("/{story_id}/wait-user-secret", response_model=StoryRead)
-async def wait_user_secret_story(
-    story_id: str,
-    body: StoryTransition | None = None,
-    db: AsyncSession = Depends(get_async_session),
-) -> StoryRead:
-    """Park a deploying story that needs a user secret it does not have yet.
-
-    The scheduler re-dispatches the deploy (→ DEPLOYING) once the secret appears,
-    so this is a non-terminal wait, not a failure.
-    """
-    body = body or StoryTransition()
-    story = await _get_story_for_update(story_id, db)
-    _do_transition(story, StoryStatus.WAITING_USER_SECRET)
-    await db.commit()
-    await db.refresh(story)
-    logger.info("story_waiting_user_secret", story_id=story.id, actor=body.actor)
+    logger.info(
+        "story_waiting_human_review",
+        story_id=story.id,
+        actor=body.actor,
+        failure_code=None if body.failure is None else body.failure.code.value,
+    )
     return StoryRead.model_validate(story, from_attributes=True)
 
 
@@ -676,6 +824,7 @@ async def start_story(
                 ),
             )
 
+    await _record_qa_routing(story, body.qa_run_id, StoryStatus.IN_PROGRESS, db)
     _do_transition(story, StoryStatus.IN_PROGRESS)
     await db.commit()
     await db.refresh(story)
@@ -697,8 +846,9 @@ async def complete_story(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Use accept-result to complete a story in waiting_human_review",
         )
+    await _record_qa_routing(story, body.qa_run_id, StoryStatus.COMPLETED, db)
     logger.info("story_completed", story_id=story.id, actor=body.actor)
-    return await _complete_story(story, db)
+    return await _complete_story(story, db, qa_run_id=body.qa_run_id)
 
 
 @router.post("/{story_id}/accept-result", response_model=StoryRead)
@@ -875,17 +1025,24 @@ async def recheck_story_qa(
 @router.post("/{story_id}/fail", response_model=StoryRead)
 async def fail_story(
     story_id: str,
-    body: StoryTransition | None = None,
+    body: StoryStopTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
-    body = body or StoryTransition()
+    body = body or StoryStopTransition()
     story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.FAILED)
+    if body.failure is not None:
+        _record_story_failure(story, body.failure, StoryStatus.FAILED)
     await db.commit()
     await db.refresh(story)
 
-    logger.info("story_failed", story_id=story.id, actor=body.actor)
+    logger.info(
+        "story_failed",
+        story_id=story.id,
+        actor=body.actor,
+        failure_code=None if body.failure is None else body.failure.code.value,
+    )
     return StoryRead.model_validate(story, from_attributes=True)
 
 

@@ -2,12 +2,16 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+from _github_client_context import assert_one_operation_scope, entered_client, self_entering
+from _owner_notification_claims import ClaimClock, ClaimsFromWrites, claim
 from _run_routing_factories import _make_story as _routing_make_story
 import pytest
+from structlog.testing import capture_logs
 
+from shared.clients.github import RegistrySecretsNotRefreshedError, RegistrySecretsRefusal
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.user import UserDTO
@@ -229,7 +233,7 @@ async def test_uses_pr_number_for_exact_lookup(mock_gh_cls):
     not by scanning all closed PRs on the branch.
     """
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
 
     api = AsyncMock()
     redis = AsyncMock()
@@ -262,7 +266,7 @@ async def test_uses_pr_number_for_exact_lookup(mock_gh_cls):
 async def test_skips_story_without_pr_number(mock_gh_cls):
     """Stories without pr_number are skipped (backward compat / edge case)."""
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
 
     api = AsyncMock()
     redis = AsyncMock()
@@ -283,7 +287,7 @@ async def test_skips_story_without_pr_number(mock_gh_cls):
 async def test_skips_unmerged_pr(mock_gh_cls):
     """If the exact PR exists but isn't merged yet, skip."""
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
 
     api = AsyncMock()
     redis = AsyncMock()
@@ -308,7 +312,7 @@ async def test_skips_unmerged_pr(mock_gh_cls):
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_app_merges_open_pr_without_auto_merge_after_green_checks(mock_gh_cls):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -345,7 +349,7 @@ async def test_app_merges_open_pr_without_auto_merge_after_green_checks(mock_gh_
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_open_pr_without_auto_merge_waits_while_checks_are_pending(mock_gh_cls):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -370,7 +374,7 @@ async def test_open_pr_without_auto_merge_waits_while_checks_are_pending(mock_gh
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_behind_open_pr_updates_branch_and_waits_for_rerun(mock_gh_cls):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -400,7 +404,7 @@ async def test_behind_open_pr_updates_branch_and_waits_for_rerun(mock_gh_cls):
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_behind_branch_update_refusal_parks_once(mock_gh_cls, owe, deliver, notify):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -433,7 +437,7 @@ async def test_behind_branch_update_refusal_parks_once(mock_gh_cls, owe, deliver
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_closed_unmerged_pr_parks_once(mock_gh_cls, owe, deliver, notify):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -464,7 +468,7 @@ async def test_closed_unmerged_pr_parks_once(mock_gh_cls, owe, deliver, notify):
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_app_merge_refusal_parks_and_notifies(mock_gh_cls, owe, deliver, notify):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -491,6 +495,254 @@ async def test_app_merge_refusal_parks_and_notifies(mock_gh_cls, owe, deliver, n
     notify.assert_awaited_once()
 
 
+def _clean_open_pull_request() -> dict:
+    return {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "clean",
+        "head": {"sha": "a" * 40},
+    }
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_the_registry_secrets_are_refreshed_immediately_before_the_app_merge(mock_gh_cls):
+    """The merge starts push-main CI, which reads the registry secrets as it starts."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.side_effect = [_clean_open_pull_request(), RuntimeError("read-back")]
+    gh.merge_pull_request.return_value = {"merged": True, "sha": "e" * 40}
+
+    await poll_merged_prs(api, redis)
+
+    calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
+    refresh = calls.index("refresh_registry_secrets")
+    assert calls[refresh + 1] == "merge_pull_request"
+    gh.refresh_registry_secrets.assert_awaited_once_with("org", "my-repo")
+
+
+def _armed_pull_request(mergeable_state: str = "clean") -> dict:
+    """An open PR still carrying an auto-merge request from before the poller merged alone."""
+    return {
+        **_clean_open_pull_request(),
+        "node_id": "PR_kwDOarmed",
+        "auto_merge": {"merge_method": "merge"},
+        "mergeable_state": mergeable_state,
+    }
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_pull_request_armed_for_auto_merge_is_refreshed_disarmed_refreshed_and_merged(
+    mock_gh_cls,
+):
+    """Refresh first while GitHub may still merge it; then the poller's own refresh-merge."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.side_effect = [_armed_pull_request(), RuntimeError("read-back")]
+    gh.disable_auto_merge.return_value = True
+    gh.merge_pull_request.return_value = {"merged": True, "sha": "e" * 40}
+
+    await poll_merged_prs(api, redis)
+
+    calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
+    assert calls[calls.index("refresh_registry_secrets") :][:4] == [
+        "refresh_registry_secrets",
+        "disable_auto_merge",
+        "refresh_registry_secrets",
+        "merge_pull_request",
+    ]
+    gh.disable_auto_merge.assert_awaited_once_with("org", "my-repo", pr_node_id="PR_kwDOarmed")
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_an_armed_pull_request_still_waiting_on_checks_is_refreshed_disarmed_and_left(
+    mock_gh_cls,
+):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = _armed_pull_request("blocked")
+    gh.disable_auto_merge.return_value = True
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
+    assert calls[calls.index("refresh_registry_secrets") :] == [
+        "refresh_registry_secrets",
+        "disable_auto_merge",
+    ]
+    gh.merge_pull_request.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("withdrawal", "node_id"),
+    [
+        ({"return_value": False}, "PR_kwDOarmed"),
+        ({"side_effect": RuntimeError("502 Bad Gateway")}, "PR_kwDOarmed"),
+        ({"return_value": True}, None),
+    ],
+    ids=["not-confirmed", "github-error", "no-node-id"],
+)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_an_auto_merge_request_that_was_not_withdrawn_still_refreshes_but_never_merges(
+    mock_gh_cls, withdrawal, node_id
+):
+    """GitHub may still merge it by itself, so the secrets are current; the poller does not
+    merge or park it, and retries on the next poll. A disable that raises is no exception."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {**_armed_pull_request(), "node_id": node_id}
+    gh.disable_auto_merge.configure_mock(**withdrawal)
+
+    with capture_logs() as logs:
+        assert await poll_merged_prs(api, redis) == 0
+
+    gh.refresh_registry_secrets.assert_awaited_once_with("org", "my-repo")
+    calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
+    # The write comes straight after reading the PR, before any withdrawal attempt.
+    assert calls[calls.index("get_pull_request") + 1] == "refresh_registry_secrets"
+    gh.merge_pull_request.assert_not_awaited()
+    failed = next(e for e in logs if e["event"] == "poll_merged_auto_merge_takeover_failed")
+    assert failed["reason"] == "github_auto_merge_disable_failed"
+    assert failed["pr_number"] == 42
+    api.update_story.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+    redis.publish_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_disable_that_raises_is_preceded_by_the_refresh(mock_gh_cls):
+    """Refresh wins over everything: an exception from the withdrawal cannot skip it."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = _armed_pull_request()
+    gh.disable_auto_merge.side_effect = RuntimeError("secondary rate limit")
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
+    assert calls[calls.index("refresh_registry_secrets") :] == [
+        "refresh_registry_secrets",
+        "disable_auto_merge",
+    ]
+    gh.merge_pull_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_failed_refresh_on_an_armed_pull_request_is_typed_and_changes_nothing_else(
+    mock_gh_cls,
+):
+    """Logged with its reason; the withdrawal is still tried; no park; the next tick writes."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = _armed_pull_request("blocked")
+    gh.refresh_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(
+        RegistrySecretsRefusal.WRITE_INCOMPLETE, "wrote 2 of 3 registry secrets to org/my-repo"
+    )
+    gh.disable_auto_merge.return_value = False
+
+    with capture_logs() as logs:
+        assert await poll_merged_prs(api, redis) == 0
+
+    failed = next(e for e in logs if e["event"] == "poll_merged_armed_pr_refresh_failed")
+    assert failed["reason"] == "registry_secrets_write_incomplete"
+    gh.disable_auto_merge.assert_awaited_once()
+    gh.merge_pull_request.assert_not_awaited()
+    api.update_story.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_pull_request_still_waiting_on_checks_writes_no_secrets(mock_gh_cls):
+    """Under the poller's sole control the refresh belongs to its merge, not to every tick."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {**_clean_open_pull_request(), "mergeable_state": "blocked"}
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    gh.refresh_registry_secrets.assert_not_awaited()
+    gh.merge_pull_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "detail"),
+    [
+        (RegistrySecretsRefusal.ENV_MISSING, "REGISTRY_PASSWORD not set"),
+        (RegistrySecretsRefusal.WRITE_INCOMPLETE, "wrote 2 of 3 registry secrets to org/my-repo"),
+    ],
+)
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.deliver_owed_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.owe_story_owner_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_registry_secrets_that_were_not_refreshed_block_the_merge(  # noqa: PLR0913
+    mock_gh_cls, owe, deliver, notify, reason, detail
+):
+    """A merge that would start CI with stale secrets is the defect, so it does not happen."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = _clean_open_pull_request()
+    gh.refresh_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(reason, detail)
+
+    with capture_logs() as logs:
+        assert await poll_merged_prs(api, redis) == 0
+
+    gh.merge_pull_request.assert_not_awaited()
+    quarantine = api.update_story.await_args.args[1]["quarantine_reason"]
+    assert quarantine["reason"] == reason.value
+    assert quarantine["detail"].endswith(detail)
+    refusal = next(entry for entry in logs if entry["event"] == "poll_merged_app_merge_refused")
+    assert refusal["reason"] == reason.value
+    api.transition_story.assert_awaited_once_with("story-1", "human-review")
+    owe.assert_awaited_once()
+    deliver.assert_awaited_once()
+    notify.assert_awaited_once()
+    api.create_run.assert_not_awaited()
+    redis.publish_message.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
@@ -498,7 +750,7 @@ async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
     Old PR #3 is also merged on same branch — but we only look at #5.
     """
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
 
     api = AsyncMock()
     redis = AsyncMock()
@@ -530,7 +782,7 @@ async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_gh_cls):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(project_id="00000000-0000-0000-0000-000000000001", pr_number=42)
@@ -564,6 +816,7 @@ async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_g
         story_id="story-1",
         head_sha="a" * 40,
         deployed_commit_sha="e" * 40,
+        merged_pr_number=42,
     )
     api.create_run.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
@@ -576,7 +829,7 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
     mock_gh_cls, notify
 ):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(project_id="00000000-0000-0000-0000-000000000001", pr_number=42)
@@ -590,6 +843,13 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
         "intent_id": "users-grant-initial_owner-00000000000000000000000000000001-84",
         "disposition": "exhausted",
         "status": "failed",
+        "exhaustion": {
+            "attempts": 3,
+            "target": {"sha": "a" * 40},
+            "exhausted_execution_run_id": "run-1",
+            "action": "retry_initial_owner_deployment",
+            "retry_command": {"expected_execution_run_id": "run-1"},
+        },
     }
     gh.get_latest_workflow_run.return_value = _published_ci_run()
     gh.get_pull_request.return_value = {
@@ -601,12 +861,12 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
 
     assert await poll_merged_prs(api, redis) == 0
 
-    api.fail_story.assert_awaited_once_with(story.id)
+    api.fail_story.assert_not_awaited()
     # The story is failed straight out of PR_REVIEW: this path must not also
     # move it to DEPLOYING first, which was a second Story transition with
     # nothing to finish it.
     api.transition_story.assert_not_awaited()
-    notify.assert_awaited_once()
+    notify.assert_not_awaited()
     api.create_run.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
 
@@ -619,7 +879,7 @@ async def test_applied_initial_owner_intent_does_not_skip_a_later_create_deploy(
 ):
     """A QA fix still deploys its merged SHA after the owner access is already live."""
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(project_id="00000000-0000-0000-0000-000000000001", pr_number=43)
@@ -794,7 +1054,7 @@ async def test_handle_failed_run_recovers_transient_details_on_a_later_poll():
 async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, notify, monkeypatch):
     monkeypatch.setenv("REGISTRY_PASSWORD", "fixture-registry-password")
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     story = _make_story()
     story.pr_number = 42
@@ -909,7 +1169,7 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
 async def test_run_34162226616_timeline_survives_fix_task_creation_failure(mock_gh_cls):
     """The control-host evidence lands before a failed fix attempt can hide it."""
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     story = _make_story(pr_number=42)
     story.generated_product_timeline = None
@@ -950,7 +1210,7 @@ async def test_run_34162226616_timeline_survives_fix_task_creation_failure(mock_
 async def test_ci_failure_retry_is_one_server_side_move(mock_gh_cls):
     """The poller reports the CI failure; the API owns failed → reopened → in_progress."""
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     api.get_stories_by_status.return_value = [_make_story()]
     api.get_primary_repository.return_value = _make_repo()
@@ -973,7 +1233,7 @@ async def test_ci_failure_retry_is_one_server_side_move(mock_gh_cls):
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_ci_registry_setup_failure_tells_worker_not_to_change_code(mock_gh_cls):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     api.get_stories_by_status.return_value = [_make_story()]
     api.get_primary_repository.return_value = _make_repo()
@@ -1002,8 +1262,9 @@ async def test_ci_registry_setup_failure_tells_worker_not_to_change_code(mock_gh
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_three_same_fingerprints_create_two_fixes_then_escalate(mock_gh_cls, notify):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
+    ClaimsFromWrites(api)  # the API grants the delivery attempt on the record it holds
     story = _make_story()
     api.get_stories_by_status.return_value = [story]
     api.get_primary_repository.return_value = _make_repo()
@@ -1038,8 +1299,9 @@ async def test_three_same_fingerprints_create_two_fixes_then_escalate(mock_gh_cl
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_exhausted_failure_retries_story_transition(mock_gh_cls, notify):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
+    ClaimsFromWrites(api)  # the API grants the delivery attempt on the record it holds
     api.get_stories_by_status.return_value = [_make_story()]
     api.get_primary_repository.return_value = _make_repo()
     details = {
@@ -1079,7 +1341,7 @@ async def test_exhausted_failure_retries_story_transition(mock_gh_cls, notify):
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_ci_failure_records_details_unavailability(mock_gh_cls):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     api.get_stories_by_status.return_value = [_make_story()]
     api.get_primary_repository.return_value = _make_repo()
@@ -1097,7 +1359,7 @@ async def test_ci_failure_records_details_unavailability(mock_gh_cls):
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_ci_failure_marks_unavailable_failed_job_log(mock_gh_cls):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     api.get_stories_by_status.return_value = [_make_story()]
     api.get_primary_repository.return_value = _make_repo()
@@ -1126,7 +1388,7 @@ async def test_ci_failure_marks_unavailable_failed_job_log(mock_gh_cls):
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_ci_failure_marks_empty_failed_job_log(mock_gh_cls):
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     api.get_stories_by_status.return_value = [_make_story()]
     api.get_primary_repository.return_value = _make_repo()
@@ -1173,7 +1435,7 @@ async def test_no_deploy_run_exists_while_the_projects_ci_is_still_building(mock
     transition performed, or queue message published.
     """
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -1230,8 +1492,9 @@ async def test_a_ci_run_that_never_published_refuses_the_story_typed_and_durably
     publishing is not proof the project is broken — and nothing is deployed.
     """
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
+    ClaimsFromWrites(api)  # the API grants the delivery attempt on the record it holds
     redis = AsyncMock()
     story = _make_story(pr_number=42)
     api.get_stories_by_status.return_value = [story]
@@ -1290,7 +1553,7 @@ async def test_the_deploy_names_the_merge_commit_not_the_pull_request_head(mock_
     the PR head's tag would ask for an image that can never exist.
     """
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -1320,7 +1583,7 @@ async def test_the_deploy_names_the_merge_commit_not_the_pull_request_head(mock_
 async def test_a_merge_with_no_merge_commit_deploys_nothing(mock_gh_cls):
     """Fail closed: the pull request head's images are never published."""
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     redis = AsyncMock()
     story = _make_story(pr_number=42)
@@ -1365,6 +1628,14 @@ class _OwnerWorld:
         api.update_story_owner_notification = AsyncMock(side_effect=self._write_record)
         api.get_project = AsyncMock(return_value=self._project())
         api.get_user = AsyncMock(return_value=self._owner())
+        api.claim_story_owner_notification_attempt = AsyncMock(side_effect=self._claim)
+        self.clock = ClaimClock()
+
+    async def _claim(self, story_id: str):
+        assert story_id == self.story.id
+        return claim(
+            self.clock, lambda: self.record, lambda stamped: setattr(self, "record", stamped)
+        )
 
     def _project(self) -> ProjectDTO:
         return ProjectDTO(
@@ -1424,7 +1695,7 @@ async def test_a_story_parked_for_unpublished_images_tells_its_owner(mock_gh_cls
     only moment the owner can be told their product stopped moving.
     """
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     world = _OwnerWorld(api)
     redis = world.redis()
@@ -1471,7 +1742,7 @@ async def test_a_story_parked_for_unpublished_images_tells_its_owner(mock_gh_cls
 async def test_a_story_whose_ci_fix_budget_ran_out_tells_its_owner(mock_gh_cls, notify):
     """Exhausted automatic retries are an ending, and endings reach the owner."""
     gh = AsyncMock()
-    mock_gh_cls.return_value = gh
+    mock_gh_cls.return_value = self_entering(gh)
     api = AsyncMock()
     world = _OwnerWorld(api)
     redis = world.redis()
@@ -1500,3 +1771,162 @@ async def test_a_story_whose_ci_fix_budget_ran_out_tells_its_owner(mock_gh_cls, 
     assert world.record["state"] == "delivered"
     api.create_task.assert_not_awaited()
     notify.assert_awaited_once()
+
+
+# --- One GitHub HTTP pool per poll -------------------------------------------------
+
+
+def _merged_pull_request(number: int) -> dict:
+    return {
+        "number": number,
+        "merged_at": "2026-03-20T03:15:00Z",
+        "merge_commit_sha": "e" * 40,
+        "head": {"sha": "a" * 40},
+    }
+
+
+def _merged_poll_world(github: AsyncMock) -> tuple[AsyncMock, AsyncMock]:
+    """Two PR_REVIEW stories whose pull requests are merged and whose images exist."""
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [
+        _make_story("story-1", pr_number=42),
+        _make_story("story-2", pr_number=43),
+    ]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    github.get_latest_workflow_run.return_value = _published_ci_run()
+    github.get_pull_request.side_effect = lambda _owner, _repo, number: _merged_pull_request(number)
+    return api, AsyncMock()
+
+
+def _ci_failure_poll_world(github: AsyncMock) -> AsyncMock:
+    """Two PR_REVIEW stories whose latest story-branch CI run failed."""
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [
+        _make_story("story-1", pr_number=42),
+        _make_story("story-2", pr_number=43),
+    ]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_tasks_by_story.return_value = []
+    github.get_latest_workflow_run.return_value = _failed_run(311, "sha-311")
+    github.get_pull_request.side_effect = lambda _owner, _repo, number: {
+        "number": number,
+        "state": "open",
+        "merged_at": None,
+        "head": {"sha": "sha-311"},
+    }
+    github.get_workflow_failure_details.return_value = {
+        "failed_jobs": [{"name": "unit", "failed_steps": ["Run pytest"]}],
+        "unavailable_reason": None,
+    }
+    return api
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("poll", [poll_merged_prs, poll_ci_failures])
+async def test_an_empty_poll_opens_no_github_client(poll):
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = []
+
+    with patch("src.tasks.pr_poller.GitHubAppClient") as client_cls:
+        assert await poll(api, AsyncMock()) == 0
+
+    client_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poll_merged_prs_enters_one_client_for_every_story():
+    recorder, github = MagicMock(), AsyncMock()
+    context = entered_client(github, recorder, "github")
+    api, redis = _merged_poll_world(github)
+
+    with patch("src.tasks.pr_poller.GitHubAppClient", return_value=context) as client_cls:
+        assert await poll_merged_prs(api, redis) == 2
+
+    client_cls.assert_called_once_with()
+    calls = assert_one_operation_scope(recorder, "github")
+    assert calls.count("get_pull_request") == 2
+    assert calls.count("get_latest_workflow_run") == 2
+
+
+@pytest.mark.asyncio
+async def test_poll_merged_prs_github_error_keeps_its_handling_and_closes_the_pool():
+    recorder, github = MagicMock(), AsyncMock()
+    context = entered_client(github, recorder, "github")
+    api, redis = _merged_poll_world(github)
+    github.get_pull_request.side_effect = [RuntimeError("GitHub is down"), _merged_pull_request(43)]
+
+    with patch("src.tasks.pr_poller.GitHubAppClient", return_value=context):
+        # The first story is skipped as before; the second still deploys.
+        assert await poll_merged_prs(api, redis) == 1
+
+    calls = assert_one_operation_scope(recorder, "github")
+    assert calls.count("get_pull_request") == 2
+    assert redis.publish_message.await_args.args[1].story_id == "story-2"
+
+
+@pytest.mark.asyncio
+async def test_poll_merged_prs_escaping_error_closes_the_pool():
+    recorder, github = MagicMock(), AsyncMock()
+    context = entered_client(github, recorder, "github")
+    api, redis = _merged_poll_world(github)
+    api.transition_story.side_effect = RuntimeError("API is down")
+
+    with (
+        patch("src.tasks.pr_poller.GitHubAppClient", return_value=context),
+        pytest.raises(RuntimeError, match="API is down"),
+    ):
+        await poll_merged_prs(api, redis)
+
+    assert assert_one_operation_scope(recorder, "github", RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_poll_ci_failures_enters_one_client_for_every_story():
+    recorder, github = MagicMock(), AsyncMock()
+    context = entered_client(github, recorder, "github")
+    api = _ci_failure_poll_world(github)
+
+    with patch("src.tasks.pr_poller.GitHubAppClient", return_value=context) as client_cls:
+        assert await poll_ci_failures(api, AsyncMock()) == 2
+
+    client_cls.assert_called_once_with()
+    calls = assert_one_operation_scope(recorder, "github")
+    assert calls.count("get_latest_workflow_run") == 2
+    assert calls.count("get_pull_request") == 2
+    assert calls.count("get_workflow_failure_details") == 2
+
+
+@pytest.mark.asyncio
+async def test_poll_ci_failures_github_error_keeps_its_handling_and_closes_the_pool():
+    recorder, github = MagicMock(), AsyncMock()
+    context = entered_client(github, recorder, "github")
+    api = _ci_failure_poll_world(github)
+    github.get_latest_workflow_run.side_effect = [
+        RuntimeError("GitHub is down"),
+        _failed_run(311, "sha-311"),
+    ]
+
+    with patch("src.tasks.pr_poller.GitHubAppClient", return_value=context):
+        # The first story is skipped as before; the second still gets its fix task.
+        assert await poll_ci_failures(api, AsyncMock()) == 1
+
+    calls = assert_one_operation_scope(recorder, "github")
+    assert calls.count("get_latest_workflow_run") == 2
+    api.retry_story_after_ci_failure.assert_awaited_once_with("story-2")
+
+
+@pytest.mark.asyncio
+async def test_poll_ci_failures_escaping_error_closes_the_pool():
+    recorder, github = MagicMock(), AsyncMock()
+    context = entered_client(github, recorder, "github")
+    api = _ci_failure_poll_world(github)
+    api.get_primary_repository.side_effect = RuntimeError("API is down")
+
+    with (
+        patch("src.tasks.pr_poller.GitHubAppClient", return_value=context),
+        pytest.raises(RuntimeError, match="API is down"),
+    ):
+        await poll_ci_failures(api, AsyncMock())
+
+    assert assert_one_operation_scope(recorder, "github", RuntimeError) == []

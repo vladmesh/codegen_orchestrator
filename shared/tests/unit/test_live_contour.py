@@ -16,7 +16,7 @@ from shared.project_slug import generate_project_slug, project_slug_prefix
 def test_default_contour_keeps_the_historical_production_names(monkeypatch):
     """An environment that never heard of contours behaves exactly as before.
 
-    These four strings are what production's sweep has always matched and what
+    These two strings are what production's sweep matches and what
     its live tests have always created. Changing one silently strands every
     resource named the old way.
     """
@@ -28,7 +28,7 @@ def test_default_contour_keeps_the_historical_production_names(monkeypatch):
     assert contour.pipeline == "live-test"
     assert contour.llm_pipeline == "live-test-llm"
     assert contour.crud == "live-crud"
-    assert contour.project_prefixes == ["live-test", "live-crud", "mega-test"]
+    assert contour.project_prefixes == ["live-test", "live-crud"]
 
 
 def test_contour_is_selected_by_environment(monkeypatch):
@@ -62,7 +62,7 @@ def test_stand_and_production_stacks_are_distinguishable():
     prod = CONTOURS["prod"].slug_prefixes
     stand = CONTOURS["stand"].slug_prefixes
 
-    assert prod == ["live-te-", "live-cr-", "mega-te-"]
+    assert prod == ["live-te-", "live-cr-"]
     assert stand == ["stand-t-", "stand-c-"]
     assert not set(prod) & set(stand)
 
@@ -123,12 +123,12 @@ def test_the_stand_hosts_live_runs(monkeypatch):
 def test_production_names_stay_sweepable(monkeypatch):
     """The refusal must not strand what production already carries.
 
-    Residue created before this rule is still addressed by production's names,
-    so cleanup keeps reading them — only creation is refused.
+    Production's active names remain addressable by cleanup even though the
+    contour refuses resource creation.
     """
     monkeypatch.delenv(CONTOUR_ENV, raising=False)
 
     contour = current_contour()
 
-    assert contour.project_prefixes == ["live-test", "live-crud", "mega-test"]
-    assert contour.slug_prefixes == ["live-te-", "live-cr-", "mega-te-"]
+    assert contour.project_prefixes == ["live-test", "live-crud"]
+    assert contour.slug_prefixes == ["live-te-", "live-cr-"]

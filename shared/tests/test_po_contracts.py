@@ -125,6 +125,19 @@ class TestPOReminderMessage:
         assert restored.text == msg.text
         assert restored.telegram_chat_id == msg.telegram_chat_id
 
+    def test_the_story_and_the_users_request_survive_the_flat_fields(self):
+        msg = POReminderMessage(
+            text="remind me", telegram_chat_id="99", story_id="story-1", user_requested=True
+        )
+        restored = from_flat_fields(to_flat_fields(msg), POReminderMessage)
+        assert restored.story_id == "story-1"
+        assert restored.user_requested is True
+        assert POReminderMessage(text="x", telegram_chat_id="99").user_requested is False
+        unrequested = POReminderMessage(text="x", telegram_chat_id="99", user_requested=False)
+        assert from_flat_fields(to_flat_fields(unrequested), POReminderMessage).user_requested is (
+            False
+        )
+
 
 class TestPOInputDiscriminator:
     adapter = TypeAdapter(POInputMessage)
@@ -191,3 +204,56 @@ class TestFlatFieldHelpers:
     def test_from_flat_fields_validation_error(self):
         with pytest.raises(ValidationError):
             from_flat_fields({}, POUserMessage)  # missing required fields
+
+
+class TestQAVerificationFacts:
+    """The settling event's QA facts travel as one JSON-encoded flat field."""
+
+    FACTS = {
+        "qa_run_id": "qa-1",
+        "passed_checks": ["GET /health returns 200"],
+        "unverified_checks": [
+            {"name": "POST /api/transactions", "reason": "needs a write", "origin": "withheld"}
+        ],
+    }
+
+    def test_the_flat_field_is_json_and_decodes_back(self):
+        import json
+
+        event = POSystemEvent(
+            event="story_completed", text="done", telegram_chat_id="1", qa_verification=self.FACTS
+        )
+
+        fields = to_flat_fields(event)
+
+        assert json.loads(fields["qa_verification"]) == self.FACTS
+        assert from_flat_fields(fields, POSystemEvent) == event
+
+    def test_an_event_without_facts_writes_no_field(self):
+        event = POSystemEvent(event="story_quarantined", text="stopped", telegram_chat_id="1")
+
+        assert "qa_verification" not in to_flat_fields(event)
+
+    def test_an_unknown_origin_is_refused(self):
+        facts = {**self.FACTS, "unverified_checks": [{"name": "x", "reason": "y", "origin": "?"}]}
+
+        with pytest.raises(ValidationError):
+            POSystemEvent(
+                event="story_completed", text="done", telegram_chat_id="1", qa_verification=facts
+            )
+
+    def test_the_owner_record_carries_the_same_facts(self):
+        from datetime import UTC, datetime
+
+        record = OwnerNotification(
+            event="story_completed",
+            text="done",
+            story_id="story-1",
+            project_id="p",
+            terminal_status=StoryStatus.COMPLETED,
+            state="owed",
+            owed_at=datetime.now(UTC),
+            qa_verification=self.FACTS,
+        )
+
+        assert record.model_dump(mode="json")["qa_verification"] == self.FACTS

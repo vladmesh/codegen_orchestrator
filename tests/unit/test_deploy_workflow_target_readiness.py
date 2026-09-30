@@ -11,7 +11,8 @@ from pathlib import Path
 import yaml
 
 DEPLOY_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "deploy.yml"
-DEPLOY_SHA = "${{ github.sha }}"
+# The one revision a deploy run deploys: the dispatched commit or the `revision` input.
+DEPLOY_SHA = "${{ env.DEPLOY_REVISION }}"
 RECONCILE = "python -m src.provisioner.target_readiness"
 STEP = "Reconcile managed deploy targets"
 
@@ -38,10 +39,14 @@ def test_exactly_one_step_reconciles_and_it_is_production_only():
 def test_it_runs_after_the_new_services_are_healthy_and_before_the_deploy_ends():
     reconcile = _index(STEP)
 
-    assert _index("Deploy") < reconcile
-    assert _index("Run migrations") < reconcile
-    assert _index("Health check") < reconcile
-    assert _index("Wait for scheduler services") < reconcile
+    # The Switch brings the release up: `up`, migrations, API health, config seed and
+    # the scheduler readiness wait are all inside it.
+    switch = _script(_steps()[_index("Switch")])
+    assert _index("Switch") < reconcile
+    assert "up -d --remove-orphans --no-build --pull never" in switch
+    assert "exec -T api alembic upgrade head" in switch
+    assert "API is healthy" in switch
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in switch
     assert reconcile < _index("Cleanup")
     assert reconcile == len(_steps()) - 2
 

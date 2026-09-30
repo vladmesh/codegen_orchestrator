@@ -1,4 +1,5 @@
 import ast
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import httpx
 import pytest
 
 from scripts import clean_live_tests
+from shared.live_contour import CONTOURS
 
 _LIVE_TESTS = Path(__file__).resolve().parents[2] / "tests" / "live"
 
@@ -180,7 +182,7 @@ def test_local_docker_filter_is_a_regexp_alternation(monkeypatch):
         "ps",
         "-aq",
         "--filter",
-        "name=live-test|live-crud|mega-test",
+        "name=live-test|live-crud",
     ]
 
 
@@ -273,6 +275,7 @@ def test_remote_residue_scan_reports_containers_and_directories(tmp_path):
 
 def test_remote_server_list_failure_is_not_empty_list(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers.get("X-Internal-Key") == "test-internal-key"
@@ -289,6 +292,110 @@ def test_remote_server_list_failure_is_not_empty_list(monkeypatch):
 
     with pytest.raises(clean_live_tests.CleanupFailure, match="server list fetch failed: 500"):
         clean_live_tests.clean_remote_servers(["live-te-11111111111111111111111111111111"])
+
+
+def test_api_clients_use_configured_endpoint_and_internal_key(monkeypatch):
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path == "/api/servers/":
+            return httpx.Response(200, json=[])
+        if request.url.path.endswith("/ssh-key"):
+            return httpx.Response(200, json={"ssh_key": "KEY"})
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.Client
+    original_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "Client", lambda *a, **kw: original_client(*a, transport=transport, **kw)
+    )
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda *a, **kw: original_async_client(*a, transport=transport, **kw)
+    )
+
+    assert clean_live_tests._observe_remote_servers() == ([], [])
+    assert clean_live_tests._fetch_remote_server_key("vps-1") == "KEY"
+
+    import asyncio
+
+    async def fence_request():
+        async with clean_live_tests.internal_api_client() as client:
+            await client.get("/api/runs/run-1")
+
+    asyncio.run(fence_request())
+    assert [str(request.url) for request in requests] == [
+        "https://internal.example/api/servers/",
+        "https://internal.example/api/servers/vps-1/ssh-key",
+        "https://internal.example/api/runs/run-1",
+    ]
+    assert all(request.headers["X-Internal-Key"] == "test-internal-key" for request in requests)
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_api_clients_refuse_missing_endpoint_before_request(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("API_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("API_BASE_URL", value)
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(httpx, "Client", lambda *a, **kw: pytest.fail("HTTP requested"))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: pytest.fail("HTTP requested"))
+
+    for call in (
+        clean_live_tests.internal_api_client,
+        clean_live_tests._observe_remote_servers,
+        lambda: clean_live_tests._fetch_remote_server_key("vps-1"),
+    ):
+        with pytest.raises(clean_live_tests.CleanupFailure, match="API_BASE_URL is required"):
+            call()
+
+
+def test_cleanup_refuses_missing_endpoint_before_any_cleanup(monkeypatch):
+    monkeypatch.delenv("API_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        clean_live_tests, "manifest_project_ids", lambda: pytest.fail("cleanup started")
+    )
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="API_BASE_URL is required"):
+        clean_live_tests.main()
+
+
+@pytest.mark.parametrize("missing", clean_live_tests.sweep_requirements(CONTOURS["stand"]))
+def test_a_stand_sweep_refuses_each_of_its_requirements_before_any_cleanup(monkeypatch, missing):
+    """`main` enforces exactly the list the stand runner checks at its entry."""
+    monkeypatch.setattr(clean_live_tests, "CONTOUR", CONTOURS["stand"])
+    for name in clean_live_tests.sweep_requirements(CONTOURS["stand"]):
+        monkeypatch.setenv(name, "configured")
+    monkeypatch.setenv(missing, " ")
+    monkeypatch.setattr(
+        clean_live_tests, "manifest_project_ids", lambda: pytest.fail("cleanup started")
+    )
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match=f"{missing} is required") as error:
+        clean_live_tests.main()
+    assert "stand contour" in str(error.value)
+
+
+def test_the_stand_sweep_requires_its_run_tag_and_production_does_not():
+    """A stand target is admitted only by the run tag it was stamped with."""
+    stand = clean_live_tests.sweep_requirements(CONTOURS["stand"])
+    prod = clean_live_tests.sweep_requirements(CONTOURS["prod"])
+
+    assert clean_live_tests.API_BASE_URL_ENV in stand and clean_live_tests.API_BASE_URL_ENV in prod
+    assert (
+        clean_live_tests.INTERNAL_API_KEY_ENV in stand
+        and clean_live_tests.INTERNAL_API_KEY_ENV in prod
+    )
+    assert clean_live_tests.STAND_RUN_TAG_ENV in stand
+    assert clean_live_tests.STAND_RUN_TAG_ENV not in prod
+    assert (
+        clean_live_tests.missing_sweep_requirements(dict.fromkeys(stand, "x"), CONTOURS["stand"])
+        == []
+    )
 
 
 _ORPHAN = "live-te-" + "a" * 32
@@ -636,6 +743,8 @@ def test_recovery_fences_the_live_target_run_before_it_captures_or_removes_it(
 
 
 def test_main_remote_failure_leaves_db_slugs_available_for_retry(monkeypatch, tmp_path):
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
     projects = [
         {
@@ -712,6 +821,8 @@ def test_unprovable_manifest_still_lets_every_other_sweep_run(monkeypatch, tmp_p
     while the operator still got a red run either way. Fail-closed is kept: the
     same failure is raised, after the sweeps that can still do their work.
     """
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
     calls: list[str] = []
 
@@ -770,8 +881,7 @@ def test_stand_sweep_cannot_address_production_projects(monkeypatch):
 
         conditions = module._build_conditions()
         assert "stand-test-%" in conditions
-        assert "live-test" not in conditions
-        assert "mega-test" not in conditions
+        assert all(prefix not in conditions for prefix in CONTOURS["prod"].project_prefixes)
 
         assert not module._STACK_NAME_PATTERN.match("live-te-" + "0" * 32)
         assert module._STACK_NAME_PATTERN.match("stand-t-" + "0" * 32)
@@ -789,8 +899,8 @@ def test_production_sweep_is_unchanged_without_a_contour(monkeypatch):
 
     module = importlib.reload(clean_live_tests)
 
-    assert module.PROJECT_PREFIXES == ["live-test", "live-crud", "mega-test"]
-    assert module.DEPLOY_SLUG_PREFIXES == ["live-te-", "live-cr-", "mega-te-"]
+    assert module.PROJECT_PREFIXES == ["live-test", "live-crud"]
+    assert module.DEPLOY_SLUG_PREFIXES == ["live-te-", "live-cr-"]
     assert not module._STACK_NAME_PATTERN.match("stand-t-" + "0" * 32)
 
 
@@ -845,3 +955,298 @@ def test_the_sweep_never_deletes_from_the_append_only_ledger():
 
     assert "DELETE FROM engineering_attempt_ledger" not in source
     assert "NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger" in source
+
+
+def test_inventory_returns_zero_and_names_every_empty_surface(monkeypatch, capsys):
+    projects: list[dict[str, str]] = []
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: projects)
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_remote_stacks", lambda prefixes: ({}, [], 0, None)
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory([clean_live_tests.PROJECT_PREFIXES[-1]]) == 0
+
+    output = capsys.readouterr().out
+    for surface in (
+        "database_projects",
+        "github_repositories",
+        "deployed_stacks",
+        "redis_capability_messages",
+        "redis_worker_meta",
+        "local_docker_containers",
+        "local_workspaces",
+    ):
+        assert f"{surface}: 0" in output
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_inventory_reports_skipped_servers_without_contacting_them(monkeypatch, capsys, mixed):
+    prefix = clean_live_tests.PROJECT_PREFIXES[-1]
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "7")
+    eligible = {
+        "handle": "managed-7",
+        "provider": "time4vps",
+        "provider_id": "7",
+        "is_managed": True,
+        "ssh_user": "root",
+        "public_ip": "203.0.113.7",
+    }
+    skipped = {"handle": "inventory-only", "is_managed": False}
+    rows = [skipped, {"is_managed": False}]
+    if mixed:
+        rows.append(eligible)
+    original_client = httpx.Client
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=rows))
+    monkeypatch.setattr(
+        httpx, "Client", lambda *a, **kw: original_client(*a, transport=transport, **kw)
+    )
+    contacts = []
+
+    @contextmanager
+    def key_file(handle):
+        contacts.append(handle)
+        yield "/tmp/inventory-key"  # noqa: S108
+
+    monkeypatch.setattr(clean_live_tests, "_server_key_file", key_file)
+    monkeypatch.setattr(clean_live_tests, "_ssh", lambda *a, **kw: _result(stdout=""))
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory([prefix]) == int(not mixed)
+    output = capsys.readouterr().out
+    assert "deployed_stacks: 0" in output if mixed else "deployed_stacks: skipped" in output
+    assert "deployed_stacks_skipped_servers: 2" in output
+    assert "inventory-only: is_not_managed" in output
+    assert "<unknown handle>: is_not_managed" in output
+    assert contacts == (["managed-7"] if mixed else [])
+
+
+def test_inventory_reports_skips_when_eligible_scan_fails(monkeypatch, capsys):
+    monkeypatch.setattr(
+        clean_live_tests,
+        "_observe_remote_servers",
+        lambda: ([{"handle": "managed-7"}], [("inventory-only", "is_not_managed")]),
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "collect_remote_residue",
+        lambda *a, **kw: (_ for _ in ()).throw(clean_live_tests.CleanupFailure("SSH failed")),
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_local_workspaces", lambda *args: [])
+
+    assert clean_live_tests.inventory([clean_live_tests.PROJECT_PREFIXES[-1]]) == 1
+    output = capsys.readouterr().out
+    assert "deployed_stacks: unreadable (SSH failed)" in output
+    assert "deployed_stacks_skipped_servers: 1" in output
+    assert "inventory-only: is_not_managed" in output
+
+
+def test_inventory_returns_nonzero_and_names_matches(monkeypatch, capsys):
+    prefix = clean_live_tests.PROJECT_PREFIXES[-1]
+    slug_prefix = clean_live_tests._inventory_slug_prefixes([prefix])[0]
+    projects = [{"id": "project-1", "title": f"{prefix}-old", "slug": slug_prefix + "1" * 32}]
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: projects)
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_github_repositories", lambda prefixes: [slug_prefix + "1" * 32]
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_remote_stacks",
+        lambda prefixes: (
+            {"vps-1": ["directory /opt/services/" + slug_prefix + "1" * 32]},
+            [],
+            1,
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_redis",
+        lambda projects: (["project-1: engineering/1-0"], ["worker:meta:w1"]),
+    )
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_docker", lambda prefixes: [f"{prefix}-worker"]
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_local_workspaces",
+        lambda projects, prefixes: ["/data/workspaces/repo-1"],
+    )
+
+    assert clean_live_tests.inventory([prefix]) == 1
+
+    output = capsys.readouterr().out
+    assert f"{prefix}-old" in output
+    assert slug_prefix + "1" * 32 in output
+    assert "worker:meta:w1" in output
+    assert "/data/workspaces/repo-1" in output
+
+
+def test_inventory_returns_nonzero_when_a_surface_is_unreadable(monkeypatch, capsys):
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_github_repositories",
+        lambda prefixes: (_ for _ in ()).throw(
+            clean_live_tests.CleanupFailure("GitHub unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_remote_stacks", lambda prefixes: ({}, [], 0, None)
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory([clean_live_tests.PROJECT_PREFIXES[-1]]) == 1
+
+    assert "github_repositories: unreadable (GitHub unavailable)" in capsys.readouterr().out
+
+
+def test_inventory_never_reaches_a_destructive_helper(monkeypatch):
+    _live_harness_modules()
+    import capability_cleanup
+
+    prefix = clean_live_tests.PROJECT_PREFIXES[-1]
+    slug_prefix = clean_live_tests._inventory_slug_prefixes([prefix])[0]
+
+    for name in (
+        "clean_database",
+        "clean_redis_queues",
+        "clean_remote_servers",
+        "clean_local_docker",
+        "clean_local_workspaces",
+        "delete_github_repos",
+        "fence_run_work",
+        "recover_ownership_manifests",
+        "cleanup_manifest_resources",
+        "cleanup_run_scoped_resources",
+    ):
+        monkeypatch.setattr(
+            clean_live_tests,
+            name,
+            lambda *args, _name=name, **kwargs: pytest.fail(f"inventory reached {_name}"),
+        )
+    monkeypatch.setattr(
+        capability_cleanup,
+        "cleanup_owned_capability_messages",
+        lambda *args, **kwargs: pytest.fail("inventory reached capability cleanup"),
+    )
+
+    def fake_run_cmd(command, **kwargs):
+        if "psql" in command:
+            sql = command[-1]
+            if sql.startswith("SELECT id, title, slug"):
+                return _result(stdout=f"project-1|{prefix}-old|{slug_prefix}{'1' * 32}\n")
+            if sql.startswith("SELECT r.id"):
+                return _result(stdout="repo-1\n")
+        if "redis-cli" in command:
+            if "EVAL" in command:
+                return _result(stdout="[]\n")
+            return _result(stdout="")
+        return _result(stdout="")
+
+    @contextmanager
+    def fake_server_key_file(handle):
+        yield "/tmp/inventory-key"  # noqa: S108
+
+    monkeypatch.setattr(clean_live_tests, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(
+        clean_live_tests,
+        "_observe_remote_servers",
+        lambda: ([{"handle": "server-1", "ssh_user": "root", "public_ip": "203.0.113.1"}], []),
+    )
+    monkeypatch.setattr(clean_live_tests, "_server_key_file", fake_server_key_file)
+    monkeypatch.setattr(clean_live_tests, "_ssh", lambda *args, **kwargs: _result(stdout=""))
+    monkeypatch.setattr(clean_live_tests, "_inventory_directory_entries", lambda path: [])
+
+    assert clean_live_tests.inventory([prefix]) == 1
+
+
+def test_inventory_reports_redis_unreadable_when_projects_are_unreadable(monkeypatch, capsys):
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_projects",
+        lambda prefixes: (_ for _ in ()).throw(
+            clean_live_tests.CleanupFailure("database unavailable")
+        ),
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_remote_stacks", lambda prefixes: ({}, [], 0, None)
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_redis",
+        lambda projects: pytest.fail("Redis cannot be attributed without projects"),
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory([clean_live_tests.PROJECT_PREFIXES[-1]]) == 1
+
+    output = capsys.readouterr().out
+    assert "redis_capability_messages: unreadable (database projects unreadable)" in output
+    assert "redis_worker_meta: unreadable (database projects unreadable)" in output
+
+
+def test_inventory_rejects_a_prefix_outside_the_current_contour(capsys):
+    assert clean_live_tests.inventory(["not-a-contour-prefix"]) == 1
+    assert "inventory_prefixes: unreadable" in capsys.readouterr().out
+
+
+def test_inventory_local_docker_reads_names_without_removing_containers(monkeypatch):
+    commands: list[list[str]] = []
+    prefix = clean_live_tests.PROJECT_PREFIXES[-1]
+
+    def fake_run_cmd(command, **kwargs):
+        commands.append(command)
+        return _result(stdout=f"{prefix}-worker\n")
+
+    monkeypatch.setattr(clean_live_tests, "run_cmd", fake_run_cmd)
+
+    assert clean_live_tests.inventory_local_docker([prefix]) == [f"{prefix}-worker"]
+    assert commands == [
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--format",
+            "{{.Names}}",
+            "--filter",
+            f"name={prefix}",
+        ]
+    ]
+
+
+def test_live_inventory_make_target_uses_the_project_environment():
+    makefile = (Path(__file__).resolve().parents[2] / "Makefile").read_text()
+
+    assert "test-live-inventory" in makefile
+    assert "uv run python -m scripts.clean_live_tests --inventory --prefix $(PREFIX)" in makefile
+    assert (
+        "make test-live-inventory PREFIX=name - Read-only residue inventory (requires API_BASE_URL)"
+        in makefile
+    )
+    assert "make test-live-clean     - Sweep live-test residue (requires API_BASE_URL)" in makefile

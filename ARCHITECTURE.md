@@ -36,7 +36,7 @@ A three-level abstraction for product management:
 4. The PO publishes an `ArchitectMessage` to `architect:queue`
 5. The Architect Consumer calls the LLM, which sees the tree of the scaffolded project → creates tasks only for the diff (the business logic)
 6. The Task Dispatcher finds unblocked tasks, creates Runs, publishes to `engineering:queue`
-7. Once all tasks are done — a PR story/* → main, auto-merge → deploy → QA → story completed
+7. Once all tasks are done — a PR story/* → main, merged by the PR poller after writing the registry secrets → deploy → QA → story completed
 
 The Story / Task / Run / `TaskEvent` entities in the API describe work on **client** projects; they are created and maintained by the pipeline itself (PO, Architect, Task Dispatcher, workers).
 
@@ -74,9 +74,9 @@ taken from the default value.
 | `worker-broker` | The only service on both control-plane and worker networks. Authenticates per-worker credentials and brokers worker streams, sessions, status and Compose requests. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
-| `scheduler-pipeline` | One ordered dispatcher cycle: scaffold and engineering admission, story completion, PR/CI, supervisors, owed notifications, QA routing, then temporary-access cleanup. A container of the shared `scheduler` image |
+| `scheduler-pipeline` | Six loops, each its own failure boundary: `task_dispatcher` (one ordered tick: scaffold and engineering admission, story completion, supervisors, QA routing), `pr_ci` (merged-PR handling and CI-failure routing), `worker_reconciliation`, `temporary_access` cleanup, `owner_notifications` recovery and `story_supervision` (state-age watchdog, stage notices). A container of the shared `scheduler` image |
 | `scheduler-infrastructure` | Fail-closed Time4VPS server sync, health checks, provisioner trigger and restart-safe result consumption. A container of the shared `scheduler` image |
-| `scheduler-maintenance` | GitHub project sync, RAG summarization, analytics aggregation and queue cleanup. A container of the shared `scheduler` image |
+| `scheduler-maintenance` | GitHub project sync, analytics aggregation and queue cleanup. A container of the shared `scheduler` image |
 | `infra-service` | An Ansible runner and SSH operations |
 | `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000 (stamping `X-Internal-Key` in, so the browser never holds it), `/wm-api/*` → worker-manager. Basic auth via htpasswd decides who reaches that proxy. Grafana is embedded at `/grafana/` |
 | `user-dashboard` | React 19 + Vite SPA. The end user's own view of their projects: auth through Telegram, analytics from Loki |
@@ -140,7 +140,7 @@ graph TD
 
     Dispatcher --> |"finds unblocked tasks"| API
     Dispatcher --> |"XADD engineering:queue"| EngQueue[engineering:queue]
-    Dispatcher --> |"story complete → PR story/* → main + auto-merge"| DeployQueue
+    Dispatcher --> |"story complete → PR story/* → main, poller merges"| DeployQueue
 
     EngQueue --> EngConsumer[Engineering Consumer]
     EngConsumer --> EngGraph[Engineering Subgraph]
@@ -194,8 +194,8 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        Telegram Bot → User
 
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
-All tasks done → Dispatcher creates PR story/* → main (auto-merge) → story pr_review
-PR merged (PR poller, 30s) → deploy:queue → deploy
+All tasks done → Dispatcher creates PR story/* → main (no GitHub auto-merge) → story pr_review
+Checks green → PR poller writes the repo's REGISTRY_* secrets, then merges → push-main CI publishes the merge commit's images → PR poller observes them → deploy:queue → deploy
 Deploy success → run.result = DeployOutcome → supervisor → qa:queue → QA consumer runs deterministic checks, then its assigned subscription executor → story testing
 QA pass → run.result = QAOutcome.PASSED → supervisor → story completed → PO notification
 QA fail → run.result = QAOutcome.FAILED → supervisor → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA
@@ -204,9 +204,10 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 
 **Key Features:**
 - **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
+- **LLM channel chain**: the Architect, the PO and the PO summarizer answer through an ordered chain of channels from `agent_configs.llm_channels` (default `codex`, `claude`, `openrouter`); a channel failure moves the same call to the next channel. See [NODES.md](docs/NODES.md#-llm-channel-chain-architect-po-po-summarizer)
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
-- **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (auto-merge on green)
+- **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (the PR poller merges on green)
 - **DevOps Subgraph**: typed environment-contract resolution and Ansible deployment via infra-service. Deploy failures use deterministic typed outcomes; unclassified subgraph and smoke failures resolve to RETRY.
 - **QA Consumer**: runs deterministic probes first, then its assigned subscription executor centrally — the only executor there is, so a failure to start it ends the run as a typed infrastructure outcome. Deployment access is limited by a per-run capability set and an unprivileged SSH identity. Pass → story completed. Fail → creates a fix task and returns to engineering.
 - **Unified Redis Consumers**: every consumer reads through `RedisStreamClient.consume()` / `consume_typed()` with PEL recovery (`claim_pending=True`) — an entry left unacked is reclaimed by the running consumer on its next `XAUTOCLAIM` sweep, restart or no restart, and a poison entry goes to `{stream}:dlq` rather than being ACKed away. The PO consumer reads through the same client and differs only in what it does with an entry: it dispatches concurrently, and keeps the ids it has in flight so its own sweep cannot hand it work it is already running. Delivery stays at-least-once between processes, as it is for every other consumer. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns) and [ERROR_HANDLING.md](docs/ERROR_HANDLING.md)
@@ -263,13 +264,20 @@ The `monitoring` role installs the exporters during provisioning. An existing se
 baseline by a separate operation, see [docs/DEPLOY.md](docs/DEPLOY.md). Metrics freshness is a meaningful
 value: the allocator uses it to decide whether a server's load is known.
 
-**Runs.** `runs` stores not only the status and the timings but also a measure of effort: the tokens spent,
-the cost, the head profile. The agent transcript is saved as an artifact on disk with a link from `runs`,
-with secrets scrubbed and a size limit; the path and the lifetime are set by `WORKER_TRANSCRIPT_*`.
+**Runs.** `runs` owns the lifecycle of an attempt: its type, status, timing (`started_at`,
+`completed_at`) and result identity (the run id, `result`, the error). It also keeps the runtime artifacts
+that belong to the run itself: the head profile (`agent_profile`) and the transcript link. The agent
+transcript is saved as an artifact on disk with a link from `runs` (`transcript_path`,
+`transcript_truncated`), with secrets scrubbed and a size limit; the path and the lifetime are set by
+`WORKER_TRANSCRIPT_*`. `runs` holds no tokens and no cost: engineering token and cost accounting is owned by
+the append-only `engineering_attempt_ledger`, one record per engineering run (see
+[docs/CONTRACTS.md](docs/CONTRACTS.md#engineering-attempt-ledger)).
 
 **Dashboards.** Grafana is provisioned from the repository (`infra/grafana/`) with two datasources, Loki and
 Postgres (a read-only role), and three dashboards: "Service Logs", "Server capacity",
-"Run operations". It is proxied through admin-frontend at `/grafana/`.
+"Run operations". In "Run operations" the outcome, failure-rate, duration and retry panels read `runs`;
+the token and cost panels read `engineering_attempt_ledger` and join `runs` only for the head profile
+label. Grafana is proxied through admin-frontend at `/grafana/`.
 
 - **LangSmith** (optional): `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY`.
 

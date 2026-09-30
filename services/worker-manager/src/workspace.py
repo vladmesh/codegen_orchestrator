@@ -58,15 +58,18 @@ def remove_workspace(base_path: str, entry_id: str) -> None:
     shutil.rmtree(workspace_dir, ignore_errors=True)
 
 
-def prepare_worker_paths(workspace_path: str | Path, transcript_path: str | Path) -> None:
+def prepare_worker_paths(workspace_path: str | Path, transcript_path: str | Path | None) -> None:
     """Make host-backed paths writable before launching a hardened worker."""
     workspace = Path(workspace_path)
-    transcript = Path(transcript_path)
     if not workspace.is_dir():
         raise RuntimeError(f"Worker workspace is not a directory: {workspace}")
 
-    transcript.mkdir(parents=True, exist_ok=True)
-    for path in (workspace, transcript):
+    paths = [workspace]
+    if transcript_path is not None:
+        transcript = Path(transcript_path)
+        transcript.mkdir(parents=True, exist_ok=True)
+        paths.append(transcript)
+    for path in paths:
         try:
             result = subprocess.run(
                 # Git is supplied by the service image on its managed PATH.

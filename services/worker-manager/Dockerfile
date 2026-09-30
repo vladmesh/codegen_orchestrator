@@ -15,20 +15,23 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-26.
        -o /usr/local/lib/docker/cli-plugins/docker-compose \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-# Copy shared as plain files (deps are in service pyproject.toml)
-COPY shared ./shared
+# Create non-root user; it owns /app, and the files below are copied in as its own, so no
+# recursive chown duplicates /app into another layer.
+RUN useradd -m -u 1000 appuser && \
+    chown appuser:appuser /app
 
-# Install service dependencies
-COPY services/worker-manager/pyproject.toml .
+# Install the locked service dependencies before any source: a shared/ or src/ edit
+# reuses this layer. The service's own code runs from PYTHONPATH=/app.
+COPY services/worker-manager/requirements.lock /tmp/requirements.lock
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install .
+    pip install -r /tmp/requirements.lock
+
+# Copy shared as plain files (deps are in the service requirements.lock)
+COPY --chown=appuser:appuser shared ./shared
 
 # Copy source
-COPY services/worker-manager/src ./src
+COPY --chown=appuser:appuser services/worker-manager/src ./src
 
-# Create non-root user
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
 USER appuser
 
 ENV PYTHONPATH=/app

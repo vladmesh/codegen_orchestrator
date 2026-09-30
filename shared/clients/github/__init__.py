@@ -15,7 +15,13 @@ from ._provisioning import ProvisioningMixin
 from ._pull_requests import NoCommitsBetweenError, PullRequestsMixin
 from ._refs import DEPLOY_PIN_TAG_PREFIX, RefsMixin, deploy_pin_tag
 from ._repos import ReposMixin
-from ._secrets import SecretsMixin
+from ._secrets import (
+    REGISTRY_SECRET_ENV,
+    RegistrySecretsNotRefreshedError,
+    RegistrySecretsRefusal,
+    SecretsMixin,
+    registry_repository_secrets,
+)
 
 
 class GitHubAppClient(
@@ -50,4 +56,8 @@ __all__ = [
     "WorkflowCancellationUnprovenError",
     "WorkflowNotFoundError",
     "NoCommitsBetweenError",
+    "REGISTRY_SECRET_ENV",
+    "RegistrySecretsNotRefreshedError",
+    "RegistrySecretsRefusal",
+    "registry_repository_secrets",
 ]

@@ -1,31 +1,42 @@
 """What a QA executor container can reach, as a property of the network.
 
-Until this module existed, the guarantee "exploratory QA does not write to the
-application" rested on the executor having no tool that could express a write.
-The executor is a CLI coding agent now: it has a shell, `curl`, and — on an
-ordinary worker network — an ordinary route to the internet. A rule in the
-prompt and a scan of the transcript afterwards are not a boundary; they are a
-request and a receipt.
-
-The boundary is here, and it is made of two things:
+The QA executor is a sandbox: a CLI coding agent with a shell, `python3`, `curl`
+and Telethon, which may run its own scripts against the product under test. What
+keeps that safe is not what the agent is told but where its packets can go, and
+that is decided here, per run, by two things:
 
 1. **An `internal` Docker network.** The QA executor container is attached to
    exactly one network, and that network has no route off itself. The
-   deployment's public URL, its IP, the management host, the rest of the fleet
-   and the internet are not forbidden to the container — they are unreachable
-   from it. `docker network create --internal` is what does this, and
-   `verify_isolation` refuses to let a run start on a container that ended up
-   anywhere else.
-2. **One CONNECT-only proxy, allowlisted to the assigned CLI's model backend.**
-   Claude Code and Codex have to talk to their own backends or there is no
-   executor at all, so exactly that much is opened, per run, by
-   `qa_egress_proxy`. It tunnels `CONNECT host:port` for the hosts named on its
-   command line and refuses everything else, including every non-CONNECT
-   method — so it cannot be turned back into a general forward proxy.
+   management host, the platform's own services, the rest of the fleet and the
+   internet are not forbidden to the container — they are unreachable from it.
+   `docker network create --internal` is what does this, and `verify_isolation`
+   refuses to let a run start on a container that ended up anywhere else.
+2. **One CONNECT-only proxy with a per-run allowlist.** `qa_egress_proxy`
+   tunnels `CONNECT host:port` to exactly three kinds of destination and
+   refuses everything else, including every non-CONNECT method — so it cannot
+   be turned back into a general forward proxy:
 
-The application under test is reachable from neither. It stays reachable only
-through the runtime's typed capability endpoint, which is served on the same
-internal network by the QA runtime itself and is GET-only for the public URL.
+   * the assigned CLI's model backend (`model_backends`);
+   * the host of the run's deployed public URL, on the URL's explicit port or
+     on 443 and 80 (`deploy_target_entries`). The network does not tell a read
+     from a write there: a CONNECT tunnel carries whatever the executor sends.
+     That no direct application-API write is made is policy, not routing —
+     the QA instructions allow GETs only, and the runtime's evidence guard
+     (`_forbidden_application_write` in qa-worker) fails a run whose report,
+     result or transcript shows one. It stays so until product-data isolation
+     (ephemeral product stands) exists;
+   * Telegram's MTProto data centres (`TELEGRAM_MTPROTO_NETWORKS`), so a
+     Telethon client logged in as the QA account can talk to the bot.
+
+What the sandbox does not get is as much a part of the boundary: no SSH key and
+no route to the target's port 22 (every SSH-based capability stays in the QA
+runtime, behind its typed capability endpoint), no platform service, and no
+secret of the platform in its environment or mounts.
+
+The deploy target arrives as data on the create request and is refused, before
+any container exists, when it could point the door back at the platform: an
+empty value, a URL carrying userinfo, a name the container reaches directly, a
+single-label service name, or a loopback, link-local or private literal.
 
 Fail-closed is the point: every check below raises instead of degrading. A run
 whose egress policy did not establish does not start with an unrestricted
@@ -40,12 +51,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import ipaddress
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import structlog
 
-from shared.contracts.queues.worker import WorkerLabel
+from shared.contracts.queues.worker import QA_TARGET_REFUSED, WorkerLabel
 from shared.contracts.vocab import AgentType
 
 from .qa_egress_proxy import LISTEN_PORT as PROXY_PORT
@@ -73,8 +85,43 @@ DEFAULT_MODEL_BACKENDS: dict[AgentType, tuple[str, ...]] = {
 }
 
 
+# Telegram's MTProto data centres, as Telegram publishes them
+# (https://core.telegram.org/resources/cidr.txt), and the ports MTProto is served
+# on. IPv4 only: Telethon dials the IPv4 data centres unless told otherwise, and
+# the QA network is IPv4. This is the one place the list lives.
+TELEGRAM_MTPROTO_NETWORKS: tuple[str, ...] = (
+    "91.105.192.0/23",
+    "91.108.4.0/22",
+    "91.108.8.0/22",
+    "91.108.12.0/22",
+    "91.108.16.0/22",
+    "91.108.20.0/22",
+    "91.108.56.0/22",
+    "149.154.160.0/20",
+    "185.76.151.0/24",
+)
+TELEGRAM_MTPROTO_PORTS: tuple[int, ...] = (443, 80, 5222)
+
+# Ports opened on a deploy target whose URL names none: HTTPS and plain HTTP.
+DEPLOY_TARGET_DEFAULT_PORTS: tuple[int, ...] = (443, 80)
+_DEPLOY_TARGET_SCHEMES = frozenset({"http", "https"})
+# Suffixes that name something on a private network, never a public deployment.
+_LOCAL_NAME_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain")
+
+
 class QAEgressError(RuntimeError):
     """The run's egress policy did not establish, so no container may run."""
+
+
+class QATargetRefused(QAEgressError):
+    """The run's deploy target is not a destination the sandbox may be opened to.
+
+    The message leads with `QA_TARGET_REFUSED`, so the QA runtime reading the
+    worker's error text knows the refusal is deterministic and does not retry.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{QA_TARGET_REFUSED}: {detail}")
 
 
 @dataclass(frozen=True)
@@ -127,6 +174,72 @@ def direct_hosts(env_vars: dict[str, str], broker_url: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(hosts))
 
 
+def telegram_entries() -> tuple[str, ...]:
+    """Telegram's data centres as proxy allowlist entries, one per network and port."""
+    return tuple(
+        f"{network}:{port}"
+        for network in TELEGRAM_MTPROTO_NETWORKS
+        for port in TELEGRAM_MTPROTO_PORTS
+    )
+
+
+def deploy_target_entries(target_url: str | None, direct: tuple[str, ...]) -> tuple[str, ...]:
+    """The allowlist entries that open the run's deploy target, or a refusal.
+
+    `target_url` is the run's deployed public URL, as the QA runtime sent it.
+    Only its host is opened, on the URL's explicit port or on 443 and 80. It is
+    refused when it could turn the door back towards the platform: empty, not
+    an http(s) URL, carrying userinfo, a name in `direct` (what the container
+    already reaches on its own network), a single-label or local name (a
+    service on the platform's own networks), or an IP literal that is not a
+    public address (loopback, link-local, RFC 1918 and the like).
+    """
+    raw = (target_url or "").strip()
+    if not raw:
+        raise QATargetRefused("a QA run needs its deployed public URL; none was sent")
+    parts = urlsplit(raw)
+    if parts.scheme not in _DEPLOY_TARGET_SCHEMES or not parts.netloc:
+        raise QATargetRefused(f"the QA deploy target {raw!r} is not an http(s) URL")
+    if "@" in parts.netloc:
+        raise QATargetRefused("the QA deploy target URL carries userinfo; it is refused")
+    try:
+        explicit_port = parts.port
+    except ValueError as exc:
+        raise QATargetRefused(f"the QA deploy target {raw!r} has an invalid port") from exc
+    # The authority names a port when a `:` follows the host (after any IPv6
+    # brackets). Such a port must be a real one: `host:` and `host:0` are
+    # malformed, never a request for the defaults.
+    names_port = ":" in parts.netloc.rpartition("]")[2]
+    if names_port and not explicit_port:
+        raise QATargetRefused(f"the QA deploy target {raw!r} names an empty or zero port")
+    host = (parts.hostname or "").rstrip(".").lower()
+    if not host:
+        raise QATargetRefused(f"the QA deploy target {raw!r} names no host")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None:
+        if not address.is_global:
+            raise QATargetRefused(
+                f"the QA deploy target {host} is not a public address; the sandbox is "
+                f"never opened to a loopback, link-local or private network"
+            )
+    elif (
+        host in {name.lower() for name in direct}
+        or host == "localhost"
+        or "." not in host
+        or host.endswith(_LOCAL_NAME_SUFFIXES)
+    ):
+        raise QATargetRefused(
+            f"the QA deploy target {host!r} names a service on the platform's own "
+            f"networks, not a public deployment"
+        )
+    ports = (explicit_port,) if names_port else DEPLOY_TARGET_DEFAULT_PORTS
+    spelled = f"[{host}]" if isinstance(address, ipaddress.IPv6Address) else host
+    return tuple(f"{spelled}:{port}" for port in ports)
+
+
 def proxy_env(proxy_host: str, no_proxy: tuple[str, ...]) -> dict[str, str]:
     """The proxy variables the CLI reads.
 
@@ -134,11 +247,12 @@ def proxy_env(proxy_host: str, no_proxy: tuple[str, ...]) -> dict[str, str]:
     ignores or unsets them reaches nothing at all, because the network it is on
     has no other way out. That is the intended failure — closed, not open.
 
-    Only the HTTPS variables are set. Every destination the proxy opens is
-    HTTPS, and everything the container speaks plain HTTP to — the capability
-    endpoint, the broker — is on its own network, where a proxy would only get
-    in the way. `NO_PROXY` names them anyway, for clients that read `ALL_PROXY`
-    out of an operator's own environment.
+    Only the HTTPS variables are set. The proxy speaks CONNECT alone, and a
+    client told `HTTP_PROXY` would send it absolute-form plain HTTP that it
+    refuses; a plain-`http://` deployment is reached through an explicit
+    CONNECT tunnel instead (`curl --proxytunnel -x "$HTTPS_PROXY" http://…`).
+    Everything the container speaks plain HTTP to on its own network — the
+    capability endpoint, the broker — is named in `NO_PROXY`.
     """
     url = f"http://{proxy_host}:{PROXY_PORT}"
     joined = ",".join(no_proxy)
@@ -162,7 +276,7 @@ async def require_internal_network(docker, network: str) -> None:
     if not attrs.get("Internal"):
         raise QAEgressError(
             f"the QA egress network {network!r} is not internal: a QA executor on it "
-            f"would reach the deployment directly. Declare it with `internal: true`."
+            f"would reach past its allowlist. Declare it with `internal: true`."
         )
 
 
@@ -176,7 +290,7 @@ def verify_isolation(attrs: dict, network: str) -> None:
         )
 
 
-async def establish(
+async def establish(  # noqa: PLR0913 — one run's whole policy, each part named
     docker,
     *,
     worker_id: str,
@@ -186,6 +300,8 @@ async def establish(
     internet_network: str,
     configured_backends: str,
     direct: tuple[str, ...],
+    deploy_target: tuple[str, ...],
+    telegram: tuple[str, ...],
     labels: dict[str, str] | None = None,
 ) -> QAEgress:
     """Put this run's egress policy in place, or raise so the run does not start.
@@ -195,9 +311,19 @@ async def establish(
     depends on it is built — a container started against a proxy that never came
     up would look to the CLI exactly like a broken session and would be retried
     as one.
+
+    `deploy_target` is `deploy_target_entries` of the run's URL and `telegram`
+    is `telegram_entries()`; both are passed in so a test can stand local
+    listeners in for them on the identical code path.
     """
     await require_internal_network(docker, network)
-    allowed = model_backends(agent_type, configured_backends)
+    if not deploy_target:
+        raise QATargetRefused("a QA run's egress policy has no deploy target to open")
+    allowed = (
+        *model_backends(agent_type, configured_backends),
+        *deploy_target,
+        *telegram,
+    )
     name = proxy_container_name(worker_id)
     proxy_labels = dict(labels or {})
     proxy_labels.update({WorkerLabel.TYPE.value: PROXY_TYPE_LABEL, WorkerLabel.ID.value: worker_id})

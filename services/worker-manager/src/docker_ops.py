@@ -244,14 +244,20 @@ class DockerClientWrapper:
             pass
 
     async def exec_in_container(
-        self, container_id: str, command: str, user: str = "worker", timeout: int = 30
+        self,
+        container_id: str,
+        command: str | list[str],
+        user: str = "worker",
+        timeout: int = 30,
+        *,
+        environment: dict[str, str] | None = None,
     ) -> tuple[int, bytes]:
         """
         Execute a command in a running container.
 
         Args:
             container_id: ID of the container
-            command: Command run
+            command: Command run, as a shell-free argument list or one string
             user: User to run command as (default: "worker")
             timeout: Timeout in seconds (default: 30)
 
@@ -262,5 +268,23 @@ class DockerClientWrapper:
         # exec_run is blocking, run in executor
         # returns (exit_code, output)
         return await asyncio.wait_for(
-            self._run(container.exec_run, cmd=command, user=user), timeout=timeout
+            self._run(container.exec_run, cmd=command, user=user, environment=environment),
+            timeout=timeout,
         )
+
+    async def exec_capture(
+        self, container_id: str, command: str, user: str = "worker", timeout: int = 30
+    ) -> tuple[int | None, bytes, bytes]:
+        """Execute a command and keep its stdout and stderr apart.
+
+        `exec_in_container` returns one merged stream, which is fine for a probe
+        and useless for a failure: when the stream is empty nothing says whether
+        the command wrote nothing or never ran. Here the exit code and each
+        stream come back separately, empty streams as `b""`.
+        """
+        container = await self.get_container(container_id)
+        exit_code, output = await asyncio.wait_for(
+            self._run(container.exec_run, cmd=command, user=user, demux=True), timeout=timeout
+        )
+        stdout, stderr = output if isinstance(output, tuple) else (output, None)
+        return exit_code, stdout or b"", stderr or b""

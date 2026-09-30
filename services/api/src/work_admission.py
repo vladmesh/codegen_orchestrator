@@ -13,6 +13,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnosticSnapshot,
 )
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
@@ -72,6 +73,10 @@ class PaidRunCommandConflict(Exception):
 
 class PaidRunIdentityExpired(Exception):
     """A terminal attempt id cannot be reused for a new paid attempt."""
+
+
+class PaidRunReservedMetadata(Exception):
+    """A paid-run command tried to supply metadata only the server writes."""
 
 
 async def _controls(db: AsyncSession, *keys: str) -> dict[str, object]:
@@ -222,15 +227,23 @@ async def _replay_paid_start(
         return None
     if existing.status not in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
         raise PaidRunIdentityExpired(command.id)
-    if command.type is RunType.ENGINEERING:
+    if command.type in {RunType.ENGINEERING, RunType.QA}:
         reservation = await db.scalar(
             select(EngineeringBudgetReservation)
             .where(EngineeringBudgetReservation.attempt_id == command.id)
             .with_for_update()
         )
+        # Engineering retains the base predicate exactly. A live QA replay
+        # reuses its decision unless its prior hold was released; then paid
+        # controls must decide that retry anew.
         if (
-            reservation is not None
+            command.type is RunType.ENGINEERING
+            and reservation is not None
             and reservation.state is not EngineeringBudgetReservationState.ACTIVE
+        ) or (
+            command.type is RunType.QA
+            and reservation is not None
+            and reservation.state is EngineeringBudgetReservationState.RELEASED
         ):
             return None
     return PaidRunStartRead(
@@ -311,6 +324,11 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     The config-row lock is retained through the Run INSERT and caller commit, so
     no successful decision can escape without occupying a counted slot.
     """
+    # The QA routing fact is Run.qa_routed_at, written only by the story
+    # transition that consumed the verdict. Refuse a metadata imitation of it
+    # here, before any audit or Run row exists.
+    if QA_ROUTED_KEY in command.run_metadata:
+        raise PaidRunReservedMetadata(QA_ROUTED_KEY)
     payload = command.model_dump(mode="json")
     replay = await _replay_paid_start(command, payload, db)
     if replay is not None:
@@ -415,7 +433,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
             executor_diagnostic=diagnostic,
         )
 
-    if command.type is RunType.ENGINEERING:
+    if command.type in {RunType.ENGINEERING, RunType.QA}:
         from shared.contracts.dto.engineering_budget_policy import (
             EngineeringBudgetAdmissionCommand,
             EngineeringBudgetAdmissionOutcome,
@@ -499,7 +517,7 @@ async def abort_paid_run_pre_handoff(run_id: str, reason: str, db: AsyncSession)
         run.status = RunStatus.CANCELLED.value
         run.error_message = reason
         run.run_metadata = {**(run.run_metadata or {}), "pre_handoff_aborted": True}
-    if run.type == RunType.ENGINEERING.value:
+    if run.type in {RunType.ENGINEERING.value, RunType.QA.value}:
         from .engineering_budget_admission import release_pre_handoff_reservation
 
         await release_pre_handoff_reservation(run_id, db)

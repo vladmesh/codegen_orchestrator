@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, patch
 
 # Sibling test-helper module (not a test module); on sys.path via pytest prepend import mode.
+from _owner_notification_claims import ClaimsFromWrites
 from _run_routing_factories import (
     _invalid_result_error,
     _make_project,
@@ -27,6 +28,7 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionRead,
     EngineeringBudgetReservationState,
 )
+from shared.contracts.dto.lifecycle_wait import UserSecretWaitDisposition, UserSecretWaitRead
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
@@ -52,6 +54,7 @@ from shared.contracts.dto.work_admission import (
 )
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE, QA_QUEUE
 from shared.tests.allocation_routing_cases import (
     REFUSAL_ROUTING_CASES,
@@ -161,6 +164,8 @@ def api_client():
     client.start_paid_run.return_value = PaidRunStartRead(
         admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="qa-test"
     )
+    # The API grants the delivery attempt on whatever record it holds.
+    client.claims = ClaimsFromWrites(client)
     return client
 
 
@@ -309,6 +314,49 @@ class TestSuperviseDeployingStories:
         assert metadata["deploy_run_id"] == "deploy-1"
         # The plan is stored with the run, so a restart can finish this handoff.
         assert QAHandoffPlan.model_validate(metadata[QA_HANDOFF_KEY]).access is None
+
+    @pytest.mark.asyncio
+    async def test_qa_budget_denial_parks_story_and_notifies_owner(
+        self,
+        api_client,
+        redis_client,
+    ):
+        from shared.contracts.dto.work_admission import WorkAdmissionReason
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SUCCESS.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+            },
+        )
+        api_client.start_paid_run.return_value = PaidRunStartRead(
+            admission=WorkAdmissionRead(
+                outcome=WorkAdmissionOutcome.DENIED,
+                reason=WorkAdmissionReason.ENGINEERING_BUDGET_DENIED,
+                message="Owner budget exhausted",
+            ),
+            engineering_budget=_engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+        )
+        with (
+            patch(
+                "src.tasks.supervisor.deploy.owe_owner_notification", new_callable=AsyncMock
+            ) as owe,
+            patch(
+                "src.tasks.supervisor.deploy.deliver_owed_notification", new_callable=AsyncMock
+            ) as deliver,
+        ):
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["tested"] == 0
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        assert owe.await_args.kwargs["text"] == "Owner budget exhausted"
+        deliver.assert_awaited_once()
+        redis_client.publish_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_criteria_are_resolved_before_the_story_moves(self, api_client, redis_client):
@@ -642,8 +690,21 @@ class TestSuperviseDeployingStories:
                 "story_id": "story-1",
                 "project_id": "00000000-0000-0000-0000-000000000001",
                 "timestamp": ANY,
+                "owner_notice": ANY,
             }
         ]
+
+        from shared.contracts.queues.po import POSystemEvent
+
+        reference = POSystemEvent.model_validate(owner_events[0]).owner_notice
+        assert reference.source == "run"
+        assert reference.source_id == "deploy-1"
+        recorded = [
+            call.args[1]["run_metadata"]["owner_notification"]
+            for call in api_client.update_run.call_args_list
+            if "owner_notification" in call.args[1].get("run_metadata", {})
+        ]
+        assert reference.owed_at.isoformat().replace("+00:00", "Z") == recorded[-1]["owed_at"]
 
     @pytest.mark.asyncio
     async def test_code_fix_publish_failure_fails_visibly_without_an_in_progress_orphan(
@@ -872,6 +933,13 @@ class TestSuperviseDeployingStories:
             intent_id="users-grant-initial_owner-seed",
             status=GrantIntentStatus.FAILED,
             disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+            exhaustion={
+                "attempts": 3,
+                "target": {"sha": "a" * 40},
+                "exhausted_execution_run_id": "run-1",
+                "action": "retry_initial_owner_deployment",
+                "retry_command": {"expected_execution_run_id": "run-1"},
+            },
         )
 
         with patch(
@@ -880,8 +948,8 @@ class TestSuperviseDeployingStories:
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
-        api_client.fail_story.assert_awaited_once_with("story-1")
-        notify.assert_awaited_once()
+        api_client.fail_story.assert_not_awaited()
+        notify.assert_not_awaited()
         api_client.create_run.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
 
@@ -938,6 +1006,13 @@ class TestSuperviseDeployingStories:
             intent_id="users-grant-initial_owner-seed",
             status=GrantIntentStatus.FAILED,
             disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+            exhaustion={
+                "attempts": 3,
+                "target": {"sha": "a" * 40},
+                "exhausted_execution_run_id": "run-1",
+                "action": "retry_initial_owner_deployment",
+                "retry_command": {"expected_execution_run_id": "run-1"},
+            },
         )
 
         with (
@@ -961,8 +1036,8 @@ class TestSuperviseDeployingStories:
             )
 
         assert action is RefusedDeployAction.FAILED
-        api_client.fail_story.assert_awaited_once_with("story-1")
-        notify.assert_awaited_once()
+        api_client.fail_story.assert_not_awaited()
+        notify.assert_not_awaited()
         api_client.create_run.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
 
@@ -985,6 +1060,13 @@ class TestSuperviseDeployingStories:
             intent_id="users-grant-initial_owner-seed",
             status=GrantIntentStatus.FAILED,
             disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+            exhaustion={
+                "attempts": 3,
+                "target": {"sha": "a" * 40},
+                "exhausted_execution_run_id": "run-1",
+                "action": "retry_initial_owner_deployment",
+                "retry_command": {"expected_execution_run_id": "run-1"},
+            },
         )
 
         with patch(
@@ -999,12 +1081,12 @@ class TestSuperviseDeployingStories:
                 logger,
             )
 
-        api_client.fail_story.assert_awaited_once_with("story-1")
+        api_client.fail_story.assert_not_awaited()
         # The story is failed straight out of WAITING_USER_SECRET: this path
         # must not also move it to DEPLOYING first, which was a second Story
         # transition with nothing to finish it.
         api_client.transition_story.assert_not_awaited()
-        notify.assert_awaited_once()
+        notify.assert_not_awaited()
         api_client.create_run.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
 
@@ -1385,22 +1467,46 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_latest_run_by_story.return_value = _make_run(
-            status=RunStatus.FAILED,
-            result=_WAITING_SECRET_RESULT,
-        )
+        run = _make_run(status=RunStatus.FAILED, result=_WAITING_SECRET_RESULT)
+        api_client.get_latest_run_by_story.return_value = run
         api_client.get_project.return_value = SimpleNamespace(owner_id=555)
         # The ask is a durable owner notification now, and the seam publishes it
         # only once the story reads back in the status the transition put it in.
         api_client.get_story.return_value = _make_story(id="story-1", status="waiting_user_secret")
 
+        async def park(story_id, command):
+            # The API action: the transition and the ask on the Run, together.
+            ask = OwnerNotification(
+                event=OwnerNotificationEvent.STORY_WAITING_USER_SECRET,
+                text=command.text,
+                story_id=story_id,
+                project_id="00000000-0000-0000-0000-000000000001",
+                terminal_status=StoryStatus.WAITING_USER_SECRET,
+                state=OwnerNotificationState.OWED,
+                owed_at=datetime.now(UTC),
+            )
+            api_client.claims.owe_run(command.run_id, ask)
+            return UserSecretWaitRead(
+                disposition=UserSecretWaitDisposition.WAITING,
+                story_id=story_id,
+                story_status=StoryStatus.WAITING_USER_SECRET,
+                run_id=command.run_id,
+                owner_notification=ask,
+            )
+
+        api_client.park_waiting_user_secret.side_effect = park
+
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["waiting"] == 1
         assert result["failed"] == 0
-        # Parked, not failed.
+        # Parked, not failed: one API action moves the story and owes the ask.
         api_client.fail_story.assert_not_called()
-        api_client.wait_user_secret_story.assert_called_once_with("story-1")
+        api_client.park_waiting_user_secret.assert_awaited_once()
+        story_id, command = api_client.park_waiting_user_secret.await_args.args
+        assert story_id == "story-1"
+        assert command.run_id == run.id
+        api_client.transition_story.assert_not_called()
 
         # Exactly one PO request on po:input, carrying the key + description, not consumers.
         po_calls = [
@@ -1570,7 +1676,7 @@ class TestSuperviseTestingStories:
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["completed"] == 1
-        api_client.transition_story.assert_called_once_with("story-1", "complete")
+        api_client.transition_story.assert_called_once_with("story-1", "complete", qa_run_id="qa-1")
 
     @pytest.mark.asyncio
     async def test_passed_run_with_a_refused_empty_input_is_not_quarantined(
@@ -1606,7 +1712,7 @@ class TestSuperviseTestingStories:
 
         assert result["completed"] == 1
         assert result["failed"] == 0
-        api_client.transition_story.assert_called_once_with("story-1", "complete")
+        api_client.transition_story.assert_called_once_with("story-1", "complete", qa_run_id="qa-1")
         api_client.stop_application.assert_not_called()
         api_client.update_story.assert_not_called()
         api_client.create_task.assert_not_called()
@@ -1635,7 +1741,7 @@ class TestSuperviseTestingStories:
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["redispatched"] == 1
-        api_client.transition_story.assert_called_once_with("story-1", "start")
+        api_client.transition_story.assert_called_once_with("story-1", "start", qa_run_id="qa-1")
         api_client.create_task.assert_called_once()
         task_data = api_client.create_task.call_args[0][0]
         assert task_data["story_id"] == "story-1"
@@ -1707,7 +1813,7 @@ class TestSuperviseTestingStories:
             "recovered": 0,
         }
         api_client.create_task.assert_not_awaited()
-        api_client.transition_story.assert_awaited_once_with("story-1", "start")
+        api_client.transition_story.assert_awaited_once_with("story-1", "start", qa_run_id="qa-1")
 
     @pytest.mark.asyncio
     async def test_three_identical_failures_create_two_fixes_then_wait_for_human(
@@ -1777,7 +1883,7 @@ class TestSuperviseTestingStories:
                 }
             },
         )
-        api_client.transition_story.assert_awaited_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_with("story-1", "human-review", qa_run_id="qa-3")
 
     @pytest.mark.asyncio
     async def test_qa_fix_ceiling_escalates_even_for_a_new_failure_signature(
@@ -1822,11 +1928,12 @@ class TestSuperviseTestingStories:
 
         assert result["failed"] == 1
         api_client.create_task.assert_not_awaited()
-        api_client.transition_story.assert_awaited_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_with("story-1", "human-review", qa_run_id="qa-3")
 
     @pytest.mark.asyncio
     async def test_a_mixed_failure_fixes_only_the_product_checks(self, api_client, redis_client):
-        """Capability and access failures are evidence on the fix task, never its instructions."""
+        """Unverified checks and access failures are evidence on the fix task, never its
+        instructions."""
         from shared.contracts.dto.run_result import QAFailedCheck
         from src.tasks.supervisor import supervise_testing_stories
         from src.tasks.supervisor.qa import _qa_failure_fingerprint
@@ -1843,12 +1950,14 @@ class TestSuperviseTestingStories:
                 "summary": "weather 404, no tool for POST /api/transactions, no access to bot",
                 "failed_checks": [
                     {"name": "weather", "detail": "404", "cause": "product"},
+                    {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
+                ],
+                "unverified_checks": [
                     {
                         "name": "create transaction",
-                        "detail": "no tool for POST /api/transactions",
-                        "cause": "qa_capability",
-                    },
-                    {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
+                        "reason": "no tool for POST /api/transactions",
+                        "origin": "executor",
+                    }
                 ],
             },
         )
@@ -1870,27 +1979,34 @@ class TestSuperviseTestingStories:
             evidence["summary"], [QAFailedCheck(name="weather", detail="404")]
         )
         assert "POST /api/transactions" not in evidence["summary"]
+        assert evidence["non_product_failures"] == [
+            {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
+        ]
         assert evidence["unverified_checks"] == [
             {
                 "name": "create transaction",
-                "detail": "no tool for POST /api/transactions",
-                "cause": "qa_capability",
+                "reason": "no tool for POST /api/transactions",
+                "origin": "executor",
             },
-            {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
         ]
         api_client.stop_application.assert_not_called()
-        api_client.transition_story.assert_awaited_once_with("story-1", "start")
+        api_client.transition_story.assert_awaited_once_with("story-1", "start", qa_run_id="qa-1")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "causes",
-        [("qa_capability",), ("qa_access",), ("qa_capability", "qa_access")],
+        [("qa_access",), ("qa_access", "qa_access")],
         ids="+".join,
     )
     async def test_a_failure_with_no_product_check_parks_without_a_fix_attempt(
         self, api_client, redis_client, causes
     ):
-        """No product judgement exists: park for an administrator, spend no fix, blame nothing."""
+        """No product judgement exists: park for an administrator, spend no fix, blame nothing.
+
+        Only a refused QA identity reaches this route: a check QA had no tool for
+        is unverified and settles the run on the checks that ran (see
+        `TestAQACapabilityGapIsNeverQuarantined`).
+        """
         from unittest.mock import AsyncMock, patch
 
         from shared.contracts.dto.run_result import QA_HARNESS_BLOCKERS, QABlockerCategory
@@ -1924,7 +2040,9 @@ class TestSuperviseTestingStories:
         assert result == {"completed": 0, "redispatched": 0, "failed": 1, "recovered": 0}
         api_client.create_task.assert_not_called()
         api_client.stop_application.assert_awaited_once_with(42)
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
         category = QABlockerCategory(reason["blocker"]["category"])
         assert category is QABlockerCategory.QA_CHECKS_UNVERIFIABLE
@@ -1940,7 +2058,7 @@ class TestSuperviseTestingStories:
         assert "qa_checks_unverifiable" in message
         assert "/api/stories/story-1/recheck-qa" in message
         assert "managed-target reconciliation" not in message
-        assert "qa_capability check needs a human decision on its criterion" in message
+        assert "qa_capability" not in message
         assert "qa_access check needs the refused access repaired first" in message
 
     @pytest.mark.asyncio
@@ -1979,7 +2097,9 @@ class TestSuperviseTestingStories:
                 }
             },
         )
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         api_client.fail_story.assert_not_called()
         event = redis_client.publish_flat.await_args.args[1]
         assert event["event"] == "story_quarantined"
@@ -2019,7 +2139,9 @@ class TestSuperviseTestingStories:
                 }
             },
         )
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         api_client.fail_story.assert_not_called()
 
     @pytest.mark.asyncio
@@ -2081,7 +2203,9 @@ class TestSuperviseTestingStories:
                 },
             }
         ]
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()
 
@@ -2125,7 +2249,9 @@ class TestSuperviseTestingStories:
 
         assert result["failed"] == 1
         api_client.create_task.assert_not_awaited()
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-telegram-1"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -2173,7 +2299,9 @@ class TestSuperviseTestingStories:
         assert result["failed"] == 1
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         admins.assert_awaited_once()
         message = admins.await_args.args[0]
         assert category in message
@@ -2264,7 +2392,9 @@ class TestSuperviseTestingStories:
 
         assert result["failed"] == 1
         api_client.stop_application.assert_awaited_once_with(42)
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()
 
@@ -3230,3 +3360,234 @@ class TestSettingsSeedFailureRouting:
         assert result["retried"] == 1
         api_client.fail_story.assert_not_awaited()
         redis_client._redis.incr.assert_awaited_once_with("deploy:retries:story-1")
+
+
+_UNVERIFIED = {
+    "name": "criterion not verifiable by QA: - POST /api/transactions returns 201",
+    "reason": "this criterion needs an action outside QA's tools (http_write)",
+    "origin": "withheld",
+}
+_PLATFORM_TEXT = "platform's test environment"
+
+
+def _published_events(redis_client) -> list[dict]:
+    return [call.args[1] for call in redis_client.publish_flat.await_args_list]
+
+
+def _owed_records(api_client) -> list[dict]:
+    """Every owner-notification record the supervisor wrote on a Run."""
+    return [
+        call.args[1]["run_metadata"]["owner_notification"]
+        for call in api_client.update_run.await_args_list
+        if "owner_notification" in call.args[1].get("run_metadata", {})
+    ]
+
+
+class TestAQACapabilityGapIsNeverQuarantined:
+    """A check QA could not run is unverified: the verdict is the checks that ran.
+
+    One row per settled shape the QA runner writes, and what the supervisor
+    does with it: only a refused QA identity (`qa_access`) is a harness blocker.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("result", "expected"),
+        [
+            pytest.param(
+                {
+                    "qa_outcome": QAOutcome.PASSED.value,
+                    "deployed_url": "https://example.com",
+                    "passed_checks": ["GET /health returns 200"],
+                    "unverified_checks": [_UNVERIFIED],
+                },
+                "completed",
+                id="only-unverified-passes",
+            ),
+            pytest.param(
+                {
+                    "qa_outcome": QAOutcome.FAILED.value,
+                    "summary": "weather 404",
+                    "failed_checks": [{"name": "weather", "detail": "404", "cause": "product"}],
+                    "passed_checks": ["GET /health returns 200"],
+                    "unverified_checks": [_UNVERIFIED],
+                },
+                "fix_task",
+                id="unverified-and-product-failure-fixes",
+            ),
+            pytest.param(
+                {
+                    "qa_outcome": QAOutcome.FAILED.value,
+                    "summary": "bot ignores QA",
+                    "failed_checks": [
+                        {"name": "bot /start", "detail": "no reply", "cause": "qa_access"}
+                    ],
+                },
+                "harness",
+                id="qa-access-stays-a-harness-blocker",
+            ),
+        ],
+    )
+    async def test_what_the_supervisor_does_with_each_settled_shape(
+        self, api_client, redis_client, result, expected
+    ):
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={QA_HANDOFF_KEY: _qa_handoff_plan(), "application_id": 42},
+            result=result,
+        )
+        api_client.get_tasks_by_story.return_value = []
+        api_client.transition_story.return_value = {}
+
+        with patch("src.tasks.supervisor.qa.notify_admins_best_effort", new_callable=AsyncMock):
+            await supervise_testing_stories(api_client, redis_client)
+
+        events = [event["event"] for event in _published_events(redis_client)]
+        written = repr(api_client.update_story.await_args_list) + repr(_owed_records(api_client))
+        if expected == "harness":
+            api_client.stop_application.assert_awaited_once_with(42)
+            reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
+            assert reason["blocker"]["category"] == "qa_checks_unverifiable"
+            assert _PLATFORM_TEXT in written
+            return
+        # A capability gap never stops the bot, parks the story or blames the platform.
+        api_client.stop_application.assert_not_called()
+        assert OwnerNotificationEvent.STORY_QUARANTINED.value not in events
+        assert not _owed_records(api_client)
+        assert _PLATFORM_TEXT not in written
+        assert "qa_checks_unverifiable" not in written
+        if expected == "completed":
+            api_client.transition_story.assert_called_once_with(
+                "story-1", "complete", qa_run_id="qa-1"
+            )
+            api_client.create_task.assert_not_called()
+        else:
+            task = api_client.create_task.await_args.args[0]
+            assert "POST /api/transactions" not in task["description"]
+            assert task["failure_metadata"]["qa_failure"]["unverified_checks"] == [_UNVERIFIED]
+            api_client.transition_story.assert_awaited_once_with(
+                "story-1", "start", qa_run_id="qa-1"
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_capability_only_failure_is_not_typed_a_harness_blocker(
+        self, api_client, redis_client
+    ):
+        """A result stored before unverified existed is not worded as a platform problem."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "could not test",
+                "failed_checks": [
+                    {"name": "upload", "detail": "no tool", "cause": "qa_capability"}
+                ],
+            },
+        )
+
+        with patch(
+            "src.tasks.supervisor.qa.notify_admins_best_effort", new_callable=AsyncMock
+        ) as admins:
+            await supervise_testing_stories(api_client, redis_client)
+
+        reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
+        assert "blocker" not in reason
+        record = _owed_records(api_client)[0]
+        assert _PLATFORM_TEXT not in record["text"]
+        admins.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_story_completed_event_carries_the_checks_that_ran_and_the_unverified(
+        self, api_client, redis_client
+    ):
+        """The completion record's facts reach `po:input` as one structured field."""
+        from shared.contracts.dto.qa_verification import QAVerificationFacts
+        from shared.contracts.queues.po import POSystemEvent, from_flat_fields
+        from src.tasks.supervisor import supervise_testing_stories
+
+        facts = QAVerificationFacts(
+            qa_run_id="qa-1",
+            passed_checks=["GET /health returns 200"],
+            unverified_checks=[_UNVERIFIED],
+        )
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={QA_HANDOFF_KEY: _qa_handoff_plan()},
+            result={
+                "qa_outcome": QAOutcome.PASSED.value,
+                "passed_checks": facts.passed_checks,
+                "unverified_checks": [_UNVERIFIED],
+            },
+        )
+        api_client.get_story.return_value = _make_story(id="story-1", status="completed")
+        api_client.get_story_owner_notification.return_value = (
+            api_client.get_story_owner_notification.return_value.model_copy(
+                update={"qa_verification": facts}
+            )
+        )
+
+        await supervise_testing_stories(api_client, redis_client)
+
+        [fields] = [
+            event
+            for event in _published_events(redis_client)
+            if event["event"] == OwnerNotificationEvent.STORY_COMPLETED.value
+        ]
+        event = from_flat_fields(fields, POSystemEvent)
+        assert event.qa_verification == facts
+
+    @pytest.mark.asyncio
+    async def test_the_quarantine_after_exhausted_fixes_carries_the_unverified_checks(
+        self, api_client, redis_client
+    ):
+        """A product-failure ending tells PO what QA did and did not check, too."""
+        from shared.contracts.queues.po import POSystemEvent, from_flat_fields
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.EXHAUSTED.value,
+                "summary": "Still broken after 2 attempts",
+                "failed_checks": [{"name": "weather", "detail": "404", "cause": "product"}],
+                "passed_checks": ["GET /health returns 200"],
+                "unverified_checks": [_UNVERIFIED],
+            },
+        )
+
+        await supervise_testing_stories(api_client, redis_client)
+
+        # Owed first, then settled by its delivery: every write carries the facts.
+        record = _owed_records(api_client)[0]
+        assert record["event"] == OwnerNotificationEvent.STORY_QUARANTINED.value
+        assert record["qa_verification"] == {
+            "qa_run_id": "qa-1",
+            "passed_checks": ["GET /health returns 200"],
+            "unverified_checks": [_UNVERIFIED],
+        }
+        event = from_flat_fields(redis_client.publish_flat.await_args.args[1], POSystemEvent)
+        assert [check.name for check in event.qa_verification.unverified_checks] == [
+            _UNVERIFIED["name"]
+        ]

@@ -1,5 +1,7 @@
 """One deadline ledger shared by the stand runner and its Product Brief fixtures."""
 
+from dataclasses import dataclass
+
 MEGA_BRIEF_PRODUCTIVE_SECONDS = 50 * 60
 MEGA_BRIEF_HARD_STOP_SECONDS = 60 * 60
 
@@ -219,3 +221,230 @@ if NOOP_SUITE_TIMEOUT_SECONDS < noop_lifecycle_explicit_waits() + NOOP_TEARDOWN_
         f"{NOOP_TEARDOWN_RESERVE_SECONDS}s of teardown reserve need more than "
         f"{NOOP_SUITE_TIMEOUT_SECONDS}s"
     )
+
+
+# ── The level-2 (`mega-live`) lifecycle ─────────────────────────────────
+# The same two-story lifecycle `mega-noop` runs — `TestFullPipeline`, the same
+# phases in the same order — with the two forks that make it level 2: a real
+# developer model writes the product code, and a real QA executor judges the
+# deployed product. Everything else is the noop ledger's own entry, so the two
+# caps cannot drift apart on a wait they share.
+
+#: One engineering Task driven by a real developer: worker spawn, the model's
+#: edits, the product's own `make setup` and pre-push hooks, and the CI-fix loop a
+#: red push sends it round, with the manager's automatic retry of a dead attempt
+#: inside the same wait. It is the bound the paid suites have always waited on
+#: (`LLM_ENGINEERING_TIMEOUT` was `tests/live/pipeline_helpers.py`'s until it moved
+#: here so the ledger can be made of it); a Task is waited on as a whole, so every
+#: attempt of it spends this one bound.
+LLM_ENGINEERING_TIMEOUT = 1800  # 30 min
+
+#: How long the QA consumer gives its executor to reach a verdict
+#: (`services/langgraph/src/consumers/_qa_runner.py`, `QA_TIMEOUT`). Restated, not
+#: imported: a service module is not importable from here, and
+#: `tests/unit/test_documented_stand_budgets.py` reads the service's constant
+#: back out of its source so the two cannot disagree silently.
+QA_EXECUTOR_VERDICT_TIMEOUT = 1200  # 20 min
+
+#: The wait for one story's QA Run when a real executor judges it: the executor's
+#: own verdict bound, plus everything the deterministic `QA_RUN_TIMEOUT` already
+#: covers — the scheduler's hand-off after the deploy, the Run's admission and the
+#: executor container's creation — which the executor's bound starts after.
+LIVE_QA_RUN_TIMEOUT = QA_RUN_TIMEOUT + QA_EXECUTOR_VERDICT_TIMEOUT
+
+#: The level-2 product is the level-1 product, so its scaffold is sized the same.
+LIVE_MODULE_COUNT = NOOP_MODULE_COUNT
+
+LIVE_FIRST_STORY_WAITS: tuple[tuple[str, int], ...] = (
+    ("scaffold", scaffold_budget_seconds(LIVE_MODULE_COUNT)),
+    ("two ordered developer Tasks", 2 * LLM_ENGINEERING_TIMEOUT),
+    ("Story aggregation after both Tasks are done", STORY_AGGREGATION_TIMEOUT),
+    ("merged deploy Run, including the product's own image publication", DEPLOY_RUN_TIMEOUT),
+    ("deploy", DEPLOY_TIMEOUT),
+    ("typed deploy outcome", DEPLOY_OUTCOME_TIMEOUT),
+    ("public health probe", health_probe_budget_seconds()),
+    ("executor QA", LIVE_QA_RUN_TIMEOUT),
+    ("Story.completed", STORY_COMPLETION_TIMEOUT),
+    ("durable PO completion notification", OWNER_NOTIFICATION_TIMEOUT),
+    ("exact service-deployment record", DEPLOY_OUTCOME_TIMEOUT),
+)
+
+LIVE_SECOND_STORY_WAITS: tuple[tuple[str, int], ...] = (
+    ("extension story: one developer Task", LLM_ENGINEERING_TIMEOUT),
+    (
+        "extension story: Story aggregation after its Task is done",
+        STORY_AGGREGATION_TIMEOUT,
+    ),
+    (
+        "extension story: merged deploy Run, including image publication",
+        DEPLOY_RUN_TIMEOUT,
+    ),
+    (
+        "extension story: typed deploy outcome, covering the deploy itself",
+        SECOND_STORY_DEPLOY_OUTCOME_TIMEOUT,
+    ),
+    ("extension story: the application's own terminal status", DEPLOY_TIMEOUT),
+    ("extension story: public health probe", health_probe_budget_seconds()),
+    ("extension story: executor QA", LIVE_QA_RUN_TIMEOUT),
+    ("extension story: Story.completed", STORY_COMPLETION_TIMEOUT),
+    ("extension story: durable PO completion notification", OWNER_NOTIFICATION_TIMEOUT),
+)
+
+#: The undeploy that ends the lifecycle is the same one.
+LIVE_TEARDOWN_WAITS: tuple[tuple[str, int], ...] = NOOP_TEARDOWN_WAITS
+
+LIVE_LIFECYCLE_WAITS: tuple[tuple[str, int], ...] = (
+    *LIVE_FIRST_STORY_WAITS,
+    *LIVE_SECOND_STORY_WAITS,
+    *LIVE_TEARDOWN_WAITS,
+)
+
+#: The same manifest-owned teardown and evidence artifact as the noop run's.
+LIVE_TEARDOWN_RESERVE_SECONDS = NOOP_TEARDOWN_RESERVE_SECONDS
+
+
+def live_lifecycle_explicit_waits() -> int:
+    """Every wait the level-2 lifecycle can spend, summed."""
+    return sum(seconds for _label, seconds in LIVE_LIFECYCLE_WAITS)
+
+
+#: The `mega-live` pytest cap: 265 minutes. Two stories' waits plus the reserve.
+#:
+#: It fits the same `e2e` job (`.github/workflows/stand-e2e.yml`,
+#: `timeout-minutes: 360`): 45 m of provisioning, 10 m of pre-provisioning
+#: reserve, 5 m preflight, 3 m readiness, 3 m executor switch, this 265 m, 5 m
+#: sweep and an 8 m job reserve come to 344 m.
+LIVE_SUITE_TIMEOUT_SECONDS = 15900
+
+if LIVE_SUITE_TIMEOUT_SECONDS < live_lifecycle_explicit_waits() + LIVE_TEARDOWN_RESERVE_SECONDS:
+    raise RuntimeError(
+        "the mega-live cap no longer covers its own lifecycle: "
+        f"{live_lifecycle_explicit_waits()}s of explicit waits and "
+        f"{LIVE_TEARDOWN_RESERVE_SECONDS}s of teardown reserve need more than "
+        f"{LIVE_SUITE_TIMEOUT_SECONDS}s"
+    )
+
+
+# ── Per-test bounds (`pytest-timeout`) ──────────────────────────────────
+# Every test under `tests/live` runs under a `pytest-timeout` bound, so a hung
+# test is reported by pytest — a failure naming `Timeout` and the test id, with
+# its traceback — while the fixture's cleanup still runs. The order of the
+# fences is fixed: the test's bound, then `stand_run.run_pytest`'s suite
+# backstop (SIGINT, then a process-group kill), then the workflow's job limit.
+# A healthy bound never reaches the second fence, and the checks below are what
+# make "never" hold for the two level-1 suites.
+#
+# `tests/live/live_timeouts.py`, through `tests/live/conftest.py`, is the one
+# place that applies these, and it applies them per item in two parts:
+#
+# * the item's *body* bound covers its setup and call;
+# * its teardown is re-armed with its own bound when teardown starts. Without
+#   that, a teardown after a failure would run unbounded: pytest-timeout drops an
+#   item's timer on `pytest_exception_interact`, which pytest calls for every
+#   failed setup or call, not only under `--pdb`.
+#
+# The level-1 lifecycle is one module-scoped fixture, so it runs entirely in the
+# setup of the first `TestFullPipeline` item, and its cleanup runs in the
+# teardown of the last one. When `-x` stops the session at a failure, pytest
+# tears the module down at session finish instead, outside any item. The
+# ordering check below covers both: whatever one item's bound leaves of the cap
+# is at least the teardown reserve, so the cleanup that follows it still ends
+# before the runner's backstop.
+
+#: `signal`, never `thread`: `thread` ends the interpreter and skips every
+#: `finally`, so no cleanup, no run evidence and a leaked stand project. `signal`
+#: raises inside the running test or fixture, and `cleanup_guard` still runs.
+LIVE_TEST_TIMEOUT_METHOD = "signal"
+
+#: What `stand_run` gives a target that is not a named suite. It lives here, not
+#: in the runner, because the ordinary live bound below is checked against it.
+CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
+
+
+@dataclass(frozen=True)
+class LiveTestBounds:
+    """The `pytest-timeout` bounds of one kind of live suite, in seconds."""
+
+    #: Body (setup + call) of the item that sets up the suite's module fixture.
+    setup_item_seconds: int
+    #: Body of every other item.
+    item_seconds: int
+    #: Every item's teardown, re-armed when the teardown starts.
+    teardown_seconds: int
+    #: The runner's backstop these bounds must come in under, or None when the
+    #: suite has no such ordering (see `BRIEF_TEST_BOUNDS`).
+    suite_cap_seconds: int | None
+
+    def max_item_seconds(self) -> int:
+        return max(self.setup_item_seconds, self.item_seconds)
+
+
+#: The teardown every live fixture's `cleanup_guard` shares: manifest-owned
+#: cleanup and the evidence artifact, the reserve both level-1 caps keep for it.
+LIVE_TEST_TEARDOWN_TIMEOUT_SECONDS = NOOP_TEARDOWN_RESERVE_SECONDS
+
+#: An ordinary live test: one real developer Task is the longest single wait any
+#: of them makes. Ordered under the custom-target backstop below.
+ORDINARY_TEST_BOUNDS = LiveTestBounds(
+    setup_item_seconds=LLM_ENGINEERING_TIMEOUT,
+    item_seconds=LLM_ENGINEERING_TIMEOUT,
+    teardown_seconds=LIVE_TEST_TEARDOWN_TIMEOUT_SECONDS,
+    suite_cap_seconds=CUSTOM_TARGET_TIMEOUT_SECONDS,
+)
+
+#: `mega-noop`: the first item carries the whole lifecycle's explicit waits, the
+#: teardown its reserve. Every other item only asserts on the fixture's context.
+NOOP_TEST_BOUNDS = LiveTestBounds(
+    setup_item_seconds=noop_lifecycle_explicit_waits(),
+    item_seconds=ORDINARY_TEST_BOUNDS.item_seconds,
+    teardown_seconds=NOOP_TEARDOWN_RESERVE_SECONDS,
+    suite_cap_seconds=NOOP_SUITE_TIMEOUT_SECONDS,
+)
+
+#: `mega-live`: the same shape over the level-2 ledger.
+LIVE_TEST_BOUNDS = LiveTestBounds(
+    setup_item_seconds=live_lifecycle_explicit_waits(),
+    item_seconds=ORDINARY_TEST_BOUNDS.item_seconds,
+    teardown_seconds=LIVE_TEARDOWN_RESERVE_SECONDS,
+    suite_cap_seconds=LIVE_SUITE_TIMEOUT_SECONDS,
+)
+
+#: `mega-brief*` does not fall out of the same mechanism: its fixture keeps its
+#: own productive clock and the runner's backstop is that clock plus exactly the
+#: cleanup grace, so no bound can sit between them. Its setup item therefore
+#: gets a plain bound at the longer brief's hard stop, which never pre-empts the
+#: fixture's own clock; the fixture clock and the runner stay its fences, and
+#: its caps are untouched.
+BRIEF_TEST_BOUNDS = LiveTestBounds(
+    setup_item_seconds=MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
+    item_seconds=ORDINARY_TEST_BOUNDS.item_seconds,
+    teardown_seconds=LIVE_TEST_TEARDOWN_TIMEOUT_SECONDS,
+    suite_cap_seconds=None,
+)
+
+for _name, _bounds, _waits, _reserve in (
+    ("mega-noop", NOOP_TEST_BOUNDS, noop_lifecycle_explicit_waits(), NOOP_TEARDOWN_RESERVE_SECONDS),
+    ("mega-live", LIVE_TEST_BOUNDS, live_lifecycle_explicit_waits(), LIVE_TEARDOWN_RESERVE_SECONDS),
+):
+    if _bounds.setup_item_seconds < _waits:
+        raise RuntimeError(
+            f"the {_name} setup item's bound ({_bounds.setup_item_seconds}s) no longer "
+            f"covers the lifecycle's {_waits}s of explicit waits"
+        )
+    if _bounds.teardown_seconds < _reserve:
+        raise RuntimeError(
+            f"the {_name} teardown bound ({_bounds.teardown_seconds}s) no longer covers "
+            f"its {_reserve}s teardown reserve"
+        )
+for _name, _bounds in (
+    ("ordinary live test", ORDINARY_TEST_BOUNDS),
+    ("mega-noop", NOOP_TEST_BOUNDS),
+    ("mega-live", LIVE_TEST_BOUNDS),
+):
+    if _bounds.max_item_seconds() + _bounds.teardown_seconds >= _bounds.suite_cap_seconds:
+        raise RuntimeError(
+            f"the {_name} item bound ({_bounds.max_item_seconds()}s) plus the teardown after "
+            f"it ({_bounds.teardown_seconds}s) no longer ends before the runner's "
+            f"{_bounds.suite_cap_seconds}s backstop, so the backstop would report a hang "
+            "before pytest could"
+        )

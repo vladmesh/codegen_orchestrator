@@ -89,7 +89,7 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
 
 def test_production_pin_is_the_immutable_kit_release() -> None:
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 2)
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 4)
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -98,13 +98,15 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    corrected_commit = "9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914"
+    corrected_commit = "04e2d94826f0dd6b46be3d7345b46cdd677db7ed"
 
     assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
+    assert answers["_src_path"] == template_pin.TEMPLATE_PIN.source
     assert answers["modules"] == "backend,tg_bot"
     assert f"codegen-product-kit.git@{corrected_commit}" in project
     assert f"rev={corrected_commit}" in lock
     assert "1d0c0fdd8b12bf1548ab3f97882e5edee7c55763" not in project
+    assert "9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914" not in project
 
 
 def test_pinned_fixture_syncs_both_locked_environments_before_generation() -> None:
@@ -117,6 +119,24 @@ def test_pinned_fixture_syncs_both_locked_environments_before_generation() -> No
     image_build = workflow.index("docker/build-push-action", generation + 1)
 
     assert root_sync < backend_sync < generation < image_build
+
+
+def test_released_render_retains_bigint_migration_orm_and_token_logging() -> None:
+    fixture = template_pin.TEMPLATE_PIN.fixture_path()
+    backend = fixture / "services/backend"
+    migration = (backend / "migrations/versions/e6b8c2d4a901_widen_user_identifiers.py").read_text()
+    users = (backend / "src/app/models/user.py").read_text()
+    setting = (backend / "src/app/models/setting.py").read_text()
+    logging = (fixture / "shared/shared/logging.py").read_text()
+    assert 'down_revision = "d4a7b2c9e1f0"' in migration
+    assert "ALTER SEQUENCE users_id_seq AS BIGINT" in migration
+    assert "values exceed int32" in migration and "sequence exceeds int32" in migration
+    assert 'BigInteger().with_variant(Integer, "sqlite")' in users
+    assert 'BigInteger, ForeignKey("users.id"' in users
+    assert "subject_id: Mapped[int] = mapped_column(BigInteger" in setting
+    assert 'logging.getLogger("httpx").setLevel(logging.WARNING)' in logging
+    assert 'logging.getLogger("httpcore").setLevel(logging.WARNING)' in logging
+    assert '_TELEGRAM_TOKEN_PATH.sub(r"\\1[REDACTED]"' in logging
 
 
 @pytest.fixture

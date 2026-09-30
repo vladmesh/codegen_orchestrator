@@ -1,13 +1,13 @@
-"""Whether a story's owner was told its stages, stated as a predicate over the record.
+"""Whether the scheduler published stage observations on po:input.
 
 issue:b28d93: one owner's PO went silent for the whole of a story while another
 got five messages in an hour. The scheduler now announces each in-work stage on
 entry and again after a quiet interval (`supervisor/stage_notices.py`), and the
 thing a run can show about that is the `story_stage` events it left on
 `po:input` — typed fields, not composed text, since the level-1 run calls no
-model and PO's words are not what is being judged.
+model. PO drops these notices before its graph; they produce no user message.
 
-The property is the one the scheduler promises: the owner is told each stage the
+The property is the one the scheduler promises: it publishes each stage the
 story is *observed* in, within one sweep of observing it, and again after the
 quiet interval while it stays there. A stage entered and left between two
 sweeps is deliberately not announced. So the notices are compared with the
@@ -190,7 +190,7 @@ def _unannounced_stage_mismatches(
 
 
 def stage_notice_mismatches(observation: dict) -> list[str]:
-    """Why this story's owner was not told its stages the way the contract says."""
+    """Why this story's internal stage observations violate the scheduler contract."""
     story_id = observation.get("story_id")
     notices = observation.get("notices")
     quiet_minutes = observation.get("quiet_minutes")

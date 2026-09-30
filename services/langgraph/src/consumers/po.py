@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import os
 import socket
 
@@ -40,9 +41,11 @@ from pydantic import TypeAdapter
 import structlog
 
 from shared.config_store import ConfigStore
+from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.queues.po import (
     POInputMessage,
     POResponse,
+    po_alert_identifiers,
     po_thread_id,
     proactive_from_input,
     to_flat_fields,
@@ -52,11 +55,28 @@ from shared.log_config.correlation import bind_message_context, unbind_message_c
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis import RedisStreamClient
+from shared.redis.po import verify_po_storage
 
 from ..agents.po.graph import create_po_graph
+from ..agents.po.situation import (
+    SITUATION_CONFIG_KEY,
+    ApiSituationReader,
+    SituationReader,
+    SituationSubject,
+    build_situation,
+    record_user_message,
+)
+from ..agents.po.tools_notices import (
+    OwnerNoticeReadUnknown,
+    notice_may_publish,
+    record_notice_told,
+    remember_owner_event,
+)
 from ..agents.po.tools_shared import init_po_clients
 from ..clients.api import api_client
-from ..config.settings import get_settings
+from ..config.settings import Settings, get_settings
+from ..llm import ChannelChainModel, LLMAgent, LLMAlerts, build_agent_llm, load_channel_chain
+from .po_story_gate import ProactiveStoryGate
 
 logger = structlog.get_logger(__name__)
 
@@ -76,6 +96,30 @@ class SummarizationConfig:
     max_summary_tokens: int
 
 
+@dataclass(frozen=True)
+class POLLMs:
+    """The PO's channel chain and the PO summarizer's, as the graph receives them."""
+
+    po: ChannelChainModel
+    summarizer: ChannelChainModel
+
+
+async def load_po_llms(settings: Settings, alerts: LLMAlerts | None = None) -> POLLMs:
+    """Both chains from agent configuration; an invalid stored chain raises here.
+
+    Both report to ``alerts``, the process's shared sender when the caller has one.
+    """
+    alerts = alerts or LLMAlerts.from_settings(settings)
+    po_chain = await load_channel_chain(api_client, LLMAgent.PO)
+    summarizer_chain = await load_channel_chain(api_client, LLMAgent.PO_SUMMARIZER)
+    return POLLMs(
+        po=build_agent_llm(LLMAgent.PO, po_chain, settings, alerts=alerts),
+        summarizer=build_agent_llm(
+            LLMAgent.PO_SUMMARIZER, summarizer_chain, settings, alerts=alerts
+        ),
+    )
+
+
 def load_summarization_config(api_base_url: str) -> SummarizationConfig:
     """Read the required PO summarization tuning from system config.
 
@@ -90,6 +134,21 @@ def load_summarization_config(api_base_url: str) -> SummarizationConfig:
         trigger_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[1]),
         max_summary_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[2]),
     )
+
+
+#: The one gate every proactive reply about a story passes (``po_story_gate``).
+_story_gate: ProactiveStoryGate | None = None
+
+
+def init_story_gate(gate: ProactiveStoryGate) -> None:
+    global _story_gate  # noqa: PLW0603 — one per process, like the PO tool clients
+    _story_gate = gate
+
+
+def _get_story_gate() -> ProactiveStoryGate:
+    if _story_gate is None:
+        raise RuntimeError("PO story gate is not initialized")
+    return _story_gate
 
 
 # The identity of this process inside the consumer group. The PID alone is not
@@ -148,7 +207,9 @@ async def _consume_po_input(
         # is working on it any more — so the id goes either way.
         in_flight.pop(msg_id, None)
         if not task.cancelled() and task.exception() is not None:
-            logger.error("po_dispatch_failed", msg_id=msg_id, error=str(task.exception()))
+            logger.error(
+                "po_dispatch_failed", msg_id=msg_id, error_type=type(task.exception()).__name__
+            )
 
     async for message in client.consume_typed(
         PO_INPUT_QUEUE,
@@ -178,30 +239,33 @@ async def _consume_po_input(
 
 async def run_po_consumer(
     summarization_config: SummarizationConfig | None = None,
+    llms: POLLMs | None = None,
 ) -> None:
     """Main loop: read po:input, invoke PO graph, write po:response:*."""
     settings = get_settings()
     effective_summarization = summarization_config or load_summarization_config(
         settings.api_base_url
     )
+    effective_llms = llms or await load_po_llms(settings)
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()
+    await verify_po_storage(client.redis)
 
     init_po_clients(api_client, client)
+    init_story_gate(ProactiveStoryGate(client, api_client))
 
     graph = await create_po_graph(
-        model=settings.po_llm_model,
-        base_url=settings.po_llm_base_url,
-        api_key=settings.po_llm_api_key,
+        llm=effective_llms.po,
+        summarization_llm=effective_llms.summarizer,
         checkpoint_database_url=settings.checkpoint_database_url,
-        summarization_model=settings.summarization_model,
         summarization_max_tokens=effective_summarization.max_tokens,
         summarization_trigger_tokens=effective_summarization.trigger_tokens,
         summarization_max_summary_tokens=effective_summarization.max_summary_tokens,
     )
+    logger.info("po_llm_channels_configured", channels=effective_llms.po.describe())
     logger.info(
         "po_summarization_configured",
-        model=settings.summarization_model or settings.po_llm_model,
+        channels=effective_llms.summarizer.describe(),
         max_tokens=effective_summarization.max_tokens,
         trigger_tokens=effective_summarization.trigger_tokens,
         max_summary_tokens=effective_summarization.max_summary_tokens,
@@ -239,6 +303,10 @@ async def _process_message(
     values elided, alerts, copies the entry to ``po:input:dlq`` and only then
     ACKs it. So what arrives here is a model, and the ACK below is the one for
     work that was actually attempted.
+
+    An event whose audience or notice settlement could not be read stays
+    pending: no publication decision was possible. The PEL sweep hands it
+    back after ``PEL_TIMEOUT_MS``.
     """
     data = message.model_dump(mode="json")
     bind_message_context(data)
@@ -250,11 +318,33 @@ async def _process_message(
 
     async with sem:
         async with lock:
+            handled = True
             try:
                 await _handle_message(graph, client, telegram_chat_id, data)
-            except Exception:
-                logger.exception(
-                    "po_invoke_failed", telegram_chat_id=telegram_chat_id, msg_id=msg_id
+            except StoryAudienceUnknown as unknown:
+                handled = False
+                logger.warning(
+                    "po_story_audience_unknown",
+                    msg_id=msg_id,
+                    event_type=data.get("event", ""),
+                    error_type=type(unknown).__name__,
+                    **po_alert_identifiers({"story_id": unknown.story_id}),
+                )
+            except OwnerNoticeReadUnknown as unknown:
+                handled = False
+                logger.warning(
+                    "po_owner_notice_pending",
+                    msg_id=msg_id,
+                    error_type=type(unknown).__name__,
+                    **po_alert_identifiers({"story_id": data.get("story_id", "")}),
+                )
+            except Exception as exc:
+                # Model/tool/validation exceptions can echo user credentials.
+                logger.error(
+                    "po_invoke_failed",
+                    telegram_chat_id=telegram_chat_id,
+                    msg_id=msg_id,
+                    error_type=type(exc).__name__,
                 )
                 request_id = data.get("request_id")
                 if request_id:
@@ -268,7 +358,8 @@ async def _process_message(
                         to_flat_fields(error_resp),
                     )
             finally:
-                await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
+                if handled:
+                    await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
                 unbind_message_context()
 
 
@@ -309,19 +400,121 @@ async def _repair_orphan_tool_calls(graph, thread_id: str) -> int:
         "po_checkpoint_repaired",
         thread_id=thread_id,
         repaired_count=len(orphan_calls),
-        tool_names=[tc["name"] for tc in orphan_calls],
     )
     return len(orphan_calls)
+
+
+def render_qa_verification(facts: dict) -> str:
+    """A settling event's QA facts as the PO model reads them: names and reasons, no JSON.
+
+    The run id and each check's origin are left out: neither is something the
+    user is told, and the answer's run is read off the story when it is recorded.
+    """
+    verification = QAVerificationFacts.model_validate(facts)
+    lines = ["What QA checked:"]
+    lines += [f"- {name}" for name in verification.passed_checks] or ["- (nothing)"]
+    if verification.unverified_checks:
+        lines.append("What QA could not check:")
+        lines += [
+            f"- {check.name} — why: {check.reason}" for check in verification.unverified_checks
+        ]
+    return "\n".join(lines)
+
+
+class StoryAudienceUnknown(Exception):
+    """Whether the story is ordered could not be read, so the event is not handled yet.
+
+    Unknown is not "not ordered": ``_process_message`` leaves such an entry
+    pending, and the PEL sweep brings it back.
+    """
+
+    def __init__(self, story_id: str) -> None:
+        super().__init__(f"whether story {story_id} is ordered could not be read")
+        self.story_id = story_id
+
+
+async def story_is_ordered(story_id: str) -> bool:
+    """Whether the story is an ordered one: a confirmed Product Brief is bound to it.
+
+    Only an ordered story's outcome is the user's to hear; every other story (a
+    technical one, a legacy one with no brief) is internal. A clean 404 and a
+    validated brief that is not confirmed are both a definitive "not ordered".
+    Every other way the read can end answers nothing and raises
+    ``StoryAudienceUnknown``: an API error or a timeout, and a 2xx body that is
+    not JSON or is not a ``ProductBriefRead``.
+    """
+    try:
+        brief = await api_client.get_product_brief_by_story(story_id)
+    except Exception as exc:
+        raise StoryAudienceUnknown(story_id) from exc
+    return brief is not None and brief.confirmed_at is not None
+
+
+async def _withhold_from_user(data: dict) -> None:
+    """Keep a not-ordered story's event from the user: the admins get it instead."""
+    event = data.get("event", "")
+    story_id = data.get("story_id", "")
+    project_id = data.get("project_id", "")
+    logger.info("po_unordered_story_event_withheld", event_type=event, story_id=story_id)
+    await notify_admins_best_effort(
+        f"Withheld from the user: story {story_id} is not an ordered story (no confirmed "
+        f"Product Brief). event={event} story={story_id} project={project_id or '-'}\n"
+        f"{data.get('text', '')}",
+        level="info" if event == OwnerNotificationEvent.STORY_COMPLETED else "warning",
+        po_event=event,
+        story_id=story_id,
+        project_id=project_id,
+    )
+
+
+def _situation_reader() -> SituationReader:
+    """Where the snapshot reads the API: the consumer's own client."""
+    return ApiSituationReader(api_client)
+
+
+async def _record_user_message(client: RedisStreamClient, telegram_chat_id: str) -> None:
+    """Remember when the user last wrote here, for the situation snapshot.
+
+    Best effort: a failed write costs the snapshot one field, never the turn.
+    """
+    try:
+        await record_user_message(client.redis, telegram_chat_id, datetime.now(UTC))
+    except Exception as exc:
+        logger.warning(
+            "po_last_user_message_not_recorded",
+            telegram_chat_id=telegram_chat_id,
+            error=str(exc),
+        )
 
 
 async def _handle_message(
     graph, client: RedisStreamClient, telegram_chat_id: str, data: dict
 ) -> None:
-    """Format message, invoke PO graph, write response."""
+    """Format message, invoke PO graph, write response.
+
+    A story is internal unless it is ordered (``story_is_ordered``). Every
+    producer's story event passes here before the PO graph, so this is the one
+    place the audience is decided: a ``system_event`` about a story that is not
+    ordered never reaches the graph or ``po:proactive``, and neither does a
+    reminder about one. The exception is ``story_waiting_user_secret``: only
+    the user can supply the secret.
+
+    A system event turn carries the situation snapshot (``agents.po.situation``)
+    in its run config; a user turn carries none and records when the user wrote.
+    """
     timestamp = data.get("timestamp", "")
     text = data.get("text", "")
     msg_type = data.get("type", "user_message")
     event = data.get("event", "")
+
+    if msg_type == "system_event" and event == OwnerNotificationEvent.STORY_STAGE:
+        logger.info(
+            "po_story_stage_notice_dropped",
+            telegram_chat_id=telegram_chat_id,
+            story_id=data.get("story_id", ""),
+            stage=data.get("stage"),
+        )
+        return
 
     # Let only shared owner-notification events through so PO can craft their
     # wording. Other validated progress events are not owner notifications.
@@ -330,7 +523,26 @@ async def _handle_message(
             "po_system_event_dropped",
             telegram_chat_id=telegram_chat_id,
             event_type=event,
-            text=text,
+        )
+        return
+
+    story_id = data.get("story_id", "")
+    if (
+        msg_type == "system_event"
+        and story_id
+        and event != OwnerNotificationEvent.STORY_WAITING_USER_SECRET
+        and not await story_is_ordered(story_id)
+    ):
+        await _withhold_from_user(data)
+        return
+
+    # A reminder about a story follows the same rule: a story nobody ordered
+    # is not the user's to hear about, so it gets no PO turn at all.
+    if msg_type == "reminder" and story_id and not await story_is_ordered(story_id):
+        logger.info(
+            "po_unordered_story_reminder_dropped",
+            telegram_chat_id=telegram_chat_id,
+            story_id=story_id,
         )
         return
 
@@ -356,6 +568,8 @@ async def _handle_message(
         )
         return
 
+    await remember_owner_event(client.redis, telegram_chat_id, data)
+
     user_name = data.get("user_name", "")
 
     formatted = f"[{timestamp} UTC] {text}" if timestamp else text
@@ -363,6 +577,8 @@ async def _handle_message(
     if msg_type != "user_message":
         tag = f"{msg_type}:{event}" if event else msg_type
         formatted = f"[system: {tag}] {formatted}"
+        if data.get("qa_verification"):
+            formatted = f"{formatted}\n{render_qa_verification(data['qa_verification'])}"
     else:
         # Inject user context so PO knows who it's talking to
         context_line = f"[context: telegram_chat_id={telegram_chat_id}, user_name={user_name}]"
@@ -372,15 +588,29 @@ async def _handle_message(
     # the pipeline raises about their projects resolve to the same key.
     thread_id = po_thread_id(telegram_chat_id)
     invoke_input = {"messages": [msg]}
-    invoke_config = {
-        "configurable": {
-            "thread_id": thread_id,
-            "telegram_chat_id": telegram_chat_id,
-            "user_name": user_name,
-            "retry_story_id": data.get("story_id", ""),
-        },
-        "recursion_limit": 50,
+    configurable = {
+        "thread_id": thread_id,
+        "telegram_chat_id": telegram_chat_id,
+        "user_name": user_name,
+        # Only a turn the user is waiting on may message them from a tool;
+        # any other turn reaches them only through its gated final reply.
+        "user_turn": bool(data.get("request_id")),
     }
+    if msg_type == "user_message":
+        await _record_user_message(client, telegram_chat_id)
+    elif msg_type == "system_event":
+        # What is true now, so an old event is told by its date. Model input for
+        # this turn only: the graph's prompt reads it from the config.
+        configurable[SITUATION_CONFIG_KEY] = await build_situation(
+            _situation_reader(),
+            client.redis,
+            SituationSubject(
+                telegram_chat_id=telegram_chat_id,
+                project_id=data.get("project_id", ""),
+                story_id=story_id,
+            ),
+        )
+    invoke_config = {"configurable": configurable, "recursion_limit": 50}
 
     # Pre-invoke: repair any orphan tool_calls from previous crashed invocations
     await _repair_orphan_tool_calls(graph, thread_id)
@@ -391,7 +621,7 @@ async def _handle_message(
         if "tool_calls that do not have a corresponding ToolMessage" not in str(exc):
             raise
         # Race condition: corruption appeared between pre-check and invoke — repair and retry once
-        logger.warning("po_checkpoint_corrupt_on_invoke", thread_id=thread_id, error=str(exc))
+        logger.warning("po_checkpoint_corrupt_on_invoke", thread_id=thread_id)
         await _repair_orphan_tool_calls(graph, thread_id)
         result = await graph.ainvoke(invoke_input, config=invoke_config)
 
@@ -419,8 +649,16 @@ async def _handle_message(
     elif response_text:
         # No request_id (reminder, system event) — forward to user via proactive
         # stream, carrying the identifiers the transport needs if delivery fails.
-        proactive = proactive_from_input(data, response_text, telegram_chat_id)
-        await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+        # The gate withholds intermediate events and reminders without an
+        # untold key change; the turn itself has already run.
+        gate = _get_story_gate()
+        decision = await gate.decide(telegram_chat_id, data)
+        if decision.send and await notice_may_publish(api_client, data):
+            proactive = proactive_from_input(data, response_text, telegram_chat_id)
+            await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+            await record_notice_told(api_client, data)
+            # Only after the publish: a failed one must leave the change untold.
+            await gate.record_told(telegram_chat_id, decision)
 
     logger.info(
         "po_message_handled",

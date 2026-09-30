@@ -316,7 +316,7 @@ class TestParallelConsumption:
             base._shutdown = False
 
         assert peak == 2
-        acked = {call.args[2] for call in redis.ack.await_args_list}
+        acked = {c.args[-1] for c in redis.redis.eval.await_args_list if "'XACK'" in c.args[0]}
         assert acked == {"1-0", "2-0"}
 
     @pytest.mark.asyncio()
@@ -353,7 +353,9 @@ class TestParallelConsumption:
             )
 
         assert peak == 1
-        assert redis.ack.await_count == 2
+        commits = [c for c in redis.redis.eval.await_args_list if "'XACK'" in c.args[0]]
+        assert len(commits) == 2
+        assert {c.args[-1] for c in commits} == {"1-0", "2-0"}
 
 
 class TestReclaimGuards:
@@ -457,14 +459,17 @@ class TestReclaimGuards:
             return {"status": "completed"}
 
         redis = _redis(consume)
-        # ZCARD 0 on the liveness read, then the job's own lease registers.
-        redis.redis.eval = AsyncMock(side_effect=[0, 1])
+        # ZCARD 0, acquisition, then the atomic completion commit.
+        redis.redis.eval = AsyncMock(side_effect=[0, 1, 1])
 
         with patch("src.consumers._base.RedisStreamClient", return_value=redis):
             await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=2)
 
         assert processed == ["run-9"]
-        redis.ack.assert_awaited_once_with("queue", "capability-workers", "9-0")
+        commits = [c for c in redis.redis.eval.await_args_list if "'XACK'" in c.args[0]]
+        assert len(commits) == 1
+        assert commits[0].args[4] == "queue"
+        assert commits[0].args[-2:] == ("capability-workers", "9-0")
 
     @pytest.mark.asyncio()
     async def test_unreadable_lease_fails_closed(self, mock_api_client):

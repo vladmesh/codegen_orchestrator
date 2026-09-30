@@ -120,23 +120,16 @@ class PullRequestsMixin:
         )
         return resp.json()
 
-    async def enable_auto_merge(
-        self,
-        owner: str,
-        repo: str,
-        pr_node_id: str,
-        merge_method: str = "MERGE",
-    ) -> bool:
-        """Enable auto-merge on a pull request via GraphQL.
+    async def disable_auto_merge(self, owner: str, repo: str, pr_node_id: str) -> bool:
+        """Withdraw a pull request's GitHub auto-merge request via GraphQL.
 
-        Args:
-            owner: Repository owner (for token resolution)
-            repo: Repository name (for token resolution)
-            pr_node_id: The GraphQL node_id of the pull request
-            merge_method: MERGE, SQUASH, or REBASE
+        The platform merges product pull requests itself, right after writing the
+        product's registry secrets; an auto-merge request would let GitHub merge
+        later with whatever secrets the repository holds by then.
 
         Returns:
-            True if auto-merge was enabled, False if not allowed.
+            True once GitHub reports the PR with no auto-merge request, False when
+            GitHub refused the mutation or still reports one.
         """
         token = await self.get_token(owner, repo)
         headers = {
@@ -145,11 +138,8 @@ class PullRequestsMixin:
         }
 
         query = """
-        mutation EnableAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
-            enablePullRequestAutoMerge(input: {
-                pullRequestId: $pullRequestId,
-                mergeMethod: $mergeMethod
-            }) {
+        mutation DisableAutoMerge($pullRequestId: ID!) {
+            disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) {
                 pullRequest {
                     number
                     autoMergeRequest { mergeMethod }
@@ -162,23 +152,26 @@ class PullRequestsMixin:
             "POST",
             "https://api.github.com/graphql",
             headers=headers,
-            json={
-                "query": query,
-                "variables": {"pullRequestId": pr_node_id, "mergeMethod": merge_method},
-            },
+            json={"query": query, "variables": {"pullRequestId": pr_node_id}},
         )
 
         data = resp.json()
         if "errors" in data:
             logger.warning(
-                "auto_merge_failed",
+                "auto_merge_disable_failed",
                 owner=owner,
                 repo=repo,
                 errors=data["errors"],
             )
             return False
+        pull_request = ((data.get("data") or {}).get("disablePullRequestAutoMerge") or {}).get(
+            "pullRequest"
+        ) or {}
+        if pull_request.get("autoMergeRequest") is not None or "number" not in pull_request:
+            logger.warning("auto_merge_disable_unconfirmed", owner=owner, repo=repo)
+            return False
 
-        logger.info("auto_merge_enabled", owner=owner, repo=repo, pr_node_id=pr_node_id)
+        logger.info("auto_merge_disabled", owner=owner, repo=repo, pr_node_id=pr_node_id)
         return True
 
     async def merge_pull_request(

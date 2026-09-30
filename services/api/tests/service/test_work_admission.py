@@ -173,6 +173,58 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
 
 
 @pytest.mark.asyncio
+async def test_qa_paid_start_reserves_owner_policy_and_denies_when_exhausted(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+):
+    telegram_id = uuid.uuid4().int % 1_000_000_000
+    user = await async_client.post(
+        "/api/users/", json={"telegram_id": telegram_id, "username": f"qa-budget-{telegram_id}"}
+    )
+    assert user.status_code == HTTPStatus.CREATED
+    project_id = str(uuid.uuid4())
+    project = await async_client.post(
+        "/api/projects/",
+        headers={"X-Telegram-ID": str(telegram_id)},
+        json={
+            "id": project_id,
+            "title": "QA budget",
+            "initiating_run_id": str(uuid.uuid4()),
+            "status": "active",
+            "config": {},
+        },
+    )
+    assert project.status_code == HTTPStatus.CREATED, project.text
+    policy = await async_client.put(
+        f"/api/engineering-budget-policies/{user.json()['id']}",
+        json={"limit_microusd": 60, "attempt_reservation_microusd": 60, "state": "enabled"},
+    )
+    assert policy.status_code in {HTTPStatus.CREATED, HTTPStatus.OK}
+    first_id = f"qa-budget-{uuid.uuid4().hex}"
+    first = await async_client.post(
+        "/api/work-admission/paid-runs",
+        json={"id": first_id, "type": "qa", "project_id": project_id},
+    )
+    assert first.json()["admission"]["outcome"] == "admitted"
+    reservation = await db_session.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == first_id
+        )
+    )
+    assert reservation.task_id is None
+    assert reservation.state == "active"
+    assert reservation.active_held_microusd == 60
+    second_id = f"qa-budget-{uuid.uuid4().hex}"
+    denied = await async_client.post(
+        "/api/work-admission/paid-runs",
+        json={"id": second_id, "type": "qa", "project_id": project_id},
+    )
+    assert denied.json()["admission"]["outcome"] == "denied"
+    assert denied.json()["admission"]["reason"] == "engineering_budget_denied"
+    assert await db_session.get(Run, second_id) is None
+
+
+@pytest.mark.asyncio
 async def test_paid_engineering_run_exposes_its_admission_audit_and_reservation(
     async_client: AsyncClient,
 ):
@@ -218,6 +270,52 @@ async def test_paid_engineering_run_exposes_its_admission_audit_and_reservation(
     assert reservation.json()["attempt_id"] == run_id
     assert reservation.json()["outcome"] == "unlimited"
     assert reservation.json()["reservation_state"] is None
+
+
+@pytest.mark.asyncio
+async def test_unlimited_engineering_replay_rechecks_emergency_stop(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    telegram_id = uuid.uuid4().int % 1_000_000_000
+    user = await async_client.post(
+        "/api/users/", json={"telegram_id": telegram_id, "username": "replay-owner"}
+    )
+    assert user.status_code == HTTPStatus.CREATED
+    project_id = str(uuid.uuid4())
+    project = await async_client.post(
+        "/api/projects/",
+        headers={"X-Telegram-ID": str(telegram_id)},
+        json={
+            "id": project_id,
+            "title": "Replay",
+            "initiating_run_id": str(uuid.uuid4()),
+            "status": "active",
+            "config": {"agent_type": "noop"},
+        },
+    )
+    assert project.status_code == HTTPStatus.CREATED, project.text
+    command = {
+        "id": f"engineering-replay-{uuid.uuid4().hex}",
+        "type": "engineering",
+        "project_id": project_id,
+    }
+    started = await async_client.post("/api/work-admission/paid-runs", json=command)
+    assert started.json()["admission"]["outcome"] == "admitted"
+    reservation = await db_session.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == command["id"]
+        )
+    )
+    assert reservation.state is None
+
+    await _set_config(db_session, "work_admission.emergency_stop", True)
+    try:
+        replay = await async_client.post("/api/work-admission/paid-runs", json=command)
+        assert replay.status_code == HTTPStatus.OK, replay.text
+        assert replay.json()["admission"]["outcome"] == "denied"
+        assert replay.json()["admission"]["reason"] == "emergency_stop"
+    finally:
+        await _set_config(db_session, "work_admission.emergency_stop", False)
 
 
 @pytest.mark.asyncio

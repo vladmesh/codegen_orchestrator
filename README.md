@@ -58,9 +58,9 @@ Stage by stage: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes and thei
 | `telegram_bot` | The user interface; owns PO sessions. |
 | `langgraph` | The PO agent and the Engineering/DevOps subgraphs. |
 | `architect` | Splits a story into tasks. Its own container, not part of the scheduler. |
-| `scheduler-pipeline` | Ordered task, story, PR/CI, supervisor, notification, QA and access lifecycle. |
+| `scheduler-pipeline` | Task/story lifecycle plus independent PR/CI, supervision, notification, QA and access loops. |
 | `scheduler-infrastructure` | Server sync, health checks, provisioning triggers and result recovery. |
-| `scheduler-maintenance` | GitHub sync, RAG summarization, analytics aggregation and queue cleanup. |
+| `scheduler-maintenance` | GitHub sync, analytics aggregation and queue cleanup. |
 | `scaffolder` | Prepares the repository: copier, `make setup`, first push. Runs before the architect. |
 | `engineering-worker`, `deploy-worker`, `qa-worker` | Redis-stream consumers. Separate entrypoints on the shared `langgraph` image. |
 | `worker-manager` | Starts and reaps the coding-agent containers, isolated on the `codegen_worker` network. |
@@ -90,12 +90,14 @@ is the fast gate and `make test-integration` needs the stack running.
 
 Two details that cost the most time when they are unknown:
 
-- `shared/` is never installed as a package. Compose bind-mounts it, images `COPY` it, tests import
-  it from the tree. Editing it needs no rebuild for bind-mounted services — see
+- `shared/` is never installed as a package. Development compose bind-mounts it, images `COPY` it
+  (production runs only the image), tests import it from the tree. Editing it needs no rebuild for
+  bind-mounted development services — see
   [docs/REBUILD.md](docs/REBUILD.md), which is also where the two separate build loops are
   explained.
-- Nothing takes a default value. A missing key raises rather than falling back, on purpose. The
-  reasoning is in [AGENTS.md](AGENTS.md#project-conventions).
+- Required settings take no default. A missing identity, credential, connection or production-policy
+  value raises rather than falling back, on purpose; only safe presentation, logging and local-ergonomics
+  settings have documented defaults. The rule is in [AGENTS.md](AGENTS.md#rules).
 
 Test layers, what each one costs and when to run it: [docs/TESTING.md](docs/TESTING.md).
 

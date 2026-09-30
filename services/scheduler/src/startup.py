@@ -35,7 +35,10 @@ PIPELINE_REQUIRED_KEYS = {
     "supervisor.qa_wait_max_minutes",
     "supervisor.pr_review_wait_max_minutes",
     "supervisor.user_secret_wait_max_minutes",
+    "supervisor.planless_story_max_minutes",
+    "supervisor.state_age_mass_park_threshold",
     "supervisor.stage_notice_quiet_minutes",
+    "supervisor.stage_notice_max_interval_minutes",
     "supervisor.resource_wait_metrics_freshness_seconds",
     "supervisor.qa_handoff_target_held_max_minutes",
     "supervisor.temporary_access_ttl_minutes",
@@ -64,7 +67,6 @@ INFRASTRUCTURE_REQUIRED_KEYS = {
 MAINTENANCE_REQUIRED_KEYS = {
     "scheduler.github_sync_interval",
     "scheduler.github_sync_missing_threshold",
-    "scheduler.rag_summarizer_poll_interval",
 }
 
 REQUIRED_KEYS = sorted(
@@ -81,7 +83,6 @@ BOUNDED_STALE_KEYS = frozenset(
         "scheduler.github_sync_interval",
         "scheduler.server_sync_interval",
         "scheduler.server_details_sync_interval",
-        "scheduler.rag_summarizer_poll_interval",
         "health.metrics_cleanup_interval_seconds",
     }
 )

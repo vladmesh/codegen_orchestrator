@@ -14,6 +14,127 @@ from shared.queues import WORKER_COMMANDS
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lost_baseline_response", [False, True])
+async def test_reclaimed_preparation_and_published_turn_keep_real_run_baseline(
+    real_redis, lost_baseline_response
+):
+    import os
+    import uuid
+
+    from shared.contracts.queues.worker import WorkerOwnership
+    from src.clients.api import LanggraphAPIClient
+    from src.clients.story_worker_registry import set_story_worker
+    from src.clients.worker_spawner import (
+        reconcile_prepared_baseline,
+        record_turn_on_attempt,
+        send_task_to_worker,
+    )
+
+    api = LanggraphAPIClient()
+    api.base_url = os.environ["TEST_CONFLICT_API_BASE_URL"]
+    worker_id = f"prepared-{uuid.uuid4().hex}"
+    try:
+        telegram = uuid.uuid4().int % 1_000_000_000
+        await api.post("users/", json={"telegram_id": telegram})
+        project = await api.post(
+            "projects/",
+            headers={"X-Telegram-ID": str(telegram)},
+            json={
+                "title": "Reclaimed preparation",
+                "status": "active",
+                "initiating_run_id": "fixture-init",
+                "config": {"workspace_ready": True},
+            },
+        )
+        story = await api.post("stories/", json={"project_id": project["id"], "title": "Reclaim"})
+        sid = story["id"]
+        await api.transition_story(sid, "start")
+        await api.post(
+            "repositories/",
+            json={
+                "project_id": project["id"],
+                "name": sid,
+                "git_url": f"https://github.com/synthetic/{sid}",
+                "role": "primary",
+            },
+        )
+        task = await api.post(
+            "tasks/",
+            json={
+                "project_id": project["id"],
+                "story_id": sid,
+                "title": "Normal admitted Task",
+                "status": "todo",
+                "type": "feature",
+            },
+        )
+        admitted = await api.post(
+            "work-admission/engineering-dispatches", json={"task_id": task["id"]}
+        )
+        assert admitted["outcome"] == "admitted", admitted
+        rid = admitted["run_id"]
+        ownership = WorkerOwnership(
+            project_id=project["id"], story_id=sid, run_id="fixture-init", attempt_id=rid
+        )
+        await api.patch(
+            f"runs/{rid}",
+            json={"run_metadata": {"worker_id": worker_id, "pre_attempt_head_sha": "a" * 40}},
+        )
+        await real_redis.hset(
+            f"worker:meta:{worker_id}",
+            mapping={
+                **ownership.as_redis_meta(),
+                "prepared_head_sha": "b" * 40,
+            },
+        )
+        await set_story_worker(real_redis, sid, worker_id)
+        stale = AttemptTurnMetadata(worker_id=worker_id, pre_attempt_head_sha="a" * 40)
+        with patch("src.clients.api.api_client", api):
+            if lost_baseline_response:
+                persist = api.patch
+
+                async def lose_response(path, **kwargs):
+                    await persist(path, **kwargs)
+                    raise OSError("synthetic committed baseline response loss")
+
+                with patch.object(api, "patch", lose_response), pytest.raises(OSError):
+                    await reconcile_prepared_baseline(real_redis, ownership, worker_id)
+            saved = await reconcile_prepared_baseline(real_redis, ownership, worker_id)
+            assert saved.pre_attempt_head_sha == "b" * 40
+            await record_turn_on_attempt(rid, "published-turn")
+            await real_redis.xadd(f"worker:{worker_id}:input", {"data": "published-turn"})
+            await real_redis.xadd(
+                f"worker:{worker_id}:output",
+                {
+                    "request_id": "published-turn",
+                    "data": json.dumps(
+                        {
+                            "status": "completed",
+                            "content": "Genuine agent work",
+                            "commit_sha": "c" * 40,
+                        }
+                    ),
+                },
+            )
+            result = await send_task_to_worker(
+                worker_id,
+                "Never duplicate this turn",
+                ownership=ownership,
+                branch=f"story/{sid}",
+                turn_metadata=stale,
+            )
+        assert result.success and result.commit_sha == "c" * 40
+        assert result.pre_attempt_head_sha == "b" * 40
+        assert await real_redis.xlen(f"worker:{worker_id}:input") == 1
+        durable = await api.get_run(rid)
+        assert durable.task_id == task["id"] and durable.story_id == sid
+        assert durable.run_metadata["pre_attempt_head_sha"] == "b" * 40
+        assert durable.run_metadata["prepared_checkout"]["attempt_id"] == rid
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
 async def test_adoption_reads_only_the_durable_turn_result_without_publishing_a_prompt(real_redis):
     """A replacement consumer settles the turn its predecessor was awaiting."""
     from src.clients.worker_spawner import await_turn_output

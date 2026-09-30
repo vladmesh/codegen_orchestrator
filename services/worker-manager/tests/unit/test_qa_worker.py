@@ -4,7 +4,9 @@ It is started by the same mechanism as a developer worker — the same
 `create_worker_with_capabilities`, the same image, the same broker, the same
 host session mount — and the differences are all in what it is *not* given: no
 repository, no git credentials, nothing that survives the container. What it is
-given instead is one command, which is its only route to the deployment.
+given instead is one command for everything SSH-based on the target, and a
+per-run egress proxy that opens its model backend, the deployed public URL and
+Telegram — nothing else.
 """
 
 from __future__ import annotations
@@ -13,14 +15,22 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakeredis import aioredis
 import pytest
 
+from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
 from shared.contracts.dto.worker import WorkerStatus
-from shared.contracts.queues.worker import AgentType, WorkerConfig, WorkerOwnership
-from shared.qa_probe_cli import QA_PROBE_PATH
+from shared.contracts.queues.worker import (
+    QA_TARGET_REFUSED,
+    AgentType,
+    WorkerConfig,
+    WorkerOwnership,
+)
+from shared.qa_probe_cli import QA_PROBE_LIBRARY_PATH, QA_PROBE_PATH
 from shared.queues import WORKER_COMMANDS
 from src import qa_egress, workspace as workspace_mod
 from src.manager import QA_WORKER_TYPE, WorkerManager
@@ -33,6 +43,7 @@ _OWNERSHIP = WorkerOwnership(
 
 
 QA_NETWORK = "codegen_qa_egress"
+DEPLOYED_URL = "http://95.216.10.20:8080"
 
 
 def _docker_mock():
@@ -130,6 +141,7 @@ def qa_worker(tmp_path):
                 "worker_type": QA_WORKER_TYPE,
                 "instructions": "# QA executor",
                 "task_content": "run the regression test",
+                "qa_target_url": DEPLOYED_URL,
                 "env_vars": {
                     "QA_CAPABILITY_URL": "http://qa-worker:41234/qa/call",
                     "QA_CAPABILITY_TOKEN": "run-token",
@@ -198,13 +210,14 @@ class TestAQaExecutorNeedsNoRepository:
         assert run_kwargs["security_opt"] == ["no-new-privileges:true"]
 
 
-class TestItCannotReachTheApplicationAtAll:
+class TestItReachesOnlyItsAllowlist:
     """The guarantee is the network, and these are the ways it is held.
 
-    A CLI agent has a shell, so "QA does not write to the application" cannot
-    rest on the tool set any more. It rests on the executor being attached to
-    one internal network and nothing else, with one CONNECT-only proxy opening
-    the assigned CLI's model backend. Every check here fails the run closed.
+    A CLI agent has a shell, so what QA can reach cannot rest on the tool set.
+    It rests on the executor being attached to one internal network and nothing
+    else, with one CONNECT-only proxy opening the assigned CLI's model backend,
+    the run's deployed public URL and Telegram. Every check here fails the run
+    closed.
     """
 
     async def test_it_is_attached_to_the_internal_qa_network_and_nothing_else(self, qa_worker):
@@ -244,11 +257,15 @@ class TestItCannotReachTheApplicationAtAll:
         with pytest.raises(qa_egress.QAEgressError, match="codegen_worker"):
             await qa_worker(docker=wrapper)
 
-    async def test_the_run_opens_only_its_assigned_agents_model_backend(self, qa_worker):
+    async def test_the_run_opens_its_backend_its_deploy_target_and_telegram_only(self, qa_worker):
         wrapper, _, _ = await qa_worker()
 
         proxy = _proxy_run(wrapper)
-        assert proxy["command"] == list(qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CLAUDE])
+        assert proxy["command"] == [
+            *qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CLAUDE],
+            "95.216.10.20:8080",
+            *qa_egress.telegram_entries(),
+        ]
         assert proxy["network"] == QA_NETWORK
         # The proxy — and only the proxy — gets the second leg that has a route out.
         wrapper.connect_network.assert_awaited_once_with("codegen_worker", "container-id")
@@ -257,9 +274,9 @@ class TestItCannotReachTheApplicationAtAll:
         with patch("src.codex_auth.validate_codex_host_session"):
             wrapper, _, _ = await qa_worker(agent_type=AgentType.CODEX)
 
-        assert _proxy_run(wrapper)["command"] == list(
-            qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CODEX]
-        )
+        command = _proxy_run(wrapper)["command"]
+        assert command[:3] == list(qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CODEX])
+        assert not set(command) & set(qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CLAUDE])
 
     async def test_the_executor_is_pointed_at_the_proxy_for_everything_else(self, qa_worker):
         wrapper, _, _ = await qa_worker()
@@ -344,10 +361,69 @@ class TestItCannotReachTheApplicationAtAll:
                 ownership=_OWNERSHIP,
                 agent_type=AgentType.CLAUDE,
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         assert wrapper.run_container.await_args.kwargs["network"] == "codegen_worker"
         wrapper.inspect_network.assert_not_awaited()
+
+
+class TestTheDeployTargetIsRefusedBeforeAnythingExists:
+    """A target that would point the sandbox back at the platform stops the run cold."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            None,
+            "",
+            "http://user:pw@app.example.com",
+            "http://qa-worker:41234",
+            "http://10.0.0.5",
+            "http://app.example.com:0",
+        ],
+    )
+    async def test_no_container_proxy_or_ownership_is_created(self, qa_worker, url):
+        wrapper = _docker_mock()
+        holder = {}
+
+        with pytest.raises(qa_egress.QATargetRefused):
+            await qa_worker(docker=wrapper, manager_holder=holder, qa_target_url=url)
+
+        wrapper.run_container.assert_not_awaited()
+        wrapper.inspect_network.assert_not_awaited()
+        redis = holder["manager"].redis
+        assert await redis.hget("worker:meta:qa-1", "project_id") is None
+        assert await redis.hget("worker:status:qa-1", "status") == WorkerStatus.FAILED
+        # The requester reads only this text; its marker says "do not retry".
+        assert (await redis.get("worker:error:qa-1")).startswith(f"{QA_TARGET_REFUSED}: ")
+
+    async def test_nothing_else_of_the_runtimes_environment_rides_along(self, qa_worker):
+        wrapper = _docker_mock()
+
+        with pytest.raises(RuntimeError, match="TELETHON_SESSION"):
+            await qa_worker(
+                docker=wrapper,
+                env_vars={
+                    "QA_CAPABILITY_URL": "http://qa-worker:41234/qa/call",
+                    "QA_CAPABILITY_TOKEN": "run-token",
+                    "TELETHON_SESSION": "session-value",
+                },
+            )
+
+        wrapper.run_container.assert_not_awaited()
+
+    def test_a_developer_worker_carries_no_deploy_target(self):
+        with pytest.raises(RuntimeError, match="only a QA executor"):
+            WorkerManager._validate_qa_request(False, "https://app.example.com", {})
+
+    async def test_the_executor_env_names_no_deploy_target_and_no_telegram_credential(
+        self, qa_worker
+    ):
+        wrapper, _, _ = await qa_worker()
+
+        env = _executor_run(wrapper)["environment"]
+        assert not [name for name in env if name.startswith("TELETHON")]
+        assert DEPLOYED_URL not in env.values()
 
 
 class TestTheOneCommandItIsGiven:
@@ -512,6 +588,100 @@ class TestTheOneCommandItIsGiven:
             await manager.delete_worker("qa-1", reason="failed")
 
         assert not workspace.exists()
+
+
+class TestTheProbeLibraryItIsOffered:
+    LIBRARY = [
+        QAProbeLibraryFile(
+            path="telegram/location.py",
+            content="print('it\\'s \"quoted\"')\n# ünïcode ✓\n$(touch /tmp/x) `id`\n",
+        ),
+        QAProbeLibraryFile(path="http/health.sh", content='curl -fsS "$1"\n'),
+        QAProbeLibraryFile(path="index.json", content='{"probes": []}\n'),
+    ]
+
+    @staticmethod
+    def _library_writes(wrapper) -> list[list[str]]:
+        return [
+            call.args[1]
+            for call in wrapper.exec_in_container.await_args_list
+            if isinstance(call.args[1], list)
+        ]
+
+    async def test_every_file_is_written_under_the_library_directory_before_ready(
+        self, qa_worker, tmp_path
+    ):
+        wrapper = _docker_mock()
+        manager_holder: dict = {}
+        statuses: list = []
+
+        async def exec_in_container(container_id, command, **kwargs):
+            if isinstance(command, list):
+                statuses.append(
+                    await manager_holder["manager"].redis.hget("worker:status:qa-1", "status")
+                )
+            return 0, "ok"
+
+        wrapper.exec_in_container = AsyncMock(side_effect=exec_in_container)
+        await qa_worker(
+            docker=wrapper, manager_holder=manager_holder, qa_probe_library=self.LIBRARY
+        )
+
+        writes = self._library_writes(wrapper)
+        assert [command[3] for command in writes] == [
+            f"{QA_PROBE_LIBRARY_PATH}/telegram/location.py",
+            f"{QA_PROBE_LIBRARY_PATH}/http/health.sh",
+            f"{QA_PROBE_LIBRARY_PATH}/index.json",
+        ]
+        assert [base64.b64decode(command[4]).decode() for command in writes] == [
+            item.content for item in self.LIBRARY
+        ]
+        assert [command[5] for command in writes] == ["w", "w", "w"]
+        # The source is an argument, never part of the code the container runs.
+        for command in writes:
+            assert command[:2] == ["python3", "-c"]
+            assert "touch" not in command[2]
+        assert statuses and WorkerStatus.RUNNING not in statuses
+        assert (
+            await manager_holder["manager"].redis.hget("worker:status:qa-1", "status")
+            == WorkerStatus.RUNNING
+        )
+
+    async def test_the_write_commands_reproduce_each_file_byte_for_byte(self, qa_worker, tmp_path):
+        # A unicode-heavy file is three times its characters in bytes; it is
+        # written in chunks so no one exec argument nears the kernel's 128 KiB.
+        library = [
+            *self.LIBRARY,
+            QAProbeLibraryFile(path="http/wide.py", content="# " + "✓" * 63_000),
+        ]
+        wrapper, _, _ = await qa_worker(qa_probe_library=library)
+
+        writes = self._library_writes(wrapper)
+        assert len(writes) > len(library)
+        for command in writes:
+            assert max(len(argument.encode()) for argument in command) < 128 * 1024
+            local = tmp_path / "container" / command[3].lstrip("/")
+            subprocess.run([sys.executable, "-c", command[2], str(local), *command[4:]], check=True)
+        for item in library:
+            local = tmp_path / "container" / QA_PROBE_LIBRARY_PATH.lstrip("/") / item.path
+            assert local.read_text(encoding="utf-8") == item.content
+
+    async def test_a_failed_library_write_fails_the_worker(self, qa_worker):
+        wrapper = _docker_mock()
+        manager_holder: dict = {}
+
+        async def exec_in_container(container_id, command, **kwargs):
+            return (1, "no space left") if isinstance(command, list) else (0, "ok")
+
+        wrapper.exec_in_container = AsyncMock(side_effect=exec_in_container)
+
+        with pytest.raises(RuntimeError, match="QA probe library file"):
+            await qa_worker(
+                docker=wrapper, manager_holder=manager_holder, qa_probe_library=self.LIBRARY
+            )
+
+        manager = manager_holder["manager"]
+        assert await manager.redis.hget("worker:status:qa-1", "status") == WorkerStatus.FAILED
 
 
 class TestNothingSurvivesTheRun:

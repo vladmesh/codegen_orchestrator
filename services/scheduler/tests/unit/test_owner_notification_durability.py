@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
 
+from _owner_notification_claims import ClaimClock, claim, refuse_superseded
 from _run_routing_factories import _make_repo, _make_run, _make_story, _make_task
 import pytest
 import structlog
@@ -41,6 +42,7 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.story import StoryDTO, StoryStatus
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.tests.allocation_routing_cases import refused_deploy_result
 
@@ -148,6 +150,9 @@ class World:
         # the transition it was supposed to protect is visible as such.
         self.journal: list[str] = []
         self.admin_alerts: list[str] = []
+        # The API's clock for attempt claims. A cycle that is meant to retry a
+        # record another cycle just attempted moves it by the interval.
+        self.clock = ClaimClock()
 
     # --- the record, as the next process would read it ---
 
@@ -160,18 +165,42 @@ class World:
 
     def _update_run(self, run_id: str, data: dict) -> None:
         assert run_id == self.run.id
+        # The API refuses a write from an attempt a newer claim superseded.
+        refuse_superseded(
+            self.run.run_metadata.get(OWNER_NOTIFICATION_KEY),
+            data["run_metadata"][OWNER_NOTIFICATION_KEY],
+        )
         self.run.run_metadata.update(data["run_metadata"])
         record = self.record
         self.journal.append(f"record:{record.state.value}:{record.attempts}")
 
+    def _claim_run(self, run_id: str):
+        assert run_id == self.run.id
+        return claim(
+            self.clock,
+            lambda: self.run.run_metadata.get(OWNER_NOTIFICATION_KEY),
+            lambda stamped: self.run.run_metadata.update({OWNER_NOTIFICATION_KEY: stamped}),
+        )
+
+    def _claim_story(self, story_id: str):
+        assert story_id == self.story.id
+        return claim(
+            self.clock,
+            lambda: self.story_notification,
+            lambda stamped: setattr(self, "story_notification", stamped),
+        )
+
     def _update_story_owner_notification(self, story_id: str, record: dict) -> None:
         assert story_id == self.story.id
+        refuse_superseded(self.story_notification, record)
         self.story_notification = record
         stored = self.record
         self.journal.append(f"story_record:{stored.state.value}:{stored.attempts}")
 
-    def _transition_story(self, story_id: str, action: str):
+    def _transition_story(self, story_id: str, action: str, *, qa_run_id: str | None = None):
         assert story_id == self.story.id
+        # QA routing names the verdict it consumes; it can only be this world's run.
+        assert qa_run_id in (None, self.run.id)
         if self.transition_failures:
             self.transition_failures -= 1
             self.journal.append(f"transition_uncommitted:{action}")
@@ -269,6 +298,8 @@ def api_client(world, monkeypatch):
     client.get_story.side_effect = world._get_story
     client.update_run.side_effect = world._update_run
     client.update_story_owner_notification.side_effect = world._update_story_owner_notification
+    client.claim_run_owner_notification_attempt.side_effect = world._claim_run
+    client.claim_story_owner_notification_attempt.side_effect = world._claim_story
     client.transition_story.side_effect = world._transition_story
     client.get_story_owner_notification.side_effect = lambda _story_id: world.record
     client.get_tasks_by_story.return_value = []
@@ -292,11 +323,16 @@ def redis_client(world):
     return client
 
 
-async def _tick(api_client, redis_client):
-    """One supervisor cycle, in the order the dispatcher runs these two steps."""
+async def _tick(world, api_client, redis_client):
+    """One supervisor cycle, in the order the dispatcher runs these two steps.
+
+    A cycle starts at least one delivery interval after the previous one, which
+    is what lets its sweep retry what the previous cycle attempted.
+    """
     from src.tasks.owner_notifications import supervise_owed_owner_notifications
     from src.tasks.supervisor import supervise_testing_stories
 
+    world.clock.elapse()
     counts = await supervise_owed_owner_notifications(api_client, redis_client)
     await supervise_testing_stories(api_client, redis_client)
     return counts
@@ -349,12 +385,16 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
 
         # The next tick routes the story still sitting in TESTING; this time the
         # completion transaction writes the record and transition together.
-        await _tick(api_client, redis_client)
+        await _tick(world, api_client, redis_client)
 
         assert world.transitions == [("story-1", "complete")]
         assert world.story.status is StoryStatus.COMPLETED
         assert len(world.published) == 1
         assert world.published[0]["event"] == "story_completed"
+        reference = POSystemEvent.model_validate(world.published[0]).owner_notice
+        assert reference.source == "story"
+        assert reference.source_id == "story-1"
+        assert reference.owed_at == world.record.owed_at
         assert world.record.state is OwnerNotificationState.DELIVERED
         # And the good news went out *after* the story was really finished, not
         # from the sweep that ran before routing on a story still in TESTING.
@@ -376,8 +416,8 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
         assert world.published == []
 
         api_client.get_stories_by_status.return_value = []
-        first = await _tick(api_client, redis_client)
-        second = await _tick(api_client, redis_client)
+        first = await _tick(world, api_client, redis_client)
+        second = await _tick(world, api_client, redis_client)
 
         assert first["delivered"] == 1
         assert second["delivered"] == 0
@@ -397,6 +437,7 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
         api_client.get_stories_by_status.return_value = []
 
         world.story_read_failures = 1
+        world.clock.elapse()
         counts = await supervise_owed_owner_notifications(api_client, redis_client)
 
         assert counts["retrying"] == 1
@@ -404,6 +445,7 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
         assert world.record.state is OwnerNotificationState.OWED
         assert world.record.attempts == 2
 
+        world.clock.elapse()
         assert (await supervise_owed_owner_notifications(api_client, redis_client))[
             "delivered"
         ] == 1
@@ -614,11 +656,16 @@ class TestTheImpossibleEngineeringPlacementTakesTheSameSeam:
 
         # The task left FAILED and the story left every status the loops scan.
         api_client.get_tasks_by_status.return_value = []
+        world.clock.elapse()
         counts = await supervise_owed_owner_notifications(api_client, redis_client)
 
         assert counts["delivered"] == 1
         assert len(world.published) == 1
         assert world.published[0]["event"] == "task_impossible_capacity"
+        reference = POSystemEvent.model_validate(world.published[0]).owner_notice
+        assert reference.source == "run"
+        assert reference.source_id == world.run.id
+        assert reference.owed_at == world.record.owed_at
         assert world.published[0]["task_id"] == "task-7"
         assert world.published[0]["story_id"] == "story-1"
         assert world.published[0]["telegram_chat_id"] == OWNER_CHAT_ID
@@ -686,7 +733,7 @@ class TestALostPublishIsPickedUpLater:
 
         # The story left TESTING, so the loop that routed it sees nothing.
         api_client.get_stories_by_status.return_value = []
-        counts = await _tick(api_client, redis_client)
+        counts = await _tick(world, api_client, redis_client)
 
         assert counts["delivered"] == 1
         assert len(world.published) == 1
@@ -708,7 +755,7 @@ class TestALostPublishIsPickedUpLater:
         assert world.record.state is OwnerNotificationState.OWED
 
         api_client.get_stories_by_status.return_value = []
-        counts = await _tick(api_client, redis_client)
+        counts = await _tick(world, api_client, redis_client)
 
         assert counts["delivered"] == 1
         assert len(world.published) == 1
@@ -725,7 +772,7 @@ class TestTheRetryIsBoundedAndItsEndIsLoud:
         await supervise_testing_stories(api_client, redis_client)
         api_client.get_stories_by_status.return_value = []
 
-        first = await _tick(api_client, redis_client)
+        first = await _tick(world, api_client, redis_client)
         assert first == {
             "delivered": 0,
             "retrying": 1,
@@ -733,10 +780,12 @@ class TestTheRetryIsBoundedAndItsEndIsLoud:
             "unaddressable": 0,
             "voided": 0,
             "skipped": 0,
+            "not_due": 0,
+            "superseded": 0,
         }
         assert world.admin_alerts == []
 
-        second = await _tick(api_client, redis_client)
+        second = await _tick(world, api_client, redis_client)
         assert second["exhausted"] == 1
         assert world.record.state is OwnerNotificationState.ABANDONED
         assert world.record.attempts == 3
@@ -759,8 +808,8 @@ class TestTheRetryIsBoundedAndItsEndIsLoud:
         world.publish_failures = 99
         await supervise_testing_stories(api_client, redis_client)
         api_client.get_stories_by_status.return_value = []
-        await _tick(api_client, redis_client)
-        await _tick(api_client, redis_client)
+        await _tick(world, api_client, redis_client)
+        await _tick(world, api_client, redis_client)
 
         world.publish_failures = 0
         counts = await supervise_owed_owner_notifications(api_client, redis_client)
@@ -772,6 +821,8 @@ class TestTheRetryIsBoundedAndItsEndIsLoud:
             "unaddressable": 0,
             "voided": 0,
             "skipped": 0,
+            "not_due": 0,
+            "superseded": 0,
         }
         assert world.published == []
 
@@ -835,6 +886,8 @@ class TestAnUnaddressableOwnerIsRefusedNotChased:
             "unaddressable": 0,
             "voided": 0,
             "skipped": 0,
+            "not_due": 0,
+            "superseded": 0,
         }
 
     @pytest.mark.asyncio
@@ -853,3 +906,145 @@ class TestAnUnaddressableOwnerIsRefusedNotChased:
 
         assert transient.state is OwnerNotificationState.OWED
         assert world.record.state is OwnerNotificationState.UNADDRESSABLE
+
+
+class TestAttemptsAreSpacedByTheRecord:
+    """One attempt per delivery interval, whichever path asks and in whatever order.
+
+    The API grants the attempt and stamps it in one write; these tests hold the
+    scheduler's side of that: a refused claim spends nothing and publishes
+    nothing, and a visit whose claim was superseded stops at its first write.
+    The real conditional write is proved against Postgres in the service tests.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_right_after_routing_attempts_nothing(
+        self, world, api_client, redis_client
+    ):
+        from src.tasks.owner_notifications import supervise_owed_owner_notifications
+        from src.tasks.supervisor import supervise_testing_stories
+
+        world.publish_failures = 99
+        await supervise_testing_stories(api_client, redis_client)
+        api_client.get_stories_by_status.return_value = []
+
+        counts = await supervise_owed_owner_notifications(api_client, redis_client)
+
+        assert counts["not_due"] == 1
+        assert counts["retrying"] == 0
+        assert world.record.attempts == 1
+        assert world.record.last_attempt_at == world.clock.now
+
+    @pytest.mark.asyncio
+    async def test_routing_right_after_the_sweep_attempts_nothing(
+        self, world, api_client, redis_client
+    ):
+        """The committed completion lost its answer; the sweep reaches it first."""
+        from src.tasks.owner_notifications import (
+            OwnerNotificationOutcome,
+            deliver_owed_notification,
+            supervise_owed_owner_notifications,
+        )
+        from src.tasks.supervisor import supervise_testing_stories
+
+        world.lost_transition_responses = 1
+        with pytest.raises(TimeoutError):
+            await supervise_testing_stories(api_client, redis_client)
+        owed_copy = world.record
+        world.publish_failures = 99
+
+        counts = await supervise_owed_owner_notifications(api_client, redis_client)
+        outcome = await deliver_owed_notification(
+            api_client, redis_client, "story-1", owed_copy, logger, story_record=True
+        )
+
+        assert counts["retrying"] == 1
+        assert outcome is OwnerNotificationOutcome.NOT_DUE
+        assert world.record.attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_a_settled_record_reports_skipped_whatever_copy_the_caller_holds(
+        self, world, api_client, redis_client
+    ):
+        from src.tasks.owner_notifications import (
+            OwnerNotificationOutcome,
+            deliver_owed_notification,
+        )
+        from src.tasks.supervisor import supervise_testing_stories
+
+        world.lost_transition_responses = 1
+        with pytest.raises(TimeoutError):
+            await supervise_testing_stories(api_client, redis_client)
+        stale = world.record
+        api_client.get_stories_by_status.return_value = []
+        await _tick(world, api_client, redis_client)
+        assert world.record.state is OwnerNotificationState.DELIVERED
+
+        world.clock.elapse()
+        outcome = await deliver_owed_notification(
+            api_client, redis_client, "story-1", stale, logger, story_record=True
+        )
+
+        assert outcome is OwnerNotificationOutcome.SKIPPED
+        assert len(world.published) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_record_written_before_the_stamp_existed_is_delivered(
+        self, world, api_client, redis_client
+    ):
+        from src.tasks.owner_notifications import supervise_owed_owner_notifications
+
+        world.story = world.story.model_copy(update={"status": StoryStatus.COMPLETED})
+        legacy = OwnerNotification(
+            event="story_completed",
+            text="The story is finished.",
+            story_id="story-1",
+            project_id=PROJECT_ID,
+            terminal_status=StoryStatus.COMPLETED,
+            state=OwnerNotificationState.OWED,
+            owed_at=datetime.now(UTC),
+            attempts=1,
+            detail="ConnectionError: po:input is unreachable",
+        ).model_dump(mode="json")
+        del legacy["last_attempt_at"]
+        world.story_notification = legacy
+
+        counts = await supervise_owed_owner_notifications(api_client, redis_client)
+
+        assert counts["delivered"] == 1
+        assert len(world.published) == 1
+        assert world.record.state is OwnerNotificationState.DELIVERED
+        assert world.record.attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_a_visit_that_outlived_its_claim_stops_at_its_first_write(
+        self, world, api_client, redis_client
+    ):
+        """A newer claim owns the record; the older visit may not overwrite it."""
+        from src.tasks.owner_notifications import (
+            OwnerNotificationOutcome,
+            deliver_owed_notification,
+        )
+        from src.tasks.supervisor import supervise_testing_stories
+
+        world.lost_transition_responses = 1
+        with pytest.raises(TimeoutError):
+            await supervise_testing_stories(api_client, redis_client)
+        owed = world.record
+        newer: list = []
+
+        async def _slow_publish(queue: str, fields: dict) -> None:
+            # While this visit is still publishing, a later cycle claims the record.
+            world.clock.elapse()
+            newer.append(world._claim_story("story-1"))
+            world.published.append(fields)
+
+        redis_client.publish_flat.side_effect = _slow_publish
+        outcome = await deliver_owed_notification(
+            api_client, redis_client, "story-1", owed, logger, story_record=True
+        )
+
+        assert newer[0].granted is True
+        assert outcome is OwnerNotificationOutcome.SUPERSEDED
+        assert world.record == newer[0].notification
+        assert world.record.state is OwnerNotificationState.OWED

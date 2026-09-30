@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import hashlib
 import json
 import os
@@ -10,7 +11,8 @@ import uuid
 
 import structlog
 
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient, RegistrySecretsNotRefreshedError
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairCommand
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.users_grant import (
@@ -46,6 +48,10 @@ logger = structlog.get_logger(__name__)
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
 _MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
+#: Logged when GitHub did not confirm withdrawing a PR's auto-merge request. The
+#: registry secrets were already refreshed that tick; the poller does not merge,
+#: and refreshes and asks again on the next poll.
+AUTO_MERGE_DISABLE_FAILED = "github_auto_merge_disable_failed"
 
 
 def _ci_failure_limit() -> int:
@@ -130,6 +136,7 @@ async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, ea
     *,
     owner: str,
     repo_name: str,
+    repository_url: str,
     story_id: str,
     project_id: str,
     head_sha: str,
@@ -162,6 +169,12 @@ async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, ea
         head_sha=deployed_commit_sha,
     )
     if verdict.state is ImagePublication.PUBLISHED:
+        timeline["deploy_observation"] = {
+            "story_id": story_id,
+            "project_id": project_id,
+            "repository_url": repository_url,
+            "observed_at": datetime.now(UTC).isoformat(),
+        }
         await api_client.update_story(story_id, {"generated_product_timeline": timeline})
         log.info(
             "poll_merged_images_published",
@@ -574,7 +587,59 @@ async def _park_story_for_merge_refusal(
     )
 
 
-async def _merge_open_pr_without_auto_merge(
+async def _take_over_auto_merge(
+    github: GitHubAppClient,
+    *,
+    owner: str,
+    repo_name: str,
+    pull_request: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Make an armed PR's registry secrets current, then withdraw its auto-merge request.
+
+    Such a request is left over from before the poller merged every product PR
+    itself. While it is armed GitHub may merge the PR by itself whenever checks
+    pass, so the secrets are written first, on every tick the PR is still armed,
+    and no outcome of the withdrawal can skip that write. A failed write is
+    logged with its typed reason and changes nothing else; the next tick writes
+    again. Refreshing never merges.
+
+    True once GitHub confirms the withdrawal, and the PR is under this poller's
+    sole control. False otherwise: the caller does not merge, and the next tick
+    refreshes and asks again.
+    """
+    pr_number = pull_request["number"]
+    try:
+        await github.refresh_registry_secrets(owner, repo_name)
+    except RegistrySecretsNotRefreshedError as error:
+        log.error(
+            "poll_merged_armed_pr_refresh_failed",
+            reason=error.reason.value,
+            pr_number=pr_number,
+            detail=error.detail,
+        )
+    pr_node_id = pull_request.get("node_id")
+    try:
+        if not pr_node_id:
+            raise ValueError("the pull request carries no GraphQL node id")
+        withdrawn = await github.disable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
+        detail = None if withdrawn else "GitHub did not confirm the auto-merge withdrawal"
+    except Exception as exc:
+        withdrawn = False
+        detail = redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ))))
+    if not withdrawn:
+        log.warning(
+            "poll_merged_auto_merge_takeover_failed",
+            reason=AUTO_MERGE_DISABLE_FAILED,
+            pr_number=pr_number,
+            detail=detail,
+        )
+        return False
+    log.info("poll_merged_auto_merge_taken_over", pr_number=pr_number)
+    return True
+
+
+async def _merge_open_pr(
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
     redis_client: RedisStreamClient,
@@ -586,12 +651,16 @@ async def _merge_open_pr_without_auto_merge(
     pull_request: dict,
     log: structlog.stdlib.BoundLogger,
 ) -> dict | None:
-    """Merge a green PR only when GitHub did not accept an auto-merge request.
+    """Merge a green PR through the App; this poller is its only automated merger.
 
-    Pending and CI-blocked PRs stay in the poll set for their normal next tick.
-    A refusal observed from GitHub is terminal for this automatic path, so it is
-    recorded with owner and administrator notices instead of being retried as a
-    warning forever.
+    A PR GitHub may still merge by itself (it carries an auto-merge request) has
+    its registry secrets refreshed on every tick before the request is withdrawn;
+    while GitHub has not confirmed the withdrawal, this poller does not merge it.
+    A PR under this poller's sole control is refreshed immediately before
+    ``merge_pull_request``, and parked if that write fails. Pending and CI-blocked PRs
+    stay in the poll set for their normal next tick. A refusal observed from
+    GitHub is terminal for this automatic path, so it is recorded with owner and
+    administrator notices instead of being retried as a warning forever.
     """
     pr_number = pull_request["number"]
     if pull_request.get("state") == "closed" and not pull_request.get("merged_at"):
@@ -607,10 +676,34 @@ async def _merge_open_pr_without_auto_merge(
             log=log,
         )
         return None
-    if pull_request.get("state") != "open" or pull_request.get("auto_merge") is not None:
+    if pull_request.get("state") != "open":
         return pull_request
+    if pull_request.get("auto_merge") is not None:
+        if not await _take_over_auto_merge(
+            github, owner=owner, repo_name=repo_name, pull_request=pull_request, log=log
+        ):
+            return pull_request
+        pull_request = {**pull_request, "auto_merge": None}
 
     mergeable_state = pull_request.get("mergeable_state")
+    if mergeable_state == "dirty":
+        story = await api_client.get_story(story_id)
+        command = PRConflictRepairCommand(
+            project_id=project_id,
+            pr_number=pr_number,
+            cycle_started_at=story.reopened_at or story.created_at,
+            expected_head_sha=pull_request["head"]["sha"],
+        )
+        repair = await api_client.repair_story_pr_conflicts(story_id, command)
+        log.info(
+            "poll_dirty_pr_repair",
+            outcome=repair.outcome,
+            task_id=repair.task_id,
+            pr_number=pr_number,
+        )
+        # The API commits both owed audiences on exhaustion. The normal durable
+        # notification sweep delivers them even if this poll dies after admission.
+        return None
     if mergeable_state == "behind":
         try:
             await github.update_pull_request_branch(owner, repo_name, pr_number)
@@ -647,6 +740,53 @@ async def _merge_open_pr_without_auto_merge(
             pr_number=pr_number,
             mergeable_state=mergeable_state,
             detail=detail,
+            log=log,
+        )
+        return None
+
+    return await _merge_clean_pr(
+        api_client,
+        github,
+        redis_client,
+        story_id=story_id,
+        project_id=project_id,
+        owner=owner,
+        repo_name=repo_name,
+        pr_number=pr_number,
+        log=log,
+    )
+
+
+async def _merge_clean_pr(
+    api_client: SchedulerAPIClient,
+    github: GitHubAppClient,
+    redis_client: RedisStreamClient,
+    *,
+    story_id: str,
+    project_id: str,
+    owner: str,
+    repo_name: str,
+    pr_number: int,
+    log: structlog.stdlib.BoundLogger,
+) -> dict | None:
+    mergeable_state = "clean"
+    # The merge starts the product's push-main CI, whose image builds read the
+    # registry secrets when they start. Make them current first, on every merge:
+    # an imported repository, or one created before a hostname or credential
+    # change, would otherwise build against stale values, and the deploy
+    # worker's own write comes after the merge, too late for that CI.
+    try:
+        await github.refresh_registry_secrets(owner, repo_name)
+    except RegistrySecretsNotRefreshedError as error:
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=f"the product repository's registry secrets were not refreshed: {error.detail}",
+            reason_code=error.reason.value,
             log=log,
         )
         return None
@@ -709,7 +849,7 @@ async def _current_pull_request(
     except Exception:
         log.exception("poll_merged_github_error", pr_number=pr_number)
         return None
-    return await _merge_open_pr_without_auto_merge(
+    return await _merge_open_pr(
         api_client,
         github,
         redis_client,
@@ -738,175 +878,179 @@ async def poll_merged_prs(
         return 0
 
     deployed = 0
-    github = GitHubAppClient()
+    # One GitHub HTTP pool spans every GitHub call of this poll and is closed on
+    # success and error alike.
+    async with GitHubAppClient() as github:
+        for story in stories:
+            story_id = story.id
+            project_id = str(story.project_id)
+            log = logger.bind(story_id=story_id, project_id=project_id)
 
-    for story in stories:
-        story_id = story.id
-        project_id = str(story.project_id)
-        log = logger.bind(story_id=story_id, project_id=project_id)
+            if not project_id:
+                continue
 
-        if not project_id:
-            continue
+            repo = await api_client.get_primary_repository(project_id)
+            if not repo:
+                log.warning("poll_merged_no_repo")
+                continue
 
-        repo = await api_client.get_primary_repository(project_id)
-        if not repo:
-            log.warning("poll_merged_no_repo")
-            continue
+            git_url = repo.git_url or ""
+            owner, repo_name = _parse_owner_repo(git_url)
 
-        git_url = repo.git_url or ""
-        owner, repo_name = _parse_owner_repo(git_url)
+            # complete_stories stores the exact PR number — use it for precise lookup.
+            # This prevents picking up stale merged PRs from previous QA fix cycles.
+            if not story.pr_number:
+                log.warning("poll_merged_no_pr_number")
+                continue
 
-        # complete_stories stores the exact PR number — use it for precise lookup.
-        # This prevents picking up stale merged PRs from previous QA fix cycles.
-        if not story.pr_number:
-            log.warning("poll_merged_no_pr_number")
-            continue
-
-        pr_data = await _current_pull_request(
-            api_client,
-            github,
-            redis_client,
-            story_id=story_id,
-            project_id=project_id,
-            owner=owner,
-            repo_name=repo_name,
-            pr_number=story.pr_number,
-            log=log,
-        )
-        if pr_data is None or not pr_data.get("merged_at"):
-            continue
-
-        merged_pr = pr_data
-        head_sha = merged_pr.get("head", {}).get("sha", "")
-        # What the story produced and what gets deployed are two different
-        # commits. No merge method makes the branch's new HEAD equal the pull
-        # request head — a merge creates a commit, squash and rebase rewrite
-        # one — and the project's CI publishes images from the branch, so the
-        # deployed commit is the merge commit and nothing else.
-        deployed_commit_sha = merged_pr.get("merge_commit_sha") or ""
-        log.info(
-            "poll_merged_pr_found",
-            pr_number=merged_pr["number"],
-            merged_at=merged_pr["merged_at"],
-            deployed_commit_sha=deployed_commit_sha,
-        )
-        if not deployed_commit_sha:
-            # Fail closed rather than deploying the pull request head: its
-            # images are never published, so the deploy would pull nothing or,
-            # worse, something else.
-            log.error("poll_merged_no_merge_commit_sha", pr_number=merged_pr["number"])
-            continue
-
-        # Nothing is created until this commit's images exist. The story stays in
-        # PR_REVIEW while the project's CI is still building, so the next tick
-        # asks again; the bound is measured from the merge, so it cannot be
-        # restarted by asking.
-        if not await _images_ready_for_deploy(
-            api_client,
-            github,
-            redis_client,
-            owner=owner,
-            repo_name=repo_name,
-            story_id=story_id,
-            project_id=project_id,
-            head_sha=head_sha,
-            deployed_commit_sha=deployed_commit_sha,
-            pull_request=merged_pr,
-            existing_timeline=getattr(story, "generated_product_timeline", None),
-            log=log,
-        ):
-            continue
-
-        recipient = await resolve_project_recipient(
-            api_client, str(project_id), event="deploy_after_pr_merge", story_id=story_id
-        )
-
-        # Determine action: "create" for first deploy, "feature" for subsequent
-        all_stories = await api_client.get_stories_by_project(project_id)
-        has_completed = any(s.status in _COMPLETED_STATUSES for s in all_stories)
-        action = "feature" if has_completed else "create"
-
-        # Initial access is an intent lifecycle, never a stable deploy Run.
-        # Every merged PR has its own immutable attempt even before a story has
-        # completed, which prevents QA/fix cycles from reusing an old SHA.
-        seed_lifecycle = None
-        if await _needs_initial_owner_seed(api_client, project_id, action):
-            seed_lifecycle = GrantIntentLifecycleResult.model_validate(
-                await api_client.resume_initial_owner_grant(
-                    project_id,
-                    story_id=story_id,
-                    head_sha=head_sha,
-                    deployed_commit_sha=deployed_commit_sha,
-                )
+            pr_data = await _current_pull_request(
+                api_client,
+                github,
+                redis_client,
+                story_id=story_id,
+                project_id=project_id,
+                owner=owner,
+                repo_name=repo_name,
+                pr_number=story.pr_number,
+                log=log,
             )
+            if pr_data is None or not pr_data.get("merged_at"):
+                continue
+
+            merged_pr = pr_data
+            head_sha = merged_pr.get("head", {}).get("sha", "")
+            # What the story produced and what gets deployed are two different
+            # commits. No merge method makes the branch's new HEAD equal the pull
+            # request head — a merge creates a commit, squash and rebase rewrite
+            # one — and the project's CI publishes images from the branch, so the
+            # deployed commit is the merge commit and nothing else.
+            deployed_commit_sha = merged_pr.get("merge_commit_sha") or ""
             log.info(
-                "poll_merged_initial_owner_lifecycle",
-                intent_id=seed_lifecycle.intent_id,
-                disposition=seed_lifecycle.disposition.value,
-                run_id=seed_lifecycle.execution_run_id,
+                "poll_merged_pr_found",
+                pr_number=merged_pr["number"],
+                merged_at=merged_pr["merged_at"],
+                deployed_commit_sha=deployed_commit_sha,
             )
-            if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
-                # Failed straight out of PR_REVIEW. Moving the story to DEPLOYING
-                # first and then failing it here was two Story transitions on one
-                # code path, and the intermediate DEPLOYING had no owner.
-                await api_client.fail_story(story_id)
-                await notify_admins_best_effort(
-                    f"Grant intent deployment retries exhausted for story {story_id}",
-                    level="error",
-                    story_id=story_id,
+            if not deployed_commit_sha:
+                # Fail closed rather than deploying the pull request head: its
+                # images are never published, so the deploy would pull nothing or,
+                # worse, something else.
+                log.error("poll_merged_no_merge_commit_sha", pr_number=merged_pr["number"])
+                continue
+
+            # Nothing is created until this commit's images exist. The story stays in
+            # PR_REVIEW while the project's CI is still building, so the next tick
+            # asks again; the bound is measured from the merge, so it cannot be
+            # restarted by asking.
+            if not await _images_ready_for_deploy(
+                api_client,
+                github,
+                redis_client,
+                owner=owner,
+                repo_name=repo_name,
+                repository_url=git_url,
+                story_id=story_id,
+                project_id=project_id,
+                head_sha=head_sha,
+                deployed_commit_sha=deployed_commit_sha,
+                pull_request=merged_pr,
+                existing_timeline=getattr(story, "generated_product_timeline", None),
+                log=log,
+            ):
+                continue
+
+            recipient = await resolve_project_recipient(
+                api_client, str(project_id), event="deploy_after_pr_merge", story_id=story_id
+            )
+
+            # Determine action: "create" for first deploy, "feature" for subsequent
+            all_stories = await api_client.get_stories_by_project(project_id)
+            has_completed = any(s.status in _COMPLETED_STATUSES for s in all_stories)
+            action = "feature" if has_completed else "create"
+
+            # Initial access is an intent lifecycle, never a stable deploy Run.
+            # Every merged PR has its own immutable attempt even before a story has
+            # completed, which prevents QA/fix cycles from reusing an old SHA.
+            seed_lifecycle = None
+            if await _needs_initial_owner_seed(api_client, project_id, action):
+                seed_lifecycle = GrantIntentLifecycleResult.model_validate(
+                    await api_client.resume_initial_owner_grant(
+                        project_id,
+                        story_id=story_id,
+                        head_sha=head_sha,
+                        deployed_commit_sha=deployed_commit_sha,
+                        merged_pr_number=story.pr_number,
+                    )
                 )
-                continue
-
-        # The story leaves PR_REVIEW exactly once, on the paths that are actually
-        # taking it further.
-        await api_client.transition_story(story_id, "deploy")
-
-        if seed_lifecycle is not None:
-            if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
-                deployed += 1
-                continue
-            if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
                 log.info(
-                    "poll_merged_initial_owner_intent_in_flight",
+                    "poll_merged_initial_owner_lifecycle",
                     intent_id=seed_lifecycle.intent_id,
+                    disposition=seed_lifecycle.disposition.value,
+                    run_id=seed_lifecycle.execution_run_id,
                 )
-                continue
-            if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
-                log.info(
-                    "poll_merged_initial_owner_intent_stale_target",
-                    intent_id=seed_lifecycle.intent_id,
-                )
-                continue
+                if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+                    # The API committed the current matching Story stop and
+                    # both owed notices with exhaustion. A stale result grants
+                    # no authority to stop whatever work is now current.
+                    if seed_lifecycle.exhaustion is None:
+                        raise ValueError("initial-owner exhaustion requires typed readback")
+                    log.warning(
+                        "poll_merged_initial_owner_exhausted",
+                        retry_action=seed_lifecycle.exhaustion.action,
+                        exhausted_execution_run_id=seed_lifecycle.exhaustion.exhausted_execution_run_id,
+                    )
+                    continue
 
-        run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
-        run_data = {
-            "id": run_id,
-            "type": "deploy",
-            "project_id": str(project_id),
-            "story_id": story_id,
-            "run_metadata": {
-                "triggered_by": "pr_poll",
-                "head_sha": head_sha,
-                "deployed_commit_sha": deployed_commit_sha,
-            },
-        }
-        await api_client.create_run(run_data)
+            # The story leaves PR_REVIEW exactly once, on the paths that are actually
+            # taking it further.
+            await api_client.transition_story(story_id, "deploy")
 
-        deploy_msg = DeployMessage(
-            task_id=run_id,
-            project_id=str(project_id),
-            telegram_chat_id=recipient.telegram_chat_id,
-            unaddressed_reason=recipient.unaddressed_reason,
-            story_id=story_id,
-            triggered_by=DeployTrigger.WEBHOOK,
-            action=action,
-            head_sha=head_sha,
-            deployed_commit_sha=deployed_commit_sha,
-        )
-        await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
+            if seed_lifecycle is not None:
+                if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+                    deployed += 1
+                    continue
+                if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+                    log.info(
+                        "poll_merged_initial_owner_intent_in_flight",
+                        intent_id=seed_lifecycle.intent_id,
+                    )
+                    continue
+                if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+                    log.info(
+                        "poll_merged_initial_owner_intent_stale_target",
+                        intent_id=seed_lifecycle.intent_id,
+                    )
+                    continue
 
-        log.info("poll_merged_deploy_triggered", run_id=run_id)
-        deployed += 1
+            run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
+            run_data = {
+                "id": run_id,
+                "type": "deploy",
+                "project_id": str(project_id),
+                "story_id": story_id,
+                "run_metadata": {
+                    "triggered_by": "pr_poll",
+                    "head_sha": head_sha,
+                    "deployed_commit_sha": deployed_commit_sha,
+                },
+            }
+            await api_client.create_run(run_data)
+
+            deploy_msg = DeployMessage(
+                task_id=run_id,
+                project_id=str(project_id),
+                telegram_chat_id=recipient.telegram_chat_id,
+                unaddressed_reason=recipient.unaddressed_reason,
+                story_id=story_id,
+                triggered_by=DeployTrigger.WEBHOOK,
+                action=action,
+                head_sha=head_sha,
+                deployed_commit_sha=deployed_commit_sha,
+            )
+            await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
+
+            log.info("poll_merged_deploy_triggered", run_id=run_id)
+            deployed += 1
 
     return deployed
 
@@ -927,77 +1071,78 @@ async def poll_ci_failures(
         return 0
 
     fixed = 0
-    github = GitHubAppClient()
+    # One GitHub HTTP pool spans every GitHub call of this poll and is closed on
+    # success and error alike.
+    async with GitHubAppClient() as github:
+        for story in stories:
+            story_id = story.id
+            project_id = str(story.project_id)
+            log = logger.bind(story_id=story_id, project_id=project_id)
 
-    for story in stories:
-        story_id = story.id
-        project_id = str(story.project_id)
-        log = logger.bind(story_id=story_id, project_id=project_id)
+            repo = await api_client.get_primary_repository(project_id)
+            if not repo:
+                continue
 
-        repo = await api_client.get_primary_repository(project_id)
-        if not repo:
-            continue
+            git_url = repo.git_url or ""
+            owner, repo_name = _parse_owner_repo(git_url)
+            branch = f"story/{story_id}"
 
-        git_url = repo.git_url or ""
-        owner, repo_name = _parse_owner_repo(git_url)
-        branch = f"story/{story_id}"
-
-        try:
-            run = await github.get_latest_workflow_run(
-                owner,
-                repo_name,
-                workflow_file="ci.yml",
-                branch=branch,
-            )
-        except Exception:
-            log.exception("poll_ci_github_error")
-            continue
-
-        if not run:
-            continue
-
-        if run.get("status") != "completed":
-            continue
-
-        if run.get("conclusion") != "failure":
-            continue
-
-        run_url = run.get("html_url", "")
-        run_id = run.get("id", "")
-        log.info("poll_ci_failure_detected", run_url=run_url, run_id=run_id)
-
-        pull_request = {"number": getattr(story, "pr_number", None)}
-        if isinstance(pull_request["number"], int):
             try:
-                pull_request = await github.get_pull_request(
-                    owner, repo_name, pull_request["number"]
+                run = await github.get_latest_workflow_run(
+                    owner,
+                    repo_name,
+                    workflow_file="ci.yml",
+                    branch=branch,
                 )
             except Exception:
-                log.exception(
-                    "poll_ci_pull_request_error",
-                    run_id=run_id,
-                    pr_number=pull_request["number"],
-                )
+                log.exception("poll_ci_github_error")
+                continue
 
-        try:
-            created = await _handle_failed_run(
-                api_client,
-                github,
-                redis_client,
-                owner=owner,
-                repo_name=repo_name,
-                story_id=story_id,
-                project_id=project_id,
-                branch=branch,
-                run=run,
-                pull_request=pull_request,
-                existing_timeline=getattr(story, "generated_product_timeline", None),
-            )
-        except Exception:
-            log.exception("poll_ci_handle_failure_error", run_id=run_id)
-            continue
-        if created:
-            log.info("poll_ci_fix_task_created", run_url=run_url)
-            fixed += 1
+            if not run:
+                continue
+
+            if run.get("status") != "completed":
+                continue
+
+            if run.get("conclusion") != "failure":
+                continue
+
+            run_url = run.get("html_url", "")
+            run_id = run.get("id", "")
+            log.info("poll_ci_failure_detected", run_url=run_url, run_id=run_id)
+
+            pull_request = {"number": getattr(story, "pr_number", None)}
+            if isinstance(pull_request["number"], int):
+                try:
+                    pull_request = await github.get_pull_request(
+                        owner, repo_name, pull_request["number"]
+                    )
+                except Exception:
+                    log.exception(
+                        "poll_ci_pull_request_error",
+                        run_id=run_id,
+                        pr_number=pull_request["number"],
+                    )
+
+            try:
+                created = await _handle_failed_run(
+                    api_client,
+                    github,
+                    redis_client,
+                    owner=owner,
+                    repo_name=repo_name,
+                    story_id=story_id,
+                    project_id=project_id,
+                    branch=branch,
+                    run=run,
+                    pull_request=pull_request,
+                    existing_timeline=getattr(story, "generated_product_timeline", None),
+                )
+            except Exception:
+                log.exception("poll_ci_handle_failure_error", run_id=run_id)
+                continue
+            if created:
+                log.info("poll_ci_fix_task_created", run_url=run_url)
+                fixed += 1
 
     return fixed

@@ -17,6 +17,7 @@ services:
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LK_JWT_SECRET: ${LK_JWT_SECRET}
+      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:?DEFAULT_AGENT_TYPE must be set to claude, factory or codex}
       QA_EXECUTOR_AGENT_TYPE: ${QA_EXECUTOR_AGENT_TYPE:-codex}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: api
@@ -58,13 +59,21 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
-      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
+      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:?DEFAULT_AGENT_TYPE must be set to claude, factory or codex}
       GITHUB_ORG: ${GITHUB_ORG}
       PO_LLM_MODEL: ${PO_LLM_MODEL:-}
       PO_LLM_BASE_URL: ${PO_LLM_BASE_URL:-}
       PO_LLM_API_KEY: ${PO_LLM_API_KEY:-}
       CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?options=-c%20search_path%3Dlanggraph
       SUMMARIZATION_MODEL: ${SUMMARIZATION_MODEL}
+      # The codex and claude channels of the PO's LLM channel chain (docs/NODES.md):
+      # the Codex workers' own profile, mounted read-write below, and the Claude
+      # subscription token. LLM_CODEX_HOME stays empty while HOST_CODEX_HOME is unset.
+      LLM_CODEX_HOME: ${HOST_CODEX_HOME:+/llm-codex-home}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # Optional OpenRouter management key for the balance check (src/llm/openrouter.py);
+      # empty, the check reads the balance with PO_LLM_API_KEY. langgraph only.
+      OPENROUTER_MANAGEMENT_KEY: ${OPENROUTER_MANAGEMENT_KEY:-}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: langgraph
@@ -72,6 +81,9 @@ services:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
+      # Read-write: a token refresh by the codex channel must reach the same file the
+      # Codex workers read. The CLI runs as the profile's owner (src/llm/cli_turn.py).
+      - ${HOST_CODEX_HOME:-./secrets/codex-unconfigured}:/llm-codex-home
     depends_on:
       db:
         condition: service_healthy
@@ -155,8 +167,8 @@ services:
       # `internal` is how this service reaches the API and Redis. `qa_egress` is
       # the only thing the QA executor's container can see of the platform: one
       # per-run endpoint, on an ephemeral port, holding no credential of its own.
-      # That network has no route off itself, so the endpoint is the executor's
-      # only way to the deployment — see the `qa_egress` definition below.
+      # That network has no route off itself; the executor's only other door is
+      # its run's egress proxy (model backend, deploy target, Telegram).
       - internal
       - qa_egress
     restart: unless-stopped
@@ -206,15 +218,20 @@ services:
     environment:
       API_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
       ARCHITECT_LLM_API_KEY: ${ARCHITECT_LLM_API_KEY:-}
       ARCHITECT_LLM_BASE_URL: ${ARCHITECT_LLM_BASE_URL:-}
       ARCHITECT_LLM_MODEL: ${ARCHITECT_LLM_MODEL:-}
+      # The codex and claude channels of the Architect's chain, as for langgraph.
+      LLM_CODEX_HOME: ${HOST_CODEX_HOME:+/llm-codex-home}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: architect
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
+      - ${HOST_CODEX_HOME:-./secrets/codex-unconfigured}:/llm-codex-home
     depends_on:
       - api
       - redis
@@ -264,8 +281,10 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
-      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
+      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:?DEFAULT_AGENT_TYPE must be set to claude, factory or codex}
       LK_DOMAIN: ${LK_DOMAIN}
+      TELEGRAM_MAX_CONCURRENT_UPDATES: ${TELEGRAM_MAX_CONCURRENT_UPDATES:?TELEGRAM_MAX_CONCURRENT_UPDATES must be set to at least 2}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: telegram-bot
     volumes:
@@ -311,9 +330,9 @@ services:
       SCAFFOLDED_WORKSPACE_PATH: /data/workspaces
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
-      # The QA executor's network, and the only destinations its per-run egress
-      # proxy opens. Empty backend lists mean the built-in defaults for the
-      # assigned CLI. Worker creation fails closed if this network is not
+      # The QA executor's network, and the model backends its per-run egress
+      # proxy opens besides the run's deploy target and Telegram. Empty backend
+      # lists mean the built-in defaults for the assigned CLI. Worker creation fails closed if this network is not
       # internal — a QA run never starts with an unrestricted container.
       QA_EGRESS_NETWORK: codegen_qa_egress
       QA_CLAUDE_BACKEND_HOSTS: ${QA_CLAUDE_BACKEND_HOSTS:-}
@@ -390,7 +409,13 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
+      # The PR poller and story completion write these into a product repository
+      # as its registry secrets before every merge they perform or enable.
+      ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
+      REGISTRY_USER: ${REGISTRY_USER}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-pipeline
     command: ["python", "-m", "src.pipeline"]
@@ -428,6 +453,7 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-infrastructure
@@ -468,6 +494,7 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-maintenance
@@ -598,6 +625,7 @@ services:
     restart: unless-stopped
 
   admin-frontend:
+    image: codegen-orchestrator/admin-frontend:local
     build:
       context: services/admin-frontend
       dockerfile: Dockerfile
@@ -618,6 +646,7 @@ services:
     restart: unless-stopped
 
   user-dashboard:
+    image: codegen-orchestrator/user-dashboard:local
     build:
       context: services/user-dashboard
       dockerfile: Dockerfile
@@ -707,11 +736,13 @@ networks:
   worker:
     name: codegen_worker
   # The QA executor's whole world. `internal: true` is not decoration: it is
-  # what makes "exploratory QA cannot write to the application" a fact about
-  # routing rather than a rule in a prompt. A container attached to this and to
-  # nothing else cannot reach the deployment's public URL, the fleet, or the
-  # internet — only the two services attached here, and the run's own egress
-  # proxy, which opens the assigned CLI's model backend and nothing else.
+  # what makes the executor's reach a fact about routing rather than a rule in a
+  # prompt. A container attached to this and to nothing else cannot reach the
+  # fleet, the platform or the internet — only the two services attached here,
+  # and the run's own egress proxy, which opens the assigned CLI's model
+  # backend, the run's deploy target and Telegram. That no direct application
+  # write is made there is QA policy and the runtime's evidence guard, not this
+  # network.
   # worker-manager refuses to start a QA executor if this network is missing or
   # is not internal.
   qa_egress:

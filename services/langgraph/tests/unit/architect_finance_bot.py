@@ -174,6 +174,7 @@ _QA_ACTION = re.compile(r"telegram|телеграм|\bGET /|FIRE JOB|button|кн
 _UPLOAD = re.compile(r"фото|скриншот|photo|screenshot|file|файл|upload", re.IGNORECASE)
 _NOT_QA_VERIFIABLE = re.compile(r"not\s+QA[\s-]verifiable", re.IGNORECASE)
 _READ_OBSERVABLE = re.compile(r"\bGET /")
+_TELEGRAM = re.compile(r"telegram|телеграм", re.IGNORECASE)
 #: An ask-back form, unless negated: «не спрашивая», «без уточнения», "without asking back"
 #: describe storing without asking.
 _ASK_BACK = re.compile(
@@ -208,8 +209,9 @@ def assert_one_criterion_per_usage_example(
 ) -> None:
     """Every example of a planned requirement is its own QA line naming that requirement.
 
-    An example whose sending is an upload may be checked through a GET of its
-    observable or carry the `not QA-verifiable` marker, but it has a line. The
+    An example whose sending is an upload is sent by QA over Telegram (the QA
+    capability catalogue offers a photo or file), checked through a GET of its
+    observable, or carries the `not QA-verifiable` marker, but it has a line. The
     examples of a returned requirement have none: nothing builds them yet.
 
     `unreachable` holds the `user_sends` of examples whose precondition central
@@ -242,8 +244,11 @@ def assert_one_criterion_per_usage_example(
             )
         if any(_UPLOAD.search(example.user_sends) for example in examples):
             assert any(
-                _NOT_QA_VERIFIABLE.search(line) or _READ_OBSERVABLE.search(line) for line in naming
-            ), f"upload example of {requirement.id} is neither observed nor marked:\n{naming}"
+                _NOT_QA_VERIFIABLE.search(line)
+                or _READ_OBSERVABLE.search(line)
+                or _TELEGRAM.search(line)
+                for line in naming
+            ), f"upload example of {requirement.id} is neither sent, observed nor marked:\n{naming}"
 
 
 def assert_balance_is_judged_from_its_start(api: FinanceBotApi) -> None:

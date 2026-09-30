@@ -25,10 +25,17 @@ from telegram.ext import (
     filters,
 )
 
-from shared.contracts.queues.po import POUserMessage, to_flat_fields
+from shared.contracts.queues.po import (
+    POPayloadProtectionError,
+    POResponse,
+    POUserMessage,
+    to_flat_fields,
+    unprotect_po_payload,
+)
 from shared.engineering_budget_display import format_microusd
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
-from shared.redis import RedisStreamClient, decode_redis_fields
+from shared.redis import RedisStreamClient
+from shared.redis.po import verify_po_storage
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -43,8 +50,9 @@ from .notifications import ProvisionerNotifier  # noqa: E402
 from .proactive import (  # noqa: E402
     PROACTIVE_RECLAIM_IDLE_MS,
     process_proactive_entry,
-    send_message_to_chat,
+    send_text,
 )
+from .update_processor import UserUpdateProcessor  # noqa: E402
 
 logger = structlog.get_logger()
 
@@ -64,18 +72,9 @@ def get_stream_client() -> RedisStreamClient:
 # PO response settings
 PO_RESPONSE_TIMEOUT_S = 60
 TYPING_INTERVAL_S = 5
-
-
-async def _post_rag_message(payload: dict) -> None:
-    """Log message to RAG system (fire and forget)."""
-    headers = {}
-    if payload.get("telegram_id"):
-        headers["X-Telegram-ID"] = str(payload["telegram_id"])
-
-    try:
-        await api_client.post_json("rag/messages", headers=headers, json=payload)
-    except httpx.HTTPError as e:
-        logger.warning("rag_message_log_failed", error=str(e))
+# What the user sees when their message could not be answered. Fixed on purpose:
+# exception text is for the logs, never for the chat.
+MESSAGE_FAILED_REPLY = "Не удалось обработать сообщение. Попробуйте позже."
 
 
 async def start(update: Update, context) -> None:
@@ -240,7 +239,7 @@ async def _read_po_response(
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error("po_response_xread_error", error=str(e))
+            logger.error("po_response_xread_error", error_type=type(e).__name__)
             await asyncio.sleep(0.5)
             continue
 
@@ -250,7 +249,11 @@ async def _read_po_response(
         for _stream_name, stream_messages in messages:
             if stream_messages:
                 _msg_id, data = stream_messages[0]
-                return decode_redis_fields(data)
+                logical = unprotect_po_payload(response_stream, data)
+                try:
+                    return to_flat_fields(POResponse.model_validate(logical))
+                except Exception:
+                    raise POPayloadProtectionError("PO response validation failed") from None
 
     return None
 
@@ -311,8 +314,7 @@ async def _send_to_po_and_wait(
 
         # Check for error response
         if data.get("error") == "true":
-            error_text = data.get("text", "Unknown error")
-            raise RuntimeError(error_text)
+            raise RuntimeError("PO returned an error response")
 
         response_text = data.get("text", "")
         if not response_text:
@@ -332,7 +334,7 @@ async def _send_to_po_and_wait(
         try:
             await client.redis.delete(response_stream)
         except Exception as e:
-            logger.debug("response_stream_cleanup_failed", error=str(e))
+            logger.debug("response_stream_cleanup_failed", error_type=type(e).__name__)
 
 
 async def handle_message(update: Update, context) -> None:
@@ -346,25 +348,11 @@ async def handle_message(update: Update, context) -> None:
 
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    message_id = update.message.message_id
     text = update.message.text
 
     logger.info("message_received", user_id=user_id, text_length=len(text) if text else 0)
 
     try:
-        # Log user message to RAG (fire and forget)
-        asyncio.create_task(
-            _post_rag_message(
-                {
-                    "telegram_id": user_id,
-                    "role": "user",
-                    "message_text": text,
-                    "message_id": str(message_id),
-                    "source": "telegram",
-                }
-            )
-        )
-
         if _stream_client is None:
             raise RuntimeError("Redis client not initialized")
 
@@ -386,11 +374,11 @@ async def handle_message(update: Update, context) -> None:
         logger.warning("po_response_timeout", user_id=user_id)
         await update.message.reply_text("Таймаут ожидания ответа. Попробуйте позже.")
     except RuntimeError as e:
-        logger.error("po_response_error", error=str(e), user_id=user_id)
-        await update.message.reply_text(f"Ошибка: {e!s}")
+        logger.error("po_response_error", error_type=type(e).__name__, user_id=user_id)
+        await update.message.reply_text(MESSAGE_FAILED_REPLY)
     except Exception as e:
-        logger.error("message_handling_failed", error=str(e), user_id=user_id)
-        await update.message.reply_text(f"Ошибка: {e!s}")
+        logger.error("message_handling_failed", error_type=type(e).__name__, user_id=user_id)
+        await update.message.reply_text(MESSAGE_FAILED_REPLY)
 
 
 class ProactiveListener:
@@ -442,8 +430,8 @@ class ProactiveListener:
 
 
 async def _send_response_to_user(app: Application, telegram_chat_id: int, text: str) -> None:
-    """Send response text to Telegram user with markdown fallback."""
-    await send_message_to_chat(app.bot, telegram_chat_id, text)
+    """Send PO's reply to the Telegram user."""
+    await send_text(app.bot, telegram_chat_id, text)
     logger.info("worker_response_sent", telegram_chat_id=telegram_chat_id, text_length=len(text))
 
 
@@ -456,6 +444,7 @@ async def post_init(app: Application) -> None:
     # Single RedisStreamClient for all operations (message handling + consumer listeners)
     _stream_client = RedisStreamClient(redis_url=settings.redis_url)
     await _stream_client.connect()
+    await verify_po_storage(_stream_client.redis)
 
     # Start provisioner notifications listener
     admin_ids = settings.get_admin_ids()
@@ -510,7 +499,12 @@ def main() -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
     app = (
-        Application.builder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
+        Application.builder()
+        .token(token)
+        .concurrent_updates(UserUpdateProcessor(get_settings().telegram_max_concurrent_updates))
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
     )
 
     # Command handlers

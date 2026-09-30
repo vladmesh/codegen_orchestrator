@@ -11,7 +11,9 @@ from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
+from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.product_brief import (
+    ProductBriefAdmissionCommand,
     ProductBriefAdmissionRead,
     ProductBriefPlanningAttemptCommand,
     ProductBriefPlanningAttemptRead,
@@ -20,10 +22,25 @@ from shared.contracts.dto.product_brief import (
     RequirementCoverageRead,
 )
 from shared.contracts.dto.project import ProjectDTO
+from shared.contracts.dto.qa_probe_library import (
+    QAProbeLibraryEntry,
+    QAProbeLibraryStored,
+    QAProbeLibraryStoreFromRun,
+)
+from shared.contracts.dto.qa_verification import (
+    QAVerificationGapsFromRun,
+    QAVerificationGapsRecorded,
+)
 from shared.contracts.dto.repository import RepositoryDTO
-from shared.contracts.dto.run import RunDTO
+from shared.contracts.dto.run import RunDTO, RunType
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story_failure import StoryFailure
+from shared.contracts.dto.story_planning import (
+    PlanningChannels,
+    StoryPlanning,
+    StoryPlanningReport,
+)
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.telegram import BotLiveness
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
@@ -138,6 +155,13 @@ class LanggraphAPIClient(InternalAPIClient):
         data = await self._get_json(f"runs/{run_id}")
         return RunDTO.model_validate(data)
 
+    async def list_story_engineering_runs(self, story_id: str) -> list[RunDTO]:
+        """Every engineering attempt of one story, newest first."""
+        data = await self._get_json(
+            "runs/", params={"story_id": story_id, "run_type": RunType.ENGINEERING.value}
+        )
+        return [RunDTO.model_validate(run) for run in data]
+
     async def get_users_grant_intent(self, project_id: str, intent_id: str) -> GrantIntent:
         data = await self._get_json(f"projects/{project_id}/users/grant-intents/{intent_id}")
         return GrantIntent.model_validate(data)
@@ -226,9 +250,6 @@ class LanggraphAPIClient(InternalAPIClient):
                 "status": "not_deployed",
             }
         )
-
-    async def query_rag(self, payload: dict) -> dict:
-        return await self._post_json("rag/query", json=payload)
 
     async def create_incident(self, payload: dict) -> dict:
         return await self._post_json("incidents/", json=payload)
@@ -349,10 +370,24 @@ class LanggraphAPIClient(InternalAPIClient):
         return [RequirementCoverageRead.model_validate(row) for row in resp.json()]
 
     async def admit_product_brief_coverage(
-        self, brief_id: str, planning_attempt_id: str
+        self,
+        brief_id: str,
+        planning_attempt_id: str,
+        *,
+        channels: PlanningChannels,
+        reopen: bool = False,
     ) -> ProductBriefAdmissionRead:
-        """Cross the coverage-to-dispatch boundary once. The API releases, not us."""
-        command = ProductBriefPlanningAttemptCommand(planning_attempt_id=planning_attempt_id)
+        """Cross the coverage-to-dispatch boundary once. The API releases, not us.
+
+        The channels that planned the story ride on the admission, which records
+        them on the story in the same transaction as the release.
+        """
+        command = ProductBriefAdmissionCommand(
+            planning_attempt_id=planning_attempt_id,
+            channels=channels.channels,
+            channel_failures=channels.channel_failures,
+            reopen=reopen,
+        )
         resp = await self.request(
             "POST",
             f"product-briefs/{brief_id}/admit",
@@ -365,6 +400,11 @@ class LanggraphAPIClient(InternalAPIClient):
     async def get_story(self, story_id: str) -> StoryDTO:
         resp = await self.request("GET", f"stories/{story_id}")
         return StoryDTO.model_validate(resp.json())
+
+    async def get_story_owner_notification(self, story_id: str) -> OwnerNotification:
+        return OwnerNotification.model_validate(
+            await self.get(f"stories/{story_id}/owner-notification")
+        )
 
     async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
         resp = await self.request("GET", "tasks/", params={"story_id": story_id})
@@ -385,6 +425,33 @@ class LanggraphAPIClient(InternalAPIClient):
     async def transition_story(self, story_id: str, action: str) -> StoryDTO:
         resp = await self.request("POST", f"stories/{story_id}/{action}")
         return StoryDTO.model_validate(resp.json())
+
+    async def stop_story(
+        self, story_id: str, action: str, failure: StoryFailure, *, actor: str
+    ) -> StoryDTO:
+        """Fail or park a story with the typed reason it stopped (`fail` / `human-review`)."""
+        if action not in {"fail", "human-review"}:
+            raise ValueError(f"{action} is not a stopping story action")
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/{action}",
+            json={"actor": actor, "failure": failure.model_dump(mode="json")},
+        )
+        return StoryDTO.model_validate(resp.json())
+
+    async def record_planning_outcome(
+        self, story_id: str, report: StoryPlanningReport
+    ) -> StoryPlanning:
+        """Report one planning attempt; the API answers with what the story does next."""
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/planning-outcome",
+            json=report.model_dump(mode="json"),
+        )
+        planning = StoryDTO.model_validate(resp.json()).planning
+        if planning is None:
+            raise RuntimeError(f"planning outcome of {story_id} came back unrecorded")
+        return planning
 
     # --- Phase 4: Project methods ---
 
@@ -409,6 +476,32 @@ class LanggraphAPIClient(InternalAPIClient):
         runtime — see `bot_liveness_path` for the surface this is the client of.
         """
         return BotLiveness.model_validate(await self._get_json(bot_liveness_path(project_id)))
+
+    async def list_qa_probes(self, project_id: str) -> list[QAProbeLibraryEntry]:
+        """This project's stored QA probe library."""
+        entries = await self._get_json(f"projects/{project_id}/qa-probes")
+        return [QAProbeLibraryEntry.model_validate(entry) for entry in entries]
+
+    async def store_qa_probes_from_run(self, project_id: str, run_id: str) -> QAProbeLibraryStored:
+        """Store a passed QA Run's eligible probes in its project's library."""
+        body = QAProbeLibraryStoreFromRun(run_id=run_id)
+        return QAProbeLibraryStored.model_validate(
+            await self._post_json(
+                f"projects/{project_id}/qa-probes/from-run", json=body.model_dump(mode="json")
+            )
+        )
+
+    async def record_verification_gaps_from_run(
+        self, project_id: str, run_id: str
+    ) -> QAVerificationGapsRecorded:
+        """Write a settled QA Run's unverified checks on its project as verification gaps."""
+        body = QAVerificationGapsFromRun(run_id=run_id)
+        return QAVerificationGapsRecorded.model_validate(
+            await self._post_json(
+                f"projects/{project_id}/verification-gaps/from-run",
+                json=body.model_dump(mode="json"),
+            )
+        )
 
     async def merge_secrets(
         self, project_id: str, secrets: dict[str, str], env_hints: dict[str, str] | None = None

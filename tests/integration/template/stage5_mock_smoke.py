@@ -105,6 +105,7 @@ class Stage5Smoke:
     artifact: Path
     command_timeout: int = COMMAND_TIMEOUT_SECONDS
     installed_packages: list[dict[str, str]] = field(default_factory=list)
+    completed_phases: list[str] = field(default_factory=list)
 
     @classmethod
     def create(
@@ -145,6 +146,12 @@ class Stage5Smoke:
                 "smoke-probe",
                 "SMOKE_RUNNER=backend",
                 "SMOKE_URL=http://backend:8000/health",
+            )
+            self._run_make(
+                "worker-call",
+                "SMOKE_RUNNER=backend",
+                "method=GET",
+                "url=http://backend:8000/health",
             )
             self._exercise_generated_access_lifecycle()
             self._prove_kit_package_install(resolved_commit)
@@ -287,6 +294,7 @@ class Stage5Smoke:
                     "error": error,
                     "compose_project_name": self.compose_project_name,
                     "installed_packages": list(self.installed_packages),
+                    "completed_phases": list(self.completed_phases),
                 },
                 indent=2,
             )
@@ -587,6 +595,8 @@ asyncio.run(verify_denial())
                 f"Phase {phase} failed ({result.returncode}): {' '.join(command)}\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
+        if result.returncode == 0:
+            self.completed_phases.append(phase)
         return result
 
 

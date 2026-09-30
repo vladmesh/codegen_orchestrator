@@ -26,6 +26,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PULL_SCRIPT = REPO_ROOT / "infra" / "scripts" / "pull-worker-images.sh"
+RETAG_SCRIPT = REPO_ROOT / "infra" / "scripts" / "retag-worker-images.sh"
 CHAIN = ("worker-base-common", "worker-base-claude", "worker-base-factory", "worker-base-codex")
 DEPLOYED_SHA = "0123456789abcdef0123456789abcdef01234567"
 REGISTRY = "ghcr.io/test-owner/codegen-orchestrator"
@@ -80,6 +81,20 @@ case "${command}" in
             echo "ERROR: $1: manifest unknown" >&2
             exit 1
         fi
+        # A pull that only succeeds while FAKE_PULL_BARRIER_COUNT image pulls are in
+        # flight together: pulled one after another, the first one gives up.
+        barrier="${FAKE_PULL_BARRIER_DIR:-}"
+        if [ -n "${barrier}" ] && [ "$(image_of "$1")" != "worker-base-release" ]; then
+            touch "${barrier}/$(image_of "$1")"
+            for _ in $(seq 1 200); do
+                if [ "$(ls "${barrier}" | wc -l)" -ge "${FAKE_PULL_BARRIER_COUNT}" ]; then
+                    exit 0
+                fi
+                sleep 0.05
+            done
+            echo "fake docker: $1 was pulled alone" >&2
+            exit 1
+        fi
         ;;
     inspect)
         if [[ "$*" == *worker_release* ]]; then
@@ -90,7 +105,14 @@ case "${command}" in
             echo "${FAKE_LABEL_DEFAULT}"
         fi
         ;;
-    tag|images)
+    tag)
+        # An image that is not on the host cannot be named either.
+        if [ "$(image_of "$1")" = "${FAKE_UNPULLABLE_IMAGE:-}" ]; then
+            echo "Error response from daemon: No such image: $1" >&2
+            exit 1
+        fi
+        ;;
+    images)
         ;;
     *)
         echo "fake docker: unexpected command ${command}" >&2
@@ -480,3 +502,179 @@ def test_the_script_declares_no_fallback_tag():
     assert "WORKER_IMAGE_TAG:?" in script
     assert "Authorization: Bearer ${registry_token}" not in script
     assert '"@${AUTH_HEADER_FILE}"' in script
+
+
+# --- a deferred retag: verify before the deploy's switch, move the names after it ---
+
+
+def test_a_deferred_retag_verifies_and_records_but_moves_no_local_name(run_pull):
+    result, calls, record = run_pull(RELEASE_DEFER_RETAG="true")
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert [call for call in calls if call.startswith("pull ") and "@sha256:" in call]
+    assert set(json.loads(record.read_text())["images"]) == set(CHAIN)
+
+
+def _retag(tmp_path, record_path, **overrides):
+    """retag-worker-images.sh against the same fake docker the pull tests use."""
+    binaries = tmp_path / "bin"
+    log = tmp_path / "docker.log"
+    log.write_text("")
+    environment = {
+        "PATH": f"{binaries}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "FAKE_DOCKER_LOG": str(log),
+        **overrides,
+    }
+    result = subprocess.run(
+        ["bash", str(RETAG_SCRIPT), str(record_path)],
+        capture_output=True,
+        text=True,
+        env=environment,
+        cwd=tmp_path,
+    )
+    return result, log.read_text().splitlines()
+
+
+def test_the_retag_after_the_switch_names_exactly_the_verified_digests(run_pull, tmp_path):
+    pulled, _calls, record = run_pull(RELEASE_DEFER_RETAG="true")
+    assert pulled.returncode == 0, pulled.stderr
+
+    result, calls = _retag(tmp_path, record)
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(calls) == sorted(
+        f"tag {REGISTRY}/{image}@sha256:{image} {image}:latest" for image in CHAIN
+    )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "{ not json",
+        json.dumps({"images": {}}),
+        json.dumps(
+            {"images": {image: {"reference": f"{REGISTRY}/{image}:latest"} for image in CHAIN}}
+        ),
+    ],
+)
+def test_the_retag_refuses_a_record_that_is_not_the_chain_by_digest(run_pull, tmp_path, record):
+    run_pull()  # creates the fake docker
+    path = tmp_path / "record.json"
+    path.write_text(record)
+
+    result, calls = _retag(tmp_path, path)
+
+    assert result.returncode == 2, result.stderr
+    assert calls == []
+
+
+def test_the_retag_fails_loudly_when_a_verified_image_is_gone(run_pull, tmp_path):
+    _pulled, _calls, record = run_pull(RELEASE_DEFER_RETAG="true")
+
+    result, _calls = _retag(tmp_path, record, FAKE_UNPULLABLE_IMAGE="worker-base-codex")
+
+    assert result.returncode == 3, result.stderr
+    assert "worker-base-codex" in result.stderr
+
+
+# --- a subset of the chain: the stand pulls only the images its suites run ---
+
+STAND_SUBSET = ("worker-base-common", "worker-base-claude", "worker-base-codex")
+
+
+def _image_pulls(calls: list[str]) -> list[str]:
+    return [
+        call for call in calls if call.startswith("pull ") and "worker-base-release" not in call
+    ]
+
+
+def test_a_subset_pulls_retags_and_records_exactly_its_images(run_pull):
+    result, calls, record = run_pull(WORKER_IMAGE_SUBSET=" ".join(STAND_SUBSET))
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(_image_pulls(calls)) == sorted(
+        f"pull {REGISTRY}/{image}@sha256:{image}" for image in STAND_SUBSET
+    )
+    assert sorted(call for call in calls if call.startswith("tag ")) == sorted(
+        f"tag {REGISTRY}/{image}@sha256:{image} {image}:latest" for image in STAND_SUBSET
+    )
+    written = json.loads(record.read_text())
+    assert set(written["images"]) == set(STAND_SUBSET)
+    assert written["git_sha"] == DEPLOYED_SHA
+
+
+def test_an_image_outside_the_subset_is_never_touched(run_pull):
+    """The factory image may even be unpullable: the stand never asks for it."""
+    result, calls, _record = run_pull(
+        WORKER_IMAGE_SUBSET=" ".join(STAND_SUBSET), FAKE_UNPULLABLE_IMAGE="worker-base-factory"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if "worker-base-factory" in call]
+
+
+def test_a_subset_still_validates_the_whole_marker_record(run_pull, tree_source_hash):
+    """A release missing an image outside the subset is still not a release."""
+    broken = release_record(tree_source_hash)
+    del broken["images"]["worker-base-factory"]
+
+    result, calls, record = run_pull(
+        WORKER_IMAGE_SUBSET=" ".join(STAND_SUBSET), FAKE_MARKER=marker_payload(broken)
+    )
+
+    assert result.returncode == EXIT_BROKEN_RELEASE, result.stderr
+    assert not _image_pulls(calls)
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+def test_a_subset_image_with_a_stale_source_hash_is_refused(run_pull):
+    result, calls, record = run_pull(
+        WORKER_IMAGE_SUBSET=" ".join(STAND_SUBSET),
+        FAKE_ODD_IMAGE="worker-base-codex",
+        FAKE_ODD_LABEL="dead0000dead0000",
+    )
+
+    assert result.returncode == EXIT_STALE_LABEL, result.stderr
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("subset", "extra", "reason"),
+    [
+        ("worker-base-common worker-base-gemini", {}, "not in the chain"),
+        ("", {}, "names no image"),
+        ("   ", {}, "names no image"),
+        ("worker-base-claude worker-base-claude", {}, "twice"),
+        ("worker-base-claude", {"RELEASE_DEFER_RETAG": "true"}, "RELEASE_DEFER_RETAG"),
+    ],
+)
+def test_a_subset_that_is_not_one_is_refused_before_the_registry_is_asked(
+    run_pull, subset, extra, reason
+):
+    result, calls, record = run_pull(WORKER_IMAGE_SUBSET=subset, **extra)
+
+    assert result.returncode == EXIT_USAGE, result.stderr
+    assert reason in result.stderr
+    assert calls == []
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("subset", "count"), [(None, len(CHAIN)), (" ".join(STAND_SUBSET), len(STAND_SUBSET))]
+)
+def test_the_images_of_the_release_are_pulled_concurrently(run_pull, tmp_path, subset, count):
+    barrier = tmp_path / "barrier"
+    barrier.mkdir()
+
+    result, _calls, _record = run_pull(
+        WORKER_IMAGE_SUBSET=subset,
+        FAKE_PULL_BARRIER_DIR=str(barrier),
+        FAKE_PULL_BARRIER_COUNT=str(count),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "was pulled alone" not in result.stdout + result.stderr

@@ -7,9 +7,10 @@ from tenacity import retry, stop_after_delay, wait_fixed
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
-    WorkerConfig,
     WorkerOwnership,
 )
+
+from .conftest import scaffolded_worker_config
 
 TEST_TIMEOUT = 60
 
@@ -32,7 +33,8 @@ async def test_factory_cli_installed(redis_client, docker_client, scaffolded_wor
     request_id = str(uuid.uuid4())
     worker_id = f"test-factory-{request_id[:8]}"
 
-    config = WorkerConfig(
+    config = scaffolded_worker_config(
+        scaffolded_workspace,
         name=worker_id,
         worker_type="developer",
         agent_type=AgentType.FACTORY,
@@ -42,7 +44,6 @@ async def test_factory_cli_installed(redis_client, docker_client, scaffolded_wor
         ownership=_ownership(),
         auth_mode="api_key",
         api_key="sk-test-factory-key",
-        repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)

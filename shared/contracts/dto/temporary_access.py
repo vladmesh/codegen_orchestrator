@@ -24,6 +24,10 @@ class TemporaryAccessStatus(StrEnum):
     REVOKE_FAILED = "revoke_failed"
 
 
+#: The escalation refusal detail while a QA run's verdict still waits for its
+#: story's routing. The sweep keeps cleaning up and asks again later.
+QA_ROUTING_PENDING = "qa_routing_pending"
+
 LIVE_TEMPORARY_ACCESS_STATUSES: frozenset[TemporaryAccessStatus] = frozenset(
     {
         TemporaryAccessStatus.GRANTING,

@@ -3,6 +3,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.llm_channel import LLMChannelChain
 
 
 class AgentConfigBase(BaseModel):
@@ -26,6 +27,13 @@ class AgentConfigBase(BaseModel):
     )
     openrouter_app_name: str | None = Field(
         default=None, description="App name for OpenRouter analytics"
+    )
+    llm_channels: LLMChannelChain | None = Field(
+        default=None,
+        description=(
+            "Ordered LLM channels (codex, claude, openrouter), each with an optional model; "
+            "null means the default chain codex, claude, openrouter"
+        ),
     )
 
 
@@ -58,3 +66,4 @@ class AgentConfigUpdate(BaseModel):
     model_identifier: str | None = None
     openrouter_site_url: str | None = None
     openrouter_app_name: str | None = None
+    llm_channels: LLMChannelChain | None = None

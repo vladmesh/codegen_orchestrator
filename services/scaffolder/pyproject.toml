@@ -23,7 +23,6 @@ dependencies = [
     "pyyaml>=6.0",
 
     # shared/ deps (shared is COPY'd as plain files, not pip-installed)
-    "pgvector>=0.2.5",
 ]
 
 [build-system]

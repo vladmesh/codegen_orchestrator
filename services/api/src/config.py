@@ -1,7 +1,6 @@
 """API service configuration.
 
-Requires: DATABASE_URL, REDIS_URL
-Optional: TELEGRAM_BOT_TOKEN (for notifications)
+Requires: DATABASE_URL, REDIS_URL, LK_JWT_SECRET, INTERNAL_API_KEY, DEFAULT_AGENT_TYPE
 """
 
 from functools import lru_cache
@@ -14,7 +13,6 @@ from shared.config import (
     default_agent_type_field,
     internal_api_key_field,
     redis_url_field,
-    telegram_token_field,
 )
 from shared.contracts.vocab import AgentType, QAExecutorAgentType
 
@@ -25,9 +23,6 @@ class Settings(BaseSettings):
     # Required
     database_url: str = database_url_field(required=True)
     redis_url: str = redis_url_field(required=True)
-
-    # Optional - notifications work without token in dev
-    telegram_bot_token: str = telegram_token_field(required=False)
 
     # LK (user dashboard) JWT auth — required, no default. An empty string would
     # sign every dashboard token with a known key, so reject it outright.
@@ -61,6 +56,6 @@ def get_settings() -> Settings:
     """Get cached settings instance.
 
     Validates required env vars on first call.
-    Raises ValidationError if DATABASE_URL or REDIS_URL are missing.
+    Raises ValidationError if any required var is missing.
     """
     return Settings()

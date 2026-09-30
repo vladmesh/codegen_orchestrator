@@ -30,7 +30,7 @@ A Docker container with a CLI coding agent inside, started by `worker-manager` o
 
 **Developer Worker** — a container with a coding agent. For tasks inside a Story it is reused between tasks (worker_id is stored in the Redis hash `story:workers`). For standalone tasks it is ephemeral and removed after completion. Stateless — its context is the code in the repo plus the errors.
 
-**QA Executor** — the container that performs one exploratory QA run (`worker_type="qa"`). It has no repository, no git credentials and nothing to commit; its only route to the deployment under test is the injected `/workspace/qa` command, which calls the run's capability endpoint on `qa-worker`. That is not a convention: the container is attached to `codegen_qa_egress` (an `internal` network) and to nothing else, so the deployment is unreachable from it except through that endpoint; one per-run `CONNECT`-only proxy opens the assigned CLI's model backend and nothing besides. Its broker credential carries the same restriction: a `qa` worker is allowed the protocol of its own turn (lease input, report status, keep its session handle, submit one typed result) and is refused every control-plane operation that can reach the management host's Docker daemon — `infra/compose` above all — at the broker and at worker-manager, on the worker type each of them recorded when the worker was created. It is not a Developer Worker and never writes code.
+**QA Executor** — the container that performs one exploratory QA run (`worker_type="qa"`). It has no repository, no git credentials and nothing to commit. It is a sandbox: it may run its own `python3`/`curl` GETs against the deployed public URL and a Telethon client as the QA account (direct application-API writes stay forbidden by QA policy and the runner's write guard until product stands exist, although its network would carry them), and it reaches everything SSH-based on the target through the injected `/workspace/qa` command, which calls the run's capability endpoint on `qa-worker`. That is not a convention: the container is attached to `codegen_qa_egress` (an `internal` network) and to nothing else, and one per-run `CONNECT`-only proxy opens exactly the assigned CLI's model backend, the run's deploy target host and Telegram's data centres. Its broker credential carries the same restriction: a `qa` worker is allowed the protocol of its own turn (lease input, report status, keep its session handle, submit one typed result) and is refused every control-plane operation that can reach the management host's Docker daemon — `infra/compose` above all — at the broker and at worker-manager, on the worker type each of them recorded when the worker was created. It is not a Developer Worker and never writes code.
 
 **Managed by:** `worker-manager`
 **Configuration:** developer prompts are stored in `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`, QA prompts in `services/langgraph/src/prompts/qa/`. Worker-manager maps them to agent-specific files through `get_instruction_path()`: Claude → `CLAUDE.md`, Factory and Codex → `AGENTS.md`. A `TASK.md` with the specific task is injected as well.
@@ -94,7 +94,7 @@ The AI that works inside a worker container — a Developer Worker or a QA Execu
 ### Story
 A large feature or user need. Generates one or more Tasks. Lives at the level of the whole project.
 **Types:** `product` (user value) | `technical` (internal work).
-**Statuses:** `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (also: `reopened`, `waiting_human_review`, `failed`, `archived`). `pr_review` — all tasks are done, a PR is created from the story branch into main, waiting for CI + auto-merge. `deploying` — deploy gate: the story waits for a successful deploy. `testing` — the deployed service goes through QA testing. `waiting_human_review` — the developer agent reported a blocker; waiting for admin intervention. `reopened` — the user reported a problem with a completed/failed story; the architect reviews it and creates fix tasks.
+**Statuses:** `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (also: `reopened`, `waiting_human_review`, `failed`, `archived`). `pr_review` — all tasks are done, a PR is created from the story branch into main, waiting for CI and the PR poller's merge. `deploying` — deploy gate: the story waits for a successful deploy. `testing` — the deployed service goes through QA testing. `waiting_human_review` — the developer agent reported a blocker; waiting for admin intervention. `reopened` — the user reported a problem with a completed/failed story; the architect reviews it and creates fix tasks.
 **Table:** `stories`
 
 ### Epic
@@ -126,6 +126,17 @@ An entity in PostgreSQL that tracks one asynchronous engineering, deploy, or QA 
 **Relations:** Project, Story (optional), Task (optional)
 
 **Table:** `runs`
+
+### Unverified check / Verification gap
+A QA check QA had no tool to run (cause `qa_capability`). It is neither a failure nor a pass: the QA runner
+records it on the Run as `unverified_checks` (`{name, reason, origin}`) and decides the verdict from the checks
+that ran. Each unverified check of a settled Run is also kept on its project as a **verification gap**.
+The user's answer to them — accept unverified, or change the requirement — is an **unverified decision**,
+appended to the story's `unverified_decisions`.
+
+**Do not confuse with:** a `qa_access` failure (the product refused the QA identity), which stays a harness blocker.
+
+**Table:** `verification_gaps`
 
 ### Message
 Data in a Redis Stream queue. Contains a `task_id` and the parameters for processing.

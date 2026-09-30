@@ -274,10 +274,8 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
     this story, and remove checks for deleted functionality.
 
     Format: one check per line, starting with "- ". Each check is concrete and
-    uses only what QA can do: a read-only HTTP GET, a Telegram text message and
-    its reply, an inline button press, or a declared FIRE JOB. A behaviour that
-    needs a write or an upload is checked by its observable afterwards, never as
-    a POST or an upload step — QA cannot check such a line:
+    uses only what "What QA Can Check" in your instructions names; a behaviour
+    that needs something QA never does is checked by its observable afterwards:
         - GET /health returns 200
         - GET /api/cities lists Moscow after the bot is told "add city Moscow"
         - Telegram: /start responds with welcome message

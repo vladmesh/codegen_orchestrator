@@ -85,7 +85,6 @@ class TestHandleMessage:
             "story_impossible_capacity",
             "task_resources_resumed",
             "story_requirements_returned",
-            "story_stage",
         ],
     )
     async def test_story_event_passes_through(self, mock_graph, mock_client, event_type):
@@ -133,6 +132,69 @@ class TestHandleMessage:
         assert delivered.args[1]["telegram_chat_id"] == "user-1"
 
     @pytest.mark.asyncio
+    async def test_the_settling_events_qa_facts_are_rendered_as_names_and_reasons(
+        self, mock_graph, mock_client
+    ):
+        """What QA checked and could not reach the model readable, never as raw JSON."""
+        notification = POSystemEvent(
+            event=OwnerNotificationEvent.STORY_QUARANTINED,
+            text="QA failed on a product check; a person decides.",
+            story_id="story-1",
+            project_id="project-1",
+            telegram_chat_id="user-1",
+            qa_verification={
+                "qa_run_id": "qa-run-7",
+                "passed_checks": ["Telegram: /start replies with a welcome", "GET /health"],
+                "unverified_checks": [
+                    {
+                        "name": "Telegram: the reminder email reaches the user",
+                        "reason": "needs an email inbox",
+                        "origin": "executor",
+                    },
+                    {
+                        "name": "POST /api/expenses returns 201",
+                        "reason": "needs an HTTP write",
+                        "origin": "withheld",
+                    },
+                ],
+            },
+        )
+        message = TypeAdapter(POInputMessage).validate_python(notification.model_dump(mode="json"))
+
+        await _handle_message(mock_graph, mock_client, "user-1", message.model_dump(mode="json"))
+
+        content = mock_graph.ainvoke.call_args[0][0]["messages"][0].content
+        assert content.endswith(
+            "QA failed on a product check; a person decides.\n"
+            "What QA checked:\n"
+            "- Telegram: /start replies with a welcome\n"
+            "- GET /health\n"
+            "What QA could not check:\n"
+            "- Telegram: the reminder email reaches the user — why: needs an email inbox\n"
+            "- POST /api/expenses returns 201 — why: needs an HTTP write"
+        )
+        assert content.startswith("[system: system_event:story_quarantined]")
+        assert "qa-run-7" not in content and "{" not in content
+        assert "withheld" not in content and "executor" not in content
+
+    @pytest.mark.asyncio
+    async def test_an_event_without_qa_facts_renders_none(self, mock_graph, mock_client):
+        notification = POSystemEvent(
+            event=OwnerNotificationEvent.STORY_COMPLETED,
+            text="The story is finished.",
+            story_id="story-1",
+            telegram_chat_id="user-1",
+        )
+
+        await _handle_message(
+            mock_graph, mock_client, "user-1", notification.model_dump(mode="json")
+        )
+
+        content = mock_graph.ainvoke.call_args[0][0]["messages"][0].content
+        assert content.endswith("The story is finished.")
+        assert "What QA" not in content
+
+    @pytest.mark.asyncio
     async def test_budget_denial_quarantine_event_is_routable_and_deliverable(
         self, mock_graph, mock_client
     ):
@@ -174,7 +236,8 @@ class TestHandleMessage:
         assert "check task eng-123" in msg.content
 
     @pytest.mark.asyncio
-    async def test_reminder_passes_story_provenance_to_tools(self, mock_graph, mock_client):
+    async def test_a_reminder_hands_no_retry_provenance_to_tools(self, mock_graph, mock_client):
+        """A retry reopens the original story; nothing links a new story to a reminder."""
         data = {
             "type": "reminder",
             "text": "check story story-second",
@@ -184,7 +247,7 @@ class TestHandleMessage:
         await _handle_message(mock_graph, mock_client, "user-1", data)
 
         config = mock_graph.ainvoke.call_args.kwargs["config"]
-        assert config["configurable"]["retry_story_id"] == "story-second"
+        assert "retry_story_id" not in config["configurable"]
 
     @pytest.mark.asyncio
     async def test_uses_thread_id_per_user(self, mock_graph, mock_client):
@@ -213,8 +276,11 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     async def test_no_request_id_forwards_to_proactive(self, mock_graph, mock_client):
-        """Without request_id, non-empty response should go to po:proactive."""
-        data = {"type": "reminder", "text": "check story story-abc12345"}
+        """Without request_id, non-empty response should go to po:proactive.
+
+        A reminder naming no story speaks only when the user asked for it.
+        """
+        data = {"type": "reminder", "text": "remind me to pay", "user_requested": True}
 
         await _handle_message(mock_graph, mock_client, "user-1", data)
 
@@ -390,6 +456,43 @@ class TestProcessMessage:
         await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", message)
 
         mock_client.redis.xack.assert_called_once_with("po:input", "po-consumer", "msg-1")
+
+    @pytest.mark.asyncio
+    async def test_the_settling_events_qa_facts_reach_the_po_consumer(
+        self, mock_graph, mock_client
+    ):
+        """The structured payload survives the flat `po:input` hop into the consumer."""
+        from shared.contracts.dto.qa_verification import QAVerificationFacts
+        from shared.contracts.queues.po import to_flat_fields
+        from shared.redis.client import validate_tolerating_additions
+
+        facts = QAVerificationFacts(
+            qa_run_id="qa-1",
+            passed_checks=["GET /health returns 200"],
+            unverified_checks=[
+                {"name": "POST /api/transactions", "reason": "needs a write", "origin": "withheld"}
+            ],
+        )
+        published = to_flat_fields(
+            POSystemEvent(
+                event=OwnerNotificationEvent.STORY_COMPLETED,
+                text="done",
+                telegram_chat_id="u1",
+                story_id="story-1",
+                qa_verification=facts,
+            )
+        )
+        # What `consume_typed` does with a flat entry before handing it over.
+        message, dropped = validate_tolerating_additions(TypeAdapter(POInputMessage), published)
+
+        with patch("src.consumers.po._handle_message", new_callable=AsyncMock) as handle:
+            await _process_message(
+                mock_graph, mock_client, asyncio.Semaphore(1), {}, "msg-1", message
+            )
+
+        assert dropped == []
+        data = handle.await_args.args[3]
+        assert QAVerificationFacts.model_validate(data["qa_verification"]) == facts
 
     @pytest.mark.asyncio
     async def test_acks_message_on_error(self, mock_graph, mock_client):

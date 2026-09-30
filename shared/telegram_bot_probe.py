@@ -9,7 +9,9 @@ environment.
 
 The script is a string rather than an import so that it runs in a child process:
 Telethon's synchronous client cannot share the consumer's event loop, and a hung
-connection has to be killable without taking the run with it.
+connection has to be killable without taking the run with it. Every value it
+carries is interpolated as a JSON literal, never as source; the table in
+`shared/tests/unit/test_telegram_probe_injection.py` runs it on hostile values.
 """
 
 from __future__ import annotations

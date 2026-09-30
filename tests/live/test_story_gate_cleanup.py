@@ -1,0 +1,165 @@
+"""A run's cleanup takes back the PO reminder gate's records of its own stories.
+
+Run 36309935451 completed both stories and its residue proof named
+`po:story_told_daily:970562711:story-779daf27:2026-09-27` and the first story's
+twin: the gate (`po_story_gate`) leaves its per-day counter to a two-day TTL, and
+the proof is right to name a key that carries the run's story. These drive the
+real `cleanup_and_prove` over one fake Redis that both the removals and the proof
+read, with the keys built by the gate's own functions.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from fnmatch import fnmatchcase
+
+import db_teardown
+from live_harness import CleanupError, OwnershipManifest, cleanup_guard
+import pipeline_helpers
+import po_checkpoints
+import pytest
+import redis_cli_fake
+import run_residue
+
+from services.langgraph.src.consumers import po_story_gate
+
+pytestmark = pytest.mark.needs_no_api_credential
+
+RUN_ID = "live-a65a8ac6fc48"
+PROJECT_ID = "project-1399"
+STORY_ID = "story-7c63267d"
+EXTENSION_STORY_ID = "story-779daf27"
+NEIGHBOUR_STORY_ID = "story-0a1b2c3d"
+#: A story id that begins with one of the run's: its keys are not the run's either.
+PREFIX_SHARING_STORY_ID = f"{STORY_ID}b"
+CHAT_ID = "970562711"
+OTHER_CHAT_ID = "999000001"
+DAY = datetime(2026, 9, 27, 10, 0, tzinfo=UTC)
+NEXT_DAY = datetime(2026, 9, 28, 0, 5, tzinfo=UTC)
+
+
+def _gate_keys(story_id: str) -> list[str]:
+    """Current records and legacy daily counters for two chats across midnight."""
+    return [
+        po_story_gate.story_told_key(CHAT_ID, story_id),
+        po_story_gate.story_told_key(OTHER_CHAT_ID, story_id),
+        f"po:story_told_daily:{CHAT_ID}:{story_id}:{DAY.date().isoformat()}",
+        f"po:story_told_daily:{CHAT_ID}:{story_id}:{NEXT_DAY.date().isoformat()}",
+        f"po:story_told_daily:{OTHER_CHAT_ID}:{story_id}:{DAY.date().isoformat()}",
+    ]
+
+
+@pytest.fixture
+def cli(monkeypatch) -> redis_cli_fake.FakeRedisCli:
+    """One Redis behind every removal and every read; nothing else of the stack."""
+    cli = redis_cli_fake.FakeRedisCli()
+    monkeypatch.setattr(pipeline_helpers, "_redis_command", cli)
+    monkeypatch.setattr(
+        run_residue,
+        "host_residue_ops",
+        lambda *_args: (redis_cli_fake.residue_ops(cli), lambda _e: None),
+    )
+    monkeypatch.setattr(po_checkpoints, "remove_run_rows", lambda *_args: [])
+
+    async def cleanup_all(_api_internal, _api_observer, _ctx):
+        return db_teardown.TeardownReport(selection=PROJECT_ID)
+
+    monkeypatch.setattr(pipeline_helpers, "cleanup_all", cleanup_all)
+    return cli
+
+
+def _write_gate_keys(cli: redis_cli_fake.FakeRedisCli, story_id: str) -> list[str]:
+    keys = _gate_keys(story_id)
+    for key in keys:
+        cli.redis.set(key, "1")
+    return keys
+
+
+def _run_ctx() -> dict:
+    return {
+        "manifest": OwnershipManifest(RUN_ID),
+        "project_id": PROJECT_ID,
+        "story_id": STORY_ID,
+        "level1_extension": {"story_id": EXTENSION_STORY_ID},
+        "po_thread_id": f"po-chat-{CHAT_ID}",
+        "po_checkpoint_snapshot": {"checkpoints": []},
+    }
+
+
+async def _run(ctx: dict, *, abort: bool) -> None:
+    async with cleanup_guard(
+        lambda: pipeline_helpers.cleanup_and_prove(object(), None, ctx),
+        manifest=ctx["manifest"],
+    ):
+        if abort:
+            raise RuntimeError("the run aborted mid-story")
+
+
+@pytest.mark.parametrize("abort", [True, False], ids=["aborted", "completed"])
+async def test_cleanup_removes_both_gate_key_shapes_and_the_proof_passes(cli, abort):
+    _write_gate_keys(cli, STORY_ID)
+    _write_gate_keys(cli, EXTENSION_STORY_ID)
+    neighbour = _write_gate_keys(cli, NEIGHBOUR_STORY_ID)
+    ctx = _run_ctx()
+
+    if abort:
+        with pytest.raises(RuntimeError, match="aborted mid-story"):
+            await _run(ctx, abort=True)
+    else:
+        await _run(ctx, abort=False)
+
+    checks = {check["kind"]: check for check in ctx["run_residue"]["checks"]}
+    assert set(checks) == set(run_residue.RESIDUE_KINDS)
+    assert {check["outcome"] for check in checks.values()} == {"absent"}, checks
+    assert checks["redis_keys"]["findings"] == []
+    # Nothing of the run is left; another story's records are the gate's.
+    assert sorted(cli.redis.keys("*")) == sorted(neighbour)
+
+
+async def test_without_the_release_the_proof_names_the_gate_keys_the_run_left(cli, monkeypatch):
+    """The gap run 36309935451 hit, kept visible: the proof is what catches it."""
+    monkeypatch.setattr(pipeline_helpers, "release_story_gate_records", lambda _ctx: None)
+    left = _write_gate_keys(cli, EXTENSION_STORY_ID)
+    ctx = _run_ctx()
+
+    with pytest.raises(CleanupError) as raised:
+        await _run(ctx, abort=False)
+
+    for key in left:
+        assert key in str(raised.value)
+
+
+def test_the_patterns_select_exactly_the_keys_the_gate_writes_for_a_story():
+    """The contract with the gate: its own key functions, and nothing of another story."""
+    patterns = pipeline_helpers.story_gate_key_patterns(STORY_ID)
+
+    for key in _gate_keys(STORY_ID):
+        assert any(fnmatchcase(key, pattern) for pattern in patterns), key
+    for other in (NEIGHBOUR_STORY_ID, EXTENSION_STORY_ID, PREFIX_SHARING_STORY_ID):
+        for key in _gate_keys(other):
+            assert not any(fnmatchcase(key, pattern) for pattern in patterns), key
+    assert pipeline_helpers.STORY_TOLD_KEY_PREFIX == po_story_gate.STORY_TOLD_KEY_PREFIX
+
+
+def test_a_run_that_owns_no_story_asks_redis_nothing(cli, monkeypatch):
+    ctx = _run_ctx()
+    del ctx["story_id"], ctx["level1_extension"]
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(pipeline_helpers, "_redis_command", lambda *args: calls.append(args) or "")
+
+    pipeline_helpers.release_story_gate_records(ctx)
+
+    assert calls == []
+
+
+def test_a_gate_key_that_survives_removal_fails_cleanup(cli, monkeypatch):
+    """A removal that did not take is said here, not left for the proof to guess at."""
+    _write_gate_keys(cli, STORY_ID)
+
+    def ignoring_deletes(*args: str) -> str:
+        return "0" if args[0] == "UNLINK" else cli(*args)
+
+    monkeypatch.setattr(pipeline_helpers, "_redis_command", ignoring_deletes)
+
+    with pytest.raises(CleanupError, match="PO reminder-gate records of stories"):
+        pipeline_helpers.release_story_gate_records({**_run_ctx(), "level1_extension": None})

@@ -7,7 +7,14 @@ from src.agents.po.tools_briefs import present_product_brief
 from src.agents.po.tools_stories import create_story
 from src.prompts.po import SYSTEM_PROMPT
 
-MAX_PROMPT_LENGTH = 14000
+MAX_PROMPT_LENGTH = 16000
+#: The one wording that forbids softening a stopped story (sprint 1468 DoD4).
+NO_SOFTENING = (
+    'Never say "tested", "standard check/procedure" or "a specialist is checking/reviewing".'
+)
+#: The softening words: never in a positive instruction, only in a prohibition.
+_SOFTENING = re.compile(r"\btested\b|\bstandard\b|\bspecialist\b|\broutine\b", re.IGNORECASE)
+_PROHIBITION = re.compile(r"\b(never|not|no)\b", re.IGNORECASE)
 
 
 def _section(heading: str) -> str:
@@ -120,10 +127,39 @@ class TestSystemPrompt:
     def test_a_secret_is_never_an_initial_setting(self):
         assert "NEVER put a token, password or API key into `initial_settings`" in SYSTEM_PROMPT
 
-    def test_the_flows_that_have_no_brief_keep_working(self):
-        assert "A `fix` story on an existing project and `reopen_story` need no brief" in (
-            SYSTEM_PROMPT
-        )
+    def test_every_story_is_an_order_and_is_redone_by_a_reopen(self):
+        workflow = " ".join(_section("## Story-Based Workflow").split())
+        assert "Every piece of work the user orders is a **story** with a confirmed" in workflow
+        assert "Work is redone by reopening its story, never by a new one." in workflow
+
+    def test_the_fix_story_instruction_is_gone(self):
+        """A story the PO starts on its own is nobody's order (story-4b5265a8)."""
+        assert "fix story" not in SYSTEM_PROMPT.lower()
+        assert "story_type" not in SYSTEM_PROMPT
+        assert "`fix`" not in SYSTEM_PROMPT
+        assert "retry provenance" not in SYSTEM_PROMPT
+
+    def test_a_retry_and_a_complaint_reopen_the_original_story(self):
+        scenario = " ".join(_section("## Scenario: Add Features or Fix Bugs").split())
+        assert (
+            "**A complaint about something built, or a retry after a failure**: "
+            "`list_stories(project_id)` → `reopen_story` on the original story, with "
+            "`user_report` (the user's words) for a complaint. Never a new story."
+        ) in scenario
+        events = " ".join(_section("## Story Events & Reminders").split())
+        assert "A retry is `reopen_story(story_id)`" in events
+
+    def test_a_service_matter_is_a_note_to_the_admins(self):
+        section = " ".join(_section("## Service Matters").split())
+        assert "`note_to_admins(text)`" in section
+        assert "It starts no work and sends the user nothing" in section
+        assert "never create or reopen a story for it" in section
+
+    def test_the_tools_named_for_retries_and_notes_exist(self):
+        from src.agents.po.tools import get_all_tools
+
+        names = {tool.name for tool in get_all_tools()}
+        assert {"list_stories", "reopen_story", "note_to_admins"} <= names
 
     def test_a_feature_on_a_live_project_is_new_product_work_too(self):
         """The shape most product work takes once a project exists."""
@@ -172,21 +208,20 @@ class TestSystemPrompt:
         assert 'a usage example in that form, or an explicit "not supported"' in SYSTEM_PROMPT
 
     def test_names_the_quality_trade_off_of_a_cheaper_variant(self):
-        assert "cheaper or free variant that is noticeably worse" in SYSTEM_PROMPT
+        assert "free or simplified variant with a noticeable quality gap" in SYSTEM_PROMPT
         assert "say the trade-off in one sentence and what can be connected later" in (
             SYSTEM_PROMPT
         )
-        assert "Record it in `limitations`" in SYSTEM_PROMPT
+        assert "before the brief" in SYSTEM_PROMPT
+        assert "Record it in `variant_choices`" in SYSTEM_PROMPT
+        assert "Never promise the alternative as built" in SYSTEM_PROMPT
+        for field in ("feature", "chosen", "alternative", "trade_off", "add_later"):
+            assert f"`{field}`" in _product_brief_section()
 
     def test_a_stopped_story_is_reported_honestly(self):
-        events = _section("## Story Events & Reminders")
+        events = " ".join(_section("## Story Events & Reminders").split())
         assert "work is stopped, a person is needed, there is no known time" in events
-        assert (
-            "Do NOT call it tested, finished, standard, a routine procedure or a specialist check"
-        ) in events
-        assert "do NOT say someone is checking or reviewing it, unless a tool result says so" in (
-            events
-        )
+        assert "Never call it finished or routine. " + NO_SOFTENING in events
         assert "`waiting_human_review` — blocked → say work is stopped, a person is needed" in (
             events
         )
@@ -202,6 +237,48 @@ class TestSystemPrompt:
         assert "confirm a corrected brief for it as its own story" in bullet
         assert "Never call it built, tested or under review" in bullet
 
+    def test_a_quarantined_story_is_listed_with_the_blocked_wording(self):
+        events = _section("## Story Events & Reminders")
+        listed_part = events.split("**Reminders**")[0]
+        assert re.search(r"^- `story_quarantined` —", listed_part, flags=re.MULTILINE)
+        bullet = events[events.index("- `story_quarantined`") :]
+        bullet = " ".join(bullet[: bullet.index("\n- ")].split())
+        assert bullet == (
+            "- `story_quarantined` — as `story_blocked`: work is stopped, a person decides, "
+            f"there is no known time. {NO_SOFTENING}"
+        )
+
+    def test_unverified_checks_get_one_honest_message_and_a_recorded_answer(self):
+        events = " ".join(_section("## Story Events & Reminders").split())
+        rule = events[events.index("**Checks QA could not run.**") :]
+        rule = rule[: rule.index("**Reminders**")].strip()
+        assert rule == (
+            "**Checks QA could not run.** When `story_completed` or `story_quarantined` lists "
+            '"What QA could not check", send ONE message in the user\'s language, with the '
+            "event's news: (1) what was checked, briefly; (2) what could not be checked and "
+            "why, in plain words, no ids or jargon; (3) ask them to choose: accept it "
+            "unchecked, or change the requirement. Never call it tested. Record the answer "
+            "with `record_unverified_decision`."
+        )
+
+    def test_the_rule_reads_the_headings_the_consumer_renders(self):
+        from src.consumers.po import render_qa_verification
+
+        rendered = render_qa_verification(
+            {
+                "qa_run_id": "qa-1",
+                "passed_checks": ["a"],
+                "unverified_checks": [{"name": "b", "reason": "c", "origin": "executor"}],
+            }
+        )
+        assert "What QA could not check:" in rendered
+        assert '"What QA could not check"' in SYSTEM_PROMPT
+
+    def test_the_answer_tool_named_in_the_prompt_exists(self):
+        from src.agents.po.tools import get_all_tools
+
+        assert "record_unverified_decision" in {tool.name for tool in get_all_tools()}
+
     def test_a_completed_bot_is_explained_with_its_usage_instructions(self):
         events = _section("## Story Events & Reminders")
         bullet = events[events.index("- `story_completed`") :]
@@ -211,18 +288,34 @@ class TestSystemPrompt:
         assert "what they send and what the bot answers" in bullet.replace("\n", " ")
         assert "Never give a backend API address" in bullet
         assert "**NEVER fabricate URLs.**" in SYSTEM_PROMPT
-        assert "`completed` — DONE → good news as for `story_completed`" in SYSTEM_PROMPT
+        assert "Terminal stories: reply nothing" in SYSTEM_PROMPT
 
     def test_the_only_events_listed_are_the_owner_notification_vocabulary(self):
         """Drift: every event the prompt says it receives is one PO's consumer routes."""
         from shared.contracts.vocab import OwnerNotificationEvent
 
         events = _section("## Story Events & Reminders")
-        listed_part, only = events.split("These are the ONLY events you receive.")
-        assert "No task/deploy/infra notifications." in only
+        listed_part = events.split("**Reminders**")[0]
+        assert "Resource/infrastructure waits and resumptions: reply nothing" in listed_part
         listed = re.findall(r"^- `([a-z_]+)` —", listed_part, flags=re.MULTILINE)
         assert "story_requirements_returned" in listed
+        assert "story_quarantined" in listed
         assert set(listed) <= {event.value for event in OwnerNotificationEvent}
+
+    def test_a_problem_is_reported_with_its_cause_not_as_progress(self):
+        """Incident 2026-09-24: an hour of "development continues" over a dead scaffold."""
+        section = _section("## Reporting a Problem Honestly")
+        assert "`get_story_diagnostics(story_id)`" in section
+        assert "the cause in one plain sentence" in section
+        assert "NEVER say development continues or nothing is required of them" in section
+        events = _section("## Story Events & Reminders")
+        assert "planning failed" in events
+        assert "Reporting a Problem Honestly" in events
+
+    def test_the_diagnostics_tool_named_in_the_prompt_exists(self):
+        from src.agents.po.tools import get_all_tools
+
+        assert "get_story_diagnostics" in {tool.name for tool in get_all_tools()}
 
     def test_the_old_reassuring_blocked_wording_is_gone(self):
         assert "specialist is looking into it" not in SYSTEM_PROMPT
@@ -249,4 +342,132 @@ class TestCreateStoryDocstring:
     def test_says_a_feature_is_new_product_work_too(self):
         doc = create_story.description
         assert "the first story of a project and every later feature alike" in doc
-        assert "leave unset only for a fix on an existing project" in doc
+
+    def test_points_a_retry_or_complaint_to_reopen_story(self):
+        doc = create_story.description
+        assert "Every story needs a confirmed Product Brief" in doc
+        assert "use `reopen_story` on the original story" in doc
+        assert "fix" not in doc.lower()
+
+
+def test_story_status_is_only_answered_on_request():
+    assert "brief update" not in SYSTEM_PROMPT
+    assert "set_reminder(10" not in SYSTEM_PROMPT
+    assert "Set a reminder for 10-15 minutes" not in SYSTEM_PROMPT
+    assert "Do not set progress reminders after creating a story" in SYSTEM_PROMPT
+    assert "in_work: reply nothing" in SYSTEM_PROMPT
+    table = _section("## Situation → Tool")
+    assert "| Status question | `get_product_situation(project_id)`, only when the user asks |" in (
+        table
+    )
+    assert "Never push progress updates." in table
+    assert "## Scenario: Status Check" not in SYSTEM_PROMPT
+
+
+class TestSituationToTool:
+    """The prompt's short "situation -> tool" table (sprint:1468 DoD item 3)."""
+
+    def _rows(self) -> dict[str, str]:
+        table = _section("## Situation → Tool")
+        rows = re.findall(r"^\| (.+?) \| (.+?) \|$", table, flags=re.MULTILINE)
+        return {situation: tool for situation, tool in rows if situation != "Situation"}
+
+    def test_each_situation_names_its_tool(self):
+        assert self._rows() == {
+            "Status question": "`get_product_situation(project_id)`, only when the user asks",
+            "A complaint about an ordered story": (
+                "`list_stories` → `reopen_story` with `user_report`"
+            ),
+            "The user returns after a pause": (
+                "`get_product_situation` first: its deferred notices"
+            ),
+        }
+
+    def test_every_tool_the_table_names_exists(self):
+        from src.agents.po.tools import get_all_tools
+        from src.agents.po.tools_stories import reopen_story
+
+        names = {tool.name for tool in get_all_tools()}
+        named = set(re.findall(r"`([a-z_]+)", " ".join(self._rows().values())))
+        assert named == {"get_product_situation", "list_stories", "reopen_story", "user_report"}
+        assert named - {"user_report"} <= names
+        assert "user_report" in reopen_story.args
+
+    def test_an_event_is_told_by_the_snapshot_dates_not_as_a_fresh_incident(self):
+        from src.agents.po.situation import SNAPSHOT_HEADING
+
+        table = " ".join(_section("## Situation → Tool").split())
+        assert '"Situation snapshot" built by code' in table
+        assert "tell an old event by its dates, never present it as a fresh incident" in table
+        assert SNAPSHOT_HEADING == "## Situation snapshot"
+
+
+def test_deferred_notices_are_explicit_and_do_not_change_facts():
+    section = _section("## Deferred Notices")
+    for instruction in (
+        "own judgement",
+        "user's or an admin's word",
+        "suppress_owner_notice",
+        "reason",
+        "Never drop a notice silently",
+        "Deferring never changes the facts",
+        "When the user returns",
+        "tell deferred notices first",
+        "resolve_deferred_notice",
+        'outcome="told"',
+        'outcome="closed"',
+        "Nothing expires",
+    ):
+        assert instruction in section
+
+
+def _bullets(section: str) -> list[str]:
+    """Each ``- `` bullet of a section; the prompt's line continuations already joined it."""
+    return [" ".join(b.split()) for b in re.findall(r"^- .*$", section, flags=re.MULTILINE)]
+
+
+def _tells_a_stopped_story(text: str) -> bool:
+    return bool(re.search(r"\bstopped\b|\bblocked\b|story_blocked|story_quarantined|defer", text))
+
+
+class TestNoSoftening:
+    """A blocked or stopped story is told as stopped; its facts are never softened."""
+
+    def test_every_instruction_telling_a_stop_forbids_softening(self):
+        events = _section("## Story Events & Reminders")
+        told_by_bullet = [b for b in _bullets(events) if _tells_a_stopped_story(b)]
+        heads = [b.split(" — ")[0] for b in told_by_bullet]
+        assert heads == [
+            "- `story_blocked`",
+            "- `story_quarantined`",
+            "- `story_impossible_capacity` / `task_impossible_capacity`",
+            "- `waiting_human_review`",
+        ]
+        for bullet in told_by_bullet:
+            assert NO_SOFTENING in bullet, bullet
+        for heading in ("## Reporting a Problem Honestly", "## Deferred Notices"):
+            assert NO_SOFTENING in " ".join(_section(heading).split()), heading
+
+    def test_the_softening_words_appear_only_in_prohibitions(self):
+        lines = SYSTEM_PROMPT.splitlines()
+        sentences = [
+            sentence for line in lines for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z*`\"])", line)
+        ]
+        using = [s for s in sentences if _SOFTENING.search(s)]
+        assert using, "the prohibitions themselves name the words"
+        for sentence in using:
+            assert _PROHIBITION.search(sentence), sentence
+
+    def test_a_mass_sweep_stop_is_a_late_notice_told_by_its_dates(self):
+        from src.agents.po.situation import MASS_SWEEP_MARK
+
+        section = " ".join(_section("## Reporting a Problem Honestly").split())
+        assert f'A status "{MASS_SWEEP_MARK}" is a late notice after a platform outage' in section
+        assert "tell it with its dates, never as a fresh failure of the user's product" in section
+
+    def test_the_snapshot_fact_is_the_wording_the_prompt_asks_for(self):
+        from src.agents.po.situation import STOPPED_FACT
+
+        assert STOPPED_FACT == "stopped, a person is needed, no known deadline"
+        for word in ("tested", "standard", "specialist", "checking", "reviewing"):
+            assert word not in STOPPED_FACT

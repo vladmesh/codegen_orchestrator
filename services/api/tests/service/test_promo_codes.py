@@ -10,9 +10,9 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text
 
-from shared.models import Run, User
+from shared.models import Run
 from src.dependencies import create_lk_jwt
 
 
@@ -138,17 +138,6 @@ async def test_lk_bearer_cannot_impersonate_for_promo_or_policy(async_client) ->
         )
         assert foreign_policy.status_code == HTTPStatus.FORBIDDEN
         assert foreign_balance.status_code == HTTPStatus.FORBIDDEN
-
-
-@pytest.mark.asyncio
-async def test_rag_unknown_telegram_user_is_not_registered(async_client, db_session) -> None:
-    telegram_id = 810_000_099
-    response = await async_client.post(
-        "/api/rag/messages",
-        json={"telegram_id": telegram_id, "role": "user", "message_text": "blocked"},
-    )
-    assert response.status_code == HTTPStatus.NOT_FOUND
-    assert await db_session.scalar(select(User).where(User.telegram_id == telegram_id)) is None
 
 
 @pytest.mark.asyncio

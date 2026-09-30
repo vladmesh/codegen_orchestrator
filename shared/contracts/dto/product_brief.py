@@ -22,17 +22,32 @@ carries neither the user's wording nor a reference to it. The strictness sits on
 the write boundary rather than on the field defaults precisely so that adding it
 is additive — nothing stored becomes unreadable, and nothing new can be written
 without it.
+
+**Caps on a proposal, not on what is stored.** Every count and every text a
+proposal carries is capped (the `MAX_*` constants below), so the brief's full
+form stays under `shared.product_brief_text.FULL_BRIEF_CEILING` — far below the
+20k-character brief that broke the 2026-09-25 canary. The caps sit on the write
+shapes only; a revision stored before them still parses through the read shape.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 import re
-from typing import Any
+from typing import Annotated, Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from shared.contracts.dto.story_planning import PlanningChannels
 
 #: How long an architect's claim survives without a heartbeat. A claim whose
 #: heartbeat is older than this is stale and may be taken over; a fresher one
@@ -72,6 +87,30 @@ _CREDENTIAL_KEY_FRAGMENTS = (
 #: The shape of a manifest-declared settings key: one path segment per level,
 #: as a generated product's `settings_schema` names its properties.
 SETTING_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
+
+
+#: What a proposed brief may carry at most. The worst case — every count and
+#: every text at its cap — renders a full form under
+#: `shared.product_brief_text.FULL_BRIEF_CEILING`; a product that needs more is
+#: staged into several briefs, one story each. Read shapes keep their old,
+#: looser limits, so a revision stored before these caps still loads.
+MAX_BRIEF_TITLE_LENGTH = 100
+MAX_SUMMARY_LENGTH = 400
+MAX_MUST_REQUIREMENTS = 8
+MAX_REQUIREMENT_TEXT_LENGTH = 200
+MAX_USER_WORDING_LENGTH = 250
+MAX_USAGE_EXAMPLES = 10
+MAX_USER_SENDS_LENGTH = 150
+MAX_PRODUCT_ANSWERS_LENGTH = 200
+MAX_LIMITATIONS = 5
+MAX_LIMITATION_LENGTH = 200
+MAX_INITIAL_SETTINGS = 6
+MAX_SETTING_DESCRIPTION_LENGTH = 150
+MAX_VARIANT_CHOICES = 2
+MAX_VARIANT_FEATURE_LENGTH = 80
+MAX_VARIANT_NAME_LENGTH = 120
+MAX_VARIANT_TRADE_OFF_LENGTH = 200
+MAX_VARIANT_ADD_LATER_LENGTH = 160
 
 
 class SettingScope(StrEnum):
@@ -201,8 +240,12 @@ class ProposedMustRequirement(MustRequirement):
 
     Path-safe id, and exactly one provenance: the user's wording, or a reference
     to it. Neither is a paraphrase nobody can audit; both at once is two answers
-    to the one question of where the requirement came from.
+    to the one question of where the requirement came from. The user's words
+    are quoted up to a cap; longer ones are referenced instead.
     """
+
+    text: str = Field(min_length=1, max_length=MAX_REQUIREMENT_TEXT_LENGTH)
+    user_wording: str | None = Field(default=None, max_length=MAX_USER_WORDING_LENGTH)
 
     @field_validator("id")
     @classmethod
@@ -228,7 +271,7 @@ class ProposedMustRequirement(MustRequirement):
 class ProposedInitialSetting(InitialSetting):
     """A setting as a producer may write it: the user is shown its description."""
 
-    description: str = Field(min_length=1, max_length=1000)
+    description: str = Field(min_length=1, max_length=MAX_SETTING_DESCRIPTION_LENGTH)
 
 
 #: A user's language as the brief names it: an ISO 639 code, optionally with a
@@ -259,12 +302,56 @@ class UsageExample(BaseModel):
         return value
 
 
+class ProposedUsageExample(UsageExample):
+    """A usage example as a producer may write it: each side capped."""
+
+    user_sends: str = Field(min_length=1, max_length=MAX_USER_SENDS_LENGTH)
+    product_answers: str = Field(min_length=1, max_length=MAX_PRODUCT_ANSWERS_LENGTH)
+
+
+class VariantChoice(BaseModel):
+    """A chosen variant and a recorded alternative that is not ordered for this brief."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: A manifest cannot id: the user explicitly accepted its workaround.
+    capability: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]*$",
+        max_length=128,
+        exclude_if=lambda value: value is None,
+    )
+    feature: str = Field(min_length=1, max_length=2000)
+    chosen: str = Field(min_length=1, max_length=2000)
+    alternative: str = Field(min_length=1, max_length=2000)
+    trade_off: str = Field(min_length=1, max_length=2000)
+    add_later: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("feature", "chosen", "alternative", "trade_off", "add_later")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("variant choice fields must not be blank")
+        return value
+
+
+class ProposedVariantChoice(VariantChoice):
+    """Short user-facing descriptions; trade_off and add_later are one sentence each."""
+
+    feature: str = Field(min_length=1, max_length=MAX_VARIANT_FEATURE_LENGTH)
+    chosen: str = Field(min_length=1, max_length=MAX_VARIANT_NAME_LENGTH)
+    alternative: str = Field(min_length=1, max_length=MAX_VARIANT_NAME_LENGTH)
+    trade_off: str = Field(min_length=1, max_length=MAX_VARIANT_TRADE_OFF_LENGTH)
+    add_later: str = Field(min_length=1, max_length=MAX_VARIANT_ADD_LATER_LENGTH)
+
+
 class ProductBriefContent(BaseModel):
     """The confirmed brief document. Frozen once `confirmed_at` is stamped.
 
     The read shape — what `ProductBriefRead` parses out of the JSON column.
     Every field added after the first release defaults — `initial_settings`,
-    `language`, `usage_examples`, `limitations` — so a document stored before
+    `language`, `usage_examples`, `limitations`, `variant_choices` — so a document stored before
     it existed still parses as the same brief.
     """
 
@@ -283,6 +370,8 @@ class ProductBriefContent(BaseModel):
     usage_examples: list[UsageExample] = Field(default_factory=list)
     #: Limitations and chosen trade-offs, one plain-language sentence each.
     limitations: list[str] = Field(default_factory=list)
+    #: Build the chosen variant; the alternative is recorded for a later order.
+    variant_choices: list[VariantChoice] = Field(default_factory=list)
 
     @field_validator("limitations")
     @classmethod
@@ -312,12 +401,34 @@ class ProposedProductBriefContent(ProductBriefContent):
     refusing what must never be opened as a revision in the first place: a
     missing language, a setting the user could only be shown by its key, a usage
     example of a requirement the brief does not have, and a user-facing
-    requirement nobody showed the user how to use.
+    requirement nobody showed the user how to use. Every count and text is
+    capped (`MAX_*`), which the stored document is not.
     """
 
-    must_requirements: list[ProposedMustRequirement] = Field(min_length=1)
-    initial_settings: list[ProposedInitialSetting] = Field(default_factory=list)
+    summary: str = Field(min_length=1, max_length=MAX_SUMMARY_LENGTH)
+    must_requirements: list[ProposedMustRequirement] = Field(
+        min_length=1, max_length=MAX_MUST_REQUIREMENTS
+    )
+    initial_settings: list[ProposedInitialSetting] = Field(
+        default_factory=list, max_length=MAX_INITIAL_SETTINGS
+    )
     language: str = Field(min_length=2, max_length=35)
+    usage_examples: list[ProposedUsageExample] = Field(
+        default_factory=list, max_length=MAX_USAGE_EXAMPLES
+    )
+    limitations: list[Annotated[str, StringConstraints(max_length=MAX_LIMITATION_LENGTH)]] = Field(
+        default_factory=list, max_length=MAX_LIMITATIONS
+    )
+    variant_choices: list[ProposedVariantChoice] = Field(
+        default_factory=list, max_length=MAX_VARIANT_CHOICES
+    )
+
+    @model_validator(mode="after")
+    def _variant_features_are_unique(self) -> ProposedProductBriefContent:
+        features = [choice.feature for choice in self.variant_choices]
+        if len(features) != len(set(features)):
+            raise ValueError("variant choice features must be unique")
+        return self
 
     @field_validator("language")
     @classmethod
@@ -354,7 +465,7 @@ class ProductBriefCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: uuid.UUID
-    title: str = Field(min_length=1, max_length=500)
+    title: str = Field(min_length=1, max_length=MAX_BRIEF_TITLE_LENGTH)
     content: ProposedProductBriefContent
     #: Idempotency key. A retry of the same creation returns the revision it
     #: already opened rather than opening a second one.
@@ -402,6 +513,35 @@ class ProductBriefRead(BaseModel):
     planning_attempt_active: bool
     planning_attempt_heartbeat_at: datetime | None = None
 
+    def planning_attempt_is_live(self, now: datetime) -> bool:
+        """Is an architect still proving it owns this brief's incomplete plan?
+
+        The question the API asks of the row before it hands a claim to a second
+        architect, asked of the row the API returned: an active attempt whose
+        heartbeat is within `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`.
+        """
+        if not self.planning_attempt_active or self.planning_attempt_heartbeat_at is None:
+            return False
+        heartbeat = self.planning_attempt_heartbeat_at
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=UTC)
+        return heartbeat >= now - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
+
+
+class ProductBriefFullText(BaseModel):
+    """The full form of one revision, as `GET /product-briefs/{id}/full` returns it.
+
+    One item per section, in reading order (`render_full_brief_sections`); the
+    PO's `show_full_brief` joins the same sections with `MESSAGE_BREAK`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    brief_id: str
+    revision: int
+    language: str | None = None
+    sections: list[str]
+
 
 class ProductBriefPlanningAttemptOutcome(StrEnum):
     """What a claim, heartbeat or finish did to the ownership of the plan."""
@@ -442,6 +582,26 @@ class ProductBriefPlanningAttemptCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     planning_attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class ProductBriefAdmissionCommand(ProductBriefPlanningAttemptCommand, PlanningChannels):
+    """The body of `admit`: the attempt, and the LLM channels that planned it.
+
+    The admission that releases the plan records the story's `planned` outcome
+    with these channels in the same transaction, so a released plan always
+    says which channel planned it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reopen: bool = False
+
+
+#: How a `returned_reason` starts when the requirement was returned because no
+#: check QA can perform observes it: the Architect's rule for a must-requirement
+#: whose only usage needs an action QA does not have. What follows it names what
+#: QA would need. A reason is free text otherwise; this is its one fixed form.
+NOT_AUTOMATICALLY_VERIFIABLE_PREFIX = "not automatically verifiable:"
 
 
 class RequirementCoverageCreate(BaseModel):

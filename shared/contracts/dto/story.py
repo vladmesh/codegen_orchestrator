@@ -8,6 +8,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.story_planning import StoryPlanning
 
 
 class StoryType(StrEnum):
@@ -195,7 +196,8 @@ class StoryStageNoticeKind(StrEnum):
 
     #: The story was seen in this stage for the first time.
     ENTERED = "entered"
-    #: The story is still in the stage a quiet interval after the last notice.
+    #: The story is still in the stage at its next escalation step: one quiet
+    #: interval after entering it, then 2, 4, 8... intervals, capped per gap.
     STILL_THERE = "still_there"
 
 
@@ -230,8 +232,15 @@ class StoryDTO(TimestampedDTO):
     generated_product_timeline: dict[str, Any] | None = None
     operator_acceptance: "StoryAcceptance | None" = None
     operator_recheck: "StoryRecheck | None" = None
+    # The user's answers to the checks QA could not run, oldest first.
+    unverified_decisions: "list[StoryUnverifiedDecision]" = Field(default_factory=list)
     reopened_at: datetime | None = None
+    #: When the story landed on ``status`` (read-only; written with it by the API).
+    #: Null for a row last landed before the field existed: unknown, not ``updated_at``.
+    status_entered_at: datetime | None = None
     pr_number: int | None = None
+    # How the last planning attempt ended; paired with ``StoryRead.planning``.
+    planning: StoryPlanning | None = None
 
 
 # --- Request DTOs ---
@@ -254,14 +263,14 @@ class StoryCreate(BaseModel):
 #: Story fields a transition owns.  Sending one to ``PATCH /stories/{id}`` is a
 #: caller bug, not a no-op, so it is refused instead of dropped by
 #: ``extra="ignore"``.
-TRANSITION_OWNED_STORY_FIELDS: tuple[str, ...] = ("status", "waiting_on")
+TRANSITION_OWNED_STORY_FIELDS: tuple[str, ...] = ("status", "waiting_on", "status_entered_at")
 
 
 class StoryUpdate(BaseModel):
     """Update story request — the editorial fields, never the lifecycle ones.
 
-    ``status`` was never patchable; ``waiting_on`` is refused on the same
-    grounds and out loud.  Both are written only by the server actions that
+    ``status`` was never patchable; ``waiting_on`` and ``status_entered_at``
+    are refused on the same grounds and out loud.  Both are written only by the server actions that
     perform a transition, so a poller that thinks it knows what a story waits
     for gets a 422 rather than a field it silently clobbered.
     """
@@ -336,3 +345,51 @@ class StoryRecheck(BaseModel):
     application_id: int
     run_id: str
     rechecked_quarantine_reason: dict[str, Any]
+
+
+class StoryUnverifiedDecisionKind(StrEnum):
+    """What the user chose for checks QA could not run on their story."""
+
+    #: The user accepts the result without those checks.
+    ACCEPT_UNVERIFIED = "accept_unverified"
+    #: The user wants the requirement changed. PO follows it up as a corrected
+    #: brief confirmed as its own story; the answer reopens and reruns nothing.
+    CHANGE_REQUIREMENT = "change_requirement"
+
+
+class StoryUnverifiedDecisionCreate(BaseModel):
+    """The user's answer to unverified checks, as PO records it on the story.
+
+    The QA run it answers is not sent: the API reads it off the story, as the
+    last QA run whose verdict the story routed, and refuses a check name that
+    run did not leave unverified.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: StoryUnverifiedDecisionKind
+    check_names: list[str] = Field(min_length=1)
+    recorded_by: str = Field(min_length=1)
+
+    @field_validator("check_names")
+    @classmethod
+    def _names_are_distinct_and_not_blank(cls, value: list[str]) -> list[str]:
+        names = [name.strip() for name in value]
+        if any(not name for name in names):
+            raise ValueError("a check name must not be blank")
+        if len(set(names)) != len(names):
+            raise ValueError("each check is named once")
+        return names
+
+
+class StoryUnverifiedDecision(BaseModel):
+    """One recorded answer. The story keeps every one: a later answer is appended."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: StoryUnverifiedDecisionKind
+    check_names: list[str]
+    #: The settled QA run whose unverified checks this answers.
+    qa_run_id: str
+    decided_at: datetime
+    recorded_by: str

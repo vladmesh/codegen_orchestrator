@@ -26,11 +26,16 @@ from shared.contracts.dto.engineering_execution import (
 )
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.story import VALID_TRANSITIONS as STORY_TRANSITIONS, StoryStatus
+
+# Re-exported: the API's admission and retry paths read the key through here.
+from shared.contracts.dto.story_failure import SCAFFOLD_ERROR_KEY as SCAFFOLD_ERROR_KEY
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.diagnostics import redact_diagnostic
 from shared.models import Task
 from shared.models.story import Story
+
+from .owner_notification_settlement import preserve_po_settlement
 
 logger = structlog.get_logger()
 
@@ -41,8 +46,6 @@ INFRASTRUCTURE_PARK_ACTION = "park_infrastructure_refusal"
 #: committed fact its attempt id names and the park endpoint proves against.
 WORKSPACE_ENSURE_AUDIT_SUBJECT = "workspace_ensure"
 
-#: The project config key the scaffolder records a failed scaffold/ensure under.
-SCAFFOLD_ERROR_KEY = "scaffold_error"
 
 _SCAFFOLD_ERROR_DETAIL_LIMIT = 500
 
@@ -158,16 +161,19 @@ async def apply_infrastructure_park(
     if story is not None:
         story.quarantine_reason = {**(story.quarantine_reason or {}), **park.as_metadata()}
         _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
-        story.owner_notification = OwnerNotification(
-            event=OwnerNotificationEvent.STORY_BLOCKED,
-            text=park.detail,
-            story_id=story.id,
-            project_id=str(story.project_id),
-            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
-            state=OwnerNotificationState.OWED,
-            owed_at=datetime.now(UTC),
-            admin_text=_admin_notice(task, story, park),
-            admin_state=OwnerNotificationState.OWED,
+        story.owner_notification = preserve_po_settlement(
+            story.owner_notification,
+            OwnerNotification(
+                event=OwnerNotificationEvent.STORY_BLOCKED,
+                text=park.detail,
+                story_id=story.id,
+                project_id=str(story.project_id),
+                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+                state=OwnerNotificationState.OWED,
+                owed_at=datetime.now(UTC),
+                admin_text=_admin_notice(task, story, park),
+                admin_state=OwnerNotificationState.OWED,
+            ),
         ).model_dump(mode="json")
     logger.info(
         "engineering_infrastructure_refusal_parked",

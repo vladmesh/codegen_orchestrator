@@ -142,7 +142,7 @@ async def _run(plan: _Plan) -> tuple[StatsApi, dict]:
     api = stats_api()
     model = _ScriptedToolCallingModel(turns=_script(api, plan))
     reset_task_chain()
-    with patch("src.agents.architect.graph.ChatOpenAI", return_value=model):
+    with patch("src.llm.openrouter.ChatOpenAI", return_value=model):
         result = await plan_finance_bot(
             api, model="scripted", base_url="http://llm.invalid", api_key="x"
         )

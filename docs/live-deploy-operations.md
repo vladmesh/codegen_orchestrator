@@ -80,7 +80,7 @@ dotenv assembly (mixed only in the deployer).
 
 ```bash
 make test-live-mega-noop                              # free full pipeline, no model call
-make stand-run SUITE=mega-llm WORKER=codex QA=claude # one real coding/QA pair on the stand
+make stand-run SUITE=mega-live WORKER=claude QA=codex # the same lifecycle, real developer and QA
 make test-live-clean                                  # always run after a local live attempt
 ```
 
@@ -219,6 +219,77 @@ once `workspace_ready` is set. If ensure fails again, the story parks again with
 new attempt id and one new notice; retry again after fixing the cause. Never edit
 `project.config` by hand to clear `scaffold_error`. When several stories of the
 project were parked, each keeps its own park and needs its own retry.
+
+## Re-run a failed planning (`planning_failed`)
+
+When the architect cannot plan a story, the story says so: `planning.state` is
+`retrying` (with `failed_attempts`, `max_retries`, `next_attempt_at` and
+`last_failure`) while the platform retries on its own, and `parked` once the
+retries run out or the failure is one no retry clears — every LLM channel
+refused payment, credentials or quota. A parked story is in
+`waiting_human_review` with a `planning_failed` `quarantine_reason`; the owner
+and administrators were each told once. The detail names the error class and,
+for an LLM failure, each channel with its class, for example
+`LLMChannelsExhausted: every LLM channel failed: codex:rate_limited,
+claude:missing_credential, openrouter:payment_required`.
+
+Fix the cause first (top up the provider, log a subscription back in, repair
+the channel chain in `agent_configs`). Then click `Retry planning` on the admin
+story detail page, or call the API as a resolved administrator:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  --request POST \
+  --header "X-Internal-Key: ${INTERNAL_API_KEY}" \
+  --header "X-Telegram-ID: ${ADMIN_TELEGRAM_ID}" \
+  --header 'Content-Type: application/json' \
+  --data '{"actor":"operator"}' \
+  "${API_BASE_URL}/api/stories/${STORY_ID}/retry-planning"
+```
+
+The response is the story in `in_progress` with no `quarantine_reason` and
+`planning.state` `retrying`, due now, with `failed_attempts` 0: the re-run is
+owed on the story, and planning is queued within a minute, on the scheduler's
+next cycle — the action itself publishes nothing, so do not call it again
+while you wait. The architect's claim voids the failed attempt's unadmitted
+tasks, so nothing of the failed plan is dispatched. Any other state is refused
+with 422 and changes nothing. Do not PATCH the status or run SQL.
+
+## What a story's owner hears while it is in work, and when
+
+The PO sends only key changes: order acceptance in the user's turn, completion, failure,
+a need for the user's secret, a stop requiring a person, or returned requirements.
+Reminders can tell an untold need or stop; they never send progress updates. Scheduler stage
+notices are still produced on `po:input`, but the PO drops them before running its graph.
+Resource/infrastructure waits and resumptions run the PO turn and publish nothing.
+
+The single proactive gate records the last key state told per chat/story, without expiry or
+a daily cap. A direct status question is answered from `get_story` in the user's own turn.
+
+## LLM channel alerts: what they mean and what to do
+
+Administrators get these from the langgraph and architect processes. Each repeats at most once per
+`llm.alert_realert_window_hours` (default 6) per channel or agent; clear the Redis key
+`llm:alert:<kind>:<subject>` to hear one again sooner.
+
+- **`LLM channel <channel> refused <agent> (payment_required)`** — the provider answered 402
+  (whatever its text; "insufficient credits" included). The chain moved the call on, so work
+  continues on the next channel while money lasts there. Top up or fix billing for that channel.
+- **`LLM channel openrouter refused openrouter_balance_check (unauthorized|forbidden)`** — the
+  balance read itself was refused; OpenRouter documents `/credits` as needing a management key.
+  The balance is not watched until it can be read: set the `OPENROUTER_MANAGEMENT_KEY` environment
+  secret to an OpenRouter management key and redeploy (see [DEPLOY.md](DEPLOY.md)).
+- **`Subscription channels down, <agent> running on OpenRouter (codex=…, claude=…)`** — both
+  subscription CLIs failed one call and OpenRouter answered it. Every call now spends OpenRouter
+  money, and the PO tells users that engineering capacity is temporarily unavailable. Restore a
+  subscription: log the profile back in (see "Log in the production subscription executor
+  profiles"), set `CLAUDE_CODE_OAUTH_TOKEN`, or wait out the usage limit the class names.
+  `llm_channel_failed` logs carry each channel's reason.
+- **`OpenRouter balance is X USD, below the Y USD alert threshold`** — top up OpenRouter credits;
+  when it runs out the last channel fails with 402 and planning parks. The next read above the
+  threshold re-arms the alert. Read the latest balance from the `openrouter_balance` log event.
+  Tune the threshold and cadence with `llm.openrouter_balance_alert_usd` and
+  `llm.openrouter_balance_check_interval_minutes`.
 
 ## Reconcile managed deploy targets
 

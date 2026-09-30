@@ -89,7 +89,7 @@
   description: "Production Copier template source"
 
 - key: scheduler.service_template_ref
-  value: "0.6.2"
+  value: "0.6.4"
   category: scheduler
   description: "Pinned codegen-product-kit release tag the orchestrator scaffolds from"
 
@@ -97,11 +97,6 @@
   value: 5
   category: scheduler
   description: "SSL certificate check socket timeout in seconds"
-
-- key: scheduler.rag_summarizer_poll_interval
-  value: 30
-  category: scheduler
-  description: "RAG summarizer poll interval in seconds"
 
 - key: scheduler.ci_failure_max_fingerprint_attempts
   value: 2
@@ -122,7 +117,7 @@
 - key: supervisor.story_max_architect_retries
   value: 3
   category: supervisor
-  description: "Max architect retry attempts for stuck stories"
+  description: "Max architect retry attempts for stuck stories and for failed planning attempts"
 
 - key: supervisor.story_retry_ttl
   value: 3600
@@ -179,10 +174,25 @@
   category: supervisor
   description: "Minutes a story may wait, after its secret request was delivered to the owner, before it is failed (derived: the same day the pipeline already allows its other wait on a person, supervisor.resource_wait_timeout_minutes)"
 
+- key: supervisor.planless_story_max_minutes
+  value: 60
+  category: supervisor
+  description: "Minutes a story may sit in 'in_progress' with no task in its current work cycle (and no live Product Brief planning attempt) before human review (derived: the architect's 5-minute scaffold wait plus one planning run, with an order of magnitude of headroom)"
+
+- key: supervisor.state_age_mass_park_threshold
+  value: 3
+  category: supervisor
+  description: "Expired waits one state-age watchdog pass may end before the pass counts as a mass sweep after downtime: above it every ending is marked mass_sweep and the admins get one message for the pass instead of one per story (no age cutoff; the PO tells such an event by its dates)"
+
 - key: supervisor.stage_notice_quiet_minutes
   value: 60
   category: supervisor
-  description: "Minutes a story may stay in one in-work stage after its last stage notice before its owner is told again that it is still there (measured from that notice, kept in Redis)"
+  description: "Minutes a story may stay in one in-work stage after entering it before its owner is first told it is still there; later reminders fall at 2, 4, 8... times this after the entry (measured from the last notice, kept in Redis)"
+
+- key: supervisor.stage_notice_max_interval_minutes
+  value: 1440
+  category: supervisor
+  description: "Longest gap between two 'still there' stage notices of one stay: the doubling reminder schedule stops growing here (never read as shorter than supervisor.stage_notice_quiet_minutes)"
 
 - key: supervisor.temporary_access_ttl_minutes
   value: 60
@@ -292,6 +302,21 @@
   value: 2000
   category: llm
   description: "Max tokens in the summary itself"
+
+- key: llm.alert_realert_window_hours
+  value: 6
+  category: llm
+  description: "Hours before one LLM-channel operator alert (402, subscriptions down, low OpenRouter balance) may repeat for the same channel or agent"
+
+- key: llm.openrouter_balance_alert_usd
+  value: 20
+  category: llm
+  description: "OpenRouter balance in USD below which the operator is alerted"
+
+- key: llm.openrouter_balance_check_interval_minutes
+  value: 30
+  category: llm
+  description: "Minutes between two OpenRouter balance reads of the langgraph process"
 
 - key: llm.task_default_max_iterations
   value: 3

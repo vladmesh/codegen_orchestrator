@@ -1,5 +1,6 @@
 """Tests for AnsibleRunner passing orchestrator_ip to playbooks."""
 
+import json
 import os
 from pathlib import Path
 import stat
@@ -15,6 +16,19 @@ os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 from src.provisioner.ansible_runner import AnsibleRunner  # noqa: E402
 
 ANSIBLE_PLAYBOOKS = Path(__file__).parents[2] / "ansible" / "playbooks"
+
+
+def _capture_vars(mock_run):
+    captured = {}
+
+    def execute(cmd, **kwargs):
+        vars_path = cmd[cmd.index("--extra-vars") + 1]
+        assert vars_path.startswith("@")
+        captured.update(json.loads(Path(vars_path[1:]).read_text()))
+        return MagicMock(returncode=0, stdout="ok", stderr="")
+
+    mock_run.side_effect = execute
+    return captured
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +47,7 @@ class TestAnsibleRunnerOrchestratorIp:
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_orchestrator_ip_in_extra_vars(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        extra_vars = _capture_vars(mock_run)
 
         self.runner.run_playbook(
             server_ip="1.2.3.4",
@@ -42,14 +56,11 @@ class TestAnsibleRunnerOrchestratorIp:
             orchestrator_ip="5.6.7.8",
         )
 
-        cmd = mock_run.call_args[0][0]
-        extra_vars_idx = cmd.index("--extra-vars")
-        extra_vars = cmd[extra_vars_idx + 1]
-        assert "orchestrator_ip=5.6.7.8" in extra_vars
+        assert extra_vars["orchestrator_ip"] == "5.6.7.8"
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_no_orchestrator_ip_when_not_provided(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        extra_vars = _capture_vars(mock_run)
 
         self.runner.run_playbook(
             server_ip="1.2.3.4",
@@ -57,14 +68,11 @@ class TestAnsibleRunnerOrchestratorIp:
             playbook_name="provision_software.yml",
         )
 
-        cmd = mock_run.call_args[0][0]
-        extra_vars_idx = cmd.index("--extra-vars")
-        extra_vars = cmd[extra_vars_idx + 1]
         assert "orchestrator_ip" not in extra_vars
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_orchestrator_hostname_in_extra_vars(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        extra_vars = _capture_vars(mock_run)
 
         self.runner.run_playbook(
             server_ip="1.2.3.4",
@@ -73,14 +81,11 @@ class TestAnsibleRunnerOrchestratorIp:
             orchestrator_hostname="orch.example.com",
         )
 
-        cmd = mock_run.call_args[0][0]
-        extra_vars_idx = cmd.index("--extra-vars")
-        extra_vars = cmd[extra_vars_idx + 1]
-        assert "orchestrator_hostname=orch.example.com" in extra_vars
+        assert extra_vars["orchestrator_hostname"] == "orch.example.com"
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_no_orchestrator_hostname_when_not_provided(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        extra_vars = _capture_vars(mock_run)
 
         self.runner.run_playbook(
             server_ip="1.2.3.4",
@@ -88,14 +93,11 @@ class TestAnsibleRunnerOrchestratorIp:
             playbook_name="provision_software.yml",
         )
 
-        cmd = mock_run.call_args[0][0]
-        extra_vars_idx = cmd.index("--extra-vars")
-        extra_vars = cmd[extra_vars_idx + 1]
         assert "orchestrator_hostname" not in extra_vars
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_deploy_user_in_extra_vars(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        extra_vars = _capture_vars(mock_run)
 
         self.runner.run_playbook(
             server_ip="1.2.3.4",
@@ -104,14 +106,11 @@ class TestAnsibleRunnerOrchestratorIp:
             deploy_user="dev",
         )
 
-        cmd = mock_run.call_args[0][0]
-        extra_vars_idx = cmd.index("--extra-vars")
-        extra_vars = cmd[extra_vars_idx + 1]
-        assert "deploy_user=dev" in extra_vars
+        assert extra_vars["deploy_user"] == "dev"
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_tags_are_passed_to_ansible(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        _capture_vars(mock_run)
 
         self.runner.run_playbook(
             server_ip="1.2.3.4",

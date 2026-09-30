@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.owner_notification import OwnerNotification
@@ -18,9 +18,13 @@ from shared.contracts.dto.story import (
     StoryRecheck,
     StoryStatus,
     StoryType,
+    StoryUnverifiedDecision,
+    StoryUnverifiedDecisionCreate,
     StoryUpdate,
     StoryWaitingOn,
 )
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+from shared.contracts.dto.story_planning import StoryPlanning
 
 __all__ = [
     "StoryCreate",
@@ -31,8 +35,11 @@ __all__ = [
     "StoryOwnerNotificationRead",
     "StoryReopen",
     "StoryStatus",
+    "StoryStopTransition",
     "StoryTransition",
     "StoryType",
+    "StoryUnverifiedDecision",
+    "StoryUnverifiedDecisionCreate",
     "StoryUpdate",
     "StoryWaitingOn",
 ]
@@ -67,8 +74,14 @@ class StoryRead(TimestampedDTO):
     generated_product_timeline: dict[str, Any] | None = None
     operator_acceptance: StoryAcceptance | None = None
     operator_recheck: StoryRecheck | None = None
+    unverified_decisions: list[StoryUnverifiedDecision] = Field(default_factory=list)
     reopened_at: datetime | None = None
+    # When the story landed on `status`; written by the transition, null before it existed.
+    status_entered_at: datetime | None = None
     pr_number: int | None = None
+    # How the last planning attempt ended: channels that planned it, or the
+    # failure and whether the platform is still retrying.
+    planning: StoryPlanning | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -84,6 +97,27 @@ class StoryTransition(BaseModel):
     """Schema for story status transition actions."""
 
     actor: str = "system"
+    # The terminal QA run whose verdict this transition routes. The API stamps
+    # that run as routed in the transition's own transaction.
+    qa_run_id: str | None = None
+
+
+class StoryStopTransition(StoryTransition):
+    """The body of the two stopping actions, `fail` and `human-review`.
+
+    ``failure`` names the platform failure that stopped the story. The API
+    stores it as the story's ``quarantine_reason`` and owes the owner and
+    administrators the matching notice, in the transition's own transaction.
+    """
+
+    failure: StoryFailure | None = None
+
+    @field_validator("failure")
+    @classmethod
+    def _native_grant_stop(cls, value: StoryFailure | None) -> StoryFailure | None:
+        if value is not None and value.code is StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED:
+            raise ValueError("initial-owner exhaustion is decided by the grant lifecycle")
+        return value
 
 
 class StoryOwnerNotificationRead(BaseModel):

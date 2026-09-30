@@ -69,6 +69,7 @@ import pytest
 import yaml
 
 from scripts.template_pin import TEMPLATE_PIN
+from shared.contracts.acceptance import parse_health_only_criteria
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIVE_DIR = REPO_ROOT / "tests" / "live"
@@ -264,7 +265,10 @@ def applied_tree(tmp_path_factory, change_sets, runner_script) -> Path:
     _, sets = change_sets
     tree = tmp_path_factory.mktemp("level1-kit") / "product"
     shutil.copytree(TEMPLATE_PIN.fixture_path(), tree)
-    for description in (sets.backend_task_description(), sets.bot_task_description()):
+    for description in (
+        sets.backend_task_description(agent_type="noop"),
+        sets.bot_task_description(agent_type="noop"),
+    ):
         operations = runner_script["parse_change_set"](description)
         assert operations, "a task description carried no change set the runner recognises"
         runner_script["apply_change_set"](operations, str(tree))
@@ -452,10 +456,160 @@ def test_the_endpoint_is_mounted_and_the_command_is_wired(applied_tree: Path, ch
 def test_the_runner_refuses_a_description_holding_two_change_sets(change_sets, runner_script):
     """One block per task description: the runner refuses to guess between two."""
     _, sets = change_sets
-    doubled = sets.backend_task_description() + sets.bot_task_description()
+    doubled = sets.backend_task_description(agent_type="noop") + sets.bot_task_description(
+        agent_type="noop"
+    )
 
     with pytest.raises(runner_script["MalformedChangeSet"]):
         runner_script["parse_change_set"](doubled)
+
+
+def _descriptions(change_sets, extension_change_set, agent_type: str) -> dict[str, str]:
+    """The three task descriptions of the lifecycle, as one developer is handed them."""
+    _, sets = change_sets
+    _, extension = extension_change_set
+    return {
+        "backend": sets.backend_task_description(agent_type=agent_type),
+        "bot": sets.bot_task_description(agent_type=agent_type),
+        "extension": extension.task_description(agent_type=agent_type),
+    }
+
+
+def test_the_scripted_developer_gets_one_change_set_per_task_its_parser_accepts(
+    change_sets, extension_change_set, runner_script
+):
+    """`noop`: the prose contract, and the fence the runner reads — exactly one each."""
+    module, _ = change_sets
+    for name, description in _descriptions(change_sets, extension_change_set, "noop").items():
+        assert description.count(f"```{module.CHANGE_SET_FENCE}") == 1, name
+        assert runner_script["parse_change_set"](description), name
+        assert "What to deliver:" in description, name
+
+
+def test_every_scripted_task_adds_a_file_so_it_never_meets_the_no_change_rule(
+    change_sets, extension_change_set, runner_script, tmp_path
+):
+    """`mega-noop` is untouched by the rule that a success must change the branch.
+
+    The developer node fails a worker success whose commit adds no file change
+    over the head the attempt started from. Each scripted task's change set
+    creates a file, and the runner's `create` refuses a path that already
+    exists, so a scripted task either adds a file — its commit always carries a
+    change, whatever the head was — or fails as itself. It cannot succeed empty.
+    """
+    for name, description in _descriptions(change_sets, extension_change_set, "noop").items():
+        operations = runner_script["parse_change_set"](description)
+        created = [(op, path, content) for op, path, content in operations if op == "create"]
+        assert created, name
+
+        workspace = tmp_path / name
+        target = workspace / created[0][1]
+        target.parent.mkdir(parents=True)
+        target.write_text("already on the branch\n")
+        with pytest.raises(runner_script["ChangeSetTargetExists"]):
+            runner_script["apply_change_set"](created[:1], str(workspace))
+
+
+@pytest.mark.parametrize("developer", ["claude", "codex"])
+def test_a_model_developer_gets_the_contract_in_prose_and_no_change_set(
+    change_sets, extension_change_set, runner_script, developer
+):
+    """A model is told what to build — never handed the patch."""
+    module, sets = change_sets
+    _, extension = extension_change_set
+    descriptions = _descriptions(change_sets, extension_change_set, developer)
+
+    for name, description in descriptions.items():
+        assert module.CHANGE_SET_FENCE not in description, name
+        assert runner_script["parse_change_set"](description) is None, name
+
+    backend, bot, extension_text = (descriptions[k] for k in ("backend", "bot", "extension"))
+    # Story 1: the endpoint and its JSON shape, the setting and where it is declared.
+    assert f"GET {module.LEVEL1_ENDPOINT_PATH}" in backend
+    for field in ('"marker"', '"setting_key"', '"declared_settings"'):
+        assert field in backend
+    assert sets.marker in backend
+    assert f"`{module.LEVEL1_SETTING_KEY}`" in backend
+    assert module.BACKEND_MANIFEST in backend
+    assert "make setup" in backend and "SETTINGS_SCHEMAS" in backend
+    # Story 1: the command, its reply, its menu description and how it is published.
+    assert f"/{module.LEVEL1_COMMAND}" in bot
+    assert f"level-1 marker: {sets.marker}" in bot
+    assert module.level1_command_description(sets.marker) in bot
+    assert "setMyCommands" in bot
+    assert "post_init" in bot
+    # Story 1, live only: the location handler and the reply it answers with.
+    assert "MessageHandler(filters.LOCATION" in bot
+    assert (
+        f'"location: {module.LEVEL1_LOCATION_REPLY_LATITUDE}, '
+        f'{module.LEVEL1_LOCATION_REPLY_LONGITUDE}"'
+    ) in bot
+    # Story 2: the second endpoint, both markers, the second setting, story 1 kept.
+    assert f"GET {module.LEVEL1_EXTENSION_ENDPOINT_PATH}" in extension_text
+    assert '"base_marker"' in extension_text
+    assert extension.extension_marker in extension_text and sets.marker in extension_text
+    assert f"`{module.LEVEL1_EXTENSION_SETTING_KEY}`" in extension_text
+    assert f"GET {module.LEVEL1_ENDPOINT_PATH}" in extension_text
+    # The kit rule a model's code otherwise fails its own CI on.
+    for description in (backend, extension_text):
+        assert "`APIRouter()` may be created only in a module under" in description
+        assert module.BACKEND_ROUTERS_PACKAGE in description
+        assert "framework.enforce_spec_compliance" in description
+
+
+def test_the_acceptance_criteria_differ_by_developer_only_in_the_live_location_line(
+    change_sets, extension_change_set
+):
+    """TASK.md quotes the same criteria whoever develops, but for one live-only line.
+
+    Only the fence differs between the scripted and the modelled descriptions,
+    except that a model's bot task also asks for the location behaviour the real
+    QA executor proves its Telegram sandbox with. The scripted runner is never
+    asked for it: its criteria and its prose are exactly what they were.
+    """
+    module, sets = change_sets
+    _, extension = extension_change_set
+    location = module.level1_location_criterion()
+
+    assert sets.backend_acceptance_criteria() == module.backend_acceptance_criteria(sets.marker)
+    scripted_bot = sets.bot_acceptance_criteria(agent_type="noop")
+    assert scripted_bot == module.bot_acceptance_criteria(sets.marker, agent_type="noop")
+    assert location not in scripted_bot
+    for developer in ("claude", "codex"):
+        assert sets.bot_acceptance_criteria(agent_type=developer) == f"{scripted_bot}\n{location}"
+    assert extension.acceptance_criteria() == module.extension_acceptance_criteria(
+        sets.marker, extension.extension_marker
+    )
+    scripted = _descriptions(change_sets, extension_change_set, "noop")
+    modelled = _descriptions(change_sets, extension_change_set, "claude")
+    location_contract = module._location_contract()
+    assert location_contract in modelled["bot"]
+    for name, description in modelled.items():
+        assert scripted[name].startswith(description.replace(location_contract, "")), name
+
+
+def test_the_live_qa_criteria_are_not_health_only_and_carry_the_run_s_markers(
+    change_sets, extension_change_set
+):
+    """What a real QA executor is handed can only be decided by starting it."""
+    module, sets = change_sets
+    _, extension = extension_change_set
+    first = module.level1_qa_criteria(sets.marker)
+    second = module.level1_extension_qa_criteria(sets.marker, extension.extension_marker)
+
+    assert parse_health_only_criteria(first) is None
+    assert parse_health_only_criteria(second) is None
+    assert sets.marker in first and module.LEVEL1_ENDPOINT_PATH in first
+    assert module.LEVEL1_SETTING_KEY in first
+    assert extension.extension_marker in second and sets.marker in second
+    assert module.LEVEL1_EXTENSION_ENDPOINT_PATH in second
+    assert module.LEVEL1_EXTENSION_SETTING_KEY in second
+    # Story 2's checklist still asks for story 1's endpoint.
+    assert module.backend_acceptance_criteria(sets.marker) in second
+    # Story 1's checklist ends with the live-only location line, the one the QA
+    # executor proves its Telegram sandbox with; story 2 does not re-ask it.
+    assert first.endswith(f"\n{module.level1_location_criterion()}")
+    assert module.level1_location_criterion() not in second
 
 
 def test_a_template_other_than_the_pin_is_refused(change_sets):
@@ -489,7 +643,7 @@ def extension_tree(tmp_path_factory, applied_tree: Path, extension_change_set, r
     _, extension = extension_change_set
     tree = tmp_path_factory.mktemp("level1-extension") / "product"
     shutil.copytree(applied_tree, tree)
-    operations = runner_script["parse_change_set"](extension.task_description())
+    operations = runner_script["parse_change_set"](extension.task_description(agent_type="noop"))
     assert operations, "the extension task description carried no change set the runner reads"
     runner_script["apply_change_set"](operations, str(tree))
     return tree

@@ -14,11 +14,12 @@ import secrets
 import subprocess
 import uuid
 
-import httpx
 from live_harness import OwnershipManifest, cleanup_guard, resolve_repo_root
+import live_timeouts
 from pipeline_helpers import (
     api_client_as_internal_service,
     api_client_as_test_user,
+    api_client_without_credentials,
     cleanup_all,
     require_internal_api_key,
 )
@@ -55,6 +56,11 @@ def pytest_configure(config):
         "markers",
         "live_llm_stand_token: requires a real Claude or Codex stand_token coding turn",
     )
+    config.addinivalue_line(
+        "markers",
+        "live_llm_channel_failover: spends real Codex and Claude subscription turns and one "
+        "OpenRouter PO turn on the stand; never collected by an offline selection",
+    )
 
 
 def pytest_collection_modifyitems(session, config, items):
@@ -76,6 +82,23 @@ def pytest_collection_modifyitems(session, config, items):
     """
     if any(item.get_closest_marker(NO_API_CREDENTIAL_MARKER) is None for item in items):
         require_internal_api_key()
+
+
+def pytest_collection_finish(session):
+    """Bound every live test that will run (`live_timeouts`).
+
+    After collection is final, `-k` and `-m` deselection included: which item
+    sets up a lifecycle fixture — and so carries the lifecycle's bound — depends
+    on which items are left.
+    """
+    live_timeouts.apply_bounds(session.items)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Give the teardown its own bound rather than what the body left of its own."""
+    live_timeouts.arm_teardown_bound(item)
+    return (yield)
 
 
 def pytest_runtest_logreport(report):
@@ -137,7 +160,7 @@ async def api_no_auth():
     client 401. To reach an internal endpoint without naming a user, use
     `api_internal` or `pipeline_helpers.api_client_as_unscoped_observer`.
     """
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    async with api_client_without_credentials() as client:
         yield client
 
 

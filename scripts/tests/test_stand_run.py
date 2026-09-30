@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from scripts import stand_run
+from scripts import clean_live_tests, stand_run
 from scripts.stand_run import (
     AGENTS,
     BRIEF_HARD_STOP_SECONDS,
@@ -13,6 +13,8 @@ from scripts.stand_run import (
     BRIEF_PACKAGE_SUITE_TIMEOUT_SECONDS,
     BRIEF_RUNNER_TIMEOUT_SECONDS,
     BRIEF_SUITE_TIMEOUT_SECONDS,
+    LIVE_RUNNER_TIMEOUT_SECONDS,
+    LIVE_SUITE_TIMEOUT_SECONDS,
     NOOP_SUITE_TIMEOUT_SECONDS,
     QA_EXECUTOR_ENV,
     STAND_JOB_RESERVE_SECONDS,
@@ -27,10 +29,36 @@ from scripts.stand_run import (
     qa_executor_services,
     read_env_file,
     resolve_suite,
+    suite_environment,
     write_junit_report,
     write_qa_executor,
 )
 from shared import stand_deadlines
+
+
+@pytest.fixture(autouse=True)
+def _release_override(tmp_path_factory, monkeypatch):
+    """Every run here is a stand run, and a stand run has its release override.
+
+    The workflow names the override bring-up generated; a test that is about its
+    absence removes it itself.
+    """
+    override = tmp_path_factory.mktemp("release") / "deployed-service-images.compose.yml"
+    override.write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV, str(override))
+    return override
+
+
+@pytest.fixture(autouse=True)
+def _sweep_requirements(monkeypatch):
+    """And its sweep is configured: the deployed `.env` carries the key and run tag.
+
+    A test that is about a missing requirement removes it itself. `API_BASE_URL`
+    is not among these: the runner forms it, and nothing exported may stand in.
+    """
+    monkeypatch.setenv(clean_live_tests.INTERNAL_API_KEY_ENV, "test-internal-key")
+    monkeypatch.setenv(clean_live_tests.STAND_RUN_TAG_ENV, "gha-1-1")
+    monkeypatch.delenv(clean_live_tests.API_BASE_URL_ENV, raising=False)
 
 
 def test_compose_calls_drop_the_exported_qa_executor():
@@ -38,7 +66,7 @@ def test_compose_calls_drop_the_exported_qa_executor():
 
     A runner that sourced the deployed .env into its own environment therefore
     pins the executor it is trying to change: the recreated container comes back
-    with the old value and the matrix silently runs the wrong half twice.
+    with the old value and a paid run silently spends the wrong executor.
     """
     env = {QA_EXECUTOR_ENV: "claude", "INTERNAL_API_KEY": "k"}
 
@@ -69,22 +97,19 @@ def test_env_values_keep_their_own_equals_signs(tmp_path):
     assert read_env_file(env_file) == {"KEY": "abc=def=="}
 
 
-def test_the_matrix_covers_every_agent_against_every_other():
-    assert set(SUITES["matrix"].combinations) == {
-        (qa, worker) for qa in AGENTS for worker in AGENTS
-    }
-    assert len(SUITES["matrix"].combinations) == 4
+def test_no_suite_runs_more_than_the_one_pair_it_was_asked_for():
+    """The four-cell matrix is gone: every paid suite spends exactly one pair."""
+    assert all(suite.combinations == () for suite in SUITES.values())
 
 
 def test_canonical_suites_have_exact_targets_and_timeouts():
     expected_targets = {
         "mega-noop": "tests/live/test_full_pipeline.py::TestFullPipeline",
-        "mega-llm": "tests/live/test_full_pipeline.py::TestFullPipelineLLM",
+        "mega-live": "tests/live/test_full_pipeline.py::TestFullPipeline",
         "mega-brief": "tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
         "mega-brief-package": (
             "tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline"
         ),
-        "matrix": "tests/live/test_full_pipeline.py::TestFullPipelineLLM",
     }
 
     assert set(SUITES) == set(expected_targets)
@@ -170,6 +195,125 @@ def test_noop_cap_covers_both_stories_and_the_undeploy_lifecycle():
     assert noop_job_seconds <= stand_run.STAND_JOB_TIMEOUT_MINUTES * 60
 
 
+def test_live_cap_is_the_noop_ledger_with_a_real_developer_and_a_real_executor():
+    """`mega-live` waits what `mega-noop` waits, but for its two forks, entry by entry.
+
+    The same identity discipline as the noop ledger: every entry is the constant
+    the wait is made of. The two differences are the developer's engineering
+    bound and the executor's QA bound; everything else is the noop entry.
+    """
+    noop_first = dict(stand_deadlines.NOOP_FIRST_STORY_WAITS)
+    noop_second = dict(stand_deadlines.NOOP_SECOND_STORY_WAITS)
+    first = dict(stand_deadlines.LIVE_FIRST_STORY_WAITS)
+    second = dict(stand_deadlines.LIVE_SECOND_STORY_WAITS)
+
+    assert first["two ordered developer Tasks"] == 2 * stand_deadlines.LLM_ENGINEERING_TIMEOUT
+    assert second["extension story: one developer Task"] == stand_deadlines.LLM_ENGINEERING_TIMEOUT
+    assert (
+        first["executor QA"]
+        == second["extension story: executor QA"]
+        == (stand_deadlines.QA_RUN_TIMEOUT + stand_deadlines.QA_EXECUTOR_VERDICT_TIMEOUT)
+    )
+    assert stand_deadlines.LIVE_QA_RUN_TIMEOUT > stand_deadlines.QA_RUN_TIMEOUT
+    shared_first = set(noop_first) - {"two ordered noop engineering Tasks", "deterministic QA"}
+    assert {label: first[label] for label in shared_first} == {
+        label: noop_first[label] for label in shared_first
+    }
+    shared_second = set(noop_second) - {
+        "extension story: one noop engineering Task",
+        "extension story: deterministic QA",
+    }
+    assert {label: second[label] for label in shared_second} == {
+        label: noop_second[label] for label in shared_second
+    }
+    assert stand_deadlines.LIVE_TEARDOWN_WAITS == stand_deadlines.NOOP_TEARDOWN_WAITS
+
+    # The totals the README states, and the cap the runner actually spends.
+    assert sum(first.values()) == 8060
+    assert sum(second.values()) == 6320
+    assert stand_deadlines.live_lifecycle_explicit_waits() == 14980
+    assert LIVE_SUITE_TIMEOUT_SECONDS == stand_deadlines.LIVE_SUITE_TIMEOUT_SECONDS == 15900
+    assert SUITES["mega-live"].timeout_seconds == LIVE_SUITE_TIMEOUT_SECONDS
+    assert SUITES["mega-live"].cleanup_grace_seconds == 0
+    assert (
+        LIVE_SUITE_TIMEOUT_SECONDS - stand_deadlines.live_lifecycle_explicit_waits()
+        >= stand_deadlines.LIVE_TEARDOWN_RESERVE_SECONDS
+    )
+
+
+def test_the_live_runner_path_fits_the_workflow_job_with_the_noop_accounting():
+    """Same accounting as `mega-noop`'s: provisioning, reserve, runner path, job reserve."""
+    assert LIVE_RUNNER_TIMEOUT_SECONDS == (
+        stand_run.PREFLIGHT_TIMEOUT_SECONDS
+        + stand_run.READINESS_TIMEOUT_SECONDS
+        + stand_run.EXECUTOR_SWITCH_TIMEOUT_SECONDS
+        + LIVE_SUITE_TIMEOUT_SECONDS
+        + stand_run.SWEEP_TIMEOUT_SECONDS
+    )
+    live_job_seconds = (
+        stand_run.STAND_PROVISIONING_TIMEOUT_SECONDS
+        + stand_run.STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS
+        + LIVE_RUNNER_TIMEOUT_SECONDS
+        + stand_run.STAND_JOB_RESERVE_SECONDS
+    )
+    assert live_job_seconds == 344 * 60
+    assert live_job_seconds <= stand_run.STAND_JOB_TIMEOUT_MINUTES * 60 == 360 * 60
+    # And it is the longest runner path the job has to hold.
+    assert LIVE_RUNNER_TIMEOUT_SECONDS > max(
+        BRIEF_RUNNER_TIMEOUT_SECONDS, BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS
+    )
+
+
+@pytest.mark.parametrize("worker", AGENTS)
+@pytest.mark.parametrize("qa", AGENTS)
+def test_mega_live_runs_the_level1_class_with_the_requested_pair(tmp_path, monkeypatch, worker, qa):
+    """`--suite mega-live --worker W --qa Q`: the level-1 class, told of both agents."""
+    captured: dict[str, object] = {}
+    switched: list[str] = []
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: True)
+    monkeypatch.setattr(stand_run, "sweep", lambda _env, _log: True)
+    monkeypatch.setattr(
+        stand_run,
+        "ensure_qa_executor",
+        lambda _env, executor, _log: switched.append(executor) or True,
+    )
+
+    def fake_run(target, env, extra, log_path, timeout_seconds, termination_grace_seconds, log):
+        captured.update(target=target, extra=extra, timeout_seconds=timeout_seconds)
+        return True
+
+    monkeypatch.setattr(stand_run, "run_pytest", fake_run)
+    monkeypatch.setattr(
+        stand_run.sys,
+        "argv",
+        ["stand_run.py", "--suite", "mega-live", "--worker", worker, "--qa", qa],
+    )
+
+    assert stand_run.main() == 0
+    assert captured["target"] == "tests/live/test_full_pipeline.py::TestFullPipeline"
+    assert captured["extra"] == {
+        "LIVE_LLM_QA": "1",
+        "LIVE_WORKER_AGENT_TYPE": worker,
+        "LIVE_QA_AGENT_TYPE": qa,
+    }
+    assert captured["timeout_seconds"] == LIVE_SUITE_TIMEOUT_SECONDS
+    # The executor switch the resolver confirms is applied before the cell.
+    assert switched == [qa]
+
+
+def test_the_suite_table_is_the_one_map_from_a_suite_to_its_agents():
+    """`suite_environment` per suite: nothing for level 1, the asked pair for paid ones."""
+    assert suite_environment(SUITES["mega-noop"], qa="claude", worker="codex") == {}
+    for name in ("mega-live", "mega-brief", "mega-brief-package"):
+        assert suite_environment(SUITES[name], qa="claude", worker="codex") == {
+            "LIVE_LLM_QA": "1",
+            "LIVE_QA_AGENT_TYPE": "claude",
+            "LIVE_WORKER_AGENT_TYPE": "codex",
+        }
+
+
 def test_brief_runner_ledger_reserves_a_hard_stop_after_productive_work():
     """The paid fixture retains evidence and cleans up before runner timeout."""
     assert BRIEF_SUITE_TIMEOUT_SECONDS == 50 * 60
@@ -245,7 +389,9 @@ def test_every_named_suite_reaches_the_help_epilog():
 
 
 def test_legacy_aliases_resolve_to_canonical_suite_names():
-    assert SUITE_ALIASES == {"mega": "mega-noop", "llm": "mega-llm"}
+    """No alias names a paid suite: `llm` and its hidden spend are gone."""
+    assert SUITE_ALIASES == {"mega": "mega-noop"}
+    assert not any(SUITES[name].llm for name in SUITE_ALIASES.values())
 
     for alias, canonical_name in SUITE_ALIASES.items():
         resolved_name, suite = resolve_suite(alias)
@@ -262,8 +408,9 @@ def test_unknown_suite_is_a_non_llm_pytest_target():
     assert suite.llm is False
 
 
-def test_mega_llm_runs_the_one_requested_agent_pair():
-    assert SUITES["mega-llm"].combinations == ()
+def test_mega_live_runs_the_one_requested_agent_pair():
+    assert SUITES["mega-live"].llm is True
+    assert SUITES["mega-live"].combinations == ()
 
 
 def test_mega_brief_runs_the_one_requested_agent_pair():
@@ -292,8 +439,8 @@ def test_an_unknown_suite_is_taken_as_a_pytest_target():
 
 @pytest.mark.parametrize("status", ["passed", "failed", "qa_executor_switch_failed"])
 def test_every_outcome_is_one_report_row(status):
-    assert matrix_row("matrix", "codex", "claude", status, 42) == (
-        f"matrix\tcodex\tclaude\t{status}\t42\n"
+    assert matrix_row("mega-live", "codex", "claude", status, 42) == (
+        f"mega-live\tcodex\tclaude\t{status}\t42\n"
     )
 
 
@@ -312,7 +459,7 @@ def test_junit_report_records_a_passing_suite(tmp_path):
 def test_junit_report_records_a_failed_suite(tmp_path):
     report = tmp_path / "junit.xml"
 
-    write_junit_report(report, "mega-llm", [("claude", "codex", "failed", 7)])
+    write_junit_report(report, "mega-live", [("claude", "codex", "failed", 7)])
 
     contents = report.read_text(encoding="utf-8")
     assert 'failures="1"' in contents
@@ -801,6 +948,21 @@ def test_a_consumer_is_ready_only_once_it_says_it_started(tmp_path, monkeypatch)
     assert stand_run.service_is_ready({}, "qa-worker") is True
 
 
+def test_langgraph_is_ready_once_its_po_consumer_says_it_started(monkeypatch):
+    """`langgraph` never logs `langgraph_started`; its PO consumer names the moment."""
+    logs = iter(['{"event": "langgraph_started"}\n', '{"event": "po_consumer_started"}\n'])
+    monkeypatch.setattr(
+        stand_run,
+        "_compose",
+        lambda env, *args, capture=False: subprocess.CompletedProcess(
+            [], 0, stdout=next(logs), stderr=""
+        ),
+    )
+
+    assert stand_run.service_is_ready({}, "langgraph") is False
+    assert stand_run.service_is_ready({}, "langgraph") is True
+
+
 def test_the_runner_waits_for_http_while_the_resolver_already_answers(tmp_path, monkeypatch):
     """The discriminating case of run 33749154999.
 
@@ -844,7 +1006,7 @@ def test_an_unready_stack_is_reported_as_a_failed_switch_and_skips_the_cell(tmp_
     monkeypatch.setattr(stand_run, "sweep", lambda _env, _log: True)
     monkeypatch.setattr(stand_run, "ensure_qa_executor", lambda _env, _qa, _log: False)
     monkeypatch.setattr(stand_run, "run_pytest", lambda *args: started.append(args[0]) or True)
-    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-llm"])
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-live"])
 
     assert stand_run.main() == 1
     assert started == []
@@ -858,3 +1020,306 @@ def test_an_unready_stack_is_reported_as_a_failed_switch_and_skips_the_cell(tmp_
 
 def _last_index(events: list[str], name: str) -> int:
     return len(events) - 1 - events[::-1].index(name)
+
+
+# --- the stand runs the pulled service release, never a build ----------------------------
+#
+# Bring-up no longer leaves a `codegen-orchestrator/*:local` image on the stand, so a
+# recreate without the release override finds no image and builds the service from
+# the checkout. These run the real `_compose` against a fake `docker` on PATH.
+
+FAKE_DOCKER = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${FAKE_DOCKER_LOG}"
+case "$*" in
+    *" logs "*) echo "{\\"event\\": \\"${@: -1}_started\\"}" ;;
+esac
+exit 0
+"""
+
+
+def _fake_docker(tmp_path, monkeypatch):
+    """A stand checkout with its generated override, and a docker that records calls."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    docker = binaries / "docker"
+    docker.write_text(FAKE_DOCKER, encoding="utf-8")
+    docker.chmod(0o755)
+    log = tmp_path / "docker.log"
+    log.write_text("", encoding="utf-8")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "deployed-service-images.compose.yml").write_text(
+        "services:\n  qa-worker:\n    image: ghcr.io/o/qa-worker@sha256:" + "a" * 64 + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(stand_run, "REPO", checkout)
+    # Relative, the way the workflow names it: the file bring-up wrote in the checkout.
+    monkeypatch.setenv(
+        stand_run.SERVICE_RELEASE_OVERRIDE_ENV, "deployed-service-images.compose.yml"
+    )
+    monkeypatch.setattr(stand_run.time, "sleep", lambda _seconds: None)
+    env = {"PATH": f"{binaries}:/usr/bin:/bin", "FAKE_DOCKER_LOG": str(log)}
+    return env, log, checkout
+
+
+def test_the_runner_recreates_from_the_pulled_release_and_builds_nothing(tmp_path, monkeypatch):
+    env, log, checkout = _fake_docker(tmp_path, monkeypatch)
+    lines: list[str] = []
+
+    assert stand_run.recreate_and_wait(env, ("qa-worker",), lines.append) is True
+
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert lines == []
+    files = (
+        "compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml "
+        f"-f {checkout / 'deployed-service-images.compose.yml'} "
+    )
+    assert calls[0] == (
+        files + "up --no-build --pull never -d --no-deps --force-recreate qa-worker"
+    )
+    assert calls[1:] and all(call.startswith(files) for call in calls[1:])
+    for call in calls:
+        assert " build" not in call and "--build " not in call
+
+
+@pytest.mark.parametrize("named", ["", "deployed-service-images.compose.yml"])
+def test_a_recreate_without_the_release_override_is_refused_before_compose_runs(
+    tmp_path, monkeypatch, named
+):
+    """Unset, or naming a file bring-up never wrote: refused, never built instead."""
+    env, log, checkout = _fake_docker(tmp_path, monkeypatch)
+    (checkout / "deployed-service-images.compose.yml").unlink()
+    if named:
+        monkeypatch.setenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV, named)
+    else:
+        monkeypatch.delenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV)
+
+    with pytest.raises(stand_run.ReleaseOverrideMissing, match="build the services"):
+        stand_run.recreate_and_wait(env, ("qa-worker",), print)
+    with pytest.raises(stand_run.ReleaseOverrideMissing):
+        stand_run.resolved_qa_executor(env)
+
+    assert log.read_text(encoding="utf-8") == ""
+
+
+def test_a_run_without_the_release_override_is_refused_before_anything_is_spent(
+    tmp_path, monkeypatch
+):
+    started: list[str] = []
+    monkeypatch.delenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV)
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: started.append("preflight"))
+    monkeypatch.setattr(stand_run, "ensure_qa_executor", lambda *_args: started.append("switch"))
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *args: started.append("pytest"))
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-live"])
+
+    assert stand_run.main() == 2
+    assert started == []
+    report = next((tmp_path / "runs").glob("*/report.tsv")).read_text(encoding="utf-8")
+    assert "\trelease_override_missing\t0\n" in report
+
+
+@pytest.mark.parametrize("verb", stand_run.COMPOSE_REFUSED_COMMANDS)
+def test_no_compose_verb_that_builds_pulls_or_skips_the_policy_gets_through(
+    tmp_path, monkeypatch, verb
+):
+    """`start` and `restart` take no --no-build, `run` no --no-build either: the
+    runner brings containers up only with the one `up` that carries the policy."""
+    env, log, _checkout = _fake_docker(tmp_path, monkeypatch)
+
+    with stand_run._recreate_gate(), pytest.raises(RuntimeError, match="build or pull"):
+        stand_run._compose(env, verb, "api")
+    with stand_run._recreate_gate(), pytest.raises(RuntimeError, match="build or pull"):
+        stand_run._compose(env, "up", "-d", "--build", "api")
+
+    assert log.read_text(encoding="utf-8") == ""
+
+
+def test_every_compose_call_of_the_runner_goes_through_the_one_policed_door():
+    """A second `docker compose` call site would not carry the override or the policy."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(stand_run))
+    owners: list[str] = []
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        for node in ast.walk(function):
+            if isinstance(node, ast.Constant) and node.value == "compose":
+                owners.append(function.name)
+
+    assert owners == ["_compose"]
+
+
+FAKE_UV = """#!/bin/bash
+printf '%s\\n' "$*" > "$FAKE_UV_ARGS"
+env > "$FAKE_UV_ENV"
+exit "${FAKE_UV_EXIT:-0}"
+"""
+
+
+def _fake_uv(tmp_path, *, exit_code=0):
+    """A `uv` that records how the sweep was started and with what environment."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    uv = binaries / "uv"
+    uv.write_text(FAKE_UV, encoding="utf-8")
+    uv.chmod(0o755)
+    args, env_dump = tmp_path / "uv.args", tmp_path / "uv.env"
+    env = {
+        "PATH": f"{binaries}:/usr/bin:/bin",
+        "FAKE_UV_ARGS": str(args),
+        "FAKE_UV_ENV": str(env_dump),
+        "FAKE_UV_EXIT": str(exit_code),
+    }
+
+    def recorded() -> tuple[str, dict[str, str]]:
+        lines = env_dump.read_text(encoding="utf-8").splitlines()
+        values = dict(line.split("=", 1) for line in lines if "=" in line)
+        return args.read_text(encoding="utf-8").strip(), values
+
+    return env, recorded
+
+
+@pytest.mark.parametrize("exported", [None, "http://api:8000", "https://elsewhere.example"])
+def test_the_sweep_addresses_the_api_the_suites_used(tmp_path, monkeypatch, exported):
+    """Run 35945831487: 39 passed, then `API_BASE_URL is required` made the run red.
+
+    Neither an exported value nor the deployed `.env` (whose `http://api:8000` is
+    the container network's name) may point the sweep at another API than the
+    suites' clients.
+    """
+    env, recorded = _fake_uv(tmp_path)
+    if exported is not None:
+        monkeypatch.setenv(clean_live_tests.API_BASE_URL_ENV, exported)
+        env[clean_live_tests.API_BASE_URL_ENV] = exported
+    lines: list[str] = []
+
+    assert stand_run.sweep(env, lines.append) is True
+
+    argv, sweep_env = recorded()
+    assert argv == "run python -m scripts.clean_live_tests"
+    assert sweep_env[clean_live_tests.API_BASE_URL_ENV] == stand_run.SUITE_API_BASE_URL
+    assert sweep_env["LIVE_CONTOUR"] == "stand"
+    assert sweep_env[clean_live_tests.INTERNAL_API_KEY_ENV] == "test-internal-key"
+    assert lines == []
+
+
+def test_a_failed_sweep_is_red_and_names_its_last_line(tmp_path):
+    env, _recorded = _fake_uv(tmp_path, exit_code=1)
+    lines: list[str] = []
+
+    assert stand_run.sweep(env, lines.append) is False
+    assert lines and lines[0].startswith("sweep failed:")
+
+
+def test_the_suite_and_the_sweep_are_given_the_same_contour():
+    assert (
+        stand_run.sweep_environment({})["LIVE_CONTOUR"] == stand_run.STAND_CONTOUR.name == "stand"
+    )
+
+
+def _count_spending(monkeypatch) -> list[str]:
+    started: list[str] = []
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: started.append("preflight"))
+    monkeypatch.setattr(stand_run, "ensure_qa_executor", lambda *_args: started.append("switch"))
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *args: started.append("pytest"))
+    monkeypatch.setattr(stand_run, "sweep", lambda *_args: started.append("sweep"))
+    return started
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        name
+        for name in clean_live_tests.sweep_requirements(stand_run.STAND_CONTOUR)
+        if name != clean_live_tests.API_BASE_URL_ENV
+    ],
+)
+def test_a_run_whose_sweep_could_not_start_is_refused_before_anything_is_spent(
+    tmp_path, monkeypatch, missing
+):
+    started = _count_spending(monkeypatch)
+    monkeypatch.delenv(missing)
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {missing: "  "})
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-noop"])
+
+    assert stand_run.main() == 2
+    assert started == []
+    run_dir = next(path for path in (tmp_path / "runs").iterdir() if path.is_dir())
+    assert "mega-noop\t" in (run_dir / "report.tsv").read_text(encoding="utf-8")
+    assert "\tsweep_requirements_missing\t0\n" in (run_dir / "report.tsv").read_text(
+        encoding="utf-8"
+    )
+    assert f"sweep cannot run without {missing}" in (run_dir / "run.log").read_text(
+        encoding="utf-8"
+    )
+    assert 'failures="1"' in (run_dir / "junit.xml").read_text(encoding="utf-8")
+
+
+def test_the_deployed_env_satisfies_the_sweep_the_way_it_configures_it(tmp_path, monkeypatch):
+    """On the stand the key and the run tag come from `.env`, not the shell."""
+    for name in (clean_live_tests.INTERNAL_API_KEY_ENV, clean_live_tests.STAND_RUN_TAG_ENV):
+        monkeypatch.delenv(name)
+    deployed = {
+        clean_live_tests.INTERNAL_API_KEY_ENV: "k",
+        clean_live_tests.STAND_RUN_TAG_ENV: "gha-1-1",
+    }
+
+    assert stand_run.sweep_requirements_refusal(deployed, print) is None
+    assert stand_run.sweep_requirements_refusal({}, print) == "sweep_requirements_missing"
+
+
+def test_the_entry_check_is_the_sweep_s_own_list_and_cannot_drift(monkeypatch):
+    """The runner holds no copy: a requirement the sweep adds is refused at entry.
+
+    And what the entry check reads is the environment `sweep` passes, so the one
+    variable the runner forms itself is satisfied by that and by nothing else.
+    """
+    lines: list[str] = []
+    original = clean_live_tests.sweep_requirements
+    monkeypatch.setattr(
+        clean_live_tests, "sweep_requirements", lambda contour: (*original(contour), "NEW_NEED")
+    )
+
+    assert stand_run.sweep_requirements_refusal({}, lines.append) == "sweep_requirements_missing"
+    assert lines == ["refused: the post-suite sweep cannot run without NEW_NEED"]
+    assert stand_run.sweep_requirements_refusal({"NEW_NEED": "1"}, lines.append) is None
+
+
+def test_a_run_that_skips_the_sweep_does_not_need_its_configuration(tmp_path, monkeypatch):
+    monkeypatch.delenv(clean_live_tests.INTERNAL_API_KEY_ENV)
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: True)
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *_args: True)
+    monkeypatch.setattr(
+        stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-noop", "--skip-sweep"]
+    )
+
+    assert stand_run.main() == 0
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(True, 0), (False, 2)])
+def test_stand_clean_sweeps_through_the_runner_s_check(tmp_path, monkeypatch, configured, expected):
+    started = _count_spending(monkeypatch)
+    monkeypatch.setattr(stand_run, "sweep", lambda *_args: started.append("sweep") or True)
+    if not configured:
+        monkeypatch.delenv(clean_live_tests.STAND_RUN_TAG_ENV)
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--sweep-only"])
+
+    assert stand_run.main() == expected
+    assert started == (["sweep"] if configured else [])
+    assert not (tmp_path / "runs").exists()
+
+
+def test_make_stand_clean_is_the_runner_s_sweep():
+    makefile = (stand_run.REPO / "Makefile").read_text(encoding="utf-8")
+    target = makefile.split("\nstand-clean:\n", 1)[1].split("\n\n", 1)[0]
+
+    assert target.strip() == "@uv run python -m scripts.stand_run --sweep-only"

@@ -181,17 +181,36 @@ class TestCheckMessageStaleness:
 class TestTerminalConsumerMessages:
     @pytest.mark.asyncio()
     async def test_live_work_watchdog_cancels_owner_when_redis_check_fails(self):
-        from src.consumers._live_work import _cancel_on_live_teardown
+        from src.consumers._live_work import execute_live_work
 
         redis = MagicMock()
         redis.redis.exists = AsyncMock(side_effect=RuntimeError("redis unavailable"))
         redis.redis.set = AsyncMock()
-        owner = MagicMock()
+        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.zrem = AsyncMock()
+        redis.ack = AsyncMock()
 
-        with patch("src.consumers._live_work.asyncio.sleep", new=AsyncMock()):
-            await _cancel_on_live_teardown(redis, "project-1", "lease-1", owner)
+        cancelled = asyncio.Event()
 
-        owner.cancel.assert_called_once()
+        async def process():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0.01):
+            with pytest.raises(asyncio.CancelledError):
+                await execute_live_work(
+                    redis,
+                    queue="queue",
+                    group="group",
+                    message_id="1-0",
+                    project_id="project-1",
+                    process=process,
+                )
+
+        assert cancelled.is_set()
+        redis.ack.assert_not_awaited()
         redis.redis.set.assert_awaited_once()
 
     @pytest.mark.asyncio()
@@ -262,9 +281,9 @@ class TestTerminalConsumerMessages:
         redis = MagicMock()
         redis.connect = AsyncMock()
         redis.close = AsyncMock()
-        redis.ack = AsyncMock(side_effect=RuntimeError("ack unavailable"))
+        redis.ack = AsyncMock()
         redis.consume = consume
-        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.eval = AsyncMock(side_effect=[1, RuntimeError("ack unavailable")])
         redis.redis.exists = AsyncMock(return_value=True)
         redis.redis.set = AsyncMock()
         redis.redis.zrem = AsyncMock()
@@ -319,7 +338,7 @@ class TestTerminalConsumerMessages:
 
         redis = MagicMock()
         redis.ack = AsyncMock()
-        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.eval = AsyncMock(side_effect=[1, -1])  # acquisition, atomic refusal
         redis.redis.set = AsyncMock()
         redis.redis.zrem = AsyncMock()
         redis.redis.exists = AsyncMock(return_value=True)
@@ -373,7 +392,10 @@ class TestTerminalConsumerMessages:
             )
 
         assert result == {"status": status, LIVE_WORK_SETTLED_KEY: True}
-        redis.ack.assert_awaited_once_with("queue", "capability-workers", "1-0")
+        commits = [c for c in redis.redis.eval.await_args_list if "'XACK'" in c.args[0]]
+        assert len(commits) == 1
+        assert commits[0].args[4] == "queue"
+        assert commits[0].args[-5:] == (1, 1, 0, "capability-workers", "1-0")
         redis.redis.set.assert_not_awaited()
 
     @pytest.mark.asyncio()
@@ -382,7 +404,7 @@ class TestTerminalConsumerMessages:
 
         redis = MagicMock()
         redis.ack = AsyncMock()
-        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.eval = AsyncMock(side_effect=[1, -1])  # acquisition, atomic refusal
         redis.redis.set = AsyncMock()
         redis.redis.zrem = AsyncMock()
         redis.redis.exists = AsyncMock(return_value=True)

@@ -17,6 +17,7 @@ between the two files.
 | [docs/coding-agents.md](docs/coding-agents.md) | Coding-agent integration and instruction injection |
 | [docs/TESTING.md](docs/TESTING.md) | Test layers, commands, and CI coverage |
 | [docs/SECRETS.md](docs/SECRETS.md) | Secret isolation and operational handling |
+| [docs/PLATFORM_CAPABILITIES.md](docs/PLATFORM_CAPABILITIES.md) | What a product can and cannot have |
 
 ## Related projects
 
@@ -56,9 +57,10 @@ in `--command`, that receipt is never reusable, and do not substitute a narrower
 
 ## Project conventions
 
-**Fail fast** — this is a prototype, not legacy software. Do not add fallback values, compatibility
-shims, or speculative branches that hide a missing required value. Required environment variables
-raise a clear error; required mappings and typed objects are accessed directly.
+**Fail fast** — this is a prototype, not legacy software. Do not add compatibility shims, speculative
+branches, or fallback values that hide a missing required value. Required environment variables raise a
+clear error; required mappings and typed objects are accessed directly. Which settings count as required
+is set by the environment-variable rule below.
 
 **Contracts first** — statuses, queue names, and messages use the types in `shared/`; do not
 construct ad-hoc dict payloads or invent string values. Check `docs/CONTRACTS.md` before changing
@@ -93,7 +95,16 @@ changed and why — no file inventories, no narrative of what was found. For exa
   so one admission point decides instead of each caller.
 ```
 
-**Environment variables** — never use default values:
+**Environment variables** — a default is allowed only where a missing value cannot change what the
+system does in production:
+
+- Identity, credentials, connectivity and required production policy have no default. In
+  `shared/config.py` they are `Field(...)`, or a `*_field()` helper with `required=True`; a missing value
+  fails at startup.
+- Safe presentation, logging and local-ergonomics settings may have a documented default, as
+  `service_name`, `log_format` and `log_level` do in `shared.config.BaseSettings`.
+- Behaviour-changing production policy is explicit configuration, never a hidden fallback.
+
 ```python
 # Wrong
 api_key = os.getenv("OPENAI_API_KEY", "sk-test")
@@ -118,6 +129,13 @@ logger = structlog.get_logger()
 async def my_node(state: OrchestratorState) -> dict:
     return {"messages": [...], "current_agent": "my_node"}
 ```
+
+**Platform capability manifest** — `docs/platform_capabilities.yaml` says what a product can and
+cannot have, with workarounds; the PO reads its product block, the Architect its technical
+block. A PR that changes a capability (deployer, secret resolver, allocations, port services,
+requestable modules, the kit pin, anything a product can or cannot do) changes the manifest in the
+same PR, bumps its `version`, and re-renders with `python -m scripts.platform_capabilities`. Unit tests fail while the
+renderings are stale or a derived key, port service or secret kind in the code is unlisted.
 
 ## Makefile
 

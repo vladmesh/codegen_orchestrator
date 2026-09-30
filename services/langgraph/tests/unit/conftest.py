@@ -35,6 +35,19 @@ def mock_deploy_config_store(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def engineering_commit_without_env_contract(monkeypatch):
+    """Keep the engineering success path off GitHub: the commit carries no contract.
+
+    Tests of the derived-key check replace this with the contract they need.
+    """
+    from src.consumers import engineering_result_handler
+
+    fetch = AsyncMock(return_value=None)
+    monkeypatch.setattr(engineering_result_handler, "_fetch_env_contract", fetch)
+    return fetch
+
+
+@pytest.fixture(autouse=True)
 def paid_run_executor_for_legacy_unit_states(monkeypatch):
     """Keep pre-decision unit fixtures focused on their stated behavior."""
     from src.consumers import engineering

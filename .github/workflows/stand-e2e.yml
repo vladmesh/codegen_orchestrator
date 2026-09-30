@@ -13,17 +13,16 @@ on:
         type: choice
         options:
           - mega-noop
-          - mega-llm
+          - mega-live
           - mega-brief
           - mega-brief-package
-          - matrix
           - custom
       target:
         description: 'pytest target, when suite is custom'
         required: false
         type: string
       worker:
-        description: 'Coding agent for mega-llm, mega-brief, mega-brief-package or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
+        description: 'Coding agent for mega-live, mega-brief, mega-brief-package or custom only; mega-noop ignores it and runs the scripted developer'
         required: false
         default: 'claude'
         type: choice
@@ -31,7 +30,7 @@ on:
           - claude
           - codex
       qa:
-        description: 'QA executor for mega-llm, mega-brief, mega-brief-package or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
+        description: 'QA executor for mega-live, mega-brief, mega-brief-package or custom only; mega-noop ignores it and runs deterministic QA'
         required: false
         default: 'codex'
         type: choice
@@ -70,16 +69,32 @@ concurrency:
 jobs:
   e2e:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: stand
-    # 360m covers 45m provisioning, a 60m mega-brief hard stop plus runner
-    # lifecycle, and the four-cell matrix. Lifecycle cleanup has its own 30m job.
+    # 360m covers 45m provisioning and the longest runner path, mega-live's
+    # 281m (scripts/stand_run.py). Lifecycle cleanup has its own 30m job.
     timeout-minutes: 360
     permissions:
       contents: read
       packages: read
+      # scripts/wait_release.py asks which CI run of this SHA publishes its releases.
+      actions: read
     env:
       STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      # Where scripts/stand_background.sh keeps the stand host's background jobs: the
+      # service and worker release pulls and the suite's uv environment, started right
+      # after bootstrap and joined before their consumers. Outside the checkout, which
+      # bootstrap rsyncs with --delete.
+      STAND_BACKGROUND_DIR: /root/stand-background
+      # The worker images the stand suites run: `noop` and `claude` resolve to
+      # worker-base-claude, `codex` to worker-base-codex, and both are built from
+      # worker-base-common (scripts/stand_run.py, services/worker-manager/src/image_builder.py).
+      # worker-base-factory is released too, but no stand suite starts it.
+      STAND_WORKER_IMAGES: worker-base-common worker-base-claude worker-base-codex
+      # Generated on the stand host from the pulled service release record
+      # (scripts/service_release.py compose-override), the same override the deploy
+      # uses: compose runs every service from its released digest and builds nothing.
+      STAND_SERVICE_RELEASE_COMPOSE: deployed-service-images.compose.yml
       # One definition for every ssh and scp in this job. Several of these calls
       # wait minutes with the connection idle — provisioning runs ansible on the
       # far side and says nothing meanwhile — and an idle connection is what a
@@ -116,10 +131,15 @@ jobs:
               echo "FATAL: suite=custom needs a pytest target" >&2
               exit 1
             fi
-            echo "value=${{ inputs.target }}" >> "$GITHUB_OUTPUT"
+            suite="${{ inputs.target }}"
           else
-            echo "value=${{ inputs.suite }}" >> "$GITHUB_OUTPUT"
+            suite="${{ inputs.suite }}"
           fi
+          echo "value=${suite}" >> "$GITHUB_OUTPUT"
+          # Whether this suite's QA executor opens the QA Telegram session: the
+          # session is then proven before any spend and must reach qa-worker.
+          qa_telethon="$(python3 -m scripts.stand_telethon_preflight needs-session --suite "${suite}")"
+          echo "qa_telethon=${qa_telethon}" >> "$GITHUB_OUTPUT"
           # The template override is both or neither: a half-set pair is a typo,
           # and it is refused here, before any machine is created.
           if [ -n "${TEMPLATE_SOURCE}" ] && [ -z "${TEMPLATE_REF}" ]; then
@@ -143,13 +163,59 @@ jobs:
           set -euo pipefail
           python3 -m scripts.stand_credentials
 
+      # A suite whose QA executor judges the Telegram-bot product proves the QA
+      # session here, on the runner, with the stand's own secrets: it authorizes,
+      # it is the QA identity the QA runtime's /start probe expects
+      # (QA_TEST_TELEGRAM_ID), and it can resolve and write to the stand product
+      # bot. This is the first point Telethon can run (uv is installed above) and
+      # it precedes every paid step: the Codex check's model call, BitLaunch and
+      # DNS. The client disconnects before the step ends, so the session is never
+      # open here while qa-worker holds it. It prints the user id, the bot
+      # username and the verdict, never a credential.
+      - name: Prove the QA Telegram session
+        if: ${{ steps.suite.outputs.qa_telethon == 'true' }}
+        timeout-minutes: 5
+        env:
+          TELETHON_API_ID: ${{ secrets.TELETHON_API_ID }}
+          TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
+          STAND_PRODUCT_BOT_TOKEN: ${{ secrets.STAND_PRODUCT_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 --with 'telethon==1.45.0' \
+            python -m scripts.stand_telethon_preflight prove
+
+      # Nothing is created for a revision that has no worker release and no service
+      # release: the stand pulls both and builds neither. Both are published by the
+      # push-to-main CI run of this exact commit; while that run is still going this
+      # waits a short, bounded time, re-probing each marker read-only, and a commit
+      # with no such run, a failed run or a run that finished without a marker is
+      # refused at once (scripts/wait_release.py, the deploy's own wait).
+      - name: Wait for this revision's worker and service releases
+        timeout-minutes: 15
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if python3 scripts/wait_release.py --revision "${GITHUB_SHA}" \
+            --chain worker --chain service --timeout-seconds 600; then
+            exit 0
+          else
+            release_status=$?
+          fi
+          echo "release_not_ready: the worker and service releases of ${GITHUB_SHA} were not confirmed (scripts/wait_release.py exit ${release_status}; the reason is above). No machine was created." >&2
+          echo "Retry after the post-merge CI of this commit publishes both releases." >&2
+          exit "${release_status}"
+
       # A failed or still-running post-merge publish must cost nothing. The
       # release marker is immutable and written last by that job, so pull and
       # verify the consumer's exact digest chain before asking BitLaunch or DNS
       # to do anything. The Codex authentication check immediately after this
       # consumes the resulting pinned `worker-base-codex:latest` tag on this
-      # runner, never a mutable registry tag. This does not wait: the operator
-      # should retry once the post-merge worker-image publication CI completes.
+      # runner, never a mutable registry tag. This does not wait: the step above
+      # already waited, boundedly, for the post-merge publication of both releases.
       - name: Validate exact worker image release
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
@@ -427,6 +493,8 @@ jobs:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
         run: |
           set -euo pipefail
+          # The start of the measured bring-up span, reported with the pulls below.
+          date +%s > "${RUNNER_TEMP}/stand-bootstrap-started"
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           inventory="${RUNNER_TEMP}/stand-bootstrap.ini"
           {
@@ -436,11 +504,44 @@ jobs:
           ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg ANSIBLE_PIPELINING=True \
             uvx --from ansible-core ansible-playbook -i "${inventory}" \
             services/infra-service/ansible/playbooks/provision_stand_control_plane.yml
-          rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-target.env \
+          rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-qa-worker.env \
+            --exclude .stand-target.env \
             -e "ssh -i ${key_path} ${SSH_OPTS}" \
             ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'uv --version >/dev/null'
+
+      # The slow half of bring-up starts the moment the host can run it, and in
+      # parallel: the service release pull (joined before `up`), the worker release
+      # pull of the images the suites run (joined before the suite) and the suite's
+      # uv environment (joined by the suite step). Each is a detached job on the stand
+      # host with its own log and exit status (scripts/stand_background.sh); nothing
+      # waits for it here. The registry token travels on stdin, never in a command
+      # line, and is not handed to the uv job.
+      - name: Start the stand's release pulls and uv environment
+        timeout-minutes: 5
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          remote_command=$(printf '%s' \
+            "set -euo pipefail; IFS= read -r GHCR_TOKEN; export GHCR_TOKEN; " \
+            "export GHCR_OWNER='${GHCR_OWNER}'; cd /opt/codegen_orchestrator; " \
+            "bash scripts/stand_background.sh start '${STAND_BACKGROUND_DIR}' service " \
+            "env SERVICE_IMAGE_TAG='${GITHUB_SHA}' " \
+            "DIGEST_FILE=/opt/codegen_orchestrator/deployed-service-images.json " \
+            "bash infra/scripts/pull-service-images.sh; " \
+            "bash scripts/stand_background.sh start '${STAND_BACKGROUND_DIR}' worker " \
+            "env WORKER_IMAGE_TAG='${GITHUB_SHA}' WORKER_IMAGE_SUBSET='${STAND_WORKER_IMAGES}' " \
+            "DIGEST_FILE=/opt/codegen_orchestrator/deployed-worker-images.json " \
+            "bash infra/scripts/pull-worker-images.sh; " \
+            "bash scripts/stand_background.sh start '${STAND_BACKGROUND_DIR}' uv " \
+            "env -u GHCR_TOKEN uv sync --frozen")
+          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" ${SSH_OPTS} \
+            root@"${PROD_HOST}" "${remote_command}"
 
       # The compose services run as `${HOST_UID}:${HOST_GID}` and the App key is
       # bind-mounted into them read-only, so the file's owner and the process
@@ -509,6 +610,13 @@ jobs:
           HOST_GID: ${{ steps.identity.outputs.runtime_gid }}
           GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
           LIVE_CONTOUR: stand
+          DEFAULT_AGENT_TYPE: claude
+          TELEGRAM_MAX_CONCURRENT_UPDATES: '8'
+          # The QA account's Telethon credentials, for qa-worker alone.
+          TELETHON_API_ID: ${{ secrets.TELETHON_API_ID }}
+          TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
+          QA_TELETHON: ${{ steps.suite.outputs.qa_telethon }}
         run: |
           set -euo pipefail
           umask 077
@@ -526,12 +634,26 @@ jobs:
               "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
               "WORKER_BROKER_INTERNAL_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "HOST_CODEX_HOME", "HOST_CODEX_VALIDATION_PATH", "PO_LLM_MODEL",
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
-              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR",
+              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR", "DEFAULT_AGENT_TYPE",
+              "TELEGRAM_MAX_CONCURRENT_UPDATES",
           )
+          # Not in names: .stand.env becomes the stand .env, which compose hands
+          # to every service through env_file. The QA session belongs to
+          # qa-worker alone, so it travels in its own file, which only the
+          # qa-worker of docker-compose.stand.yml reads. Required when the suite
+          # opens the session (mega-live); allowed empty otherwise (mega-noop).
+          telethon = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
           missing = [name for name in (*names, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
           if missing:
               raise SystemExit("missing required stand configuration: " + ", ".join(missing))
+          if os.environ["QA_TELETHON"] == "true":
+              missing = [name for name in telethon if not os.environ.get(name)]
+              if missing:
+                  raise SystemExit("missing required qa-worker configuration: " + ", ".join(missing))
           Path(".stand.env").write_text("\n".join(f"{name}={os.environ[name]}" for name in names) + "\n")
+          Path(".stand-qa-worker.env").write_text(
+              "\n".join(f"{name}={os.environ[name]}" for name in telethon) + "\n"
+          )
           # Same terminal newline the key files get: a stored secret whose final
           # newline was eaten otherwise lands on the stand as a truncated PEM.
           Path(".stand-github-app.pem").write_text(
@@ -539,7 +661,20 @@ jobs:
           )
           '
 
+      # Nothing is built on the stand. Bring-up joins the service release pull started
+      # after bootstrap, pulls the third-party images compose names by tag (they need
+      # the contour .env, so they start here, beside the tail of that pull), and runs
+      # every service from its released digest through the deploy's compose override
+      # with --no-build --pull never. Migrations, both seeders and the scheduler
+      # recreate then run in the release containers. The step ends with every service
+      # up and the schedulers healthy; its end closes the measured bring-up span.
+      #
+      # 30 minutes: the build this replaced measured 3–14.4 minutes, and a cold GHCR
+      # pull on this link measured up to 18.7 (the worker chain, 29 green runs). The
+      # service join is bounded at 20 of them and the third-party join at 10, so a
+      # hung pull fails here with its log tail, not at the 360-minute job limit.
       - name: Bring up dynamic orchestrator and wait for API
+        timeout-minutes: 30
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
           RUNTIME_UID: ${{ steps.identity.outputs.runtime_uid }}
@@ -551,6 +686,9 @@ jobs:
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           scp -i "${key_path}" ${SSH_OPTS} .stand.env \
             root@"${PROD_HOST}":/opt/codegen_orchestrator/.env
+          # qa-worker's own env file (docker-compose.stand.yml), no wider than .env.
+          scp -i "${key_path}" ${SSH_OPTS} .stand-qa-worker.env \
+            root@"${PROD_HOST}":/opt/codegen_orchestrator/.qa-worker.env
           # Owned by the runtime user rather than by root, and no wider than
           # before: the directory stays 0700 and the key 0400. Production does the
           # same thing with `chown deploy:deploy /opt/secrets`; the stand bootstraps
@@ -572,13 +710,28 @@ jobs:
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             "chown ${RUNTIME_UID}:${RUNTIME_GID} /opt/secrets/github_app.pem \
              && chmod 0400 /opt/secrets/github_app.pem"
-          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+          remote_script='
             set -euo pipefail
             cd /opt/codegen_orchestrator
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml up -d --build --remove-orphans
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml exec -T api alembic upgrade head
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+            bash scripts/stand_background.sh start "${background}" third-party \
+              ${COMPOSE} pull --ignore-buildable --policy missing --quiet
+            bash scripts/stand_background.sh join "${background}" service 1200
+            bash scripts/stand_background.sh join "${background}" third-party 600
+            # The resolved configuration carries the contour values, so it lives in
+            # the private background directory and only as long as it is read.
+            ${COMPOSE} config --format json > "${background}/compose.json"
+            python3 scripts/service_release.py compose-override \
+              --compose-config "${background}/compose.json" \
+              --record deployed-service-images.json \
+              --output "${override}"
+            rm -f "${background}/compose.json"
+            COMPOSE="${COMPOSE} -f ${override}"
+            ${COMPOSE} config --quiet
+            ${COMPOSE} up -d --remove-orphans --no-build --pull never
+            ${COMPOSE} exec -T api alembic upgrade head
             remaining=180
-            until docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml exec -T api curl -fsS http://127.0.0.1:8000/health >/dev/null; do
+            until ${COMPOSE} exec -T api curl -fsS http://127.0.0.1:8000/health >/dev/null; do
               test "${remaining}" -gt 0 || exit 1
               sleep 5
               remaining=$((remaining - 5))
@@ -589,16 +742,22 @@ jobs:
             # `Missing work admission config: work_admission.emergency_stop`
             # buried in its own log — which reads as a broken build rather than
             # an unseeded database.
-            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
             ${COMPOSE} exec -T api python /app/scripts/seed_system_configs.py \
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/system_configs.yaml
             ${COMPOSE} exec -T api python /app/scripts/seed_agent_configs.py \
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/agent_configs.yaml
-            ${COMPOSE} up -d --force-recreate --no-deps --wait --wait-timeout 180 \
+            ${COMPOSE} up -d --force-recreate --no-deps --wait --wait-timeout 180 --no-build --pull never \
               scheduler-pipeline scheduler-infrastructure scheduler-maintenance
           '
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "background=${STAND_BACKGROUND_DIR}; override=${STAND_SERVICE_RELEASE_COMPOSE}; ${remote_script}"
+          healthy_epoch=$(date +%s)
+          echo "${healthy_epoch}" > "${RUNNER_TEMP}/stand-services-healthy"
+          started_epoch=$(cat "${RUNNER_TEMP}/stand-bootstrap-started")
+          span=$((healthy_epoch - started_epoch))
+          echo "stand bring-up: ${span}s from Bootstrap start to all services healthy (target 300s)"
 
       # The stand's seeded scheduler configuration has to name the same template the
       # suite scaffolds from, or the two disagree about what is being exercised. The
@@ -616,7 +775,11 @@ jobs:
           remote_command=$(printf 'cd /opt/codegen_orchestrator && docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml exec -T api python /app/scripts/seed_system_configs.py --api-base-url http://localhost:8000 --configs-path /app/scripts/system_configs.yaml --override scheduler.service_template_source=%q --override scheduler.service_template_ref=%q' "${TEMPLATE_SOURCE}" "${TEMPLATE_REF}")
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}"
 
+      # Measured 1.7–6.2 minutes (29 green runs). The bound sits above the 25-minute
+      # deadline of wait_stand_provisioning, so that wait reports on its own and the
+      # diagnostics below it are still collected; this bound stops a hang outside it.
       - name: Register and provision dynamic target
+        timeout-minutes: 30
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
           TARGET_ID: ${{ steps.create.outputs.target_id }}
@@ -693,12 +856,22 @@ jobs:
             # path: a pipe that did not complete publishes the stated reason
             # instead of its input.
             COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-            protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
+            # The QA session lives in the qa-worker env file, not in the api
+            # environment, so the redactor is handed it by name: -e NAME takes
+            # the value from this shell, never from a command line.
+            qa_env=./.qa-worker.env
+            TELETHON_API_HASH=; TELETHON_SESSION=
+            if [ -f "${qa_env}" ]; then
+              TELETHON_API_HASH=$(sed -n "s/^TELETHON_API_HASH=//p" "${qa_env}")
+              TELETHON_SESSION=$(sed -n "s/^TELETHON_SESSION=//p" "${qa_env}")
+            fi
+            export TELETHON_API_HASH TELETHON_SESSION
+            protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY TELETHON_API_HASH TELETHON_SESSION"
             services_out="${diagnostics_dir}/provisioning-services.log"
             services_partial="${services_out}.partial"
             rm -f "${services_partial}"
             if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler-infrastructure 2>&1 | \
-              ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
+              ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" -e TELETHON_API_HASH -e TELETHON_SESSION api \
               python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
               > "${services_partial}"; then
               mv "${services_partial}" "${services_out}"
@@ -712,27 +885,28 @@ jobs:
             fi
           '
 
-      - name: Provide worker base images on the stand
+      # The worker release pull started after bootstrap — only the images the suites
+      # run, from the marker record verified whole — is joined here, before the suite
+      # that starts workers from them. The pull measured 0.8–18.7 minutes cold, on the
+      # foreground path; by now it has run beside bring-up and provisioning, so the
+      # join is bounded at 20 minutes and the step at 25, and a failed or hung pull
+      # fails this step with its own exit code and log tail.
+      - name: Join the worker image release pull
+        timeout-minutes: 25
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
-          GHCR_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          release_sha="${GITHUB_SHA}"
-          echo "worker image release candidate: ${release_sha}"
-          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" ${SSH_OPTS} \
-            root@"${PROD_HOST}" \
-            "IFS= read -r GHCR_TOKEN && export GHCR_TOKEN && \
-             cd /opt/codegen_orchestrator && \
-             GHCR_OWNER='${GHCR_OWNER}' WORKER_IMAGE_TAG='${release_sha}' \
-             DIGEST_FILE=/opt/codegen_orchestrator/deployed-worker-images.json \
-             bash infra/scripts/pull-worker-images.sh" || pulled=$?
-          if [ "${pulled:-0}" -ne 0 ]; then
-            echo "FATAL: pulling the worker image release failed after pre-create validation (exit ${pulled})" >&2
-            exit "${pulled}"
+          echo "worker image release candidate: ${GITHUB_SHA} (${STAND_WORKER_IMAGES})"
+          if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join '${STAND_BACKGROUND_DIR}' worker 1200"; then
+            exit 0
+          else
+            pulled=$?
           fi
+          echo "FATAL: pulling the worker image release failed after pre-create validation (exit ${pulled})" >&2
+          exit "${pulled}"
 
       # The runner is the single owner of named-suite and custom-target
       # semantics.  Its non-zero result is held until the safe handoff has been
@@ -759,22 +933,59 @@ jobs:
           if [ -n "${TEMPLATE_SOURCE}" ]; then
             template_env=$(printf 'LIVE_TEMPLATE_REPO=%q LIVE_TEMPLATE_REF=%q ' "${TEMPLATE_SOURCE}" "${TEMPLATE_REF}")
           fi
-          # The product bot token belongs to the level-1 suite and to nothing
-          # else: it is one bot on one stand, and mega-noop is the only suite
-          # that deploys a Telegram-bot product and binds it. Every other suite
-          # is handed an empty value, and the level-1 helper refuses to start on
-          # one, which is what makes a missing secret a named failure rather than
-          # a run that quietly proves nothing.
+          # The product bot token belongs to the level-1 lifecycle and to
+          # nothing else: it is one bot on one stand, and mega-noop and mega-live
+          # — the same lifecycle with a scripted or a real developer — are the
+          # only suites that deploy a Telegram-bot product and bind it. Every
+          # other suite is handed an empty value, and the level-1 helper refuses
+          # to start on one, which is what makes a missing secret a named failure
+          # rather than a run that quietly proves nothing.
           bot_token=""
-          if [ "${SUITE}" = "mega-noop" ]; then
+          if [ "${SUITE}" = "mega-noop" ] || [ "${SUITE}" = "mega-live" ]; then
             bot_token="${STAND_PRODUCT_BOT_TOKEN}"
           fi
           # Over stdin, never in the command line: an ssh argument is visible in
           # the stand's own process list, the same reason the worker-image step
           # above pipes its registry token.
-          remote_command=$(printf 'cd /opt/codegen_orchestrator && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
+          # The suite's environment was synced in the background after bootstrap
+          # (`uv sync --frozen`, the default group `uv run` uses). The join is bounded
+          # and fail-closed; UV_FROZEN then keeps every `uv run` of the runner, its
+          # own nested ones included, on that environment with no fresh resolve.
+          # The runner recreates services when it switches the QA executor; it does
+          # so through the release override bring-up generated, which it is named
+          # here, with --no-build --pull never, and refuses the run without it.
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join %q uv 600 < /dev/null && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && export UV_FROZEN=1 && export STAND_SERVICE_RELEASE_COMPOSE=%q && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${STAND_BACKGROUND_DIR}" "${STAND_SERVICE_RELEASE_COMPOSE}" "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
           printf '%s\n' "${bot_token}" | ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
             2>&1 | tee "${RUNNER_TEMP}/remote-invocation.log"
+
+      # The run's bring-up on the record: the span from Bootstrap start to all
+      # services healthy (the sprint target is 5 minutes), and each background job's
+      # own duration and exit status read from the stand host. It only reports: the
+      # joins above are what fail a run.
+      - name: Report stand bring-up timing
+        if: ${{ always() && steps.create.outputs.orchestrator_ip != '' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          started="${RUNNER_TEMP}/stand-bootstrap-started"
+          healthy="${RUNNER_TEMP}/stand-services-healthy"
+          {
+            echo '### Stand bring-up'
+            echo
+            if [ -f "${started}" ] && [ -f "${healthy}" ]; then
+              echo "Bootstrap start → all services healthy: **$(( $(cat "${healthy}") - $(cat "${started}") ))s** (target ≤ 300s)"
+            else
+              echo "Bootstrap start → all services healthy: not reached in this run"
+            fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "cd /opt/codegen_orchestrator && bash scripts/stand_background.sh report '${STAND_BACKGROUND_DIR}' service worker uv third-party" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       # The stand is serialized, so one profile has one writer at a time. Pull a
       # worker-refreshed file before cleanup tears down the only host that has
@@ -871,16 +1082,11 @@ jobs:
             if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
               if [ -d /root/e2e-runs/latest ]; then exit 0; else exit 1; fi
             '; then
-              reports=(junit.xml report.tsv run.log)
-              if [ "${SUITE}" = "matrix" ]; then
-                reports+=(claude-claude.log claude-codex.log codex-claude.log codex-codex.log)
-              else
-                # A named single-cell suite and a custom target produce exactly
-                # the pair the runner was asked for. Trying all matrix filenames
-                # here made scp wait on three files that cannot exist (21 seconds
-                # in run 33446639363), obscuring rather than improving evidence.
-                reports+=("${QA}-${WORKER}.log")
-              fi
+              # Every suite is one cell, and it produces exactly the pair the
+              # runner was asked for. Trying other pairs' filenames here made scp
+              # wait on files that cannot exist (21 seconds in run 33446639363),
+              # obscuring rather than improving evidence.
+              reports=(junit.xml report.tsv run.log "${QA}-${WORKER}.log")
               for name in "${reports[@]}"; do
                 scp -i "${key_path}" ${SSH_OPTS} \
                   root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
@@ -906,7 +1112,17 @@ jobs:
                 set -euo pipefail
                 cd /opt/codegen_orchestrator
                 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-                protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
+                # The QA session lives in the qa-worker env file, not in the api
+                # environment, so the redactor is handed it by name: -e NAME takes
+                # the value from this shell, never from a command line.
+                qa_env=./.qa-worker.env
+                TELETHON_API_HASH=; TELETHON_SESSION=
+                if [ -f "${qa_env}" ]; then
+                  TELETHON_API_HASH=$(sed -n "s/^TELETHON_API_HASH=//p" "${qa_env}")
+                  TELETHON_SESSION=$(sed -n "s/^TELETHON_SESSION=//p" "${qa_env}")
+                fi
+                export TELETHON_API_HASH TELETHON_SESSION
+                protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY TELETHON_API_HASH TELETHON_SESSION"
                 out=/root/e2e-runs/suite-services.log
                 partial="${out}.partial"
                 rm -f "${partial}"
@@ -917,7 +1133,7 @@ jobs:
                      scheduler-pipeline scheduler-infrastructure scheduler-maintenance \
                      engineering-worker worker-manager worker-broker api \
                      qa-worker deploy-worker 2>&1 | \
-                   ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
+                   ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" -e TELETHON_API_HASH -e TELETHON_SESSION api \
                    python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
                    > "${partial}"; then
                   mv "${partial}" "${out}"
@@ -1002,6 +1218,8 @@ jobs:
           ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
         run: |
           set -euo pipefail
           never_upload="${RUNNER_TEMP}/stand-e2e-never-upload"
@@ -1047,7 +1265,7 @@ jobs:
   cleanup:
     needs: e2e
     if: ${{ always() && github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: stand
     timeout-minutes: 30
     env:
@@ -1140,6 +1358,8 @@ jobs:
           ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
         run: |
           set -euo pipefail
           never_upload="${RUNNER_TEMP}/stand-acceptance-never-upload"
@@ -1182,7 +1402,7 @@ jobs:
 
   ttl-sweep:
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: stand
     env:
       BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}

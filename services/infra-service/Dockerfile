@@ -10,15 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy shared as plain files (deps are in service pyproject.toml)
-COPY shared /app/shared
-
-# Install service dependencies + Ansible collections
-COPY services/infra-service/pyproject.toml .
-COPY services/infra-service/ansible/requirements.yml /app/ansible/requirements.yml
+# Install the locked service dependencies, then the pinned Ansible collections, before any
+# source: a shared/ or src/ edit reuses both layers. The service's own code runs from
+# PYTHONPATH=/app, so it is not pip-installed.
+COPY services/infra-service/requirements.lock /tmp/requirements.lock
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install . && \
-    ansible-galaxy collection install -r /app/ansible/requirements.yml
+    pip install -r /tmp/requirements.lock
+COPY services/infra-service/ansible/requirements.yml /app/ansible/requirements.yml
+RUN ansible-galaxy collection install -r /app/ansible/requirements.yml
+
+# Copy shared as plain files (deps are in the service requirements.lock)
+COPY shared /app/shared
 
 # Copy source code
 COPY services/infra-service/src /app/src

@@ -16,8 +16,10 @@ remote, a fraction of a second.
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -183,6 +185,53 @@ async def test_a_new_story_branch_is_cut_from_the_fetched_default_branch(tmp_pat
     assert _git(workspace, "rev-parse", "HEAD") != stale_head
 
 
+async def test_checkout_converges_after_branch_fetch_failed_following_default_fetch(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    branch = "story/story-ea07a289"
+    remote_tip = _advance_remote(remote, tmp_path, branch, "existing story work")
+    real_git = subprocess.run(  # noqa: S603
+        ["which", "git"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    calls = tmp_path / "fetch-calls"
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        "  *'fetch origin'*)\n"
+        f"    count=$(cat '{calls}' 2>/dev/null || echo 0)\n"
+        "    count=$((count + 1))\n"
+        f"    echo \"$count\" > '{calls}'\n"
+        '    if [ "$count" -eq 2 ]; then '
+        "echo 'remote: Repository not found.' >&2; exit 128; fi ;;\n"
+        "esac\n"
+        f"exec '{real_git}' \"$@\"\n"
+    )
+    shim.chmod(0o755)
+    script = git_ops.build_checkout_script(branch).replace("cd /workspace", f"cd {workspace}", 1)
+    env = {**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"}
+
+    first = subprocess.run(  # noqa: S603
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
+    )
+    assert first.returncode != 0
+    assert "Repository not found" in first.stderr
+    assert _git(workspace, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") == "origin/main"
+    assert _git(workspace, "branch", "--list", branch) == ""
+
+    resumed = subprocess.run(  # noqa: S603
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    assert _git(workspace, "rev-parse", "--abbrev-ref", "HEAD") == branch
+    assert _git(workspace, "rev-parse", "HEAD") == remote_tip
+    assert _git(workspace, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}") == (
+        f"origin/{branch}"
+    )
+    assert branch in _git(remote, "branch", "--list", branch)
+
+
 async def test_an_existing_story_branch_resumes_at_its_remote_tip(tmp_path):
     remote, workspace = _make_product_repo(tmp_path)
     tip = _advance_remote(remote, tmp_path, "story/story-ea07a289", "earlier turn")
@@ -220,8 +269,125 @@ async def test_an_unpushed_local_commit_on_a_resumed_branch_is_never_discarded(t
 # --- Criterion 3: the token refresh runs no product hook either ---
 
 
+@pytest.mark.parametrize("remote_only", [False, True])
+async def test_merged_story_restarts_from_fresh_actual_default(tmp_path, remote_only):
+    remote, workspace = _make_product_repo(tmp_path)
+    branch = "story/reopened"
+    _git(workspace, "checkout", "-b", branch)
+    (workspace / "README.md").write_text("old story\n")
+    _git(workspace, "add", "README.md")
+    _git(workspace, "commit", "-m", "old story")
+    _git(workspace, "-c", "core.hooksPath=/dev/null", "push", "-u", "origin", branch)
+    old = _git(workspace, "rev-parse", "HEAD")
+    _git(workspace, "checkout", "main")
+    _git(workspace, "merge", "--no-ff", branch, "-m", "release")
+    (workspace / "README.md").write_text("default advanced\n")
+    _git(workspace, "add", "README.md")
+    _git(workspace, "commit", "-m", "advance default on same file")
+    _git(workspace, "branch", "-m", "trunk")
+    _git(workspace, "-c", "core.hooksPath=/dev/null", "push", "origin", "trunk")
+    _git(remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+    _git(workspace, "update-ref", "-d", "refs/remotes/origin/trunk")
+    fresh = _git(workspace, "rev-parse", "HEAD")
+    if remote_only:
+        _git(workspace, "branch", "-D", branch)
+    else:
+        _git(workspace, "checkout", branch)
+    result = _run_checkout_script(workspace, branch)
+    assert result.returncode == 0, result.stderr
+    assert _git(workspace, "rev-parse", "HEAD") == fresh
+    assert _git(remote, "rev-parse", branch) == fresh
+    assert _git(workspace, "rev-parse", "@{upstream}") == fresh
+    assert _git(workspace, "config", "core.hooksPath") == ".githooks"
+    (workspace / "README.md").write_text("new worker work\n")
+    _git(workspace, "add", "README.md")
+    _git(workspace, "commit", "-m", "new cycle")
+    assert _git(workspace, "rev-parse", "HEAD^") == fresh
+    _git(workspace, "-c", "core.hooksPath=/dev/null", "push")
+    _git(workspace, "checkout", "trunk")
+    _git(workspace, "merge", "--no-ff", branch, "-m", "new release")
+    assert (workspace / "README.md").read_text() == "new worker work\n"
+    assert old != fresh
+
+
+async def test_merged_remote_does_not_discard_unpushed_local_work(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    branch = "story/local"
+    assert _run_checkout_script(workspace, branch).returncode == 0
+    (workspace / "local.txt").write_text("unpublished work")
+    _git(workspace, "add", "local.txt")
+    _git(workspace, "commit", "-m", "local work")
+    local = _git(workspace, "rev-parse", "HEAD")
+    _advance_remote(remote, tmp_path, "main", "default advanced")
+    result = _run_checkout_script(workspace, branch)
+    assert result.returncode == 0, result.stderr
+    assert _git(workspace, "rev-parse", "HEAD") == local
+    assert (workspace / "local.txt").read_text() == "unpublished work"
+
+
+async def test_divergent_story_fails_without_discarding_either_tip(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    branch = "story/divergent"
+    assert _run_checkout_script(workspace, branch).returncode == 0
+    (workspace / "local.txt").write_text("local")
+    _git(workspace, "add", "local.txt")
+    _git(workspace, "commit", "-m", "local work")
+    local = _git(workspace, "rev-parse", "HEAD")
+    side = tmp_path / "remote-author"
+    _git(tmp_path, "clone", str(remote), str(side))
+    _git(side, "config", "user.email", "test@example.com")
+    _git(side, "config", "user.name", "Test")
+    _git(side, "checkout", branch)
+    (side / "remote.txt").write_text("remote")
+    _git(side, "add", "remote.txt")
+    _git(side, "commit", "-m", "remote work")
+    _git(side, "push")
+    remote_tip = _git(remote, "rev-parse", branch)
+    result = _run_checkout_script(workspace, branch)
+    assert result.returncode != 0
+    assert _git(workspace, "rev-parse", "HEAD") == local
+    assert _git(remote, "rev-parse", branch) == remote_tip
+
+
+async def test_dirty_story_fails_without_changing_owned_bytes(tmp_path):
+    _, workspace = _make_product_repo(tmp_path)
+    (workspace / "README.md").write_text("unfinished local edit\n")
+    result = _run_checkout_script(workspace, "story/dirty")
+    assert result.returncode != 0
+    assert (workspace / "README.md").read_text() == "unfinished local edit\n"
+
+
+@pytest.mark.parametrize(
+    "step", ["ls-remote --symref", "fetch origin", "push -u", "ls-remote --exit-code"]
+)
+async def test_native_checkout_failures_cannot_report_success(tmp_path, step):
+    _, workspace = _make_product_repo(tmp_path)
+    shim_dir = tmp_path / "failure-shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        + f'case "$*" in *"{step}"*) '
+        + "echo 'synthetic native Git failure' >&2; exit 128;; esac\n"
+        + f'exec "{shutil.which("git")}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    script = git_ops.build_checkout_script("story/native-failure").replace(
+        "cd /workspace", f"cd {workspace}", 1
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"},
+    )  # noqa: S603
+    assert result.returncode != 0
+    assert "synthetic native Git failure" in result.stderr
+
+
 async def test_the_token_refresh_script_is_hook_free():
-    script = git_ops.build_token_refresh_script("org/repo", "ghs-token")
+    script = git_ops.build_token_refresh_script("org/repo")
 
     invocations = list(_GIT_COMMAND.finditer(script))
     assert invocations
@@ -236,7 +402,7 @@ async def test_refresh_git_token_execs_the_hook_free_script():
 
     assert await git_ops.refresh_git_token(docker, "cid", "org/repo", "ghs-token", "w-1")
 
-    decoded = _decoded_script(docker.exec_in_container.await_args.args[1])
+    decoded = docker.exec_in_container.await_args.args[1][2]
     assert git_ops.GIT in decoded
     for match in _GIT_COMMAND.finditer(decoded):
         assert decoded[match.end() :].startswith(_HOOKLESS)
@@ -249,19 +415,30 @@ def _decoded_script(cmd: str) -> str:
 
 async def test_checkout_branch_execs_the_hook_free_script():
     docker = MagicMock()
-    docker.exec_in_container = AsyncMock(return_value=(0, ""))
+    docker.exec_capture = AsyncMock(return_value=(0, b"CODEGEN_CHECKOUT_HEAD=" + b"a" * 40, b""))
 
     assert await git_ops.checkout_branch(docker, "cid", "story/story-ea07a289", "w-1")
 
-    decoded = _decoded_script(docker.exec_in_container.await_args.args[1])
+    decoded = _decoded_script(docker.exec_capture.await_args.args[1])
     assert decoded == git_ops.build_checkout_script("story/story-ea07a289")
+
+
+async def test_success_without_prepared_head_evidence_is_a_checkout_failure():
+    docker = MagicMock()
+    docker.exec_capture = AsyncMock(return_value=(0, b"origin/story/x", b""))
+    result = await git_ops.checkout_branch(docker, "cid", "story/x", "w-1")
+    assert not result and "prepared head" in result.detail
 
 
 async def test_checkout_branch_reports_a_failed_script():
     docker = MagicMock()
-    docker.exec_in_container = AsyncMock(return_value=(1, "fatal: no upstream"))
+    docker.exec_capture = AsyncMock(return_value=(1, b"", b"fatal: no upstream"))
 
-    assert await git_ops.checkout_branch(docker, "cid", "story/story-ea07a289", "w-1") is False
+    result = await git_ops.checkout_branch(docker, "cid", "story/story-ea07a289", "w-1")
+
+    assert not result
+    assert "exit_code=1" in result.detail
+    assert "stderr: fatal: no upstream" in result.detail
 
 
 # --- Criterion 4: a checkout that did not do its job fails worker creation ---
@@ -296,7 +473,11 @@ async def test_a_false_checkout_fails_creation_before_any_material_is_injected()
             "src.manager.workspace_mod.get_scaffolded_workspace",
             return_value=(Path("/data/ws/repo-1"), True),
         ),
-        patch("src.manager.git_ops.checkout_branch", new_callable=AsyncMock, return_value=False),
+        patch(
+            "src.manager.git_ops.checkout_branch",
+            new_callable=AsyncMock,
+            return_value=git_ops.CheckoutResult(ok=False, detail="exit_code=1; stderr: fatal"),
+        ),
         patch.object(manager, "_register_broker_worker", new_callable=AsyncMock),
         patch.object(manager, "_inject_worker_materials", new_callable=AsyncMock) as inject,
     ):
@@ -323,6 +504,7 @@ async def test_a_false_checkout_fails_creation_before_any_material_is_injected()
                 api_key="test-api-key",
                 instructions="required instructions",
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
                 branch="story/story-ea07a289",
             )
 
@@ -330,3 +512,5 @@ async def test_a_false_checkout_fails_creation_before_any_material_is_injected()
     recorded = await redis.get("worker:error:dev-p-checkout-false")
     assert recorded.strip()
     assert "checkout_branch" in recorded
+    # The script's own account reaches the record the spawner reads.
+    assert "exit_code=1; stderr: fatal" in recorded

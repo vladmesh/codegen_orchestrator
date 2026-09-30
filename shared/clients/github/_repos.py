@@ -132,6 +132,30 @@ class ReposMixin:
         # mean sha is not an ancestor of the branch.
         return resp.json().get("status") in ("identical", "ahead")
 
+    async def commit_adds_changes(
+        self, owner: str, repo: str, base_sha: str, head_sha: str
+    ) -> bool:
+        """Whether ``head_sha`` carries a file change of its own over ``base_sha``.
+
+        GitHub compares from the merge base of the two. A ``head_sha`` equal to or
+        behind ``base_sha`` has no commit ahead of it, and commits that net out to
+        no file change — an empty commit, a change and its revert — list no files.
+        Either way nothing was produced on top of ``base_sha``.
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/compare/"
+            f"{quote(base_sha, safe='')}...{quote(head_sha, safe='')}",
+            headers=headers,
+        )
+        comparison = resp.json()
+        return comparison["ahead_by"] > 0 and bool(comparison["files"])
+
     async def delete_repo(self, owner: str, repo: str) -> bool:
         """Delete a repository.
 

@@ -1,7 +1,8 @@
 """SecretResolverNode — resolves secrets by generating, computing, and checking user-provided."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from ipaddress import ip_address
+from ipaddress import IPv6Address, ip_address
 import json
 import os
 import secrets as secrets_module
@@ -49,6 +50,101 @@ class TypedSecretResolutionError(SecretResolutionError):
     def __init__(self, outcome: DeployOutcome, message: str):
         super().__init__(message)
         self.outcome = outcome
+
+
+def _runtime_slug(project_spec: dict, state: DevOpsState) -> str:
+    """The project's runtime slug, which names the app, the project and the stack."""
+    return project_spec_runtime_slug(project_spec)
+
+
+def _postgres_db(project_spec: dict, state: DevOpsState) -> str:
+    """The product database name, unique per project."""
+    safe_project_id = state.get("project_id", "").replace("-", "_").lower()
+    return f"db_{safe_project_id}"
+
+
+def _enabled_modules(project_spec: dict, state: DevOpsState) -> str:
+    """The project's modules as one comma-separated value."""
+    modules = project_spec.get("config", {}).get("modules", [])
+    if not isinstance(modules, list) or not all(isinstance(module, str) for module in modules):
+        raise SecretResolutionError("project modules are invalid")
+    return ",".join(modules)
+
+
+def backend_allocation(state: DevOpsState) -> dict:
+    """The single validated backend allocation used for deployment and self links."""
+    try:
+        if not isinstance(state.get("allocated_resources", {}), dict):
+            raise SecretResolutionError("Invalid backend allocation mapping")
+        endpoint = SecretResolverNode._find_allocation(state, "backend")
+        if endpoint is None:
+            raise SecretResolutionError("Missing allocation for service backend")
+    except SecretResolutionError as error:
+        raise SecretResolutionError(f"PUBLIC_BASE_URL: {error}") from error
+    backend_http_url(*endpoint)
+    return next(
+        resource
+        for resource in state["allocated_resources"].values()
+        if isinstance(resource, dict) and resource.get("service_name") == "backend"
+    )
+
+
+def backend_base_url(state: DevOpsState) -> str:
+    """Plain HTTP at the allocated address; IPv6 literals require URL brackets."""
+    allocation = backend_allocation(state)
+    return backend_http_url(allocation["server_ip"], allocation["port"])
+
+
+def backend_http_url(server_ip: str, port: int) -> str:
+    """Validate the effective address before formatting the HTTP consumer's host."""
+    try:
+        address = ip_address(server_ip)
+    except ValueError as error:
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend address is invalid") from error
+    effective = (address.ipv4_mapped or address) if isinstance(address, IPv6Address) else address
+    if (
+        effective.is_loopback
+        or effective.is_unspecified
+        or effective.is_multicast
+        or (isinstance(address, IPv6Address) and address.scope_id)
+    ):
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend address is unusable")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= _MAX_TCP_PORT:
+        raise SecretResolutionError("PUBLIC_BASE_URL: backend port is invalid")
+    if isinstance(address, IPv6Address):
+        # Keep existing hexadecimal self URLs stable when Python changes the
+        # spelling of IPv4-mapped IPv6Address.compressed across patch releases.
+        mapped = address.ipv4_mapped
+        host = (
+            f"::ffff:{int(mapped) >> 16:x}:{int(mapped) & 0xFFFF:x}"
+            if mapped is not None
+            else address.compressed
+        )
+        host = f"[{host}]"
+    else:
+        host = address.compressed
+    return f"http://{host}:{port}"
+
+
+def _public_base_url(project_spec: dict, state: DevOpsState) -> str:
+    return backend_base_url(state)
+
+
+#: Derived keys computed from the project and deploy context, by name. With
+#: `_STATIC_SECRETS`, `_PORT_SERVICE_MAP` and the `IMAGE_KEY_SUFFIX` family this is
+#: every derived key a deploy can resolve; `docs/platform_capabilities.yaml` lists
+#: each one, and a test holds the two together.
+CONTEXT_DERIVED_SECRETS: dict[str, Callable[[dict, DevOpsState], str]] = {
+    "APP_NAME": _runtime_slug,
+    "PROJECT_NAME": _runtime_slug,
+    "POSTGRES_DB": _postgres_db,
+    "COMPOSE_PROJECT_NAME": _runtime_slug,
+    "ENABLED_MODULES": _enabled_modules,
+    "PUBLIC_BASE_URL": _public_base_url,
+}
+
+#: A derived key ending in this names the published image of one product service.
+IMAGE_KEY_SUFFIX = "_IMAGE"
 
 
 @dataclass
@@ -304,7 +400,8 @@ class SecretResolverNode(FunctionalNode):
             raise SecretResolutionError("project slug is required for secret resolution")
         return project_id, project_spec
 
-    def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
+    @staticmethod
+    def _find_allocation(state: DevOpsState, service_name: str) -> tuple[str, int] | None:
         """Look up allocated server IP and port for a service.
 
         Searches allocated_resources by matching service_name field.
@@ -375,37 +472,20 @@ class SecretResolverNode(FunctionalNode):
 
     def _compute_secret(self, key: str, project_spec: dict, state: DevOpsState) -> str:
         """Compute context-based secret value."""
+        if not is_computable_derived_key(key):
+            raise UnknownDerivedKeyError(f"Unknown computed secret: {key}")
         key_upper = key.upper()
 
         if key_upper in self._STATIC_SECRETS:
             return self._STATIC_SECRETS[key_upper]
 
-        if key_upper == "APP_NAME":
-            return project_spec_runtime_slug(project_spec)
-
-        if key_upper == "PROJECT_NAME":
-            return project_spec_runtime_slug(project_spec)
-
-        safe_project_id = state.get("project_id", "").replace("-", "_").lower()
-        if key_upper == "POSTGRES_DB":
-            return f"db_{safe_project_id}"
-        if key_upper == "COMPOSE_PROJECT_NAME":
-            return project_spec_runtime_slug(project_spec)
-        if key_upper == "ENABLED_MODULES":
-            modules = project_spec.get("config", {}).get("modules", [])
-            if not isinstance(modules, list) or not all(
-                isinstance(module, str) for module in modules
-            ):
-                raise SecretResolutionError("project modules are invalid")
-            return ",".join(modules)
+        if key_upper in CONTEXT_DERIVED_SECRETS:
+            return CONTEXT_DERIVED_SECRETS[key_upper](project_spec, state)
 
         if key_upper in self._PORT_SERVICE_MAP:
             return self._resolve_port(key_upper, state)
 
-        if key_upper.endswith("_IMAGE"):
-            return self._resolve_docker_image(key_upper, state)
-
-        raise UnknownDerivedKeyError(f"Unknown computed secret: {key}")
+        return self._resolve_docker_image(key_upper, state)
 
     def _resolve_port(self, key_upper: str, state: DevOpsState) -> str:
         """Resolve port from resource allocator."""
@@ -458,7 +538,7 @@ class SecretResolverNode(FunctionalNode):
             )
 
         owner, repo = path_parts
-        service = key_upper.removesuffix("_IMAGE").lower().replace("_", "-")
+        service = key_upper.removesuffix(IMAGE_KEY_SUFFIX).lower().replace("_", "-")
         return f"{registry_host}/{owner}/{repo}-{service}:{tag}"
 
     async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
@@ -477,3 +557,20 @@ class SecretResolverNode(FunctionalNode):
             secrets_count=len(secrets),
             secret_names=list(secrets.keys()),
         )
+
+
+def is_computable_derived_key(key: str) -> bool:
+    """Whether a deploy can compute this `derived` contract key.
+
+    The one answer to "does the platform compute it": `_compute_secret` refuses a
+    key this rejects, and the engineering stage refuses a required one before any
+    deploy is triggered. It says nothing about whether the deploy's context holds
+    what the value is computed from — an allocation, the deployed commit.
+    """
+    key_upper = key.upper()
+    return (
+        key_upper in SecretResolverNode._STATIC_SECRETS
+        or key_upper in CONTEXT_DERIVED_SECRETS
+        or key_upper in SecretResolverNode._PORT_SERVICE_MAP
+        or key_upper.endswith(IMAGE_KEY_SUFFIX)
+    )

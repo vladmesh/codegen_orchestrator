@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from _github_client_context import self_entering
+from _owner_notification_claims import ClaimClock, claim
 import httpx
 import pytest
 
@@ -310,28 +312,19 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
         "trigger_scaffolds": 0,
         "dispatch_todo_tasks": 0,
         "complete_stories": 0,
-        "poll_merged_prs": 0,
-        "poll_ci_failures": None,
         "supervise_stuck_stories": {"retried": 0, "failed": 0},
         "supervise_stuck_tasks": {"timed_out": 0},
         "supervise_waiting_resource_tasks": {"resumed": 0, "expired": 0},
         "supervise_deploying_stories": {},
         "supervise_waiting_user_secret_stories": {},
-        "supervise_owed_owner_notifications": {
-            "delivered": 0,
-            "retrying": 0,
-            "exhausted": 0,
-            "unaddressable": 0,
-            "voided": 0,
-        },
-        "supervise_testing_stories": {},
-        "supervise_temporary_access": {},
     }
     for name, result in checks.items():
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=result))
 
     late_supervisor = AsyncMock(return_value={})
-    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", late_supervisor)
+    sweep = AsyncMock()
+    monkeypatch.setattr(task_dispatcher, "supervise_testing_stories", late_supervisor)
+    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", sweep)
     monkeypatch.setattr(
         task_dispatcher.asyncio,
         "sleep",
@@ -342,7 +335,536 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
         await task_dispatcher.task_dispatcher_loop()
 
     late_supervisor.assert_awaited_once_with(api_client, redis)
+    sweep.assert_not_awaited()
     redis.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_loop_continues_after_tick_failure_without_sweeping(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import task_dispatcher
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", log)
+    scaffold = AsyncMock(side_effect=[RuntimeError("tick failed"), 0])
+    monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
+    for name in ("dispatch_todo_tasks", "complete_stories"):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=0))
+    for name in (
+        "supervise_stuck_stories",
+        "supervise_stuck_tasks",
+        "supervise_failed_tasks",
+        "supervise_waiting_resource_tasks",
+        "supervise_deploying_stories",
+        "supervise_waiting_user_secret_stories",
+        "supervise_testing_stories",
+    ):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value={}))
+    sweep = AsyncMock(side_effect=RuntimeError("sweep must be independent"))
+    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", sweep)
+    monkeypatch.setattr(
+        task_dispatcher.asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, asyncio.CancelledError]),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task_dispatcher.task_dispatcher_loop()
+
+    assert scaffold.await_count == 2
+    log.exception.assert_called_once_with("dispatcher_cycle_error")
+    assert any(call.args[0] == "dispatcher_cycle" for call in log.info.call_args_list)
+    sweep.assert_not_awaited()
+    redis.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_temporary_access_loop_continues_after_sweep_failure_and_closes_redis(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import temporary_access_loop
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    counts = {
+        "dispatched": 2,
+        "released": 1,
+        "revoked": 3,
+        "expired": 4,
+        "revoke_failed": 5,
+        "escalated": 6,
+    }
+    sweep = AsyncMock(side_effect=[RuntimeError("sweep failed"), counts])
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(temporary_access_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(temporary_access_loop, "supervise_temporary_access", sweep)
+    monkeypatch.setattr(temporary_access_loop, "_temporary_access_interval", lambda: 0)
+    monkeypatch.setattr(temporary_access_loop, "logger", log)
+    monkeypatch.setattr(
+        temporary_access_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, asyncio.CancelledError]),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await temporary_access_loop.temporary_access_loop()
+
+    assert sweep.await_count == 2
+    log.exception.assert_called_once_with("temporary_access_cycle_error")
+    log.info.assert_any_call("temporary_access_cycle", **counts)
+    log.info.assert_any_call("temporary_access_started", interval=0)
+    log.info.assert_any_call("temporary_access_stopped")
+    redis.connect.assert_awaited_once()
+    redis.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_temporary_access_loop_logs_zero_count_cycle(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.tasks import temporary_access_loop
+
+    redis = AsyncMock()
+    counts = dict.fromkeys(
+        ("dispatched", "released", "revoked", "expired", "revoke_failed", "escalated"), 0
+    )
+    log = MagicMock()
+    monkeypatch.setattr(temporary_access_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(
+        temporary_access_loop, "supervise_temporary_access", AsyncMock(return_value=counts)
+    )
+    monkeypatch.setattr(temporary_access_loop, "_temporary_access_interval", lambda: 0)
+    monkeypatch.setattr(temporary_access_loop, "logger", log)
+    monkeypatch.setattr(
+        temporary_access_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await temporary_access_loop.temporary_access_loop()
+
+    log.info.assert_any_call("temporary_access_cycle", **counts)
+
+
+def _mock_dispatcher_tick(monkeypatch, task_dispatcher, *, scaffold):
+    monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
+    for name in ("dispatch_todo_tasks", "complete_stories"):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=0))
+    for name in (
+        "supervise_stuck_stories",
+        "supervise_stuck_tasks",
+        "supervise_failed_tasks",
+        "supervise_waiting_resource_tasks",
+        "supervise_deploying_stories",
+        "supervise_waiting_user_secret_stories",
+        "supervise_testing_stories",
+    ):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value={}))
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_tick_does_not_sweep_owed_owner_notifications(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import owner_notifications, task_dispatcher
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", log)
+    _mock_dispatcher_tick(monkeypatch, task_dispatcher, scaffold=AsyncMock(return_value=0))
+    sweep = AsyncMock(side_effect=RuntimeError("the tick must not sweep"))
+    monkeypatch.setattr(owner_notifications, "supervise_owed_owner_notifications", sweep)
+    monkeypatch.setattr(
+        task_dispatcher.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task_dispatcher.task_dispatcher_loop()
+
+    assert not hasattr(task_dispatcher, "supervise_owed_owner_notifications")
+    sweep.assert_not_awaited()
+    api.list_runs_owing_owner_notification.assert_not_awaited()
+    api.list_stories_owing_owner_notification.assert_not_awaited()
+    log.exception.assert_not_called()
+    assert any(call.args[0] == "dispatcher_cycle" for call in log.info.call_args_list)
+
+
+_OWNER_NOTIFICATION_COUNTS = {
+    "delivered": 1,
+    "retrying": 2,
+    "exhausted": 3,
+    "unaddressable": 4,
+    "voided": 5,
+    "skipped": 6,
+    "not_due": 7,
+    "superseded": 8,
+}
+
+
+@pytest.mark.asyncio
+async def test_owner_notification_loop_continues_after_sweep_failure_and_closes_redis(
+    monkeypatch,
+):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import owner_notification_loop, task_dispatcher
+    from src.tasks.owner_notifications import OwnerNotificationOutcome
+
+    assert set(_OWNER_NOTIFICATION_COUNTS) == {
+        outcome.value for outcome in OwnerNotificationOutcome
+    }
+    api = AsyncMock()
+    redis = AsyncMock()
+    sweep = AsyncMock(side_effect=[RuntimeError("sweep failed"), _OWNER_NOTIFICATION_COUNTS])
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(owner_notification_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(owner_notification_loop, "supervise_owed_owner_notifications", sweep)
+    monkeypatch.setattr(owner_notification_loop, "_owner_notification_interval", lambda: 0)
+    monkeypatch.setattr(owner_notification_loop, "logger", log)
+    monkeypatch.setattr(
+        owner_notification_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, asyncio.CancelledError]),
+    )
+    # The dispatcher tick is a separate loop: nothing here reaches it.
+    scaffold = AsyncMock(return_value=0)
+    monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner_notification_loop.owner_notification_loop()
+
+    assert sweep.await_count == 2
+    sweep.assert_awaited_with(api, redis)
+    log.exception.assert_called_once_with("owner_notifications_cycle_error")
+    log.info.assert_any_call("owner_notifications_cycle", **_OWNER_NOTIFICATION_COUNTS)
+    log.info.assert_any_call("owner_notifications_started", interval=0)
+    log.info.assert_any_call("owner_notifications_stopped")
+    redis.connect.assert_awaited_once()
+    redis.close.assert_awaited_once()
+    scaffold.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notification_sweep_failure_and_dispatcher_tick_failure_isolate_each_other(
+    monkeypatch,
+):
+    """Both loops run side by side; each one's failures stay inside its own cycle."""
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import owner_notification_loop, task_dispatcher
+
+    api = AsyncMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    dispatcher_redis = AsyncMock()
+    notification_redis = AsyncMock()
+    dispatcher_log = MagicMock()
+    notification_log = MagicMock()
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: dispatcher_redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", dispatcher_log)
+    monkeypatch.setattr(owner_notification_loop, "RedisStreamClient", lambda: notification_redis)
+    monkeypatch.setattr(owner_notification_loop, "_owner_notification_interval", lambda: 0)
+    monkeypatch.setattr(owner_notification_loop, "logger", notification_log)
+
+    # Every other dispatcher tick fails, and so does every other sweep.
+    ticks = sweeps = 0
+    enough = asyncio.Event()
+
+    async def scaffold(*_args):
+        nonlocal ticks
+        ticks += 1
+        if ticks % 2:
+            raise RuntimeError("tick failed")
+        return 0
+
+    async def sweep(*_args):
+        nonlocal sweeps
+        sweeps += 1
+        if sweeps >= 6 and ticks >= 6:
+            enough.set()
+        if sweeps % 2:
+            raise RuntimeError("sweep failed")
+        return _OWNER_NOTIFICATION_COUNTS
+
+    _mock_dispatcher_tick(monkeypatch, task_dispatcher, scaffold=AsyncMock(side_effect=scaffold))
+    monkeypatch.setattr(
+        owner_notification_loop, "supervise_owed_owner_notifications", AsyncMock(side_effect=sweep)
+    )
+
+    loops = [
+        asyncio.create_task(task_dispatcher.task_dispatcher_loop()),
+        asyncio.create_task(owner_notification_loop.owner_notification_loop()),
+    ]
+    try:
+        await asyncio.wait_for(enough.wait(), timeout=5)
+        assert not any(loop.done() for loop in loops)
+    finally:
+        for loop in loops:
+            loop.cancel()
+        await asyncio.gather(*loops, return_exceptions=True)
+
+    tick_errors = dispatcher_log.exception.call_args_list
+    assert len(tick_errors) >= 3
+    assert all(c.args == ("dispatcher_cycle_error",) for c in tick_errors)
+    assert any(c.args[0] == "dispatcher_cycle" for c in dispatcher_log.info.call_args_list)
+    sweep_errors = notification_log.exception.call_args_list
+    assert len(sweep_errors) >= 3
+    assert all(c.args == ("owner_notifications_cycle_error",) for c in sweep_errors)
+    notification_log.info.assert_any_call("owner_notifications_cycle", **_OWNER_NOTIFICATION_COUNTS)
+    dispatcher_redis.close.assert_awaited_once()
+    notification_redis.close.assert_awaited_once()
+
+
+_STATE_AGE_COUNTS = {"parked": 1, "failed": 2, "skipped": 3}
+_STAGE_NOTICE_COUNTS = {"entered": 4, "still_there": 5, "unaddressable": 6}
+_STATE_AGE_CYCLE = {f"state_age_{name}": n for name, n in _STATE_AGE_COUNTS.items()}
+_STAGE_NOTICE_CYCLE = {f"stage_notices_{name}": n for name, n in _STAGE_NOTICE_COUNTS.items()}
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_tick_does_not_run_story_supervision(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import supervisor, task_dispatcher
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", log)
+    _mock_dispatcher_tick(monkeypatch, task_dispatcher, scaffold=AsyncMock(return_value=0))
+    watchdog = AsyncMock(side_effect=RuntimeError("the tick must not run the watchdog"))
+    notices = AsyncMock(side_effect=RuntimeError("the tick must not announce stages"))
+    monkeypatch.setattr(supervisor, "supervise_state_age_bounds", watchdog)
+    monkeypatch.setattr(supervisor, "supervise_stage_notices", notices)
+    monkeypatch.setattr(
+        task_dispatcher.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task_dispatcher.task_dispatcher_loop()
+
+    assert not hasattr(task_dispatcher, "supervise_state_age_bounds")
+    assert not hasattr(task_dispatcher, "supervise_stage_notices")
+    watchdog.assert_not_awaited()
+    notices.assert_not_awaited()
+    api.get_stories_by_status.assert_not_awaited()
+    log.exception.assert_not_called()
+    assert any(call.args[0] == "dispatcher_cycle" for call in log.info.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_story_supervision_sweeps_fail_independently_within_a_cycle(monkeypatch):
+    """A failing watchdog still lets that cycle's notices run, and the reverse."""
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import story_supervision_loop, task_dispatcher
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+    # Cycle 1: the watchdog raises. Cycle 2: the notices raise.
+    watchdog = AsyncMock(side_effect=[RuntimeError("watchdog failed"), _STATE_AGE_COUNTS])
+    notices = AsyncMock(side_effect=[_STAGE_NOTICE_COUNTS, RuntimeError("notices failed")])
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(story_supervision_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(story_supervision_loop, "supervise_state_age_bounds", watchdog)
+    monkeypatch.setattr(story_supervision_loop, "supervise_stage_notices", notices)
+    monkeypatch.setattr(story_supervision_loop, "_story_supervision_interval", lambda: 0)
+    monkeypatch.setattr(story_supervision_loop, "logger", log)
+    monkeypatch.setattr(
+        story_supervision_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, asyncio.CancelledError]),
+    )
+    # The dispatcher tick is a separate loop: nothing here reaches it.
+    scaffold = AsyncMock(return_value=0)
+    monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
+
+    with pytest.raises(asyncio.CancelledError):
+        await story_supervision_loop.story_supervision_loop()
+
+    assert watchdog.await_count == 2
+    assert notices.await_count == 2
+    watchdog.assert_awaited_with(api, redis)
+    notices.assert_awaited_with(api, redis)
+    assert [c.args for c in log.exception.call_args_list] == [
+        ("story_supervision_cycle_error",),
+        ("story_supervision_cycle_error",),
+    ]
+    assert [c.kwargs for c in log.exception.call_args_list] == [
+        {"sweep": "state_age"},
+        {"sweep": "stage_notices"},
+    ]
+    cycles = [c for c in log.info.call_args_list if c.args == ("story_supervision_cycle",)]
+    assert [c.kwargs for c in cycles] == [_STAGE_NOTICE_CYCLE, _STATE_AGE_CYCLE]
+    log.info.assert_any_call("story_supervision_started", interval=0)
+    log.info.assert_any_call("story_supervision_stopped")
+    redis.connect.assert_awaited_once()
+    redis.close.assert_awaited_once()
+    scaffold.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_story_supervision_logs_one_cycle_line_with_both_sweeps_counts(monkeypatch):
+    import asyncio
+
+    from src.tasks import story_supervision_loop
+
+    redis = AsyncMock()
+    log = MagicMock()
+    monkeypatch.setattr(story_supervision_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(
+        story_supervision_loop,
+        "supervise_state_age_bounds",
+        AsyncMock(return_value=_STATE_AGE_COUNTS),
+    )
+    monkeypatch.setattr(
+        story_supervision_loop,
+        "supervise_stage_notices",
+        AsyncMock(return_value=_STAGE_NOTICE_COUNTS),
+    )
+    monkeypatch.setattr(story_supervision_loop, "_story_supervision_interval", lambda: 0)
+    monkeypatch.setattr(story_supervision_loop, "logger", log)
+    monkeypatch.setattr(
+        story_supervision_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await story_supervision_loop.story_supervision_loop()
+
+    cycles = [c for c in log.info.call_args_list if c.args == ("story_supervision_cycle",)]
+    assert [c.kwargs for c in cycles] == [{**_STATE_AGE_CYCLE, **_STAGE_NOTICE_CYCLE}]
+    log.exception.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_story_supervision_failure_and_dispatcher_tick_failure_isolate_each_other(
+    monkeypatch,
+):
+    """Both loops run side by side; each one's failures stay inside its own cycle."""
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import story_supervision_loop, task_dispatcher
+
+    api = AsyncMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    dispatcher_redis = AsyncMock()
+    supervision_redis = AsyncMock()
+    dispatcher_log = MagicMock()
+    supervision_log = MagicMock()
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: dispatcher_redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", dispatcher_log)
+    monkeypatch.setattr(story_supervision_loop, "RedisStreamClient", lambda: supervision_redis)
+    monkeypatch.setattr(story_supervision_loop, "_story_supervision_interval", lambda: 0)
+    monkeypatch.setattr(story_supervision_loop, "logger", supervision_log)
+
+    # Every other dispatcher tick fails, and so does every other supervision
+    # cycle, in both of its sweeps.
+    ticks = cycles = 0
+    enough = asyncio.Event()
+
+    async def scaffold(*_args):
+        nonlocal ticks
+        ticks += 1
+        if ticks % 2:
+            raise RuntimeError("tick failed")
+        return 0
+
+    async def watchdog(*_args):
+        nonlocal cycles
+        cycles += 1
+        if cycles >= 6 and ticks >= 6:
+            enough.set()
+        if cycles % 2:
+            raise RuntimeError("watchdog failed")
+        return _STATE_AGE_COUNTS
+
+    async def notices(*_args):
+        if cycles % 2:
+            raise RuntimeError("notices failed")
+        return _STAGE_NOTICE_COUNTS
+
+    _mock_dispatcher_tick(monkeypatch, task_dispatcher, scaffold=AsyncMock(side_effect=scaffold))
+    monkeypatch.setattr(
+        story_supervision_loop, "supervise_state_age_bounds", AsyncMock(side_effect=watchdog)
+    )
+    monkeypatch.setattr(
+        story_supervision_loop, "supervise_stage_notices", AsyncMock(side_effect=notices)
+    )
+
+    loops = [
+        asyncio.create_task(task_dispatcher.task_dispatcher_loop()),
+        asyncio.create_task(story_supervision_loop.story_supervision_loop()),
+    ]
+    try:
+        await asyncio.wait_for(enough.wait(), timeout=5)
+        assert not any(loop.done() for loop in loops)
+    finally:
+        for loop in loops:
+            loop.cancel()
+        await asyncio.gather(*loops, return_exceptions=True)
+
+    tick_errors = dispatcher_log.exception.call_args_list
+    assert len(tick_errors) >= 3
+    assert all(c.args == ("dispatcher_cycle_error",) for c in tick_errors)
+    assert any(c.args[0] == "dispatcher_cycle" for c in dispatcher_log.info.call_args_list)
+    sweep_errors = supervision_log.exception.call_args_list
+    assert len(sweep_errors) >= 6
+    assert all(c.args == ("story_supervision_cycle_error",) for c in sweep_errors)
+    supervision_log.info.assert_any_call(
+        "story_supervision_cycle", **_STATE_AGE_CYCLE, **_STAGE_NOTICE_CYCLE
+    )
+    dispatcher_redis.close.assert_awaited_once()
+    supervision_redis.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1223,10 +1745,9 @@ class TestCompleteStories:
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
         github.get_ref_sha.return_value = STORY_HEAD_SHA
-        github.enable_auto_merge.return_value = True
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1285,10 +1806,9 @@ class TestCompleteStories:
             "merged_at": "2026-09-13T15:00:00Z",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = True
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1347,10 +1867,9 @@ class TestCompleteStories:
             "node_id": "PR_fix",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = True
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1362,9 +1881,8 @@ class TestCompleteStories:
         github.create_pull_request.assert_awaited_once()
         github.get_pull_request.assert_not_awaited()
         api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 5})
-        github.enable_auto_merge.assert_awaited_once_with(
-            "my-org", "weather-bot", pr_node_id="PR_fix"
-        )
+        # The successor is merged by the PR poller, never by GitHub auto-merge.
+        github.enable_auto_merge.assert_not_called()
         api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
 
     @pytest.mark.asyncio
@@ -1402,10 +1920,9 @@ class TestCompleteStories:
                 "node_id": "PR_new",
                 "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
             }
-            github.enable_auto_merge.return_value = True
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1420,7 +1937,7 @@ class TestCompleteStories:
             finalize.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_auto_merge_refusal_still_finalizes_teardown_and_handoff(
+    async def test_completion_still_finalizes_teardown_and_handoff_for_the_open_pr(
         self, api_client, redis_client
     ):
         """A visible open PR must not retain the story's project worker forever."""
@@ -1442,10 +1959,9 @@ class TestCompleteStories:
             "node_id": "PR_new",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = False
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1458,7 +1974,7 @@ class TestCompleteStories:
         api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
 
     @pytest.mark.asyncio
-    async def test_auto_merge_refusal_persists_pr_for_the_poller_handoff(
+    async def test_completion_persists_the_open_pr_for_the_poller_handoff(
         self, api_client, redis_client
     ):
         from src.tasks.task_dispatcher import complete_stories
@@ -1476,10 +1992,9 @@ class TestCompleteStories:
             "node_id": "PR_new",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = False
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1585,8 +2100,9 @@ class TestCompleteStories:
             "node_id": "PR_abc",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = True
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)
+        ):
             completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
@@ -1594,7 +2110,7 @@ class TestCompleteStories:
 
     @pytest.mark.asyncio
     async def test_completes_story_creates_pr_when_all_tasks_done(self, api_client, redis_client):
-        """Story with all tasks done -> creates PR, enables auto-merge, transitions to pr_review."""
+        """Story with all tasks done -> creates PR, no auto-merge, transitions to pr_review."""
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1628,9 +2144,10 @@ class TestCompleteStories:
         redis_client.redis.hgetall.return_value = {}
         redis_client.redis.eval.return_value = 1
         redis_client.redis.get.return_value = None
-        mock_github.enable_auto_merge.return_value = True
 
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             await complete_stories(api_client, redis_client)
 
         # Should transition story to pr_review (not deploying)
@@ -1643,13 +2160,11 @@ class TestCompleteStories:
             head="story/story-1",
             base="main",
             title="Add weather API",
-            body="All tasks completed. Auto-merge enabled.",
+            body="All tasks completed. The pipeline merges it once checks pass.",
         )
 
-        # Should enable auto-merge
-        mock_github.enable_auto_merge.assert_called_once_with(
-            "my-org", "weather-bot", pr_node_id="PR_abc"
-        )
+        # Should not enable auto-merge: the PR poller is the only automated merger
+        mock_github.enable_auto_merge.assert_not_called()
 
         # Should NOT publish deploy message (webhook handles it after merge)
         deploy_calls = [
@@ -1724,7 +2239,9 @@ class TestCompleteStories:
         redis_client.redis.eval.return_value = 1
         redis_client.redis.get.return_value = None
 
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             result = await complete_stories(api_client, redis_client)
 
         # Must transition to pr_review so poller picks up the merge
@@ -1780,9 +2297,10 @@ class TestCompletionIgnoresCancelledTasks:
             "node_id": "PR_x",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        mock_github.enable_auto_merge.return_value = True
 
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
@@ -1885,7 +2403,7 @@ class TestPollMergedPRs:
     async def test_triggers_create_deploy_for_first_story(self, api_client, redis_client):
         """First story merge -> action='create'."""
 
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
             _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=42)
@@ -1910,7 +2428,7 @@ class TestPollMergedPRs:
             "head": {"sha": "a" * 40},
         }
 
-        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=self_entering(mock_github)):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 1
@@ -1928,7 +2446,7 @@ class TestPollMergedPRs:
     ):
         """Project with a completed story -> action='feature'."""
 
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
             _story(id="story-2", project_id=PROJ_ID, status="pr_review", pr_number=43)
@@ -1954,7 +2472,7 @@ class TestPollMergedPRs:
             "head": {"sha": "d" * 40},
         }
 
-        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=self_entering(mock_github)):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 1
@@ -1965,7 +2483,7 @@ class TestPollMergedPRs:
     async def test_no_action_when_pr_not_merged(self, api_client, redis_client):
         """Story in pr_review with open (not merged) PR -> no action."""
 
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
             _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=42)
@@ -1984,7 +2502,7 @@ class TestPollMergedPRs:
             "head": {"sha": "a" * 40},
         }
 
-        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=self_entering(mock_github)):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 0
@@ -1993,7 +2511,7 @@ class TestPollMergedPRs:
     @pytest.mark.asyncio
     async def test_no_action_when_no_stories_in_pr_review(self, api_client, redis_client):
         """No stories in pr_review -> nothing to poll."""
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = []
 
@@ -2005,7 +2523,7 @@ class TestPollMergedPRs:
     async def test_continues_on_github_error(self, api_client, redis_client):
         """GitHub API error for one story doesn't block others."""
 
-        from src.tasks.task_dispatcher import poll_merged_prs
+        from src.tasks.pr_poller import poll_merged_prs
 
         proj2_id = "00000000-0000-0000-0000-000000000002"
         api_client.get_stories_by_status.return_value = [
@@ -2042,7 +2560,7 @@ class TestPollMergedPRs:
             },
         ]
 
-        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=self_entering(mock_github)):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 1
@@ -2078,6 +2596,31 @@ class _RefusalWorld:
         api_client.update_run = _AsyncMock(side_effect=self._write_run)
         api_client.get_project = _AsyncMock(return_value=self._project())
         api_client.get_user = _AsyncMock(return_value=self._owner())
+        api_client.claim_story_owner_notification_attempt = _AsyncMock(
+            side_effect=self._claim_story
+        )
+        api_client.claim_run_owner_notification_attempt = _AsyncMock(side_effect=self._claim_run)
+        self.clock = ClaimClock()
+
+    async def _claim_story(self, story_id: str):
+        assert story_id == self.story.id
+        return claim(
+            self.clock,
+            lambda: self.story_record,
+            lambda stamped: setattr(self, "story_record", stamped),
+        )
+
+    async def _claim_run(self, run_id: str):
+        assert self.initiating_run is not None and run_id == self.initiating_run.id
+
+        def stamp(stamped: dict) -> None:
+            self.initiating_run = self.initiating_run.model_copy(
+                update={"run_metadata": {"owner_notification": stamped}}
+            )
+
+        return claim(
+            self.clock, lambda: self.initiating_run.run_metadata.get("owner_notification"), stamp
+        )
 
     def _project(self):
         from uuid import UUID

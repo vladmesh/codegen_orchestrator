@@ -233,6 +233,7 @@ async def test_a_developer_worker_carries_the_ownership_the_request_named(_works
             base_image="worker-base:latest",
             ownership=OWNERSHIP,
             repo_id="repo-1",
+            env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
         )
 
     labels = docker.run_container.await_args.kwargs["labels"]
@@ -297,6 +298,7 @@ async def test_a_qa_executor_owns_a_project_without_taking_its_workspace_lock(tm
             worker_type=QA_WORKER_TYPE,
             instructions="# QA executor",
             task_content="test it",
+            qa_target_url="https://app.example.com",
         )
 
     labels = docker.run_container.await_args.kwargs["labels"]

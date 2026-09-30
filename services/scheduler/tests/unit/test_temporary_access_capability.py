@@ -10,14 +10,14 @@ from structlog.testing import capture_logs
 
 from shared.contracts.dto.deploy_dispatch import DispatchWithdrawal
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import DeploySkipReason, QABlockerCategory
+from shared.contracts.dto.run_result import DeployRunResult, DeploySkipReason, QABlockerCategory
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantDTO,
     TemporaryAccessGrantUpdate,
     TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
 )
-from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAMessage
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 
@@ -692,3 +692,118 @@ async def test_exhausted_revoke_escalates_once_and_never_republishes_access() ->
 
     assert api.escalate_temporary_access_grant.await_count == 1
     assert counts["dispatched"] == 0
+
+
+@pytest.mark.asyncio
+async def test_exhausted_revoke_awaiting_qa_routing_keeps_cleaning_up_without_an_incident() -> None:
+    """The API refuses the incident while the QA verdict is unrouted; that is a wait.
+
+    No administrator is told and no attempt is spent, but a revoke still goes
+    out. Once routing is recorded the next failed revoke escalates exactly once.
+    """
+    from src.tasks.temporary_access import _max_revoke_attempts, _settle_revoke
+
+    attempts = _max_revoke_attempts()
+    grant = _grant(
+        status=TemporaryAccessStatus.REVOKING,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+        revoke_run_id="temporary-access-revoke-last",
+        revoke_attempts=attempts,
+    )
+    api = AsyncMock()
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
+    api.get_run_if_missing_returns_none.return_value = _operation_run(RunStatus.FAILED)
+    api.escalate_temporary_access_grant.return_value = None
+    redis = AsyncMock()
+    counts = {
+        "dispatched": 0,
+        "released": 0,
+        "revoked": 0,
+        "expired": 0,
+        "revoke_failed": 0,
+        "escalated": 0,
+    }
+
+    with patch("src.tasks.temporary_access.notify_admins_best_effort", new=AsyncMock()) as notify:
+        await _settle_revoke(api, redis, grant, counts, AsyncMock())
+
+        notify.assert_not_awaited()
+        update = api.update_temporary_access_grant.await_args.args[1]
+        assert update.status is TemporaryAccessStatus.REVOKING
+        assert update.revoke_attempts == attempts
+        assert update.revoke_run_id != grant.revoke_run_id
+        assert update.revoke_reason is TemporaryAccessRevokeReason.RUN_TERMINAL
+        assert [call.args[0] for call in redis.publish_message.await_args_list] == [DEPLOY_QUEUE]
+        assert counts["escalated"] == 0
+        assert counts["dispatched"] == 1
+
+        # The story has routed the verdict: the redispatched revoke failing
+        # again now produces the one incident.
+        api.escalate_temporary_access_grant.return_value = _grant(
+            status=TemporaryAccessStatus.REVOKE_FAILED, escalated_at=datetime.now(UTC)
+        )
+        retried = grant.model_copy(update={"revoke_run_id": update.revoke_run_id})
+        await _settle_revoke(api, redis, retried, counts, AsyncMock())
+
+    notify.assert_awaited_once()
+    assert api.escalate_temporary_access_grant.await_count == 2
+    assert redis.publish_message.await_count == 1
+    assert counts["escalated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_revoke_that_found_no_deployment_settles_revoked_without_retry() -> None:
+    """A revoke landing after the target was undeployed is a proved revoke.
+
+    The deploy consumer allocates nothing for it and records the result a proved
+    revoke records, because access to a deployment that no longer exists went
+    with it. The supervisor closes the grant on that result: no `REVOKE_FAILED`,
+    no replacement revoke and no administrator.
+    """
+    from src.tasks.temporary_access import _counts, _settle_granted, _settle_revoke
+
+    grant = _grant(status=TemporaryAccessStatus.GRANTED)
+    api = AsyncMock()
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
+    api.get_run_if_missing_returns_none.return_value = SimpleNamespace(
+        status=RunStatus.COMPLETED, created_at=datetime.now(UTC)
+    )
+    api.withdraw_deploy_dispatch.return_value = SimpleNamespace(
+        outcome=DispatchWithdrawal.ALREADY_DISPATCHED
+    )
+    redis = AsyncMock()
+    counts = _counts()
+
+    # The QA run is terminal, so the supervisor dispatches the revoke.
+    await _settle_granted(api, redis, grant, counts, AsyncMock())
+    dispatched = api.update_temporary_access_grant.await_args.args[1]
+    assert dispatched.status is TemporaryAccessStatus.REVOKING
+    revoking = grant.model_copy(
+        update={
+            "status": TemporaryAccessStatus.REVOKING,
+            "revoke_reason": dispatched.revoke_reason,
+            "revoke_run_id": dispatched.revoke_run_id,
+            "revoke_attempts": dispatched.revoke_attempts,
+        }
+    )
+    api.update_temporary_access_grant.reset_mock()
+    redis.publish_message.reset_mock()
+
+    # What the deploy consumer records for a revoke whose target has no allocations.
+    api.get_run_if_missing_returns_none.return_value = SimpleNamespace(
+        status=RunStatus.COMPLETED,
+        result=DeployRunResult(deploy_outcome=DeployOutcome.SUCCESS, action=DeployAction.FEATURE),
+        created_at=datetime.now(UTC),
+    )
+    with patch("src.tasks.temporary_access.notify_admins_best_effort", new=AsyncMock()) as notify:
+        await _settle_revoke(api, redis, revoking, counts, AsyncMock())
+
+    api.update_temporary_access_grant.assert_awaited_once_with(
+        grant.id, TemporaryAccessGrantUpdate(status=TemporaryAccessStatus.REVOKED)
+    )
+    redis.publish_message.assert_not_awaited()
+    api.escalate_temporary_access_grant.assert_not_awaited()
+    notify.assert_not_awaited()
+    assert counts["revoked"] == 1
+    assert counts["revoke_failed"] == 0
+    assert counts["escalated"] == 0

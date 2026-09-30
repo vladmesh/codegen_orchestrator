@@ -11,14 +11,16 @@ Requires a real LLM API key. Run with:
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 import pytest
 
+from shared.contracts.dto.llm_channel import LLMChannel, LLMChannelConfig
 from src.agents.po.graph import POState, _create_summarization_hook
+from src.llm import LLMAgent, build_agent_llm
 
 # Very low thresholds to force summarization within a few messages
 SUMMARIZATION_MAX_TOKENS = 500
@@ -55,17 +57,18 @@ async def test_summarization_triggers_and_preserves_context():
     """
     llm_config = _get_llm_config()
 
-    llm = ChatOpenAI(
-        model=llm_config["model"],
-        base_url=llm_config["base_url"],
-        api_key=llm_config["api_key"],
+    # The openrouter channel alone: this test is about summarization, not channel choice.
+    settings = SimpleNamespace(
+        po_llm_model=llm_config["model"],
+        po_llm_base_url=llm_config["base_url"],
+        po_llm_api_key=llm_config["api_key"],
+        summarization_model=None,
     )
+    openrouter_only = [LLMChannelConfig(channel=LLMChannel.OPENROUTER)]
+    llm = build_agent_llm(LLMAgent.PO, openrouter_only, settings)
 
     summarization_hook = _create_summarization_hook(
-        llm=llm,
-        summarization_model=None,
-        base_url=llm_config["base_url"],
-        api_key=llm_config["api_key"],
+        summarization_llm=build_agent_llm(LLMAgent.PO_SUMMARIZER, openrouter_only, settings),
         max_tokens=SUMMARIZATION_MAX_TOKENS,
         trigger_tokens=SUMMARIZATION_TRIGGER_TOKENS,
         max_summary_tokens=SUMMARIZATION_MAX_SUMMARY_TOKENS,

@@ -6,11 +6,12 @@ queue, so drift between the three has to fail in tests instead.
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from structlog.testing import capture_logs
 
+from shared.contracts.dto.llm_channel import LLMChannel, LLMChannelConfig
 from shared.queues import PO_INPUT_QUEUE
 from src.config.agent_llm_env import AGENT_LLM_ENV, missing_llm_env
 from src.config.settings import Settings
@@ -78,6 +79,16 @@ class TestEnvExampleDocumentsGroups:
 
 
 class TestArchitectStartupGuard:
+    """A chain of openrouter alone cannot run without its env; `main()` refuses it."""
+
+    @pytest.fixture(autouse=True)
+    def _openrouter_only_chain(self):
+        from src.consumers import architect
+
+        chain = [LLMChannelConfig(channel=LLMChannel.OPENROUTER)]
+        with patch.object(architect, "load_channel_chain", AsyncMock(return_value=chain)):
+            yield
+
     def test_refuses_to_start_without_config(self):
         from src.consumers import architect
 
@@ -118,13 +129,16 @@ class TestPoStartupSignal:
         """The operator greps for the stream named here, so it must be po:input."""
         from src import main
 
-        async def _idle():
+        async def _idle(*_):
             return None
 
+        # The real settings are read here, so the balance loop is stubbed too: an
+        # OpenRouter key reaching them (a local .env) would otherwise never return.
         with (
             patch.object(main, "_po_missing_env", return_value=["PO_LLM_API_KEY"]),
             patch.object(main, "listen_provisioner_triggers", _idle),
             patch.object(main, "listen_worker_events", _idle),
+            patch.object(main, "run_openrouter_balance_check", _idle),
             capture_logs() as logs,
         ):
             await main.run_worker()

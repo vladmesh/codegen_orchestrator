@@ -576,3 +576,126 @@ class TestGitCommitStep:
         assert result.success is False
         assert "Git push failed" in result.error
         assert "remote rejected" in result.error
+
+
+def _proc(rc: int, stderr: bytes = b"") -> AsyncMock:
+    proc = AsyncMock()
+    proc.communicate = AsyncMock(return_value=(b"", stderr))
+    proc.returncode = rc
+    return proc
+
+
+_NOT_FOUND = (
+    b"remote: Repository not found.\nfatal: repository 'https://github.com/o/p/' not found\n"
+)
+
+
+async def _scaffold_with_fetch(settings, tmp_path, fetch_results, has_main=True):
+    """Run run_scaffold where `git fetch` answers from `fetch_results` in order."""
+    settings.workspace_base_path = str(tmp_path)
+    workspace = tmp_path / "repo-456"
+    fetches = iter(fetch_results)
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        if args[:2] == ("git", "fetch"):
+            return next(fetches)
+        if args[:2] == ("git", "rev-parse"):
+            return _proc(0 if has_main else 1)
+        if args[:2] == ("copier", "copy"):
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / ".copier-answers.yml").write_text("_commit: abc\n")
+        return _proc(0)
+
+    sleep = AsyncMock()
+    with (
+        patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch("src.scaffold.asyncio.sleep", sleep),
+        capture_logs() as logs,
+    ):
+        result = await run_scaffold(
+            project_id="proj-123",
+            repository_id="repo-456",
+            template_repo="/data/service-template",
+            template_ref="0.3.0",
+            project_name="my-project",
+            modules="backend",
+            task_description="x",
+            repo_full_name="org/my-project",
+            github_token="ghs_testtoken_for_scaffold",  # noqa: S106
+            settings=settings,
+        )
+    return result, calls, sleep, logs
+
+
+class TestFetchNewRemote:
+    """git fetch right after create_repo waits out GitHub's git-transport lag only."""
+
+    @pytest.mark.asyncio
+    async def test_not_found_is_retried_with_backoff_until_served(self, settings, tmp_path):
+        result, calls, sleep, logs = await _scaffold_with_fetch(
+            settings, tmp_path, [_proc(128, _NOT_FOUND), _proc(128, _NOT_FOUND), _proc(0)]
+        )
+
+        assert result.success is True, result.error
+        assert sum(1 for c in calls if c[:2] == ("git", "fetch")) == 3
+        assert [c.args[0] for c in sleep.await_args_list] == [1, 2]
+        assert [e["event"] for e in logs].count("scaffold_fetch_retry") == 2
+
+    @pytest.mark.asyncio
+    async def test_http_404_is_retried(self, settings, tmp_path):
+        error = (
+            b"fatal: unable to access 'https://github.com/o/p/': "
+            b"The requested URL returned error: 404\n"
+        )
+        result, _, sleep, _ = await _scaffold_with_fetch(
+            settings, tmp_path, [_proc(128, error), _proc(0)]
+        )
+
+        assert result.success is True, result.error
+        assert sleep.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retries_are_bounded(self, settings, tmp_path):
+        result, calls, sleep, _ = await _scaffold_with_fetch(
+            settings, tmp_path, [_proc(128, _NOT_FOUND) for _ in range(10)]
+        )
+
+        assert result.success is False
+        assert "Repository not found" in (result.error or "")
+        assert sum(1 for c in calls if c[:2] == ("git", "fetch")) == 6
+        assert [c.args[0] for c in sleep.await_args_list] == [1, 2, 4, 8, 15]
+        assert not any(c[:2] == ("copier", "copy") for c in calls)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            b"remote: Invalid username or password.\nfatal: Authentication failed\n",
+            b"remote: Permission to o/p.git denied to bot.\n"
+            b"fatal: unable to access 'https://github.com/o/p/': "
+            b"The requested URL returned error: 403\n",
+            b"fatal: unable to access 'https://github.com/o/p/': Could not resolve host\n",
+        ],
+    )
+    async def test_other_failures_are_not_retried(self, settings, tmp_path, stderr):
+        result, calls, sleep, _ = await _scaffold_with_fetch(
+            settings, tmp_path, [_proc(128, stderr)]
+        )
+
+        assert result.success is False
+        assert result.error.startswith("Git init/fetch failed")
+        assert sum(1 for c in calls if c[:2] == ("git", "fetch")) == 1
+        sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_without_main_waits_for_auto_init_commit(self, settings, tmp_path):
+        result, calls, sleep, _ = await _scaffold_with_fetch(
+            settings, tmp_path, [_proc(0) for _ in range(6)], has_main=False
+        )
+
+        assert result.success is False
+        assert "no main branch" in (result.error or "")
+        assert sum(1 for c in calls if c[:2] == ("git", "fetch")) == 6
+        assert sleep.await_count == 5

@@ -31,6 +31,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["/entrypoint.sh"]
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - ENVIRONMENT=test
       - SEED_SYSTEM_CONFIGS_ON_START=true
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
@@ -81,11 +82,15 @@ services:
       - API_BASE_URL=http://api:8000
       - REDIS_URL=redis://redis:6379/0
       - TELEGRAM_BOT_TOKEN=test-token-for-scheduler-tests
+      - SECRETS_ENCRYPTION_KEY=GkH0NqyqjG599M0K9fVwU34b_2i1-m_i_M80-82d2X0=
       - GITHUB_ORG_NAME=test-org
       - TIME4VPS_USERNAME=test
       - TIME4VPS_PASSWORD=test
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
       - LOKI_URL=http://loki:3100
+      # Only the owner-notification spacing test uses it, to age a record's
+      # last attempt by one interval: the API decides spacing on its own clock.
+      - TEST_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - PYTHONPATH=/app:/app/src
     depends_on:
       api:

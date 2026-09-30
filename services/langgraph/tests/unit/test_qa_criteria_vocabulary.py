@@ -1,19 +1,25 @@
 """A criterion outside QA's vocabulary is marked before QA and reported, never checked.
 
-QA reads HTTP GET routes, sends Telegram text, presses inline buttons and fires
-declared jobs. On 2026-09-15 the architect wrote `POST /api/transactions` and a
-receipt photo upload as criteria, and QA failed them against any code. Only the
-HTTP write is withheld before QA; an upload reaches the executor, which reports
-it with its own `qa_capability` cause.
+What QA can and never does is the capability catalogue's. On 2026-09-15 the
+architect wrote `POST /api/transactions` and a receipt photo upload as criteria,
+and QA failed them against any code. Only the HTTP write — the catalogue's
+"never" entry — is withheld before QA. A photo, a location or a contact sent to
+the bot reaches the executor, which sends it as the QA user from its sandbox.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from shared.contracts.dto.run_result import QAFailedCheck, QAFailedCheckCause
+from shared.contracts.dto.qa_verification import QAUnverifiedOrigin
+from shared.contracts.dto.run_result import QAFailedCheckCause
 from src.agents.qa.acceptance import prepare_central_qa_criteria
-from src.consumers._qa_runner import QAResult, apply_unverifiable_criteria
+from src.consumers._qa_runner import (
+    QAResult,
+    apply_unverifiable_criteria,
+    settle_unverified_checks,
+)
+from src.prompts.qa import build_qa_prompt
 
 POST_ITEM = "- POST /api/transactions with an amount returns 201"
 PHOTO_ITEM = "- Receipt photo → OCR extracts the total and the bot records the expense"
@@ -69,9 +75,8 @@ def test_a_line_is_withheld_only_when_it_certainly_needs_an_http_write(line, wit
 class TestTheSeptember15CriteriaSet:
     """Only the POST item is withheld; the receipt photo item goes to the executor.
 
-    The photo item is not recognised before QA. It relies on the executor's own
-    `qa_capability` cause: the executor cannot send a photo, so it fails that
-    check with that cause instead of a product failure.
+    The photo item is not recognised before QA: the executor sends the photo as
+    the QA user through a probe of its own.
     """
 
     def test_only_the_post_item_is_marked_not_verifiable(self):
@@ -87,15 +92,54 @@ class TestTheSeptember15CriteriaSet:
 
         result = apply_unverifiable_criteria(QAResult(passed=True, checks=[]), unverifiable)
 
-        assert result.passed is False
         [check] = result.checks
         assert check["cause"] == QAFailedCheckCause.QA_CAPABILITY.value
         assert POST_ITEM.lstrip("- ") in check["name"]
+
+    def test_the_post_item_settles_as_unverified_with_origin_withheld(self):
+        unverifiable = prepare_central_qa_criteria(SEPT_15_CRITERIA).unverifiable
+
+        result = settle_unverified_checks(
+            apply_unverifiable_criteria(QAResult(passed=True, checks=[]), unverifiable)
+        )
+
+        assert result.checks == []
+        [check] = result.unverified_checks
+        assert check.origin is QAUnverifiedOrigin.WITHHELD
+        assert POST_ITEM.lstrip("- ") in check.name
+        assert "http_write" in check.reason
 
     def test_the_photo_telegram_and_get_items_are_handed_to_the_executor(self):
         prepared = prepare_central_qa_criteria(SEPT_15_CRITERIA)
 
         assert prepared.criteria.splitlines() == [PHOTO_ITEM, TEXT_ITEM, BUTTON_ITEM, GET_ITEM]
+
+
+LOCATION_ITEM = "- Telegram: sending a location replies with the nearest shop (requirement near)"
+SEND_PHOTO_ITEM = "- Telegram: send a photo of a receipt; the bot replies with its total"
+CONTACT_ITEM = "- Telegram: sharing a contact replies that the contact was saved"
+
+
+class TestASandboxActionReachesTheExecutor:
+    """A Telegram location, photo or contact is a check QA performs, never withheld."""
+
+    @pytest.mark.parametrize("line", (LOCATION_ITEM, SEND_PHOTO_ITEM, CONTACT_ITEM))
+    def test_it_is_not_withheld(self, line):
+        prepared = prepare_central_qa_criteria(line)
+
+        assert prepared.adjustments == ()
+        assert prepared.criteria == line
+
+    def test_it_is_in_the_prompt_the_executor_is_given(self):
+        criteria = "\n".join((POST_ITEM, LOCATION_ITEM, SEND_PHOTO_ITEM, CONTACT_ITEM))
+        prepared = prepare_central_qa_criteria(criteria)
+
+        prompt = build_qa_prompt(prepared.criteria, "https://shop.example.com", "shop_bot")
+
+        for line in (LOCATION_ITEM, SEND_PHOTO_ITEM, CONTACT_ITEM):
+            assert line in prompt
+        assert POST_ITEM not in prompt
+        assert [a.original for a in prepared.unverifiable] == [POST_ITEM]
 
 
 class TestWhatIsOutsideTheVocabulary:
@@ -141,24 +185,20 @@ class TestWhatIsOutsideTheVocabulary:
 
 
 class TestAnUnverifiableCriterionInTheRunResult:
-    def test_a_run_that_only_carried_unverifiable_criteria_does_not_pass(self):
+    def test_a_run_whose_other_checks_passed_passes_with_the_criterion_unverified(self):
         unverifiable = prepare_central_qa_criteria(SEPT_15_CRITERIA).unverifiable
         verdict = QAResult(
             passed=True, checks=[{"name": "text reply", "pass": True, "detail": "ok"}]
         )
 
-        result = apply_unverifiable_criteria(verdict, unverifiable)
+        result = settle_unverified_checks(apply_unverifiable_criteria(verdict, unverifiable))
 
-        assert result.passed is False
-        # Mapped the way the QA consumer stores a failed check on the run.
-        failed = [
-            QAFailedCheck.model_validate({k: check[k] for k in ("name", "detail", "cause")})
-            for check in result.checks
-            if not check["pass"]
-        ]
-        assert [check.cause for check in failed] == [QAFailedCheckCause.QA_CAPABILITY]
-        assert POST_ITEM.lstrip("- ") in failed[0].name
-        assert "not verifiable" in result.summary
+        assert result.passed is True
+        # Never counted as a pass: only the check that ran is in `checks`.
+        assert result.checks == [{"name": "text reply", "pass": True, "detail": "ok"}]
+        [unverified] = result.unverified_checks
+        assert POST_ITEM.lstrip("- ") in unverified.name
+        assert "recorded as unverified" in result.summary
 
     def test_a_product_failure_keeps_its_cause_and_its_summary(self):
         unverifiable = prepare_central_qa_criteria(POST_ITEM).unverifiable
@@ -168,9 +208,11 @@ class TestAnUnverifiableCriterionInTheRunResult:
             summary="the list route is missing",
         )
 
-        result = apply_unverifiable_criteria(verdict, unverifiable)
+        result = settle_unverified_checks(apply_unverifiable_criteria(verdict, unverifiable))
 
-        assert [check["cause"] for check in result.checks] == ["product", "qa_capability"]
+        assert result.passed is False
+        assert [check["cause"] for check in result.checks] == ["product"]
+        assert [check.origin for check in result.unverified_checks] == [QAUnverifiedOrigin.WITHHELD]
         assert result.summary.startswith("the list route is missing; ")
 
     def test_a_run_with_nothing_unverifiable_is_returned_unchanged(self):

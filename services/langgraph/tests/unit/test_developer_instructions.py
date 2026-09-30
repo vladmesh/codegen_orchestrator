@@ -1,6 +1,17 @@
 """Tests for developer worker INSTRUCTIONS.md content."""
 
+import re
+
+from scripts.platform_capabilities import load_manifest
 from src.prompts import load_developer_instructions
+from src.prompts.architect import SYSTEM_PROMPT as ARCHITECT_PROMPT
+from src.subgraphs.devops.secret_resolver import is_computable_derived_key
+
+
+def _section(content: str, heading: str) -> str:
+    """One `## ` section of the instructions, whitespace-normalised."""
+    body = content.split(heading, 1)[1].split("\n## ", 1)[0]
+    return " ".join(body.split())
 
 
 class TestDeveloperInstructions:
@@ -47,16 +58,40 @@ class TestDeveloperInstructions:
         assert "jobs_schema" in self.content
         assert 'provides: ["jobs.fire"]' in self.content
         assert "job_fired" in self.content
-        assert "services.yml" in self.content
-        assert "compose.base.yml" in self.content
         assert "compose.prod.yml" in self.content
         assert "durable output" in lower
         assert "dispatch_status" in self.content
-        assert "notifications_worker" in self.content
-        assert "Dockerfile" in self.content
         assert "env.contract.yaml" in self.content
-        assert "CI build/push matrix" in self.content
         assert "docker compose -f infra/compose.prod.yml config" not in self.content
+
+    def test_a_scheduled_behaviour_is_an_in_process_timer_as_the_architect_plans_it(self):
+        """The gate agrees with the Architect prompt and names no service that does not exist."""
+        gate = _section(self.content, "## Scheduled Behaviour Completion Gate")
+        architect = " ".join(ARCHITECT_PROMPT.split())
+
+        assert "notifications_worker" not in self.content
+        assert "in-process timer in the backend or bot that calls the declared job" in architect
+        assert (
+            "in-process timer in the product's own backend or bot that calls the declared job"
+            in gate
+        )
+        assert "`FIRE JOB` stays the QA verification form, not a production scheduler" in gate
+        assert "platform cannot deploy extra service modules" in gate
+
+    def test_states_the_derived_key_rule_with_every_key_the_platform_computes(self):
+        instructions = " ".join(self.content.split())
+        rule = self.content.split("A `derived` contract entry", 1)[1].split("\n\n", 1)[0]
+        listed = set(re.findall(r"`([A-Z_*]+)`", rule))
+
+        assert {entry.key for entry in load_manifest().derived_keys} <= listed
+        assert all(is_computable_derived_key(key) for key in listed)
+        assert "PUBLIC_BASE_URL" in listed
+        assert not is_computable_derived_key("UNSUPPORTED_DERIVED_URL")
+        assert (
+            "the platform cannot compute it; remove it, make it optional with a safe default, "
+            "or use a `user_secret` if the user supplies it"
+        ) in instructions
+        assert "refused before any deploy" in instructions
 
     def test_requires_the_generated_settings_contract_before_a_seed_can_succeed(self):
         assert "POST /settings/set" in self.content

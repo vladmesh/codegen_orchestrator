@@ -53,7 +53,10 @@ def _notice(
     *,
     story_id: str = STORY_ID,
 ) -> dict:
-    """A notice exactly as `record_stage_notices` stores it: the event's JSON dump."""
+    """A notice exactly as `record_stage_notices` stores it: the event's JSON dump.
+
+    Its step is the first of its kind: 0 for an entry, 1 for a repeat.
+    """
     waiting_on, estimate = _WAITS[stage]
     return POSystemEvent(
         event="story_stage",
@@ -66,6 +69,8 @@ def _notice(
         waiting_on=waiting_on,
         wait_estimate=estimate,
         stage_notice=kind,
+        stage_notice_step=0 if kind is StoryStageNoticeKind.ENTERED else 1,
+        stage_entered_at=f"2026-09-21T{at}:00+00:00",
     ).model_dump(mode="json")
 
 

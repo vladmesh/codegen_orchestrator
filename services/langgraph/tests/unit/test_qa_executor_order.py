@@ -211,10 +211,13 @@ class TestTheAssignedExecutorGoesFirst:
 
         assert "POST /api/transactions" not in executor.calls[0]["prompt"]
         assert "GET /health returns 200" in executor.calls[0]["prompt"]
-        assert result.passed is False
-        [unverified] = [check for check in result.checks if not check["pass"]]
-        assert unverified["cause"] == "qa_capability"
-        assert "POST /api/transactions" in unverified["name"]
+        # The executor passed what it was handed; the withheld line is recorded
+        # as unverified, and neither fails the run nor counts as a pass.
+        assert result.passed is True
+        assert all(check["pass"] for check in result.checks)
+        [unverified] = result.unverified_checks
+        assert unverified.origin.value == "withheld"
+        assert "POST /api/transactions" in unverified.name
 
     async def test_codex_is_the_default_executor(self, tmp_path):
         executor = _submitting_executor()

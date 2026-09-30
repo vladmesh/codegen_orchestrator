@@ -60,6 +60,13 @@ CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
         "    apt-get update && apt-get install -y --no-install-recommends gh && \\",
         "    rm -rf /var/lib/apt/lists/*",
     ],
+    # The QA executor's sandbox: a Telethon client for the QA Telegram account,
+    # and python-socks so Telethon can reach Telegram through the run's
+    # CONNECT-only egress proxy (`proxy=("http", host, 3128)`). Installed into
+    # the system interpreter, so the container's `python3` imports both.
+    "QA_SANDBOX": [
+        "RUN pip install --no-cache-dir telethon==1.45.0 python-socks==2.8.2",
+    ],
 }
 
 # Packages that can be combined in a single apt-get install

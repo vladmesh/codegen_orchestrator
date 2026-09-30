@@ -33,6 +33,7 @@ from level1_change_set import (
     LEVEL1_EXTENSION_ENDPOINT_PATH,
     LEVEL1_EXTENSION_SETTING_KEY,
     LEVEL1_SETTING_KEY,
+    SCRIPTED_DEVELOPER,
     backend_acceptance_criteria,
     backend_operations,
     bot_acceptance_criteria,
@@ -215,7 +216,7 @@ def _admission_context() -> dict:
         "task_criteria": backend_acceptance_criteria(MARKER),
         "followup_task_title": "bot task",
         "followup_task_description": "bot change set",
-        "followup_task_criteria": bot_acceptance_criteria(MARKER),
+        "followup_task_criteria": bot_acceptance_criteria(MARKER, agent_type=SCRIPTED_DEVELOPER),
     }
 
 
@@ -315,7 +316,7 @@ def test_the_level1_acceptance_criteria_are_this_run_s_and_are_what_qa_checks():
     product probes already use.
     """
     backend = backend_acceptance_criteria(MARKER)
-    bot = bot_acceptance_criteria(MARKER)
+    bot = bot_acceptance_criteria(MARKER, agent_type=SCRIPTED_DEVELOPER)
 
     assert MARKER in backend
     assert MARKER in bot
@@ -364,7 +365,10 @@ async def test_the_plan_asks_for_the_acceptance_criteria_its_task_documents_must
             response = await api.get(f"/api/tasks/{task_id}")
             read_back.append(response.json())
 
-    expected = [backend_acceptance_criteria(MARKER), bot_acceptance_criteria(MARKER)]
+    expected = [
+        backend_acceptance_criteria(MARKER),
+        bot_acceptance_criteria(MARKER, agent_type=SCRIPTED_DEVELOPER),
+    ]
     assert [body["acceptance_criteria"] for body in bodies] == expected
     # And they are on the task rows this run reads its evidence from: it is that
     # read (`_record_task_diagnostic`) that tells the artifact what TASK.md must
@@ -795,7 +799,7 @@ def test_the_extension_acceptance_criteria_are_this_story_s_and_are_what_qa_chec
     assert LEVEL1_EXTENSION_SETTING_KEY in criteria
     assert criteria not in (
         backend_acceptance_criteria(MARKER),
-        bot_acceptance_criteria(MARKER),
+        bot_acceptance_criteria(MARKER, agent_type=SCRIPTED_DEVELOPER),
     )
     # Same two shape rules the first story's criteria are held to: no fence of
     # their own for the scripted runner to find, and already stripped.

@@ -14,6 +14,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
 )
+from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
@@ -25,6 +26,7 @@ from shared.contracts.dto.work_admission import (
 from shared.contracts.vocab import AgentType
 from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.work_admission import (
+    PaidRunReservedMetadata,
     _executor_diagnostic_allows_admission,
     admit_project_creation,
     start_paid_run,
@@ -74,6 +76,29 @@ def _rows(values: dict[str, object]) -> MagicMock:
 
 
 @pytest.mark.asyncio
+async def test_paid_run_start_refuses_the_qa_routing_stamp_before_touching_the_database():
+    """Only the story transition writes the stamp; no creation path may seed it."""
+    db = AsyncMock()
+
+    with pytest.raises(PaidRunReservedMetadata):
+        await start_paid_run(
+            PaidRunStartCommand(
+                id="qa-forged-stamp",
+                type=RunType.QA,
+                project_id="00000000-0000-0000-0000-000000000001",
+                story_id="00000000-0000-0000-0000-000000000002",
+                run_metadata={QA_ROUTED_KEY: {"story_id": "00000000-0000-0000-0000-000000000002"}},
+            ),
+            db,
+        )
+
+    db.scalar.assert_not_called()
+    db.scalars.assert_not_called()
+    db.execute.assert_not_called()
+    db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_project_stop_is_checked_before_the_project_count():
     db = AsyncMock()
     db.add = MagicMock()
@@ -88,6 +113,12 @@ async def test_project_stop_is_checked_before_the_project_count():
 
 @pytest.mark.asyncio
 async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monkeypatch):
+    from shared.contracts.dto.engineering_budget_policy import (
+        EngineeringBudgetAdmissionOutcome,
+        EngineeringBudgetAdmissionRead,
+        EngineeringBudgetReservationState,
+    )
+
     db = AsyncMock()
     db.add = MagicMock()
     db.scalars.side_effect = [
@@ -125,6 +156,19 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monk
         )
 
     monkeypatch.setattr("src.work_admission.current_executor_diagnostic", available_codex)
+    reserve = AsyncMock(
+        return_value=EngineeringBudgetAdmissionRead(
+            attempt_id="qa-1",
+            user_id=7,
+            outcome=EngineeringBudgetAdmissionOutcome.ADMITTED,
+            reservation_microusd=10,
+            known_spend_microusd=0,
+            active_held_microusd=10,
+            available_microusd=90,
+            reservation_state=EngineeringBudgetReservationState.ACTIVE,
+        )
+    )
+    monkeypatch.setattr("src.engineering_budget_admission.admit_engineering_attempt", reserve)
 
     result = await start_paid_run(
         PaidRunStartCommand(
@@ -137,6 +181,7 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monk
 
     assert result.admission.outcome is WorkAdmissionOutcome.ADMITTED
     assert result.run_id == "qa-1"
+    assert reserve.await_args.args[0].attempt_id == "qa-1"
     assert db.add.call_count == 2  # Run plus the durable admission audit record.
 
 

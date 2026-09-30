@@ -1,7 +1,7 @@
 """The record that the owner of a story is owed a message.
 
 A terminal story outcome — finished, or stopped for a human — is decided by the
-supervisor and told to the owner through `po:input`. The transition is committed
+supervisor and handed to the PO through `po:input`. The transition is committed
 to the database; the message is an `xadd` with nothing behind it. Publishing
 after the commit therefore has a gap: if the publish, or the recipient lookup in
 front of it, fails transiently, the story has already left the status the
@@ -11,8 +11,9 @@ finished and nobody tells them, forever.
 So the message is not inferred from a successful publish. A `story_completed`
 record is committed on the Story with `COMPLETED`; other terminal notices are
 written before their transition on the Run that produced them. From that moment
-the record owns delivery. `OWED` means "the owner has not been told and must
-be"; only a publish that returned moves it to `DELIVERED`.
+the record owns delivery. `OWED` means "the event is owed to the PO"; only a
+publish that returned moves it to `DELIVERED`. The independent `told_state`
+records the PO decision.
 
 The record carries the `terminal_status` the transition produces, and nothing is
 published until the story is read and found in it. This protects run-backed
@@ -29,27 +30,50 @@ again from scratch if routing later does finish the story.
 
 This is deliberately narrow. It is not an outbox for every producer in the
 project — it covers the terminal owner notifications the supervisor emits, which
-are the ones whose story is unreachable the moment the transition lands.
+are the ones whose story is unreachable the moment the transition lands, and the
+lifecycle waits whose announcement is equally lost to a failed publish: a task
+parked for, or resumed from, a resource wait, and a story waiting for a user
+secret. Those are written by the API in the transaction of the state change
+they announce, and a task-level one also names the task statuses in which it is
+still true (`expected_task_statuses`). Progress notices
+(`NON_DURABLE_OWNER_EVENTS`) stay outside it.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.vocab import NON_DURABLE_OWNER_EVENTS, OwnerNotificationEvent
 
 #: JSON key for run-backed terminal notices; completed-story notices live on Story.
 OWNER_NOTIFICATION_KEY = "owner_notification"
 
+#: The least time between two delivery attempts on one record. The API grants an
+#: attempt only when this much has passed since ``last_attempt_at``, so the
+#: spacing is a fact of the record, not of which loop happens to call first or of
+#: how often it runs. A minute lets the transient failures this record survives —
+#: an API restart, a Redis failover — clear between attempts, so the bounded
+#: attempts are not all spent inside one outage.
+OWNER_NOTIFICATION_ATTEMPT_INTERVAL = timedelta(seconds=60)
+
+#: The ``detail.code`` of the 409 the API answers to a write carrying an older
+#: attempt than the one the record holds: a visit that outlived its claim, whose
+#: record has since been claimed again, may not overwrite what the newer visit
+#: settled.
+OWNER_NOTIFICATION_ATTEMPT_SUPERSEDED = "owner_notification_attempt_superseded"
+
 
 class OwnerNotificationState(StrEnum):
     """What is known about the message this story owes its owner."""
 
-    #: Written before the terminal transition. The owner has not been told.
+    #: Written before the terminal transition. The event is owed to the PO.
     OWED = "owed"
     #: The event was accepted by `po:input`. Nothing publishes it again.
     DELIVERED = "delivered"
@@ -61,6 +85,36 @@ class OwnerNotificationState(StrEnum):
     #: was published and no attempt was spent; the obligation is owed again from
     #: scratch when the story really does reach that ending.
     VOIDED = "voided"
+
+
+class OwnerNoticeReference(BaseModel):
+    """The exact obligation carried by a durable PO event."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["run", "story"]
+    source_id: str = Field(min_length=1)
+    owed_at: datetime
+
+
+class OwnerNoticeSettlement(OwnerNoticeReference):
+    """A PO decision, separate from acceptance by po:input."""
+
+    told_state: Literal["told", "suppressed", "closed"]
+    reason: str = ""
+    suppressed_by: Literal["po", "user", "admin"] | None = None
+    #: Explicit resolution may address a retained deferral; a publication write
+    #: must only address the current obligation of its source.
+    resolve_deferred: bool = False
+
+    @model_validator(mode="after")
+    def _decision_is_whole(self) -> OwnerNoticeSettlement:
+        if self.resolve_deferred and self.told_state == "suppressed":
+            raise ValueError("Resolution must tell or close a deferred notice")
+        if self.told_state in {"suppressed", "closed"} and not self.reason.strip():
+            raise ValueError("Suppression and closure require a non-empty reason")
+        if (self.told_state == "suppressed") != (self.suppressed_by is not None):
+            raise ValueError("Only suppression names suppressed_by, and it must name it")
+        return self
 
 
 class OwnerNotification(BaseModel):
@@ -88,17 +142,43 @@ class OwnerNotification(BaseModel):
     #: story as a whole. `None` means the story is the subject, which is what
     #: every story-level ending records.
     task_id: str | None = None
+    #: The statuses the task named by ``task_id`` must be in for this message to
+    #: be true, checked at delivery next to ``terminal_status``. A notice about a
+    #: task's lifecycle — "waiting for capacity", "resumed" — is made false by the
+    #: task moving on while the story stays where it was, so the story alone
+    #: cannot say whether it may still be published. `None` on every story-level
+    #: ending and on every record written before this field existed: those keep
+    #: exactly the story check.
+    expected_task_statuses: tuple[TaskStatus, ...] | None = None
     state: OwnerNotificationState
     owed_at: datetime
     #: When the owner audience was marked delivered: the moment `po:input`
     #: accepted the event. `None` until then, and on every record delivered
-    #: before this field existed. A wait that is measured from the owner having
-    #: been told reads this, never `owed_at` — owing is not telling.
+    #: before this field existed. The secret-wait clock reads this acceptance
+    #: time, never `owed_at` or the separate PO `told_at`.
     delivered_at: datetime | None = None
+    told_state: Literal["told", "suppressed", "closed"] | None = None
+    told_at: datetime | None = None
+    suppressed_reason: str | None = None
+    suppressed_by: Literal["po", "user", "admin"] | None = None
+    suppressed_at: datetime | None = None
+    closed_at: datetime | None = None
+    closed_reason: str | None = None
+    #: Deferred obligations survive replacement of the source's current notice.
+    #: They remain in the same JSON record until explicitly resolved.
+    deferred: list[OwnerNotification] = Field(default_factory=list)
     #: Delivery attempts already spent. Bounded by the producer.
     attempts: int = Field(default=0, ge=0)
     #: Why the last attempt did not deliver.
     detail: str | None = None
+    #: When the last delivery attempt on this record was granted, whichever
+    #: audience it served. Stamped by the API in the same locked write that
+    #: checks ``OWNER_NOTIFICATION_ATTEMPT_INTERVAL``, and never by a caller.
+    #: `None` means never attempted, which is what every record written before
+    #: this field existed reads as. One stamp spaces both audiences because one
+    #: granted visit serves both: two callers can never split a record's
+    #: audiences between them and overwrite each other's settlement.
+    last_attempt_at: datetime | None = None
     #: The administrator audience of the same ending, settled independently of
     #: the owner. Absent (`None`) on every record written before this audience
     #: existed and on endings that owe administrators nothing, so a released
@@ -107,6 +187,27 @@ class OwnerNotification(BaseModel):
     admin_state: OwnerNotificationState | None = None
     admin_attempts: int = Field(default=0, ge=0)
     admin_detail: str | None = None
+    #: What the QA run that settled the story checked and could not, carried to
+    #: PO as structured facts beside the words. `None` on every ending no QA
+    #: verdict settled, and on every record written before this field existed.
+    qa_verification: QAVerificationFacts | None = None
+
+    @model_validator(mode="after")
+    def _po_decision_is_whole(self) -> OwnerNotification:
+        if self.told_state == "told" and self.told_at is None:
+            raise ValueError("A told notice records told_at")
+        if self.told_state == "suppressed" and (
+            not self.suppressed_reason
+            or not self.suppressed_reason.strip()
+            or self.suppressed_by is None
+            or self.suppressed_at is None
+        ):
+            raise ValueError("A suppressed notice records reason, decider and time")
+        if self.told_state == "closed" and (
+            not self.closed_reason or not self.closed_reason.strip() or self.closed_at is None
+        ):
+            raise ValueError("A closed notice records reason and time")
+        return self
 
     @model_validator(mode="after")
     def _event_is_durable(self) -> OwnerNotification:
@@ -114,6 +215,14 @@ class OwnerNotification(BaseModel):
         # hand the recovery sweep a message that is stale by the time it lands.
         if self.event in NON_DURABLE_OWNER_EVENTS:
             raise ValueError(f"{self.event} is never an owed owner notification")
+        return self
+
+    @model_validator(mode="after")
+    def _task_expectation_names_a_task(self) -> OwnerNotification:
+        if self.expected_task_statuses is not None and (
+            self.task_id is None or not self.expected_task_statuses
+        ):
+            raise ValueError("expected_task_statuses needs a task_id and at least one status")
         return self
 
     @model_validator(mode="after")
@@ -131,3 +240,49 @@ class OwnerNotification(BaseModel):
     def admin_owed(self) -> bool:
         """True while administrators still have to be told about this ending."""
         return self.admin_state is OwnerNotificationState.OWED
+
+    def attempt_due(self, now: datetime) -> bool:
+        """True when some audience is owed and the last attempt is an interval old."""
+        if not self.owed and not self.admin_owed:
+            return False
+        return (
+            self.last_attempt_at is None
+            or now - self.last_attempt_at >= OWNER_NOTIFICATION_ATTEMPT_INTERVAL
+        )
+
+    def supersedes(self, incoming: OwnerNotification) -> bool:
+        """True when ``incoming`` is a write from an attempt older than this record's.
+
+        The same obligation is recognised by its ``owed_at``: a record owed
+        afresh — a voided ending that became real, or a later lifecycle notice
+        on the same Run — is a new obligation and replaces this one whatever it
+        carries. The converse is refused: a write naming an obligation older
+        than the stored one comes from a visit to a record this one replaced,
+        and letting it land would put the replaced message back in its place.
+        """
+        if incoming.owed_at < self.owed_at:
+            return True
+        if incoming.owed_at != self.owed_at or self.last_attempt_at is None:
+            return False
+        return incoming.last_attempt_at is None or incoming.last_attempt_at < self.last_attempt_at
+
+
+class OwnerNotificationAttemptClaim(BaseModel):
+    """The API's answer to "may one delivery attempt be made on this record now?".
+
+    ``granted`` means the record was stamped with this attempt in the same locked
+    write that found it owed and due, and ``notification`` is the stamped record
+    the attempt must carry into every write it makes. A refusal spends nothing
+    and changes nothing; ``notification`` is then the record as it stands (a
+    settled one, or one attempted less than an interval ago), or `None` when the
+    source carries no record at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    granted: bool
+    notification: OwnerNotification | None
+
+
+class AddressedOwnerNotice(OwnerNoticeReference):
+    notification: OwnerNotification

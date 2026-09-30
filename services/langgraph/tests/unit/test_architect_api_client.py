@@ -13,6 +13,13 @@ from shared.contracts.dto.product_brief import (
     RequirementCoverageCreate,
 )
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+from shared.contracts.dto.story_planning import (
+    PlanningChannels,
+    StoryPlanningOutcome,
+    StoryPlanningReport,
+    StoryPlanningState,
+)
 
 
 @pytest.fixture
@@ -140,6 +147,59 @@ class TestTransitionStory:
         call_args = mock_httpx_client.request.call_args
         assert "story-abc" in str(call_args)
         assert "start" in str(call_args)
+
+    @pytest.mark.asyncio
+    async def test_stop_story_carries_the_typed_reason(self, api_client, mock_httpx_client):
+        mock_httpx_client.request.return_value = _ok_response(_story_dict(status="failed"))
+        failure = StoryFailure(
+            code=StoryFailureCode.SCAFFOLD_FAILED, source="architect", detail="clone failed"
+        )
+
+        result = await api_client.stop_story("story-abc", "fail", failure, actor="architect")
+
+        assert result.status == "failed"
+        call = mock_httpx_client.request.call_args
+        assert call.args[:2] == ("POST", "/api/stories/story-abc/fail")
+        body = call.kwargs["json"]
+        assert body["actor"] == "architect"
+        assert body["failure"]["code"] == "scaffold_failed"
+        assert body["failure"]["detail"] == "clone failed"
+
+    @pytest.mark.asyncio
+    async def test_stop_story_refuses_a_non_stopping_action(self, api_client):
+        failure = StoryFailure(code=StoryFailureCode.SCAFFOLD_FAILED, source="a", detail="d")
+        with pytest.raises(ValueError, match="not a stopping story action"):
+            await api_client.stop_story("story-abc", "start", failure, actor="architect")
+
+    @pytest.mark.asyncio
+    async def test_record_planning_outcome_posts_the_report_and_returns_the_record(
+        self, api_client, mock_httpx_client
+    ):
+        planning = {
+            "state": "retrying",
+            "failed_attempts": 1,
+            "max_retries": 3,
+            "next_attempt_at": _NOW,
+            "recorded_at": _NOW,
+        }
+        mock_httpx_client.request.return_value = _ok_response(
+            _story_dict(status="in_progress", planning=planning)
+        )
+        report = StoryPlanningReport(
+            outcome=StoryPlanningOutcome.FAILED,
+            failure=StoryFailure(
+                code=StoryFailureCode.PLANNING_FAILED, source="architect", detail="timeout"
+            ),
+            channel_failures=["codex:timeout"],
+        )
+
+        recorded = await api_client.record_planning_outcome("story-abc", report)
+
+        assert recorded.state is StoryPlanningState.RETRYING
+        call = mock_httpx_client.request.call_args
+        assert call.args[:2] == ("POST", "/api/stories/story-abc/planning-outcome")
+        assert call.kwargs["json"]["failure"]["code"] == "planning_failed"
+        assert call.kwargs["json"]["channel_failures"] == ["codex:timeout"]
 
 
 def _brief_dict(**overrides):
@@ -356,12 +416,19 @@ class TestProductBriefBoundaryClient:
             }
         )
 
-        admission = await api_client.admit_product_brief_coverage("brief-1", "plan-1")
+        admission = await api_client.admit_product_brief_coverage(
+            "brief-1",
+            "plan-1",
+            channels=PlanningChannels(channels=["codex"], channel_failures=["claude:timeout"]),
+        )
 
         assert admission.outcome is ProductBriefAdmissionOutcome.INCOMPLETE
         assert admission.missing_requirement_ids == ["req-1"]
         method, path = mock_httpx_client.request.call_args[0]
         assert (method, path) == ("POST", "/api/product-briefs/brief-1/admit")
         assert mock_httpx_client.request.call_args.kwargs["json"] == {
-            "planning_attempt_id": "plan-1"
+            "planning_attempt_id": "plan-1",
+            "channels": ["codex"],
+            "channel_failures": ["claude:timeout"],
+            "reopen": False,
         }

@@ -34,7 +34,7 @@ def test_pipeline_does_not_require_maintenance_or_infrastructure_config():
     from src import startup
 
     assert "scheduler.dispatch_interval_seconds" in startup.PIPELINE_REQUIRED_KEYS
-    assert "scheduler.rag_summarizer_poll_interval" not in startup.PIPELINE_REQUIRED_KEYS
+    assert "scheduler.github_sync_missing_threshold" not in startup.PIPELINE_REQUIRED_KEYS
     assert "scheduler.server_sync_interval" not in startup.PIPELINE_REQUIRED_KEYS
 
 
@@ -58,7 +58,7 @@ def test_pipeline_validates_only_its_own_config(monkeypatch):
 
     startup.init_config(startup.PIPELINE_REQUIRED_KEYS)
 
-    with pytest.raises(RuntimeError, match="scheduler.rag_summarizer_poll_interval"):
+    with pytest.raises(RuntimeError, match="scheduler.github_sync_missing_threshold"):
         startup.init_config(startup.MAINTENANCE_REQUIRED_KEYS)
 
 
@@ -105,6 +105,20 @@ def test_compose_runs_independent_scheduler_processes():
             {"scheduler-pipeline", "scheduler-infrastructure", "scheduler-maintenance"}
             & set(services[name]["depends_on"])
         )
+
+
+def test_scheduler_pipeline_carries_the_registry_env_its_merges_write():
+    """The merging process writes the product's registry secrets, so it holds them.
+
+    `pr_poller` and `story_completion` run in scheduler-pipeline and refresh a
+    product repository's REGISTRY_* secrets before every merge they perform or
+    enable. Production composes this file, so the variables must be named here.
+    """
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    environment = compose["services"]["scheduler-pipeline"]["environment"]
+
+    for variable in ("ORCHESTRATOR_HOSTNAME", "REGISTRY_USER", "REGISTRY_PASSWORD"):
+        assert environment[variable] == f"${{{variable}}}"
 
 
 def test_infra_stack_waits_for_scheduler_health():
@@ -210,7 +224,11 @@ async def test_pipeline_starts_without_loki(monkeypatch):
     workers = run_workers.await_args.args[0]
     assert [(name, worker) for name, worker in workers] == [
         ("task_dispatcher", pipeline.task_dispatcher_loop),
+        ("pr_ci", pipeline.pr_ci_loop),
         ("worker_reconciliation", pipeline.worker_reconciliation_loop),
+        ("temporary_access", pipeline.temporary_access_loop),
+        ("owner_notifications", pipeline.owner_notification_loop),
+        ("story_supervision", pipeline.story_supervision_loop),
     ]
 
 
@@ -239,12 +257,15 @@ async def test_worker_inventory_is_complete_and_disjoint(monkeypatch):
 
     assert set().union(*inventories.values()) == {
         "task_dispatcher",
+        "pr_ci",
         "worker_reconciliation",
+        "temporary_access",
+        "owner_notifications",
+        "story_supervision",
         "server_sync",
         "health_checker",
         "provisioner_results",
         "github_sync",
-        "rag_summarizer",
         "analytics_aggregator",
         "queue_cleanup",
     }

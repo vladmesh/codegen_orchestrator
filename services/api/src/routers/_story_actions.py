@@ -10,11 +10,13 @@ event that happened and never sequence lifecycle state themselves.
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.engineering_execution import (
     ENGINEERING_INFRASTRUCTURE_KEY,
     EngineeringExecutionPhase,
@@ -28,40 +30,346 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureRetryRead,
     infrastructure_refusal_detail,
 )
+from shared.contracts.dto.lifecycle_wait import (
+    UserSecretWaitCommand,
+    UserSecretWaitDisposition,
+    UserSecretWaitRead,
+)
+from shared.contracts.dto.owner_notification import (
+    OWNER_NOTIFICATION_KEY,
+    OwnerNotification,
+    OwnerNotificationState,
+)
+from shared.contracts.dto.pr_conflict_repair import (
+    PR_CONFLICT_REPAIR_KEY,
+    PRConflictRepairCommand,
+    PRConflictRepairEvidence,
+    PRConflictRepairOutcome,
+    PRConflictRepairRead,
+    cycle_stamp,
+    repair_task_id,
+)
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResult
+from shared.contracts.dto.state_wait import (
+    ANCHOR_RUN_TYPE_BY_STATUS,
+    StateWaitExpiryCommand,
+    StateWaitExpiryDisposition,
+    StateWaitExpiryRead,
+    StateWaitObservation,
+)
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode, in_work_cycle
+from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata
-from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
+from shared.models import (
+    Project,
+    Repository,
+    Run,
+    SystemConfig,
+    Task,
+    TaskEvent,
+    WorkAdmissionAudit,
+)
 from shared.models.story import Story
 
 from ..database import get_async_session
-from ..dependencies import require_internal_or_admin
+from ..dependencies import _optional_bearer_scheme, is_internal_service, require_internal_or_admin
 from ..infrastructure_park import (
     SCAFFOLD_ERROR_KEY,
     WORKSPACE_ENSURE_AUDIT_SUBJECT,
     apply_infrastructure_park,
     infrastructure_conflict,
 )
+from ..owner_notification_settlement import preserve_po_settlement
 from ..schemas.story import StoryRead, StoryTransition
 from ..work_admission import abort_paid_run_pre_handoff
-from ._story_helpers import _get_story_for_update, _land_on, _validate_transition
+from ._pr_conflict_attempt import router as pr_conflict_attempt_router
+from ._story_helpers import (
+    _do_transition,
+    _get_story_for_update,
+    _land_on,
+    _record_story_failure,
+    _validate_transition,
+    work_cycle_task_count,
+)
 from ._task_helpers import create_status_event, get_task_for_update, validate_transition
-from .projects_guards import load_locked_project
+from .projects_guards import check_project_access, load_locked_project
 
 logger = structlog.get_logger()
 
 _LIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED.value, RunStatus.RUNNING.value})
 
 action_router = APIRouter()
+action_router.include_router(pr_conflict_attempt_router)
+PR_CONFLICT_GITHUB = GitHubAppClient
+
+
+def _repair_conflict(message: str) -> None:
+    raise HTTPException(409, detail={"code": "pr_conflict_repair_refused", "message": message})
+
+
+@action_router.post("/{story_id}/repair-pr-conflicts", response_model=PRConflictRepairRead)
+async def repair_pr_conflicts(
+    story_id: str,
+    command: PRConflictRepairCommand,
+    db: AsyncSession = Depends(get_async_session),
+    internal: bool = Depends(is_internal_service),
+    telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+) -> PRConflictRepairRead:
+    # Existing Tasks precede Story, Project and Runs in the lock ladder. The
+    # deterministic new Task is inserted only while the Story lock is held.
+    tasks = (
+        await db.scalars(
+            select(Task).where(Task.story_id == story_id).order_by(Task.id).with_for_update()
+        )
+    ).all()
+    story = await _get_story_for_update(story_id, db)
+    project = await load_locked_project(db, story.project_id)
+    actor = await check_project_access(
+        project, telegram_id, db, is_internal=internal, credentials=credentials
+    )
+    cycle = cycle_stamp(story.reopened_at or story.created_at)
+    if (
+        command.project_id != story.project_id
+        or command.pr_number != story.pr_number
+        or cycle_stamp(command.cycle_started_at) != cycle
+    ):
+        _repair_conflict("Project, current PR or story cycle changed.")
+    tid = repair_task_id(story.id, cycle)
+    # A concurrent initial caller may have inserted it after our Task query.
+    # Read it after acquiring Story; repeats never mutate or lock that Task.
+    task = next((row for row in tasks if row.id == tid), None)
+    if task is None:
+        task = await db.get(Task, tid)
+    reason = story.quarantine_reason or {}
+    released_park = (
+        story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
+        and reason.get("reason") == "github_app_merge_refused"
+        and reason.get("mergeable_state") == "dirty"
+        and reason.get("pr_number") == story.pr_number
+    )
+    exhausted_park = (
+        task is not None
+        and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
+        and reason.get("code") == StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED.value
+    )
+    if story.status not in {StoryStatus.PR_REVIEW.value, StoryStatus.IN_PROGRESS.value}:
+        if not (released_park or exhausted_park):
+            _repair_conflict("This human-review reason does not permit conflict recovery.")
+    if task is None and story.status == StoryStatus.IN_PROGRESS.value:
+        _repair_conflict("The story has engineering work in progress.")
+    if command.expected_head_sha is None and not (released_park or task is not None):
+        _repair_conflict("Automatic admission requires the observed PR head.")
+    current = [row for row in tasks if in_work_cycle(row.created_at, story.reopened_at, row.status)]
+    if any(row.project_id != story.project_id for row in current):
+        _repair_conflict("A story Task belongs to another project.")
+    if task is None and (
+        not any(row.status == TaskStatus.DONE.value for row in current)
+        or any(
+            row.status not in {TaskStatus.DONE.value, TaskStatus.CANCELLED.value} for row in current
+        )
+    ):
+        _repair_conflict("Original engineering work is not settled.")
+    live = (
+        await db.scalars(
+            select(Run)
+            .where(Run.story_id == story.id, Run.status.in_(_LIVE_RUN_STATUSES))
+            .order_by(Run.id)
+            .with_for_update()
+        )
+    ).all()
+    if any(task is None or run.task_id != task.id for run in live):
+        _repair_conflict("A different attempt is live on this story.")
+    repository = await db.scalar(
+        select(Repository).where(
+            Repository.project_id == story.project_id, Repository.role == "primary"
+        )
+    )
+    if repository is None:
+        _repair_conflict("The project has no primary repository.")
+    head_sha, default, default_sha = await _observe_dirty_pr(story, repository, command)
+    identity = "internal_service" if actor is None else f"user:{actor.id}"
+    if task is None:
+        control = await db.get(SystemConfig, "llm.task_default_max_iterations")
+        if control is None or type(control.value) is not int or control.value <= 0:
+            raise HTTPException(503, detail="Required engineering iteration bound is missing")
+        evidence = PRConflictRepairEvidence(
+            **command.model_dump(),
+            story_id=story.id,
+            repository_id=repository.id,
+            head_sha=head_sha,
+            default_branch=default,
+            default_sha=default_sha,
+            max_iterations=control.value,
+        )
+        task = Task(
+            id=tid,
+            project_id=story.project_id,
+            story_id=story.id,
+            repository_id=repository.id,
+            type=TaskType.FIX.value,
+            status=TaskStatus.TODO.value,
+            title=f"Resolve conflicts in PR #{story.pr_number}",
+            description=(
+                f"Repair existing PR #{story.pr_number} on story/{story.id}. "
+                f"Observed head {head_sha}; merge origin/{default} ({default_sha}) into "
+                "this branch, resolve conflicts preserving both story and default work, "
+                "run the product checks, commit and push normally. Preserve this PR. "
+                "Do not force-push, reset, rebase or discard user work."
+            ),
+            max_iterations=evidence.max_iterations,
+            created_by=PR_CONFLICT_REPAIR_KEY,
+            dispatch_admitted=True,
+            failure_metadata={PR_CONFLICT_REPAIR_KEY: evidence.model_dump(mode="json")},
+        )
+        db.add(task)
+        await db.flush()
+        db.add(
+            TaskEvent(
+                task_id=tid,
+                event_type=TaskEventType.NOTE.value,
+                actor=identity,
+                details={
+                    PR_CONFLICT_REPAIR_KEY: evidence.model_dump(mode="json"),
+                    "previous_quarantine": reason if released_park else None,
+                },
+            )
+        )
+        _do_transition(story, StoryStatus.IN_PROGRESS)
+        # Preserve the released refusal as immutable task admission evidence.
+        if released_park:
+            task.failure_metadata = {**task.failure_metadata, "previous_quarantine": reason}
+            story.quarantine_reason = None
+        await db.commit()
+        outcome = PRConflictRepairOutcome.ADMITTED
+    else:
+        evidence = await _repair_admission_evidence(task, story, repository.id, db)
+        if exhausted_park:
+            outcome = PRConflictRepairOutcome.EXHAUSTED
+        elif not live and (
+            task.status
+            in {
+                TaskStatus.DONE.value,
+                TaskStatus.CANCELLED.value,
+                TaskStatus.WAITING_HUMAN_REVIEW.value,
+            }
+            or (
+                task.status == TaskStatus.FAILED.value
+                and task.current_iteration >= evidence.max_iterations
+            )
+        ):
+            failure = StoryFailure(
+                code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
+                source="scheduler",
+                detail=(
+                    f"PR #{story.pr_number} is still dirty at "
+                    f"{head_sha}; repair Task {tid} ended {task.status} at iteration "
+                    f"{task.current_iteration}. One repair Task is allowed, with iteration "
+                    f"ceiling {evidence.max_iterations}; automatic repair allowance exhausted."
+                ),
+            )
+            _record_story_failure(story, failure, StoryStatus.WAITING_HUMAN_REVIEW)
+            if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+                _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+            await db.commit()
+            outcome = PRConflictRepairOutcome.EXHAUSTED
+        else:
+            if story.status != StoryStatus.IN_PROGRESS.value:
+                _repair_conflict("A pending repair has inconsistent story state.")
+            outcome = PRConflictRepairOutcome.REUSED
+    return PRConflictRepairRead(
+        outcome=outcome,
+        story_id=story.id,
+        task_id=tid,
+        pr_number=story.pr_number,
+        max_iterations=evidence.max_iterations,
+        reason=(story.quarantine_reason or {}).get("detail")
+        if outcome is PRConflictRepairOutcome.EXHAUSTED
+        else None,
+    )
+
+
+async def _repair_admission_evidence(
+    task: Task, story: Story, repository_id: str, db: AsyncSession
+) -> PRConflictRepairEvidence:
+    if task.story_id != story.id or task.project_id != story.project_id:
+        _repair_conflict("The repair Task has inconsistent resource relationships.")
+    from ._pr_conflict_attempt import _admission_evidence
+
+    events = list(
+        (
+            await db.scalars(
+                select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
+            )
+        ).all()
+    )
+    evidence = await _admission_evidence(task, story, events, db)
+    if (
+        evidence.pr_number != story.pr_number
+        or evidence.repository_id != repository_id
+        or evidence.story_id != story.id
+        or evidence.project_id != story.project_id
+        or cycle_stamp(evidence.cycle_started_at)
+        != cycle_stamp(story.reopened_at or story.created_at)
+    ):
+        _repair_conflict("The repair belongs to a replaced PR, repository or cycle.")
+    return evidence
+
+
+async def _observe_dirty_pr(
+    story: Story, repository: Repository, command: PRConflictRepairCommand
+) -> tuple[str, str, str]:
+    from .applications import _parse_github_repo_url
+
+    owner, repo = _parse_github_repo_url(repository.git_url)
+    try:
+        async with PR_CONFLICT_GITHUB() as github:
+            pr = await github.get_pull_request(owner, repo, command.pr_number)
+            default = (await github.get_repo(owner, repo)).default_branch
+            default_sha = await github.get_ref_sha(owner, repo, f"heads/{default}")
+            current_head = await github.get_ref_sha(owner, repo, f"heads/story/{story.id}")
+    except Exception as exc:
+        logger.warning(
+            "pr_conflict_observation_failed", story_id=story.id, error_type=type(exc).__name__
+        )
+        raise HTTPException(503, detail="Current PR evidence could not be read") from exc
+    head, base = pr.get("head") or {}, pr.get("base") or {}
+    full_name = f"{owner}/{repo}"
+    if (
+        pr.get("number") != story.pr_number
+        or pr.get("state") != "open"
+        or pr.get("merged_at")
+        or pr.get("mergeable_state") != "dirty"
+        or head.get("ref") != f"story/{story.id}"
+        or (head.get("repo") or {}).get("full_name") != full_name
+        or (base.get("repo") or {}).get("full_name") != full_name
+        or base.get("ref") != default
+        or base.get("sha") != default_sha
+        or not default_sha
+        or not current_head
+        or head.get("sha") != current_head
+        or (command.expected_head_sha is not None and current_head != command.expected_head_sha)
+    ):
+        _repair_conflict("The current open dirty PR does not match this story and default.")
+    return current_head, default, default_sha
+
 
 #: The CI-failure retry: the PR poller has recorded the failed CI run and
 #: created the fix task, so the story records the failed attempt, opens a new
 #: work cycle and goes back to engineering.  Was three client calls
 #: (`fail` → `reopen` → `start`) in `pr_poller._record_ci_failure`.
 RETRY_AFTER_CI_FAILURE = "retry-after-ci-failure"
+
+#: Parking a story whose planning failed before the architect ever moved it to
+#: in_progress — a reopen, which the architect starts only once it has planned,
+#: or a story whose start was refused. `waiting_human_review` is reachable from
+#: in_progress only, so the park passes through it on the same locked row.
+#: Applied by `POST /stories/{id}/planning-outcome`, not an endpoint of its own.
+PARK_UNSTARTED_PLANNING_FAILURE = "park-unstarted-planning-failure"
 
 #: Every composite Story move the platform performs, as the ordered chain of
 #: hops it applies.  Nothing outside this table walks a Story through more than
@@ -71,6 +379,10 @@ COMPOSITE_CHAINS: dict[str, tuple[StoryStatus, ...]] = {
         StoryStatus.FAILED,
         StoryStatus.REOPENED,
         StoryStatus.IN_PROGRESS,
+    ),
+    PARK_UNSTARTED_PLANNING_FAILURE: (
+        StoryStatus.IN_PROGRESS,
+        StoryStatus.WAITING_HUMAN_REVIEW,
     ),
 }
 
@@ -403,6 +715,213 @@ async def park_infrastructure_refusal(
     return _park_read(disposition, story, task, park)
 
 
+@action_router.post(
+    "/{story_id}/park-waiting-user-secret",
+    response_model=UserSecretWaitRead,
+)
+async def park_waiting_user_secret(
+    story_id: str,
+    command: UserSecretWaitCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> UserSecretWaitRead:
+    """Park a deploying story on a missing user secret and owe the owner the ask.
+
+    The deploy supervisor's path for a deploy Run that reported missing secrets.
+    On the locked Story and then that Run, the ``waiting_user_secret`` transition
+    and the owed ask on the Run commit together or not at all, so a story never
+    waits on an ask nobody owes, and an ask is never owed for a wait that did
+    not start. The ask is ``story_waiting_user_secret``, true while the story is
+    in ``waiting_user_secret``; its ``delivered_at`` is what the state-age
+    watchdog measures the wait from, and nothing here sets it.
+
+    An ask already on the Run is kept, not replaced: this Run's wait is asked
+    for once, and a delivery in flight is never reset. A story already waiting
+    is a repeat whose answer was lost: nothing is written, and the Run's ask is
+    returned for delivery.
+    """
+    story = await _get_story_for_update(story_id, db)
+    run = await db.scalar(select(Run).where(Run.id == command.run_id).with_for_update())
+    if run is None or run.type != RunType.DEPLOY.value or run.story_id != story.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "stale_attempt_fence",
+                "message": "The named Run is not a deploy Run of this story.",
+            },
+        )
+    stored = (run.run_metadata or {}).get(OWNER_NOTIFICATION_KEY)
+    existing = None if stored is None else OwnerNotification.model_validate(stored)
+    if story.status == StoryStatus.WAITING_USER_SECRET.value:
+        return UserSecretWaitRead(
+            disposition=UserSecretWaitDisposition.ALREADY_WAITING,
+            story_id=story.id,
+            story_status=StoryStatus.WAITING_USER_SECRET,
+            run_id=run.id,
+            owner_notification=existing,
+        )
+    _do_transition(story, StoryStatus.WAITING_USER_SECRET)
+    ask = existing
+    if existing is None or existing.state is OwnerNotificationState.VOIDED:
+        ask = OwnerNotification(
+            event=OwnerNotificationEvent.STORY_WAITING_USER_SECRET,
+            text=command.text,
+            story_id=story.id,
+            project_id=str(story.project_id),
+            terminal_status=StoryStatus.WAITING_USER_SECRET,
+            state=OwnerNotificationState.OWED,
+            owed_at=datetime.now(UTC),
+        )
+        run.run_metadata = {
+            **(run.run_metadata or {}),
+            OWNER_NOTIFICATION_KEY: preserve_po_settlement(stored, ask).model_dump(mode="json"),
+        }
+    await db.commit()
+    logger.info(
+        "story_waiting_user_secret",
+        story_id=story.id,
+        run_id=run.id,
+        actor=command.actor,
+        ask_state=ask.state.value,
+    )
+    return UserSecretWaitRead(
+        disposition=UserSecretWaitDisposition.WAITING,
+        story_id=story.id,
+        story_status=StoryStatus.WAITING_USER_SECRET,
+        run_id=run.id,
+        owner_notification=ask,
+    )
+
+
+def _missing_secrets_saved(run: Run, project: Project) -> bool:
+    """Whether every secret the deploy Run reported missing is now on the project."""
+    if run.result is None:
+        return False
+    missing = {
+        secret.key for secret in DeployRunResult.model_validate(run.result).missing_user_secrets
+    }
+    # Names only: the stored values stay encrypted and are never read here.
+    saved = set((project.config or {}).get("secrets") or {})
+    return bool(missing) and missing <= saved
+
+
+async def _work_cycle_task_count(story: Story, db: AsyncSession) -> int:
+    return await work_cycle_task_count(story, db)
+
+
+async def _observe_state_wait(
+    story: Story, command: StateWaitExpiryCommand, db: AsyncSession
+) -> StateWaitObservation:
+    """What the locked rows say about the wait the command names.
+
+    Lock ladder: the Story is already held; then the Project, whose row every
+    secret write locks, then the latest Run of the anchor type.
+    """
+    observed = StateWaitObservation(
+        status=StoryStatus(story.status),
+        pr_number=story.pr_number,
+        story_updated_at=story.updated_at,
+    )
+    if (
+        observed.status is StoryStatus.IN_PROGRESS
+        and command.expected_status is StoryStatus.IN_PROGRESS
+    ):
+        return observed.model_copy(
+            update={"work_cycle_tasks": await _work_cycle_task_count(story, db)}
+        )
+    run_type = ANCHOR_RUN_TYPE_BY_STATUS.get(command.expected_status)
+    if observed.status is not command.expected_status or run_type is None:
+        return observed
+    waits_on_secrets = command.expected_status is StoryStatus.WAITING_USER_SECRET
+    project = await load_locked_project(db, story.project_id) if waits_on_secrets else None
+    run = await db.scalar(
+        select(Run)
+        .where(Run.story_id == story.id, Run.type == run_type.value)
+        .order_by(Run.created_at.desc(), Run.id.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    if run is None:
+        return observed
+    observed = observed.model_copy(update={"run_id": run.id, "run_status": RunStatus(run.status)})
+    if project is None:
+        return observed
+    # Only a secret wait is anchored on the ask this Run carries.
+    stored_ask = (run.run_metadata or {}).get(OWNER_NOTIFICATION_KEY)
+    return observed.model_copy(
+        update={
+            "ask": None if stored_ask is None else OwnerNotification.model_validate(stored_ask),
+            "secrets_saved": run.id == command.anchor.run_id
+            and _missing_secrets_saved(run, project),
+        }
+    )
+
+
+@action_router.post("/{story_id}/expire-state-wait", response_model=StateWaitExpiryRead)
+async def expire_state_wait(
+    story_id: str,
+    command: StateWaitExpiryCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> StateWaitExpiryRead:
+    """End one expired wait, only if the story is still where the watchdog saw it.
+
+    The state-age watchdog's only way to park or fail a story. On the locked
+    rows the status must be the one the watchdog read and the anchor the one its
+    age was measured from (`StateWaitExpiryCommand.mismatch`); then the typed
+    reason, the owed owner record and the transition commit together. Otherwise
+    nothing is written and the mismatch is named. A repeat of an ending that
+    already committed is `already_ended`, so it owes the owner nothing twice.
+    """
+    story = await _get_story_for_update(story_id, db)
+    if command.owner_notification.story_id != story.id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="The owner notification names another story.",
+        )
+    if command.is_repeat(story.status, story.quarantine_reason):
+        return StateWaitExpiryRead(
+            disposition=StateWaitExpiryDisposition.ALREADY_ENDED,
+            story_id=story.id,
+            story_status=StoryStatus(story.status),
+        )
+    skip = command.mismatch(await _observe_state_wait(story, command, db))
+    if skip is not None:
+        logger.info(
+            "state_wait_expiry_skipped",
+            story_id=story.id,
+            expected_status=command.expected_status.value,
+            story_status=story.status,
+            mismatch=skip.reason.value,
+            expected=skip.expected,
+            actual=skip.actual,
+        )
+        return StateWaitExpiryRead(
+            disposition=StateWaitExpiryDisposition.SKIPPED,
+            story_id=story.id,
+            story_status=StoryStatus(story.status),
+            skip=skip,
+        )
+    story.quarantine_reason = command.reason.model_dump(mode="json")
+    story.owner_notification = preserve_po_settlement(
+        story.owner_notification, command.owner_notification
+    ).model_dump(mode="json")
+    _do_transition(story, command.terminal_status)
+    await db.commit()
+    logger.info(
+        "state_wait_expired",
+        story_id=story.id,
+        expected_status=command.expected_status.value,
+        story_status=story.status,
+        ending=command.ending.value,
+    )
+    return StateWaitExpiryRead(
+        disposition=StateWaitExpiryDisposition.EXPIRED,
+        story_id=story.id,
+        story_status=command.terminal_status,
+    )
+
+
 def _apply_chain(story: Story, chain: tuple[StoryStatus, ...]) -> None:
     """Validate every hop of the chain against VALID_TRANSITIONS, then apply it.
 
@@ -445,7 +964,13 @@ async def retry_story_after_ci_failure(
     body = body or StoryTransition()
     story = await _get_story_for_update(story_id, db)
 
+    original_cycle = story.reopened_at
+    repair = await db.get(Task, repair_task_id(story.id, story.reopened_at or story.created_at))
     _apply_chain(story, COMPOSITE_CHAINS[RETRY_AFTER_CI_FAILURE])
+    if repair is not None:
+        # CI failure inside conflict repair is the same work cycle. A new stamp
+        # would give a later dirty observation a second repair admission.
+        story.reopened_at = original_cycle
 
     await db.commit()
     await db.refresh(story)

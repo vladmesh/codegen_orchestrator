@@ -15,11 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 FROM base AS test-deps
 
 # Copy only dependency files first (for caching)
-COPY services/langgraph/pyproject.toml ./
+COPY services/langgraph/requirements.lock ./
 
 # Install runtime + test dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install . && \
+    pip install -r requirements.lock && \
     pip install pytest pytest-asyncio pytest-cov
 
 # === Test Stage ===
@@ -32,6 +32,7 @@ ENV PYTHONPATH=/app
 # Copy source code
 COPY services/langgraph/src ./src
 COPY services/langgraph/tests ./tests
+COPY services/scheduler/src ./scheduler/src
 COPY services/langgraph/pytest.ini ./
 
 # Run tests

@@ -4,12 +4,12 @@ The central executor is deliberately not a second deployer or jobs-core client.
 It may judge the product observable after a named fire, but deployment owns
 privileged setting seed/readback and jobs core owns its transport response.
 
-It is also not a writer. Its whole vocabulary is a read-only HTTP GET, a
-Telegram text message, an inline button press and a declared ``FIRE JOB``. A
-criterion that needs an HTTP write on a product route is marked not verifiable
-here, before the executor exists, and never reaches it as a check. A criterion
-that needs a photo or file sent to the bot is not recognised here: it reaches
-the executor, which reports it with its own `qa_capability` cause.
+It is also not a writer. What QA can and never does is the capability
+catalogue's (`shared.contracts.qa_capabilities`). A criterion that needs one of
+the HTTP methods the catalogue's "never" entries forbid, on a product route, is
+marked not verifiable here, before the executor exists, and never reaches it as
+a check. Every other criterion reaches the executor, which performs it or
+reports it with its own `qa_capability` cause.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import re
 
 from shared.contracts.acceptance import parse_scheduled_behaviours
+from shared.contracts.qa_capabilities import http_write_methods
 
 _SETTINGS_ASSERTION = re.compile(
     r"\bPOST\s+`?(?:/(?:api|v\d+))*/settings/(?:set|get)\b`?",
@@ -31,7 +32,7 @@ _THEN_OBSERVABLE = re.compile(r"\bTHEN\s+(?P<observable>\S.*)$", re.IGNORECASE)
 _BULLET = re.compile(r"^(?P<bullet>\s*(?:[-*]|\d+[.)])\s+)")
 
 # The rule for withholding a line: only when it certainly requires the tester to
-# send an HTTP write. No other action, an upload included, is inferred here.
+# send an HTTP write. No other action is inferred here.
 # When in doubt the line goes to the executor, whose own `qa_capability` cause
 # is the safe fallback; a wrongly withheld line would fail every run of a
 # correct product.
@@ -40,11 +41,12 @@ _BULLET = re.compile(r"^(?P<bullet>\s*(?:[-*]|\d+[.)])\s+)")
 # a slash-command or a path segment such as `/delete`) followed by a route:
 # a path, optionally after a preposition, a scheme and host, or `localhost:port`.
 # The first such token decides: a GET line is never withheld.
+_HTTP_WRITES = http_write_methods()
+_HTTP_READS = ("GET", "HEAD", "OPTIONS")
 _METHOD_ROUTE = re.compile(
-    r"(?<![/\w-])(?P<method>GET|HEAD|OPTIONS|POST|PUT|PATCH|DELETE)\s+"
+    rf"(?<![/\w-])(?P<method>{'|'.join((*_HTTP_READS, *sorted(_HTTP_WRITES)))})\s+"
     r"(?:(?:to|on|at|against)\s+)?`?(?:https?://[^\s/`]+|localhost:\d+)?/"
 )
-_HTTP_WRITES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 UNVERIFIABLE = "unverifiable"
 

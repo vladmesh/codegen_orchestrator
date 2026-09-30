@@ -17,6 +17,22 @@ Everything is keyed on one per-run marker, so nothing an earlier run left behind
 — a committed file, a cached image, a command menu Telegram still remembers —
 can answer for this run.
 
+Contract first, patch only for the scripted runner
+--------------------------------------------------
+
+The same lifecycle runs with a real developer model (`mega-live`). A model gets
+the *contract*, not a patch: every task description states in prose what the
+developer must deliver — the endpoint and its JSON shape, the setting and where
+it is declared, the command and its menu — together with the kit rules the
+change set encodes by construction and the product's own CI enforces, such as
+where an ``APIRouter()`` may live. The ``codegen-change-set`` block is appended
+to that prose **only** when the developer is the scripted runner (``noop``),
+which has nothing to read but the block. Each description has one builder, and
+the fence is that builder's only branch, with one exception: a model's bot task
+also asks for the live-only location behaviour (``level1_location_criterion``),
+which exists so the real QA executor proves its Telegram sandbox, and which the
+scripted runner is never asked for.
+
 Written against the pin, not against a remembered tree
 ------------------------------------------------------
 
@@ -45,10 +61,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scripts.template_pin import TEMPLATE_PIN
+from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 
 #: The fence the scripted runner recognises, and the sentinel it demands first.
 CHANGE_SET_FENCE = "codegen-change-set"
 CHANGE_SET_SENTINEL = "codegen-change-set v1"
+#: The one developer that is handed a change set: the scripted runner.
+SCRIPTED_DEVELOPER = "noop"
 
 #: The product-scoped setting the backend manifest registers.
 LEVEL1_SETTING_KEY = "level1_marker"
@@ -66,6 +85,24 @@ LEVEL1_EXTENSION_ENDPOINT_PATH = "/level1/extension"
 #: description beside it rather than in the name.
 LEVEL1_COMMAND = "level1"
 
+# ── The live-only location behaviour ─────────────────────────────────────
+#
+# Under `mega-live` only, the bot also answers a native Telegram location with
+# its coordinates, so the real QA executor proves its sandbox end to end: it has
+# to send that location as the QA account with a probe (the `telegram/location`
+# library seed or its own script). The scripted runner is never asked for it, so
+# nothing `mega-noop` renders mentions it.
+#
+# The coordinates QA sends are fixed, and chosen so that neither rounded value is
+# a substring of the value sent: 55.75588 rounds to 55.7559 and 37.61738 to
+# 37.6174. A probe that prints what it sent therefore never shows the rounded
+# pair, and only the bot's reply can.
+LEVEL1_LOCATION_LATITUDE = "55.75588"
+LEVEL1_LOCATION_LONGITUDE = "37.61738"
+#: What the bot answers them with: each coordinate rounded to 4 decimals.
+LEVEL1_LOCATION_REPLY_LATITUDE = f"{float(LEVEL1_LOCATION_LATITUDE):.4f}"
+LEVEL1_LOCATION_REPLY_LONGITUDE = f"{float(LEVEL1_LOCATION_LONGITUDE):.4f}"
+
 BACKEND_MANIFEST = "services/backend/manifest.yaml"
 #: Where the endpoint module goes. The kit's own gate
 #: (``framework.enforce_spec_compliance``) forbids an ``APIRouter()`` call
@@ -78,8 +115,13 @@ BACKEND_ENDPOINT_MODULE = "services/backend/src/app/api/routers/level1.py"
 #: cannot silently lose the first story's endpoint.
 BACKEND_EXTENSION_MODULE = "services/backend/src/app/api/routers/level1_extension.py"
 BACKEND_ROUTER = "services/backend/src/app/api/router.py"
+#: The only directory the kit's gate lets a product create an ``APIRouter()`` in.
+BACKEND_ROUTERS_PACKAGE = "services/backend/src/app/api/routers/"
+BACKEND_GENERATED_PACKAGE = "services/backend/src/generated/"
 BOT_MENU_MODULE = "services/tg_bot/src/menu.py"
 BOT_MAIN = "services/tg_bot/src/main.py"
+#: The commands the kit's bot already answers, which the published menu keeps.
+BOT_EXISTING_COMMANDS = (("start", "start the bot"), ("command", "publish a command event"))
 
 
 class ChangeSetAnchorMissing(RuntimeError):
@@ -123,18 +165,199 @@ def backend_acceptance_criteria(marker: str) -> str:
     )
 
 
-def bot_acceptance_criteria(marker: str) -> str:
+def level1_location_criterion() -> str:
+    """The live-only location behaviour, as the one prose line QA judges it by.
+
+    The same line is the bot task's last criterion and the last line of the
+    first story's QA checklist, so the developer is asked for exactly what QA
+    then checks. It names a *native* location, so a text message carrying the
+    numbers is not the check, and it fixes the coordinates, so the run can tell
+    the bot's reply apart from a probe echoing what it sent.
+    """
+    return (
+        "- When the QA account sends the deployed bot a native Telegram location at latitude "
+        f"{LEVEL1_LOCATION_LATITUDE}, longitude {LEVEL1_LOCATION_LONGITUDE}, the bot answers "
+        f'with a text message containing "{LEVEL1_LOCATION_REPLY_LATITUDE}" and '
+        f'"{LEVEL1_LOCATION_REPLY_LONGITUDE}", that location\'s latitude and longitude rounded '
+        "to 4 decimals."
+    )
+
+
+def bot_acceptance_criteria(marker: str, *, agent_type: str) -> str:
     """What QA checks the bot task by, on the running deployment.
 
     The brief's `level1_command` requirement: the command answers with this
     run's marker, and the running bot publishes that command to Telegram. Same
-    per-run marker discipline as `backend_acceptance_criteria`.
+    per-run marker discipline as `backend_acceptance_criteria`. A model is also
+    asked for the live-only location behaviour (`level1_location_criterion`);
+    the scripted runner is not, so its criteria stay what they always were.
     """
-    return (
+    criteria = (
         f"- The deployed bot answers the command /{LEVEL1_COMMAND} with exactly "
         f'"level-1 marker: {marker}".\n'
         f"- The command menu the running bot publishes to Telegram lists /{LEVEL1_COMMAND} "
         f'with the description "{level1_command_description(marker)}".'
+    )
+    if agent_type != SCRIPTED_DEVELOPER:
+        criteria += f"\n{level1_location_criterion()}"
+    return criteria
+
+
+def _level1_backend_qa_criteria(marker: str) -> str:
+    """The seeded health check, then the first story's backend observations."""
+    return f"{BASELINE_ACCEPTANCE_CRITERIA}\n{backend_acceptance_criteria(marker)}"
+
+
+def level1_qa_criteria(marker: str) -> str:
+    """The repository checklist a real QA executor judges the first story by.
+
+    Written through the repository update the Architect uses, at the story's
+    plan admission, only when the developer is a model: a scripted run has no
+    executor to hand it to. It is the accumulated regression checklist QA runs
+    (`shared.contracts.acceptance`): the seeded health check, the backend
+    observations of the first story — this run's marker on `GET /level1/marker`
+    and the `level1_marker` setting registered on the deployment — and the bot's
+    location behaviour, which QA verifies as the QA account with a probe it runs
+    in its sandbox. They are prose on purpose, so no line collapses into a
+    health-only check QA would decide without an executor.
+
+    The /level1 command and its menu are not here: they stay in the task's
+    TASK.md and in the suite's own probe of the command menu, as they did before
+    the stand's QA executor was given the QA Telegram identity.
+    """
+    return f"{_level1_backend_qa_criteria(marker)}\n{level1_location_criterion()}"
+
+
+def level1_extension_qa_criteria(marker: str, extension_marker: str) -> str:
+    """The checklist the extension story is judged by: the first story's, then its own.
+
+    Accumulated, because the repository's criteria are the product's regression
+    checklist: the first story's endpoint and setting must still answer beside
+    the extension endpoint and the second setting. The first story's location
+    line is left out: the extension story is not where the QA sandbox is
+    proven, and it asks QA nothing it did not ask before that proof existed.
+    """
+    return (
+        f"{_level1_backend_qa_criteria(marker)}\n"
+        f"{extension_acceptance_criteria(marker, extension_marker)}"
+    )
+
+
+def _kit_rules(*, routers_module: str) -> str:
+    """The rules of the pinned kit a developer's change has to keep, stated once.
+
+    Each is something the scripted change set gets right by construction and the
+    product's own CI refuses otherwise, so a model that is not told them writes
+    code its own pipeline rejects.
+    """
+    return (
+        "Rules of this product's kit, which its own CI and pre-push hooks enforce:\n"
+        f"- `APIRouter()` may be created only in a module under `{BACKEND_ROUTERS_PACKAGE}` "
+        "(`framework.enforce_spec_compliance`). Put the new router in "
+        f"`{routers_module}` and include it in `{BACKEND_ROUTER}` beside the health router.\n"
+        f"- A product setting is declared in `{BACKEND_MANIFEST}` and nowhere else. "
+        "`make setup` runs `framework.generate`, which writes the `SETTINGS_SCHEMAS` registry "
+        f"under `{BACKEND_GENERATED_PACKAGE}`; never edit a generated file by hand. Run "
+        "`make setup` after changing the manifest and commit what it regenerates.\n"
+        "- Keep the repository's lint, format and unit tests green before you push."
+    )
+
+
+def _settings_endpoint_contract(
+    *, path: str, fields: tuple[tuple[str, str], ...], setting_key: str, default: str
+) -> str:
+    """One marker endpoint and the product-scoped setting behind it, in words."""
+    shape = "".join(f'  - "{name}": {value};\n' for name, value in fields)
+    return (
+        f"- The backend service answers `GET {path}` with HTTP 200 and a JSON object of "
+        "exactly these keys:\n"
+        f"{shape}"
+        '  - "declared_settings": the generated settings registry, `SETTINGS_SCHEMAS` from '
+        "`services.backend.src.generated.settings_schemas`, as a JSON object keyed by setting "
+        "key.\n"
+        f"- The product-scoped setting `{setting_key}` is a property of `settings_schema` in "
+        f'`{BACKEND_MANIFEST}`: type string, minLength 1, default "{default}". `make setup` '
+        "turns that declaration into its `SETTINGS_SCHEMAS` entry, which the endpoint reports."
+    )
+
+
+def backend_contract(marker: str) -> str:
+    """What the first task delivers: the marker endpoint and its product setting."""
+    return (
+        "What to deliver:\n"
+        + _settings_endpoint_contract(
+            path=LEVEL1_ENDPOINT_PATH,
+            fields=(
+                ("marker", f'the string "{marker}"'),
+                ("setting_key", f'the string "{LEVEL1_SETTING_KEY}"'),
+            ),
+            setting_key=LEVEL1_SETTING_KEY,
+            default=marker,
+        )
+        + "\n\n"
+        + _kit_rules(routers_module=BACKEND_ENDPOINT_MODULE)
+    )
+
+
+def _location_contract() -> str:
+    """The live-only location deliverable, in words a model can build from."""
+    return (
+        "- The bot answers a native Telegram location message (one that carries "
+        "`message.location`) with a text reply `location: <latitude>, <longitude>`, each "
+        'coordinate rounded to 4 decimals (`f"{value:.4f}"`). Register it with '
+        "`MessageHandler(filters.LOCATION, ...)` beside the handlers the bot already has, "
+        f"so a location sent at latitude {LEVEL1_LOCATION_LATITUDE}, longitude "
+        f"{LEVEL1_LOCATION_LONGITUDE} is answered with "
+        f'"location: {LEVEL1_LOCATION_REPLY_LATITUDE}, {LEVEL1_LOCATION_REPLY_LONGITUDE}".\n'
+    )
+
+
+def bot_contract(marker: str, *, agent_type: str) -> str:
+    """What the second task delivers: the bot command and its published menu.
+
+    A model is also asked for the live-only location behaviour; the scripted
+    runner's change set carries none, so its contract does not mention it.
+    """
+    existing = ", ".join(f'/{name} "{description}"' for name, description in BOT_EXISTING_COMMANDS)
+    location = _location_contract() if agent_type != SCRIPTED_DEVELOPER else ""
+    return (
+        "What to deliver:\n"
+        f"- The bot service (`services/tg_bot`) answers the command /{LEVEL1_COMMAND} with "
+        f'exactly "level-1 marker: {marker}". Register it with '
+        f'`CommandHandler("{LEVEL1_COMMAND}", ...)` beside the handlers the bot already has.\n'
+        "- When the bot starts, it publishes its command menu to Telegram with "
+        "`setMyCommands` (`application.bot.set_my_commands`). The menu lists "
+        f'/{LEVEL1_COMMAND} with the description "{level1_command_description(marker)}", '
+        f"beside the commands the bot already offers: {existing}.\n"
+        f"{location}\n"
+        "Rules of this product's kit, which its own CI and pre-push hooks enforce:\n"
+        f"- Keep `post_init` in `{BOT_MAIN}` with its exact signature and body: the kit's own "
+        "unit test calls it directly with a mock application. Publish the menu from a new "
+        "startup step that awaits `post_init` and then publishes, and wire that step into the "
+        "application builder's `.post_init(...)` instead.\n"
+        "- Keep the repository's lint, format and unit tests green before you push."
+    )
+
+
+def extension_contract(marker: str, extension_marker: str) -> str:
+    """What the extension task delivers, with the first story's work left in place."""
+    return (
+        "What to deliver:\n"
+        + _settings_endpoint_contract(
+            path=LEVEL1_EXTENSION_ENDPOINT_PATH,
+            fields=(
+                ("marker", f'the string "{extension_marker}"'),
+                ("base_marker", f'the string "{marker}", the first story\'s marker'),
+                ("setting_key", f'the string "{LEVEL1_EXTENSION_SETTING_KEY}"'),
+            ),
+            setting_key=LEVEL1_EXTENSION_SETTING_KEY,
+            default=extension_marker,
+        )
+        + f" Declare it beside `{LEVEL1_SETTING_KEY}`, not over it.\n"
+        "- Leave the first story's work in place: "
+        f"`GET {LEVEL1_ENDPOINT_PATH}`, the `{LEVEL1_SETTING_KEY}` setting and the "
+        f"/{LEVEL1_COMMAND} bot command keep answering exactly as they do now.\n\n"
+        + _kit_rules(routers_module=BACKEND_EXTENSION_MODULE)
     )
 
 
@@ -373,36 +596,47 @@ class Level1ChangeSets:
         """Every workspace path the story's change sets touch."""
         return [operation.path for operation in (*self.backend, *self.bot)]
 
-    def backend_task_description(self) -> str:
+    def backend_task_description(self, *, agent_type: str) -> str:
         return _task_description(
             "Add the level-1 marker endpoint and register its product setting.",
+            backend_contract(self.marker),
             self.backend,
+            agent_type=agent_type,
         )
 
-    def bot_task_description(self) -> str:
+    def bot_task_description(self, *, agent_type: str) -> str:
         return _task_description(
             f"Add the /{LEVEL1_COMMAND} Telegram command and publish the bot's command menu.",
+            bot_contract(self.marker, agent_type=agent_type),
             self.bot,
+            agent_type=agent_type,
         )
 
     def backend_acceptance_criteria(self) -> str:
         """What the first task's `TASK.md` has to quote, word for word."""
         return backend_acceptance_criteria(self.marker)
 
-    def bot_acceptance_criteria(self) -> str:
+    def bot_acceptance_criteria(self, *, agent_type: str) -> str:
         """What the second task's `TASK.md` has to quote, word for word."""
-        return bot_acceptance_criteria(self.marker)
+        return bot_acceptance_criteria(self.marker, agent_type=agent_type)
 
 
-def _task_description(headline: str, operations: list[Operation]) -> str:
-    """One task description: the sentence a human reads, then the change set.
+def _task_description(
+    headline: str, contract: str, operations: list[Operation], *, agent_type: str
+) -> str:
+    """One task description: the headline, the contract in prose, and — for noop — the patch.
 
-    The change set travels in the task description because that is the channel
-    the manager already writes to ``/workspace/TASK.md``; nothing else is added
-    to carry it. Exactly one fenced block per description — the runner refuses a
-    document holding more than one.
+    The contract is what every developer is told, so a model and the scripted
+    runner are asked for the same product. The change set is appended only for
+    the scripted runner: it travels in the task description because that is the
+    channel the manager already writes to ``/workspace/TASK.md``, and a model is
+    to write the change itself rather than be handed it. Exactly one fenced
+    block per description — the runner refuses a document holding more than one.
     """
-    return f"{headline}\n\n{render_change_set(operations)}\n"
+    description = f"{headline}\n\n{contract}\n"
+    if agent_type == SCRIPTED_DEVELOPER:
+        description += f"\n{render_change_set(operations)}\n"
+    return description
 
 
 def build_level1_change_sets(marker: str, template: tuple[str, str]) -> Level1ChangeSets:
@@ -569,10 +803,12 @@ class Level1ExtensionChangeSet:
         """Every workspace path the extension change set touches."""
         return [operation.path for operation in self.operations]
 
-    def task_description(self) -> str:
+    def task_description(self, *, agent_type: str) -> str:
         return _task_description(
             "Add the level-1 extension endpoint and register its product setting.",
+            extension_contract(self.marker, self.extension_marker),
             self.operations,
+            agent_type=agent_type,
         )
 
     def acceptance_criteria(self) -> str:

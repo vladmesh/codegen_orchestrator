@@ -5,20 +5,36 @@ below are the ones whose absence is discovered at the worst moment — a second
 run trampling the first, or a failed run whose logs were never collected.
 """
 
+import ast
+import base64
+from datetime import UTC, datetime, timedelta
+import json
 import os
 from pathlib import Path
+import re
 import subprocess
+import sys
 import tempfile
+import textwrap
+import time
 
+import pytest
 import yaml
 
 from scripts.stand_acceptance import PROTECTED_STAND_SECRET_NAMES
+from scripts.stand_credentials import CLAUDE_MINIMUM_TTL, validate_precreate_credentials
 from scripts.stand_run import (
-    MATRIX_RUNNER_TIMEOUT_SECONDS,
+    LIVE_RUNNER_TIMEOUT_SECONDS,
     STAND_CLEANUP_JOB_TIMEOUT_MINUTES,
+    STAND_JOB_RESERVE_SECONDS,
     STAND_JOB_TIMEOUT_MINUTES,
     STAND_PROVISIONING_TIMEOUT_SECONDS,
+    STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS,
     SUITES,
+)
+from scripts.stand_telethon_preflight import needs_session
+from scripts.wait_stand_provisioning import (
+    DEFAULT_TIMEOUT_SECONDS as WAIT_STAND_PROVISIONING_TIMEOUT_SECONDS,
 )
 from shared.ssh_keys import normalize_admin_private_key
 
@@ -71,13 +87,14 @@ def test_every_named_suite_is_offered_plus_an_arbitrary_target():
 
     assert set(options) == {
         "mega-noop",
-        "mega-llm",
+        "mega-live",
         "mega-brief",
         "mega-brief-package",
-        "matrix",
         "custom",
     }
     assert "custom" in options, "an e2e invented later must be startable without a code change"
+    # The retired paid route is not offered under any spelling.
+    assert not {"mega-llm", "matrix", "llm"} & set(options)
 
 
 def test_workflow_suite_names_match_the_runner_canonical_suite_table():
@@ -93,10 +110,11 @@ def test_worker_and_qa_inputs_describe_when_the_runner_uses_them():
 
     for name in ("worker", "qa"):
         description = inputs[name]["description"]
-        assert "mega-llm" in description
+        assert "mega-live" in description
         assert "mega-brief" in description
-        assert "matrix" in description
         assert "mega-noop" in description
+        assert "mega-llm" not in description
+        assert "matrix" not in description
 
 
 def test_template_override_inputs_are_optional_and_documented():
@@ -168,16 +186,24 @@ def test_the_machine_manifest_is_collected_and_scanned_before_handoff_upload():
 
 
 def test_handoff_collects_only_logs_the_selected_suite_can_produce():
-    """A one-cell suite must not spend SSH retries probing the other matrix cells."""
+    """Every suite is one cell: SSH retries are never spent probing other pairs' logs."""
     collect = _steps()["Record machine manifest"]
     script = collect["run"]
 
     assert collect["env"]["SUITE"] == "${{ steps.suite.outputs.value }}"
     assert collect["env"]["WORKER"] == "${{ inputs.worker }}"
     assert collect["env"]["QA"] == "${{ inputs.qa }}"
-    assert 'if [ "${SUITE}" = "matrix" ]' in script
-    assert 'reports+=("${QA}-${WORKER}.log")' in script
+    assert "matrix" not in script
+    assert 'reports=(junit.xml report.tsv run.log "${QA}-${WORKER}.log")' in script
     assert 'for name in "${reports[@]}"' in script
+
+
+def test_the_product_bot_token_reaches_both_level1_suites_and_no_other():
+    """`mega-live` deploys the same Telegram-bot product `mega-noop` does."""
+    script = _steps()["Run selected stand suite"]["run"]
+
+    assert 'if [ "${SUITE}" = "mega-noop" ] || [ "${SUITE}" = "mega-live" ]; then' in script
+    assert script.count('bot_token="${STAND_PRODUCT_BOT_TOKEN}"') == 1
 
 
 def test_worker_failure_evidence_is_copied_before_the_ephemeral_host_is_deleted():
@@ -395,13 +421,16 @@ def test_remote_target_provisioning_script_does_not_break_its_ssh_quote():
     assert "'" not in remote_script
 
 
-def test_the_matrix_fits_in_the_job_timeout():
-    """The provisioned stand, four cells, and their cleanup reserve fit strictly."""
+def test_the_live_runner_path_fits_in_the_job_timeout():
+    """The provisioned stand, `mega-live`'s runner path and the job reserve fit."""
     job = _workflow()["jobs"]["e2e"]
 
-    assert job["timeout-minutes"] == STAND_JOB_TIMEOUT_MINUTES
-    assert job["timeout-minutes"] * 60 > (
-        STAND_PROVISIONING_TIMEOUT_SECONDS + MATRIX_RUNNER_TIMEOUT_SECONDS
+    assert job["timeout-minutes"] == STAND_JOB_TIMEOUT_MINUTES == 360
+    assert job["timeout-minutes"] * 60 >= (
+        STAND_PROVISIONING_TIMEOUT_SECONDS
+        + STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS
+        + LIVE_RUNNER_TIMEOUT_SECONDS
+        + STAND_JOB_RESERVE_SECONDS
     )
     assert _workflow()["jobs"]["cleanup"]["timeout-minutes"] == STAND_CLEANUP_JOB_TIMEOUT_MINUTES
 
@@ -412,13 +441,18 @@ def test_make_targets_preserve_the_canonical_suite_contract():
     assert 'test-live-mega-noop:\n\t@echo "Running mega-noop' in makefile
     assert "pytest tests/live/test_full_pipeline.py::TestFullPipeline -v" in makefile
     assert "test-live-mega: test-live-mega-noop" in makefile
-    assert 'test-live-mega-llm:\n\t@echo "Running mega-llm' in makefile
-    assert "pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v" in makefile
+    # Level 1 is told of no developer, whatever the caller's environment carries.
+    assert "env -u LIVE_WORKER_AGENT_TYPE -u LIVE_LLM_QA -u LIVE_QA_AGENT_TYPE" in makefile
+    assert "test-live-mega-live:\n\t@$(MAKE) --no-print-directory stand-run SUITE=mega-live" in (
+        makefile
+    )
+    assert "TestFullPipelineLLM" not in makefile
+    assert "mega-llm" not in makefile
     assert 'test-live-mega-brief:\n\t@echo "Running mega-brief' in makefile
     assert (
         "pytest tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline -v" in makefile
     )
-    assert "test-live-matrix:\n\t@$(MAKE) --no-print-directory stand-run SUITE=matrix" in makefile
+    assert "test-live-matrix" not in makefile and "SUITE=matrix" not in makefile
     assert "# Legacy aggregate, not a named suite:" in makefile
 
 
@@ -595,16 +629,21 @@ def test_stand_profile_is_owned_by_the_exact_worker_image_identity():
 
 def test_missing_exact_worker_release_fails_with_retry_guidance_not_a_local_build():
     job = _workflow()["jobs"]["e2e"]
-    step = _steps()["Provide worker base images on the stand"]
+    # The stand's worker pull starts in the background after bootstrap and is joined
+    # before the suite; the properties hold across the two steps.
+    start = _steps()["Start the stand's release pulls and uv environment"]
+    step = _steps()["Join the worker image release pull"]
     gate = _steps()["Validate exact worker image release"]
 
     assert job["permissions"]["packages"] == "read"
     assert job["steps"][0]["with"]["fetch-depth"] == 0
+    assert "${GITHUB_SHA}" in start["run"]
     assert "${GITHUB_SHA}" in step["run"]
-    assert "git merge-base HEAD origin/main" not in step["run"]
-    assert "GHCR_TOKEN='${GHCR_TOKEN}'" not in step["run"]
-    assert "read -r GHCR_TOKEN" in step["run"]
-    assert "ensure-worker-images" not in step["run"]
+    for script in (start["run"], step["run"]):
+        assert "git merge-base HEAD origin/main" not in script
+        assert "GHCR_TOKEN='${GHCR_TOKEN}'" not in script
+        assert "ensure-worker-images" not in script
+    assert "read -r GHCR_TOKEN" in start["run"]
     assert 'case "${pulled}"' not in step["run"]
     assert "FATAL: pulling the worker image release failed" in step["run"]
     assert "release_not_published" in gate["run"]
@@ -840,15 +879,48 @@ def _run_settle(tmp: Path, *, timeout_seconds: int, cloud_init_rc: int, lock_pol
         stub = stubs / name
         stub.write_text(f'#!/bin/bash\necho "{name} $*" >> "{calls}"\n{body}\n')
         stub.chmod(0o755)
-    result = subprocess.run(
+    # Its own session: `timeout` moves its children to a new process group but
+    # not out of the session, so every stub it started can be waited for.
+    process = subprocess.Popen(
         ["/bin/bash", "-c", command],
         env={"PATH": f"{stubs}:{os.environ['PATH']}"},
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=30,
+        start_new_session=True,
     )
+    stdout, stderr = process.communicate(timeout=30)
+    # A stub signalled by `timeout` can still finish writing into `tmp` after
+    # bash returns; the caller's cleanup must not race it.
+    _wait_until_session_ends(process.pid)
+    result = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
     recorded = calls.read_text().splitlines() if calls.exists() else []
     return result, recorded
+
+
+def _session_members(session_id: int) -> list[int]:
+    """Live (not zombie) processes of a session, read from /proc."""
+    members = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            # Fields after the parenthesised command: state, ppid, pgrp, session.
+            state, _ppid, _pgrp, session = (
+                (entry / "stat").read_text().rsplit(")", 1)[1].split()[:4]
+            )
+        except OSError:
+            continue
+        if int(session) == session_id and state != "Z":
+            members.append(int(entry.name))
+    return members
+
+
+def _wait_until_session_ends(session_id: int, *, seconds: float = 10) -> None:
+    deadline = time.monotonic() + seconds
+    while members := _session_members(session_id):
+        assert time.monotonic() < deadline, f"settle left processes running: {members}"
+        time.sleep(0.01)
 
 
 def test_first_boot_settle_stops_upgrades_then_waits_for_cloud_init_then_locks():
@@ -1120,3 +1192,945 @@ def test_a_secret_that_kept_its_newline_still_yields_one_accepted_key():
     assert normalize_admin_private_key(delivered).fingerprint == (
         normalize_admin_private_key(key_text).fingerprint
     )
+
+
+def test_the_docker_steps_of_the_stand_have_their_own_bounds():
+    """A hung pull fails its step, not the 360-minute job with two paid machines under it."""
+    steps = _steps()
+
+    # Bring-up now joins the background service release pull (bounded at 20 minutes)
+    # and the third-party pull (10) instead of building; the worker release is joined
+    # (bounded at 20) in its own step before the suite.
+    assert steps["Start the stand's release pulls and uv environment"]["timeout-minutes"] == 5
+    assert steps["Bring up dynamic orchestrator and wait for API"]["timeout-minutes"] == 30
+    assert steps["Join the worker image release pull"]["timeout-minutes"] == 25
+    # The provisioning wait keeps its own deadline and reports on it; the step bound
+    # only catches what hangs outside the wait.
+    target = steps["Register and provision dynamic target"]["timeout-minutes"]
+    assert target == 30
+    assert target * 60 > WAIT_STAND_PROVISIONING_TIMEOUT_SECONDS
+    for step in steps.values():
+        assert step.get("timeout-minutes", 0) < STAND_JOB_TIMEOUT_MINUTES
+
+
+# --- the stand runs the tested release: pulled, never built ------------------------------
+#
+# The workflow cannot run in PR CI, so its shell is exercised here offline: each step's
+# script is run against a fake `ssh` that records what would have run on the stand host,
+# and that remote shell is then run against a fake `docker` in a scratch directory
+# standing in for /opt/codegen_orchestrator.
+
+START_STEP = "Start the stand's release pulls and uv environment"
+BRING_UP_STEP = "Bring up dynamic orchestrator and wait for API"
+WORKER_JOIN_STEP = "Join the worker image release pull"
+RELEASE_WAIT_STEP = "Wait for this revision's worker and service releases"
+TIMING_STEP = "Report stand bring-up timing"
+BACKGROUND_SCRIPT = WORKFLOW.parents[2] / "scripts" / "stand_background.sh"
+SERVICE_RELEASE_SCRIPT = WORKFLOW.parents[2] / "scripts" / "service_release.py"
+STAND_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+FAKE_SSH = """#!/usr/bin/env bash
+# The remote command is the last argument; stdin is what the runner piped to it.
+printf '%s\\0' "${@: -1}" >> "${FAKE_SSH_COMMANDS}"
+cat > "${FAKE_SSH_STDIN}.$(date +%s%N)" || true
+"""
+
+FAKE_DOCKER_FOR_STAND = """#!/usr/bin/env bash
+echo "docker $*" >> "${FAKE_DOCKER_LOG}"
+case "$*" in
+    *"config --format json"*) cat "${FAKE_COMPOSE_CONFIG}" ;;
+esac
+exit 0
+"""
+
+
+def _job_env() -> dict[str, str]:
+    return {key: str(value) for key, value in _workflow()["jobs"]["e2e"]["env"].items()}
+
+
+def _joined(script: str) -> str:
+    """A step script with its line continuations joined, as the shell reads it."""
+    return script.replace("\\\n", " ")
+
+
+def _write_executable(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    path.chmod(0o755)
+
+
+def _run_step_against_fake_ssh(tmp: Path, step: str, extra_env: dict[str, str]) -> list[str]:
+    """Run one step's script on a fake runner; return the remote commands it sent."""
+    binaries = tmp / "runner-bin"
+    _write_executable(binaries / "ssh", FAKE_SSH)
+    _write_executable(binaries / "scp", "#!/usr/bin/env bash\nexit 0\n")
+    commands = tmp / "ssh-commands"
+    runner_temp = tmp / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    environment = {
+        "PATH": f"{binaries}:/usr/bin:/bin",
+        "HOME": str(tmp),
+        "RUNNER_TEMP": str(runner_temp),
+        "SSH_OPTS": "-o BatchMode=yes",
+        "PROD_HOST": "192.0.2.10",
+        "GITHUB_SHA": STAND_SHA,
+        "FAKE_SSH_COMMANDS": str(commands),
+        "FAKE_SSH_STDIN": str(tmp / "ssh-stdin"),
+        **_job_env(),
+        **extra_env,
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-c", _steps()[step]["run"]],
+        capture_output=True,
+        text=True,
+        env=environment,
+        cwd=tmp,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    return [command for command in commands.read_text().split("\0") if command]
+
+
+def _stand_host(tmp: Path) -> Path:
+    """A scratch /opt/codegen_orchestrator with the real background and release helpers."""
+    host = tmp / "host"
+    (host / "scripts").mkdir(parents=True)
+    (host / "scripts" / "stand_background.sh").write_text(BACKGROUND_SCRIPT.read_text())
+    (host / "scripts" / "service_release.py").write_text(SERVICE_RELEASE_SCRIPT.read_text())
+    return host
+
+
+def _on_host(command: str, host: Path) -> str:
+    return command.replace("/opt/codegen_orchestrator", str(host))
+
+
+def test_the_release_gate_waits_boundedly_for_both_chains_before_any_money_is_spent():
+    steps = list(_steps())
+    gate = _steps()[RELEASE_WAIT_STEP]
+
+    assert "python3 scripts/wait_release.py" in gate["run"]
+    assert '--revision "${GITHUB_SHA}"' in gate["run"]
+    assert "--chain worker --chain service" in _joined(gate["run"])
+    assert "--timeout-seconds 600" in _joined(gate["run"])
+    assert gate["timeout-minutes"] * 60 > 600
+    assert "Retry after the post-merge CI" in gate["run"]
+    assert gate["env"]["GITHUB_TOKEN"] == "${{ github.token }}"  # noqa: S105
+    assert _workflow()["jobs"]["e2e"]["permissions"]["actions"] == "read"
+    for paid in (
+        "Preflight ephemeral machines",
+        "Create ephemeral machines",
+        "Give the stand a resolvable name",
+    ):
+        assert steps.index(RELEASE_WAIT_STEP) < steps.index(paid)
+
+
+def test_no_step_of_the_workflow_builds_an_image():
+    """The stand runs the tested release; a build there is what made it fragile."""
+    for job in _workflow()["jobs"].values():
+        for step in job["steps"]:
+            script = _joined(step.get("run", ""))
+            assert not re.search(r"\bup\b[^\n]*(?<![\w-])--build\b", script), step.get("name")
+            assert not re.search(r"compose\b[^\n]*\sbuild\b", script, re.IGNORECASE), step.get(
+                "name"
+            )
+    bring_up = _joined(_steps()[BRING_UP_STEP]["run"])
+    ups = re.findall(r"\$\{COMPOSE\} up [^\n]*", bring_up)
+    assert len(ups) == 2
+    for up in ups:
+        assert "--no-build --pull never" in up
+    assert "pull --ignore-buildable --policy missing" in bring_up
+
+
+def test_background_work_starts_right_after_bootstrap_and_is_joined_before_its_consumer():
+    steps = list(_steps())
+    bring_up = _joined(_steps()[BRING_UP_STEP]["run"])
+    suite = _steps()["Run selected stand suite"]["run"]
+
+    assert steps.index(START_STEP) == steps.index("Bootstrap dynamic orchestrator") + 1
+    # The service release is joined, and turned into the override, before `up`.
+    join_service = bring_up.index('stand_background.sh join "${background}" service')
+    override = bring_up.index("scripts/service_release.py compose-override")
+    up = bring_up.index("up -d --remove-orphans --no-build --pull never")
+    assert join_service < override < up
+    assert bring_up.index('join "${background}" third-party') < up
+    # The worker release is joined after provisioning, before the suite starts workers.
+    assert (
+        steps.index("Register and provision dynamic target")
+        < steps.index(WORKER_JOIN_STEP)
+        < steps.index("Run selected stand suite")
+    )
+    assert "Provide worker base images on the stand" not in steps
+    # The suite joins its own environment, then runs frozen on it.
+    assert suite.index("stand_background.sh join %q uv 600") < suite.index("uv run python")
+    assert "export UV_FROZEN=1" in suite
+    assert suite.index("export UV_FROZEN=1") < suite.index("uv run python")
+
+
+def test_the_start_step_launches_three_detached_jobs_with_the_token_only_on_stdin(tmp_path):
+    token = "ghcr-token-that-must-not-reach-a-command-line"  # noqa: S105
+    background = tmp_path / "bg"
+    commands = _run_step_against_fake_ssh(
+        tmp_path,
+        START_STEP,
+        {"GHCR_TOKEN": token, "GHCR_OWNER": "test-owner", "STAND_BACKGROUND_DIR": str(background)},
+    )
+    assert len(commands) == 1
+    remote = commands[0]
+    assert token not in remote
+    assert "IFS= read -r GHCR_TOKEN" in remote
+
+    # Run what the stand would run, against fake pullers and a fake uv.
+    host = _stand_host(tmp_path)
+    for script, variables in (
+        ("pull-service-images.sh", "tag=${SERVICE_IMAGE_TAG} digest=${DIGEST_FILE}"),
+        (
+            "pull-worker-images.sh",
+            "tag=${WORKER_IMAGE_TAG} subset=${WORKER_IMAGE_SUBSET} digest=${DIGEST_FILE}",
+        ),
+    ):
+        _write_executable(
+            host / "infra" / "scripts" / script,
+            f'#!/usr/bin/env bash\necho "{variables} owner=${{GHCR_OWNER}} '
+            'token=${GHCR_TOKEN:-unset}"\n',
+        )
+    stand_bin = tmp_path / "stand-bin"
+    _write_executable(
+        stand_bin / "uv", '#!/usr/bin/env bash\necho "uv $* token=${GHCR_TOKEN:-unset}"\n'
+    )
+    started = time.monotonic()
+    result = subprocess.run(
+        ["bash", "-c", _on_host(remote, host)],
+        input=token + "\n",
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{stand_bin}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert time.monotonic() - started < 5, "the start step must not wait for the jobs"
+
+    logs = {}
+    for job in ("service", "worker", "uv"):
+        joined = subprocess.run(
+            ["bash", str(BACKGROUND_SCRIPT), "join", str(background), job, "10"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "STAND_BACKGROUND_POLL_SECONDS": "0.05"},
+            timeout=30,
+        )
+        assert joined.returncode == 0, joined.stderr
+        logs[job] = (background / f"{job}.log").read_text()
+
+    assert f"tag={STAND_SHA}" in logs["service"]
+    assert f"digest={host}/deployed-service-images.json" in logs["service"]
+    assert f"token={token}" in logs["service"]
+    assert f"tag={STAND_SHA}" in logs["worker"]
+    assert f"subset={_job_env()['STAND_WORKER_IMAGES']}" in logs["worker"]
+    assert f"digest={host}/deployed-worker-images.json" in logs["worker"]
+    assert "uv sync --frozen token=unset" in logs["uv"], "the uv job never sees the token"
+
+
+def test_the_stand_pulls_exactly_the_worker_images_its_suites_run():
+    images = _job_env()["STAND_WORKER_IMAGES"].split()
+
+    assert images == ["worker-base-common", "worker-base-claude", "worker-base-codex"]
+    assert "worker-base-factory" not in images
+
+
+def _bring_up_remote(tmp: Path, background: Path) -> str:
+    runner_temp = tmp / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    (runner_temp / "stand-bootstrap-started").write_text("1000\n")
+    commands = _run_step_against_fake_ssh(
+        tmp,
+        BRING_UP_STEP,
+        {
+            "STAND_BACKGROUND_DIR": str(background),
+            "RUNTIME_UID": "1001",
+            "RUNTIME_GID": "1001",
+            "CODEX_WORKER_UID": "1002",
+            "CODEX_WORKER_GID": "1002",
+        },
+    )
+    main = [command for command in commands if "stand_background.sh join" in command]
+    assert len(main) == 1
+    return main[0]
+
+
+def _finished_job(background: Path, job: str, status: int, log: str = "") -> None:
+    background.mkdir(exist_ok=True)
+    (background / f"{job}.started").write_text("1000\n")
+    (background / f"{job}.finished").write_text("1090\n")
+    (background / f"{job}.log").write_text(log)
+    (background / f"{job}.status").write_text(f"{status}\n")
+
+
+def _run_bring_up_on_stand(
+    tmp: Path, remote: str, host: Path
+) -> tuple[subprocess.CompletedProcess, list[str]]:
+    stand_bin = tmp / "stand-bin"
+    _write_executable(stand_bin / "docker", FAKE_DOCKER_FOR_STAND)
+    config = tmp / "compose-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "services": {
+                    "api": {"build": {"context": "."}, "image": "codegen-orchestrator/api:local"},
+                    "db": {"image": "pgvector/pgvector:0.8.6-pg16"},
+                }
+            }
+        )
+    )
+    docker_log = tmp / "docker.log"
+    docker_log.write_text("")
+    result = subprocess.run(
+        ["bash", "-c", _on_host(remote, host)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env={
+            "PATH": f"{stand_bin}:/usr/bin:/bin",
+            "HOME": str(tmp),
+            "FAKE_DOCKER_LOG": str(docker_log),
+            "FAKE_COMPOSE_CONFIG": str(config),
+            "STAND_BACKGROUND_POLL_SECONDS": "0.05",
+        },
+        timeout=60,
+    )
+    return result, docker_log.read_text().splitlines()
+
+
+def test_bring_up_runs_the_pulled_release_by_digest_and_builds_nothing(tmp_path):
+    background = tmp_path / "bg"
+    remote = _bring_up_remote(tmp_path, background)
+    host = _stand_host(tmp_path)
+    digest = "ghcr.io/test-owner/codegen-orchestrator/api@sha256:" + "a" * 64
+    (host / "deployed-service-images.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "git_sha": STAND_SHA,
+                "source_hash": "feedface",
+                "images": {"api": {"reference": digest}},
+            }
+        )
+    )
+    _finished_job(background, "service", 0, "service images ready\n")
+
+    result, calls = _run_bring_up_on_stand(tmp_path, remote, host)
+
+    assert result.returncode == 0, result.stderr
+    override = _job_env()["STAND_SERVICE_RELEASE_COMPOSE"]
+    assert json.dumps(digest) in (host / override).read_text()
+    assert not (background / "compose.json").exists(), "the resolved config is not left behind"
+    pulls = [call for call in calls if " pull --ignore-buildable" in call]
+    assert len(pulls) == 1
+    ups = [call for call in calls if " up " in call]
+    assert len(ups) == 2
+    for up in ups:
+        assert f"-f {override}" in up
+        assert "--no-build --pull never" in up
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in ups[1]
+    assert calls.index(ups[0]) < calls.index(
+        next(call for call in calls if "alembic upgrade head" in call)
+    )
+    for call in calls:
+        assert not re.search(r"(?<![\w-])--build\b|\sbuild\b", call), call
+
+
+def test_bring_up_fails_closed_on_a_failed_service_pull_before_anything_starts(tmp_path):
+    background = tmp_path / "bg"
+    remote = _bring_up_remote(tmp_path, background)
+    host = _stand_host(tmp_path)
+    _finished_job(background, "service", 10, "FATAL: the release marker is not a usable record\n")
+
+    result, calls = _run_bring_up_on_stand(tmp_path, remote, host)
+
+    assert result.returncode == 10
+    assert "background job service failed with exit 10" in result.stderr
+    assert "not a usable record" in result.stderr
+    assert not [call for call in calls if " up " in call]
+
+
+def test_bring_up_fails_closed_on_a_service_pull_that_never_started(tmp_path):
+    background = tmp_path / "bg"
+    remote = _bring_up_remote(tmp_path, background)
+    host = _stand_host(tmp_path)
+
+    result, calls = _run_bring_up_on_stand(tmp_path, remote, host)
+
+    assert result.returncode == 125
+    assert not [call for call in calls if " up " in call]
+
+
+def test_the_worker_join_fails_the_step_with_the_pull_exit_code():
+    join = _steps()[WORKER_JOIN_STEP]
+
+    assert "stand_background.sh join '${STAND_BACKGROUND_DIR}' worker 1200" in join["run"]
+    assert "FATAL: pulling the worker image release failed" in join["run"]
+    assert 'exit "${pulled}"' in join["run"]
+    assert join["timeout-minutes"] * 60 > 1200
+
+
+def test_every_rendered_step_script_parses(tmp_path):
+    """No step ships a shell syntax error to the one budgeted live run."""
+    for job in _workflow()["jobs"].values():
+        for step in job["steps"]:
+            script = step.get("run")
+            if not script:
+                continue
+            rendered = re.sub(r"\$\{\{[^}]*\}\}", "rendered", script)
+            result = subprocess.run(
+                ["bash", "-n", "-c", rendered], capture_output=True, text=True, timeout=30
+            )
+            assert result.returncode == 0, f"{step.get('name')}: {result.stderr}"
+
+
+def test_the_remote_bring_up_script_parses(tmp_path):
+    remote = _bring_up_remote(tmp_path, tmp_path / "bg")
+
+    result = subprocess.run(["bash", "-n", "-c", remote], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_bring_up_span_and_the_pull_durations_are_reported():
+    bootstrap = _steps()["Bootstrap dynamic orchestrator"]["run"]
+    bring_up = _steps()[BRING_UP_STEP]["run"]
+    timing = _steps()[TIMING_STEP]
+    steps = list(_steps())
+
+    assert bootstrap.splitlines()[2].strip() == (
+        'date +%s > "${RUNNER_TEMP}/stand-bootstrap-started"'
+    ), "the span starts with the Bootstrap step"
+    assert bring_up.rstrip().endswith('(target 300s)"')
+    assert 'echo "${healthy_epoch}" > "${RUNNER_TEMP}/stand-services-healthy"' in bring_up
+    assert "$GITHUB_STEP_SUMMARY" in timing["run"]
+    assert "stand_background.sh report" in timing["run"]
+    for job in ("service", "worker", "uv", "third-party"):
+        assert job in timing["run"].split("report", 1)[1]
+    assert timing["if"].startswith("${{ always()")
+    assert timing["continue-on-error"] is True, "reporting never decides a run"
+    assert steps.index("Run selected stand suite") < steps.index(TIMING_STEP)
+    assert steps.index(TIMING_STEP) < steps.index("Admit cleanup handoff")
+
+
+# --- every compose call that can start a container runs the pulled release ----------------
+#
+# Bring-up leaves no `codegen-orchestrator/*:local` image on the stand. A compose `up`,
+# `create`, `run` or `start` without the release override would find none and build the
+# service from the checkout; one without `--no-build --pull never` could build or pull
+# anyway. `start`, `restart` and `run` take no `--no-build`, so on the stand they cannot
+# be reached at all. The runner's own calls are pinned in scripts/tests/test_stand_run.py.
+
+POLICED_COMPOSE_VERBS = ("up", "create", "run", "start", "restart")
+RELEASE_POLICY = "--no-build --pull never"
+_COMPOSE_CALL = re.compile(r"docker compose\b|\$\{COMPOSE\}|\$COMPOSE\b")
+_COMPOSE_ASSIGNMENT = re.compile(r'^\s*COMPOSE="([^"]*)"')
+_OVERRIDE_REFERENCES = ("${override}", "${STAND_SERVICE_RELEASE_COMPOSE}")
+
+
+def _compose_invocations(script: str) -> list[tuple[list[str], str, str]]:
+    """Every compose call a step script makes: (files, verb, the rest of the line).
+
+    `${COMPOSE}` is expanded to what the script last assigned it, the way the shell
+    reads it, so an override appended to the variable counts where it was appended.
+    """
+    compose: str | None = None
+    calls: list[tuple[list[str], str, str]] = []
+    for line in _joined(script).splitlines():
+        if line.strip().startswith("#"):
+            continue
+        assignment = _COMPOSE_ASSIGNMENT.match(line)
+        if assignment:
+            compose = assignment.group(1).replace("${COMPOSE}", compose or "")
+            continue
+        for occurrence in _COMPOSE_CALL.finditer(line):
+            text = line[occurrence.start() :]
+            if occurrence.group() != "docker compose":
+                assert compose is not None, f"${{COMPOSE}} used before it is assigned: {line}"
+                text = compose + text[len(occurrence.group()) :]
+            tokens = text.split()[2:]
+            files: list[str] = []
+            while len(tokens) > 1 and tokens[0] in ("-f", "--file", "-p", "--project-name"):
+                if tokens[0] in ("-f", "--file"):
+                    files.append(tokens[1])
+                tokens = tokens[2:]
+            calls.append((files, tokens[0] if tokens else "", " ".join(tokens[1:])))
+    return calls
+
+
+def _release_violations(script: str) -> list[str]:
+    violations = []
+    for files, verb, rest in _compose_invocations(script):
+        if verb == "build" or re.search(r"(?<![\w-])--build\b", rest):
+            violations.append(f"{verb} {rest}: builds")
+        if verb not in POLICED_COMPOSE_VERBS:
+            continue
+        if not any(reference in files for reference in _OVERRIDE_REFERENCES):
+            violations.append(f"{verb} {rest}: without the release override")
+        if RELEASE_POLICY not in rest:
+            violations.append(f"{verb} {rest}: without {RELEASE_POLICY}")
+    return violations
+
+
+def test_the_compose_scanner_catches_a_call_that_would_build_on_the_stand():
+    """The contract below is only as good as this reader, so it is shown a bad script."""
+    base = 'COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"\n'
+    released = base + 'COMPOSE="${COMPOSE} -f ${override}"\n'
+
+    assert _release_violations(released + "${COMPOSE} up -d --no-build --pull never api\n") == []
+    assert _release_violations(base + "${COMPOSE} up -d --no-build --pull never api\n")
+    assert _release_violations(released + "${COMPOSE} up -d --force-recreate api\n")
+    assert _release_violations(released + "${COMPOSE} create --no-build --pull never\n") == []
+    assert _release_violations(released + "${COMPOSE} create api\n")
+    assert _release_violations(released + "${COMPOSE} start api\n")
+    assert _release_violations(released + "${COMPOSE} run --rm api true\n")
+    assert _release_violations("ssh host 'docker compose -f a.yml -f ${override} restart api'\n")
+    assert _release_violations(released + "${COMPOSE} build api\n")
+    assert _release_violations(base + "${COMPOSE} exec -T api true\n") == []
+    assert _release_violations("# docker compose up -d, in a comment\n") == []
+
+
+def test_every_compose_call_that_starts_a_container_runs_the_pulled_release():
+    starting = []
+    for job in _workflow()["jobs"].values():
+        for step in job["steps"]:
+            script = step.get("run", "")
+            assert _release_violations(script) == [], step.get("name")
+            starting += [
+                verb
+                for _files, verb, _rest in _compose_invocations(script)
+                if verb in POLICED_COMPOSE_VERBS
+            ]
+    # Not vacuous: bring-up's two `up` calls are the ones the reader has to have seen.
+    assert starting == ["up", "up"]
+
+
+def test_the_suite_step_hands_the_runner_the_override_bring_up_generated(tmp_path):
+    """The runner recreates services on a QA switch; it does so from this file."""
+    background = tmp_path / "bg"
+    commands = _run_step_against_fake_ssh(
+        tmp_path,
+        "Run selected stand suite",
+        {
+            "STAND_BACKGROUND_DIR": str(background),
+            "SUITE": "mega-live",
+            "WORKER": "claude",
+            "QA": "codex",
+            "TEMPLATE_SOURCE": "",
+            "TEMPLATE_REF": "",
+            "STAND_PRODUCT_BOT_TOKEN": "",
+        },
+    )
+    assert len(commands) == 1
+    host = _stand_host(tmp_path)
+    _finished_job(background, "uv", 0, "synced\n")
+    stand_bin = tmp_path / "stand-bin"
+    _write_executable(
+        stand_bin / "uv",
+        '#!/usr/bin/env bash\necho "uv $* override=${STAND_SERVICE_RELEASE_COMPOSE:-unset} '
+        'frozen=${UV_FROZEN:-unset}"\n',
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", _on_host(commands[0], host)],
+        input="\n",
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{stand_bin}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    override = _job_env()["STAND_SERVICE_RELEASE_COMPOSE"]
+    assert "python -m scripts.stand_run --suite mega-live" in result.stdout
+    assert f"override={override} frozen=1" in result.stdout
+    # The same name bring-up writes the override to, in the checkout the runner resolves
+    # it against, and the same variable the runner reads.
+    bring_up = _steps()[BRING_UP_STEP]["run"]
+    assert "override=${STAND_SERVICE_RELEASE_COMPOSE}" in bring_up
+    assert '--output "${override}"' in bring_up
+    from scripts import stand_run
+
+    assert stand_run.SERVICE_RELEASE_OVERRIDE_ENV == "STAND_SERVICE_RELEASE_COMPOSE"
+
+
+# --- The QA Telegram session: validated, rendered for qa-worker, proven, redacted ---
+
+#: Credentials pre-create validation requires that are deliberately not stand
+#: configuration, each with the reason. A name validated before any machine exists
+#: and then dropped from the render is either listed here or a defect.
+NOT_NEEDED_ON_STAND = {
+    "SSH_PRIVATE_KEY": (
+        "the runner's own key for reaching the pair it creates: written to protected key "
+        "files for ssh, bootstrap and target registration, never a service setting"
+    ),
+}
+QA_WORKER_ENV = "/opt/codegen_orchestrator/.qa-worker.env"
+TELETHON_NAMES = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
+
+
+def _render_script(step: dict) -> str:
+    """The Python program of the render step, as the runner executes it."""
+    return step["run"].split("python3 -c '\n", maxsplit=1)[1].rsplit("\n'", maxsplit=1)[0]
+
+
+def _rendered_files(step: dict) -> dict[str, tuple[str, ...]]:
+    """The names each render tuple writes: `names` to .stand.env, `telethon` to qa-worker."""
+    tuples = {}
+    for node in ast.walk(ast.parse(_render_script(step))):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Tuple)
+        ):
+            tuples[node.targets[0].id] = tuple(ast.literal_eval(node.value))
+    return {".stand.env": tuples["names"], ".stand-qa-worker.env": tuples["telethon"]}
+
+
+def _validated_but_dropped(steps: dict[str, dict]) -> set[str]:
+    """Validated credentials whose secret no rendered stand setting carries."""
+    validated = steps["Validate pre-create credentials"]["env"]
+    render = steps["Render protected dynamic configuration"]
+    rendered = {name for names in _rendered_files(render).values() for name in names}
+    carried = {render["env"][name] for name in rendered if name in render["env"]}
+    return {
+        name
+        for name, source in validated.items()
+        if source not in carried and name not in NOT_NEEDED_ON_STAND
+    }
+
+
+def test_every_validated_credential_is_rendered_for_the_stand_or_named_as_not_needed():
+    steps = _steps()
+
+    assert _validated_but_dropped(steps) == set()
+    # The list is the validation's own: each name it is handed is one it requires,
+    # and nothing it requires is outside the list.
+    now = datetime(2026, 9, 25, tzinfo=UTC)
+    valid = {
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-fake-opaque-claude-token",
+        "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (
+            now + CLAUDE_MINIMUM_TTL + timedelta(seconds=1)
+        ).isoformat(),
+        "TELETHON_API_ID": "12345",
+        "TELETHON_API_HASH": "hash",
+        "TELETHON_SESSION": "session",
+        "SSH_PRIVATE_KEY": (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\ndGVzdA==\n-----END OPENSSH PRIVATE KEY-----"
+        ),
+    }
+    validated = steps["Validate pre-create credentials"]["env"]
+    assert set(valid) == set(validated)
+    assert validate_precreate_credentials(valid, now=now) == []
+    for name in validated:
+        assert validate_precreate_credentials({**valid, name: ""}, now=now), name
+    assert set(NOT_NEEDED_ON_STAND) <= set(validated)
+
+
+def test_a_validated_credential_removed_from_the_render_fails_the_list_test():
+    workflow = _workflow()
+    steps = {step["name"]: step for step in workflow["jobs"]["e2e"]["steps"]}
+    render = steps["Render protected dynamic configuration"]
+    render["run"] = render["run"].replace(
+        '"TELETHON_API_HASH", "TELETHON_SESSION")', '"TELETHON_API_HASH")'
+    )
+
+    assert _validated_but_dropped(steps) == {"TELETHON_SESSION"}
+
+
+def _run_render(tmp_path: Path, *, qa_telethon: str, **overrides: str):
+    step = _steps()["Render protected dynamic configuration"]
+    environment = {name: f"value-of-{name}" for name in step["env"]}
+    environment.update(GH_APP_PRIVATE_KEY="key", QA_TELETHON=qa_telethon, **overrides)
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _render_script(step)],
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"], **environment},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result
+
+
+def test_the_qa_session_is_required_for_a_suite_that_opens_it():
+    step = _steps()["Render protected dynamic configuration"]
+    suite = _steps()["Resolve the suite"]
+
+    assert step["env"]["QA_TELETHON"] == "${{ steps.suite.outputs.qa_telethon }}"
+    assert "scripts.stand_telethon_preflight needs-session" in suite["run"]
+    assert "qa_telethon=" in suite["run"]
+    assert needs_session("mega-live") is True
+    assert needs_session("mega-noop") is False
+    for name in TELETHON_NAMES:
+        assert step["env"][name] == f"${{{{ secrets.{name} }}}}"
+
+
+def test_mega_live_refuses_to_render_without_the_qa_session(tmp_path):
+    result = _run_render(tmp_path, qa_telethon="true", TELETHON_SESSION="")
+
+    assert result.returncode != 0
+    assert "missing required qa-worker configuration: TELETHON_SESSION" in result.stderr
+    assert not (tmp_path / ".stand.env").exists()
+    assert not (tmp_path / ".stand-qa-worker.env").exists()
+
+
+def test_mega_live_renders_the_qa_session_for_qa_worker_and_not_into_the_stand_env(tmp_path):
+    result = _run_render(tmp_path, qa_telethon="true")
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".stand-qa-worker.env").read_text() == "".join(
+        f"{name}=value-of-{name}\n" for name in TELETHON_NAMES
+    )
+    assert "TELETHON" not in (tmp_path / ".stand.env").read_text()
+
+
+def test_mega_noop_renders_without_the_qa_session_as_it_always_has(tmp_path):
+    result = _run_render(tmp_path, qa_telethon="false", **dict.fromkeys(TELETHON_NAMES, ""))
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".stand-qa-worker.env").read_text() == "".join(
+        f"{name}=\n" for name in TELETHON_NAMES
+    )
+    assert "TELETHON" not in (tmp_path / ".stand.env").read_text()
+
+
+def test_actual_stand_renderer_provisions_required_policy_for_clean_compose(tmp_path):
+    step = _steps()["Render protected dynamic configuration"]
+    # Use the workflow's literal policy, without supplying it from the test or
+    # the invoking shell. Other values are synthetic and never contact a service.
+    literals = {name: str(value) for name, value in step["env"].items() if "${{" not in str(value)}
+    result = _run_render(
+        tmp_path,
+        qa_telethon="false",
+        **literals,
+        HOST_UID="1000",
+        HOST_GID="1000",
+        ORCHESTRATOR_PUBLIC_IP="127.0.0.1",
+        ORCHESTRATOR_HOSTNAME="stand.test",
+    )
+    assert result.returncode == 0, result.stderr
+    (tmp_path / ".env").write_bytes((tmp_path / ".stand.env").read_bytes())
+    root = WORKFLOW.parents[2]
+    command = [
+        "docker",
+        "compose",
+        "--project-directory",
+        str(tmp_path),
+        "--env-file",
+        str(tmp_path / ".env"),
+    ]
+    for name in ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml"):
+        command += ["-f", str(root / name)]
+    configured = subprocess.run(  # noqa: S603
+        [*command, "config", "--quiet"],
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert configured.returncode == 0, configured.stderr
+    assert "TELEGRAM_MAX_CONCURRENT_UPDATES=8\n" in (tmp_path / ".stand.env").read_text()
+
+
+def test_the_qa_worker_env_file_reaches_the_stand_beside_its_env_and_is_never_rsynced():
+    bring_up = _steps()["Bring up dynamic orchestrator and wait for API"]["run"]
+    bootstrap = _steps()["Bootstrap dynamic orchestrator"]["run"]
+
+    assert re.search(
+        r'\.stand-qa-worker\.env \\\n\s+root@"\$\{PROD_HOST\}":' + re.escape(QA_WORKER_ENV) + "\n",
+        bring_up,
+    )
+    assert bring_up.index(".stand-qa-worker.env") < bring_up.index("up -d --remove-orphans")
+    assert "--exclude .stand-qa-worker.env" in bootstrap
+
+
+def _render_stand_stack(project_dir: Path, qa_worker_env: str | None, extra_env: str = "") -> dict:
+    """The stand stack as compose resolves it, from a stand .env without the session."""
+    root = WORKFLOW.parents[2]
+    env_file = project_dir / ".env"
+    example = (root / ".env.example").read_text().splitlines()
+    env_file.write_text(
+        "\n".join(line for line in example if not line.startswith("TELETHON_"))
+        + "\nLOKI_URL=http://loki:3100\nHOST_CODEX_HOME=/opt/secrets/codex-stand\n"
+        + extra_env
+    )
+    if qa_worker_env is not None:
+        (project_dir / ".qa-worker.env").write_text(qa_worker_env)
+    command = ["docker", "compose", "--project-directory", str(project_dir)]
+    command += ["--env-file", str(env_file)]
+    for name in ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml"):
+        command += ["-f", str(root / name)]
+    result = subprocess.run(  # noqa: S603
+        [*command, "config", "--format", "json"], check=True, capture_output=True, text=True
+    )
+    return json.loads(result.stdout)
+
+
+def test_the_llm_channel_heads_get_the_stand_codex_profile_and_claude_token(tmp_path):
+    """langgraph and architect answer through codex and claude on the stand's own credentials.
+
+    Both arrive through names the rendered stand .env already carries (HOST_CODEX_HOME,
+    STAND_CLAUDE_CODE_OAUTH_TOKEN), so the refreshed-profile write-back covers the
+    heads' refreshes too: they write the same /opt/secrets/stand-codex the workers do.
+    """
+    render = _render_script(_steps()["Render protected dynamic configuration"])
+    for name in ("HOST_CODEX_HOME", "STAND_CLAUDE_CODE_OAUTH_TOKEN"):
+        assert f'"{name}"' in render
+    token = "stand-claude-" + "t" * 20
+
+    config = _render_stand_stack(tmp_path, None, f"STAND_CLAUDE_CODE_OAUTH_TOKEN={token}\n")
+
+    for head in ("langgraph", "architect"):
+        service = config["services"][head]
+        assert service["environment"]["CLAUDE_CODE_OAUTH_TOKEN"] == token, head
+        assert service["environment"]["LLM_CODEX_HOME"] == "/llm-codex-home", head
+        (mount,) = [v for v in service["volumes"] if v["target"] == "/llm-codex-home"]
+        assert mount["source"] == "/opt/secrets/codex-stand", head
+        assert not mount.get("read_only", False), head
+    # The name Claude Code reads is set for the two heads only; the stand .env, which
+    # every service reads, keeps the token under its stand name.
+    holders = {
+        name
+        for name, service in config["services"].items()
+        if "CLAUDE_CODE_OAUTH_TOKEN" in (service.get("environment") or {})
+    }
+    assert holders == {"langgraph", "architect"}
+
+
+def _telethon_by_service(config: dict) -> dict[str, dict[str, str]]:
+    found = {}
+    for name, service in config["services"].items():
+        environment = service.get("environment") or {}
+        telethon = {key: value for key, value in environment.items() if key.startswith("TELETHON_")}
+        if telethon:
+            found[name] = telethon
+    return found
+
+
+def test_the_qa_session_reaches_qa_worker_and_no_other_service_on_the_stand(tmp_path):
+    session = "1" + "A" * 40
+    config = _render_stand_stack(
+        tmp_path,
+        f"TELETHON_API_ID=12345\nTELETHON_API_HASH=feed\nTELETHON_SESSION={session}\n",
+    )
+
+    assert _telethon_by_service(config) == {
+        "qa-worker": {
+            "TELETHON_API_ID": "12345",
+            "TELETHON_API_HASH": "feed",
+            "TELETHON_SESSION": session,
+        }
+    }
+    # qa-worker still reads the stand .env like every other service.
+    assert config["services"]["qa-worker"]["environment"]["POSTGRES_DB"]
+
+
+def test_a_stand_without_the_qa_worker_env_file_still_renders(tmp_path):
+    assert _telethon_by_service(_render_stand_stack(tmp_path, None)) == {}
+
+
+def test_the_qa_session_is_proven_before_any_paid_step_and_only_when_a_suite_opens_it():
+    steps = list(_steps())
+    proof = _steps()["Prove the QA Telegram session"]
+
+    assert proof["if"] == "${{ steps.suite.outputs.qa_telethon == 'true' }}"
+    assert "python -m scripts.stand_telethon_preflight prove" in proof["run"]
+    assert "--with 'telethon==1.45.0'" in proof["run"]
+    for name in (*TELETHON_NAMES, "STAND_PRODUCT_BOT_TOKEN"):
+        assert proof["env"][name] == f"${{{{ secrets.{name} }}}}"
+        assert f"${{{name}}}" not in proof["run"]
+    assert proof["timeout-minutes"] <= 10
+    position = steps.index("Prove the QA Telegram session")
+    assert steps.index("Install uv") < position
+    assert steps.index("Resolve the suite") < position
+    assert steps.index("Validate pre-create credentials") < position
+    for paid in (
+        "Authenticate Codex against exact worker image",
+        "Preflight ephemeral machines",
+        "Create ephemeral machines",
+        "Give the stand a resolvable name",
+        "Run selected stand suite",
+    ):
+        assert position < steps.index(paid), paid
+
+
+def _remote_redaction_scripts() -> list[str]:
+    return [
+        _steps()["Register and provision dynamic target"]["run"],
+        _steps()["Record machine manifest"]["run"],
+    ]
+
+
+def _session_needles(script: str) -> tuple[str, str]:
+    """The shell that reads the session for the redactor, and the redactor itself."""
+    lines = script.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "qa_env=./.qa-worker.env")
+    end = next(i for i, line in enumerate(lines) if line.strip().startswith("protected_names="))
+    shell = textwrap.dedent("\n".join(lines[start : end + 1]))
+    code = re.search(r'python -c "((?:[^"\\]|\\.)*)"', script).group(1).replace('\\"', '"')
+    return shell, code
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["provisioning-tails", "suite-failure-tails"])
+def test_the_service_tail_redaction_removes_a_session_looking_value(tmp_path, which):
+    script = _remote_redaction_scripts()[which]
+    session = "1" + base64.urlsafe_b64encode(os.urandom(263)).decode()
+    api_hash = "0123456789abcdef0123456789abcdef"
+    (tmp_path / ".qa-worker.env").write_text(
+        f"TELETHON_API_ID=12345\nTELETHON_API_HASH={api_hash}\nTELETHON_SESSION={session}\n"
+    )
+    shell, code = _session_needles(script)
+    assert "-e TELETHON_API_HASH -e TELETHON_SESSION api" in script
+
+    # What the stand host's shell hands the redactor: the names, and the values by name.
+    read = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-c",
+            f'set -euo pipefail\n{shell}\nprintf "%s\\0" "${{protected_names}}" '
+            '"${TELETHON_API_HASH}" "${TELETHON_SESSION}"',
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    names, handed_hash, handed_session = read.stdout.split("\0")[:3]
+    assert {"TELETHON_API_HASH", "TELETHON_SESSION"} <= set(names.split())
+    assert (handed_hash, handed_session) == (api_hash, session)
+
+    tail = (
+        f"qa-worker | telethon session={session}\n"
+        f"qa-worker | api_hash {api_hash} in a traceback\n"
+        "qa-worker | qa_telethon_not_configured\n"
+    )
+    redacted = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code],
+        input=tail,
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": str(WORKFLOW.parents[2]),
+            "STAND_DIAGNOSTIC_SECRET_NAMES": names,
+            "TELETHON_API_HASH": handed_hash,
+            "TELETHON_SESSION": handed_session,
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert session not in redacted
+    assert api_hash not in redacted
+    assert redacted.count("[redacted]") >= 2
+    assert "qa_telethon_not_configured" in redacted
+
+
+def test_the_qa_session_is_a_protected_value_of_every_artifact_admission():
+    assert {"TELETHON_API_HASH", "TELETHON_SESSION"} <= PROTECTED_STAND_SECRET_NAMES
+    # TELETHON_API_ID is an application number, not a credential: never a needle.
+    assert "TELETHON_API_ID" not in PROTECTED_STAND_SECRET_NAMES

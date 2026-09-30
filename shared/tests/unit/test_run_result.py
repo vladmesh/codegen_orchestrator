@@ -17,11 +17,13 @@ from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     DeployRunResult,
     DeploySkipReason,
+    EngineeringFailureReason,
     EngineeringRunResult,
     QABlocker,
     QABlockerCategory,
     QAFailedCheck,
     QAFailedCheckCause,
+    QAProbeRun,
     QARunResult,
     QAStateChange,
     QAStateChangeCleanup,
@@ -212,6 +214,27 @@ class TestValidPayloads:
                     ],
                 }
             )
+
+    def test_qa_probe_records_distinguish_known_none_from_a_writer_without_them(self):
+        probe = QAProbeRun(
+            id="probe-1",
+            platform="http",
+            name="health",
+            source="print('health')",
+            arguments=["/health"],
+            stdout="ok",
+            stderr="",
+            exit_status=0,
+            duration_ms=1,
+        )
+
+        recorded = QARunResult(qa_outcome=QAOutcome.PASSED, probe_runs=[probe])
+        known_none = QARunResult(qa_outcome=QAOutcome.PASSED, probe_runs=[])
+        not_held = QARunResult(qa_outcome=QAOutcome.PASSED)
+
+        assert recorded.probe_runs[0].id == "probe-1"
+        assert known_none.probe_runs == []
+        assert not_held.probe_runs is None
 
     @pytest.mark.parametrize("run_type", list(RunType))
     @pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLED])
@@ -467,3 +490,76 @@ class TestSuccessMeansEveryConfirmedSettingArrived:
         )
 
         assert result.settings_seed[0].written is True
+
+
+class TestUnverifiedChecks:
+    """A check QA could not run is its own state on the result, not a failed check."""
+
+    UNVERIFIED = {"name": "upload receipt", "reason": "no tool to upload", "origin": "executor"}
+
+    def test_a_passed_result_carries_its_unverified_checks_and_the_checks_that_ran(self):
+        result = QARunResult.model_validate(
+            {
+                "qa_outcome": "passed",
+                "passed_checks": ["GET /health returns 200"],
+                "unverified_checks": [self.UNVERIFIED],
+            }
+        )
+
+        facts = result.verification_facts("qa-1")
+
+        assert facts.qa_run_id == "qa-1"
+        assert facts.passed_checks == ["GET /health returns 200"]
+        assert [check.model_dump(mode="json") for check in facts.unverified_checks] == [
+            self.UNVERIFIED
+        ]
+        assert result.failed_checks == []
+
+    def test_a_result_written_before_them_reads_as_empty(self):
+        result = QARunResult.model_validate({"qa_outcome": "passed"})
+
+        assert result.passed_checks == []
+        assert result.unverified_checks == []
+
+    @pytest.mark.parametrize(
+        "check",
+        [
+            {"name": "", "reason": "r", "origin": "executor"},
+            {"name": "n", "reason": "", "origin": "executor"},
+            {"name": "n", "reason": "r", "origin": "guessed"},
+            {"name": "n", "reason": "r", "origin": "executor", "cause": "qa_capability"},
+        ],
+    )
+    def test_an_unverified_check_is_exactly_name_reason_and_origin(self, check):
+        with pytest.raises(ValidationError):
+            QARunResult.model_validate({"qa_outcome": "passed", "unverified_checks": [check]})
+
+
+class TestUncomputableDerivedKeyFailure:
+    """The keys travel with, and only with, their failure reason."""
+
+    def test_the_keys_round_trip(self):
+        result = EngineeringRunResult(
+            engineering_status="failed",
+            failure_reason=EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY,
+            uncomputable_derived_keys=["PUBLIC_BASE_URL"],
+        )
+
+        assert EngineeringRunResult.model_validate(result.model_dump(mode="json")) == result
+
+    @pytest.mark.parametrize(
+        ("reason", "keys"),
+        [
+            (EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY, None),
+            (EngineeringFailureReason.UNCOMPUTABLE_DERIVED_KEY, []),
+            (EngineeringFailureReason.NO_NEW_COMMIT, ["PUBLIC_BASE_URL"]),
+            (None, ["PUBLIC_BASE_URL"]),
+        ],
+    )
+    def test_a_mismatched_pair_is_refused(self, reason, keys):
+        with pytest.raises(ValidationError, match="uncomputable_derived_keys"):
+            EngineeringRunResult(
+                engineering_status="failed",
+                failure_reason=reason,
+                uncomputable_derived_keys=keys,
+            )

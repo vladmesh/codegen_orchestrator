@@ -108,6 +108,25 @@ async def test_remote_docker_prepares_mounts_in_the_daemon_namespace(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_remote_docker_omits_transcript_mount_when_not_retained(monkeypatch):
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    monkeypatch.setenv("DOCKER_HOST", "tcp://docker:2375")
+
+    await manager._prepare_remote_daemon_mounts(
+        image="worker:latest",
+        worker_id="qa-1",
+        workspace_path="/data/workspaces/qa-1",
+        transcript_path=None,
+    )
+
+    call = wrapper.run_container.await_args.kwargs
+    assert call["command"] == ["-R", "1000:1000", "/workspace"]
+    assert call["volumes"] == {"/data/workspaces/qa-1": {"bind": "/workspace", "mode": "rw"}}
+
+
+@pytest.mark.asyncio
 async def test_instruction_injection_failure_aborts_worker_creation():
     """A failed created worker stays owned and fenced until deletion confirms removal."""
     redis = aioredis.FakeRedis(decode_responses=True)
@@ -127,6 +146,7 @@ async def test_instruction_injection_failure_aborts_worker_creation():
             "src.manager.workspace_mod.get_scaffolded_workspace",
             return_value=(Path("/data/ws/repo-1"), True),
         ),
+        patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True),
     ):
         mock_settings.ENVIRONMENT = "production"
         mock_settings.DOCKER_NETWORK = ""
@@ -151,6 +171,7 @@ async def test_instruction_injection_failure_aborts_worker_creation():
                 api_key="test-api-key",
                 instructions="required instructions",
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
     assert await redis.hget("worker:status:w-injection-failure", "status") == WorkerStatus.FAILED
@@ -346,6 +367,7 @@ async def test_production_launch_uses_hardened_container_config(agent_type):
             auth_mode="api_key",
             api_key="test-api-key",
             repo_id="repo-1",
+            env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
         )
 
     kwargs = wrapper.run_container.call_args.kwargs
@@ -442,6 +464,7 @@ async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
             auth_mode="api_key",
             api_key="test-api-key",
             repo_id="repo-1",
+            env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
         )
 
     kwargs = wrapper.run_container.call_args.kwargs
@@ -1061,6 +1084,7 @@ async def test_checkout_branch_called_when_branch_provided():
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
+    wrapper.exec_capture = AsyncMock(return_value=(0, b"CODEGEN_CHECKOUT_HEAD=" + b"a" * 40, b""))
 
     manager = WorkerManager(redis=redis, docker_client=wrapper)
 
@@ -1099,7 +1123,7 @@ async def test_checkout_branch_called_when_branch_provided():
     # so we decode one of the exec calls to check the branch name is present
     import base64 as b64
 
-    exec_calls = wrapper.exec_in_container.call_args_list
+    exec_calls = wrapper.exec_capture.call_args_list
     decoded_cmds = []
     for c in exec_calls:
         cmd_str = c.args[1] if len(c.args) > 1 else ""
@@ -1159,3 +1183,31 @@ async def test_no_checkout_branch_when_branch_is_none():
     exec_calls = wrapper.exec_in_container.call_args_list
     branch_calls = [c for c in exec_calls if "checkout -b" in str(c)]
     assert len(branch_calls) == 0, f"Unexpected branch checkout call found: {branch_calls}"
+
+
+@pytest.mark.asyncio
+async def test_a_creation_failure_outlives_the_teardown_it_queues():
+    """The spawner reads the cause even after `delete_worker` removed status and error.
+
+    story-39fbe87a: the teardown ran within the same second as the failure, the
+    spawner's next poll found `worker:status` gone, and four attempts ended as
+    "Worker disappeared during creation" with the real reason unread.
+    """
+    from shared.contracts.dto.worker import worker_creation_failure_key
+
+    redis = aioredis.FakeRedis(decode_responses=True)
+    manager = WorkerManager(redis=redis, docker_client=_make_docker_mock())
+    worker_id = "w-creation-failure-durable"
+    await manager._acquire_workspace_lock(worker_id, _OWNERSHIP)
+
+    await manager._fail_acquired_worker(
+        worker_id, RuntimeError("checkout_branch did not establish branch story/x: exit_code=137")
+    )
+    await manager.delete_worker(worker_id, reason="creation_failed")
+
+    assert await redis.exists(f"worker:status:{worker_id}") == 0
+    recorded = await redis.hgetall(worker_creation_failure_key(worker_id))
+    assert "exit_code=137" in recorded["error"]
+    assert recorded["execution_phase"] == "pre_agent_refused"
+    assert recorded["infrastructure_refusal"] == "worker_creation_failed"
+    assert 0 < await redis.ttl(worker_creation_failure_key(worker_id)) <= 600

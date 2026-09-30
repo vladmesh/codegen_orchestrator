@@ -21,7 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 RUN useradd -m -s /bin/bash worker
 USER worker
 
-RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+# When the fetch still fails after curl's retries, print a CI-INFRA-CAUSE line that the
+# CI job reads as an infrastructure failure (scripts/ci-infra.sh watch). printf joins it
+# at run time, so the command text a build log echoes never carries it.
+RUN installer=$(mktemp) \
+    && { curl --retry 3 --retry-connrefused -fsSL -o "$installer" https://claude.ai/install.sh \
+        || { printf '%s=%s\n' CI-INFRA-CAUSE claude-installer-fetch >&2; exit 1; }; } \
+    && test -s "$installer" \
+    && bash -s -- "${CLAUDE_CODE_VERSION}" < "$installer" \
+    && rm "$installer" \
     && /home/worker/.local/bin/claude --version | grep -F "${CLAUDE_CODE_VERSION}"
 
 # --- Stage 2: Final image ---

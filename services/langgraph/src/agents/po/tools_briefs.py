@@ -12,6 +12,18 @@ of its own:
 * `confirm_product_brief` freezes that revision by echoing the stored content
   back to the server, which refuses anything but a byte-for-byte match.
 
+A third, `show_full_brief`, reads a revision back in its full form for a user
+who asks for it (`shared.product_brief_text`). Its result is the user's reply,
+so a read that fails is a fixed apology in the brief's language, never the error.
+
+**What the user is shown fits one message, or nothing is opened.** The
+confirmation is the brief's short form, and it is measured against
+`BRIEF_MESSAGE_BUDGET` from the *proposed* content before anything is written.
+A brief that does not fit opens no revision and moves no pointer: the PO is told
+to stage the product — fewer requirements now, the rest as a later brief — and
+never to squeeze the wording. On 2026-09-25 the pointer was written first, the
+send of a 20k-character brief failed, and every retry re-presented it.
+
 **How a restart cannot lose the presentation.** The brief is addressed by an id
 the server mints, and until the brief is bound to a story there is no route that
 finds it again from the project alone. So the project's config carries the one
@@ -52,62 +64,23 @@ from shared.contracts.dto.product_brief import (
     ProductBriefRead,
     ProposedProductBriefContent,
 )
+from shared.product_brief_text import (
+    BRIEF_MESSAGE_BUDGET,
+    LABELS,
+    brief_message_length,
+    full_brief_unavailable,
+    render_brief_message,
+    render_full_brief,
+)
 
+from ...capability_feasibility import capability_refusal
+from ...prompts.qa_capabilities import render_brief_capabilities
 from .tools_shared import _get_api, _user_headers
 
 logger = structlog.get_logger(__name__)
 
 #: Where the project config carries the revision presented and not yet spent.
 PRODUCT_BRIEF_POINTER_KEY = "product_brief_id"
-
-#: Every fixed label of the message the user is shown, per language. The user
-#: reads the brief in their own language, so no label may be hard-coded in
-#: English; a language with no table here falls back to `en`.
-LABELS: dict[str, dict[str, str]] = {
-    "en": {
-        "summary": "Summary",
-        "must_requirements": "Must-requirements",
-        "your_words": "your words",
-        "said_in": "said earlier in our conversation",
-        "source": "source",
-        "usage": "How you will use it",
-        "you_send": "You send",
-        "product_answers": "The product answers",
-        "no_interaction": "works without anything sent by you",
-        "limitations": "Limitations and chosen trade-offs",
-        "initial_settings": "Initial settings",
-        "not_specified": "not specified",
-        "answer": "yes / correct me",
-    },
-    "ru": {
-        "summary": "Кратко",
-        "must_requirements": "Обязательные требования",
-        "your_words": "ваши слова",
-        "said_in": "сказано раньше в нашей переписке",
-        "source": "источник",
-        "usage": "Как вы будете пользоваться",
-        "you_send": "Вы отправляете",
-        "product_answers": "Продукт отвечает",
-        "no_interaction": "работает без ваших сообщений",
-        "limitations": "Ограничения и выбранные компромиссы",
-        "initial_settings": "Начальные настройки",
-        "not_specified": "не указано",
-        "answer": "да / поправить",
-    },
-}
-
-#: How an unchosen value is shown to a user whose brief has no language table
-#: of its own: the user reads one message and sees which values nobody has
-#: decided yet.
-NOT_SPECIFIED = LABELS["en"]["not_specified"]
-
-
-def _labels(language: str | None) -> dict[str, str]:
-    """The label table of the brief's language, or `en` when there is none."""
-    if language is None:
-        return LABELS["en"]
-    return LABELS.get(language) or LABELS.get(language.split("-", maxsplit=1)[0]) or LABELS["en"]
-
 
 #: How many keys one presentation may try before giving up. Each step past the
 #: first means the key it would have used already names a revision that is spent
@@ -156,75 +129,34 @@ def _confirmation_request_id(brief_id: str) -> str:
 
 
 def _render(brief: ProductBriefRead) -> str:
-    """The one atomic confirmation message, and the only text the user is shown.
+    """The short form of a stored revision: the confirmation message itself."""
+    return render_brief_message(brief.title, brief.content)
 
-    Everything the user is asked to confirm is in it, in the user's language:
-    the summary, every must-requirement with the id the architect will dispose
-    of it by and the provenance of its wording, how the user will use each of
-    them, the limitations and trade-offs chosen, and every initial setting by
-    its description. It is not a series of questions, and it ends the way the
-    user is told to answer it. What only the PO needs — the brief id and
-    revision — is in the PO-facing prefix, not here.
 
-    A document stored before the language, usage examples and setting
-    descriptions existed has no language: it renders in `en`, without the two
-    sections it cannot fill, and with its settings as the keys it stored.
-    """
-    content = brief.content
-    label = _labels(content.language)
-    lines = [
-        f"<b>{brief.title}</b>",
-        "",
-        f"{label['summary']}: {content.summary}",
-        "",
-        f"{label['must_requirements']}:",
-    ]
-    for requirement in content.must_requirements:
-        lines.append(f"- [{requirement.id}] {requirement.text}")
-        if requirement.user_wording:
-            lines.append(f'  {label["your_words"]}: "{requirement.user_wording}"')
-        elif requirement.wording_reference:
-            # The reference is an audit pointer (`telegram:chat=42:message=17`)
-            # for the architect, not something the user can read.
-            lines.append(f"  {label['said_in']}")
-        else:
-            lines.append(f"  {label['source']}: {label['not_specified']}")
-    if content.language is not None:
-        lines.append("")
-        lines.append(f"{label['usage']}:")
-        for requirement in content.must_requirements:
-            examples = [e for e in content.usage_examples if e.requirement_id == requirement.id]
-            if not examples and requirement.user_facing:
-                continue
-            lines.append(f"[{requirement.id}]")
-            if not examples:
-                lines.append(f"  {label['no_interaction']}")
-            for example in examples:
-                lines.append(f"  {label['you_send']}: {example.user_sends}")
-                lines.append(f"  {label['product_answers']}: {example.product_answers}")
-        lines.append("")
-        lines.append(f"{label['limitations']}:")
-        if not content.limitations:
-            lines.append(f"- {label['not_specified']}")
-        lines.extend(f"- {limitation}" for limitation in content.limitations)
-    lines.append("")
-    lines.append(f"{label['initial_settings']}:")
-    if not content.initial_settings:
-        lines.append(f"- {label['not_specified']}")
-    for setting in content.initial_settings:
-        if setting.description is not None:
-            lines.append(f"- {setting.description}")
-            continue
-        subject = "" if setting.subject_id is None else f", subject {setting.subject_id}"
-        value = (
-            label["not_specified"]
-            if setting.value is None
-            else json.dumps(setting.value, ensure_ascii=False)
+def _over_budget(length: int) -> str:
+    """Why a brief was not presented, and the one way on: stage the product."""
+    return (
+        f"its confirmation message would be {length} characters, over the budget of "
+        f"{BRIEF_MESSAGE_BUDGET}. The user can only confirm a brief that fits one "
+        "message. Split the product into stages: keep the must-requirements for a first "
+        "story in this brief and move the rest to a later brief. Propose that staging "
+        "to the user in a short message of your own; never shorten or merge the "
+        "wording to make it fit."
+    )
+
+
+def _refusal_of_invalid(invalid: ValidationError) -> str:
+    """The content refusal, and staging advice when a proposal cap was the reason."""
+    refusal = f"No Product Brief was presented — the content is not valid:\n{invalid}"
+    if any(error["type"] in {"too_long", "string_too_long"} for error in invalid.errors()):
+        refusal += (
+            "\nA brief is capped in how many requirements, examples, limitations and "
+            "settings it carries and in how long each text is. Too many items: stage the "
+            "product — keep the must-requirements for a first story here and move the "
+            "rest to a later brief. A long quote of the user: give `wording_reference` "
+            "instead of `user_wording`."
         )
-        lines.append(f"- {setting.key} ({setting.scope.value}{subject}) = {value}")
-    lines.append("")
-    lines.append(label["answer"])
-    return "\n".join(lines)
+    return refusal
 
 
 async def _load_brief(brief_id: str, headers: dict[str, str]) -> ProductBriefRead | None:
@@ -274,8 +206,56 @@ def _presented(brief: ProductBriefRead, prefix: str) -> str:
     return f"Product Brief revision {brief.revision} (id: {brief.id}). {prefix}\n\n{_render(brief)}"
 
 
-@tool
-async def present_product_brief(
+def _answer_from_stored(
+    project_id: str, stored: ProductBriefRead | None, corrects_brief_id: str | None
+) -> str | None:
+    """What the revision this project already points at answers, if anything.
+
+    None means nothing stands in the way of opening a new revision: there is no
+    open revision and no correction, or the correction names the open one.
+    """
+    if stored is not None and corrects_brief_id is None:
+        if refusal := capability_refusal(stored.content):
+            return refusal + f" Present a corrected brief with corrects_brief_id='{stored.id}'."
+        if stored.confirmed_at is not None:
+            return _presented(
+                stored,
+                "This brief is already confirmed. Do not present it again — call "
+                f"create_story(product_brief_id='{stored.id}'). It reads:",
+            )
+        length = brief_message_length(_render(stored))
+        if length > BRIEF_MESSAGE_BUDGET:
+            # A revision opened before the budget existed: it cannot be sent, so
+            # it is corrected into a first stage rather than re-presented.
+            return (
+                f"Product Brief revision {stored.revision} (id: {stored.id}) is open for "
+                f"this project, but {_over_budget(length)} Then present the first stage "
+                f"with corrects_brief_id='{stored.id}'."
+            )
+        return _presented(
+            stored,
+            "This project already has a presented Product Brief revision, and this is "
+            "it — not a new one. Send it to the user as it stands:",
+        )
+    if stored is not None and corrects_brief_id != stored.id:
+        if refusal := capability_refusal(stored.content):
+            return refusal + f" Correct the current brief with corrects_brief_id='{stored.id}'."
+        return _presented(
+            stored,
+            f"Brief {corrects_brief_id} is not the revision presented for this project; "
+            f"revision {stored.revision} ({stored.id}) superseded it. Correct that one "
+            "instead. It reads:",
+        )
+    if stored is None and corrects_brief_id is not None:
+        return (
+            f"No Product Brief revision is open for project {project_id}, so "
+            f"{corrects_brief_id} cannot be corrected. Present the brief without "
+            "corrects_brief_id."
+        )
+    return None
+
+
+async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named tool argument.
     project_id: str,
     title: str,
     summary: str,
@@ -284,6 +264,7 @@ async def present_product_brief(
     usage_examples: list[dict] | None = None,
     limitations: list[str] | None = None,
     initial_settings: list[dict] | None = None,
+    variant_choices: list[dict] | None = None,
     corrects_brief_id: str | None = None,
     *,
     config: RunnableConfig,
@@ -302,8 +283,14 @@ async def present_product_brief(
     returned.
 
     Write every text the user reads — title, summary, requirement texts,
-    usage examples, limitations, setting descriptions — in the user's language.
+    usage examples, limitations, setting descriptions, variant choices — in the user's language.
     The tool supplies the section labels in that language itself.
+
+    The message must fit one Telegram message: at most 8 must-requirements,
+    10 usage examples, 5 limitations, 6 settings and 2 variant choices, each text short. A brief
+    that does not fit is refused and nothing is opened; then propose to the
+    user to build the product in stages — the first stage in this brief, the
+    rest in a later one — and never shorten the wording to fit.
 
     Args:
         project_id: Project ID (UUID).
@@ -316,11 +303,7 @@ async def present_product_brief(
             Add `"user_facing": false` only for a requirement the user never
             interacts with (internal, or scheduled with nothing the user sends);
             every other requirement is user-facing and needs a usage example.
-            Word the text as something QA can check: a read-only HTTP GET, a
-            Telegram text message and its reply, an inline button press, or a
-            declared scheduled behaviour and its observable. A behaviour that
-            needs a write or an upload is stated by its observable after the
-            fact (a GET or a bot reply), never as a POST or an upload step.
+            __QA_CAPABILITIES__
             Give either `user_wording` (what the user actually wrote) or
             `wording_reference` (where they wrote it) — exactly one, never both,
             never neither.
@@ -344,6 +327,13 @@ async def present_product_brief(
             Leave empty when the user chose none. NEVER put a token, password,
             API key or any other secret here — secrets go to
             `set_project_secret`.
+        variant_choices: Chosen free or simplified variants with a noticeable quality gap.
+            For an accepted platform workaround, add `capability` with its manifest cannot id.
+            Set it only after the user explicitly accepts that workaround.
+            Each entry names `feature`, `chosen`, `alternative`, `trade_off` and
+            `add_later`, all in the user's language. The last two are one sentence
+            each. Name the gap and what can be added later before presenting this
+            brief. The alternative is recorded for later, never promised as built.
         corrects_brief_id: The brief id the user corrected, when re-presenting
             after a correction. Leave unset the first time.
     """
@@ -354,38 +344,6 @@ async def present_product_brief(
             f"No Product Brief was presented: {project_id!r} is not a project UUID. "
             "Use the UUID create_project returned."
         )
-    api = _get_api()
-    headers = _user_headers(config)
-    project_config = await _project_config(project_id, headers)
-    pointer = project_config.get(PRODUCT_BRIEF_POINTER_KEY)
-
-    stored = await _load_brief(pointer, headers) if pointer else None
-    if stored is not None and corrects_brief_id is None:
-        if stored.confirmed_at is not None:
-            return _presented(
-                stored,
-                "This brief is already confirmed. Do not present it again — call "
-                f"create_story(product_brief_id='{stored.id}'). It reads:",
-            )
-        return _presented(
-            stored,
-            "This project already has a presented Product Brief revision, and this is "
-            "it — not a new one. Send it to the user as it stands:",
-        )
-    if stored is not None and corrects_brief_id != stored.id:
-        return _presented(
-            stored,
-            f"Brief {corrects_brief_id} is not the revision presented for this project; "
-            f"revision {stored.revision} ({stored.id}) superseded it. Correct that one "
-            "instead. It reads:",
-        )
-    if stored is None and corrects_brief_id is not None:
-        return (
-            f"No Product Brief revision is open for project {project_id}, so "
-            f"{corrects_brief_id} cannot be corrected. Present the brief without "
-            "corrects_brief_id."
-        )
-
     try:
         content = ProposedProductBriefContent.model_validate(
             {
@@ -395,22 +353,49 @@ async def present_product_brief(
                 "language": language,
                 "usage_examples": usage_examples or [],
                 "limitations": limitations or [],
+                "variant_choices": variant_choices or [],
             }
+        )
+        first = ProductBriefCreate(
+            project_id=project_uuid,
+            title=title,
+            content=content,
+            request_id=_creation_request_id(project_id, title, content),
         )
     except ValidationError as invalid:
         logger.warning("po_brief_content_refused", project_id=project_id, error=str(invalid))
-        return f"No Product Brief was presented — the content is not valid:\n{invalid}"
+        return _refusal_of_invalid(invalid)
+
+    if refusal := capability_refusal(content):
+        return refusal
+
+    api = _get_api()
+    headers = _user_headers(config)
+    project_config = await _project_config(project_id, headers)
+    pointer = project_config.get(PRODUCT_BRIEF_POINTER_KEY)
+    stored = await _load_brief(pointer, headers) if pointer else None
+    if (answer := _answer_from_stored(project_id, stored, corrects_brief_id)) is not None:
+        return answer
+
+    # Measured before anything is written: a brief the user cannot be sent must
+    # not become the revision this project points at.
+    length = brief_message_length(render_brief_message(title, content))
+    if length > BRIEF_MESSAGE_BUDGET:
+        logger.warning(
+            "po_brief_over_budget",
+            project_id=project_id,
+            length=length,
+            budget=BRIEF_MESSAGE_BUDGET,
+        )
+        return f"No Product Brief was presented and nothing was changed: {_over_budget(length)}"
 
     if refusal := await _refuse_settings_that_are_secrets(project_id, content, headers):
         return refusal
 
     brief = None
     for attempt in range(MAX_PRESENTATION_KEYS):
-        creation = ProductBriefCreate(
-            project_id=project_uuid,
-            title=title,
-            content=content,
-            request_id=_creation_request_id(project_id, title, content, attempt),
+        creation = first.model_copy(
+            update={"request_id": _creation_request_id(project_id, title, content, attempt)}
         )
         response = await api.post_raw(
             "product-briefs/", json=creation.model_dump(mode="json"), headers=headers
@@ -460,6 +445,14 @@ async def present_product_brief(
         corrects_brief_id=corrects_brief_id,
     )
     return _presented(brief, "Send this to the user exactly as it stands and wait for an answer:")
+
+
+# The must-requirement wording rule is the QA capability catalogue's, rendered
+# into the docstring before `@tool` reads it as the description the PO sees.
+present_product_brief.__doc__ = present_product_brief.__doc__.replace(
+    "            __QA_CAPABILITIES__", render_brief_capabilities(indent=" " * 12)
+)
+present_product_brief = tool(present_product_brief)
 
 
 async def _refuse_settings_that_are_secrets(
@@ -518,6 +511,8 @@ async def confirm_product_brief(project_id: str, brief_id: str, *, config: Runna
         return f"No Product Brief {brief_id} exists. Present one first."
     if str(brief.project_id) != project_id:
         return f"Product Brief {brief_id} belongs to another project; nothing was confirmed."
+    if refusal := capability_refusal(brief.content):
+        return refusal + f" Present a corrected brief with corrects_brief_id='{brief.id}'."
     if brief.confirmed_at is not None:
         return (
             f"Product Brief {brief.id} (revision {brief.revision}) is already confirmed. "
@@ -558,11 +553,56 @@ async def confirm_product_brief(project_id: str, brief_id: str, *, config: Runna
     )
 
 
+def _stated_language(payload: object) -> str | None:
+    """The language a brief payload names, read without trusting its shape."""
+    content = payload.get("content") if isinstance(payload, dict) else None
+    language = content.get("language") if isinstance(content, dict) else None
+    return language if isinstance(language, str) else None
+
+
+@tool(return_direct=True)
+async def show_full_brief(brief_id: str, *, config: RunnableConfig) -> str:
+    """Show the user the full text of a Product Brief, when they ask for it.
+
+    Call it alone, only when the user asks to see the whole brief (every
+    requirement with their own words, every usage example, limitation and
+    setting). Its result goes to the user as it stands, as several messages
+    — one per section — and ends your turn; add nothing of your own.
+
+    Args:
+        brief_id: The brief id `present_product_brief` returned.
+    """
+    # The result is the user's reply (`return_direct`), so nothing that fails
+    # here may reach them as it failed: a missing brief, an HTTP error or a
+    # payload that does not validate all become one fixed apology, in the
+    # brief's language when the payload got far enough to name it.
+    language = None
+    try:
+        response = await _get_api().get_raw(
+            f"product-briefs/{brief_id}", headers=_user_headers(config)
+        )
+        response.raise_for_status()
+        payload = response.json()
+        language = _stated_language(payload)
+        brief = ProductBriefRead.model_validate(payload)
+        text = render_full_brief(brief.title, brief.content)
+    except Exception as failure:  # noqa: BLE001 — every read failure is the same apology
+        logger.warning(
+            "po_product_brief_full_unavailable",
+            brief_id=brief_id,
+            error_type=type(failure).__name__,
+            error=str(failure),
+        )
+        return full_brief_unavailable(language)
+    logger.info("po_product_brief_full_shown", brief_id=brief.id, revision=brief.revision)
+    return text
+
+
 __all__ = [
     "LABELS",
-    "NOT_SPECIFIED",
     "PRODUCT_BRIEF_POINTER_KEY",
     "clear_brief_pointer",
     "confirm_product_brief",
     "present_product_brief",
+    "show_full_brief",
 ]

@@ -1,4 +1,5 @@
 import base64
+from collections.abc import Sequence
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -19,11 +20,17 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureRefusal,
 )
 from shared.contracts.dto.executor_diagnostics import ExecutorDiagnosticSnapshot
+from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.dto.worker import (
+    WORKER_CREATION_FAILURE_TTL_SECONDS,
+    WorkerStatus,
+    worker_creation_failure_key,
+)
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
-from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
+from shared.diagnostics import redact_diagnostic
+from shared.qa_probe_cli import QA_PROBE_LIBRARY_PATH, QA_PROBE_PATH, QA_PROBE_SCRIPT
 from shared.queues import WORKER_COMMANDS
 from shared.redis import decode_redis_fields, decode_redis_value
 
@@ -43,6 +50,19 @@ _TERMINAL_STORY_STATUSES = frozenset(
     {StoryStatus.COMPLETED, StoryStatus.FAILED, StoryStatus.ARCHIVED}
 )
 _REJECTED_WORKER_OBSERVATION_SECONDS = 300
+# The whole environment the QA runtime may hand a QA executor: its run's
+# capability endpoint and that endpoint's token. Anything else in a QA create
+# request is refused, so nothing more of qa-worker's environment can ride along.
+QA_EXECUTOR_ENV_KEYS = frozenset({"QA_CAPABILITY_URL", "QA_CAPABILITY_TOKEN"})
+# Writes one chunk of a probe-library file: path, base64 bytes and mode (`w` for
+# the first chunk, `a` after it) are arguments. A chunk stays well under the
+# kernel's 128 KiB limit on one exec argument once encoded.
+_WRITE_LIBRARY_FILE = (
+    "import base64, os, sys; p = sys.argv[1]; "
+    "os.makedirs(os.path.dirname(p), exist_ok=True); "
+    "open(p, sys.argv[3] + 'b').write(base64.b64decode(sys.argv[2]))"
+)
+_LIBRARY_CHUNK_BYTES = 60_000
 
 # What a `dev_proj_<worker_id>` network says it is, in `com.codegen.type`. A
 # network is created and destroyed with its worker but is a separate Docker
@@ -172,7 +192,7 @@ class WorkerManager:
         image: str,
         worker_id: str,
         workspace_path: str,
-        transcript_path: str,
+        transcript_path: str | None,
     ) -> None:
         """Prepare bind mounts in the namespace that will launch the worker.
 
@@ -188,18 +208,20 @@ class WorkerManager:
 
         helper_name = f"worker-mount-prep-{worker_id}"
         await self.docker.remove_container(helper_name, force=True)
+        volumes = {workspace_path: {"bind": "/workspace", "mode": "rw"}}
+        command = ["-R", "1000:1000", "/workspace"]
+        if transcript_path is not None:
+            command.append(TRANSCRIPT_MOUNT)
+            volumes[transcript_path] = {"bind": TRANSCRIPT_MOUNT, "mode": "rw"}
         try:
             await self.docker.run_container(
                 image,
                 name=helper_name,
                 entrypoint="/bin/chown",
-                command=["-R", "1000:1000", "/workspace", TRANSCRIPT_MOUNT],
+                command=command,
                 user="root",
                 network_mode="none",
-                volumes={
-                    workspace_path: {"bind": "/workspace", "mode": "rw"},
-                    transcript_path: {"bind": TRANSCRIPT_MOUNT, "mode": "rw"},
-                },
+                volumes=volumes,
                 remove=True,
                 read_only=True,
                 cap_drop=["ALL"],
@@ -350,18 +372,23 @@ class WorkerManager:
         # The reason, not `str(exc)`: an exception that stringifies to nothing —
         # a bare timeout is the common one — would otherwise publish an empty
         # error to the only place the spawner can read one.
-        await self.redis.set(f"worker:error:{worker_id}", worker_creation_failure_reason(exc))
+        reason = worker_creation_failure_reason(exc)
+        await self.redis.set(f"worker:error:{worker_id}", reason)
         evidence = EngineeringExecutionEvidence(
             execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
             infrastructure_refusal=EngineeringInfrastructureRefusal.WORKER_CREATION_FAILED,
         )
+        evidence_fields = evidence.model_dump(mode="json", exclude_none=True)
         await self.redis.hset(
             f"worker:status:{worker_id}",
-            mapping={
-                "status": WorkerStatus.FAILED,
-                **evidence.model_dump(mode="json", exclude_none=True),
-            },
+            mapping={"status": WorkerStatus.FAILED, **evidence_fields},
         )
+        # The teardown queued below deletes `worker:status` and `worker:error`,
+        # usually before the spawner's next readiness poll. This record outlives
+        # it, so the caller reads the cause instead of a worker that vanished.
+        failure_key = worker_creation_failure_key(worker_id)
+        await self.redis.hset(failure_key, mapping={"error": reason, **evidence_fields})
+        await self.redis.expire(failure_key, WORKER_CREATION_FAILURE_TTL_SECONDS)
         await self.redis.xadd(
             WORKER_COMMANDS,
             {
@@ -495,11 +522,17 @@ class WorkerManager:
             return container.id
 
         except Exception as e:
-            logger.error("worker_creation_failed", worker_id=worker_id, error=str(e))
+            message = redact_diagnostic(
+                e,
+                secrets=(env_vars.get("GITHUB_TOKEN", ""), env_vars.get("GH_TOKEN", "")),
+            )
+            logger.error("worker_creation_failed", worker_id=worker_id, error=message)
             await self.redis.hset(
                 f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED}
             )
-            await self.redis.set(f"worker:error:{worker_id}", str(e))
+            await self.redis.set(f"worker:error:{worker_id}", message)
+            if message != str(e):
+                raise RuntimeError(f"{type(e).__name__}: {message}") from None
             raise
 
     async def pause_worker(self, worker_id: str) -> None:
@@ -666,6 +699,31 @@ class WorkerManager:
                 raise RuntimeError("FACTORY_API_KEY is not set")
         return network_name, allow_host_network, factory_api_key
 
+    @staticmethod
+    def _validate_qa_request(
+        is_qa_worker: bool, qa_target_url: str | None, env_vars: dict[str, str]
+    ) -> tuple[str, ...]:
+        """Refuse a QA request that would widen the sandbox; return its target entries.
+
+        Runs before ownership is stamped, so a refused target leaves no
+        container, proxy or record behind. A developer worker carries no
+        target: it is never behind the QA proxy, and a target on it would mean
+        a request that was built for something else.
+        """
+        if not is_qa_worker:
+            if qa_target_url:
+                raise RuntimeError("only a QA executor is opened to a deploy target")
+            return ()
+        extra = sorted(set(env_vars) - QA_EXECUTOR_ENV_KEYS)
+        if extra:
+            raise RuntimeError(
+                "a QA executor is given its capability endpoint and nothing else; "
+                f"refusing env_vars {', '.join(extra)}"
+            )
+        return qa_egress.deploy_target_entries(
+            qa_target_url, qa_egress.direct_hosts(env_vars, settings.WORKER_BROKER_URL)
+        )
+
     # Statuses that indicate the worker is no longer alive and can be cleaned up
     _TERMINAL_STATUSES = frozenset({WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED})
 
@@ -711,6 +769,8 @@ class WorkerManager:
         worker_type: str = "developer",
         repo_id: str | None = None,
         branch: str | None = None,
+        qa_target_url: str | None = None,
+        qa_probe_library: Sequence[QAProbeLibraryFile] = (),
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
@@ -721,6 +781,13 @@ class WorkerManager:
         required — a worker nobody owns cannot be attributed once it is dead —
         and it is written below, once this worker is one that will exist, and
         always before a container of it can.
+
+        `qa_target_url` is a QA executor's deployed public URL. Its host is the
+        one product destination the run's egress proxy opens; it is validated
+        here, before anything is stamped or created.
+
+        `qa_probe_library` is the probe library a QA executor is offered, written
+        under `QA_PROBE_LIBRARY_PATH` before the executor is marked running.
         """
         logger.info(
             "create_worker_with_capabilities",
@@ -758,6 +825,7 @@ class WorkerManager:
                     repo_id=repo_id,
                 )
             )
+            qa_deploy_target = self._validate_qa_request(is_qa_worker, qa_target_url, env_vars)
 
             # The workspace lock is a developer-worker concern: it guards the one
             # persistent checkout a project has. A QA executor owns the same project
@@ -828,7 +896,9 @@ class WorkerManager:
                 stand_claude_code_oauth_token=(
                     settings.STAND_CLAUDE_CODE_OAUTH_TOKEN if auth_mode == "stand_token" else None
                 ),
-                transcript_host_path=settings.WORKER_TRANSCRIPT_STORAGE_PATH,
+                transcript_host_path=(
+                    None if is_qa_worker else settings.WORKER_TRANSCRIPT_STORAGE_PATH
+                ),
                 transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
             )
             self._prune_transcripts()
@@ -853,6 +923,8 @@ class WorkerManager:
                     internet_network=settings.WORKER_NETWORK,
                     configured_backends=self._qa_backend_setting(agent_type),
                     direct=qa_egress.direct_hosts(container_env, settings.WORKER_BROKER_URL),
+                    deploy_target=qa_deploy_target,
+                    telegram=qa_egress.telegram_entries(),
                     # The run's proxy belongs to the run that opened it, and is
                     # labelled with the same ownership as the executor it serves.
                     labels={**json.loads(settings.WORKER_DOCKER_LABELS), **ownership.as_labels()},
@@ -882,23 +954,23 @@ class WorkerManager:
                 # A QA executor runs no project of its own, and a second network
                 # is exactly what it must not have: it is attached to the QA
                 # egress network alone, where the only things it can address are
-                # the run's capability endpoint, the broker, and its own proxy.
+                # the run's capability endpoint, the broker, and its own proxy —
+                # and through the proxy, only its allowlist.
                 create_dev_network=network_name != "host" and not is_qa_worker,
                 workspace_path=str(ws_path),
                 container_config=config,
                 allow_host_network=allow_host_network,
-                # A QA container starts before its injected files exist. Keep
-                # it STARTING until AGENTS/CLAUDE, TASK and /workspace/qa are
-                # all usable, so the central runner cannot publish its turn to
-                # a partial workspace.
-                publish_ready=not is_qa_worker,
+                # Keep preparation private until Git credentials, checkout and
+                # turn materials are ready. Reused developer workspaces can
+                # still carry a released credentialed origin at container start.
+                publish_ready=False,
             )
             if is_qa_worker:
                 # Proof, not intent: whatever was asked for, this is what Docker
                 # actually attached. A container that ended up on a second
                 # network — a leftover default, a hand-edited compose, a future
-                # branch here — can reach the deployment directly, so it is
-                # refused before it is given any work.
+                # branch here — can reach past its allowlist, so it is refused
+                # before it is given any work.
                 qa_egress.verify_isolation(
                     await self.docker.inspect_container(container_id), network_name
                 )
@@ -915,12 +987,13 @@ class WorkerManager:
             )
 
             if is_qa_worker:
-                await self._inject_qa_probe(container_id, worker_id)
-                await self.redis.hset(
-                    f"worker:status:{worker_id}",
-                    mapping={"status": WorkerStatus.RUNNING},
-                )
+                await self._inject_qa_probe(container_id, worker_id, qa_probe_library)
                 logger.info("qa_executor_ready", worker_id=worker_id)
+
+            await self.redis.hset(
+                f"worker:status:{worker_id}",
+                mapping={"status": WorkerStatus.RUNNING},
+            )
 
             return worker_id
         except Exception as exc:
@@ -958,25 +1031,43 @@ class WorkerManager:
         repo_name = env_vars.get("REPO_NAME")
         github_token = env_vars.get("GITHUB_TOKEN")
 
+        if repo_id and not (repo_name and github_token):
+            raise RuntimeError("Repository credentials are required before workspace preparation")
+
         if repo_name and github_token:
             logger.info(
                 "refreshing_git_token",
                 worker_id=worker_id,
                 repo_id=repo_id,
             )
-            await git_ops.refresh_git_token(
+            refreshed = await git_ops.refresh_git_token(
                 self.docker, container_id, repo_name, github_token, worker_id
             )
+            if not refreshed:
+                raise RuntimeError("Git credential refresh or workspace sanitization failed")
 
         if branch:
             # A checkout that returns False established neither the branch nor
             # its upstream. Ignoring it used to let creation continue with the
             # worker on the wrong branch and no upstream to push to; raising
             # sends the failure into the `checkout_branch` step record.
-            if not await git_ops.checkout_branch(self.docker, container_id, branch, worker_id):
+            checkout = await git_ops.checkout_branch(
+                self.docker,
+                container_id,
+                branch,
+                worker_id,
+                secret_values=(github_token,) if github_token else (),
+            )
+            if not checkout:
                 raise RuntimeError(
-                    f"checkout_branch did not establish branch {branch} or its upstream"
+                    f"checkout_branch did not establish branch {branch} or its upstream: "
+                    f"{checkout.detail}"
                 )
+            if checkout.head_sha is None:
+                raise RuntimeError("Checkout did not retain its prepared HEAD evidence")
+            await self.redis.hset(
+                f"worker:meta:{worker_id}", "prepared_head_sha", checkout.head_sha
+            )
 
     @staticmethod
     def _set_worker_workspace(
@@ -1232,8 +1323,13 @@ class WorkerManager:
             return settings.QA_CODEX_BACKEND_HOSTS
         return settings.QA_CLAUDE_BACKEND_HOSTS
 
-    async def _inject_qa_probe(self, container_id: str, worker_id: str) -> None:
-        """Put the QA executor's one command into its workspace.
+    async def _inject_qa_probe(
+        self,
+        container_id: str,
+        worker_id: str,
+        probe_library: Sequence[QAProbeLibraryFile] = (),
+    ) -> None:
+        """Put the QA executor's one command, and its probe library, into its workspace.
 
         This is the whole of what the container can reach the deployment with.
         It carries no address and no credential of its own — both arrive in the
@@ -1257,6 +1353,37 @@ class WorkerManager:
                 f"could not install the QA capability command in {worker_id}: {output}"
             )
         logger.info("qa_probe_installed", worker_id=worker_id, path=QA_PROBE_PATH)
+        await self._inject_qa_probe_library(container_id, worker_id, probe_library)
+
+    async def _inject_qa_probe_library(
+        self, container_id: str, worker_id: str, files: Sequence[QAProbeLibraryFile]
+    ) -> None:
+        """Write the run's probe library, one file per call, before the executor runs.
+
+        Each path already matched the library's closed pattern on the create
+        request, so none of them can name anything outside the directory. The
+        content travels as an argument rather than inside the command text, so
+        no probe source is ever part of what the container parses as code.
+        """
+        for item in files:
+            path = f"{QA_PROBE_LIBRARY_PATH}/{item.path}"
+            content = item.content.encode("utf-8")
+            for offset in range(0, max(len(content), 1), _LIBRARY_CHUNK_BYTES):
+                chunk = base64.b64encode(content[offset : offset + _LIBRARY_CHUNK_BYTES]).decode()
+                mode = "w" if offset == 0 else "a"
+                exit_code, output = await self.docker.exec_in_container(
+                    container_id, ["python3", "-c", _WRITE_LIBRARY_FILE, path, chunk, mode]
+                )
+                if exit_code != 0:
+                    raise RuntimeError(
+                        f"could not write the QA probe library file {path} in {worker_id}: {output}"
+                    )
+        logger.info(
+            "qa_probe_library_installed",
+            worker_id=worker_id,
+            path=QA_PROBE_LIBRARY_PATH,
+            files=len(files),
+        )
 
     def _prune_transcripts(self) -> None:
         """Delete expired disk artifacts without affecting worker creation."""

@@ -23,10 +23,12 @@ services:
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - API_URL=http://api:8000
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
     depends_on:
       redis:
         condition: service_healthy
@@ -36,17 +38,16 @@ services:
       - backend-test
 
   engineering-worker:
+    # Built once, by the langgraph service of this file; never pulled.
     image: codegen-orchestrator/langgraph:test
-    build:
-      context: ../../..
-      dockerfile: services/langgraph/Dockerfile
-      args:
-        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    pull_policy: never
     command: ["python", "-m", "src.consumers.engineering"]
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       # GitHub/registry env vars intentionally absent — tests verify
       # the flow fails at the external boundary
     depends_on:
@@ -58,17 +59,16 @@ services:
       - backend-test
 
   architect:
+    # Built once, by the langgraph service of this file; never pulled.
     image: codegen-orchestrator/langgraph:test
-    build:
-      context: ../../..
-      dockerfile: services/langgraph/Dockerfile
-      args:
-        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    pull_policy: never
     command: ["python", "-m", "src.consumers.architect"]
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       # The consumer is idle in this suite. These values let it start while
       # ensuring an accidental LLM request cannot reach a real endpoint.
       - ARCHITECT_LLM_MODEL=test-model
@@ -183,6 +183,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     # Uses default entrypoint.sh which runs alembic migrations before uvicorn
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - ENVIRONMENT=test
       - SEED_SYSTEM_CONFIGS_ON_START=true
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
@@ -201,6 +202,9 @@ services:
   docker:
     image: docker:29.7.0-dind
     privileged: true
+    # The DinD entrypoint mounts /tmp if it is not already a mountpoint, hiding
+    # the workspace/transcript child mounts below it. Mount the parent first.
+    tmpfs: /tmp
     environment:
       - DOCKER_TLS_CERTDIR=
     dns:
@@ -274,6 +278,13 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - BUILD_WORKER_BASE_IMAGES=true
+      # Where the worker base images come from (setup_worker_base_images): `build` them
+      # from the tree inside DinD, the local default, or pull the `candidates` CI built
+      # for this push, by digest, from the record in WORKER_BASE_CANDIDATES.
+      - WORKER_BASE_IMAGE_SOURCE=${WORKER_BASE_IMAGE_SOURCE:-build}
+      - WORKER_BASE_CANDIDATES=${WORKER_BASE_CANDIDATES:-}
+      - GHCR_OWNER=${GHCR_OWNER:-}
+      - GHCR_TOKEN=${GHCR_TOKEN:-}
       - REDIS_URL=redis://172.31.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
       - FACTORY_API_KEY=${FACTORY_API_KEY}

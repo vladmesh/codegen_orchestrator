@@ -49,7 +49,6 @@ def test_required_keys_cover_every_scheduler_task_config_value():
         "scheduler.service_template_source",
         "scheduler.service_template_ref",
         "scheduler.ssl_check_timeout",
-        "scheduler.rag_summarizer_poll_interval",
         "deploy.max_deploy_retries",
         "deploy.max_deploy_fix_attempts",
         "deploy.deploy_retry_ttl",
@@ -86,7 +85,6 @@ def test_bounded_stale_keys_are_a_small_explicit_cadence_allowlist():
         "scheduler.github_sync_interval",
         "scheduler.server_sync_interval",
         "scheduler.server_details_sync_interval",
-        "scheduler.rag_summarizer_poll_interval",
         "health.metrics_cleanup_interval_seconds",
     }
     assert startup.BOUNDED_STALE_KEYS <= set(startup.REQUIRED_KEYS)

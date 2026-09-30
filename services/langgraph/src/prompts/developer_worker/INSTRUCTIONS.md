@@ -62,6 +62,16 @@ When a change introduces, removes, or changes environment consumption, update th
 `env.contract.yaml` fragment in the same commit. This includes application settings, Compose
 interpolation, workflow forwarding, and shell entrypoints.
 
+A `derived` contract entry is a value the platform computes at deploy time, and only these
+keys exist: `APP_ENV`, `ENVIRONMENT`, `DEBUG`, `POSTGRES_HOST`, `POSTGRES_PORT`,
+`POSTGRES_REQUIRE_SSL`, `BACKEND_API_URL`, `API_URL`, `API_BASE_URL`, `BACKEND_URL`,
+`APP_NAME`, `PROJECT_NAME`, `COMPOSE_PROJECT_NAME`, `POSTGRES_DB`, `ENABLED_MODULES`,
+`BACKEND_PORT`, `FRONTEND_PORT`, `TG_BOT_PORT`, `POSTGRES_HOST_PORT`, `REDIS_HOST_PORT` and
+`*_IMAGE`. Never declare any other key as a required `derived` entry — `PUBLIC_BASE_URL`, for
+one, does not exist. A commit that does is refused before any deploy, with each such key named:
+the platform cannot compute it; remove it, make it optional with a safe default, or use a
+`user_secret` if the user supplies it.
+
 ## Progress Tracking
 
 Maintain `/workspace/PROGRESS.md` throughout your work. Create it at the start, update as you go.
@@ -124,6 +134,12 @@ make test-integration
 
 ## Scheduled Behaviour Completion Gate
 
+Production fires no product job on a clock: the kit's jobs core schedules nothing,
+and the platform fires a product's jobs only while QA checks it. A scheduled
+behaviour is an in-process timer in the product's own backend or bot that calls
+the declared job on its schedule. `FIRE JOB` stays the QA verification form, not
+a production scheduler: QA fires the named job and reads the observable.
+
 If your task adds or changes a fireable scheduled behaviour, do not report it
 complete just because `POST /jobs/fire` returns `dispatch_status: dispatched`.
 That response proves only that the jobs core emitted `job_fired`; it does not
@@ -133,12 +149,10 @@ Before reporting success, verify all of the following in the generated project:
 
 1. The behaviour is declared in `services/<service>/manifest.yaml` under
    `jobs_schema`, and the provider declares `provides: ["jobs.fire"]`.
-2. A provider subscribes to `job_fired` and is wired into the deployed topology.
-   Prefer the existing deployable `notifications_worker` when it can own the
-   behaviour. If a new provider service is genuinely needed, it must include a
-   Dockerfile and production entrypoint; a `services.yml` entry; its own
-   `env.contract.yaml` image key; a CI build/push matrix entry; and broker-aware
-   wiring in both `infra/compose.base.yml` and `infra/compose.prod.yml`. Source
+2. The provider is the backend or the bot that production already runs: it
+   subscribes to `job_fired` and does the work, and the same process starts the
+   in-process timer that calls the declared job. Do not add a service, worker or
+   container for it; the platform cannot deploy extra service modules. Source
    code, a unit-test-only subscriber, or an optional profile that production
    does not start is not a provider.
 3. The provider produces the acceptance criterion's durable output — for
@@ -158,14 +172,13 @@ direct handler call, a mocked dispatch record, or logs for that provider-path
 test.
 
 Use cheap checks before any deployment: run the provider's focused tests and
-verify the topology at file level: the provider name, Dockerfile, image key and
-broker dependency agree across `services.yml`, its `env.contract.yaml`, the CI
-build/push matrix, `infra/compose.base.yml`, and `infra/compose.prod.yml`. Do
-not run production Compose from the worker: its Compose proxy owns dev-only
-files and production also needs published-image variables. Do not report success
-until the focused tests and file-level verification pass. If the task cannot
-make the provider deployable and its output observable, report `success:false`
-rather than a partial implementation.
+verify at file level that the `job_fired` subscription and the timer start from
+the backend's or bot's production entrypoint, the process `infra/compose.prod.yml`
+runs, not only from tests. Do not run production Compose from the worker: its
+Compose proxy owns dev-only files and production also needs published-image
+variables. Do not report success until the focused tests and file-level
+verification pass. If the task cannot make the provider run in production and its
+output observable, report `success:false` rather than a partial implementation.
 
 ## Confirmed Product Brief Settings Gate
 

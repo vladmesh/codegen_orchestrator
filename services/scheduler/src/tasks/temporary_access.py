@@ -496,11 +496,23 @@ async def _redispatch_revoke_without_effect(api_client, redis_client, grant, cou
     if _revoke_retries_are_spent(grant):
         await _escalate_unrevoked(
             api_client,
+            redis_client,
             grant,
             "revoke capability operation cancelled after unrevoked deadline",
             counts,
         )
         return
+    await _redispatch_revoke_unspent(
+        api_client,
+        redis_client,
+        grant,
+        "revoke capability operation cancelled before effect",
+        counts,
+    )
+
+
+async def _redispatch_revoke_unspent(api_client, redis_client, grant, detail, counts) -> None:
+    """Publish another revoke under the record's reason, keeping its attempt count."""
     run_id = _new_operation_run_id("revoke")
     await api_client.update_temporary_access_grant(
         grant.id,
@@ -509,7 +521,7 @@ async def _redispatch_revoke_without_effect(api_client, redis_client, grant, cou
             revoke_reason=grant.revoke_reason,
             revoke_run_id=run_id,
             revoke_attempts=grant.revoke_attempts,
-            last_error="revoke capability operation cancelled before effect",
+            last_error=detail,
         ),
     )
     await _publish_operation(api_client, redis_client, grant, run_id, "revoke")
@@ -531,7 +543,7 @@ async def _settle_revoke_failed(api_client, redis_client, grant, counts, log) ->
         raise ValueError("failed revoke has no reason")
     if _revoke_retries_are_spent(grant):
         await _escalate_unrevoked(
-            api_client, grant, grant.last_error or "revoke proof failed", counts
+            api_client, redis_client, grant, grant.last_error or "revoke proof failed", counts
         )
         return
     await _dispatch_revoke(api_client, redis_client, grant, grant.revoke_reason)
@@ -544,7 +556,7 @@ async def _record_revoke_failure(api_client, redis_client, grant, detail, counts
     if grant.escalated_at is not None:
         return
     if _revoke_retries_are_spent(grant):
-        await _escalate_unrevoked(api_client, grant, detail, counts)
+        await _escalate_unrevoked(api_client, redis_client, grant, detail, counts)
         return
     await api_client.update_temporary_access_grant(
         grant.id,
@@ -563,9 +575,16 @@ async def _record_revoke_failure(api_client, redis_client, grant, detail, counts
     )
 
 
-async def _escalate_unrevoked(api_client, grant, detail, counts) -> None:
-    """Persist the once-only escalation before issuing its best-effort alert."""
-    await api_client.escalate_temporary_access_grant(
+async def _escalate_unrevoked(api_client, redis_client, grant, detail, counts) -> None:
+    """Persist the once-only escalation before issuing its best-effort alert.
+
+    The API refuses the escalation while the QA run holds a verdict its story
+    has not routed yet: an incident written first could stand in for the
+    product verdict. That refusal is a wait, not a failure. No administrator is
+    told, no attempt is spent, and cleanup goes on with another revoke; the
+    escalation is asked for again when that one does not prove the access gone.
+    """
+    escalated = await api_client.escalate_temporary_access_grant(
         grant.id,
         error=detail,
         run_error_message="temporary QA access could not be revoked",
@@ -580,6 +599,16 @@ async def _escalate_unrevoked(api_client, grant, detail, counts) -> None:
             ),
         ),
     )
+    if escalated is None:
+        logger.info(
+            "temporary_access_escalation_awaits_qa_routing",
+            grant_id=grant.id,
+            qa_run_id=grant.qa_run_id,
+            attempts=grant.revoke_attempts,
+            error=detail,
+        )
+        await _redispatch_revoke_unspent(api_client, redis_client, grant, detail, counts)
+        return
     await notify_admins_best_effort(
         "Temporary QA access could not be revoked and needs operator cleanup: "
         f"grant {grant.id}, project {grant.project_id}, QA run {grant.qa_run_id}. "

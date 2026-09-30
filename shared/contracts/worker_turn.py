@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 
-__all__ = ["AttemptTurnMetadata", "WorkerActiveTurn", "active_turn_key"]
+__all__ = ["AttemptTurnMetadata", "PreparedCheckoutBaseline", "WorkerActiveTurn", "active_turn_key"]
 
 
 def active_turn_key(worker_id: str) -> str:
@@ -49,6 +49,16 @@ class WorkerActiveTurn(BaseModel):
         return cls.model_validate(fields)
 
 
+class PreparedCheckoutBaseline(BaseModel):
+    """Native checkout evidence, fenced to the worker's creator attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    worker_id: str = Field(min_length=1)
+    attempt_id: str = Field(min_length=1)
+    head_sha: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
 class AttemptTurnMetadata(BaseModel):
     """The run-metadata half of a worker turn's durable identity.
 
@@ -70,6 +80,12 @@ class AttemptTurnMetadata(BaseModel):
     stop_reason: str | None = None
     worker_state: str | None = None
     execution: EngineeringExecutionEvidence | None = None
+    # The story branch head as it stood before this attempt's turn was sent, or
+    # the default branch head when the branch did not exist yet. The developer's
+    # initial lookup is reconciled with native preparation before the creator's
+    # first turn; published turns retain their original saved baseline.
+    pre_attempt_head_sha: str | None = Field(default=None, min_length=1)
+    prepared_checkout: PreparedCheckoutBaseline | None = None
 
     def as_run_metadata(self) -> dict[str, Any]:
         return self.model_dump(mode="json", exclude_none=True)

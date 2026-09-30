@@ -3,8 +3,332 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-30
+
+- Run merged-PR handling and CI-failure routing in their own scheduler loop, so dispatcher failures
+  cannot delay deploy routing and one PR/CI path cannot suppress the other.
+
+## 2026-09-29
+
+- Admit provider-absent, unreachable, unmanaged and off-allowlist Time4VPS history in production preflight;
+  retain blocking drift for live inventory, authorized targets and unsettled rows.
+
+- Verify a policy increase on an exhausted Story through lifecycle replay, proving no automatic
+  reset without asking the deploying scheduler to process a terminal Story.
+
+- Revalidate initial-owner retry against current deploy policy at locked API read and command boundaries;
+  keep terminal Story and notice wording stable so policy changes cannot promise unavailable retry.
+
+- Derive initial-owner retry guidance from the verified exhausted Run across readback, notices
+  and PO capabilities: zero admissions offer no action, while fenced terminal Runs retain it.
+
+- Assert zero-ceiling replay preserves the exhausted intent and notice episode while reporting
+  the per-call created flag accurately, so CI distinguishes replay from first intent creation.
+
+- Recover owed initial-owner Run publication through the deploying supervisor; stop trusted zero-admission
+  and typed cancelled exhaustion, and refuse premature human retry without resetting its epoch.
+
+- Correct initial-owner CI notice, cancellation and replacement-owner fixtures, and retain the
+  recovery deadline without a pytest plugin so native retry proofs can execute.
+
+- Allow owner/admin retry of exhausted initial deployment with an immutable attempt fence;
+  commit its typed Story cause and both owed notices so automatic recovery stays bounded.
+
+- Compare conflict refusal history by immutable event IDs and validate both refusal audits, preserving
+  complete records when atomic retry events share a timestamp and the API returns a different order.
+
+- Dispose no-Run conflict dispatch refusals with their Task, Story and both notices atomically;
+  fence deliberate resume with immutable refusal and retry-bound authority.
+
+- Read physical Run metadata in the late-start recovery fixture so CI can verify the next admitted
+  attempt and continue bounded exhaustion after the delayed start.
+
+- Fence admitted conflict starts with immutable Run and settlement evidence, so delayed dispatch
+  cannot overwrite an atomic retry or revive settled work.
+
+- Recover terminal conflict Runs through scoped settlement before generic Task replay, so interrupted
+  refusals owe both notices and immutable Run evidence decides the bounded ending.
+
+- Reconcile reclaimed checkout baselines before worker turns; atomically fence conflict retries and
+  terminal settlement to their admitted cycle and Run so lost responses cannot strand or stop new work.
+
+- Advance merged story branches without discarding local work; admit one bounded dirty-PR repair
+  through normal dispatch, including authenticated recovery of the released dirty quarantine.
+
+- Atomically fence every leased ACK retry with ownership and retained result settlement; expose lost-reply
+  ambiguity and provision the required Telegram concurrency policy on the stand.
+- Telegram dispatches users concurrently while retaining per-user order; live work survives short Redis
+  outages within confirmed lease ownership and refuses expired renewal.
+
+- Bind nightly backup and independent readback to h01o's owning rootless user/daemon;
+  install private policy and timer in that user's manager so production proof uses the right database.
+- Publish verified private PostgreSQL archives and gate production Switch before migrations;
+  preserve protected backups across rotation and rollback, and pin runners to Ubuntu 24.04.
+- Keep mapped HTTP hosts stable across Python patches and reconcile rejected workflow customizations
+  in released-kit upgrade checks so CI exercises the same deployed endpoint and reviewed update.
+- Validate effective mapped self addresses and IPv6 smoke; adopt released kit transport and refuse
+  unverified existing workflows until a reviewed update so accepted endpoints can finish deployment.
+- Derived `PUBLIC_BASE_URL` uses the deployed HTTP endpoint; resolver failures reach owners,
+  and verified merged repairs open bounded grant epochs without duplicate concurrent dispatch.
+
+## 2026-09-28
+
+- Empty-result settlement preserves its cause across exhausted siblings and interrupted writes;
+  committed stops resume remaining task/Run effects without another worker turn or notice episode.
+- Empty engineering and no-commits PR stops persist their reason and owed owner/admin notices
+  atomically; planned-task retries keep their budget and notify on exhaustion.
+- Backend DinD fixtures provide matching origins and synthetic repository credentials; explicit
+  `/tmp` mounting preserves shared workspaces so real worker credential preparation can run.
+- Filtered agents use private HOME Git configuration; recovery transfers remote credentials as
+  private files and cleans them after clone, update or failure.
+- Recovery uses private Ansible vars and redacted diagnostics; worker preparation upgrades
+  credentialed origins and keeps Git auth outside reused workspaces.
+- New products scaffold from kit `0.6.3`, carrying bigint user identifiers and Telegram token-safe
+  logging; the generated fixture and capability provenance follow the published release.
+- PO Redis/checkpoint maintenance shares one Deploy order, fences writes through readiness and
+  reconciliation, and drains late proactive work before switching images.
+- PO Redis dialogue, DLQs, reminders and owner-event caches encrypt whole payloads before writes;
+  a quiesced upgrade preserves retained evidence and delivery state.
+- PO checkpoints encrypt all dialogue payloads with the project key; a quiesced, atomic upgrade
+  preserves existing conversations and pending work with count-only reporting.
+- The checkpoint upgrade runbook uses the complete production image chain and stops PO writers
+  again after Deploy, so conversion runs from the released digest with ingress paused.
+- Capability manifest v5 is the owner's product list: the PO reads a product-only block and refusals quote
+  only product fields; the Architect gets the technical block; payments, backups and web presence detected.
+- The API refuses to start with an empty `INTERNAL_API_KEY`, and an empty `X-Internal-Key` never
+  authenticates, so a blank key can no longer be an internal-service bypass.
+- Live-run cleanup releases the PO's `po:latest_owner_event:*:<story>` records of the run's stories,
+  so the residue proof no longer fails on them (e2e run 36383692107).
+
+## 2026-09-27
+
+- A commit whose env contract requires a derived key the resolver cannot compute fails engineering
+  with each key named, before any deploy; capability detect terms no longer trip on nearby words.
+- Intake and Architect admission refuse unsupported capabilities unless the user accepted a
+  manifest workaround; insisting requests go to admins, and scheduled work needs a product timer.
+- The deploy-target permission test creates its disposable user in bounded setup with an empty
+  skeleton and no login-log initialization, isolating account setup stalls from the role proof.
+- The deploy-target test pins its Python and pipelines local modules to reduce runner-dependent
+  startup work; verbose failure output identifies the command stalled inside a role task.
+- The deploy-target permission test skips unused fact gathering and bounds each Ansible apply at
+  30 seconds, reporting captured output and elapsed time before pytest's timeout.
+- `docs/platform_capabilities.yaml` (v1, draft) states what a product can and cannot have; PO and
+  Architect read its compact block, and a test fails when a derived key or port service is unlisted.
+- Briefs record chosen variants, quality trade-offs and later alternatives; both views show them,
+  and planning explicitly builds only the chosen variant.
+- A state-age pass that ends more waits than `supervisor.state_age_mass_park_threshold` marks each
+  `mass_sweep` and sends admins one message; the PO snapshot tells it as a late notice after downtime.
+- A stopped story is told as "stopped, a person is needed, no known deadline"; the PO prompt forbids
+  "tested", "standard check/procedure" and "a specialist is checking" wherever it tells a stop.
+- The PO publish point logs a reply withheld for a replaced or settled notice; a notice record gone
+  before its admin copy is marked sent answers 410, not 500.
+- The first-boot settle unit test waits for every process of its session before removing its temp
+  dir, so a stub killed by `timeout` can no longer race the cleanup (CI flake).
+- PO can defer owner notices with a reason and an admin copy, retrieve them until told or closed,
+  and record telling separately from queue delivery.
+
+- Every PO system-event turn carries a code-built situation snapshot (order date, wait age, app health, other orders)
+  as model input only, never checkpointed; `get_product_situation` answers the same on request.
+- `stories.status_entered_at` is stamped by the one status writer, so the PO snapshot's wait age survives
+  unrelated story writes; rows landed before it read `unknown` (migration `a4c6e8f0b2d5`, no backfill).
+- An automatically retried planning is in work, not stopped; `set_reminder` names its story, a story-less reminder
+  speaks only if the user asked, and a reminder about a not-ordered story runs no PO turn.
+- PO publishes only key story changes: progress reminders and stage notices stay silent; every unreadable
+  brief leaves its event pending instead of acknowledging an unknown audience.
+
+- Only an ordered story's (confirmed brief) events reach the user, the rest go to the admins; the chat PO has no
+  fix stories: a retry or a complaint reopens the original story.
+- A reminder about a story reaches its owner only on an untold `needs_user` or `stopped` state; stage notices are
+  dropped, so the PO's self-reminders no longer repeat "work is going" every 15 minutes.
+- A stay in one stage is re-announced at 1, 2, 4, 8… quiet intervals, each gap capped at
+  `supervisor.stage_notice_max_interval_minutes`; a notice carries its step and stay, told only in rising order.
+- `notify_user` sends nothing in a reminder or system turn, so the gated final reply is the only way such a turn
+  reaches the user.
+- [hotfix] `LLMAlerts.drain` no longer busy-loops on an alert whose done callback is still queued (the unit
+  hang on main); every unit test has a 90 s timeout that names a hanging test and its asyncio tasks.
+- RAG is removed: its routes, embedding client, ingest, summarizer, Telegram message capture and four `rag_*` tables
+  (dropped by migration `d3f5a7c9e1b4`) had no reader; `OPEN_ROUTER_KEY` is no longer required.
+- Stand live test `test_llm_channel_failover.py` (custom target) proves Architect and PO failover healthy, with codex
+  faulted and with both subscriptions faulted, faulting only agent-config chains and restoring them always.
+- [hotfix] Live-run cleanup deletes the PO reminder gate's `po:story_told*` keys of the run's stories, so the
+  residue proof no longer names the gate's TTL-bound per-day counters.
+- [hotfix] `mega-live`'s location proof accepts an out-of-range location check reported not applicable only on the
+  seed probe's own argument refusal of the value it names, and records that refusal kind in the run evidence.
+- [hotfix] `run_evidence` imports the location proof only to judge a read QA Run record, so the backend DinD suite,
+  which has no `scripts/` on its path, imports it and builds artifacts again.
+
+## 2026-09-26
+
+- Administrators hear of an LLM channel 402, both subscriptions down (the PO then tells users capacity is out) and
+  an OpenRouter balance below `llm.openrouter_balance_alert_usd`, deduplicated in Redis per channel or agent.
+- A 402 alerts whatever class its text earned, and the balance check reads `/credits` with the optional
+  `OPENROUTER_MANAGEMENT_KEY` (langgraph only), else the PO key; a refused read says to set it.
+
+- A failed Architect planning is a story state (`stories.planning`, `planning_failed`): retried with backoff up to
+  `supervisor.story_max_architect_retries`, parked at once when no retry can help, re-run by `retry-planning`.
+- `stories.planning` is the durable record that planning is owed: `retry-planning` only writes it due now and the
+  supervisor alone publishes it; a job arriving before its retry is due settles; `admit` records the channels.
+- The "already decomposed" skip counts only admitted tasks or a live attempt's, never cancelled ones or a failed
+  attempt's leftovers, so a re-queue reaches the claim; the PO reports a failed planning as a problem.
+- The langgraph image carries Codex and Claude Code at the worker pins, so the codex and claude channels answer in
+  langgraph and architect: codex on the workers' own profile, run as its owner under the shared lock.
+- Each agent logs `llm_channel_ready` per channel at startup, and a PO or summarizer turn gives a subscription CLI
+  180 s before moving on; the deploy writes the optional `CLAUDE_CODE_OAUTH_TOKEN` secret.
+- The Architect, PO and PO summarizer answer through a per-agent LLM channel chain (`agent_configs.llm_channels`,
+  default codex → claude → openrouter); a channel failure moves the same call on and every call logs its channel.
+- An engineering success whose commit adds no change over the story branch head recorded before the attempt fails
+  `no_new_commit` and retries as a task iteration, so a no-op is never `done`; the default-branch guard folds into it.
+- A reused story worker handed another task, or a retry after a no-change attempt, gets `clear_session` and a TASK.md
+  naming the task, so it no longer resumes the previous task's conversation and reports that task's commit.
+- QA capabilities live in one catalogue (`shared/contracts/qa_capabilities.py`) that renders the Architect, PO brief and
+  QA executor guidance and the pre-QA HTTP-write set; Telegram media, location, contact, reply and edit are now checkable.
+- A check QA cannot run is recorded as unverified, not failed: the verdict comes from the checks that ran, so a
+  capability gap no longer quarantines the product or parks the story.
+- The settling owner event carries `qa_verification` (passed and unverified checks), and each unverified check is
+  kept as a project verification gap (`GET /api/projects/{id}/verification-gaps`).
+- The Architect rewrites or returns a must-requirement QA cannot check (`not automatically verifiable:` reason), and
+  PO tells the user what QA could not check and records their answer on the story (`unverified_decisions`).
+- The bot sends every user-bound text through `send_text`: split on `MESSAGE_BREAK` and under 4000 units as valid
+  HTML, retries resume at the failed chunk, and errors reply a fixed apology, never "Message is too long".
+- The Product Brief the user signs is one short message (≤ `BRIEF_MESSAGE_BUDGET` 3500): bold sections, each wording
+  once, no ids or fillers; the full form is `show_full_brief` and `GET /api/product-briefs/{id}/full`, one section each.
+- An over-budget brief opens no revision and writes no pointer; the PO stages the product instead of squeezing it, and
+  proposals are capped in counts and lengths so the worst-case full form stays under 12k characters.
+- `telegram_probe`/`telegram_click_button` are proven injection-safe by running their scripts on hostile values, and
+  without a proven identity they return the missing-credentials blocker and start no child process.
+- `show_full_brief` answers a fixed apology in the brief's language on any read failure, and the PO graph refuses the
+  other calls of its turn, so the user gets the full brief or the apology, never another tool's result.
+- `mega-live`'s bot also answers a native Telegram location, and `test_qa_passed` requires QA to prove it with a retained
+  sandbox probe (passed, not unverified); `mega-noop` renders byte-for-byte as before, pinned offline.
+- Live API clients drop idle connections after 1 s (uvicorn keeps 5 s) and retry a GET/HEAD/OPTIONS once on a dropped
+  connection, never a POST, so a poll no longer dies on `Server disconnected without sending a response`.
+- Live run cleanup removes the scheduler's `story:stage_notice:<id>` markers and set membership of its own stories
+  before the residue proof, so an aborted run no longer fails `prove_nothing_left` on them.
+- Live capability-stream cleanup rescans until clean (up to 6 scans, 2 s apart), logging and recording owned entries the
+  platform publishes during teardown, e.g. the temporary-access revoke; only lasting residue fails the run.
+
+## 2026-09-25
+
+- Passed QA runs keep their exit-0 probes in a per-project library (cap 50), offered to later runs with platform seeds
+  under `/workspace/qa-library`; the first seed sends a Telegram location with coordinates checked as floats.
+- Probe library names are canonical at store time (non-matching names are skipped and counted), and a library that
+  cannot be built degrades the run to seeds with a `build_failure` note instead of failing it.
+- `qa probe` bounds each text by its encoded size, so a control-character-heavy probe fits the 256 KiB body limit.
+- QA probe capture now survives timeouts, invalid bytes, output bounds and non-JSON endpoint failures; endpoint fields and request bodies are bounded, and QA workers retain no transcript mount.
+- QA executor probes now retain scrubbed, bounded source and results on their Run, and QA removes its broker output
+  stream rather than naming a deleted transcript file.
+- The QA executor is a sandbox: its proxy opens the model backend, the deploy target (GETs by policy) and Telegram;
+  it gets the QA Telethon identity only after a per-run proof, and no platform secret.
+- `mega-live` proves the QA Telethon session (authorized, QA identity, reaches the stand bot) before any spend,
+  and the stand hands it to qa-worker alone; paid run 36147402976 had blocked on missing credentials.
+- Worker-manager retries story checkout when GitHub briefly returns repository 404, sharing scaffolder's 30 s policy;
+  live checks parse console retry fields and keep the 15 s active-work bound.
+- A failed story-branch fetch now exits unless Git says the remote ref is absent, avoiding an incorrect new branch.
+- A QA temporary-access grant or revoke only reads its grant's target application's allocations: a revoke after
+  undeploy settles as revoked with no ports or SSH; a grant, or an unreadable target, fails closed.
+- After its HTTP result, a Claude CLI gets 30 s under a git-lock fence to end its turn, so its
+  `total_cost_usd` reaches the ledger as `provider_reported`; past the grace it is stopped, cost unknown.
+
+## 2026-09-24
+
+- Every `tests/live` test runs under a `pytest-timeout` `signal` bound derived in `shared/stand_deadlines.py`,
+  so a hang fails as a named pytest timeout, with cleanup, before the stand runner's backstop.
+- Langgraph's service QA executor fixture now records a published start, so write-guard tests exercise QA accounting after executor creation.
+- QA Run accounting now totals every started executor attempt and marks post-start errors unknown; unlimited engineering replays recheck controls.
+- QA executor Runs now reserve the owner's promo budget and settle provider cost into the shared ledger; health-only QA releases its hold without spend.
+- New stand suite `mega-live`: `TestFullPipeline`'s two-story lifecycle with a real developer and QA executor,
+  asserting provider-reported settlement; `mega-llm`, `matrix` and `TestFullPipelineLLM` are removed.
+- One contract test bans `pytest.skip` in `tests/live` outside a named environment-precondition allowlist;
+  a failed scaffold or engineering phase now fails naming the phase instead of skipping.
+- A failed `checkout_branch` logs and records its exit code, stderr/stdout and, when silent, the dead worker
+  container's state and log tail; the spawner reads a durable creation-failure record, not "Worker disappeared".
+- A failed or timed-out scaffold now fails or parks the stories waiting on it, `in_progress` included, with
+  a typed `StoryFailure` and an owed owner notice, instead of leaving them "in progress" for ever.
+- An `in_progress` story with no task for `supervisor.planless_story_max_minutes` (60) is parked for
+  human review by the state-age watchdog, so no dead planning run reads as work continuing.
+- PO reads `GET /api/stories/{id}/diagnostics` (recorded cause, scaffold error, failed runs, redacted
+  Loki error lines) through `get_story_diagnostics`, and must tell the owner the cause of a stop.
+- Scaffold retries `git fetch` of a just-created repository with bounded backoff (~30 s) while GitHub's git
+  endpoint still answers "Repository not found" or lacks `main`; other git failures still fail at once.
+- CI builds through a per-Dockerfile gha layer cache, bakes the 8 import-check images in parallel, and
+  plans its docker legs and the import check from path filters, so skipped legs take no runner.
+- Docker jobs wait for a 15 s lint job instead of the unit suite, which runs beside them; main runs are
+  never cancelled, so every merge commit gets its service and worker release.
+- The stand runs the tested release: it waits for both releases before creating machines, pulls the
+  service release instead of building, and warms both pulls and uv in the background after bootstrap.
+- `pull-worker-images.sh` takes `WORKER_IMAGE_SUBSET` (the stand skips the factory image), and both
+  release pullers fetch a chain's images concurrently.
+- The stand runner's QA-switch recreate runs the release override with `--no-build --pull never` and
+  refuses a run without that override, instead of building services from the checkout.
+- The stand sweep gets the suites' `API_BASE_URL`, and the runner refuses before preflight when the
+  sweep's own requirements are unmet, so a green suite is no longer made red by a sweep that cannot start.
+- [hotfix] Deploy cleanup removes images by ID, skips what is already gone, and reports a failure as a
+  warning, so a live deploy is never red over cleanup (runs 35991711761, 35993281922).
+
+## 2026-09-23
+
+- Worker images are released per source hash: built once as candidates beside the suites, tested by DinD
+  by digest, and after the gate a same-hash commit only gets its alias marker naming those digests.
+
+- Every Python service image installs its `requirements.lock` before `COPY shared`/`src`, infra-service's
+  Ansible collections are exact pins, and `service-image-imports` fails on any image-vs-lock drift.
+
+- The prod overlay resets every source bind-mount, so prod and stand run the released image code only;
+  shared freshness now compares those images, and `service_release.py readback` checks it on the host.
+
+- Deploy pulls the revision's service release by digest beside the worker release and runs compose on it
+  with `--no-build`, so the host builds nothing; a `revision` input redeploys a previous release (rollback).
+- Deploy verifies both releases from a staged worktree into a pending set; one `Switch` step alone changes
+  live host state and promotes the release records only after `up`, so a failed attempt poisons nothing.
+- Main CI pushes the 10 service images by merge SHA and, after a green gate, a `service-release:<sha>` marker;
+  both release chains push only on a registry 404 for the marker and validate a committed record whole.
+- The PR poller merges product PRs itself (no GitHub auto-merge) after writing their `REGISTRY_*` secrets
+  and rewrites them each tick a PR stays armed for auto-merge, so push-main CI never builds on stale ones.
+- Resource-wait park/resume and the secret ask (the only entry to `waiting_user_secret`) owe their owner notice
+  in the move's transaction and deliver it via the seam, so a Redis or recipient failure cannot lose it.
+- The state-age watchdog and stage notices run in their own `story_supervision` scheduler loop, each sweep
+  in its own failure boundary, since neither depends on its position in the dispatcher tick any more.
+- Stage notices re-read the story just before the marker write and publish and skip a stage it has left,
+  so naming the real stage no longer depends on running after every routing supervisor in the tick.
+- The state-age watchdog ends a wait only via `expire-state-wait`, a compare-and-set on status and anchor,
+  so a story routing moved on is skipped and logged, never parked or failed, whatever runs first.
+- Every CI job and docker step is bounded, with job limits covering worst-case retries, so a hung Buildx or
+  image pull fails, is retried and marks `step-timeout` instead of holding CI for up to 6 h.
+- CI retries uv, Buildx and image-pull downloads and writes one `CI-INFRA-FAILURE:` marker when they are
+  exhausted; the Required CI Gate repeats it but still fails. Every third-party action is SHA-pinned.
+- The deploy waits up to 45 min for the dispatched SHA's CI run to publish its worker release before touching
+  the host, and its file-only SSH steps retry a dropped connection up to three times, never a failed script.
+- `poll_merged_prs`, `poll_ci_failures` and each story completion enter one `GitHubAppClient` per operation,
+  so their GitHub calls share one HTTP pool, closed on success and error, not one pool per request.
+- Owed owner-notification recovery runs on its own scheduler loop and logs every outcome per sweep, so
+  its failures cannot stop dispatcher ticks and tick failures cannot delay it.
+- `DEFAULT_AGENT_TYPE` is required by api, langgraph and telegram_bot and by Compose, with no `claude`
+  fallback; the API drops its unused optional `TELEGRAM_BOT_TOKEN` setting.
+- Owed owner notifications carry `last_attempt_at`; the API grants one delivery attempt per 60 s per record
+  under the row lock, so routing and the recovery sweep may run in any order or concurrently.
+
 ## 2026-09-22
 
+- The Claude worker image retries transient installer fetch failures and checks the downloaded script before execution, keeping its pinned version check.
+- Live-test cleanup and inventory now require `API_BASE_URL`; inventory names servers skipped by cleanup policy and fails when all registered servers are skipped.
+- Each scaffold operation enters one `GitHubAppClient` context for all its GitHub calls, replacing the
+  scaffolder's process singleton, so its HTTP pool closes on success, failure and cancellation.
+- Temporary QA access cleanup now runs on its own scheduler loop and logs each sweep, so dispatcher
+  failures cannot delay cleanup and sweep failures cannot stop dispatcher ticks.
+- Cleanup escalation waits for `runs.qa_routed_at`, set only by the story transition that routes the QA run,
+  so the access sweep may run before or after QA routing; run writes carrying `qa_routed` metadata get 422.
+- Migration `4d8e1f2a3b5c` deletes revoked target-less temporary access rows, makes both target columns NOT NULL
+  and drops `env_key`/`subject`; the API loses its legacy-record rejection, list filter and legacy drain.
+- The production sweep now owns only its two active title prefixes after retiring the legacy third
+  production sweep prefix, whose inventory proved no residual resources remained.
+- One `EmbeddingClient.generate` call now sends all of its batches through a single HTTP pool that closes
+  when the call ends, instead of opening a new client for each batch.
+- GitHub App operations can now share one explicitly scoped HTTP pool, while callers outside a
+  lifecycle retain per-request clients and environment-contract loading uses the bounded path.
+- The live-test sweep now has a fail-closed read-only inventory for each contour prefix, so the PO
+  can prove retired-prefix residue is absent from production before its legacy entry is retired.
+- Docs now match the code: `engineering_attempt_ledger`, not `runs`, owns token and cost accounting, and the
+  env-default rule allows documented defaults only for safe presentation, logging and local ergonomics.
 - Executor profile compatibility is version-bound end to end: Codex owns its serde/JWT parser and both
   adapters carry pinned provenance, so vendor upgrades cannot silently reuse a stale private-format contract.
 

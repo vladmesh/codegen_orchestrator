@@ -19,7 +19,14 @@ from shared.contracts.dto.product_brief import (
 )
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import StoryFailureCode
+from shared.contracts.dto.story_planning import (
+    PlanningChannels,
+    StoryPlanning,
+    StoryPlanningState,
+)
 from shared.contracts.queues.architect import ArchitectMessage
+from src.capability_feasibility import MANIFEST_VERSION
 from tests.unit.factories import (
     make_admission,
     make_planning_attempt,
@@ -34,6 +41,14 @@ _ACTIVE_PROJECT = make_project(status=ProjectStatus.ACTIVE, config={})
 
 # Default story response (CREATED = ready for architect decomposition)
 _CREATED_STORY = make_story(id="story-abc", status="created")
+
+
+_OPENROUTER_ONLY_CONFIG = {"id": "architect", "llm_channels": [{"channel": "openrouter"}]}
+
+
+def _recorded_planning(state: StoryPlanningState = StoryPlanningState.RETRYING) -> StoryPlanning:
+    """What `POST /stories/{id}/planning-outcome` answers with, reduced to the record."""
+    return StoryPlanning(state=state, failed_attempts=1, recorded_at="2026-09-26T00:00:00Z")
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +69,11 @@ def _mock_api_get_project():
         mock_api.finish_planning_attempt = AsyncMock()
         mock_api.admit_product_brief_coverage = AsyncMock()
         mock_api.list_requirement_coverage = AsyncMock(return_value=[])
+        # The Architect's stored channel chain: openrouter alone, the chain these
+        # tests were written against (`ARCHITECT_LLM_*` is then required).
+        mock_api.get_agent_config = AsyncMock(return_value=_OPENROUTER_ONLY_CONFIG)
+        # Every planning attempt reports its outcome on the story.
+        mock_api.record_planning_outcome = AsyncMock(return_value=_recorded_planning())
         yield mock_api
 
 
@@ -271,6 +291,103 @@ class TestProcessArchitectJob:
         assert mock_api.get_project.call_count == 2
 
 
+class TestScaffoldFailureStopsTheStory:
+    """Incident 2026-09-24: a dead scaffold left story-3990e41c in_progress with no tasks."""
+
+    @pytest.fixture
+    def valid_job_data(self):
+        return ArchitectMessage(
+            story_id="story-3990e41c", project_id="proj-123", telegram_chat_id="user-1"
+        ).model_dump(mode="json")
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_scaffold_error_fails_the_story_at_once(
+        self, valid_job_data, _mock_api_get_project
+    ):
+        mock_api = _mock_api_get_project
+        mock_api.get_project = AsyncMock(
+            return_value=make_project(
+                status=ProjectStatus.DRAFT,
+                config={"scaffold_error": "Git init/fetch failed: Repository not found."},
+            )
+        )
+        mock_api.stop_story = AsyncMock()
+        sleep = AsyncMock()
+
+        with patch("src.consumers.architect.asyncio.sleep", sleep):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(valid_job_data, AsyncMock())
+
+        assert result["status"] == "failed"
+        assert result["_live_work_settled"] is True
+        sleep.assert_not_awaited()
+        (call,) = mock_api.stop_story.await_args_list
+        story_id, action, failure = call.args
+        assert (story_id, action, call.kwargs["actor"]) == ("story-3990e41c", "fail", "architect")
+        assert failure.code is StoryFailureCode.SCAFFOLD_FAILED
+        assert "Repository not found" in failure.detail
+
+    @pytest.mark.asyncio
+    async def test_an_error_recorded_during_the_wait_ends_it(
+        self, valid_job_data, _mock_api_get_project
+    ):
+        mock_api = _mock_api_get_project
+        mock_api.get_project = AsyncMock(
+            side_effect=[
+                make_project(status=ProjectStatus.DRAFT, config={}),
+                make_project(status=ProjectStatus.DRAFT, config={"scaffold_error": "clone"}),
+            ]
+        )
+        mock_api.stop_story = AsyncMock()
+
+        with patch("src.consumers.architect.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            from src.consumers.architect import process_architect_job
+
+            await process_architect_job(valid_job_data, AsyncMock())
+
+        assert sleep.await_count == 1
+        assert mock_api.stop_story.await_args.args[1] == "fail"
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_without_a_recorded_error_parks_the_story_for_a_person(
+        self, valid_job_data, _mock_api_get_project
+    ):
+        mock_api = _mock_api_get_project
+        mock_api.get_project = AsyncMock(
+            return_value=make_project(status=ProjectStatus.DRAFT, config={})
+        )
+        mock_api.stop_story = AsyncMock()
+
+        with patch("src.consumers.architect.asyncio.sleep", new_callable=AsyncMock):
+            from src.consumers.architect import SCAFFOLD_WAIT_MAX, process_architect_job
+
+            result = await process_architect_job(valid_job_data, AsyncMock())
+
+        assert result["error"] == "scaffold did not complete in time"
+        story_id, action, failure = mock_api.stop_story.await_args.args
+        assert action == "human-review"
+        assert failure.code is StoryFailureCode.SCAFFOLD_TIMEOUT
+        assert f"after {SCAFFOLD_WAIT_MAX} seconds" in failure.detail
+
+    @pytest.mark.asyncio
+    async def test_a_refused_stop_is_logged_and_leaves_the_job_unsettled(
+        self, valid_job_data, _mock_api_get_project
+    ):
+        mock_api = _mock_api_get_project
+        mock_api.get_project = AsyncMock(
+            return_value=make_project(status=ProjectStatus.DRAFT, config={"scaffold_error": "x"})
+        )
+        mock_api.stop_story = AsyncMock(side_effect=RuntimeError("422 already failed"))
+
+        from src.consumers.architect import process_architect_job
+
+        result = await process_architect_job(valid_job_data, AsyncMock())
+
+        assert result["status"] == "failed"
+        assert result["_live_work_settled"] is False
+
+
 class TestProcessArchitectJobIntegration:
     """Integration-style test: full flow with mocked graph + mocked API."""
 
@@ -391,7 +508,9 @@ class TestProductBriefPlanning:
         assert "req-1" in user_msg and "req-2" in user_msg
         assert "record_requirement_coverage" in user_msg
         api.claim_planning_attempt.assert_awaited_once_with("brief-1")
-        api.admit_product_brief_coverage.assert_awaited_once_with("brief-1", "plan-1")
+        api.admit_product_brief_coverage.assert_awaited_once_with(
+            "brief-1", "plan-1", channels=PlanningChannels(), reopen=False
+        )
 
     @pytest.mark.asyncio
     async def test_rival_owner_plans_nothing(
@@ -444,6 +563,74 @@ class TestProductBriefPlanning:
         assert result["status"] == "success"
         api.admit_product_brief_coverage.assert_not_called()
         assert graph.ainvoke.call_args[0][0]["planning_attempt_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_retried_failed_order_whose_plan_was_admitted_is_planned_again(
+        self, mock_redis, _mock_api_get_project, _llm_configured
+    ):
+        """A platform retry reopens the ordered story: the brief's bookkeeping lets it plan.
+
+        The admitted plan stays admitted, so the retry is ordinary work on the
+        same story — no second claim or admission to refuse it — and the story
+        moves on to work once planned.
+        """
+        api = _mock_api_get_project
+        api.get_story = AsyncMock(return_value=make_story(id="story-abc", status="reopened"))
+        api.get_product_brief_by_story = AsyncMock(
+            return_value=make_product_brief(coverage_admitted_at=make_product_brief().confirmed_at)
+        )
+        api.claim_planning_attempt = AsyncMock(
+            return_value=make_planning_attempt(
+                outcome=ProductBriefPlanningAttemptOutcome.ALREADY_ADMITTED,
+                planning_attempt_id=None,
+            )
+        )
+        retry = ArchitectMessage(
+            story_id="story-abc", project_id="proj-123", telegram_chat_id="user-1", is_reopen=True
+        ).model_dump(mode="json")
+        graph = _graph_returning()
+
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(retry, mock_redis)
+
+        assert result["status"] == "success"
+        user_msg = graph.ainvoke.call_args[0][0]["messages"][0]["content"]
+        assert "REOPEN of story story-abc" in user_msg
+        assert "retry after the story failed; there is no user report" in user_msg
+        assert "what made the previous attempt fail" in user_msg
+        assert "None" not in user_msg
+        api.admit_product_brief_coverage.assert_not_called()
+        api.transition_story.assert_called_with("story-abc", "start")
+
+    @pytest.mark.asyncio
+    async def test_a_retried_order_that_failed_in_planning_is_claimed_and_admitted(
+        self, mock_redis, _mock_api_get_project, _llm_configured
+    ):
+        """A story that failed before its plan was admitted gets a fresh attempt."""
+        api = _mock_api_get_project
+        api.get_story = AsyncMock(return_value=make_story(id="story-abc", status="reopened"))
+        api.get_product_brief_by_story = AsyncMock(return_value=make_product_brief())
+        api.claim_planning_attempt = AsyncMock(return_value=make_planning_attempt())
+        api.admit_product_brief_coverage = AsyncMock(return_value=make_admission())
+        retry = ArchitectMessage(
+            story_id="story-abc", project_id="proj-123", telegram_chat_id="user-1", is_reopen=True
+        ).model_dump(mode="json")
+
+        with patch(
+            "src.consumers.architect.create_architect_graph", return_value=_graph_returning()
+        ):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(retry, mock_redis)
+
+        assert result["status"] == "success"
+        api.claim_planning_attempt.assert_awaited_once_with("brief-1")
+        api.admit_product_brief_coverage.assert_awaited_once_with(
+            "brief-1", "plan-1", channels=PlanningChannels(), reopen=True
+        )
+        api.transition_story.assert_called_with("story-abc", "start")
 
     @pytest.mark.asyncio
     async def test_unconfirmed_brief_is_not_planned(
@@ -570,7 +757,9 @@ class TestProductBriefPlanning:
         assert result["status"] == "incomplete"
         assert result["missing_requirement_ids"] == ["req-2"]
         assert "req-2" in result["error"]
-        api.admit_product_brief_coverage.assert_awaited_once_with("brief-1", "plan-1")
+        api.admit_product_brief_coverage.assert_awaited_once_with(
+            "brief-1", "plan-1", channels=PlanningChannels(), reopen=True
+        )
         # The story is not moved on by this consumer, and nothing is admitted twice.
         api.transition_story.assert_not_called()
 
@@ -595,8 +784,12 @@ class _FakeBriefBoundary:
         self.tasks: dict[str, dict] = {}
         self.admit_calls = 0
         self.released: list[str] = []
+        self.planning_reports: list = []
 
     # --- the story/project reads the consumer does before planning ---
+
+    async def get_agent_config(self, agent_id):
+        return _OPENROUTER_ONLY_CONFIG
 
     async def get_story(self, story_id):
         return make_story(id=story_id, status="created")
@@ -612,6 +805,10 @@ class _FakeBriefBoundary:
 
     async def get_primary_repository(self, project_id):
         return None
+
+    async def record_planning_outcome(self, story_id, report):
+        self.planning_reports.append(report)
+        return _recorded_planning()
 
     # --- the boundary ---
 
@@ -683,7 +880,7 @@ class _FakeBriefBoundary:
             )
         ]
 
-    async def admit_product_brief_coverage(self, brief_id, planning_attempt_id):
+    async def admit_product_brief_coverage(self, brief_id, planning_attempt_id, **_channels):
         self.admit_calls += 1
         must = {r.id for r in self.brief.content.must_requirements}
         covered = {
@@ -816,6 +1013,95 @@ class TestUndisposedRequirementCounterfactual:
         assert boundary.released == ["task-1"]
         assert boundary.tasks["task-1"]["dispatch_admitted"] is True
 
+    @pytest.mark.parametrize("returned", [False, True])
+    async def test_unsupported_calendar_requires_return_instead_of_task_coverage(
+        self, returned, mock_redis, valid_job_data, boundary, _llm_configured
+    ):
+        from src.agents.architect.tools import record_requirement_coverage
+        from src.consumers.architect import process_architect_job
+
+        boundary.brief.content.must_requirements[0].text = "/connect: secure Google OAuth flow"
+        reason = (
+            f"oauth_web_redirect, manifest v{MANIFEST_VERSION}: no stable HTTPS redirect. "
+            "Use a Google service account the user shares their calendar with."
+        )
+        graph = _planning_graph(dispose=["req-2"] if returned else ["req-1", "req-2"])
+        scripted = graph.ainvoke.side_effect
+
+        async def plan(state, config=None):
+            output = await scripted(state, config)
+            if returned:
+                await record_requirement_coverage.ainvoke(
+                    {
+                        "requirement_id": "req-1",
+                        "returned_reason": reason,
+                        "brief_id": state["product_brief_id"],
+                        "planning_attempt_id": state["planning_attempt_id"],
+                    }
+                )
+            return output
+
+        graph.ainvoke.side_effect = plan
+        mock_redis.redis.exists.return_value = False
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            result = await process_architect_job(valid_job_data, mock_redis)
+
+        if returned:
+            assert result["status"] == "success"
+            assert boundary.admit_calls == 1 and boundary.released == ["task-1"]
+            notices = [
+                call.args[1]
+                for call in mock_redis.publish_flat.call_args_list
+                if call.args[0] == "po:input"
+            ]
+            assert any(reason in notice["text"] for notice in notices)
+        else:
+            assert result["status"] == "incomplete"
+            assert "oauth_web_redirect" in result["error"]
+            assert f"manifest v{MANIFEST_VERSION}" in result["error"]
+            assert "service account" in result["error"]
+            assert boundary.admit_calls == 0 and boundary.released == []
+            assert not boundary.attempt_active
+            assert not boundary.tasks["task-1"]["dispatch_admitted"]
+
+    async def test_accepted_calendar_workaround_allows_task_coverage(
+        self, mock_redis, valid_job_data, boundary, _llm_configured
+    ):
+        from src.consumers.architect import process_architect_job
+
+        content = boundary.brief.content.model_dump()
+        content["must_requirements"][0]["text"] = "/connect: secure Google OAuth flow"
+        content["variant_choices"] = [
+            {
+                "capability": "oauth_web_redirect",
+                "feature": "Calendar connection",
+                "chosen": "Google service account",
+                "alternative": "OAuth",
+                "trade_off": "Share the calendar manually",
+                "add_later": "Web login when supported",
+            }
+        ]
+        boundary.brief.content = ProductBriefContent.model_validate(content)
+        graph = _planning_graph(dispose=["req-1", "req-2"])
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            result = await process_architect_job(valid_job_data, mock_redis)
+        assert result["status"] == "success"
+        assert boundary.admit_calls == 1 and boundary.released == ["task-1"]
+
+    async def test_stale_return_cannot_admit_a_current_conflicting_plan(
+        self, mock_redis, valid_job_data, boundary, _llm_configured
+    ):
+        from src.consumers.architect import process_architect_job
+
+        boundary.brief.content.must_requirements[0].text = "OAuth redirect"
+        boundary.coverage["req-1"] = ("old-attempt", None, "OAuth is unsupported")
+        graph = _planning_graph(dispose=["req-2"])
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            result = await process_architect_job(valid_job_data, mock_redis)
+        assert result["status"] == "incomplete"
+        assert "oauth_web_redirect" in result["error"]
+        assert boundary.admit_calls == 0 and boundary.released == []
+
 
 class TestProductBriefUsageExamples:
     """How the user confirmed each requirement is used reaches the plan in their words."""
@@ -845,6 +1131,29 @@ class TestProductBriefUsageExamples:
         return graph.ainvoke.call_args[0][0]["messages"][0]["content"]
 
     @pytest.mark.asyncio
+    async def test_variant_choices_reach_the_graph_as_context_for_only_the_chosen_variant(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        brief = make_product_brief()
+        choice = {
+            "feature": "Recognition",
+            "chosen": "Free OCR",
+            "alternative": "Paid vision",
+            "trade_off": "Worse on receipt photos.",
+            "add_later": "Add your key later.",
+        }
+        brief.content = ProductBriefContent.model_validate(
+            {**brief.content.model_dump(), "variant_choices": [choice]}
+        )
+        instructions = await self._instructions(
+            _mock_api_get_project, mock_redis, valid_job_data, brief
+        )
+        assert all(value in instructions for value in choice.values())
+        assert "Recorded variant_choices context" in instructions
+        assert "Build only the chosen variant" in instructions
+        assert "alternative is not a requirement; do not build it" in instructions
+
+    @pytest.mark.asyncio
     async def test_examples_grouped_by_requirement_limitations_and_internal_requirements(
         self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
     ):
@@ -855,7 +1164,7 @@ class TestProductBriefUsageExamples:
                 must_requirements=[
                     {"id": "expense-text", "text": "Записывает расход из текста"},
                     {"id": "income", "text": "Записывает доход"},
-                    {"id": "backup", "text": "Ночная резервная копия", "user_facing": False},
+                    {"id": "rollup", "text": "Ночная сверка итогов за день", "user_facing": False},
                 ],
                 # Shown to the user out of requirement order; planned in it.
                 usage_examples=[
@@ -894,7 +1203,7 @@ class TestProductBriefUsageExamples:
             "  - the user sends: /income 80000 зарплата\n"
             "    the product answers: Записал доход 80 000 ₽"
         ) in instructions
-        assert "- backup: Ночная резервная копия (not user-facing" in instructions
+        assert "- rollup: Ночная сверка итогов за день (not user-facing" in instructions
         assert "- expense-text: Записывает расход из текста\n" in instructions
         assert (
             "Limitations and trade-offs the user confirmed:\n"
@@ -1176,6 +1485,31 @@ class TestReturnedRequirementsNotice:
         # Only what this plan returned: the covered requirement and the voided
         # attempt's return are not in it.
         assert "req-1" not in text and "stale reason" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_requirement_qa_cannot_check_is_returned_like_any_other(
+        self, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        from shared.contracts.dto.product_brief import NOT_AUTOMATICALLY_VERIFIABLE_PREFIX
+
+        reason = (
+            f"{NOT_AUTOMATICALLY_VERIFIABLE_PREFIX} QA would need to read the email the "
+            "product sends to the user"
+        )
+        self._admitting(
+            _mock_api_get_project,
+            _coverage(("req-1", "plan-1", "task-1", None), ("req-2", "plan-1", None, reason)),
+        )
+        redis = _FakeRedis()
+
+        result = await self._run(valid_job_data, redis)
+
+        assert result["status"] == "success"
+        [event] = _returned_events(redis)
+        assert event["story_id"] == "story-abc"
+        assert "- req-2: It must list cities" in event["text"]
+        assert f"reason: {reason}" in event["text"]
+        assert "req-1" not in event["text"]
 
     @pytest.mark.asyncio
     async def test_nothing_returned_publishes_nothing(

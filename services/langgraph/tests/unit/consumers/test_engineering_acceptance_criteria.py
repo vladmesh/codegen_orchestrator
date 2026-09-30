@@ -107,8 +107,12 @@ async def _task_md(job_data: dict, api: MagicMock) -> str:
     developer_api = MagicMock()
     developer_api.get_project = AsyncMock(return_value=None)
     developer_api.get_primary_repository = AsyncMock(return_value=make_repository())
+    developer_api.patch = AsyncMock()
+    developer_api.list_story_engineering_runs = AsyncMock(return_value=[])
     github = MagicMock()
     github.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
+    github.return_value.get_repo = AsyncMock(return_value=SimpleNamespace(default_branch="main"))
+    github.return_value.get_ref_sha = AsyncMock(return_value="main-head")
 
     with (
         patch("src.consumers.engineering.api_client", api),

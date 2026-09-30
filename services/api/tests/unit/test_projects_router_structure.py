@@ -104,6 +104,18 @@ def test_projects_route_table_keeps_its_public_surface():
         ),
         (
             "GET",
+            "/api/projects/{project_id}/users/initial-owner-deployment",
+            "get_initial_owner_deployment_api_projects__project_id__users_initial_owner_deployment_get",
+            ("200", "422"),
+        ),
+        (
+            "POST",
+            "/api/projects/{project_id}/users/grant-intents/{intent_id}/retry",
+            "retry_initial_owner_deployment_api_projects__project_id__users_grant_intents__intent_id__retry_post",
+            ("200", "422"),
+        ),
+        (
+            "GET",
             "/api/projects/{project_id}/users/grant-intents/{intent_id}",
             "get_intent_api_projects__project_id__users_grant_intents__intent_id__get",
             ("200", "422"),
@@ -124,6 +136,30 @@ def test_projects_route_table_keeps_its_public_surface():
             "GET",
             "/api/projects/{project_id}/telegram/liveness",
             "check_telegram_bot_liveness_api_projects__project_id__telegram_liveness_get",
+            ("200", "422"),
+        ),
+        (
+            "GET",
+            "/api/projects/{project_id}/qa-probes",
+            "list_qa_probes_api_projects__project_id__qa_probes_get",
+            ("200", "422"),
+        ),
+        (
+            "POST",
+            "/api/projects/{project_id}/qa-probes/from-run",
+            "store_qa_probes_from_run_api_projects__project_id__qa_probes_from_run_post",
+            ("200", "422"),
+        ),
+        (
+            "GET",
+            "/api/projects/{project_id}/verification-gaps",
+            "list_verification_gaps_api_projects__project_id__verification_gaps_get",
+            ("200", "422"),
+        ),
+        (
+            "POST",
+            "/api/projects/{project_id}/verification-gaps/from-run",
+            "record_verification_gaps_from_run_api_projects__project_id__verification_gaps_from_run_post",
             ("200", "422"),
         ),
         (

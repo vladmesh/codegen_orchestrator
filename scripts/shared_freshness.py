@@ -46,8 +46,13 @@ Two things are deliberately not stale, and both say so where the code decides it
   old — so it is reported as NOT_BUILT and does not fail the check. That is what keeps the
   check green on a clean machine and in CI, where nothing is built.
 * A compose service that mounts `./shared` over `/app/shared` runs the tree, not the copy
-  in its image, so its image is not compared. It still has to be nameable and to stamp its
-  hash, so the day the mount goes away the check works without being taught anything.
+  in its image, so its image is not compared — but only when every contour that runs the
+  service mounts it. The development stack does; the production contours
+  (PRODUCTION_CONTOURS: the base file under the production overlay, and the stand overlay
+  on top) reset every source mount and run the released image, so a service of the base
+  file is compared like any other. A production contour that still mounts `./shared` over
+  a baked copy fails the check by name: it would run the checkout while its image's label
+  vouches for something else.
 
 Usage:
     python3 scripts/shared_freshness.py hash    # the tree hash, for the Makefile
@@ -108,6 +113,13 @@ WALK_SKIP_DIRS = {
 VENDORED_TEMPLATE_FIXTURE_ROOT = ("shared", "tests", "fixtures")
 SHARED_TREE = "shared"
 SHARED_MOUNT_TARGET = "/app/shared"
+# The stacks a deploy brings up (`COMPOSE_ARGS` in .github/workflows/deploy.yml), each an
+# ordered list of compose files merged the way compose merges them. They run the released
+# image of every service, never the checkout, so no mount of theirs exempts an image.
+PRODUCTION_CONTOURS = (
+    ("docker-compose.yml", "docker-compose.prod.yml"),
+    ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml"),
+)
 GLOB_CHARS = set("*?[")
 SOURCE_AND_DESTINATION = 2  # the shortest COPY and the shortest volume mapping
 
@@ -348,23 +360,133 @@ def _service_dockerfile(compose_path: Path, build, root: Path) -> str | None:
         return None  # outside the repository: not ours to check
 
 
-def _mounts_the_tree_over_the_baked_copy(compose_path: Path, service: dict, root: Path) -> bool:
-    """Does `./shared` cover the baked copy? Then what runs is the tree, never the image."""
-    for volume in service.get("volumes") or []:
-        if isinstance(volume, dict):
-            source, target = volume.get("source"), volume.get("target")
-        elif isinstance(volume, str):
-            parts = volume.split(":")
-            if len(parts) < SOURCE_AND_DESTINATION:
-                continue
-            source, target = parts[0], parts[1]
+def _split_outside_interpolation(volume: str) -> list[str]:
+    """`src:dst[:mode]` split on the colons compose splits on, not those of `${VAR:-x}`."""
+    parts, current, depth = [], "", 0
+    index = 0
+    while index < len(volume):
+        if volume.startswith("${", index):
+            depth += 1
+            current += "${"
+            index += 2
+            continue
+        char = volume[index]
+        if char == "}" and depth:
+            depth -= 1
+        if char == ":" and not depth:
+            parts.append(current)
+            current = ""
         else:
+            current += char
+        index += 1
+    return [*parts, current]
+
+
+def _volume_source_and_target(volume) -> tuple[str | None, str | None]:
+    """A volume entry in either compose spelling, short (`src:dst[:mode]`) or long."""
+    if isinstance(volume, dict):
+        source, target = volume.get("source"), volume.get("target")
+        return (source if isinstance(source, str) else None), (
+            target if isinstance(target, str) else None
+        )
+    if isinstance(volume, str):
+        parts = _split_outside_interpolation(volume)
+        if len(parts) >= SOURCE_AND_DESTINATION:
+            return parts[0], parts[1]
+        return None, parts[0]  # an anonymous volume: a target and nothing else
+    return None, None
+
+
+def _mounts_the_tree(project: Path, volumes, root: Path) -> bool:
+    """Does `./shared` cover the baked copy? Then what runs is the tree, never the image."""
+    for volume in volumes or []:
+        source, target = _volume_source_and_target(volume)
+        if target != SHARED_MOUNT_TARGET or source is None:
             continue
-        if target != SHARED_MOUNT_TARGET or not isinstance(source, str):
-            continue
-        if (compose_path.parent / source).resolve() == root / SHARED_TREE:
+        if (project / source).resolve() == root / SHARED_TREE:
             return True
     return False
+
+
+# --- the production contours ------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Reset:
+    """`!reset`: the overlay clears the attribute the files before it set."""
+
+
+@dataclass(frozen=True)
+class _Override:
+    """`!override`: the overlay's value replaces the merged one instead of merging into it."""
+
+    value: object
+
+
+def _contour_services(path: Path) -> dict:
+    """One file of a contour, with compose's merge tags kept rather than read as values."""
+    import yaml  # only the check needs it; `hash` runs on a bare interpreter
+
+    class _TagLoader(yaml.SafeLoader):
+        """SafeLoader that keeps `!reset` and `!override`, which decide how files merge."""
+
+    def _reset(loader, node):
+        return _Reset()
+
+    def _override(loader, node):
+        if isinstance(node, yaml.SequenceNode):
+            return _Override(loader.construct_sequence(node, deep=True))
+        if isinstance(node, yaml.MappingNode):
+            return _Override(loader.construct_mapping(node, deep=True))
+        return _Override(loader.construct_scalar(node))
+
+    _TagLoader.add_constructor("!reset", _reset)
+    _TagLoader.add_constructor("!override", _override)
+    try:
+        data = yaml.load(path.read_text(), _TagLoader)  # noqa: S506 - derives from SafeLoader
+    except yaml.YAMLError as error:
+        raise Unreadable(
+            f"{path.name}: a production contour file that cannot be parsed as YAML "
+            f"({error.__class__.__name__}), so what production mounts cannot be checked"
+        ) from error
+    services = data.get("services") if isinstance(data, dict) else None
+    if not isinstance(services, dict):
+        raise Unreadable(f"{path.name}: a production contour file without a services: mapping")
+    return services
+
+
+def _merged_volumes(layers: list) -> list:
+    """`volumes` after compose merged the layers: by container path, unless a tag says not."""
+    merged: dict[object, object] = {}
+    for value in layers:
+        if isinstance(value, _Reset | _Override):
+            merged = {}
+        entries = value.value if isinstance(value, _Override) else value
+        for volume in entries if isinstance(entries, list) else []:
+            _source, target = _volume_source_and_target(volume)
+            merged[target if target is not None else object()] = volume
+    return list(merged.values())
+
+
+def production_contours(root: Path = REPO_ROOT) -> list[tuple[tuple[str, ...], dict[str, list]]]:
+    """Every production contour the tree has, as its merged `volumes` per service.
+
+    A contour whose files are not all in the tree is not one this tree deploys (a miniature
+    test repository has no overlays); the real tree's contours are pinned by a unit test.
+    """
+    contours = []
+    for files in PRODUCTION_CONTOURS:
+        if not all((root / name).is_file() for name in files):
+            continue
+        layers: dict[str, list] = {}
+        for name in files:
+            for service_name, service in _contour_services(root / name).items():
+                if isinstance(service, dict) and "volumes" in service:
+                    layers.setdefault(service_name, []).append(service["volumes"])
+                else:
+                    layers.setdefault(service_name, [])
+        contours.append((files, {name: _merged_volumes(value) for name, value in layers.items()}))
+    return contours
 
 
 def _passes_source_hash(build) -> bool:
@@ -386,7 +508,8 @@ class BuildRoute:
     reference: str
     dockerfile: str
     origin: str
-    runs_the_tree: bool = False  # ./shared is mounted over the baked copy at run time
+    # ./shared is mounted over the baked copy on every contour that runs it
+    runs_the_tree: bool = False
 
 
 def _with_tag(reference: str) -> str:
@@ -415,9 +538,12 @@ def compose_routes(root: Path = REPO_ROOT) -> tuple[list[str], list[BuildRoute]]
     problems: list[str] = []
     routes: list[BuildRoute] = []
     bakers = set(dockerfiles_baking_shared(root))
+    contours = production_contours(root)
 
     for path, data in _compose_documents(root):
         where_file = path.relative_to(root)
+        # The production contours this file is the base of: they run its services too.
+        stacked = [(files, volumes) for files, volumes in contours if root / files[0] == path]
         for name, service in data["services"].items():
             if not isinstance(service, dict):
                 continue
@@ -441,12 +567,22 @@ def compose_routes(root: Path = REPO_ROOT) -> tuple[list[str], list[BuildRoute]]
                     "Compose resolves it outside the tree, so which image is built cannot be "
                     "read here — same rule as is_pinned_image() in scripts/check-ci-gate.py"
                 )
+            runs_the_tree = _mounts_the_tree(path.parent, service.get("volumes"), root)
+            for files, volumes in stacked:
+                if _mounts_the_tree(path.parent, volumes.get(name), root):
+                    problems.append(
+                        f"{where} and on production contour {' + '.join(files)} mounts "
+                        "./shared over that copy — production runs image code only, so the "
+                        "overlay has to reset the mount"
+                    )
+                # Production runs the image, whatever the development stack mounts.
+                runs_the_tree = False
             routes.append(
                 BuildRoute(
                     _with_tag(reference),
                     dockerfile,
                     f"{where_file} service {name}",
-                    runs_the_tree=_mounts_the_tree_over_the_baked_copy(path, service, root),
+                    runs_the_tree=runs_the_tree,
                 )
             )
     return problems, routes

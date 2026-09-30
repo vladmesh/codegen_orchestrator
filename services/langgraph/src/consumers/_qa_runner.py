@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 import json
 import re
 from typing import Protocol
@@ -18,11 +19,20 @@ from shared.contracts.acceptance import (
     ScheduledBehaviourCriterion,
     parse_scheduled_behaviours,
 )
+from shared.contracts.dto.engineering_attempt import (
+    CostSource,
+    EngineeringAttemptLedgerInput,
+    QAAccountingFact,
+)
 from shared.contracts.dto.product_brief import InitialSetting
+from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
+from shared.contracts.dto.qa_verification import QAUnverifiedCheck, QAUnverifiedOrigin
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
     QAFailedCheckCause,
+    QAProbeLibraryOffer,
+    QAProbeRun,
     QATelegramProbeEvidence,
 )
 from shared.contracts.queues.worker import WorkerOwnership
@@ -54,7 +64,11 @@ from ..agents.qa.packages import (
     parse_job_owners,
     parse_listed_packages,
 )
-from ..agents.qa.tools import QAJobsCapability, build_qa_callables
+from ..agents.qa.tools import (
+    QAJobsCapability,
+    build_qa_callables,
+    missing_telethon_credentials,
+)
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
 from ..prompts.qa import build_qa_instructions, build_qa_prompt
 from ._qa_target import (
@@ -74,6 +88,7 @@ from ._qa_target import (
     new_grant_marker,
     qa_target_grant,
 )
+from ._qa_telegram_identity import QATelegramIdentityRefusal, handed_over_secrets, redact
 from ._qa_workspace import QAWorkspace, qa_workspace
 
 logger = structlog.get_logger(__name__)
@@ -95,11 +110,19 @@ _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
 @dataclass(frozen=True)
 class QARuntimeConfig:
-    """Assigned executor and management-host capability/Telegram configuration."""
+    """Assigned executor and management-host capability/Telegram configuration.
+
+    `telegram_identity_proven` is set only by this run's own proof of
+    `telethon_env`; it is what lets the capability endpoint hand the identity to
+    the sandbox. A refused proof drops `telethon_env` and says why in
+    `telegram_identity_refusal`.
+    """
 
     executor_agent_type: AgentType
     capability_host: str
     telethon_env: dict[str, str] | None = None
+    telegram_identity_proven: bool = False
+    telegram_identity_refusal: QATelegramIdentityRefusal | None = None
 
 
 # One header per retained attempt, so a body carrying two of them is readable as
@@ -110,14 +133,13 @@ class QARuntimeConfig:
 EXECUTOR_ATTEMPT_HEADER = "== QA executor attempt {attempt} of {attempts} =="
 
 
-@dataclass(frozen=True)
+@dataclass
 class QAExecutorAttempts:
     """What every executor attempt of one QA run said, in the order they ran.
 
-    An attempt that never started a container contributes nothing — there is no
-    transcript to keep — and an attempt that ran contributes what it said, the
-    empty string included, because "it ran and was silent" is something this
-    process observed.
+    A published create command counts as a start even if a later error prevents
+    a transcript. Every such start needs typed facts to report a known Run cost.
+    A returned transcript, the empty string included, is retained as evidence.
 
     `evidence` keeps those three answers apart, and they never merge:
 
@@ -127,17 +149,71 @@ class QAExecutorAttempts:
       content;
     * ``""`` — at least one attempt ran and no attempt said anything. The runner
       watched that happen, so the silence is knowledge and is carried as such;
-    * ``None`` — no attempt ever started a container, so this record holds
-      nothing and claims nothing about any executor.
+    * ``None`` — no attempt returned a transcript. A create may still have been
+      published, so accounting reads `started`, not this presentation value.
     """
 
     attempts: int
     said: tuple[tuple[int, str], ...] = ()
+    started: set[int] = field(default_factory=set)
+    facts: dict[int, EngineeringAttemptLedgerInput | None] = field(default_factory=dict)
 
-    def with_attempt(self, attempt: int, transcript: str | None) -> QAExecutorAttempts:
+    def record_start(self, attempt: int) -> None:
+        """The create command was published; this start survives every later error."""
+        self.started.add(attempt)
+
+    def with_attempt(
+        self,
+        attempt: int,
+        transcript: str | None,
+        facts: EngineeringAttemptLedgerInput | None = None,
+    ) -> QAExecutorAttempts:
         if transcript is None:
             return self
-        return QAExecutorAttempts(self.attempts, (*self.said, (attempt, transcript)))
+        self.record_start(attempt)
+        self.said = (*self.said, (attempt, transcript))
+        self.facts[attempt] = facts
+        return self
+
+    @property
+    def accounting(self) -> QAAccountingFact:
+        """One conservative fact for every executor create published by this Run."""
+        if not self.started:
+            return QAAccountingFact(executor_started=False)
+        if any(self.facts.get(number) is None for number in self.started):
+            return QAAccountingFact(executor_started=True, attempt=EngineeringAttemptLedgerInput())
+
+        facts = [self.facts[number] for number in sorted(self.started)]
+        providers = {fact.provider for fact in facts}
+        models = {fact.model for fact in facts}
+        provider = next(iter(providers)) if len(providers) == 1 else None
+        model = next(iter(models)) if len(models) == 1 else None
+
+        def summed(name: str) -> int | None:
+            values = [getattr(fact, name) for fact in facts]
+            return sum(values) if all(value is not None for value in values) else None
+
+        cost = summed("cost_microusd") if provider is not None else None
+        return QAAccountingFact(
+            executor_started=True,
+            attempt=EngineeringAttemptLedgerInput(
+                provider=provider,
+                model=model,
+                input_tokens=summed("input_tokens"),
+                output_tokens=summed("output_tokens"),
+                total_tokens=summed("total_tokens"),
+                cache_read_tokens=summed("cache_read_tokens"),
+                cache_write_tokens=summed("cache_write_tokens"),
+                cost_microusd=cost,
+                cost_source=(
+                    CostSource.PROVIDER_REPORTED if cost is not None else CostSource.UNKNOWN
+                ),
+            ),
+        )
+
+    @property
+    def attempt(self) -> EngineeringAttemptLedgerInput | None:
+        return self.accounting.attempt
 
     @property
     def evidence(self) -> str | None:
@@ -168,11 +244,13 @@ class QAInfrastructureFailure(Exception):
         summary: str,
         blocker: QABlocker,
         executor_transcript: str | None = None,
+        attempt: EngineeringAttemptLedgerInput | None = None,
     ) -> None:
         super().__init__(blocker.received)
         self.summary = summary
         self.blocker = blocker
         self.executor_transcript = executor_transcript
+        self.attempt = attempt
 
 
 @dataclass
@@ -187,14 +265,21 @@ class QAResult:
     blocker: QABlocker | None = None
     state_changes: list[dict] = field(default_factory=list)
     telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
+    probe_runs: list[QAProbeRun] | None = None
+    # The probe library the consumer offered this run's executor, set by the
+    # consumer that prepared it and carried to the Run as `probe_library`.
+    probe_library: QAProbeLibraryOffer | None = None
+    # Checks QA could not run, taken out of `checks` by `settle_unverified_checks`
+    # and carried to the Run as `unverified_checks`.
+    unverified_checks: list[QAUnverifiedCheck] = field(default_factory=list)
     # The executor's own account of the run, scanned with runner-owned evidence
     # for forbidden writes and carried across the Run boundary
     # (`QARunResult.executor_transcript`) because it exists nowhere else once the
-    # stand is gone. ``None`` is "no executor ran at all" — deterministic health
-    # checks, or a container-state failure that never started one — and an empty
-    # string is an executor that ran and said nothing. A red run's artifact
-    # reports those as different findings, so they are kept apart here.
+    # stand is gone. ``None`` means no executor returned a transcript; a create
+    # may still have been published. The accumulator owns the start fact. An
+    # empty string is an executor that ran and said nothing.
     executor_evidence: str | None = None
+    executor_attempt: EngineeringAttemptLedgerInput | None = None
 
 
 def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
@@ -251,6 +336,10 @@ def _block_forbidden_application_write(qa_result: QAResult, write: str) -> QARes
     return qa_result
 
 
+#: The runner's own mark on a `qa_capability` check it produced, naming where it
+#: arose. An executor check never carries it (its fields are exact), so a
+#: `qa_capability` check without it is the executor's own.
+_ORIGIN = "origin"
 _PASSED_CHECK_FIELDS = frozenset({"name", "pass", "detail"})
 _FAILED_CHECK_FIELDS = _PASSED_CHECK_FIELDS | {"cause"}
 #: A check the transport could not carry: no `pass`, no `cause`. It counts toward
@@ -304,8 +393,8 @@ def _ground_not_applicable_checks(
     not-applicable check, in order, is paired with a distinct transport refusal
     this run's workspace recorded (today, `telegram_probe` refusing an empty
     message), and the refusal it rests on is written onto the check. A check
-    left without one is what it would have been before this form existed: a
-    failed check QA had no tool for, cause `qa_capability`. The pairing is by
+    left without one is a check QA had no tool for, cause `qa_capability`, which
+    `settle_unverified_checks` records as unverified. The pairing is by
     count, not by check: the prompt forbids the form for an acceptance-criterion
     check, and the refusal itself is persisted on the run as Telegram evidence.
     """
@@ -334,6 +423,7 @@ def _ground_not_applicable_checks(
                     f"for it: {check['detail']}"
                 ),
                 "cause": QAFailedCheckCause.QA_CAPABILITY.value,
+                _ORIGIN: QAUnverifiedOrigin.NOT_APPLICABLE.value,
             }
         )
     return grounded
@@ -363,14 +453,21 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
         if shape_error:
             return _invalid_qa_payload(raw, shape_error)
 
-    # A verdict passes only if every check passed. A failure QA had no tool or
-    # no access for is still a failure, and it is parked only when `pass` says so.
-    # A not-applicable check is not a failure; whether it stays one is decided by
-    # the runner's own evidence (`_ground_not_applicable_checks`), not here.
-    any_check_failed = any(check.get("pass") is False for check in data["checks"])
-    if data["pass"] is any_check_failed:
+    # `pass` is false exactly when a product or access check failed. A check QA
+    # had no tool for (`qa_capability`) is neither a failure nor a pass: the
+    # runner records it as unverified and decides the verdict from the checks
+    # that ran (`settle_unverified_checks`), so the executor's `pass` may say
+    # either when those are its only failures. A not-applicable check is not a
+    # failure; whether it stays one is decided by the runner's own evidence
+    # (`_ground_not_applicable_checks`), not here.
+    failed_causes = {check["cause"] for check in data["checks"] if check.get("pass") is False}
+    judged_failure = bool(failed_causes - {QAFailedCheckCause.QA_CAPABILITY.value})
+    if failed_causes and not judged_failure:
+        return None
+    if data["pass"] is judged_failure:
         return _invalid_qa_payload(
-            raw, "pass must be false exactly when a check failed, whatever its cause"
+            raw,
+            "pass must be false exactly when a product or qa_access check failed",
         )
 
     return None
@@ -383,7 +480,8 @@ def parse_qa_result(
 
     `transport_refusals` are the inputs this run's runtime refused because the
     transport cannot carry them; only they ground a not-applicable check. With
-    none, every not-applicable check is a failed `qa_capability` check.
+    none, every not-applicable check is a `qa_capability` check, which
+    `settle_unverified_checks` later records as unverified.
     """
     if not raw or not raw.strip():
         return QAResult(
@@ -1107,7 +1205,11 @@ def apply_package_acceptance(
             _behaviour_row(package, criterion, acceptance, workspace, qa_result.checks)
             for criterion in declared
         )
-    failed = [row for row in rows if not row["pass"]]
+    for row in rows:
+        if row.get("cause") == QAFailedCheckCause.QA_CAPABILITY.value:
+            # Nothing to exercise the behaviour with: unverified, not failed.
+            row[_ORIGIN] = QAUnverifiedOrigin.PACKAGE.value
+    failed = [row for row in rows if not row["pass"] and _ORIGIN not in row]
     qa_result.checks = [*rows, *qa_result.checks]
     if not failed:
         return qa_result
@@ -1123,12 +1225,12 @@ def apply_package_acceptance(
 def apply_unverifiable_criteria(
     qa_result: QAResult, unverifiable: Sequence[CriteriaAdjustment]
 ) -> QAResult:
-    """Report every criterion QA was not handed as a failed `qa_capability` check.
+    """Report every criterion QA was not handed as a `qa_capability` check.
 
     The executor never saw these lines, so its verdict says nothing about them;
-    a run that carried one cannot pass as if it had been checked. The cause
-    keeps each one out of any fix task: the supervisor parks a run whose only
-    failures are these, and fixes only the product failures of a mixed run.
+    a run that carried one cannot pass as if it had been checked, and it cannot
+    fail as if the product had been. `settle_unverified_checks` records each one
+    as unverified, with origin `withheld`.
     """
     if not unverifiable:
         return qa_result
@@ -1143,15 +1245,58 @@ def apply_unverifiable_criteria(
                 "not checked; restate it through an observable QA can read"
             ),
             "cause": QAFailedCheckCause.QA_CAPABILITY.value,
+            _ORIGIN: QAUnverifiedOrigin.WITHHELD.value,
         }
         for adjustment in unverifiable
     ]
-    already_failed = not qa_result.passed
     qa_result.checks = [*qa_result.checks, *rows]
-    qa_result.passed = False
-    unchecked = f"{len(rows)} criterion line(s) were not verifiable by QA and were not checked"
-    qa_result.summary = f"{qa_result.summary}; {unchecked}" if already_failed else unchecked
     logger.info("qa_unverifiable_criteria_reported", criteria=[row["name"] for row in rows])
+    return qa_result
+
+
+def settle_unverified_checks(qa_result: QAResult) -> QAResult:
+    """The one place a check QA could not run leaves the verdict.
+
+    Every `qa_capability` check, wherever it arose — the executor's own, an
+    ungrounded not-applicable one, a criterion withheld before the executor
+    ran, a package row with nothing to exercise it — is taken out of `checks`
+    and recorded in `unverified_checks` with its origin. It is never a failure
+    and never a pass. The verdict is then what the remaining checks say: every
+    one passed, `passed`; any product or access failure, not. A blocker already
+    on the result keeps it unpassed whatever the checks say.
+    """
+    unverified: list[QAUnverifiedCheck] = []
+    kept: list[dict] = []
+    for check in qa_result.checks:
+        if (
+            check.get("pass") is False
+            and check.get("cause") == QAFailedCheckCause.QA_CAPABILITY.value
+        ):
+            unverified.append(
+                QAUnverifiedCheck(
+                    name=check["name"],
+                    reason=check["detail"],
+                    origin=check.get(_ORIGIN, QAUnverifiedOrigin.EXECUTOR.value),
+                )
+            )
+        else:
+            kept.append(check)
+    if not unverified:
+        return qa_result
+    qa_result.checks = kept
+    qa_result.unverified_checks = [*qa_result.unverified_checks, *unverified]
+    qa_result.passed = qa_result.blocker is None and not any(
+        check.get("pass") is False for check in kept
+    )
+    note = f"{len(unverified)} check(s) QA could not perform, recorded as unverified: " + "; ".join(
+        check.name for check in unverified
+    )
+    qa_result.summary = f"{qa_result.summary}; {note}" if qa_result.summary else note
+    logger.info(
+        "qa_checks_unverified",
+        passed=qa_result.passed,
+        unverified=[{"name": check.name, "origin": check.origin.value} for check in unverified],
+    )
     return qa_result
 
 
@@ -1226,20 +1371,21 @@ def confirmed_settings_facts(settings: Sequence[InitialSetting]) -> list[str]:
 
 
 async def preflight_bot_access(
-    *, bot_username: str, telethon_env: dict[str, str] | None
+    *,
+    bot_username: str,
+    telethon_env: dict[str, str] | None,
+    identity_refusal: QATelegramIdentityRefusal | None = None,
 ) -> QABlocker | None:
     """Check the platform's own prerequisites for testing a bot, without the LLM.
 
     The credentials are the QA runtime's, so a missing one is named here rather
     than discovered by the agent mid-run; the probe then asks the bot itself
-    whether it admits the QA identity.
+    whether it admits the QA identity. Credentials this run's identity proof
+    refused are missing credentials too, and the blocker says why.
     """
     if not telethon_env:
-        return QABlocker(
-            category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
-            attempted="validate QA Telethon credentials",
-            sent="TELETHON_API_ID, TELETHON_API_HASH, TELETHON_SESSION in the QA runtime",
-            received="the QA runtime has no Telegram QA account configured",
+        return missing_telethon_credentials(
+            identity_refusal.describe() if identity_refusal else None
         )
     probe = await run_probe_script(
         build_access_probe_script(bot_username),
@@ -1297,6 +1443,12 @@ def _apply_telegram_probe_evidence(qa_result: QAResult, workspace: QAWorkspace) 
     return qa_result
 
 
+def _apply_probe_runs(qa_result: QAResult, workspace: QAWorkspace) -> QAResult:
+    """Carry runner-owned executor probe records over the Run boundary."""
+    qa_result.probe_runs = list(workspace.probe_runs)
+    return qa_result
+
+
 async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each part named
     *,
     target: QATarget,
@@ -1309,20 +1461,46 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     settings_established: bool,
     timeout: int,
     jobs: QAJobsCapability | None,
+    attempts: QAExecutorAttempts,
     acceptance: PackageAcceptance | None = None,
+    probe_library: Sequence[QAProbeLibraryFile] = (),
 ) -> QAResult:
     """Run the one assigned executor over this run's capability endpoint."""
     calls = build_qa_callables(
         session=session,
         workspace=workspace,
         telethon_env=runtime.telethon_env,
+        telegram_identity_refusal=(
+            runtime.telegram_identity_refusal.describe()
+            if runtime.telegram_identity_refusal
+            else None
+        ),
         jobs=jobs,
     )
+    secrets = handed_over_secrets(runtime)
+    if secrets:
+        # The sandbox may print the credential it holds; the report and the
+        # verdict it submits are scrubbed on the way in, before either is kept.
+        store_report = calls["write_qa_report"]
+
+        def write_qa_report(markdown: str) -> str:
+            return store_report(redact(markdown, secrets))
+
+        calls["write_qa_report"] = write_qa_report
     service = QACapabilityService(
         calls=calls,
         capabilities=session.capabilities.describe(),
-        submit_verdict=workspace.submit_verdict,
+        submit_verdict=lambda raw: workspace.submit_verdict(redact(raw, secrets)),
         advertised_host=runtime.capability_host,
+        # Only an identity this run proved is served to the sandbox.
+        telegram_identity=runtime.telethon_env if runtime.telegram_identity_proven else None,
+        telegram_identity_refusal=(
+            runtime.telegram_identity_refusal.describe()
+            if runtime.telegram_identity_refusal
+            else None
+        ),
+        probe_secrets=secrets,
+        redact_text=redact,
     )
     prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
     if prepared_criteria.adjustments:
@@ -1343,17 +1521,24 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             endpoint=endpoint,
             service=service,
             timeout=timeout,
+            attempts=attempts,
+            probe_library=probe_library,
         )
         if executor_run is not None:
-            return apply_unverifiable_criteria(
-                apply_package_acceptance(
-                    _apply_telegram_probe_evidence(
-                        _verdict_of(workspace, service, timeout, said), workspace
+            return settle_unverified_checks(
+                apply_unverifiable_criteria(
+                    apply_package_acceptance(
+                        _apply_probe_runs(
+                            _apply_telegram_probe_evidence(
+                                _verdict_of(workspace, service, timeout, said), workspace
+                            ),
+                            workspace,
+                        ),
+                        acceptance,
+                        workspace,
                     ),
-                    acceptance,
-                    workspace,
-                ),
-                prepared_criteria.unverifiable,
+                    prepared_criteria.unverifiable,
+                )
             )
     finally:
         await service.stop()
@@ -1369,6 +1554,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         # Every attempt that ran, not only the last: the last one may be an
         # attempt that never started a container and has nothing to say.
         executor_transcript=said.evidence,
+        attempt=said.attempt,
         blocker=QABlocker(
             category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
             attempted=f"run exploratory QA on the assigned executor ({executor})",
@@ -1383,7 +1569,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     )
 
 
-async def _run_central_executor(
+async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, each part named
     *,
     target: QATarget,
     ownership: WorkerOwnership,
@@ -1394,6 +1580,8 @@ async def _run_central_executor(
     endpoint,
     service: QACapabilityService,
     timeout: int,
+    attempts: QAExecutorAttempts,
+    probe_library: Sequence[QAProbeLibraryFile] = (),
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
     """Retry only transient subscription-executor failures.
 
@@ -1410,12 +1598,14 @@ async def _run_central_executor(
         settings_established=settings_established,
     )
     last: QAExecutorUnavailable | None = None
-    said = QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
+    said = attempts
+    secrets = handed_over_secrets(runtime)
     for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
         try:
             run = await run_qa_executor(
                 agent_type=runtime.executor_agent_type,
                 ownership=ownership,
+                deploy_target_url=target.deployed_url,
                 capability_url=endpoint.url,
                 capability_token=endpoint.token,
                 instructions=build_qa_instructions(),
@@ -1423,10 +1613,16 @@ async def _run_central_executor(
                 verdict_received=service.verdict_received,
                 calls_served=lambda: service.calls_served,
                 timeout=timeout,
+                on_create_published=partial(said.record_start, attempt),
+                probe_library=list(probe_library),
             )
         except QAExecutorUnavailable as exc:
+            # What the sandbox said is evidence, and it may have printed the
+            # credential it was handed; the value never reaches the Run.
+            exc.detail = redact(exc.detail, secrets) or ""
+            exc.transcript = redact(exc.transcript, secrets)
             last = exc
-            said = said.with_attempt(attempt, exc.transcript)
+            said = said.with_attempt(attempt, exc.transcript, exc.attempt)
             logger.warning(
                 "qa_executor_unavailable",
                 executor=runtime.executor_agent_type.value,
@@ -1444,7 +1640,7 @@ async def _run_central_executor(
             verdict=run.verdict_submitted,
             calls_served=run.calls_served,
         )
-        return run, None, said.with_attempt(attempt, run.transcript)
+        return run, None, said.with_attempt(attempt, redact(run.transcript, secrets), run.attempt)
     return None, last, said
 
 
@@ -1466,6 +1662,7 @@ def _verdict_of(
             summary=f"the QA executor did not submit a result within {timeout}s",
             report=workspace.read_report(),
             executor_evidence=said.evidence,
+            executor_attempt=said.attempt,
             blocker=_unknown_result_blocker(
                 attempted="run the central QA executor",
                 sent=f"{service.calls_served} capability call(s)",
@@ -1475,6 +1672,7 @@ def _verdict_of(
     qa_result = parse_qa_result(workspace.verdict, transport_refusals=workspace.transport_refusals)
     qa_result.report = workspace.read_report()
     qa_result.executor_evidence = said.evidence
+    qa_result.executor_attempt = said.attempt
     return qa_result
 
 
@@ -1496,10 +1694,13 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     established_facts: list[str],
     settings_established: bool = False,
     jobs: QAJobsCapability | None = None,
+    attempts: QAExecutorAttempts | None = None,
     timeout: int = QA_TIMEOUT,
+    probe_library: Sequence[QAProbeLibraryFile] = (),
 ) -> QAResult:
     """Run QA with cleanup residue reported as a blocker on every exit path."""
     grant = QAGrantOutcome(marker=new_grant_marker())
+    attempts = attempts or QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
     workspace: QAWorkspace | None = None
     try:
         with qa_workspace() as workspace:
@@ -1581,12 +1782,20 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             settings_established=settings_established,
                             timeout=timeout,
                             jobs=jobs,
+                            attempts=attempts,
                             acceptance=acceptance,
+                            probe_library=probe_library,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
+            if attempts.started:
+                qa_result = _apply_probe_runs(qa_result, workspace)
             write = _forbidden_application_write(
                 f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}\n"
-                f"{qa_result.executor_evidence or ''}",
+                f"{qa_result.executor_evidence or ''}\n"
+                + "\n".join(
+                    f"{probe.source}\n{probe.stdout}\n{probe.stderr}"
+                    for probe in qa_result.probe_runs or []
+                ),
                 target.deployed_url,
             )
             if write:
@@ -1614,6 +1823,8 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 summary=failure.summary,
                 blocker=failure.blocker,
                 executor_evidence=failure.executor_transcript,
+                executor_attempt=attempts.attempt,
+                probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
         )
@@ -1639,6 +1850,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                     sent=exc.sent,
                     received=exc.received,
                 ),
+                probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
         )
@@ -1670,6 +1882,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                     sent=f"authorized_keys entry {grant.marker} on {target.server_ip}",
                     received=str(exc),
                 ),
+                probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
         )
@@ -1679,11 +1892,14 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
             QAResult(
                 passed=False,
                 summary=f"QA run against {target.server_ip} failed: {exc}",
+                executor_evidence=attempts.evidence,
+                executor_attempt=attempts.attempt,
                 blocker=_unknown_result_blocker(
                     attempted="run the central QA agent against the target",
                     sent=f"QA run on {target.server_ip}",
                     received=str(exc),
                 ),
+                probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
         )

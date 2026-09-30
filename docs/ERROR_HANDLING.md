@@ -60,20 +60,42 @@ bounded state is an entry plus its config key, never another timeout branch.
 | `testing` | `supervisor.qa_wait_max_minutes` | 60 min | the in-flight QA Run's `created_at` | human review |
 | `pr_review` | `supervisor.pr_review_wait_max_minutes` | 220 min | the pull request's `updated_at` on GitHub | human review |
 | `waiting_user_secret` | `supervisor.user_secret_wait_max_minutes` | 1440 min | the ask's owner-notification record: its `delivered_at` | fail |
+| `in_progress` with no task in its work cycle | `supervisor.planless_story_max_minutes` | 60 min | the Story row's `updated_at` (entry into `in_progress`) | human review |
+
+The `in_progress` bound covers one shape of the stage only — a story an architect took and never
+planned (dead scaffold, dead architect). A story with a task of its current cycle, or whose Product
+Brief planning attempt still heartbeats, is not bounded; the API refuses the ending if the row was
+written or a task appeared since the watchdog read it (`story_updated`, `tasks_created`). It is not
+the stage's expected duration, so stage notices still call `in_progress` unbounded.
 
 On expiry the story carries a typed `quarantine_reason` naming the state, the threshold and the
-anchor, and its owner is told through the durable seam in the mandated order (record, transition,
-deliver, administrators). Each default's provenance is recorded in its
+anchor, and its owner is told through the durable seam: record and transition commit together,
+then delivery and the administrator notice. Each default's provenance is recorded in its
 `scripts/system_configs.yaml` description and beside its map entry, so a bound can be retuned
 against the timing it was derived from. The transition is what makes it idempotent: an expired story leaves the
-status the watchdog scans. `IMAGE_PUBLICATION_TIMEOUT_SECONDS` (900 s, measured from the merge)
+status the watchdog scans, and a repeat of a committed ending is a typed `already_ended` no-op.
+
+One pass collects every expired wait across all bounds before it ends any. When there are more to
+end than `supervisor.state_age_mass_park_threshold` (default 3) the platform was down and many waits
+expired at once: each ending records `mass_sweep: true` in its reason, every owner is still told, and
+the administrators get one message for the pass naming the stories it actually ended (id, status,
+age) instead of one per story. There is no age cutoff; the PO snapshot marks such a story "stopped
+in a mass sweep after downtime" and the PO tells it by its dates, as a late notice after an outage.
+
+The ending is a compare-and-set, `POST /api/stories/{id}/expire-state-wait`: on the locked rows the
+status must be the one the watchdog read and the anchor the one its age was measured from (the same
+latest QUEUED/RUNNING Run; the same delivered ask on the same deploy Run, with its secrets still
+missing; the same `pr_number`, and a pull request whose `updated_at` a re-read just before the call
+finds unmoved). Otherwise nothing is written or told and `state_age_bound_skipped` names the
+mismatch, so routing that moved the story on wins whichever runs first. `IMAGE_PUBLICATION_TIMEOUT_SECONDS` (900 s, measured from the merge)
 still owns the wait for a merged commit's images and always ends it; the `pr_review` bound is an
 order of magnitude longer, so it never takes a story that bound already governs.
 
 The secret wait's clock starts only when the request for the secrets is delivered to the owner.
 The ask is itself a durable owner notification (`story_waiting_user_secret`) on the deploy Run
-that reported the missing keys, owed before the transition and retried by the recovery sweep
-while it is owed. An ask that settles `unaddressable` or `abandoned` never starts the clock: the
+that reported the missing keys, owed in the transition's own transaction
+(`POST /api/stories/{id}/park-waiting-user-secret`) and retried by the recovery sweep while it is
+owed. An ask that settles `unaddressable` or `abandoned` never starts the clock: the
 story is not failed, it carries `quarantine_reason.reason = user_secret_request_undelivered`, and
 administrators are told it will not end on its own. A wait entered before the ask was durable is
 asked once, and its clock starts at that delivery.
@@ -83,16 +105,20 @@ asked once, and its clock starts at that delivery.
 While a story is in work its owner is told the stage, not left in silence
 (`services/scheduler/src/tasks/supervisor/stage_notices.py`). A story in `created`,
 `in_progress`, `reopened`, `pr_review`, `deploying` or `testing` gets one non-terminal
-`story_stage` event on entering the stage and one more each time it is still there
-`supervisor.stage_notice_quiet_minutes` (60) after the last notice. The sweep runs once per
-dispatcher tick, so the owner hears each stage the story is *observed* in within one sweep; a stage
-entered and left between two sweeps is deliberately not announced, because it is no longer true. The event carries the
+`story_stage` event on entering the stage (step 0) and then `still_there` steps on a growing
+schedule: step 1 one `supervisor.stage_notice_quiet_minutes` (60) after the entry, then 2, 4, 8…
+quiet intervals after it, each gap capped at `supervisor.stage_notice_max_interval_minutes` (1440).
+Each event carries its `stage_notice_step`. The sweep runs once per
+cycle of the `story_supervision` loop, right after the state-age watchdog, so the owner hears each stage the story is *observed* in within one sweep; a stage
+entered and left between two sweeps is deliberately not announced, because it is no longer true. Just before
+the marker write the story is read again, and a story that has left the scanned stage gets no notice and no
+marker, whatever order the routing supervisors run in; the next sweep announces its new stage. The event carries the
 `StoryStatus`, its `WAITING_ON_BY_STATUS` value and a `StoryWaitEstimate` — the magnitude of the
 state's bound above, or `unbounded` where the map has none. Terminal states and the two states
 whose owner was already told what is needed (`waiting_user_secret`, `waiting_human_review`) get
-none. The last notice per story is a Redis marker (`story:stage_notice:<id>`) written before the
-publish, with no expiry, so a scheduler restart of any length neither repeats nor resets the
-interval; it is deleted by the first sweep that no longer finds the story in work. It is best-effort by
+none. The last notice per story, with its step, is a Redis marker (`story:stage_notice:<id>`) written
+before the publish, with no expiry, so a scheduler restart of any length neither repeats nor resets the
+schedule; it is deleted by the first sweep that no longer finds the story in work. It is best-effort by
 design: a lost stage notice is superseded by the next one, so it is never an owed record.
 
 ---
@@ -314,7 +340,7 @@ Atomic `SET NX` Redis lock per project prevents duplicate deploys. Replaces the 
 `_check_project_lock()` in the engineering consumer verifies `worker:status` in Redis. Workers in terminal states (`DEAD`/`FAILED`/`STOPPED`) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual intervention.
 
 ### Resource Allocation Capacity
-Typed allocation failures for insufficient free or reserved RAM park the task in `waiting_resources`, rather than consuming an engineering retry. The scheduler resumes it after fresh server metrics satisfy the same conservative RAM and disk admission checks, and moves it to human review after the configured wait timeout. A request that exceeds every managed server is escalated immediately. `no_fresh_metrics` means the platform cannot evaluate its own fleet: it escalates too, with an operator alert and no owner-facing message, because neither waiting nor retrying the code can end it.
+Typed allocation failures for insufficient free or reserved RAM park the task in `waiting_resources`, rather than consuming an engineering retry. The scheduler resumes it after fresh server metrics satisfy the same conservative RAM and disk admission checks, and moves it to human review after the configured wait timeout. The park and the resume are API actions (`park-waiting-resources`, `resume-from-resource-wait`) that commit the owner's announcement as an owed owner notification on the refused engineering Run in the same transaction; the first park of a wait owes it, the resume replaces it with `task_resources_resumed`, and delivery voids either one whose task has already left the status it describes. A Redis or recipient failure after the move therefore leaves the notice owed for the `owner_notifications` loop, never lost. A request that exceeds every managed server is escalated immediately. `no_fresh_metrics` means the platform cannot evaluate its own fleet: it escalates too, with an operator alert and no owner-facing message, because neither waiting nor retrying the code can end it.
 
 ### An Allocation Refusal Never Terminates a Story
 Every member of `AllocationFailureReason` is a statement about the platform's servers, never about the user's project, so none of them may fail a story or raise a product-failure alert. That decision lives once, in `shared/allocation_disposition.py::attempt_disposition`, which classifies a failed attempt as `INFRASTRUCTURE_WAIT`, `OPERATOR_REVIEW`, `TECHNICAL_FAILURE` or `PRODUCT_FAILURE`, and states the precedence: when one attempt carries both an allocation refusal and a product failure, the allocation refusal wins. Neither routing path keeps a reason list of its own — the engineering path (`_park_task_waiting_resources`) and the deploy path (`consumers/deploy.py::_record_infrastructure_wait` producing the outcome, `supervise_deploying_stories` routing it) both call that function. On the deploy path the refusal is recorded as `DeployOutcome.WAITING_INFRASTRUCTURE` with its reason and admission budget instead of `GIVE_UP`.
@@ -333,7 +359,7 @@ The dispositions exist because they need different handling, so no path may answ
 Both waits are bounded by `supervisor.resource_wait_timeout_minutes`, after which a human is told; the deploy wait carries its start in `run_metadata.infrastructure_wait_started_at` so re-dispatching does not reset the bound. Escalation always means the `human-review` story action — the status value is not a route — and never `fail_story`.
 
 ### Target Admission (Provisioning Readiness)
-Before capacity is considered at all, a server has to be an admissible target: managed, operational, `labels.provisioning_phase == "complete"`, and free of an active `PROVISIONING_FAILED` incident. The rule is fail-closed — a missing, empty or unknown phase counts as unfinished — and lives once in `shared/server_admission.py`. Every path that places a workload calls it: `_find_suitable_server` (langgraph allocator, a new host), `_refuse_inadmissible_target` (the same module's reuse branch, the host a project is already bound to) and `_resources_available` (scheduler resource wait), so a parked task can never wake up towards a server the allocator would refuse, and a redeploy or a newly added module cannot be placed on a host that is no longer a legal target. When no host is admissible, the allocator raises `shared/server_admission.py::ADMISSION_FAILURE_REASON` — `AllocationFailureReason.SERVER_NOT_PROVISIONED`: the task parks in `waiting_resources` like a capacity wait — no engineering retry, no story failure, no product-failure notification — but the owner is told through the `task_waiting_infrastructure` PO event, never as a capacity shortage.
+Before capacity is considered at all, a server has to be an admissible target: managed, operational, `labels.provisioning_phase == "complete"`, and free of an active `PROVISIONING_FAILED` incident. The rule is fail-closed — a missing, empty or unknown phase counts as unfinished — and lives once in `shared/server_admission.py`. Every path that places a workload calls it: `_find_suitable_server` (langgraph allocator, a new host), `_refuse_inadmissible_target` (the same module's reuse branch, the host a project is already bound to) and `_resources_available` (scheduler resource wait), so a parked task can never wake up towards a server the allocator would refuse, and a redeploy or a newly added module cannot be placed on a host that is no longer a legal target. When no host is admissible, the allocator raises `shared/server_admission.py::ADMISSION_FAILURE_REASON` — `AllocationFailureReason.SERVER_NOT_PROVISIONED`: the task parks in `waiting_resources` like a capacity wait — no engineering retry, no story failure, no product-failure notification — and the `task_waiting_infrastructure` PO event stays internal, never as a user-facing capacity shortage.
 
 That one reason covers all four rejections, on both placement paths, and there is one constant rather than a rejection-to-reason table because there is no branch to make: none of the rejections is a statement about how much memory was asked for. Two of them — the host is not managed, or its status does not admit — are not literally an unfinished build and the reason vocabulary has no member for them; they are still platform state, and the alternative to the closest infrastructure reason is describing them to the owner as a capacity shortage, which is false. A subset that held only the two provisioning rejections was how the two paths drifted apart: the search path let a host merely in status `provisioning` fall through to `insufficient_free_memory`, which a live acceptance run then read back on an empty 4 GB machine.
 
@@ -344,7 +370,21 @@ One question is answered ahead of that reason, and only in the search path: whet
 A bound-host refusal also shapes the wait: resuming asks whether *any* server is admissible, while this project is refused by *the one it sits on*, so a fleet with one healthy host and one broken host the project is pinned to satisfies the resume condition on every tick and is refused again on every tick. Both waits check their elapsed-time bound before admissibility, which ends that cycle in the same escalation as a wait with no target at all. A server-pinned resume condition would end it sooner, but the wait's contract is fleet-wide today and the bound is what makes the cycle finite.
 
 ### Proactive Message Spam Filter
-PO sends user-facing lifecycle messages through `po:proactive`: deploy success, permanent story failure, and resource-wait entry, escalation, and resumption. Intermediate smoke, precheck, and workflow failures stay internal.
+PO publishes durable key events and returned requirements through `po:proactive`. Resource and
+infrastructure waits and resumptions run the PO turn but their replies are suppressed. Stage notices
+are logged and dropped before the graph; no escalation step can start a PO turn.
+
+`services/langgraph/src/consumers/po_story_gate.py` reads the current story at the single proactive
+publish point. A reminder publishes only `needs_user` or `stopped` if that key state differs from
+what this chat last heard. Planning failure before building counts as stopped; changing attempts
+or an in-work status does not create news. Terminal reminders are silent: the durable seam tells endings.
+Suppressions log `po_proactive_suppressed` with their reason and key state. An unreadable API or Redis
+result suppresses reminders, while durable events still publish.
+
+The last-told record (`po:story_told:<chat>:<story>`) is written after publication and has no expiry;
+a failed publish leaves the change untold. Previous fingerprint records retain their told state.
+The story's ending deletes the record. There is no daily cap or periodic progress message.
+`notify_user` sends nothing in these turns, so the final reply is the only way to the user.
 
 ---
 

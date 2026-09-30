@@ -19,18 +19,25 @@ import structlog
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
 from shared.contracts.dto.engineering_dispatch import (
+    EngineeringAttemptStartCommand,
+    EngineeringAttemptStartOutcome,
     EngineeringDispatchCommand,
     EngineeringDispatchOutcome,
     EngineeringDispatchRead,
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
-from shared.contracts.dto.engineering_execution import infrastructure_refusal_for_dispatch
-from shared.contracts.dto.run import RunDTO
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionPhase,
+    infrastructure_refusal_for_dispatch,
+)
+from shared.contracts.dto.pr_conflict_repair import PRConflictRepairAttemptDisposition
+from shared.contracts.dto.run import RunDTO, RunStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType, OwnerNotificationEvent
+from shared.pr_conflict_repair import settle_pr_repair_attempt
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis import RedisStreamClient
 
@@ -39,9 +46,7 @@ from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
     owe_story_owner_notification,
-    supervise_owed_owner_notifications,
 )
-from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
     _parse_owner_repo,
@@ -51,8 +56,6 @@ from .story_completion import (
 from .supervisor import (
     supervise_deploying_stories,
     supervise_failed_tasks,
-    supervise_stage_notices,
-    supervise_state_age_bounds,
     supervise_stuck_stories,
     supervise_stuck_tasks,
     supervise_testing_stories,
@@ -71,7 +74,6 @@ __all__ = [
     "_trigger_next_story",
     "complete_stories",
     "dispatch_todo_tasks",
-    "poll_merged_prs",
     "supervise_temporary_access",
     "task_dispatcher_loop",
 ]
@@ -142,14 +144,39 @@ async def _recover_dispatched_task(
 ) -> None:
     """Replay a finished run's outcome onto a task the transition never left todo.
 
-    in_dev is the only way out of todo, so the task goes there first and the
-    outcome is applied on top — the result handler could not apply it while the
-    task was still in todo, and without the replay the task would sit in in_dev
-    with nothing working on it.
+    Ordinary outcomes follow the native start hops. Failed conflict attempts
+    settle under their admission/Run fence even when dispatch never wrote the
+    start; infrastructure/resource refusals defer to native supervision.
 
     The run is always finished by the time this is called: the admission point
     names this repair only for a run no longer in flight.
     """
+    if task_id.startswith("pr-conflict-") and run.status is RunStatus.FAILED:
+        result = run.result
+        if result.allocation_failure_reason is not None or (
+            result.execution is not None
+            and result.execution.execution_phase is EngineeringExecutionPhase.PRE_AGENT_REFUSED
+        ):
+            # Restore only discovery; the next stuck sweep applies native
+            # infrastructure/resource priority before any repair settlement.
+            await _transition_to_in_dev(api_client, task_id, run.id, log)
+            log.info("conflict_refusal_deferred_to_supervision", run_id=run.id)
+            return
+        if run.story_id is None:
+            raise RuntimeError("An admitted conflict repair requires its story")
+        outcome = await settle_pr_repair_attempt(
+            api_client,
+            run.story_id,
+            task_id,
+            run.id,
+            "Recover terminal conflict Run before dispatch status write.",
+            PRConflictRepairAttemptDisposition.FAILED,
+        )
+        log.info("conflict_dispatch_outcome_settled", run_id=run.id, outcome=outcome.outcome.value)
+        return
+    if task_id.startswith("pr-conflict-"):
+        await _transition_to_in_dev(api_client, task_id, run.id, log)
+        return
     await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
     for status in terminal_task_statuses(run):
         await api_client.transition_task(task_id, status, "dispatcher")
@@ -181,6 +208,9 @@ async def _execute_repair(
         run_id=decision.run_id,
         iteration=task.current_iteration,
     )
+    if task.id.startswith("pr-conflict-"):
+        started = await _transition_to_in_dev(api_client, task.id, decision.run_id, log)
+        return started and decision.repair in _DISPATCH_COMPLETING
     await api_client.transition_task(task.id, TaskStatus.IN_DEV, "dispatcher")
     return decision.repair in _DISPATCH_COMPLETING
 
@@ -192,12 +222,13 @@ async def _handle_refusal(
     decision: EngineeringDispatchRead,
     log: structlog.BoundLogger,
 ) -> None:
-    """Act on a refusal: only a refusal that already counted an attempt routes.
+    """Consume the paid gate's disposition or route an ordinary Task refusal.
 
     `paid_work` is present exactly when the paid gate decided, and that is the
     line: a refusal from an earlier condition is a state this tick simply cannot
-    dispatch in and a later tick may, while a paid denial has spent the attempt
-    and hands the story and the task to a human instead of retrying.
+    dispatch in and a later tick may. The gate's no-Run decisions count no
+    engineering attempt. Admission owns infrastructure and conflict stops;
+    ordinary Tasks retain their existing scheduler refusal routing.
     """
     if decision.paid_work is None:
         log.info("task_dispatch_refused", reason=decision.reason.value)
@@ -215,6 +246,21 @@ async def _handle_refusal(
             disposition=(
                 decision.infrastructure_park.value if decision.infrastructure_park else None
             ),
+        )
+        return
+    if task.id.startswith("pr-conflict-"):
+        disposition = decision.refusal_disposition
+        if (
+            disposition is None
+            or disposition.task_id != task.id
+            or disposition.reason is not decision.reason
+        ):
+            raise RuntimeError("Conflict paid refusal has no matching committed disposition")
+        log.info(
+            "task_dispatch_refusal_disposed_by_admission",
+            task_id=disposition.task_id,
+            decision_id=disposition.decision_id,
+            reason=disposition.reason.value,
         )
         return
     if task.story_id and admission.message:
@@ -376,16 +422,30 @@ async def _transition_to_in_dev(
     todo. If both attempts fail, the admission point's live-attempt repair
     finishes the transition on the next tick.
     """
+
+    async def start():
+        if not task_id.startswith("pr-conflict-"):
+            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            return True
+        decision = await api_client.start_engineering_attempt(
+            EngineeringAttemptStartCommand(task_id=task_id, run_id=run_id)
+        )
+        log.info("conflict_attempt_start", run_id=run_id, outcome=decision.outcome.value)
+        return decision.outcome in {
+            EngineeringAttemptStartOutcome.STARTED,
+            EngineeringAttemptStartOutcome.REUSED,
+            EngineeringAttemptStartOutcome.COMPLETED,
+        }
+
     try:
-        await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+        return await start()
     except Exception:
         log.warning("task_transition_retry", run_id=run_id, exc_info=True)
         try:
-            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            return await start()
         except Exception:
             log.exception("task_transition_failed", run_id=run_id)
             return False
-    return True
 
 
 async def dispatch_todo_tasks(
@@ -448,9 +508,6 @@ async def task_dispatcher_loop() -> None:
                 scaffolds = await trigger_scaffolds(api_client, redis_client)
                 dispatched = await dispatch_todo_tasks(api_client, redis_client)
                 completed = await complete_stories(api_client, redis_client)
-                merged = await poll_merged_prs(api_client, redis_client)
-                await poll_ci_failures(api_client, redis_client)
-
                 # Supervisor checks
                 stuck_stories = await supervise_stuck_stories(api_client, redis_client)
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
@@ -460,32 +517,8 @@ async def task_dispatcher_loop() -> None:
                 waiting_secret = await supervise_waiting_user_secret_stories(
                     api_client, redis_client
                 )
-                # Messages a committed terminal transition still owes are
-                # re-attempted before the routing that owes new ones. Ordered
-                # this way round, a record written by this tick's routing gets
-                # exactly the one in-tick attempt routing makes; the other way
-                # round the sweep would immediately spend a second attempt of
-                # the bound on it, in the same second.
-                owner_notifications = await supervise_owed_owner_notifications(
-                    api_client, redis_client
-                )
-                # Stories are routed on their QA runs before the access sweep
-                # runs, and that order is the delivery guarantee: a product QA
-                # has passed is handed to its owner on the tick that reads the
-                # verdict, and the cleanup of the identity it borrowed happens
-                # afterwards. Sweeping first would let a cleanup that ran out of
-                # attempts during a gap in this loop write its incident on the QA
-                # run before the story had been routed, turning a passed product
-                # into a quarantine over a leftover test user.
                 testing = await supervise_testing_stories(api_client, redis_client)
-                # Last of the story supervisors on purpose: every routing above
-                # has had this tick's chance to move a story on, so a wait this
-                # watchdog ends is one nothing else was going to end.
-                state_age = await supervise_state_age_bounds(api_client, redis_client)
-                # After every supervisor that can move a story on this tick, so
-                # a stage is announced only for a story that is really in it.
-                stage_notices = await supervise_stage_notices(api_client, redis_client)
-                temporary_access = await supervise_temporary_access(api_client, redis_client)
+                temporary_access = {}
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -493,7 +526,6 @@ async def task_dispatcher_loop() -> None:
                     tasks_dispatched=dispatched,
                     stories_completed=completed,
                     scaffolds_triggered=scaffolds,
-                    prs_merged=merged,
                 )
                 supervisor_active = (
                     stuck_stories.get("retried", 0)
@@ -514,21 +546,11 @@ async def task_dispatcher_loop() -> None:
                     + testing.get("completed", 0)
                     + testing.get("redispatched", 0)
                     + testing.get("failed", 0)
-                    + state_age["parked"]
-                    + state_age["failed"]
-                    + stage_notices["entered"]
-                    + stage_notices["still_there"]
-                    + stage_notices["unaddressable"]
                     + temporary_access.get("dispatched", 0)
                     + temporary_access.get("released", 0)
                     + temporary_access.get("revoked", 0)
                     + temporary_access.get("revoke_failed", 0)
                     + temporary_access.get("escalated", 0)
-                    + owner_notifications["delivered"]
-                    + owner_notifications["retrying"]
-                    + owner_notifications["exhausted"]
-                    + owner_notifications["unaddressable"]
-                    + owner_notifications["voided"]
                 )
                 if supervisor_active:
                     logger.info(
@@ -549,16 +571,6 @@ async def task_dispatcher_loop() -> None:
                         qa_completed=testing.get("completed", 0),
                         qa_redispatched=testing.get("redispatched", 0),
                         qa_failed=testing.get("failed", 0),
-                        # Waits that ran out of time rather than ending on
-                        # their own: parked for a specialist, or failed where
-                        # the wait was on somebody outside the platform.
-                        state_age_parked=state_age["parked"],
-                        state_age_failed=state_age["failed"],
-                        # Owners told which stage their story is at: on entry,
-                        # after a quiet interval, or due with no chat to go to.
-                        stage_notices_entered=stage_notices["entered"],
-                        stage_notices_still_there=stage_notices["still_there"],
-                        stage_notices_unaddressable=stage_notices["unaddressable"],
                         temporary_access_dispatched=temporary_access.get("dispatched", 0),
                         temporary_access_released=temporary_access.get("released", 0),
                         temporary_access_revoked=temporary_access.get("revoked", 0),
@@ -566,18 +578,6 @@ async def task_dispatcher_loop() -> None:
                         # Still being chased vs. given up on and handed to a human.
                         temporary_access_revoke_failed=temporary_access.get("revoke_failed", 0),
                         temporary_access_escalated=temporary_access.get("escalated", 0),
-                        # Owner notifications recovered from a committed
-                        # terminal transition whose publish did not land. Still
-                        # being chased vs. given up on and handed to a human vs.
-                        # refused because the owner has no chat to write to.
-                        owner_notify_recovered=owner_notifications["delivered"],
-                        owner_notify_retrying=owner_notifications["retrying"],
-                        owner_notify_exhausted=owner_notifications["exhausted"],
-                        owner_notify_unaddressable=owner_notifications["unaddressable"],
-                        # A record whose transition never committed: nothing was
-                        # sent, nothing was spent, and the ending is owed again
-                        # if routing does reach it.
-                        owner_notify_voided=owner_notifications["voided"],
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")

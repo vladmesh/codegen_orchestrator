@@ -54,13 +54,15 @@ class WorkerContainerConfig:
             "WORKER_TYPE": self.worker_type,
             "WORKER_CAPABILITIES": ",".join(self.capabilities),
             "WORKER_SUBPROCESS_TIMEOUT_SECONDS": str(subprocess_timeout_seconds),
-            "WORKER_TRANSCRIPT_DIR": TRANSCRIPT_MOUNT,
-            "WORKER_TRANSCRIPT_MAX_BYTES": str(self.transcript_max_bytes),
             # The worker validates its own agent state against the mode it was
             # created with: host_session needs a mounted session, api_key does not.
             "WORKER_AUTH_MODE": self.auth_mode,
         }
         env.update({"WORKER_BROKER_URL": broker_url, "WORKER_BROKER_TOKEN": broker_token})
+
+        if self.worker_type != "qa":
+            env["WORKER_TRANSCRIPT_DIR"] = TRANSCRIPT_MOUNT
+            env["WORKER_TRANSCRIPT_MAX_BYTES"] = str(self.transcript_max_bytes)
 
         if self.agent_type == AgentType.CLAUDE and self.auth_mode == "host_session":
             env["CLAUDE_CONFIG_DIR"] = CLAUDE_CONFIG_DIR
@@ -112,7 +114,7 @@ class WorkerContainerConfig:
         if self.workspace_host_path:
             volumes[self.workspace_host_path] = {"bind": "/workspace", "mode": "rw"}
 
-        if self.transcript_host_path:
+        if self.transcript_host_path and self.worker_type != "qa":
             volumes[self.transcript_host_path] = {
                 "bind": TRANSCRIPT_MOUNT,
                 "mode": "rw",

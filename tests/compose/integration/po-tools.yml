@@ -53,17 +53,21 @@ services:
 
   # Test Runner
   integration-test-runner:
-    image: codegen-orchestrator/integration-test-runner:test
+    image: codegen-orchestrator/po-tools-test-runner:test
     build:
       context: ../../..
-      dockerfile: tests/compose/integration/Dockerfile
+      dockerfile: services/langgraph/Dockerfile.test
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
-    command: ["pytest", "tests/integration/po_tools/", "-v"]
+    command: ["pytest", "tests/integration/po_tools/", "services/langgraph/tests/integration/checkpoints/", "services/langgraph/tests/integration/po_redis/", "--import-mode=importlib", "-v"]
     environment:
       - API_URL=http://api:8000
+      - API_BASE_URL=http://api:8000
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - CHECKPOINT_TEST_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres?options=-c%20search_path%3Dlanggraph
     depends_on:
       api:
         condition: service_healthy
@@ -74,6 +78,7 @@ services:
     volumes:
       - ../../../tests:/app/tests
       - ../../../services:/app/services
+      - ../../../services/langgraph/src:/app/src
       - ../../../shared:/app/shared
       - ../../../packages:/app/packages
 
@@ -81,7 +86,9 @@ services:
   # It proves the PO path resolves the default at creation instead of retaining
   # the earlier project's agent selection.
   api-factory:
+    # Built once, by the api service of this file; never pulled.
     image: codegen-orchestrator/api:test
+    pull_policy: never
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres

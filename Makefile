@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-smoke test-live-engineering test-live-mega-noop test-live-mega-llm test-live-mega-brief test-live-mega-brief-package test-live-matrix test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-inventory test-live-smoke test-live-engineering test-live-mega-noop test-live-mega-live test-live-mega-brief test-live-mega-brief-package test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -39,12 +39,13 @@ help:
 	@echo "  make test-service SERVICE=name - Run service tests for a specific module"
 	@echo "  make test-integration     - Run all integration tests"
 	@echo "  make test-live            - Run all live tests (from host, no LLM)"
+	@echo "  make test-live-inventory PREFIX=name - Read-only residue inventory (requires API_BASE_URL)"
+	@echo "  make test-live-clean     - Sweep live-test residue (requires API_BASE_URL)"
 	@echo "  make test-live N=health   - Run specific live test file"
-	@echo "  make test-live-mega-noop  - Run only the free noop full-pipeline class"
-	@echo "  make test-live-mega-llm   - Run only the one-pair LLM full-pipeline class"
+	@echo "  make test-live-mega-noop  - Run the level-1 lifecycle: scripted developer, deterministic QA"
+	@echo "  make test-live-mega-live WORKER=.. QA=.. - Run the same lifecycle with a real developer and QA executor on the stand"
 	@echo "  make test-live-mega-brief - Run the Product Brief E2E class for one selected pair"
 	@echo "  make test-live-mega-brief-package - Run the Product Brief package E2E class"
-	@echo "  make test-live-matrix     - Run four LLM pairs through the stand runner"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
 	@echo "Git Hooks:"
@@ -79,6 +80,7 @@ lock-deps:
 	uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
 	uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
 	uv pip compile services/scaffolder/pyproject.toml -o services/scaffolder/requirements.lock
+	uv pip compile services/worker-broker/pyproject.toml -o services/worker-broker/requirements.lock
 	@echo "✅ All lock files updated!"
 
 # === Docker ===
@@ -233,6 +235,12 @@ setup-hooks:
 
 # === Testing ===
 
+# CI merges one more compose file into every test stack: the override
+# scripts/ci_build_cache.py writes, which wires each image the stack builds to the buildx
+# layer cache of its Dockerfile. Locally TEST_COMPOSE_OVERRIDE is unset and the stack is
+# the compose file alone.
+test_compose_files = -f $(1)$(if $(TEST_COMPOSE_OVERRIDE), -f $(TEST_COMPOSE_OVERRIDE))
+
 # Integration tests - pattern rule for dynamic discovery
 # Any tests/compose/integration/*.yml file automatically becomes test-integration-* target
 INTEGRATION_COMPOSE_FILES := $(wildcard tests/compose/integration/*.yml)
@@ -242,15 +250,15 @@ INTEGRATION_TESTS := $(patsubst tests/compose/integration/%.yml,test-integration
 # Any tests/compose/integration/*.yml file automatically becomes test-integration-* target
 test-integration-%:
 	@echo "🧪 Running $* integration tests..."
-	@docker compose -p $(TEST_PROJECT)_$* -f tests/compose/integration/$*.yml down --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_$* -f tests/compose/integration/$*.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
+	@docker compose -p $(TEST_PROJECT)_$* $(call test_compose_files,tests/compose/integration/$*.yml) down --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_$* $(call test_compose_files,tests/compose/integration/$*.yml) up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
 	EXIT_CODE=$$?; \
-	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_$* -f tests/compose/integration/$*.yml ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
+	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_$* $(call test_compose_files,tests/compose/integration/$*.yml) ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
 	if [ -n "$$FAILED_CONTAINERS" ]; then \
 		echo "$$FAILED_CONTAINERS"; \
 		EXIT_CODE=1; \
 	fi; \
-	docker compose -p $(TEST_PROJECT)_$* -f tests/compose/integration/$*.yml down --remove-orphans; \
+	docker compose -p $(TEST_PROJECT)_$* $(call test_compose_files,tests/compose/integration/$*.yml) down --remove-orphans; \
 	exit $$EXIT_CODE
 
 # The Stage 5 smoke must run on the Docker host: generated compose files bind-mount
@@ -269,16 +277,20 @@ test-template-compat:
 		$(if $(TEMPLATE_REF),--ref "$(TEMPLATE_REF)",)
 
 test-integration-template-runner:
-	@docker compose -p $(TEST_PROJECT)_template -f tests/compose/integration/template.yml down --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_template -f tests/compose/integration/template.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
+	@docker compose -p $(TEST_PROJECT)_template $(call test_compose_files,tests/compose/integration/template.yml) down --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_template $(call test_compose_files,tests/compose/integration/template.yml) up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
 	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_template -f tests/compose/integration/template.yml down --remove-orphans; \
+	docker compose -p $(TEST_PROJECT)_template $(call test_compose_files,tests/compose/integration/template.yml) down --remove-orphans; \
 	exit $$EXIT_CODE
 
 # Run all unit tests locally (no Docker, fast)
 # Requires: uv sync (once)
 test-unit:
 	@uv run bash scripts/test-unit-local.sh
+
+.PHONY: test-backup-db
+test-backup-db:
+	uv run pytest -q tests/integration/backup/test_verified_database_backup.py
 
 # Run service tests for a specific service using its dedicated compose file
 # Usage: make test-service SERVICE=api
@@ -292,31 +304,31 @@ test-service:
 		exit 1; \
 	fi
 	@echo "🧪 Running $(SERVICE) service tests..."
-	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml down --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) down --remove-orphans 2>/dev/null || true
 	@EXIT_CODE=0; \
 	if [ "$(SERVICE)" = "worker-manager" ]; then \
 		: "The rollout suite deliberately restarts the control-plane containers."; \
 		: "Run the pytest container separately from the restarted control plane."; \
-		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml build; \
+		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) build; \
 		EXIT_CODE=$$?; \
 		if [ "$$EXIT_CODE" -eq 0 ]; then \
-			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml up -d --wait worker-manager worker-broker; \
+			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) up -d --wait worker-manager worker-broker; \
 			EXIT_CODE=$$?; \
 		fi; \
 		if [ "$$EXIT_CODE" -eq 0 ]; then \
-			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml run --rm --no-deps $(SERVICE)-test-runner; \
+			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) run --rm --no-deps $(SERVICE)-test-runner; \
 			EXIT_CODE=$$?; \
 		fi; \
 	else \
-		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
+		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
 		EXIT_CODE=$$?; \
 	fi; \
-	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
+	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
 	if [ -n "$$FAILED_CONTAINERS" ]; then \
 		echo "$$FAILED_CONTAINERS"; \
 		EXIT_CODE=1; \
 	fi; \
-	docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml down --remove-orphans; \
+	docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) down --remove-orphans; \
 	exit $$EXIT_CODE
 
 # Run all integration tests (auto-discovered from tests/compose/integration/*.yml)
@@ -336,6 +348,7 @@ LIVE_OFFLINE_IGNORE_FLAGS = \
 	--ignore=tests/live/test_product_brief_package_pipeline.py \
 	--ignore=tests/live/test_sprint_dod.py \
 	--ignore=tests/live/test_health.py \
+	--ignore=tests/live/test_llm_channel_failover.py \
 	--ignore=tests/live/test_parallel_engineering.py \
 	--ignore=tests/live/test_pipeline_engineering.py \
 	--ignore=tests/live/test_pipeline_scaffold.py \
@@ -364,14 +377,18 @@ test-live-engineering:
 	@echo "Running engineering pipeline test (~3-5 min)..."
 	@uv run pytest tests/live/test_pipeline_engineering.py -v --tb=long -x -s
 
+# The class runs level 2 when it is told of a developer model; level 1 is told of none.
 test-live-mega-noop:
 	@echo "Running mega-noop: TestFullPipeline only (no LLM)..."
-	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipeline -v --tb=long -x -s
+	@env -u LIVE_WORKER_AGENT_TYPE -u LIVE_LLM_QA -u LIVE_QA_AGENT_TYPE \
+		uv run pytest tests/live/test_full_pipeline.py::TestFullPipeline -v --tb=long -x -s
 
 # L1 retired compatibility spelling `test-live-mega: test-live-mega-noop`; use the canonical target directly.
-test-live-mega-llm:
-	@echo "Running mega-llm: TestFullPipelineLLM only (one selected developer/QA pair)..."
-	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v --tb=long -x -s
+# Level 2 is the same class with a real developer and a real QA executor. Which
+# agents it runs, and the QA executor switch that makes the second one true, are
+# the stand runner's to decide, so the target is the runner's.
+test-live-mega-live:
+	@$(MAKE) --no-print-directory stand-run SUITE=mega-live
 
 test-live-mega-brief:
 	@echo "Running mega-brief: TestProductBriefPipeline only (one selected developer/QA pair)..."
@@ -380,10 +397,6 @@ test-live-mega-brief:
 test-live-mega-brief-package:
 	@echo "Running mega-brief-package: TestProductBriefPackagePipeline only (one selected developer/QA pair)..."
 	@uv run pytest tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline -v --tb=long -x -s
-
-# Four paid stand cells: Claude/Codex developer × Claude/Codex QA.
-test-live-matrix:
-	@$(MAKE) --no-print-directory stand-run SUITE=matrix
 
 # Legacy aggregate, not a named suite: `test-live-pipeline` is retired; invoke the named targets explicitly.
 
@@ -397,19 +410,18 @@ stand-preflight:
 	@set -a; . ./.env; set +a; \
 	uv run python -m scripts.stand_preflight
 
-# One entry point for every e2e on the stand. SUITE is a named suite — mega-noop, mega-llm,
-# mega-brief, matrix — or any pytest target, so a new scenario needs no new plumbing.
+# One entry point for every e2e on the stand. SUITE is a named suite — mega-noop, mega-live,
+# mega-brief, mega-brief-package — or any pytest target, so a new scenario needs no new plumbing.
 #
 #   make stand-run SUITE=mega-noop
-#   make stand-run SUITE=mega-llm WORKER=codex QA=claude
+#   make stand-run SUITE=mega-live WORKER=codex QA=claude
 #   make stand-run SUITE=mega-brief WORKER=codex QA=claude
-#   make stand-run SUITE=matrix
 #   make stand-run SUITE=tests/live/test_api_crud.py
 #
-# A mega takes ten minutes and the matrix an hour — longer than an SSH session
+# A mega takes tens of minutes and a live one hours — longer than an SSH session
 # reliably lives — so run it detached and read the log it names:
 #
-#   setsid nohup make stand-run SUITE=matrix > /dev/null 2>&1 &
+#   setsid nohup make stand-run SUITE=mega-live > /dev/null 2>&1 &
 #   tail -f ~/e2e-runs/latest/run.log
 SUITE ?= mega-noop
 WORKER ?= claude
@@ -422,14 +434,22 @@ stand-run:
 stand-e2e:
 	@$(MAKE) stand-run SUITE=mega-noop
 
-# Sweep this contour and no other.
+# Sweep this contour and no other, through the runner: it gives the sweep the
+# stand's endpoint and deployed .env, and refuses first if a requirement is missing.
 stand-clean:
-	@LIVE_CONTOUR=stand uv run python -m scripts.clean_live_tests
+	@uv run python -m scripts.stand_run --sweep-only
 
-# Cleanup DB and artifacts left by live tests
+# Cleanup DB and artifacts left by live tests. API_BASE_URL is required.
 test-live-clean:
 	@echo "🧹 Running comprehensive live test cleanup (DB, GitHub, Workers, Workspaces, Servers)..."
 	@uv run python -m scripts.clean_live_tests
+
+# Read every cleanup surface without changing it. PREFIX must name one prefix in
+# the selected contour; the script validates that boundary before it inspects anything.
+# API_BASE_URL is required for the internal server inventory.
+test-live-inventory:
+	@test -n "$(PREFIX)" || (echo "PREFIX is required" >&2; exit 2)
+	@uv run python -m scripts.clean_live_tests --inventory --prefix $(PREFIX)
 
 # Destroys production and rebuilds it from the deployed revision. Ordinary
 # cleanup is `test-live-clean`; this is for when a live run on production has

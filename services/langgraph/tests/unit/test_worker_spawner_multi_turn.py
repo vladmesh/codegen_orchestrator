@@ -79,6 +79,73 @@ class TestWaitUntilReady:
         assert result is not None
         assert result.execution is None
 
+    @pytest.mark.asyncio
+    async def test_a_torn_down_failure_reads_the_durable_record(self):
+        """Status already deleted by teardown: the cause comes from the durable record."""
+        from src.clients.worker_spawner import _wait_until_ready
+
+        statuses = [{"status": "STARTING"}, {}]
+        records = {
+            "worker:creation-failure:worker-1": {
+                "error": "RuntimeError: checkout_branch did not establish branch: exit_code=137",
+                "execution_phase": "pre_agent_refused",
+                "infrastructure_refusal": "worker_creation_failed",
+            }
+        }
+
+        async def hgetall(key):
+            if key.startswith("worker:status:"):
+                return statuses.pop(0) if statuses else {}
+            return records.get(key, {})
+
+        redis = AsyncMock()
+        redis.hgetall.side_effect = hgetall
+
+        with patch("src.clients.worker_spawner.READY_POLL_INTERVAL", 0):
+            result = await _wait_until_ready(redis, "worker-1", "request-1", timeout=5)
+
+        assert result is not None
+        assert "Worker disappeared" not in result.output
+        assert "exit_code=137" in result.output
+        assert result.execution.execution_phase is EngineeringExecutionPhase.PRE_AGENT_REFUSED
+
+    @pytest.mark.asyncio
+    async def test_a_dead_worker_with_a_recorded_failure_reports_it(self):
+        from src.clients.worker_spawner import _wait_until_ready
+
+        async def hgetall(key):
+            if key.startswith("worker:status:"):
+                return {"status": "DEAD"}
+            return {"error": "RuntimeError: checkout failed"}
+
+        redis = AsyncMock()
+        redis.hgetall.side_effect = hgetall
+
+        result = await _wait_until_ready(redis, "worker-1", "request-1", timeout=5)
+
+        assert result is not None
+        assert result.output == "Creation failed: RuntimeError: checkout failed"
+
+    @pytest.mark.asyncio
+    async def test_a_vanished_worker_without_a_record_is_still_disappeared(self):
+        from src.clients.worker_spawner import _wait_until_ready
+
+        statuses = [{"status": "STARTING"}, {}]
+
+        async def hgetall(key):
+            if key.startswith("worker:status:"):
+                return statuses.pop(0) if statuses else {}
+            return {}
+
+        redis = AsyncMock()
+        redis.hgetall.side_effect = hgetall
+
+        with patch("src.clients.worker_spawner.READY_POLL_INTERVAL", 0):
+            result = await _wait_until_ready(redis, "worker-1", "request-1", timeout=5)
+
+        assert result is not None
+        assert result.output == "Worker disappeared during creation"
+
 
 class TestCheckWorkerAlive:
     @pytest.mark.asyncio

@@ -3,11 +3,15 @@
 import asyncio
 import base64
 from datetime import UTC, datetime, timedelta
+from ipaddress import ip_address
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import yaml
 
+from scripts.template_pin import TEMPLATE_PIN
 from shared.clients.github import deploy_pin_tag
 from shared.clients.registry import RegistryError, sha_image_tag
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
@@ -107,6 +111,12 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
     gh.wait_for_workflow_completion.return_value = _SUCCESS_RUN
+    gh.get_file_contents.return_value = (
+        TEMPLATE_PIN.fixture_path() / ".github/workflows/deploy.yml"
+    ).read_text()
+    gh.get_file_contents.side_effect = lambda owner, repo, path, ref: (
+        None if path.endswith(".rej") else gh.get_file_contents.return_value
+    )
     mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
     mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
     mock_api.create_deployment = AsyncMock(return_value={})
@@ -123,6 +133,167 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
         )
     )
     return gh
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("address", "expected_host"),
+    [
+        ("192.0.2.42", "192.0.2.42"),
+        ("2001:db8::42", "2001:db8::42"),
+        ("::ffff:192.0.2.42", "::ffff:c000:22a"),
+    ],
+)
+@patch("src.subgraphs.devops.deployer.GitHubAppClient")
+@patch("src.subgraphs.devops.deployer.api_client")
+async def test_resolved_public_address_reaches_dotenv_and_success_url(
+    mock_api, mock_gh_cls, base_state, address, expected_host
+):
+    from src.subgraphs.devops.graph import create_devops_subgraph
+    from tests.unit.test_public_base_url import public_state
+
+    gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+    gh.wait_for_workflow_completion.return_value = {**_SUCCESS_RUN, "head_sha": BUILT_SHA}
+    base_state["head_sha"] = PINNED_SHA
+    base_state["deployed_commit_sha"] = BUILT_SHA
+    base_state["allocated_resources"]["backend"]["server_ip"] = address
+    base_state["allocated_resources"] = {
+        "bot": {"service_name": "tg_bot", "server_ip": "192.0.2.99", "port": 8081},
+        **base_state["allocated_resources"],
+    }
+    contract = public_state(base_state["allocated_resources"])["environment_contract"]
+    contract["entries"]["BACKEND_IMAGE"] = {
+        "source": "derived",
+        "required": True,
+        "environments": ["production"],
+    }
+    base_state["run_id"] = None
+    written = {}
+    requests = []
+    async_client = httpx.AsyncClient
+
+    def health(request):
+        requests.append(request)
+        return httpx.Response(200, json={"status": "ok"})
+
+    async def write(owner, repo, values):
+        written.update(values)
+        return len(values)
+
+    gh.set_repository_secrets.side_effect = write
+    with (
+        patch(
+            "src.subgraphs.devops.env_contract_loader._fetch_env_contract",
+            AsyncMock(return_value=contract),
+        ),
+        patch(
+            "src.subgraphs.devops.smoke.httpx.AsyncClient",
+            side_effect=lambda: async_client(transport=httpx.MockTransport(health)),
+        ),
+    ):
+        result = await create_devops_subgraph().ainvoke(base_state)
+    assert result["deployed_url"] == result["non_secret_values"]["PUBLIC_BASE_URL"]
+    assert _dotenv(written)["PUBLIC_BASE_URL"] == result["deployed_url"]
+    assert result["smoke_result"]["status"] == "pass"
+    assert len(requests) == 1
+    assert str(requests[0].url) == result["deployed_url"] + "/health"
+    assert requests[0].url.host == httpx.URL(result["deployed_url"]).host
+    assert requests[0].url.host == expected_host
+    assert ip_address(requests[0].url.host) == ip_address(address)
+    assert requests[0].url.port == 8080
+    assert requests[0].url.path == "/health"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "old",
+        "missing",
+        "unreadable",
+        "comment",
+        "disabled_step",
+        "disabled_job",
+        "drift",
+        "extra_job",
+        "duplicate",
+        "default_shell",
+        "wrong_ref",
+        "rejected",
+    ],
+)
+@patch("src.subgraphs.devops.deployer.GitHubAppClient")
+@patch("src.subgraphs.devops.deployer.api_client")
+async def test_ipv6_requires_correct_executable_workflow_before_mutations(
+    mock_api, mock_gh_cls, base_state, variant
+):
+    gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+    base_state["allocated_resources"]["backend"]["server_ip"] = "2001:db8::42"
+    base_state["deployed_commit_sha"] = BUILT_SHA
+    base_state["head_sha"] = PINNED_SHA
+    base_state["fence_active_deploys"] = True
+    base_state["secret_values"] = {"TOKEN": TELEGRAM_TOKEN}
+    source = gh.get_file_contents.return_value
+    data = yaml.load(source, Loader=yaml.BaseLoader)  # noqa: S506 (strings only)
+    if variant in ("old", "wrong_ref"):
+        source = source.replace('"$SCP_HOST:$TARGET/"', '"$HOST:$TARGET/"')
+    elif variant == "missing":
+        source = None
+    elif variant == "unreadable":
+        gh.get_file_contents.side_effect = RuntimeError(TELEGRAM_TOKEN)
+    elif variant == "comment":
+        source = (
+            "# kit update and SCP_HOST brackets\n"
+            + "\n".join("# " + line for line in source.splitlines())
+            + "\njobs: {}\n"
+        )
+    elif variant == "disabled_step":
+        data["jobs"]["deploy"]["steps"][2]["if"] = "false"
+        source = yaml.safe_dump(data)
+    elif variant == "disabled_job":
+        data["jobs"]["deploy"]["if"] = "false"
+        source = yaml.safe_dump(data)
+    elif variant == "drift":
+        source = source.replace("scp $SSH_OPTS", "scp -O $SSH_OPTS")
+    elif variant == "extra_job":
+        data["jobs"]["old"] = data["jobs"]["deploy"]
+        source = yaml.safe_dump(data)
+    elif variant == "duplicate":
+        source += "\njobs: {}\n"
+    elif variant == "default_shell":
+        data["defaults"] = {"run": {"shell": "python"}}
+        source = yaml.safe_dump(data)
+    if variant == "wrong_ref":
+
+        async def read(owner, repo, path, ref):
+            return gh.get_file_contents.return_value if ref == PINNED_SHA else source
+
+        gh.get_file_contents.side_effect = read
+    elif variant == "rejected":
+        gh.get_file_contents.side_effect = lambda owner, repo, path, ref: (
+            "+ runs-on: self-hosted" if path.endswith(".rej") else source
+        )
+    else:
+        gh.get_file_contents.return_value = source
+    result = await DeployerNode().run(base_state)
+    assert result["resolution_outcome"] is DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED
+    reason = " ".join(result["errors"])
+    assert ".github/workflows/deploy.yml" in reason and "DEPLOY_HOST" in reason
+    assert "reviewed" in reason and "kit update" in reason
+    assert TELEGRAM_TOKEN not in reason
+    assert gh.get_file_contents.await_args_list[0].args == (
+        "my-org",
+        "my-repo",
+        ".github/workflows/deploy.yml",
+    )
+    assert all(call.kwargs == {"ref": BUILT_SHA} for call in gh.get_file_contents.await_args_list)
+    assert gh.get_file_contents.await_count == (2 if variant == "rejected" else 1)
+    gh.set_repository_secrets.assert_not_awaited()
+    gh.create_or_reset_tag.assert_not_awaited()
+    gh.trigger_workflow_dispatch.assert_not_awaited()
+    gh.rerun_failed_jobs.assert_not_awaited()
+    gh.fence_workflow.assert_not_awaited()
+    mock_api.get_server_ssh_key.assert_not_awaited()
 
 
 class TestDeployerNodeErrors:
@@ -584,8 +755,12 @@ class TestDeployerPinnedToCommit:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
     @patch("src.subgraphs.devops.deployer.api_client")
-    async def test_rerun_stays_on_the_pinned_tag(self, mock_api, mock_gh_cls, deployer, base_state):
+    @pytest.mark.parametrize("address", ["10.0.0.1", "2001:db8::42", "::ffff:192.0.2.42"])
+    async def test_rerun_stays_on_the_pinned_tag(
+        self, mock_api, mock_gh_cls, deployer, base_state, address
+    ):
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        base_state["allocated_resources"]["backend"]["server_ip"] = address
         gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
         gh.get_latest_workflow_run.return_value = _pinned_run()
         gh.wait_for_run_completion.return_value = _pinned_run()
@@ -599,6 +774,10 @@ class TestDeployerPinnedToCommit:
         assert rerun_lookup[0][3] == PIN_TAG
         assert rerun_lookup[1]["head_sha"] == BUILT_SHA
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+        if ":" in address:
+            assert all(
+                call.kwargs == {"ref": BUILT_SHA} for call in gh.get_file_contents.await_args_list
+            )
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
@@ -1092,6 +1271,42 @@ class TestDeployerImageGate:
         gh.trigger_workflow_dispatch.assert_not_called()
         mock_api.claim_deploy_dispatch.assert_not_called()
         mock_api.create_deployment.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_deploy_yml_is_dispatched_only_after_the_built_commits_images_are_read(
+        self, mock_api, mock_gh_cls, deployer, base_state, published_images
+    ):
+        """deploy.yml never starts on push; this dispatch is its only start, and it waits.
+
+        The images of the exact built commit are read back first, and the run is
+        pinned to that same commit, so the deploy cannot overtake its image build.
+        """
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+        gh.set_repository_secrets.return_value = 9
+        order = MagicMock()
+        order.attach_mock(published_images, "images_read")
+        order.attach_mock(gh.set_repository_secrets, "secrets_written")
+        order.attach_mock(gh.create_or_reset_tag, "commit_pinned")
+        order.attach_mock(gh.trigger_workflow_dispatch, "deploy_dispatched")
+
+        await deployer.run({**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA})
+
+        assert [name for name, _args, _kwargs in order.mock_calls] == [
+            "images_read",
+            "secrets_written",
+            "commit_pinned",
+            "deploy_dispatched",
+        ]
+        assert published_images.await_args.args[0]["BACKEND_IMAGE"].endswith(
+            f":sha-{BUILT_SHA[:7]}"
+        )
+        gh.create_or_reset_tag.assert_awaited_once_with("my-org", "my-repo", PIN_TAG, BUILT_SHA)
+        gh.trigger_workflow_dispatch.assert_awaited_once_with(
+            "my-org", "my-repo", "deploy.yml", ref=PIN_TAG
+        )
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")

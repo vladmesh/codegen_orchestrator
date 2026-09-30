@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 import uuid
 
+import httpx
 from pydantic import ValidationError
 import structlog
 
@@ -17,6 +18,7 @@ from shared.allocation_disposition import (
     may_terminate_story,
     refusal_routing,
 )
+from shared.contracts.dto.lifecycle_wait import UserSecretWaitCommand
 from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.project import (
     ProjectPredatesRunOwnership,
@@ -37,10 +39,13 @@ from shared.contracts.dto.settings_seed import (
     SettingSeedOutcome,
 )
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
+    GrantIntentKind,
     GrantIntentLifecycleDisposition,
     GrantIntentLifecycleResult,
+    GrantIntentStatus,
 )
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.deploy import (
@@ -270,6 +275,14 @@ async def _supervise_deploying_story(
     if run is None:
         return DeploySupervisorAction.NONE
 
+    # An initial-owner retry lands the Story on DEPLOYING before the queued
+    # grant's publication. Discover a committed owed handoff here; the API
+    # lifecycle owns its locked publish and never mints a replacement Run.
+    if run.status is RunStatus.QUEUED and await _recover_initial_owner_grant_handoff(
+        api_client, project_id, story_id, run, log
+    ):
+        return DeploySupervisorAction.NONE
+
     # A recheck deploy persists the exact message before publication. A process
     # can die after that commit, so a queued recheck without its dispatch stamp
     # is recoverable. Other queued deploys have no reconstructable handoff.
@@ -356,6 +369,19 @@ async def _route_deploy_outcome(
         return DeploySupervisorAction.WAITING
 
     if outcome in _TERMINAL_FAILURE_OUTCOMES:
+        if outcome is DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED:
+            await api_client.stop_story(
+                story_id,
+                "fail",
+                StoryFailure(
+                    code=StoryFailureCode.ENVIRONMENT_RESOLUTION_FAILED,
+                    source="scheduler",
+                    detail=result.error_details
+                    or "Required deployment environment could not be resolved",
+                ),
+                actor="deploy_supervisor",
+            )
+            return DeploySupervisorAction.FAILED
         await _handle_deploy_give_up(api_client, story_id, project_id, run, log)
         return DeploySupervisorAction.FAILED
 
@@ -377,6 +403,64 @@ def _log_redeploy_reason(
     }.get(outcome)
     if event is not None:
         log.info(event, run_id=run.id)
+
+
+async def _recover_initial_owner_grant_handoff(
+    api_client: SchedulerAPIClient,
+    project_id: str,
+    story_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Let the locked API lifecycle publish an admitted owner Run still owed."""
+    metadata = getattr(run, "run_metadata", None) or {}
+    intent_id = metadata.get(USERS_GRANT_INTENT_KEY)
+    if (
+        metadata.get("triggered_by") != "users_grant_intent"
+        or not isinstance(intent_id, str)
+        or not intent_id.startswith("users-grant-initial_owner-")
+    ):
+        return False
+    age_minutes = (datetime.now(UTC) - _parse_datetime(run.created_at)).total_seconds() / 60
+    if age_minutes < _qa_handoff_recovery_minutes():
+        return True  # the original publisher still owns its handoff window
+    try:
+        intent = await api_client.get_users_grant_intent(project_id, intent_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == httpx.codes.NOT_FOUND:
+            return True
+        raise
+    if (
+        intent.kind is not GrantIntentKind.INITIAL_OWNER
+        or intent.project_id != project_id
+        or intent.id != intent_id
+        or intent.status is not GrantIntentStatus.PUBLISH_OWED
+        or intent.execution_run_id != run.id
+        or intent.target_sha != metadata.get("head_sha")
+    ):
+        return True
+    try:
+        lifecycle = await _resume_initial_owner_intent(
+            api_client,
+            project_id,
+            story_id,
+            run,
+            intent.target_sha,
+            expected_execution_run_id=run.id,
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {httpx.codes.CONFLICT, httpx.codes.SERVICE_UNAVAILABLE}:
+            log.info("deploy_owner_owed_handoff_pending", run_id=run.id)
+            return True
+        raise
+    if (
+        lifecycle is None
+        or lifecycle.intent_id != intent.id
+        or lifecycle.disposition is not GrantIntentLifecycleDisposition.IN_FLIGHT
+    ):
+        raise ValueError("fenced owner handoff returned an unexpected lifecycle result")
+    log.info("deploy_owner_owed_handoff_reconciled", run_id=run.id, status=lifecycle.status.value)
+    return True
 
 
 async def _recover_recheck_deploy_handoff(
@@ -826,7 +910,7 @@ async def _handle_deploy_retry(
             )
             return DeployRetryAction.RETRIED
         if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
-            await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+            _log_exhausted_grant_intent(lifecycle, log)
             return DeployRetryAction.FAILED
         if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
             log.info("deploy_supervisor_owner_intent_stale_target", source_run_id=run.id)
@@ -1027,7 +1111,13 @@ def _deploy_run_deployed_commit_sha(run) -> str | None:
 
 
 async def _resume_initial_owner_intent(
-    api_client: SchedulerAPIClient, project_id: str, story_id: str, run, head_sha: str
+    api_client: SchedulerAPIClient,
+    project_id: str,
+    story_id: str,
+    run,
+    head_sha: str,
+    *,
+    expected_execution_run_id: str | None = None,
 ) -> GrantIntentLifecycleResult | None:
     """Recover only the API-owned initial-owner intent referenced by this run.
 
@@ -1047,22 +1137,29 @@ async def _resume_initial_owner_intent(
             story_id=story_id,
             head_sha=head_sha,
             deployed_commit_sha=deployed_commit_sha,
+            **(
+                {"expected_execution_run_id": expected_execution_run_id}
+                if expected_execution_run_id is not None
+                else {}
+            ),
         )
     )
 
 
-async def _fail_exhausted_grant_intent(
-    api_client: SchedulerAPIClient,
-    story_id: str,
-    project_id: str,
-    run,
+def _log_exhausted_grant_intent(
+    lifecycle: GrantIntentLifecycleResult,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Turn API admission exhaustion into the ordinary terminal story outcome."""
-    detail = "grant intent deployment retries exhausted"
-    log.warning("deploy_grant_intent_retries_exhausted", run_id=run.id)
-    await api_client.fail_story(story_id)
-    await _notify_admin_failure(run.id, project_id, detail)
+    """API admission committed the matching stop and both owed audiences."""
+    if lifecycle.exhaustion is None:
+        raise ValueError("initial-owner exhaustion requires typed readback")
+    log.warning(
+        "deploy_grant_intent_retries_exhausted",
+        intent_id=lifecycle.intent_id,
+        exhausted_execution_run_id=lifecycle.exhaustion.exhausted_execution_run_id,
+        target_sha=lifecycle.exhaustion.target.sha,
+        retry_action=lifecycle.exhaustion.action,
+    )
 
 
 async def _route_refused_deploy(
@@ -1328,7 +1425,7 @@ async def _handle_deploy_infrastructure_wait(
             log.info("infrastructure_wait_resumed_owner_intent", run_id=run.id)
             return RefusedDeployAction.REDISPATCHED
         if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
-            await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+            _log_exhausted_grant_intent(lifecycle, log)
             return RefusedDeployAction.FAILED
         if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
             log.info("infrastructure_wait_owner_intent_in_flight", run_id=run.id)
@@ -1384,17 +1481,20 @@ async def _handle_deploy_waiting_user_secret(
 ) -> None:
     """Deploy is blocked on a required user secret — park the story, ask the owner once.
 
-    The story moves DEPLOYING → WAITING_USER_SECRET (not FAILED), and the request
-    goes through the durable owner-notification seam in its mandated order: owe
-    the ask on this Run, transition, deliver. The record is what the wait's age
-    bound reads: its clock starts only when the record says the ask was
-    delivered, so a publish that failed, an owner nobody can reach, or a process
-    that died before asking can never start it.
+    The story moves DEPLOYING → WAITING_USER_SECRET (not FAILED) in one API
+    transaction with the ask owed on this Run
+    (`POST /stories/{id}/park-waiting-user-secret`), so the wait and its ask
+    commit together or not at all; this tick then spends one delivery attempt
+    and the owner-notification sweep owns the rest. The record is what the
+    wait's age bound reads: its clock starts only when the record says the ask
+    was delivered, so a publish that failed, an owner nobody can reach, or a
+    process that died before asking can never start it.
 
-    Repeating this for the same Run owes nothing new — `owe_owner_notification`
-    returns the record already there — so a tick that retries an entry whose
-    transition was lost cannot ask twice. supervise_waiting_user_secret_stories
-    only checks for the secret's arrival; it never re-sends the request.
+    Repeating this for the same Run owes nothing new — the API keeps an ask the
+    Run already carries and answers a story already waiting with that ask — so
+    a tick that retries an entry whose answer was lost cannot ask twice.
+    supervise_waiting_user_secret_stories only checks for the secret's arrival;
+    it never re-sends the request.
     """
     missing = run.result.missing_user_secrets
     log.info(
@@ -1403,9 +1503,21 @@ async def _handle_deploy_waiting_user_secret(
         missing=[m.key for m in missing],
     )
 
-    owed = await owe_user_secret_request(api_client, run, story_id, project_id, log)
-    await api_client.wait_user_secret_story(story_id)
-    await deliver_user_secret_request(api_client, redis_client, run, owed, log)
+    parked = await api_client.park_waiting_user_secret(
+        story_id,
+        UserSecretWaitCommand(
+            run_id=run.id, text=_user_secret_request_text(missing), actor="supervisor"
+        ),
+    )
+    log.info(
+        "deploy_waiting_user_secret_parked",
+        run_id=run.id,
+        disposition=parked.disposition.value,
+    )
+    if parked.owner_notification is not None:
+        await deliver_user_secret_request(
+            api_client, redis_client, run, parked.owner_notification, log
+        )
 
 
 def _user_secret_request_text(missing) -> str:
@@ -1439,6 +1551,10 @@ async def owe_user_secret_request(
     is WAITING_USER_SECRET, so the seam publishes it only while the story is
     really waiting, and voids it — sending nothing — if the secret arrived and
     the story moved on first.
+
+    Entering the wait owes the ask in the transition's own API transaction
+    (`_handle_deploy_waiting_user_secret`); this is for a story already waiting
+    without one, which the state-age watchdog asks once.
     """
     return await owe_owner_notification(
         api_client,
@@ -1568,7 +1684,7 @@ async def _redispatch_waiting_deploy(
         # Failed straight out of WAITING_USER_SECRET. Moving the story to
         # DEPLOYING first and then failing it here was two Story transitions on
         # one code path, and the intermediate DEPLOYING had no owner.
-        await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+        _log_exhausted_grant_intent(lifecycle, log)
         return False
 
     # The story leaves WAITING_USER_SECRET exactly once, on the paths that are

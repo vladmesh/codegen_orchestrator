@@ -24,6 +24,124 @@ the boundary, producer, consumer, or invariant changes.
 
 ## Caller principals
 
+### Story PR conflict repair
+
+Conflict dispatch dispositions use the existing engineering admission lock ladder.
+The following producers and consumers own each outcome; admission refusals create
+no Run and a deferred paid gate result does not itself count an engineering attempt.
+
+| Outcome | Authority and native consumer |
+|---|---|
+| Non-TODO/unadmitted Task, blocker, internal/legacy/draft project, workspace pending, roster change, stale cycle/PR or Story review | Admission refuses without Task/Story disposition; dispatcher waits for later eligibility. |
+| Failed workspace ensure | Admission's native infrastructure park and workspace audit; infrastructure retry clears the exact park. |
+| Sibling status/live Run, own live Run, finished current-iteration Run | Locked admission refuses busy work or returns a repair; dispatcher uses admitted-start or scoped terminal settlement, without buying another attempt. |
+| Emergency stop, paid-count deferral, first/later budget denial | Paid gate audits the real decision; conflict admission commits Task/Story human review and both owed audiences together. This retains the existing engineering refusal consumer's human disposition, including the paid-count gate's deferred result. |
+| Executor unavailable/confirmation required | Paid gate audits; admission commits the existing infrastructure park, even for deferred confirmation; scheduler consumes it and infrastructure retry owns recovery. |
+| Admitted/lost-response start, operator spawn | Admission creates a real Run/hold; dispatcher publishes then uses locked admitted-start; operator spawn locks admission/start before publication. Generic conflict start remains refused. |
+| Terminal/reclaimed/stuck/failed/finished-Run recovery | Consumer persists the real Run; scoped attempt-outcome owns retry/ending. Reclaim ACKs terminal work; native supervision or TODO recovery settles it. Infrastructure/resource/no-new-commit priorities remain. |
+| Deliberate human recovery | Authenticated internal/admin Task resume checks the current conflict admission and matching stop, records the fresh iteration/bound, and returns Task/Story eligibility. Admission recognises only that native audited bound; prior decisions/Runs remain history. |
+
+`EngineeringDispatchRead.refusal_disposition` names the parked conflict Task and
+the immutable paid decision reference, never a Run FK. The scheduler consumes
+the committed result without another start, Story stop or notice write. Lost
+responses converge through the non-TODO fence and normal owed-notice delivery.
+Other Task dispatch policy and the released dirty-Story restart boundary retain
+their existing ownership.
+The native resume status event alone may extend the bound; generic conflict
+transition/reopen bodies cannot claim `action=operator_resume`, and client note
+events have no status edges that could supply that authority.
+An immutable no-Run stop continues to fence dispatch after mutable status or
+metadata changes until that deliberate command supersedes it. Current conflict
+admission and live-work checks also precede workspace-failure parks.
+
+`POST /api/stories/{id}/repair-pr-conflicts` accepts `PRConflictRepairCommand`
+and returns `PRConflictRepairRead`. The scheduler supplies the observed head;
+the registered PO `reopen_story` tool may omit it only for the released
+`waiting_human_review` / `github_app_merge_refused` / `dirty` quarantine.
+The API resolves service, administrator or project-owner authority from credentials,
+checks project, current PR and cycle (`reopened_at`, otherwise `created_at`), and
+reads the open dirty PR, repository, story branch and actual default through the
+GitHub App. Actor text and model-selected IDs grant no authority.
+
+Task rows lock before Story rows. A deterministic Task ID per story cycle and
+the Story lock serialize admission: one FIX Task, its immutable admission event
+and `in_progress` landing commit together. Repeated requests reuse that Task;
+neither repair admission nor CI retry starts another story cycle. Prior Tasks,
+Runs and PR identities survive. The event records PR/head/default evidence and
+the required `llm.task_default_max_iterations` bound, which normal engineering
+dispatch enforces. No Run or queue message is created here; ordinary task
+dispatch uses `/work-admission/engineering-dispatches`.
+
+Once this Task completes, exhausts its failed-iteration retries, is cancelled or
+requires human review, a still dirty PR exhausts repair rather than creating
+another Task, even if its head changed. The native iteration ceiling permits
+iteration zero followed by retries up to `max_iterations`; a failed attempt
+below that ceiling remains eligible for the ordinary supervisor retry.
+Exhaustion commits the named PR, Task and bound with both owed notice audiences.
+An interrupted response is safe to repeat. Missing/stale evidence,
+live unrelated work and unrelated quarantines fail without mutation. GitHub
+read failures remain visible failures. This route never resets a task budget,
+force-pushes, merges a dirty PR or replans the story.
+
+`POST /api/stories/{id}/repair-pr-conflicts/attempt-outcome` accepts
+`PRConflictRepairAttemptCommand` from an internal service or administrator and
+returns `PRConflictRepairAttemptRead`. The command names the admitted Task,
+failed engineering Run, its iteration, project, PR and immutable admission
+cycle, plus `failed` or `gave_up`. Task, Story, Project and related Run locks
+fence the decision in one transaction. Replaced cycles/PRs and older attempts
+return `stale` without changing current work or notices; client reads grant no
+settlement authority. Malformed or unrelated admission/Run evidence refuses.
+
+The persisted terminal Run decides `failed` versus `gave_up` and supplies the
+diagnostic; the command's disposition/detail are observations, not permission
+to downgrade a refusal into a retry. Settlement accepts the native interruption
+states `in_dev` after the Run write and before any Task write, and `todo` when
+the worker finished before dispatch's status write. It commits the
+Task disposition directly, without a generic Task-only human-review hop.
+Task-only human review without a matching stop is not a supported repair state.
+
+Engineering result delivery submits this command after persisting the Run.
+Terminal queue reclaim ACKs that immutable Run without repeating the worker;
+the normal stuck-task sweep discovers its still `in_dev` Task and submits the
+same command. Failed-task supervision also submits it, after infrastructure and
+resource dispositions, using immutable Run evidence even for a saved `gave_up`.
+Dispatch's finished-Run recovery submits the command from `todo`; for a proven
+infrastructure/resource refusal it restores `in_dev` discovery and defers to
+the stuck sweep's existing priority routing. It never replays a repair refusal
+as Task-only human review.
+Request failure leaves the Task discoverable on the next native tick. Generic
+terminal replay refuses failed conflict Tasks instead of bypassing settlement.
+
+For an ordinary failed repair below the recorded ceiling, its next iteration
+and `todo` state commit together, with an immutable per-attempt settlement event.
+Lost responses and concurrent repeats reuse that event without another increment
+or Run. No native repair producer splits retry into separate `backlog`/`todo`
+writes; intermediate unreleased `backlog` retries are refused rather than
+treated as supported history. Unrelated retry policy is unchanged.
+
+At the ceiling or on `gave_up`, repair Task settlement, the named durable Story
+stop and both owed notice audiences commit together. Replay reconciles the same
+settlement without another stop/notice episode. Dirty-PR admission can already
+have stopped an exhausted Task in the same cycle; the attempt command finishes
+that matching stop without replacing its notice episode. The existing no-new-commit,
+infrastructure and resource-wait dispositions retain priority. Owner/admin
+delivery uses the existing owed-notification sweep.
+
+Worker checkout fast-forwards a synchronized story tip to freshly fetched
+default only when both local and fetched remote work are contained there.
+Unmerged work stays; divergence and tracked dirty work fail visibly. Native
+non-force publication and readback finish preparation before the turn baseline
+is recorded, so advancing the base is not engineering output. Before a first
+turn, both spawn and reclaim reconcile the Run with native prepared HEAD and
+the worker's creation ownership. The Run retains the prepared worker/attempt
+identity atomically with its baseline. A previous remote lookup alone cannot
+survive this handoff as authoritative preparation evidence. A persisted turn
+keeps its saved baseline on adoption, including after a lost response; it never
+replaces that baseline with a post-agent head. Missing or inconsistent worker,
+Run or preparation identity fails before another turn is published. Ordinary
+later attempts on a reused worker retain their own pre-turn baseline rather
+than the checkout baseline of the worker's earlier creator attempt.
+
 `services/api/src/dependencies.py` and `services/api/src/routers/_recipients.py`
 resolve the caller once. An LK bearer acts only as the token subject. An
 internal key is a service principal and may name an actor through
@@ -43,7 +161,7 @@ attempt and holds only the intent reference plus its exact SHA.
 
 An APPLIED intent wins redelivery and is never rewritten or dispatched again. An
 automatic source Run cannot replace a binding while its execution Run is live,
-cannot reopen an exhausted intent, and cannot bind a SHA retained in
+cannot reopen an exhausted target, and cannot bind a SHA retained in
 `target_history`; it receives `in_flight`, `exhausted`, or `stale_target` with no
 new Run. Only after the prior execution is terminal may a genuinely new
 authoritative target record the replaced application/deployment/SHA and its
@@ -72,8 +190,101 @@ supervisor recovery route use that disposition rather than an intent's
 historical execution id. A lost completion response reconciles the source deploy
 through the ordinary successful-deploy handoff without spending a retry;
 infrastructure and user-secret recovery only claim an intent redispatch when the
-result is `dispatched`, and convert `exhausted` into the normal failed-story and
-admin-alert outcome.
+result is `dispatched`. INITIAL_OWNER exhaustion commits the matching current Story's
+typed failure and both owed notice audiences in API admission; scheduler consumers
+must not issue a second stop or best-effort alert. A stale callback cannot stop new work.
+At a zero ceiling, the poller's persisted current-cycle merged PR, CI and image
+observation let API admission stop the matching PR-review Story without a Run;
+stale PRs, unrelated stops and live work grant no such transition. A terminal
+cancelled deploy is an exhausted source only with its validated typed
+`DeployRunResult.deploy_outcome=cancelled`; a resultless superseded cancellation
+does not supply that evidence.
+
+`GET /api/projects/{id}/users/initial-owner-deployment` and the existing intent
+read authorize the credential-derived owner/admin or internal reader and expose
+`GrantIntent.exhaustion`. `GrantIntentLifecycleResult.exhaustion` has the same
+`GrantIntentExhaustion`: typed `initial_owner_deployment_exhausted`, closed count,
+immutable target, and any verified exhausted execution Run. The locked API
+lifecycle checks the current admitted Run, owner, Story and epoch before exposing
+`retry_initial_owner_deployment` with
+`GrantIntentRetryCommand.expected_execution_run_id` only while the effective
+locked `deploy.max_deploy_retries` ceiling is positive. Zero admission has no
+exhausted Run, action or command, including after a policy increase. A real
+exhausted Run retains its history when policy becomes zero, but current API and
+PO readbacks offer no action or command. A later positive policy restores only
+a still-fenced offer; it never resets the intent automatically. Story failure
+and both owed notice texts are stable historical explanations that direct readers
+to authenticated current readback, without promising an executable command.
+This readback never claims a new dispatch.
+
+`POST /api/projects/{id}/users/grant-intents/{intent_id}/retry` accepts that command
+only from the current credential-derived project owner or administrator. The
+established internal service-on-behalf-of-verified-user transport may carry the
+PO caller; a service alone, bare Telegram header, actor string or lifecycle JSON
+flag cannot grant reset authority. The registered PO read/retry tools carry server
+context and the observed fence unchanged across response loss. Queued means admitted,
+not deployed or active; deployment credentials remain platform provisioned.
+
+Under project/intent/Story/Run locks, applied and live work win. Same-target recovery
+requires the current verified identity and immutable source Run, exact distinct
+head/built SHAs, current closed merged PR and Story cycle, matching native epoch
+admissions, no other live work and the corresponding deployment exhaustion stop.
+Released INITIAL_OWNER Runs without epoch stamps and bare failed Stories remain
+supported only with genuine matching native admissions/PR/cycle evidence and a
+failed landing after the source Run. Free text alone grants nothing. Missing,
+replaced or unrelated evidence refuses before mutation. Archived Stories/projects
+and unrelated quarantines remain protected.
+
+One transaction appends the authenticated actor, prior count/target, command fence
+and prior stop/notice facts to `retry_history`, resets that epoch, returns its matching
+Story to `deploying` without a new cycle, and creates its one immutable deploy Run.
+Prior executions and targets remain history. Repeated commands, including an old
+command replayed after the new epoch exhausts, cannot reopen it. A policy or secret
+fix alone cannot reset committed exhaustion; repeated inactive completion cannot
+downgrade it. The new epoch uses the current configured `deploy.max_deploy_retries`;
+zero refuses before any reset, Run or Story change. A policy update between GET
+and POST therefore returns a typed non-actionable exhaustion. Existing
+PUBLISH_OWED recovery publishes the same real Run
+and reports `in_flight`, not a newly dispatched execution. Publication and notices
+retain their established at-least-once transport semantics.
+The deploying supervisor discovers an owed queued initial-owner Run after the
+handoff grace interval and invokes the same locked lifecycle with
+`GrantIntentLifecycleRequest.expected_execution_run_id`. The API requires that
+exact current queued Run, intent, Story and target before publication; the
+request cannot create an intent or admit another Run. A human command against
+`retryable` with remaining admissions refuses with 409 and preserves its epoch.
+
+`StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED`, source `api`, records only
+bounded native intent/attempt/target/count identifiers. Its durable wording
+explains exhaustion and directs the owner/PO to authenticated current readback;
+zero admission also states that no Run was admitted and same-target retry is
+unavailable for that epoch. It never embeds a policy-sensitive action.
+The API stores it with the matching Story stop and owner/admin owed obligations.
+Generic Story stop bodies cannot claim this API-owned grant exhaustion code.
+Response loss converges without replacing that notice episode. History and PO
+readback explain exhaustion without requesting customer-supplied DEPLOY_* data.
+
+`GrantIntentLifecycleRequest` (`shared/contracts/dto/users_grant.py`) adds an optional
+`merged_pr_number` for the PR poller. It selects evidence, never grants a reset. After its
+GitHub App reads the current story PR and observes successful image publication on `main`
+for the built merge SHA, the poller persists `generated_product_timeline.deploy_observation`
+(story, project, primary repository URL, observation time), alongside the exact PR and CI
+reading, before admission. This observation can be written only by an internal service;
+ordinary authenticated story updates keep their existing authorization.
+
+Under the existing project/intent locks, APPLIED and a live execution take precedence.
+A superseded SHA is refused. Any automatic replacement requires the selected current PR,
+matching story/project/repository, exact head and built SHAs, one completed successful CI run
+on `main`, and merge/observation timestamps within the current story cycle. Missing or
+inconsistent evidence returns a visible 409 without mutation. A changed SHA without merge
+authority returns `stale_target`, or `exhausted` if the current epoch already exhausted.
+A verified new merged target may replace even a committed exhausted epoch on the same
+intent: it retains the old target/count, resets only the new target counter and creates
+one immutable Run under the same ceiling. An exhausted same target remains terminal
+to automatic callers.
+Generic supervisor, infrastructure and secret recovery supply no merge authority. Publication
+reacquires the existing project/intent locks after the Run commit, serializing concurrent
+owed dispatches without minting another Run or changing prior execution history.
 
 After smoke success, deploy grants through `POST /users/grant` and requires
 `GET /users/access` to report that exact identity active before the API records
@@ -91,14 +302,12 @@ The reconciler retries only the record's immutable target. Missing or stale gran
 and revoke operation Runs consume their separately recorded, bounded attempt
 budgets. A revoke that exceeds its attempt or unrevoked-time bound receives one
 persisted administrator escalation and never releases or republishes QA access.
-A non-revoked record with a known `(project_id, target_application_id)` blocks
-only a capability-backed QA handoff for that exact target. A target-less legacy
-record blocks no current handoff; it remains fail-closed when read as a current
-capability record, and terminal legacy history remains readable. An internal or
-administrator operator may explicitly drain such an unreconcilable legacy record,
-or a target-backed revoke only after the reconciler persisted its terminal
-`revoke_failed` escalation. That command records acceptance of unproved remote
-cleanup and its resolved actor in the durable work-admission audit.
+Every record carries its target. A non-revoked record blocks only a
+capability-backed QA handoff for its exact `(project_id, target_application_id)`.
+An internal or administrator operator may explicitly drain a revoke only after the
+reconciler persisted its terminal `revoke_failed` escalation. That command records
+acceptance of unproved remote cleanup and its resolved actor in the durable
+work-admission audit.
 
 ### Deploy diagnostic redaction
 
@@ -120,6 +329,14 @@ Canonical model: `shared/contracts/dto/engineering_attempt.py`.
 `engineering_attempt_ledger` records one terminal coding-agent attempt under
 the stable `engineering-run:{run_id}` identity. The terminal Run writer holds
 the Run lock while it writes the ledger, so redelivery retains the first fact.
+Engineering Runs always write a row. QA Runs reserve on paid admission and
+send `qa_accounting` on terminal update: an executor start writes `role=qa`
+and settles reported cost or retains an unknown-final hold; no start releases
+the hold without spend. A missing QA fact also releases the hold and logs a
+warning. An in-flight QA Run admitted before reservations existed has no hold
+or spend to settle. The QA consumer counts every published executor create in
+one Run; it reports the sum only when every start has typed provider facts,
+and otherwise reports unknown cost.
 Money is integer micro-USD, never float. Unknown cost is null, not zero; a
 provider-reported cost must name both a provider and an amount. A project
 deletion detaches relationship ids from accounting history without deleting the
@@ -203,6 +420,29 @@ It records an audit decision. A queued or running replay returns the persisted
 Run; a terminal identity is not reopened. A publish failure has an unknown
 broker outcome, so the committed Run and reservation remain recoverable rather
 than being cancelled speculatively.
+
+`POST /work-admission/engineering-dispatches/start` accepts
+`EngineeringAttemptStartCommand` from an internal service or administrator.
+The command names only Task and admitted Run; actor text grants no authority.
+The API uses dispatch admission's Task-roster, Story, Project, Run lock ladder
+and re-reads the repair admission, cycle, PR, iteration and settlement ledger.
+Only the same current live attempt can start; repeated starts return `reused`.
+A settled attempt returns `settled`, a replaced attempt/cycle/PR returns `stale`,
+and a failed terminal attempt returns `terminal_pending`, all without writes.
+TODO terminal work remains discoverable by dispatch's scoped outcome recovery.
+No response restores TODO from an old ledger or changes a newer live attempt.
+Matching completed-Run recovery commits the native completion hops together
+under this fence and returns `completed`, without replaying a generic start.
+This command creates no Run, reservation, publication or notice.
+
+Conflict dispatch publication, its repeated start request and live/prior-attempt
+recovery use this command. Generic Task `start` and transitions to `in_dev`
+refuse admitted conflict Tasks. Proven infrastructure/resource terminal evidence
+returns `priority_pending` and restores only matching IN_DEV discovery under
+the same fence, then defers to the existing native stuck priority routing.
+Operator spawn retains admission locks and commits its start before publication;
+conflict spawn cannot override a live attempt or revive settled/replaced work.
+Unavailable or stale scoped responses never fall back to a Task-only start.
 
 Internal/admin callers can read the immutable admission fact at
 `GET /api/work-admission/paid-runs/{run_id}/admission` and the corresponding
@@ -310,8 +550,33 @@ already carries a park with `infrastructure_parked` before any attempt id is min
 
 `OwnerNotification.delivered_at` is set by the seam in the same write that marks the owner
 audience `delivered`, and is `None` before that and on records delivered before the field
-existed. A wait measured from the owner having been told — the `waiting_user_secret` age bound —
-reads it, never `owed_at`.
+existed. The `waiting_user_secret` age bound continues to read delivery acceptance,
+never `owed_at` or the independent `told_at`.
+
+`POSystemEvent.owner_notice` identifies a durable obligation by source (`run` or `story`),
+source id and `owed_at`, JSON-encoded in one flat Redis field. Best-effort events carry none.
+`DELIVERED` still means acceptance by `po:input`; the separate `told_state` is absent until
+PO records `told`, `suppressed` or `closed`, with the corresponding time and decision details.
+The PO consumer checks that exact record at its single proactive publish point and writes
+`told` only after publication. A failed write is logged without undoing the publication; an
+unreadable publication decision leaves the input event pending.
+
+Internal/admin `GET /api/stories/{id}/owner-notifications` reads both record homes, and
+`POST /api/stories/{id}/owner-notifications/settlement` compares the source and `owed_at`
+under row locks. A stale identity is 409. Suppression requires the latest delivered,
+unsettled notice, a reason and `suppressed_by=po|user|admin`; a user-secret request is refused.
+The PO tool exposes only `po|user`, verifies project ownership and refuses a latest best-effort
+event, remembered by the consumer per chat/story. Suppression copies story, event, text,
+reason and decider to admins; a failed immediate copy is owed to the existing admin audience.
+
+`GET /api/stories/owner-notifications/deferred?project_id=...` lists suppressed notices without
+an age cutoff. The snapshot reads this for the user's owned projects. PO resolves the oldest
+deferred notice of a story as `told` after telling it in a user turn, or as `closed` on an
+explicit user/admin drop request with a reason. Delivery writes preserve concurrent PO
+settlement. Replacement retains suppressed obligations in the existing record's `deferred`
+list, addressable by their original `owed_at` with explicit `resolve_deferred=true`, and carries
+any pending admin copy forward. A publication write cannot settle a replaced record.
+No new table or delivery-state value is introduced; old records remain unsettled, not deferred.
 
 `OwnerNotification` carries an optional administrator audience (`admin_text`,
 `admin_state`, `admin_attempts`, `admin_detail`) settled independently of the
@@ -332,6 +597,49 @@ a raised users-API failure, spends one bounded attempt and stays `owed`, then
 `abandoned` with the detail. A settled audience is never sent again; before
 settlement delivery is at-least-once, because Telegram has no idempotency key,
 so a retry after partial success resends to administrators already reached.
+
+Attempts on one record are spaced by `OwnerNotification.last_attempt_at`, not by the order
+the dispatcher calls routing and the recovery sweep. Every delivery first asks the internal
+`POST /api/runs/{id}/owner-notification/attempt` or `POST /api/stories/{id}/owner-notification/attempt`
+(`OwnerNotificationAttemptClaim`). Under the row lock the API grants it only while some audience
+is `owed` and the last attempt is at least `OWNER_NOTIFICATION_ATTEMPT_INTERVAL` (60 s) old, and
+stamps `last_attempt_at` in the same write; a refusal changes nothing and the caller publishes
+nothing (`not_due`, or `skipped` when the record is settled). One stamp spaces both audiences,
+because one granted visit serves both. A missing stamp — every record written before it existed —
+means never attempted. A voided record keeps its stamp and spends no attempt; an ending owed
+again is a fresh record with a new `owed_at` and no stamp. The run `PATCH` and the story
+owner-notification `PATCH` answer 409 `owner_notification_attempt_superseded` to a write of the
+same obligation (same `owed_at`) carrying an older or missing stamp than the stored one, so a
+visit that outlived its claim cannot overwrite what a newer one settled. They answer the same 409
+to a write naming an older obligation (an earlier `owed_at`) than the stored one: a later notice
+on the same Run replaced it, and the visit to the replaced record may not write it back.
+
+The non-terminal lifecycle notices are owed records too, written by the API in the transaction of
+the move they announce (`shared/contracts/dto/lifecycle_wait.py`), never published directly:
+
+| Move (internal/admin) | State change | Record on | True while |
+|---|---|---|---|
+| `POST /api/tasks/{id}/park-waiting-resources` | wait facts in `failure_metadata`, task → `waiting_resources` | the refused engineering Run (`run_id`) | task `waiting_resources`, story in its status at the park |
+| `POST /api/tasks/{id}/resume-from-resource-wait` | task `waiting_resources → backlog → todo` | the task's latest engineering Run, replacing the wait's record | task `todo`/`in_dev`, story in its status at the resume |
+| `POST /api/stories/{id}/park-waiting-user-secret` | story `deploying → waiting_user_secret` | the deploy Run that reported the missing secrets (`run_id`) | story `waiting_user_secret` |
+
+The caller sends only the words (`event`/`text`); the API mints the record's facts from the locked
+rows, so an illegal hop or a Run that is not the task's (`stale_attempt_fence`) writes neither
+the move nor the record. A park is announced (`task_waiting_resources`, or
+`task_waiting_infrastructure` for an unprovisioned host) only when it starts a wait — the locked
+task carries no `resource_wait_started_at` yet — so a wait spanning several refused attempts is
+announced once. A repeat answers `already_waiting` and a resume of a task no longer waiting
+answers `not_waiting`, writing nothing. The secret ask keeps an ask the Run already carries; its
+`delivered_at` stays the state-age anchor. A task-level record names the task statuses it is true
+in (`OwnerNotification.expected_task_statuses`); delivery voids it, publishing nothing and
+spending no attempt, when the task has left them. Records without that field keep exactly the
+story check. The truth check is read again after the recipient is resolved, as the last reads
+before the `XADD`; a move committing between those reads and Redis accepting the entry is not
+seen, so no ordering is promised between two notices about one task. `park-waiting-user-secret`
+is the only API route that lands a Story in `waiting_user_secret`; the single-hop
+`wait-user-secret` route is removed. The scheduler spends one attempt in the routing tick and the
+`owner_notifications` loop recovers the rest, with the terminal endings' bound, spacing and
+escalation.
 
 ### The Product Brief coverage-to-dispatch boundary
 
@@ -387,11 +695,85 @@ sends and what the product answers), `limitations` (plain-language sentences),
 All default on the read shape, so a brief stored before them still parses. The
 write shape requires a language and a description on every setting, and refuses a
 usage example naming an unknown requirement id and a user-facing requirement with
-no example. `present_product_brief` renders the user-facing message from a
-per-language label table (`ru`, `en`; any other language falls back to `en`),
-shows settings only by their description, and keeps the brief id in the PO-facing
-prefix. A stored revision lacking these fields cannot be confirmed; the PO is told
-to present a correction.
+no example. The user-facing text comes from a per-language label table (`ru`,
+`en`; any other language falls back to `en`), shows settings only by their
+description, and keeps the brief id in the PO-facing prefix. A stored revision
+lacking these fields cannot be confirmed; the PO is told to present a correction.
+
+**A choice records the cost of the chosen variant.** `variant_choices` defaults
+to `[]` on both content shapes. Each typed entry carries `feature`, `chosen`,
+`alternative`, `trade_off` and `add_later`; proposals reject blank fields and
+duplicate features. Before presenting a free or simplified variant with a
+noticeable quality gap, the PO names the gap and the later upgrade in one
+sentence. Both brief forms show each choice on one line in the brief's language,
+including that the alternative is not included. Confirmation compares these
+fields with the stored content under the existing equality rule. The architect
+receives them as recorded context: build only the chosen variant, never the
+alternative or its upgrade path without a later order. No endpoint or migration
+is added; `content` remains JSON and `limitations` keeps its meaning.
+
+An optional `VariantChoice.capability` names a `cannot` id from the platform
+manifest and records the user's explicit acceptance of its workaround. Absent
+values are omitted from serialization. PO presentation and confirmation reject
+requirements matching manifest detection phrases without that choice. An insisting
+user's `pass_capability_request` sends an admin note and starts no work. The
+Architect consumer checks the same runtime manifest data before coverage admission:
+each conflicting requirement must be returned by the active attempt, never covered
+by a task. The return reason names the capability, manifest version and workaround.
+
+**A brief has two forms, both pure functions of the stored title and content**
+(`shared/product_brief_text.py`), both Telegram HTML with every user or model text
+escaped by `html.escape(..., quote=False)`:
+
+- *Short form* (`render_brief_message`) — the one confirmation message the user
+  signs: title and summary, then bold sections *what you get*, *how you will use
+  it*, *limitations*, *chosen variants*, *settings* in the user's language, each omitted when empty,
+  and the answer line. Each requirement's wording and each usage example appear
+  once; no revision or requirement id, no "your words" quote, no provenance, no
+  filler. Its length, in UTF-16 units as Telegram counts it, is at most
+  `BRIEF_MESSAGE_BUDGET` (3500).
+- *Full form* (`render_full_brief_sections`) — every section at full length, with
+  the user's own words under each requirement, as a list of sections: heading,
+  what you get, how you will use it, limitations, chosen variants, settings (empty ones omitted).
+  The PO's `show_full_brief(brief_id)` joins them with `MESSAGE_BREAK` and is a
+  `return_direct` tool, so its text is the turn's answer and each section is its
+  own Telegram message; a section over the bot's limit is cut by the bot's
+  splitter. The admin API returns the same sections from
+  `GET /api/product-briefs/{id}/full` as `ProductBriefFullText`
+  (`brief_id`, `revision`, `language`, `sections: list[str]`).
+- *`show_full_brief` failure rule* — its result is always the full form or one
+  fixed apology (`full_brief_unavailable`: the brief's language, else `en`; no
+  error text, no id), whatever failed in the read. In a turn where the model calls
+  it beside other tools, the PO graph's `post_model_hook` answers every other call
+  with a short `Not run:` tool error before the tool node runs, so the brief is the
+  turn's last message and nothing else ran; unusable arguments answer every call
+  of the turn the same way and the model gets another step.
+
+**Over the budget, the product is staged, and nothing is written.**
+`present_product_brief` renders the short form from the *proposed* title and
+content before it creates a revision or writes the `product_brief_id` pointer.
+Over `BRIEF_MESSAGE_BUDGET` it creates and writes nothing and returns a refusal
+naming the measured length and the budget and telling the PO to split the product
+into stages — the requirements for a first story in this brief, the rest in a
+later one — never to shorten the wording. An open revision stored before the
+budget whose short form does not fit is not re-sent; the PO is told to present
+its first stage with `corrects_brief_id`. A brief that fits keeps the fingerprint
+creation key and the "send the returned message unchanged" rule.
+
+**A proposal is capped; a stored revision is not.** The write shapes
+(`ProposedProductBriefContent`, `ProposedMustRequirement`, `ProposedUsageExample`,
+`ProposedInitialSetting`, `ProductBriefCreate.title`) cap every count and text:
+title 100, summary 400, at most 8 must-requirements (text 200, `user_wording`
+250 — a longer quote goes to `wording_reference`), 10 usage examples (sends 150,
+answers 200), 5 limitations (200 each), 6 initial settings (description 150), and
+2 variant choices (feature 80, chosen and alternative 120 each, trade-off 200,
+add-later 160). At
+every cap the full form stays under `FULL_BRIEF_CEILING` (12,000 characters as
+the user reads them; pinned in `shared/tests/unit/test_product_brief_text.py`),
+far below the 20k brief that broke the 2026-09-25 canary. The read shapes keep
+their looser limits, so a revision stored before the caps still loads and reads
+in full; confirming one is refused like any other over-cap echo, and the PO
+presents a correction.
 
 **A brief carries typed initial settings, and never a secret.**
 `ProductBriefContent.initial_settings` is an ordered list of `InitialSetting` —
@@ -591,7 +973,7 @@ postmortem evidence.
 
 **The producer of the confirmed brief is the PO consumer.**
 `present_product_brief` opens the revision and returns the exact text the user is
-shown; `confirm_product_brief` freezes it by echoing that content back.
+shown (the short form, after a PO-only "Product Brief revision N (id: …)" line); `confirm_product_brief` freezes it by echoing that content back.
 Recovering the presentation across a PO restart is what the project config key
 `product_brief_id` is for — it points at the revision presented and not yet
 spent, because until a brief is bound to a story no route finds it from the
@@ -613,8 +995,10 @@ path, and binds the brief through `POST /api/product-briefs/{id}/story`
 is already brief-backed. A failed bind publishes nothing *and closes the story
 it could not back*: returning without publishing is not enough, because the
 scheduler's liveness sweep re-publishes a `created` story with no tasks and it
-would then be planned from prose. A `fix` story and `reopen_story` need no
-brief; they repair what a confirmed brief already described.
+would then be planned from prose. The chat PO creates no story without a brief
+and cannot choose a story type: a retry after a failure and a complaint go
+through `reopen_story` on the original `failed` or `completed` story, which
+keeps its brief.
 
 **A planned task's plan membership is immutable while it is unadmitted.** Its
 project, story and planning attempt are what the admission's release set and the
@@ -701,6 +1085,15 @@ are repository-relative.
 
 ### Recipient and PO rules
 
+Telegram admits bounded concurrent updates through PTB's native update processor.
+`TELEGRAM_MAX_CONCURRENT_UPDATES` is required and at least two. The processor holds
+a FIFO asyncio lock for the effective user across authorization and all registered
+handlers, including commands and callbacks. Different users have distinct contexts
+and locks; an idle lock is removed when its last admitted waiter leaves. PTB owns
+admission and shutdown, so this adds no scheduler or persistent user registry.
+PO's existing per-chat graph serialization and protected request streams remain
+the downstream boundary.
+
 Canonical sources: `shared/contracts/recipient.py` and
 `shared/contracts/queues/po.py`.
 
@@ -710,10 +1103,108 @@ an unresolved recipient. `DeployMessage` requires exactly one of an address or
 an `unaddressed_reason`. Legacy ambiguous `user_id` payloads are rejected,
 quarantined to DLQ, and alerted rather than silently becoming unaddressable.
 
-PO streams use the flat-field codec from `queues/po.py`. The proactive listener
+The PO prompt's "Story Events & Reminders" lists the events PO receives, each an
+`OwnerNotificationEvent`: `story_completed`, `story_failed`, `story_blocked`,
+`story_quarantined` (worded as `story_blocked`: work is stopped, a person decides, no
+known time), `story_impossible_capacity`, `task_impossible_capacity`,
+`story_waiting_user_secret` and `story_requirements_returned`. A unit test
+holds the listed set inside the vocabulary the consumer routes.
+
+A `story_stage` event carries `stage`, `waiting_on`, `wait_estimate`, `stage_notice`,
+`stage_notice_step` and `stage_entered_at`. The step is 0 for `entered` and only for it, `n` for the
+`n`-th `still_there` of the stay. `stage_entered_at` names the stay: when its entry notice went out,
+the same on every notice of the stay, later for a return to the stage. The PO consumer logs and
+drops every stage notice before the graph; the scheduler producer remains unchanged.
+
+At the single proactive publish point, `consumers/po_story_gate.py` classifies the current API
+story as `in_work`, `needs_user`, `stopped`, `completed` or `failed`. Reminders publish only an
+untold `needs_user` or `stopped` state; a planning failure that parked the story is stopped, while a
+planning being retried automatically, changes among in-work statuses, resource waits and escalation
+steps never justify a message. A reminder names its story in `story_id` (the explicit argument of
+`set_reminder`); one naming no story publishes only if `user_requested` is true, i.e. it was set in
+the user's own turn. Terminal
+reminders stay silent because the durable seam tells endings. Durable key events and returned
+requirements publish and record what was told. Resource/infrastructure waits and resumptions run
+the PO turn but their replies are suppressed. Redis retains the last told state per chat/story
+without expiry until the story ends; the previous fingerprint format counts as already told.
+An unreadable gate suppresses reminders, while durable events still publish.
+
+**Only an ordered story's outcome reaches the user.** A story is *ordered* when
+`GET /api/product-briefs/by-story/{id}` returns a brief with `confirmed_at` set. The PO consumer
+checks it before the PO graph for every remaining `system_event` that names a story, so producers do not: a
+not-ordered story's event never reaches the graph or `po:proactive`, the admins get it marked as
+withheld. Stage notices were already dropped without an audience read. `story_waiting_user_secret` is
+exempt. A reminder that names a story passes the same check at the same entry: a not-ordered
+story's reminder runs no PO turn and is logged. A 404 or a validated unconfirmed brief is "not
+ordered"; every exception while reading the brief, including malformed bodies, leaves the entry
+unacked for the PEL sweep to hand back.
+
+**The situation snapshot.** Every `system_event` turn that reaches the PO graph carries a snapshot
+built by `agents/po/situation.py` from existing API reads and the chat's
+`po:last_user_message:<chat>` key (written on each user turn): the order (story and brief
+`confirmed_at`, or "not an order"), the story's status and when it entered it
+(`status_entered_at`; null on rows landed before that column existed reads `unknown`, never
+`updated_at`), for a stopped story (key state `stopped`) the fixed fact "stopped, a person is
+needed, no known deadline", for a story the state-age watchdog stopped the wait its
+`state_wait_age_bound_exceeded` reason records (marked "stopped in a mass sweep after downtime" when
+the reason has `mass_sweep: true`), the user's last message, the project's Application status and last health
+check, the user's other ordered stories in work, a count of platform work, and a `### Deferred
+notices` section (empty until notices are deferred). Dates are absolute UTC plus a human age. Each
+field is read on its own: a read that raises, answers 404 or returns a body that is not the DTO
+makes that field `unknown`, and the turn runs. The snapshot travels in the run config
+(`po_situation`) and the graph's prompt appends it to the system message, so the checkpointer never
+stores it. A user turn has none; `get_product_situation(project_id)` returns the same text for one
+of the user's own projects, about its current or latest ordered story.
+
+In a PO turn without `request_id` (a reminder or system event) the only way to the user is that
+gated final reply: the `notify_user` tool publishes nothing there (the consumer passes
+`user_turn` in the run config). No other PO tool publishes to `po:proactive`, and a unit test
+holds that.
+
+PO models use the logical flat-field codec from `queues/po.py`. Before the first
+Redis command, `RedisStreamClient.publish_flat` (and `publish`/`publish_message`
+on PO streams) protects the entire payload with the deployed
+`SECRETS_ENCRYPTION_KEY`. The sole wire field is `po_encrypted_v1`, a Fernet token
+authenticating both the destination key and the payload. No model field remains
+in cleartext. `consume_typed`, the proactive `consume` path, and the bot's direct
+response XREAD authenticate/decode before validation or delivery. Runtime has no
+plaintext read/write fallback. PO and bot startup authenticate retained PO
+payloads and refuse released plaintext before consumption; the offline,
+quiesced converter is described in [SECRETS.md](SECRETS.md#production-po-redis-upgrade).
+
+PO reminders protect the entire JSON member before ZADD; the poller authenticates
+before validating and publishing a separately protected input. Latest owner
+events protect the entire JSON document before SET; notice tools authenticate
+before reading the notice reference. Keys, stream entry IDs, consumer/group
+names, cursors, delivery counts, reminder scores and TTLs remain operational
+metadata. Payload timestamps, names, reasons, QA facts, notice references, errors,
+and recipient/story/project/task identifiers are inside the envelope. A failed
+reminder authentication retains the member for repair and logs no body.
+
+PO quarantine protects the complete DLQ record, including the original wire
+body and failure reason, before XADD and ACK. A failed DLQ write leaves the
+original entry pending. Validation logs report counts; transport exceptions
+report safe classifications. Unvalidated alert identifiers are restricted to
+known event vocabulary and identifier shapes. Payloads and exception bodies are
+never rendered in transport failure logs or alerts. ACKed retained entries remain
+protected. Other services' queue representations are unchanged.
+
+The proactive listener
 acks only after successful delivery or terminal delivery exhaustion. Its PEL
 delivery count survives a restart; exhaustion is alerted and is not retried as
 an endlessly valid message.
+
+Every text the bot sends a user on the reply and proactive paths goes through one
+function, `send_text` in `services/telegram_bot/src/proactive.py`. It splits on
+`MESSAGE_BREAK` (`queues/po.py`, ASCII RS `\x1e`): a producer that wants a new Telegram
+message puts it into `POResponse.text` or `POProactiveMessage.text`, never inside an
+open HTML tag, and the bot drops it and any empty part. A part over
+`SAFE_MESSAGE_LENGTH` (4000 UTF-16 units of HTML source, `shared/telegram_text.py`) is
+cut at the last paragraph, then line, then word boundary that fits, never inside a tag
+or entity; tags open at a cut are closed and reopened, so every chunk is valid HTML.
+Chunks go in order, each HTML first and plain text if refused. A proactive retry
+resumes at the chunk that failed (`SendProgress`, kept per delivery). A failed reply
+gets a fixed apology, never exception text.
 
 ### Worker command and turn rules
 
@@ -749,6 +1240,33 @@ a database lock, persisted request/run identity, or explicit turn/adoption key.
 `XAUTOCLAIM` recovery, DLQ handling, and approximate stream trimming do not
 authorise a consumer to invent a result. The PO consumer additionally tracks
 its in-flight ids so one process does not reclaim its own active dispatch.
+
+Capability executions retain the released live-work keys, 60-second lease and
+Redis-server-time expiry. Renewal atomically refuses expired tokens, even before
+PEL liveness pruning. The existing 10-second refresh cadence also bounds each
+network attempt and the delay between transient connection/timeout retries. A
+local monotonic deadline starts before the last confirmed acquisition/renewal
+request; failed attempts never extend it. A ten-second connection outage fits
+inside this confirmed window. No renewal is accepted after the local deadline.
+Confirmed teardown still cancels the owner. Missing/expired ownership, exhausted
+uncertainty and non-transient errors cancel visibly and retain the pending entry.
+Leased completion and cancellation use one terminal Lua decision: check the
+completed result's settlement, teardown fence and unexpired token against Redis
+TIME, then XACK atomically. Every retry repeats this decision inside the original
+confirmed deadline. A returned result remains authoritative through subsequent
+owner cancellation; only a running process that unwound can settle as cancelled
+work. Unproven external cancellation, unsettled teardown results, known ownership
+loss and exhausted uncertainty prevent ACK. Cancellation without teardown leaves
+the entry pending. An observed teardown continues to constrain a returned result
+even if its key later disappears. Shutdown settlement is additionally bounded by
+the existing ten-second attempt window. A lost ACK reply may mean Redis already
+committed: a subsequent zero XACK is unproven, fences cleanup and never claims
+recovered settlement.
+No durable ACK recovery protocol is introduced. A definitive ACK reply received
+after the conservative local deadline is reported as already applied but cannot
+claim current ownership. Watchers are cancelled and awaited on every exit; bounded
+best-effort failure marking and lease removal cannot mask the primary failure.
+This changes no DTO, stream, schema, key format or released-worker upgrade protocol.
 
 ## Current flow map
 
@@ -803,9 +1321,10 @@ its in-flight ids so one process does not reclaim its own active dispatch.
    no longer safely stoppable, then writes its typed terminal result.
 5. The supervisor reads that typed result, creates QA work only with resolved
    repository criteria, and routes the typed QA outcome.
-6. A terminal owner notification is persisted before it is published to PO.
-   Recovery retries the owned notification record; it does not duplicate an
-   already settled owner event.
+6. A terminal owner notification is persisted before it is published to PO, and
+   a lifecycle-wait notice (resource wait, resume, secret ask) is persisted in
+   the transaction of the move it announces. Recovery retries the owned
+   notification record; it does not duplicate an already settled owner event.
 
 ## REST DTO registry
 
@@ -827,6 +1346,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | Server and SSH user/status | `shared/contracts/dto/server.py` | `schemas/server.py`, `routers/servers.py` | server operations use the resolved caller principal |
 | Service deployment result | `shared/contracts/dto/deployment.py` | `schemas/service_deployment.py`, `routers/service_deployments.py` | deployment rows identify an owned application target |
 | User create/update | `shared/contracts/dto/user.py` | `schemas/user.py`, `routers/users.py` | an API caller cannot substitute another bearer subject |
+| QA probe library | `shared/contracts/dto/qa_probe_library.py` | `routers/projects/qa_probes.py` | `GET /projects/{id}/qa-probes` is internal or admin; `POST /projects/{id}/qa-probes/from-run` is the QA runtime only and reads the probes off the settled passed Run, never the request |
 
 ### Story, task, and run surfaces
 
@@ -834,14 +1354,15 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 
 | Surface / model family | Canonical source | API exposure / owner | Non-type invariant |
 |---|---|---|---|
-| Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py`, `routers/_story_helpers.py`, `routers/_story_actions.py` | status and `waiting_on` are written only by a transition, together on one locked row; `StoryUpdate` refuses both; App-authenticated generated-product evidence, owner notifications and QA handoff are durable story lifecycle state |
+| Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py`, `routers/_story_helpers.py`, `routers/_story_actions.py` | status, `waiting_on` and `status_entered_at` are written only by a transition, together on one locked row; `StoryUpdate` refuses all three; App-authenticated generated-product evidence, owner notifications and QA handoff are durable story lifecycle state; `unverified_decisions` is append-only |
 | Task create/update/event/status | `shared/contracts/dto/task.py` | `schemas/task.py`, `routers/tasks.py` | scheduler dispatches only durable eligible task state |
 | Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | confirmed content is immutable; one live planning attempt; one idempotent admission releases that attempt's tasks |
 | Task action requests | `services/api/src/schemas/actions.py` | `routers/_task_actions.py` | actions use admission and do not bypass paid-run ownership |
 | Run create/type/status | `shared/contracts/dto/run.py` | `schemas/run.py`, `routers/runs.py` | terminal transitions are guarded by the Run owner and lock |
 | Typed run results | `shared/contracts/dto/run_result.py` | `schemas/run.py`, deploy/QA consumers | only the owning terminal writer may set its typed result; readers reject a mismatched or untyped shape |
-| Engineering attempt ledger input | `shared/contracts/dto/engineering_attempt.py` | `schemas/run.py`, `routers/runs.py` | terminal ledger fact is idempotent by engineering Run |
+| Engineering and QA attempt ledger input | `shared/contracts/dto/engineering_attempt.py` | `schemas/run.py`, `routers/runs.py` | terminal ledger fact is idempotent by Run |
 | Owner notification | `shared/contracts/dto/owner_notification.py` | `schemas/story.py`, `routers/stories.py` | persist notification obligation before PO publish; retry from that record |
+| Lifecycle-wait moves | `shared/contracts/dto/lifecycle_wait.py` | `routers/_resource_wait_actions.py`, `routers/_story_actions.py` | the move and its owed owner notice on the deciding Run commit in one transaction; the API mints the record's facts |
 
 **Story lifecycle ownership.** A Story's status is written in exactly two places,
 both in `services/api`: `_do_transition` in `routers/_story_helpers.py` for a
@@ -861,6 +1382,88 @@ The locked infrastructure park,
 `POST /api/stories/{id}/park-infrastructure-refusal`, moves a Story one hop but
 its Task up to two (`todo → in_dev → waiting_human_review`) in the same
 transaction, so no caller sequences task and story status for that park.
+`POST /api/stories/{id}/park-waiting-user-secret` moves a Story one hop together
+with the owed ask on its deploy Run (see the lifecycle-wait table above).
+
+**A platform failure names itself on the story.** `POST /api/stories/{id}/fail` and
+`/human-review` accept an optional `failure` (`StoryFailure`, `shared/contracts/dto/story_failure.py`:
+`code`, `source`, redacted and bounded `detail`). The same transaction stores it as
+`quarantine_reason` (`reason: story_failure`) and owes the owner (`story_failed` / `story_blocked`)
+and administrators the cause. The scaffolder sends `scaffold_failed` for every story still waiting on
+a failed scaffold (`created`, or `in_progress` with no task of its current cycle); the architect sends
+`scaffold_failed` (fail) when the project carries `scaffold_error` and `scaffold_timeout` (park) when
+its wait runs out. `GET /api/stories/{id}/diagnostics` (`StoryDiagnosticsRead`, project access) is
+the read-only view of the causes: typed failure or other `quarantine_reason`, `scaffold_error`,
+work-cycle task count, the last failed Runs and task stop events, and the newest error/warning Loki
+lines naming the story or project — named fields only, redacted, at most
+`STORY_DIAGNOSTIC_LOG_LIMIT`; an unreadable log store is `logs_unavailable`, never an error.
+
+Empty engineering stops use `StoryFailureCode.NO_NEW_COMMIT` (`no_new_commit`, source
+`engineering` or `scheduler`) on `/human-review`: taskless results, exhausted planned-task
+retries and GitHub's specific no-commits PR refusal commit the reason, `waiting_on=human_review`
+and both owed audiences together. No separate reason PATCH or immediate Redis publication is
+required; the existing notification sweep delivers `story_blocked` with the bounded cause and
+the explanation that nothing was produced and a person must decide the next move.
+
+Failed-task supervision selects the required typed stop for each story before any exhausted
+sibling can make a bare escalation. It reads each selected task's latest engineering result;
+an unread sibling leaves that story selected. A partial handoff resumes only when the story's
+status/waiting reason, exact task/attempt cause and owner/admin notification episode match the
+empty-result stop. A settled exhausted sibling can supply that same proof. Unrelated human
+review or a missing/mismatched notice is not proof; no repeated transition is globally allowed.
+
+For `DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED`, the DevOps subgraph preserves the typed
+resolver outcome and key-bearing error even when `deployment_result` is absent or null.
+The deploy consumer commits a failed Run with bounded/redacted cause and performs no deploy
+execution after resolver failure. The scheduler consumes that persisted result and sends
+`StoryFailureCode.ENVIRONMENT_RESOLUTION_FAILED`, source `scheduler`, through `stop_story`
+with action `fail`. The API commits the failed status, cause and owed owner/admin notices
+together. Stop refusal propagates for retry; notification publication is recovered by the
+existing owed-notice sweep. No preceding reason PATCH is required. Other deploy outcomes
+retain their existing routes.
+
+**A failed planning attempt is a story state.** `stories.planning` (`StoryPlanning`, on
+`StoryRead.planning`, `shared/contracts/dto/story_planning.py`) is the one durable record that
+planning is owed: every path that makes the architect owe a story a planning run writes it as
+`retrying` with `next_attempt_at` in the same transaction as the state change. The architect reports
+a failed attempt to `POST /api/stories/{id}/planning-outcome` (`StoryPlanningReport` →
+`StoryRead`, internal or admin) with a `planning_failed` `StoryFailure` (source `architect`,
+redacted detail naming the error class and, for `LLMChannelsExhausted`, every channel with its
+class). A retriable failure within `supervisor.story_max_architect_retries` is `retrying` with
+`failed_attempts` and `next_attempt_at` (60 s, doubling) and leaves the status alone. A failure past
+the bound, or `retriable=false` (every channel failed with payment_required, unauthorized, forbidden,
+quota_exhausted, missing_credential or binary_missing, or the chain cannot run), is `parked`: the
+same transaction makes the `human-review` stop with the `StoryFailure` and both owed notices (a
+`reopened` or `created` story passes through `in_progress`). A failure reported for a story outside
+`created`/`in_progress`/`reopened` is a 409 and writes nothing. `POST /api/stories/{id}/retry-planning`
+(internal or admin, optional `AdminAction`) is valid only for `waiting_human_review` with a
+`planning_failed` stop, else 422: one transaction clears the stop, lands on `in_progress` and writes
+`retrying` due now with `failed_attempts` 0, and nothing is published. The scheduler supervisor
+(`supervise_stuck_stories`, one sequential loop in `scheduler-pipeline`) is the one publisher of an
+`ArchitectMessage` for a `retrying` record, so an operator's re-run is queued within one cycle. The
+Redis key `planning_retry_queued_key` (TTL `supervisor.story_retry_ttl`) is its throttle, never a
+lock: it is checked first and set only after `XADD` returned, so a failed lookup or publish leaves
+none and the next tick publishes again (a per-story failure is logged as
+`story_planning_retry_publish_failed` and the tick goes on). The row wins over Redis. The architect
+settles a job whose `retrying` record is not yet due (`architect_planning_not_due`), a claim that
+finds a live rival, and a plan already in place.
+A successful brief-backed plan records `planned` with its channels in the `admit` transaction
+(`ProductBriefAdmissionCommand.channels` / `channel_failures`); a plan without a brief reports
+`succeeded` to `planning-outcome`, retried briefly, and logs `architect_planning_outcome_unrecorded`
+with the channels when the API stays unavailable.
+
+*Accepted residuals (observer decisions on card codegen-orchestrator-1387).* A successful plan
+without a Product Brief made while the API is unavailable for all three outcome writes keeps its
+channels only in the `architect_planning_outcome_unrecorded` log event. An `XADD` that raises after
+Redis wrote the entry sets no throttle, so the next tick may publish the same record again: a
+brief-backed story's claim settles that duplicate, and for a story without a brief a second planning
+run is possible in this Redis-fault corner only.
+
+The state-age watchdog's ending, `POST /api/stories/{id}/expire-state-wait`
+(`StateWaitExpiryCommand` → `StateWaitExpiryRead`, `shared/contracts/dto/state_wait.py`), moves a
+Story one hop only if the locked rows still show the expected status and anchor
+(`StateWaitExpiryCommand.mismatch`); reason, owed story record and transition commit together.
+A mismatch is a typed `skipped` naming it, a repeat is `already_ended`, and neither writes anything.
 
 The narrow exception is the locked infrastructure recovery transaction,
 `POST /api/stories/{id}/retry-infrastructure-attempt`. It verifies the task and
@@ -879,7 +1482,9 @@ same transaction as `status`, from the one `WAITING_ON_BY_STATUS` mapping in
 `shared/contracts/dto/story.py`. That mapping is total over `StoryStatus`, so no
 transition can leave a stale wait behind. `PATCH /api/stories/{id}` refuses
 `status` and `waiting_on` alike — they are `TRANSITION_OWNED_STORY_FIELDS`, so
-sending either is a 422 rather than a field silently dropped. `StoryDTO` and
+sending either is a 422 rather than a field silently dropped. `_land_on` also stamps
+`stories.status_entered_at` (nullable timestamptz, migration `a4c6e8f0b2d5`, not backfilled) with
+the landing time; it is read-only on `StoryDTO`/`StoryRead` and refused by `PATCH` the same way. `StoryDTO` and
 `StoryRead` both declare `waiting_on` required with no default, so a response
 without it is a broken response and not a story waiting for nothing, and
 `GET /api/admin/overview` exposes it per story in the bounded `waiting_stories`
@@ -931,13 +1536,13 @@ completed result.
 | Incidents, analytics, brainstorms | `dto/incident.py`, `dto/analytics.py`, `dto/brainstorm.py` | corresponding schema and router modules | their status vocabularies are source-owned |
 | System config | `services/api/src/schemas/system_config.py` | corresponding API routers | API-local system-config payloads are not shared DTOs |
 | Telegram binding | `shared/contracts/dto/telegram.py` | `routers/projects.py` | token binding is fail-closed and stores the verified bot identity |
-| API analytics and RAG payloads | `services/api/src/schemas/analytics.py`, `schemas/rag.py` | `routers/analytics.py`, `routers/rag.py` | these API-local models have no shared duplicate |
+| API analytics payloads | `services/api/src/schemas/analytics.py` | `routers/analytics.py` | these API-local models have no shared duplicate |
 | Promo-code and port allocation payloads | `services/api/src/schemas/promo_code.py`, `schemas/port_allocation.py` | promo-code and allocation routes | route ownership determines admission and visibility |
 
 ### Shared DTO foundations
 
 `shared/contracts/dto/base.py` supplies common API DTO foundations. The API also
-has local schemas for analytics, brainstorming, API keys, ports, RAG, promo
+has local schemas for analytics, brainstorming, API keys, ports, promo
 codes, system configuration, and LK interactions. Their canonical definitions
 are the corresponding `services/api/src/schemas/*.py` modules unless the table
 above names a shared contract import.
@@ -1016,12 +1621,46 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.6.2` tag, which dereferences to
-`9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.6.2` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.6.4` tag, object
+`2fe1dc027834d4118eff21af81dc942909aa7ebf`, which dereferences to
+`04e2d94826f0dd6b46be3d7345b46cdd677db7ed`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.6.4` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`.
+It represents the committed checkout: generated ignored `.env` and `TASK.md`
+are omitted; every versioned rendered file retains the producer's bytes.
 Its main-push image workflow runs frozen root sync, frozen `services/backend`
 sync, and generation in that order before building either service image.
+The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
+after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs. The kit's
+[release proofs](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md)
+cover PostgreSQL preserving upgrade/readback above int32 and real HTTP logging.
+Existing Copier products retain owned ORM files: their later update must reconcile
+`User.id`, `UserChannel.user_id`, and `Setting.subject_id` and apply the forward
+migration. Downgrade refuses data or sequence values outside int32. This pin
+changes new-product scaffolding; it does not migrate deployed products.
+The generated deployment runs on `ubuntu-24.04`, keeps `DEPLOY_HOST` raw for
+native SSH and appleboy/ssh-action, and brackets IPv6 only in the native SCP
+remote destination. The same two compose files, target, options and three
+attempts remain. Root tooling and its lock resolve the released commit; backend
+and bot retain their own frozen service environments. Application/tooling
+versions remain `0.1.0`; minimum Copier remains `9.0.0`.
+
+Existing products need a reviewed Copier update on a clean review branch:
+`copier update --defaults --trust --vcs-ref=0.6.4 --conflict=rej`. Preserve selected
+modules and owned application/spec/environment bytes, back up ignored real
+environment data through the product's restricted procedure, and compare its
+bytes locally without exposing credentials. Read back answers/source, tooling
+revision, both frozen environments and the full workflow. An exit of zero and
+new answers can coexist with `.rej`: Copier installs the candidate workflow
+while retaining rejected local hunks in the artifact and committed predecessor.
+Reconcile each hunk deliberately, retain reviewed unrelated customizations,
+resolve rejection artifacts and validate the product before its normal reviewed
+merge and image publication. No bulk updater or remote workflow patch exists.
+The immutable [release notes](https://github.com/vladmesh/codegen-product-kit/blob/04e2d94826f0dd6b46be3d7345b46cdd677db7ed/docs/releases/0.6.4.md)
+and generated `infra/README.md` describe this boundary; the release document's
+preparation heading predates publication, whose annotated identity above was
+independently read back. External action execution, remote authentication and
+production deployment are outside the nonconnecting validation boundary.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
 (`tests/live/pipeline_helpers.py`, still overridable per run by
@@ -1254,24 +1893,133 @@ problem, never a successful or engineering-fix verdict.
 
 ### An engineering result carries a new commit or it failed
 
-A DONE engineering result is only a result when its commit is new work on the
-story branch. `services/langgraph/src/nodes/developer.py::_no_new_commit_error`
-verifies the worker-reported SHA against GitHub next to the unpushed-commit
-check, and refuses one that is already reachable from the repository default
-branch — the branch's base, and every commit already deployed for the story,
-live there. Such an attempt becomes a failed Run carrying
+A DONE engineering result is only a result when its commit changes something on
+the story branch. Before the turn is sent, the developer node
+(`services/langgraph/src/nodes/developer.py::_pre_attempt_head`) records on the
+attempt's `run_metadata` the head the attempt starts from,
+`AttemptTurnMetadata.pre_attempt_head_sha`: the story branch head, or the
+default branch head when the branch does not exist yet. It is written once; a
+reclaimed attempt that adopts an already-pushed turn is judged against the
+recorded value, never a head read after the push. Work on the default branch
+itself and runs without a branch record none and are not judged.
+
+`_no_new_commit_error` is the one acceptance rule, next to the unpushed-commit
+check: a worker success whose reported commit equals that head, or adds no file
+change over it (`shared.clients.github` `commit_adds_changes`: nothing ahead of
+the head, or commits that net out to no file change), is a failed Run carrying
 `EngineeringRunResult.failure_reason = no_new_commit`
-(`shared/contracts/dto/run_result.py::EngineeringFailureReason`), distinct from
-the missing-SHA failure "Developer completed but no commit was made". No deploy
-is published for it, and the story leaves `in_progress` for human review with
-the reason on its `quarantine_reason`, because no pull request can ever be
-opened for a branch that carries no commit of its own — GitHub answers that
-request 422 "No commits between". `complete_stories` classifies that same
-refusal through `shared.clients.github.NoCommitsBetweenError` and parks the
-story instead of retrying it every tick; other PR-creation errors stay transient.
+(`shared/contracts/dto/run_result.py::EngineeringFailureReason`). A worker success
+with an absent or empty SHA, including the consumer's defensive success entry,
+carries that same classification. The branch
+base, a commit already deployed and an earlier task's commit are all at or
+behind the head, so the former default-branch guard is this same check. No
+deploy is published for it.
+
+A planning task's attempt that fails this way is an ordinary failed iteration:
+the task goes to `failed`, the supervisor retries it while `current_iteration <
+max_iterations` and escalates it to human review after that, so it is never
+`done`; exhaustion uses the typed story stop and owes both audiences. A taskless attempt
+(a deploy repair) has no iteration loop: its story
+leaves `in_progress` for human review with the reason on its
+`quarantine_reason`, because no pull request can ever be opened for a branch
+that carries no commit of its own — GitHub answers that request 422 "No commits
+between". `complete_stories` classifies that same refusal through
+`shared.clients.github.NoCommitsBetweenError` and parks the story instead of
+retrying it every tick; other PR-creation errors stay transient. The consumer settles
+the worker turn first and requires the typed story stop before ending the taskless Run.
+A refused stop propagates, leaving the Run nonterminal and the queue entry reclaimable;
+the scheduler logs a refused stop and leaves the story selected for a later cycle.
+An optional engineering callback failure after the stop leaves the committed notice owed.
+The empty-result terminal writer retries one transient Run write with the identical typed
+result, execution, worker observability and accounting input. A lost response therefore reuses
+the immutable outcome and first ledger fact. A persistent write or required worker-settlement
+failure propagates without creating a generic terminal answer or another worker turn. A
+previously committed matching taskless stop is validated against its cause and both notice
+audiences before completing the Run; its original notification episode is retained.
 The manifest-repair follow-up deploy Run that an accepted engineering result
 creates names its story, so every story-scoped reader of deploy Runs — the live
 follow-up wait included — can observe it at all.
+
+### A commit's required derived keys are computable before it deploys
+
+`services/langgraph/src/subgraphs/devops/secret_resolver.py::is_computable_derived_key`
+is the one answer to which `derived` keys a deploy computes: the static values,
+`CONTEXT_DERIVED_SECRETS`, the port keys and the `*_IMAGE` family. `_compute_secret`
+raises `UnknownDerivedKeyError` for any key it rejects, and the deploy skips such
+an entry only when it is optional.
+
+Required production derived `PUBLIC_BASE_URL` is the allocated backend's plain HTTP address
+and port. Resolver and deployer use the same single backend allocation, independent of resource
+ordering; standard-library IP validation and bracketed IPv6 formatting apply. The effective
+`ipv4_mapped` address must also pass the same loopback/unspecified/multicast refusal; scoped
+IPv6 remains unusable. Usable mapped/native IPv6 and private addresses retain their existing
+allocation policy. Resolver, deployer and actual HTTP smoke reuse that validation; smoke adds
+exactly one `/health` suffix. Mapped IPv6 HTTP hosts retain their hexadecimal spelling across
+Python patch releases, even when `IPv6Address.compressed` changes to dotted notation. Absent, invalid
+or ambiguous endpoints fail `environment_resolution_failed` naming `PUBLIC_BASE_URL`.
+Overrides cannot replace derived values. The canonical derived entry stays non-sensitive;
+other entry kinds retain their declared sensitivity routing. This supplies no domain, TLS,
+frontend or webhook guarantee.
+
+For IPv6 allocations, `DeployerNode` uses the authenticated
+`GitHubAppClient.get_file_contents` at the full `deployed_commit_sha` to read
+`.github/workflows/deploy.yml` and its `.rej` before credentials, repository secret
+writes, fencing, temporary tags, dispatch or rerun. IPv4 keeps its existing
+admission boundary. `deploy_workflow.py` recognizes a bounded released executable
+shape: sole unconditional `deploy` job, `workflow_dispatch`, `ubuntu-24.04` and
+the released checkout/key/copy/SSH-action steps in order. A SHA-256 digest of
+those parsed steps, excluding presentation names, is tested against the actual
+pin render. It includes shell bodies, action inputs and env expressions, so raw
+SSH/action host, bracketed SCP host, compose files, target and retry semantics
+are established by executable source. Workflow/job/step names, outer YAML
+comments/formatting, permissions and job timeout can differ. Extra jobs/steps,
+conditionals, aliases, duplicate keys, shell defaults, environment overrides or
+unrecognized executable variants refuse; no general shell interpreter is used.
+
+Missing/unreadable source, an invalid built SHA, unknown transport or a retained
+workflow `.rej` yields `ENVIRONMENT_RESOLUTION_FAILED` with a bounded cause naming
+`.github/workflows/deploy.yml`, `DEPLOY_HOST` and the required reviewed kit update.
+Source and HTTP exception bodies never enter diagnostics. Neither answers/version
+markers, comments nor a fixed unselected step establish admission. The existing
+typed Run and atomic scheduler StoryFailure/owed owner notices preserve this
+cause. Reruns remain bound to the same verified built SHA, existing dispatch lease,
+publication check, cancellation and temporary-tag cleanup. A subsequent current
+merged/published updated target still needs the API-owned grant replacement
+authority described above; changing a marker or caller flag cannot reopen it.
+
+`handle_engineering_success` reads the commit's environment contract with the
+deploy's own loader (`env_contract_loader._fetch_env_contract`, at the commit
+SHA) before the Run is completed, a task is done or a deploy is triggered. A
+required production `derived` entry the predicate rejects fails the attempt
+through `fail_job`: a failed Run carrying `EngineeringRunResult.failure_reason =
+uncomputable_derived_key` and `uncomputable_derived_keys` (required with that
+reason and only with it), an error message naming each key, the task `failed`
+for the supervisor's ordinary retry, and no deploy Run. The next attempt at the
+task keeps its session and TASK.md opens by naming each key and the ways out:
+remove it, make it optional with a safe default, or use a `user_secret`. A
+repository or contract that cannot be read or validated adds no failure here;
+the deploy reports it as before.
+
+### A reused story worker's turn names its task
+
+A story keeps one worker across its tasks, and a reused worker resumes its CLI
+session unless the turn carries `clear_session`
+(`services/langgraph/src/clients/worker_spawner.py::send_task_to_worker`). For a
+planning task's attempt, `services/langgraph/src/nodes/developer_turn.py::plan_turn`
+reads the story's engineering Runs — each records its `task_id` and the
+`run_metadata.worker_id` that ran it — and:
+
+- sends `clear_session=True` with a TASK.md that opens by naming the task (id and
+  title) and saying that earlier tasks in the story are finished and are not this
+  task's result, when the reused worker's last turn worked on another task or on
+  none on record;
+- sends `clear_session=True` with a TASK.md that says the previous attempt at
+  this task made no changes, when that attempt failed `no_new_commit` (a fresh
+  worker gets the same text; it has no session to clear);
+- keeps the session with a TASK.md that names each key, when that attempt failed
+  `uncomputable_derived_key`;
+- otherwise keeps today's turn: a retry of the same task after any other failure
+  resumes its session, and a taskless attempt is sent unchanged.
 
 ### A deploy that placed nothing says so
 
@@ -1342,6 +2090,117 @@ for this sprint: closing it would change terminal ownership and the run
 lifecycle. Under the rule above it costs no false statement — the artifact
 reports which path settled the Run and claims nothing about the executor.
 
+### QA probes are Run evidence
+
+`QARunResult.probe_runs` retains each `qa probe` record in capability-call
+order: its runner-assigned id, closed platform (`telegram`, `http`, or `web`),
+source, arguments, stdout, stderr, exit status, duration and per-text truncation
+flags. The capability endpoint bounds every text field and the per-Run count,
+scrubs the QA Telethon credentials and run token before storage, and refuses a
+malformed record with an error response. `[]` means the executor ran and no
+probes were recorded; `null` means the terminal writer held no probe record and
+does not claim anything about an executor it did not observe.
+
+Probe source and output enter the same forbidden-application-write scan as the
+runner trace, report, verdict and transcript. A hidden POST, PUT, PATCH or
+DELETE therefore fails the Run closed even when its executor verdict says pass.
+
+`qa probe` cuts each of source, stdout and stderr at 19,000 characters *and* at
+64,000 bytes as JSON-encoded on the wire (a C0 control character is six bytes,
+`\u0001`), so a record is always under the endpoint's 256 KiB body limit; the
+record carries `file_kind` (`py` or `sh`), `null` on records that predate it.
+
+QA executor containers retain no transcript file. Their output is retained only
+as `executor_transcript` and `probe_runs`; QA Run, attempt and executor-result
+records omit a transcript locator, and qa-worker deletes `worker:{id}:output`
+when the run ends so a session cannot survive in the broker stream.
+
+### The QA capability catalogue
+
+What central QA can do is declared once, in `shared/contracts/qa_capabilities.py`.
+`QA_ACTIONS` are typed entries: platform (`telegram`, `http`, `web`, `job`), action,
+route (`tool` — a fixed `qa` call; `sandbox_probe` — a script the executor writes and
+runs through `qa probe`; `library_seed` — a ready probe under `/workspace/qa-library`)
+and one line of prompt wording; `criterion: false` marks an executor-only read that no
+criterion is written through. Telegram offers what a user account sends through Telethon:
+text (`telegram_probe`), an inline button (`telegram_click_button`), a location (the
+`telegram/location` seed), and a contact, photo/file/media, reply or edit through a
+probe. `QA_NEVER` declares, each with its reason, what QA never performs: an HTTP POST,
+PUT, PATCH or DELETE to the product's API (policy), a direct read or write of the
+product's stored data or state, and anything outside the run's deployment and Telegram.
+
+A sandbox platform is offered only while the `qa_sandbox` image capability installs its
+tooling: `QA_SANDBOX_TOOLING` names the package (`telegram` → `telethon`, `web` →
+`playwright`, not installed), a worker-manager unit test pins it against
+`CAPABILITY_INSTALL_MAP["QA_SANDBOX"]`, and `qa_actions()` is the one filter. Every
+`tool` call is on `QA_PROBE_USAGE`, and the CLI's other calls are `QA_RUNTIME_CALLS`.
+
+Consumers read the catalogue, never a list of their own: the Architect's "What QA Can
+Check", the PO `present_product_brief` must-requirement guidance (rendered into the
+docstring before `@tool` reads it) and the QA executor's "What you can check" come from
+one renderer each in `services/langgraph/src/prompts/qa_capabilities.py`; the pre-QA
+filter takes its withheld HTTP methods from `http_write_methods()`. A tripwire test
+renders each consumer's text and fails when a catalogue wording or a retired phrase
+appears outside the generated block.
+
+**A must-requirement QA cannot check is settled at planning time.** The Architect's
+"What QA Can Check" ends with the rule, rendered beside the catalogue's lists: when the
+only usage example of a must-requirement (or every one) needs an action the catalogue
+does not name or lists under never, the Architect rewrites the check into an observable
+QA can check, or returns the requirement with
+`record_requirement_coverage(requirement_id=..., returned_reason=...)` whose reason starts
+with `NOT_AUTOMATICALLY_VERIFIABLE_PREFIX` (`"not automatically verifiable:"`,
+`shared/contracts/dto/product_brief.py`) followed by what QA would need. Such a return is
+an ordinary return: the admitted plan's `story_requirements_returned` carries the reason
+to PO like any other.
+
+### The QA probe library
+
+A project's library (`qa_probes`) is unique on project, platform and name and
+holds at most `QA_PROBE_LIBRARY_CAP` (50) entries; a store past the cap evicts
+the oldest `updated_at`. It is filled only after the QA consumer's own PASSED
+write settled the Run: `POST /projects/{id}/qa-probes/from-run` validates that
+Run (this project, type `qa`, `completed`, `qa_outcome: passed`) and upserts every
+`probe_runs` record with exit status 0, an untruncated source and a known
+`file_kind` — the last record of a repeated name wins. It is the one writer, so
+it alone decides which names exist: a record whose name does not match
+`QA_PROBE_LIBRARY_NAME_PATTERN` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`) is skipped,
+never rewritten, and counted in the response's `skipped`. Its source is the record
+the capability endpoint already scrubbed and bounded; no other path writes a
+library entry. A FAIL, BLOCKED, EXHAUSTED or infrastructure outcome stores
+nothing, and a failed library write is logged and changes neither the verdict nor
+the Run.
+
+At run start the QA consumer reads the project's entries and the platform seeds
+(`shared/qa_probe_library/`) and sends them as `WorkerConfig.qa_probe_library`;
+worker-manager writes them under `/workspace/qa-library/<platform>/<name>.<py|sh>`
+with `index.json` (name, platform, origin `seed` or the storing run id, file,
+one-line usage) before the executor is marked running. The entry name is its
+file stem, so the table's unique key makes paths unique, and
+`QA_PROBE_LIBRARY_FILE_PATTERN` closes them. The index is bounded by arithmetic,
+`QA_PROBE_LIBRARY_INDEX_MAX`: (cap + at most 13 seeds) rows of at most
+256 + 4 × 64 (name) + 6 × 255 (a JSON-escaped `runs.id` origin) + 64 (usage
+arguments) characters. Seeds are offered to a run with a `bot_username` (the
+Telegram bot under test) and shadow a stored entry of the same platform and
+name; another project's entry is never offered.
+
+A stored library never makes a run fail. A failed library read, or stored
+entries that cannot be laid out as one executor's library (a non-library name,
+a repeated path, more than `QA_PROBE_LIBRARY_MAX_FILES` files, a file or index
+over its bound — rows written before the name rule or by any other path), run
+with the seeds alone; the seeds alone always build. `QARunResult.probe_library`
+records the offer: `offered` (platform, name, origin), `read_failure` and
+`build_failure` (a bounded note of why the stored entries were dropped). It is
+set whenever `run_qa_centrally` returned, including a result that failed before
+the executor started, and `null` only when the run ended before the library was
+prepared (a preflight blocker) or the runner raised.
+
+The Telegram location seed takes `BOT LAT LON [WAIT_SECONDS]`, parses the
+coordinates with `float()`, refuses NaN, infinities and values outside
+[-90, 90] / [-180, 180] before importing Telethon, and passes them to Telethon as
+values; it generates no source. It connects with the `qa telegram_identity` file
+through the run's proxy and exits 3 when that identity is missing or unproven.
+
 ### Deploy dispatch, withdrawal, and deadlines
 
 `shared/contracts/dto/deploy_dispatch.py` and `services/api/src/routers/runs.py`
@@ -1358,13 +2217,19 @@ Canonical contracts: `dto/temporary_access.py` and `dto/qa_ssh_grant.py`.
 Persist the immutable QA identity and exact deployed-service target before the
 capability operation is dispatched. The post-health deploy worker resolves the
 generated capability only in `secret_values`, then proves grant or revoke with
-the matching access readback. Legacy live records without a target remain fail-closed
-when a caller tries to hydrate them as capability records, but do not block a
-different target's admission; revoked legacy history remains readable. The target
-lock and partial unique index scope contention to `(project_id,
-target_application_id)`, including a legacy row whose target application is known.
-An id-colliding legacy record is never hydrated as a capability record, while a
-narrow QA-run history lookup still sees it so recovery cannot replay its handoff.
+the matching access readback. A grant or revoke only ever acts on an existing
+deployment of the grant's recorded `target_application_id`: the deploy consumer
+reads that application's allocations and never creates any
+(`existing_application_allocations`), and never asks the repository for "its"
+application, since a repository can hold one per server. When the target exists
+and holds no allocations it is not deployed: a revoke completes `SUCCESS` with
+no precheck, SSH or DevOps run, because the access went with the deployment, and
+the reconciler closes the grant as for any proved revoke; a grant fails
+`owner_access_proof_failed` through the ordinary grant retry. A grant, target or
+allocation set that cannot be read fails either operation closed with
+`owner_access_proof_failed`, never as that proof. Both target columns are NOT NULL: every record has
+a target. The target lock and partial unique index scope contention to
+`(project_id, target_application_id)`.
 Cancelled deploy-lock or fence operations are redispatched against their stored
 target without consuming a grant or revoke proof budget; failed, missing, and
 stale operations remain independently bounded. Immediately before either remote
@@ -1374,10 +2239,28 @@ before withdrawing the predecessor and dispatching fenced cleanup, so a delayed
 grant cannot restore access after revoke proof. Cancelled revoke redispatches
 retain their attempt budget only before the absolute unrevoked deadline.
 
+`POST /api/temporary-access-grants/{grant_id}/escalate` waits for QA routing.
+The routing fact is the server-owned `runs.qa_routed_at` column (the run's own
+`story_id` names the story). Its sole writer is `_record_qa_routing`: a story
+transition out of TESTING that routes a QA verdict (`complete`, `human-review`,
+`start`) names the run in `qa_run_id` and, in the transition's transaction under
+the story then QA run row locks, sets it; a transition that names no run leaves
+it unset. `RunRead` exposes it read-only; `RunCreate`, `RunUpdate` and the paid-run
+command have no such field. Run metadata never proves routing: the reserved key
+`qa_routed` (`QA_ROUTED_KEY`) is refused with 422 by `POST /api/runs/` and the run
+PATCH (`reserved_run_metadata`) and by `start_paid_run` (`paid_run_reserved_metadata`,
+before any audit or Run row). Escalation locks the grant then the QA run; while
+that run is terminal with a verdict, linked to a story and `qa_routed_at` is
+unset, it answers 409
+`qa_routing_pending` (`QA_ROUTING_PENDING`) and writes nothing. The reconciler
+then sends no alert and redispatches the revoke without spending an attempt; it
+asks again when that revoke fails. Nothing else stands in for the column: not a
+newer QA run of the story, not a story status move. A QA run with no verdict yet
+still receives the routable `qa_cleanup_failed` blocker.
+
 `POST /api/temporary-access-grants/{grant_id}/drain` is the sole unproved-close
-boundary. Under the grant row lock it accepts only a live target-less legacy row
-or a complete target-backed row already stamped `revoke_failed` and escalated by
-the bounded reconciler; the generic lifecycle update cannot stamp escalation. It
+boundary. Under the grant row lock it accepts only a complete target-backed row
+already stamped `revoke_failed` and escalated by the bounded reconciler; the generic lifecycle update cannot stamp escalation. It
 writes `revoked`, `revoked_at`, the typed
 `operator_drain` reason, and one actor audit in the same transaction. Equal
 repeats return the settled record without a second audit. It does not prove that
@@ -1389,8 +2272,22 @@ remote access is absent and cannot override an ordinary current-format lifecycle
 HTTP without an executor. Other criteria use the central ephemeral QA executor
 through worker-manager, which is QA's only executor: when it does not run, the
 run ends as a typed infrastructure outcome rather than retrying elsewhere. The executor receives a run-scoped restricted capability, no target SSH
-credential, and egress only through the assigned proxy. Failure to establish
+credential, and egress only through the assigned proxy, whose per-run allowlist
+is the model backend, the host of `WorkerConfig.qa_target_url` (the deployed
+public URL, sent as data and refused by worker-manager when it could name the
+platform) and Telegram's data centres. The network carries any request to the
+target; direct application-API writes stay forbidden by the QA instructions and
+the runner's write guard until product-data isolation exists. The QA Telegram identity is served to the
+executor by the capability endpoint (`telegram_identity`) only after the run
+proved it; the outcome is `Run.run_metadata.qa_telegram_identity`
+(`handed_over`, and on refusal `reason`/`detail`). Failure to establish
 that boundary is a typed infrastructure outcome, not a product verdict.
+The fixed Telegram tools `telegram_probe` and `telegram_click_button` stay
+platform tools in qa-worker (sprint:1464 option B), not routed through the run's
+proxy: their child scripts are platform-written with every input a JSON literal
+(proven by executing them with hostile values), and they run only with the
+proven identity — without it each returns the `missing_telethon_credentials`
+blocker preflight uses and starts no child process.
 
 QA parses criteria before it resolves exploratory-only resources. Deterministic
 probe inability, unavailable target runtime, bot liveness failures, access
@@ -1429,7 +2326,9 @@ site-packages off; a new invocation is covered by that parse automatically.
 ### Terminal owner notification
 
 `dto/owner_notification.py` and `shared/contracts/queues/po.py` define the
-handoff. Persist the owed owner notification before PO publication. Recovery
+handoff. Persist the owed owner notification before PO publication; the
+lifecycle-wait notices (`dto/lifecycle_wait.py`) are persisted by the API in the
+transaction of their move. Recovery
 publishes the durable obligation once; it does not turn a duplicate queue event
 into a second owner notification. A deployed address is included only when the
 typed lifecycle state authorises it.
@@ -1678,21 +2577,75 @@ product; `qa_target_profile_stale` is operator-recheckable.
 
 Every failed check in an executor verdict carries a `cause`, and the runner refuses
 one without it or outside `QAFailedCheckCause`: `product`, `qa_capability` (no QA
-tool for the criterion, such as an HTTP write or a photo upload) or `qa_access`
+action for the criterion in the capability catalogue, or one QA never performs, such as
+an HTTP write) or `qa_access`
 (the product refused the QA identity). A verdict whose top-level `pass` disagrees
-with its checks (true with any failed check, false with none) is refused the same
-way. A stored `QAFailedCheck` without a cause
-reads as `product`. The supervisor puts only `product` checks into a fix task's
-description and fingerprint and records the rest as `unverified_checks` evidence;
-a FAILED run with no `product` check parks as `qa_checks_unverifiable`, a
-`QA_HARNESS_BLOCKERS` member that is operator-recheckable.
+with its product and access checks (true with one failed, false with none) is
+refused the same way; when its only failures are `qa_capability`, either `pass` is
+accepted. A stored `QAFailedCheck` without a cause reads as `product`.
+
+**Unverified checks.** A `qa_capability` check is neither a failure nor a pass. The
+runner's `settle_unverified_checks` (`services/langgraph/src/consumers/_qa_runner.py`)
+is the one place that decides it: every such check, whatever its origin — `executor`,
+an ungrounded `not_applicable` check, a criterion `withheld` before the executor ran
+(`agents/qa/acceptance.py`), or a kit `package` row with nothing to exercise it — is
+removed from the checks and written to `QARunResult.unverified_checks` as
+`{name, reason, origin}` (`shared/contracts/dto/qa_verification.py`). The verdict is
+what the remaining checks say: all pass → `passed` (possibly with a non-empty
+`unverified_checks`), any product or access failure → `failed`. `QARunResult` also
+records `passed_checks`, the names of the checks that ran and passed. The runner
+never settles a Run with `qa_capability` in `failed_checks`.
+
+The supervisor puts only `product` checks into a fix task's description and
+fingerprint; the task's `qa_failure` evidence carries `unverified_checks` and the
+other failed checks as `non_product_failures`. A FAILED run with no `product` check
+and a `qa_access` one parks as `qa_checks_unverifiable`, a `QA_HARNESS_BLOCKERS`
+member that is operator-recheckable; that blocker names only `qa_access` checks and is
+never produced for a capability gap, so the "platform's test environment" wording is
+reachable only from a real harness blocker.
+
+**The settling owner event carries the facts.** `OwnerNotification.qa_verification`
+and `POSystemEvent.qa_verification` are a `QAVerificationFacts`
+(`{qa_run_id, passed_checks, unverified_checks}`), JSON-encoded in its one flat
+`po:input` field. The API's completion transaction sets it on `story_completed` from
+the passed QA run the completion names; the supervisor sets it on the
+`story_quarantined` record of a FAILED or EXHAUSTED verdict. It is `None` on every
+other ending. The fix-task route owes no owner event, so it carries none.
+
+**PO tells the user, and keeps the answer.** The PO consumer renders the facts under the
+event's text as "What QA checked:" and "What QA could not check:" lines, each check's
+name and reason, without the run id, the origin or JSON (`render_qa_verification`,
+`services/langgraph/src/consumers/po.py`). When unverified checks are listed, the PO
+prompt asks for one message in the user's language that says what was checked, what
+could not be and why in plain words, and asks the user to accept it unchecked or change
+the requirement. The PO tool `record_unverified_decision(story_id, decision, check_names)`
+records the answer with `POST /api/stories/{id}/unverified-decisions`
+(`StoryUnverifiedDecisionCreate`: `decision` is `accept_unverified` or
+`change_requirement`, the check names, `recorded_by`). The API appends a
+`StoryUnverifiedDecision` (`decision`, `check_names`, `qa_run_id`, `decided_at`,
+`recorded_by`) to `stories.unverified_decisions` under the story row lock; an earlier
+answer is never rewritten. `qa_run_id` is not sent: it is the story's last QA run with
+`qa_routed_at`, and a check name that run did not leave unverified is refused (422), as
+is a story with no routed run (409). The record changes nothing else — no status, no
+reopen, no rerun. `change_requirement` is followed up by PO as a corrected brief
+confirmed as its own story. `StoryRead`/`StoryDTO.unverified_decisions` return every
+answer, oldest first, to `get_story` and the admin story detail.
+
+**Verification gaps.** After a Run settles as `passed`, `failed` or `exhausted` with
+unverified checks, the QA consumer asks `POST /api/projects/{id}/verification-gaps/from-run`
+(QA runtime only) to write them in the `verification_gaps` table, read off the settled
+Run itself: what (`name`), why (`reason`), `origin`, `story_id`, `run_id` and
+`created_at`. It is idempotent per (project, run, check name) and refuses a blocked,
+errored or unsettled Run. A write failure is logged and never changes the verdict.
+`GET /api/projects/{id}/verification-gaps` (internal or admin) lists them oldest first.
 
 A verdict check may instead be `{"name", "not_applicable": true, "detail"}`, with no
 `pass` or `cause`: an input the transport refused, such as an empty Telegram
 message. It never counts toward `pass` and is never a failed check, but the runner
 keeps it only when paired with a distinct refusal this run's workspace recorded
-(`QAWorkspace.transport_refusals`); an unpaired one becomes a failed `qa_capability`
-check. The prompt forbids the form for an acceptance-criterion check.
+(`QAWorkspace.transport_refusals`); an unpaired one becomes a `qa_capability` check,
+recorded as unverified with origin `not_applicable`. The prompt forbids the form for
+an acceptance-criterion check.
 
 ## Source map
 
@@ -1702,6 +2655,7 @@ check. The prompt forbids the form for an acceptance-criterion check.
 | queue messages and results | `shared/contracts/queues/` |
 | shared Redis topology and client semantics | `shared/queues.py`, `shared/redis/client.py` |
 | shared run, recipient, worker, and env invariants | `shared/contracts/` |
+| what central QA can check, and never does | `shared/contracts/qa_capabilities.py` |
 | API-only request/response composition | `services/api/src/schemas/` |
 | REST route ownership | `services/api/src/routers/` |
 | LangGraph consumers | `services/langgraph/src/consumers/` |

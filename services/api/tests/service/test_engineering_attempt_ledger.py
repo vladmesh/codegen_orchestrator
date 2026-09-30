@@ -139,6 +139,174 @@ async def test_terminal_engineering_run_writes_one_unknown_cost_ledger_row(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fact", "expected_role", "expected_state", "expected_cost"),
+    [
+        (
+            {"executor_started": True, "attempt": {"claude_evidence": {"cost_microusd": 42}}},
+            "qa",
+            "settled",
+            42,
+        ),
+        ({"executor_started": True}, "qa", "unknown_final", None),
+        ({"executor_started": False}, None, "released", None),
+        (None, None, "released", None),
+    ],
+    ids=["claude", "codex", "health-only", "missing-fact"],
+)
+async def test_terminal_qa_accounting_fact(
+    async_client: AsyncClient,
+    fact: dict | None,
+    expected_role: str | None,
+    expected_state: str,
+    expected_cost: int | None,
+):
+    owner = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    project = await _project(async_client, owner["telegram_id"])
+    policy = await async_client.put(
+        f"/api/engineering-budget-policies/{owner['id']}",
+        json={"limit_microusd": 100, "attempt_reservation_microusd": 60, "state": "enabled"},
+    )
+    assert policy.status_code in {HTTPStatus.OK, HTTPStatus.CREATED}, policy.text
+    run_id = f"qa-ledger-{uuid.uuid4().hex}"
+    admitted = await async_client.post(
+        "/api/work-admission/paid-runs",
+        json={"id": run_id, "type": "qa", "project_id": project["id"]},
+    )
+    assert admitted.json()["admission"]["outcome"] == "admitted"
+    before = await async_client.get(f"/api/engineering-budget-policies/admissions/{run_id}")
+    assert before.json()["reservation_state"] == "active"
+    terminal = {"status": "completed", **({"qa_accounting": fact} if fact is not None else {})}
+    for _ in range(2):
+        response = await async_client.patch(f"/api/runs/{run_id}", json=terminal)
+        assert response.status_code == HTTPStatus.OK, response.text
+    rows = (
+        await async_client.get("/api/runs/engineering-attempts", params={"run_id": run_id})
+    ).json()
+    assert len(rows) == int(expected_role is not None)
+    if rows:
+        assert rows[0]["role"] == expected_role
+        assert rows[0]["cost_microusd"] == expected_cost
+    reservation = (
+        await async_client.get(f"/api/engineering-budget-policies/admissions/{run_id}")
+    ).json()
+    assert reservation["reservation_state"] == expected_state
+    balance = (
+        await async_client.get(f"/api/engineering-budget-policies/{owner['id']}/balance")
+    ).json()
+    assert balance["known_spend_microusd"] == (expected_cost or 0)
+
+
+@pytest.mark.asyncio
+async def test_qa_role_migration_preserves_engineering_rows_on_upgrade_and_downgrade(db_session):
+    import importlib.util
+    from pathlib import Path
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    schema = f"qa_role_migration_{uuid.uuid4().hex}"
+    path = (
+        Path(__file__).parents[2]
+        / "migrations/versions/6f2a9c4e8b1d_allow_qa_attempt_ledger_role.py"
+    )
+    spec = importlib.util.spec_from_file_location("qa_role_migration", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    def exercise(session):
+        connection = session.connection()
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        connection.execute(text(f'SET LOCAL search_path TO "{schema}", public'))
+        connection.execute(
+            text(
+                "CREATE TABLE engineering_attempt_ledger (id integer PRIMARY KEY, role varchar(32) "
+                "NOT NULL, CONSTRAINT ck_engineering_attempt_role CHECK (role = 'engineering'))"
+            )
+        )
+        connection.execute(text("INSERT INTO engineering_attempt_ledger VALUES (1, 'engineering')"))
+        original = migration.op
+        migration.op = Operations(MigrationContext.configure(connection))
+        try:
+            migration.upgrade()
+            connection.execute(text("INSERT INTO engineering_attempt_ledger VALUES (2, 'qa')"))
+            assert (
+                connection.execute(
+                    text("SELECT role FROM engineering_attempt_ledger WHERE id=1")
+                ).scalar()
+                == "engineering"
+            )
+            connection.execute(text("DELETE FROM engineering_attempt_ledger WHERE id=2"))
+            migration.downgrade()
+            assert (
+                connection.execute(
+                    text("SELECT role FROM engineering_attempt_ledger WHERE id=1")
+                ).scalar()
+                == "engineering"
+            )
+            with pytest.raises(DBAPIError):
+                with connection.begin_nested():
+                    connection.execute(
+                        text("INSERT INTO engineering_attempt_ledger VALUES (3, 'qa')")
+                    )
+        finally:
+            migration.op = original
+
+    await db_session.run_sync(exercise)
+
+
+@pytest.mark.asyncio
+async def test_legacy_terminal_qa_run_without_reservation_has_nothing_to_settle(
+    async_client: AsyncClient,
+    db_session,
+):
+    owner = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    project = await _project(async_client, owner["telegram_id"])
+    run_id = f"qa-legacy-{uuid.uuid4().hex}"
+    db_session.add(Run(id=run_id, type="qa", status="running", project_id=project["id"]))
+    await db_session.commit()
+    response = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"status": "completed", "qa_accounting": {"executor_started": True}},
+    )
+    assert response.status_code == HTTPStatus.OK, response.text
+    rows = await async_client.get("/api/runs/engineering-attempts", params={"run_id": run_id})
+    assert rows.json() == []
+
+
+@pytest.mark.asyncio
+async def test_unlimited_qa_executor_still_writes_spend_without_an_active_hold(
+    async_client: AsyncClient,
+):
+    owner = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    project = await _project(async_client, owner["telegram_id"])
+    run_id = f"qa-unlimited-{uuid.uuid4().hex}"
+    admitted = await async_client.post(
+        "/api/work-admission/paid-runs",
+        json={"id": run_id, "type": "qa", "project_id": project["id"]},
+    )
+    assert admitted.json()["admission"]["outcome"] == "admitted"
+    terminal = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={
+            "status": "completed",
+            "qa_accounting": {
+                "executor_started": True,
+                "attempt": {"claude_evidence": {"cost_microusd": 42}},
+            },
+        },
+    )
+    assert terminal.status_code == HTTPStatus.OK, terminal.text
+    rows = (
+        await async_client.get("/api/runs/engineering-attempts", params={"run_id": run_id})
+    ).json()
+    assert len(rows) == 1
+    assert rows[0]["role"] == "qa"
+    assert rows[0]["cost_microusd"] == 42
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("terminal_status", ["completed", "failed", "cancelled"])
 async def test_terminal_engineering_run_preserves_provider_reported_cost(
     async_client: AsyncClient, terminal_status: str

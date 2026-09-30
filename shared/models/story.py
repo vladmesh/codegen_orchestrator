@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.story import StoryStatus, StoryType, StoryWaitingOn
@@ -52,8 +52,22 @@ class Story(Base):
     operator_acceptance: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # A credential-derived administrator decision that re-enters QA through the pipeline.
     operator_recheck: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The user's answers to checks QA could not run (`StoryUnverifiedDecision`),
+    # oldest first. Append-only: a later answer is added, never written over.
+    unverified_decisions: Mapped[list] = mapped_column(
+        JSON, default=list, server_default=text("'[]'"), nullable=False
+    )
+    # When the story landed on its current `status`. Written only by `_land_on`,
+    # with `status`; null on rows written before it existed (never backfilled).
+    status_entered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Starts the current work cycle, so completion cannot reuse pre-reopen QA evidence.
     reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # The durable completion notice owed when this story reaches COMPLETED.
     owner_notification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How the architect's last planning attempt ended (`StoryPlanning`): which
+    # LLM channels planned it, or the failure, retry count and next retry time.
+    # Written only by `POST /stories/{id}/planning-outcome` and `retry-planning`.
+    planning: Mapped[dict | None] = mapped_column(JSON, nullable=True)

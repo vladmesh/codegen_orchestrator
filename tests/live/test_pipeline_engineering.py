@@ -71,9 +71,15 @@ class TestEngineeringPipeline:
         )
 
     async def test_task_completed(self, engineering_ctx):
-        """Task reaches 'done' (worker succeeded + CI passed)."""
-        if engineering_ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-            pytest.skip("scaffold failed")
+        """Task reaches 'done' (worker succeeded + CI passed).
+
+        A scaffold that failed is this test's failure too, naming that phase: a
+        skip would report an engineering phase that never ran as untested.
+        """
+        assert engineering_ctx.get("scaffold_status") == ProjectStatus.ACTIVE, (
+            "the scaffold phase failed before engineering could run: status "
+            f"{engineering_ctx.get('scaffold_status')}"
+        )
         assert engineering_ctx.get("task_status") == TaskStatus.DONE, (
             f"Task not done — status: {engineering_ctx.get('task_status')} "
             f"after {engineering_ctx.get('engineering_elapsed', '?')}s"
@@ -83,11 +89,13 @@ class TestEngineeringPipeline:
         """Story transitions past in_progress after all tasks done.
 
         With the PR-based CI gate, stories go to 'pr_review' after all tasks done
-        (dispatcher creates PR from story branch → main with auto-merge).
-        'deploying' happens later via webhook when PR is merged.
+        (dispatcher creates PR from story branch → main; the PR poller merges it).
+        'deploying' happens later, once the PR poller has merged it.
         """
-        if engineering_ctx.get("task_status") != TaskStatus.DONE:
-            pytest.skip("task not done")
+        assert engineering_ctx.get("task_status") == TaskStatus.DONE, (
+            "the engineering phase failed before the story could progress: task status "
+            f"{engineering_ctx.get('task_status')}"
+        )
         assert engineering_ctx.get("story_status") in {
             StoryStatus.PR_REVIEW,
             StoryStatus.DEPLOYING,

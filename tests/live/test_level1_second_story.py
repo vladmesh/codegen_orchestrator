@@ -69,6 +69,108 @@ def test_a_checkout_that_took_four_seconds_is_recorded_as_four_seconds():
     assert checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND) == []
 
 
+def test_one_repository_not_found_retry_stays_one_successful_bounded_checkout():
+    log = _log(
+        _checkout("checkout_branch_start", at="2026-09-19T18:50:34.000000"),
+        {
+            **_checkout("checkout_branch_retry", at="2026-09-19T18:50:35.000000"),
+            "attempt": 1,
+            "delay_seconds": 1,
+        },
+        _checkout("checkout_branch_complete", at="2026-09-19T18:50:50.000000"),
+    )
+
+    attempts = checkout_records(log, branch=BRANCH)
+
+    assert len(attempts) == 1
+    assert attempts[0]["retries"] == [{"attempt": 1, "delay_seconds": 1}]
+    assert attempts[0]["duration_seconds"] == 16
+    assert checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND) == []
+    attempts[0]["duration_seconds"] = 17
+    assert (
+        "over the 16s bound" in checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND)[0]
+    )
+
+
+def test_an_unbounded_retry_claim_does_not_relax_the_checkout_assertion():
+    attempts = checkout_records(
+        _log(
+            _checkout("checkout_branch_start", at="2026-09-19T18:50:34.000000"),
+            {
+                **_checkout("checkout_branch_retry", at="2026-09-19T18:50:35.000000"),
+                "attempt": 1,
+                "delay_seconds": 60,
+            },
+            _checkout("checkout_branch_complete", at="2026-09-19T18:50:50.000000"),
+        ),
+        branch=BRANCH,
+    )
+    assert (
+        "invalid retry schedule"
+        in checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND)[0]
+    )
+
+
+def _console_retry_checkout(*, attempt: str = "1", delay_seconds: str = "1") -> str:
+    """Real git_ops.checkout_branch default-renderer output, with a compose prefix.
+
+    Captured with a mocked 404 followed by success. Only the two retry fields
+    vary in the failure cases.
+    """
+    return (
+        "worker-manager-1  | 2026-09-25 15:05:48 [info     ] checkout_branch_start"
+        f"          branch={BRANCH} worker_id=dev-1\n"
+        "worker-manager-1  | 2026-09-25 15:05:48 [warning  ] checkout_branch_retry"
+        f"          attempt={attempt} branch={BRANCH} delay_seconds={delay_seconds} "
+        'stderr="remote: Repository not found.\\nfatal: repository '
+        "'https://github.com/o/r/' not found\" stdout= worker_id=dev-1\n"
+        "worker-manager-1  | 2026-09-25 15:05:49 [info     ] checkout_branch_complete"
+        f"       attempts=2 branch={BRANCH} worker_id=dev-1\n"
+    )
+
+
+def test_console_retry_with_quoted_multiline_stderr_is_a_successful_checkout():
+    attempts = checkout_records(_console_retry_checkout(), branch=BRANCH)
+
+    assert len(attempts) == 1
+    assert attempts[0]["retries"] == [{"attempt": 1, "delay_seconds": 1}]
+    assert attempts[0]["duration_seconds"] == 1
+    assert checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND) == []
+
+
+def test_console_retry_with_wrong_delay_is_reported():
+    attempts = checkout_records(_console_retry_checkout(delay_seconds="2"), branch=BRANCH)
+
+    assert attempts[0]["retries"] == [{"attempt": 1, "delay_seconds": 2}]
+    assert checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND) == [
+        f"the first checkout of {BRANCH} logged an invalid retry schedule",
+    ]
+
+
+def test_console_retry_with_unparsable_attempt_is_reported():
+    attempts = checkout_records(_console_retry_checkout(attempt="many"), branch=BRANCH)
+
+    assert attempts[0]["retries"] == [{"attempt": None, "delay_seconds": 1}]
+    assert (
+        "invalid retry schedule"
+        in checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND)[0]
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("attempt", "-1"), ("attempt", "nan"), ("delay_seconds", "-1"), ("delay_seconds", "inf")],
+)
+def test_console_retry_with_non_finite_or_negative_field_is_reported(field, value):
+    attempts = checkout_records(_console_retry_checkout(**{field: value}), branch=BRANCH)
+
+    assert attempts[0]["retries"][0][field] is None
+    assert (
+        "invalid retry schedule"
+        in checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND)[0]
+    )
+
+
 def test_the_checkout_that_hit_the_exec_bound_and_was_retried_is_refused():
     """`issue:028670f21dbd138ccd04`, as the manager's log actually recorded it.
 

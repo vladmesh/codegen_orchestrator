@@ -10,6 +10,8 @@ Every agent is a LangGraph node with its own set of tools and its own specializa
 
 **Implementation**: LangGraph `create_react_agent` in `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container. Conversation state is persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); without `CHECKPOINT_DATABASE_URL` it uses in-memory `MemorySaver`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) into a running summary in `state["context"]`.
 
+**Model**: the PO and its summarizer each answer through their own [LLM channel chain](#-llm-channel-chain-architect-po-po-summarizer) (`po`, `po_summarizer`).
+
 **Tools** (`src/agents/po/tools.py`):
 - `create_project`, `list_projects`, `get_project`: project management through the API
 - `set_project_secret`: storing secrets. Bot tokens are refused server-side (422) — the API only takes them through the validator.
@@ -30,22 +32,111 @@ telling the agent the bot is free. A failed undeploy run surfaces as `failed` ra
 wait. Someone else's project is refused with 403 and stays untouched. This is the way out of a
 `bound_to_own_project` verdict — PO offers the user the choice between continuing in the holding
 project and freeing the token.
-- `create_story`: creating a user story + automatically starting engineering work
-- `reopen_story`: reopening a completed story with a user_report (the context of the problem)
+- `create_story`: creating the user story for a confirmed Product Brief + automatically starting engineering work; refused without a brief
+- `reopen_story`: reopening the original story — a `completed` one with the user's `user_report` (a complaint), or a `failed` one with an optional report (a retry)
+- `note_to_admins`: a note about a service matter to the admins; starts no work and sends the user nothing
 - `list_stories`, `get_story`: viewing stories, the tasks attached to them and their runs (with id, status, type, error, timing)
+- `get_product_situation`: the situation snapshot of one of the user's projects, on request (status questions, a return after a pause); sends nothing
 - `get_run_status`: the detailed status of a specific engineering/deploy run
 - `get_budget_balance`: the current user's exact known engineering spend and API-calculated
 available amount. PO checks it before starting or reopening paid work and warns about low or
 incomplete cost coverage without exposing reservation internals.
-- `set_reminder`: deferred checks through a Redis ZSET
-- `notify_user`: proactive message to user via `po:proactive` stream
+- `set_reminder`: deferred re-checks through a Redis ZSET, naming their story in `story_id`; the reply to a fired reminder reaches the user only if the story changed, or, for a reminder about no story, only if the user asked for it (see below)
+- `notify_user`: proactive message to user via `po:proactive` stream, in a turn answering the user only; in a reminder or system turn it sends nothing and says so
 - `web_search`: searching the documentation of external APIs through DuckDuckGo
 
-**System events**: the PO consumer accepts three story-level events: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW), and the non-terminal `story_requirements_returned` (the architect's admitted plan returned must-requirements; published by the architect consumer, replayed from the unacknowledged job until `po:input` accepts it), and the non-terminal `story_stage` (the scheduler's stage notice: the stage a story in work is at, what it waits for and the magnitude of the wait, on entry and after each quiet interval). The rest of `OwnerNotificationEvent` is routed too. All other system events are dropped — the PO checks progress through reminders.
+**System events**: the PO consumer accepts three story-level events: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW), and the non-terminal `story_requirements_returned` (the architect's admitted plan returned must-requirements; published by the architect consumer, replayed from the unacknowledged job until `po:input` accepts it), and the non-terminal `story_stage` (the scheduler's stage notice: the stage a story in work is at, what it waits for and the magnitude of the wait, on entry and then at escalation steps 1, 2, 4, 8… quiet intervals into the stay, each carrying its `stage_notice_step`). The rest of `OwnerNotificationEvent` is routed too. All other system events are dropped — the PO checks progress through reminders. An event about a story that is not ordered (no confirmed Product Brief bound to it) never reaches the PO graph: the admins get it instead, except `story_waiting_user_secret`, which always reaches the PO. A reminder about a story that is not ordered gets no PO turn either.
 
-**Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). All PO streams use Pydantic contracts from `shared.contracts.queues.po` (`POInputMessage`, `POResponse`, `POProactiveMessage`) with flat-field serialization (`to_flat_fields()` / `from_flat_fields()`). PO Consumer has PEL recovery via `XAUTOCLAIM` on startup. Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
+**Situation snapshot**: every system event turn gets a snapshot built by code (`agents/po/situation.py`: order date, status and when the story entered it (`status_entered_at`), the wait a watchdog park ended, the user's last message, app health, other ordered stories in work, platform work count, deferred notices), appended to the system message from the run config and never stored in the thread. A source that fails reads `unknown`; the turn still runs.
+
+**Proactive story gate**: reminders publish only an untold `needs_user` or `stopped` key state, read from the API at decision time. `in_work` stays silent; terminal stories leave their ending to the durable owner seam. `story_stage` is logged and dropped before the graph. Resource waits and resumptions run the PO turn but publish nothing. Durable key events and returned requirements publish and record the state told. `consumers/po_story_gate.py` enforces this at the single proactive publish point; Redis keeps `po:story_told:<chat>:<story>` without expiry until the story ends. No daily cap or escalation-step bypass remains.
+
+**Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). All PO streams use Pydantic contracts from `shared.contracts.queues.po` (`POInputMessage`, `POResponse`, `POProactiveMessage`) with flat-field serialization (`to_flat_fields()` / `from_flat_fields()`). PO Consumer has PEL recovery via `XAUTOCLAIM` on startup. Workers write system events to `po:input` via `callback_stream`. A reminder or system-event turn reaches the user only through its final reply, which the proactive story gate below decides; `notify_user` sends nothing in such a turn.
 
 **Output**: actions through tools, messages to the user through Telegram
+
+---
+
+## 🔀 LLM channel chain (Architect, PO, PO summarizer)
+
+The Architect, the PO and the PO summarizer do not hold one provider's model. Each gets one chat
+model, `ChannelChainModel` (`services/langgraph/src/llm/`), built from an ordered **channel chain**
+read from its `agent_configs` record (id `architect`, `po`, `po_summarizer`; field `llm_channels`).
+`create_react_agent` and the PO `SummarizationNode` receive that model and nothing else.
+
+**Channels**:
+- `codex` — one model turn as one `codex exec` on the file-backed ChatGPT profile `LLM_CODEX_HOME`
+  (`--ephemeral --ignore-user-config --skip-git-repo-check --sandbox read-only -c
+  cli_auth_credentials_store="file"`), serialized by the profile's advisory lock
+  `.codegen-codex.lock`, the same lock the worker wrapper holds. In the containers the profile is
+  the Codex workers' own `HOST_CODEX_HOME`, and the CLI runs as its owner
+  ([coding-agents.md](coding-agents.md#dedicated-chatgpt-session-profile)).
+- `claude` — one model turn as one `claude -p --output-format json --json-schema … --tools ""
+  --no-session-persistence` on `CLAUDE_CODE_OAUTH_TOKEN`, run as `nobody` when the service is root.
+- `openrouter` — the existing `ChatOpenAI` on `ARCHITECT_LLM_*` / `PO_LLM_*` (the summarizer on
+  `SUMMARIZATION_MODEL`, else `PO_LLM_MODEL`, over the PO's endpoint and key). `src/llm/openrouter.py`
+  is the only module that builds `ChatOpenAI` or reads that env.
+
+A CLI turn gets the serialized conversation (system, human, AI with tool calls, tool results) and the
+bound tools' names, descriptions and argument schemas on **stdin**, never argv, and is held to the
+output schema `{content, tool_calls: [{name, arguments_json}]}`. Arguments are parsed and validated
+against the bound tool's schema and become `tool_calls` with generated ids. The process runs in an
+empty temporary directory with no tools of its own and an environment of PATH, locale, its own
+credential variable and a HOME of its own that is deleted with the call — never an API key, Redis
+or database URL of langgraph. The langgraph image installs both CLIs at the worker images' pins and
+its build fails if an installed version differs from the pin or lacks a flag the adapter passes
+(`src/llm/cli_contract.py`).
+
+**Configuration**: `llm_channels` is a list of `{channel, model?, timeout_seconds?}`
+(`shared/contracts/dto/llm_channel.py`); the API refuses an empty list, an unknown channel or a
+duplicate. No record or `null` means the default chain `codex, claude, openrouter`. `model` unset
+means the CLI's own default model, or the agent's env model for `openrouter`; `timeout_seconds`
+unset means 600 s for one model turn, except the `codex` and `claude` channels of the PO and the PO
+summarizer: a user waits on those turns, so a subscription CLI gets 180 s before the turn moves on. A stored chain that does not validate stops the consumer at
+startup with `invalid_llm_channel_chain`. An agent is refused (Architect) or disabled (PO) only
+when no channel of its chain is configured — no `LLM_CODEX_HOME`, no `CLAUDE_CODE_OAUTH_TOKEN`, no
+complete OpenRouter env for the channels it names; otherwise a missing credential is that
+channel's failure and the chain moves on.
+
+**Switching**: a call tries the channels in order and returns the first answer. These failure
+classes move the same call to the next channel: `unauthorized` (401), `payment_required` (402),
+`forbidden` (403), `rate_limited` (429), `server_error` (5xx), `unreachable` (no connection),
+`quota_exhausted` (usage limit or credits), `timeout` (the channel's deadline, lock wait included),
+`missing_credential`, `binary_missing`, `nonzero_exit` and `invalid_output` (not schema-valid, an
+unbound tool, or arguments failing the tool's schema, after one corrective re-ask on the same
+channel). Anything else — a bug, a provider 400, cancellation — propagates without switching. When
+every channel failed, `LLMChannelsExhausted` names each channel and its failure class.
+
+**Readiness**: at startup each agent logs `llm_channel_ready` per channel of its chain — `agent`,
+`channel`, `status` (`ready` or the failure class a call would hit first), `reason`,
+`cli_version` — without calling a model or running a CLI against a credential.
+
+**Recording**: `llm_channel_used` and `llm_channel_failed` per call (see
+[LOGGING.md](LOGGING.md#langgraph-worker)); the answering channel is in the returned message's
+`response_metadata["llm_channel"]`; the Architect's `architect_job_success` / `architect_job_failed`
+name the channels its planning attempt used and the failures it skipped.
+
+**Operator alerts** (`src/llm/alerts.py`): the chain reports every failure and answer to one alert
+module, which sends to administrators in a bounded background task and never touches the call.
+A provider 402 on any channel of any agent alerts once per channel, whatever class its text
+earned (a 402 saying "insufficient credits" is `quota_exhausted` for routing and retry, and still
+a payment alert; `ChannelFailure.http_status` carries the status); one call that
+failed both `codex` and `claude` and was answered by `openrouter` alerts "subscription channels
+down, <agent> running on OpenRouter" once per agent. The langgraph process also reads the
+OpenRouter balance (`GET <PO_LLM_BASE_URL>/credits`, `total_credits - total_usage`, with the
+optional `OPENROUTER_MANAGEMENT_KEY`, else `PO_LLM_API_KEY`) every
+`llm.openrouter_balance_check_interval_minutes` and alerts below `llm.openrouter_balance_alert_usd`,
+re-armed once the balance is back above it; a 401/402/403 on that read is alerted like a refused
+channel, and without an OpenRouter key the check logs `openrouter_balance_check_idle` and stops.
+Dedup is a Redis key `llm:alert:<kind>:<channel or agent>` shared by langgraph and architect,
+set only after an administrator accepted the alert, with `llm.alert_realert_window_hours` as TTL.
+A missing or unreadable config key falls back to its documented default with a warning.
+
+**Degraded mode**: when the PO's call reaches `openrouter` after `codex` and `claude` both failed
+it, the chain appends `PO_SUBSCRIPTIONS_DOWN_NOTE` (`src/llm/agent.py`) as a system message to
+that call only: answer normally, keep collecting requirements, tell the user once that
+engineering capacity is temporarily unavailable, promise no timeline. The PO summarizer and the
+Architect get no note; no note is added when a subscription channel answered.
 
 ---
 

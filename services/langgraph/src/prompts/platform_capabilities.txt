@@ -1,0 +1,19 @@
+## Platform capabilities (manifest v10, owner-reviewed)
+What a product built here can and cannot have. The product is a Telegram bot and has no web address.
+Can:
+- Plain HTTP self links: The bot can include plain HTTP self links; their address can change when the product moves.
+- Telegram bot: A Telegram bot people chat with, using commands, buttons and menus.
+- The bot remembers data: The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
+- Actions on a schedule or later: The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
+- Settings without a new version: The owner later changes settings, such as the list of languages or the texts, without a new version of the bot.
+- Connecting to other services: The bot connects to other online services, such as AI, weather or spreadsheets, with a key the user provides; AI in the bot runs on the user's own key.
+- Who can use the bot: At first only the customer can use the bot; everyone else is ignored. The customer can give permanent access to specific Telegram users, and it starts working once the running bot confirms it. The customer can also hand the bot over to another Telegram user. Taking access back and opening the bot to everyone are not available yet. The owner or admin can retry exhausted initial deployment only when the platform offers a retry action for a failed attempt.
+Cannot (why; instead):
+- A website or web pages: [web_presence] The bot has no website, web pages, admin panel or domain of its own, and cannot open a mini app inside Telegram. The product lives entirely inside the Telegram chat. Instead: Everything happens in the chat with buttons.
+- Receiving events other services send: [inbound_webhooks] The bot cannot receive events that other services send to it by themselves, such as GitHub notifications or form submissions. Other services have nowhere to send such events to. Instead: The bot checks the service itself from time to time, if the service allows that.
+- Accepting payments: [payments] The bot cannot take payments: neither through payment services such as YooKassa or Stripe nor inside Telegram (Stars, Payments). Payment acceptance is not part of what the platform builds. No way around it.
+- Signing in with Google and the like: [oauth_web_redirect] The bot cannot use "Sign in with Google" or similar sign-in buttons to reach a user's account. Such sign-in needs a web page for the user to return to, which the bot does not have. Instead: The user shares their spreadsheet or calendar with the bot's Google service account, or pastes a personal token.
+- Sending email by itself: [send_email] The bot cannot send email by itself. The bot has no mail service of its own. Instead: Send through an email service with a key the user provides, or send the message in Telegram.
+- Keeping uploaded files: [file_storage] The bot does not keep uploaded files itself. The bot remembers data, not files. Instead: Photos and documents stay in Telegram and the bot remembers them; large files go to an external storage service with a key the user provides.
+- Direct access to the bot's data store: [external_database_access] Nobody can connect to the bot's data store directly. The data is reachable only through the bot. Instead: The bot hands out the data needed through a command, such as an export or a report.
+- Backups of the data: [backups] There are no backups of the bot's data; if the server is lost, the bot's data is lost with it. The platform makes no copies of the bot's data. No way around it.

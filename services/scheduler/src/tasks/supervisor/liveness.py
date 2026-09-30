@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -20,24 +20,31 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureParkDisposition,
     infrastructure_refusal_detail,
 )
-from shared.contracts.dto.product_brief import (
-    PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
-    ProductBriefRead,
+from shared.contracts.dto.lifecycle_wait import (
+    TaskResourceResumeCommand,
+    TaskResourceResumeDisposition,
+    TaskResourceWaitCommand,
 )
-from shared.contracts.dto.run import RunType
+from shared.contracts.dto.pr_conflict_repair import (
+    PRConflictRepairAttemptDisposition,
+    PRConflictRepairAttemptOutcome,
+)
+from shared.contracts.dto.product_brief import ProductBriefRead
+from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
+    EngineeringFailureReason,
     EngineeringRunResult,
 )
-from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story import StoryDTO, StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+from shared.contracts.dto.story_planning import StoryPlanningState, planning_retry_queued_key
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.vocab import OwnerNotificationEvent
-from shared.queues import (
-    ARCHITECT_QUEUE,
-    PO_INPUT_QUEUE,
-)
+from shared.empty_engineering_stop import ensure_empty_story_stop, matching_empty_cause
+from shared.pr_conflict_repair import settle_pr_repair_attempt
+from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
 if TYPE_CHECKING:
@@ -46,7 +53,11 @@ if TYPE_CHECKING:
 from ... import startup
 from .._recipients import resolve_project_recipient
 from ..infrastructure_park import park_story_infrastructure_refusal
-from ..owner_notifications import deliver_owed_notification, owe_owner_notification
+from ..owner_notifications import (
+    deliver_in_tick,
+    deliver_owed_notification,
+    owe_owner_notification,
+)
 from ..worker_liveness import (
     WorkerAttemptState,
     attempt_state,
@@ -95,6 +106,10 @@ async def supervise_stuck_stories(
     tasks is somebody else's business.
 
     Retry counts are persisted in Redis so they survive scheduler restarts.
+
+    It also re-queues planning of an in-progress or reopened story whose last
+    planning attempt failed and is due a retry (`_queue_due_planning_retries`);
+    those re-queues count as 'retried' too.
 
     Returns dict with 'retried' and 'failed' counts.
     """
@@ -170,26 +185,97 @@ async def supervise_stuck_stories(
         )
         retried += 1
 
-    return {"retried": retried, "failed": failed}
+    reopened = await api_client.get_stories_by_status(StoryStatus.REOPENED)
+    planning_retried = await _queue_due_planning_retries(
+        api_client, redis_client, [*active_stories, *reopened], now
+    )
+    return {"retried": retried + planning_retried, "failed": failed}
+
+
+async def _queue_due_planning_retries(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    stories: list[StoryDTO],
+    now: datetime,
+) -> int:
+    """Re-queue planning for every story whose `planning` record owes a due retry.
+
+    The one publisher of every planning the record owes: a failed attempt's
+    retry, whose bound, count and backoff the API decided when it recorded the
+    failure, and an operator's `retry-planning`, due at once, which publishes
+    nothing itself. It runs in the single sequential dispatcher loop, so no two
+    publishers race. A story in `created` is left to the stuck-story retry
+    above, which already re-queues it.
+
+    The row is what is owed; the Redis key is only a throttle that stops later
+    ticks re-publishing while the planning run is in flight. It is checked
+    first and set only after `XADD` returned, so a failed recipient lookup or
+    publish leaves nothing behind and the next tick publishes again. One
+    story's failure is logged and the loop goes on with the others.
+    """
+    queued = 0
+    for story in stories:
+        planning = story.planning
+        if planning is None or planning.state is not StoryPlanningState.RETRYING:
+            continue
+        if planning.next_attempt_at is None or planning.next_attempt_at > now:
+            continue
+        try:
+            queued += await _publish_due_planning_retry(api_client, redis_client, story)
+        except Exception as exc:
+            logger.error(
+                "story_planning_retry_publish_failed",
+                story_id=story.id,
+                retry_attempt=planning.failed_attempts,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+    return queued
+
+
+async def _publish_due_planning_retry(
+    api_client: SchedulerAPIClient, redis_client: RedisStreamClient, story: StoryDTO
+) -> int:
+    """Publish one due record's architect job unless it was published within the TTL."""
+    planning = story.planning
+    redis = redis_client._redis
+    # Set below once this record was published. It expires after
+    # `supervisor.story_retry_ttl`, so a message that was lost is re-sent.
+    key = planning_retry_queued_key(story.id, planning)
+    if await redis.exists(key):
+        return 0
+    project_id = str(story.project_id)
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="story_planning_retry", story_id=story.id
+    )
+    await redis_client.publish_message(
+        ARCHITECT_QUEUE,
+        ArchitectMessage(
+            story_id=story.id,
+            project_id=project_id,
+            telegram_chat_id=recipient.telegram_chat_id,
+            is_reopen=planning.reopen,
+            user_report=story.user_report if planning.reopen else None,
+        ),
+    )
+    await redis.set(key, 1, ex=_story_retry_ttl())
+    logger.warning(
+        "story_planning_retry_queued",
+        story_id=story.id,
+        retry_attempt=planning.failed_attempts,
+        max_retries=planning.max_retries,
+        last_failure=None if planning.last_failure is None else planning.last_failure.detail,
+    )
+    return 1
 
 
 def _planning_attempt_is_live(brief: ProductBriefRead, now: datetime) -> bool:
     """Is an architect still proving it owns this brief's incomplete plan?
 
-    The same question `services/api/.../_product_brief_helpers.py` asks of the
-    row before it hands a claim to a second architect, asked here of the row the
-    API returned and against the one timeout the brief contract declares. It is
-    a read: nothing here takes the claim, and a brief whose owner is alive is
-    simply left to it.
+    A read, asked through the brief contract's own rule: nothing here takes the
+    claim, and a brief whose owner is alive is simply left to it.
     """
-    if not brief.planning_attempt_active:
-        return False
-    heartbeat = brief.planning_attempt_heartbeat_at
-    if heartbeat is None:
-        return False
-    if heartbeat.tzinfo is None:
-        heartbeat = heartbeat.replace(tzinfo=UTC)
-    return heartbeat >= now - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
+    return brief.planning_attempt_is_live(now)
 
 
 async def _plan_is_abandoned_unadmitted(
@@ -238,35 +324,63 @@ async def supervise_failed_tasks(
 ) -> dict[str, int]:
     """Detect failed tasks and retry or escalate to waiting_human_review.
 
-    FAILED status means technical failure (crash, OOM, timeout) — the worker
-    never explicitly gave up. Supervisor retries if iterations remain, otherwise
-    transitions to WAITING_HUMAN_REVIEW (same as gave_up — needs human).
+    Ordinary technical failures retry while iterations remain. Conflict Tasks
+    submit immutable Run evidence to scoped settlement, which also recognizes
+    a persisted gave_up regardless of the caller's mutable observation.
 
     Returns dict with 'retried' and 'escalated' counts.
     """
     tasks = await api_client.get_tasks_by_status(TaskStatus.FAILED)
     retried = 0
     escalated = 0
-    # One story reaches the human-review queue once per tick. Several failed
-    # tasks can share a story, and escalating each of them issued a second
-    # `human-review` transition for a story already in it — refused by the API
-    # and swallowed here. The queue entry is about the story, so the first one
-    # is the whole move.
+    # Choose the story's required cause before any sibling can make a bare stop.
     escalated_stories: set[str] = set()
+    blocked_stories: set[str] = set()
+    runs_by_task: dict[str, list[RunDTO]] = {}
+    empty_stops: dict[str, list[tuple[TaskDTO, StoryFailure]]] = {}
+    for task in tasks:
+        if not task.story_id:
+            continue
+        try:
+            runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
+            runs_by_task[task.id] = runs
+            failure = _empty_exhaustion_failure(task, runs)
+            if failure is not None and not task.id.startswith("pr-conflict-"):
+                empty_stops.setdefault(task.story_id, []).append((task, failure))
+        except Exception as exc:
+            # An unread sibling could require a typed stop. Do not let another
+            # row park its story without that evidence this cycle.
+            blocked_stories.add(task.story_id)
+            logger.error(
+                "failed_task_outcome_read_failed", task_id=task.id, error_type=type(exc).__name__
+            )
+
+    for story_id, candidates in empty_stops.items():
+        if story_id in blocked_stories:
+            continue
+        try:
+            failure = await _selected_empty_story_failure(
+                api_client, story_id, candidates, runs_by_task
+            )
+            await ensure_empty_story_stop(api_client, story_id, failure, actor="supervisor")
+            escalated_stories.add(story_id)
+        except Exception as exc:
+            blocked_stories.add(story_id)
+            logger.error("empty_task_stop_failed", story_id=story_id, error_type=type(exc).__name__)
 
     for task in tasks:
         task_id = task.id
         story_id = task.story_id
 
         # Skip standalone tasks (not part of a story)
-        if not story_id:
+        if not story_id or story_id in blocked_stories:
             continue
 
         current_iter = task.current_iteration
         log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
         try:
             task_retried, task_escalated = await _supervise_failed_task(
-                api_client, redis_client, task, log, escalated_stories
+                api_client, redis_client, task, log, escalated_stories, runs_by_task[task.id]
             )
         except Exception:
             log.exception("failed_task_supervision_contained")
@@ -277,17 +391,63 @@ async def supervise_failed_tasks(
     return {"retried": retried, "escalated": escalated}
 
 
+def _empty_exhaustion_failure(task: TaskDTO, runs: list[RunDTO]) -> StoryFailure | None:
+    if task.current_iteration < task.max_iterations or not runs:
+        return None
+    latest = runs[0]
+    if (
+        not isinstance(latest.result, EngineeringRunResult)
+        or latest.result.failure_reason is not EngineeringFailureReason.NO_NEW_COMMIT
+    ):
+        return None
+    return StoryFailure(
+        code=StoryFailureCode.NO_NEW_COMMIT,
+        source="scheduler",
+        detail=f"Task {task.id} exhausted its {task.max_iterations} retries. "
+        f"Attempt {latest.id} produced no new commit to merge or deploy.",
+    )
+
+
+async def _selected_empty_story_failure(
+    api_client: SchedulerAPIClient,
+    story_id: str,
+    candidates: list[tuple[TaskDTO, StoryFailure]],
+    runs_by_task: dict[str, list[RunDTO]],
+) -> StoryFailure:
+    """Retain a committed sibling's episode when only another sibling remains failed."""
+    story = await api_client.get_story(story_id)
+    for _, failure in candidates:
+        if matching_empty_cause(story, failure) is not None:
+            return failure
+    if story.status is StoryStatus.WAITING_HUMAN_REVIEW:
+        for sibling in await api_client.get_tasks_by_story(story_id):
+            if (
+                sibling.story_id != story_id
+                or sibling.status not in {TaskStatus.FAILED, TaskStatus.WAITING_HUMAN_REVIEW}
+                or sibling.current_iteration < sibling.max_iterations
+            ):
+                continue
+            runs = runs_by_task.get(sibling.id)
+            if runs is None:
+                runs = await api_client.list_runs(
+                    task_id=sibling.id, run_type=RunType.ENGINEERING.value
+                )
+            failure = _empty_exhaustion_failure(sibling, runs)
+            if failure is not None and matching_empty_cause(story, failure) is not None:
+                return failure
+    # Stable identity, independent of API priority/list ordering.
+    return min(candidates, key=lambda candidate: candidate[0].id)[1]
+
+
 async def _supervise_failed_task(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
     task: TaskDTO,
     log: structlog.stdlib.BoundLogger,
     escalated_stories: set[str],
+    engineering_runs: list[RunDTO],
 ) -> tuple[int, int]:
     """Supervise one row so every read and write has one containment boundary."""
-    engineering_runs = await api_client.list_runs(
-        task_id=task.id, run_type=RunType.ENGINEERING.value
-    )
     infrastructure = await _park_pre_agent_infrastructure_refusal(
         api_client,
         task,
@@ -306,6 +466,21 @@ async def _supervise_failed_task(
     current_iter = task.current_iteration
     max_iter = task.max_iterations
     story_id = task.story_id
+    if task.id.startswith("pr-conflict-"):
+        outcome = await settle_pr_repair_attempt(
+            api_client,
+            story_id,
+            task.id,
+            engineering_runs[0].id,
+            "Engineering attempt failed; retry within the admitted repair bound.",
+            PRConflictRepairAttemptDisposition.FAILED,
+        )
+        if outcome.outcome is PRConflictRepairAttemptOutcome.EXHAUSTED:
+            escalated_stories.add(story_id)
+            return 0, 1
+        return int(outcome.outcome is PRConflictRepairAttemptOutcome.RETRIED), 0
+    if task.status is TaskStatus.BACKLOG:
+        return 0, 0
     if current_iter < max_iter:
         # Retry: failed → backlog → todo, bump iteration
         await api_client.transition_task(task.id, TaskStatus.BACKLOG, "supervisor")
@@ -325,8 +500,13 @@ async def _supervise_failed_task(
         )
         try:
             await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
-        except Exception:
-            log.warning("task_whr_transition_failed", task_id=task.id, exc_info=True)
+        except Exception as exc:
+            if _empty_exhaustion_failure(task, engineering_runs) is not None:
+                log.warning(
+                    "task_whr_transition_failed", task_id=task.id, error_type=type(exc).__name__
+                )
+            else:
+                log.warning("task_whr_transition_failed", task_id=task.id, exc_info=True)
 
         if story_id not in escalated_stories:
             escalated_stories.add(story_id)
@@ -471,31 +651,37 @@ async def _park_task_waiting_resources(
         # so this is the code's own failure and the caller retries it.
         return False
 
-    metadata = dict(task.failure_metadata or {})
-    is_new_wait = "resource_wait_started_at" not in metadata
-    metadata.setdefault("resource_wait_started_at", datetime.now(UTC).isoformat())
-    metadata.update(
-        {
-            "allocation_required_ram_mb": result.allocation_required_ram_mb,
-            "allocation_min_disk_mb": result.allocation_min_disk_mb,
-            "allocation_failure_reason": reason.value,
-        }
+    # An unfinished host build waits on the same path, but the owner must not
+    # be told the platform ran out of capacity when it did not.
+    event, text = (
+        (OwnerNotificationEvent.TASK_WAITING_INFRASTRUCTURE, WAITING_INFRASTRUCTURE_TASK_TEXT)
+        if reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+        else (OwnerNotificationEvent.TASK_WAITING_RESOURCES, WAITING_RESOURCES_TASK_TEXT)
     )
-    await api_client.update_task(task.id, {"failure_metadata": metadata})
-    await api_client.transition_task(task.id, TaskStatus.WAITING_RESOURCES, "supervisor")
-    log.info("task_waiting_resources", reason=reason.value)
-    if is_new_wait:
-        # An unfinished host build waits on the same path, but the owner must not
-        # be told the platform ran out of capacity when it did not.
-        request_via_po = (
-            _request_infrastructure_wait_via_po
-            if reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
-            else _request_resources_via_po
-        )
-        try:
-            await request_via_po(api_client, redis_client, task, log)
-        except Exception:
-            log.warning("waiting_resources_request_failed", exc_info=True)
+    # The wait's facts, the transition and — when this park starts the wait —
+    # the owed announcement on this refused Run are one API transaction. Whether
+    # the wait is new is decided there, on the locked task, so it is announced
+    # once however many refused attempts it spans.
+    parked = await api_client.park_task_waiting_resources(
+        task.id,
+        TaskResourceWaitCommand(
+            run_id=run.id,
+            allocation_failure_reason=reason,
+            allocation_required_ram_mb=result.allocation_required_ram_mb,
+            allocation_min_disk_mb=result.allocation_min_disk_mb,
+            event=event,
+            text=text,
+            actor="supervisor",
+        ),
+    )
+    log.info(
+        "task_waiting_resources",
+        reason=reason.value,
+        disposition=parked.disposition.value,
+        new_wait=parked.new_wait,
+    )
+    if parked.owner_notification is not None:
+        await deliver_in_tick(api_client, redis_client, run.id, parked.owner_notification, log)
     return True
 
 
@@ -529,69 +715,26 @@ IMPOSSIBLE_CAPACITY_TASK_TEXT = (
 )
 
 
-async def _request_resources_via_po(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    task,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Ask PO to tell the owner that engineering is waiting for capacity."""
-    recipient = await resolve_project_recipient(
-        api_client, str(task.project_id), event="task_waiting_resources", story_id=task.story_id
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event=OwnerNotificationEvent.TASK_WAITING_RESOURCES,
-        text=(
-            "Engineering is waiting for server capacity. Tell the user that work will resume "
-            "automatically when capacity becomes available."
-        ),
-        task_id=task.id,
-        story_id=task.story_id or "",
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=str(task.project_id),
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-    log.info("waiting_resources_requested")
+#: What the owner is told when engineering waits for server capacity.
+WAITING_RESOURCES_TASK_TEXT = (
+    "Engineering is waiting for server capacity. Tell the user that work will resume "
+    "automatically when capacity becomes available."
+)
 
+#: What the owner is told when the target machine is still being prepared.
+#: Deliberately not the capacity message: nothing is full and the user's project
+#: is not defective — the host it would run on has not finished (or has failed)
+#: its software provisioning, which operators and the provisioner resolve.
+WAITING_INFRASTRUCTURE_TASK_TEXT = (
+    "Engineering is waiting for a server whose setup is still being finished on our "
+    "side. Tell the user this is our infrastructure, not a problem with their project, "
+    "and that work will resume automatically once the server is ready."
+)
 
-async def _request_infrastructure_wait_via_po(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    task,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Ask PO to tell the owner the target machine is still being prepared.
-
-    This is deliberately not the capacity message: nothing is full and the user's
-    project is not defective — the host it would run on has not finished (or has
-    failed) its software provisioning, which operators and the provisioner resolve.
-    """
-    recipient = await resolve_project_recipient(
-        api_client,
-        str(task.project_id),
-        event=OwnerNotificationEvent.TASK_WAITING_INFRASTRUCTURE,
-        story_id=task.story_id,
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event="task_waiting_infrastructure",
-        text=(
-            "Engineering is waiting for a server whose setup is still being finished on our "
-            "side. Tell the user this is our infrastructure, not a problem with their project, "
-            "and that work will resume automatically once the server is ready."
-        ),
-        task_id=task.id,
-        story_id=task.story_id or "",
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=str(task.project_id),
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-    log.info("waiting_infrastructure_requested")
+#: What the owner is told when a parked task is released again.
+RESOURCES_RESUMED_TASK_TEXT = (
+    "Server capacity is available again. Tell the user that engineering has resumed."
+)
 
 
 async def supervise_waiting_resource_tasks(
@@ -632,12 +775,20 @@ async def supervise_waiting_resource_tasks(
         if not await _resources_available(api_client, metadata):
             continue
         await _clear_failed_run_iteration(api_client, task)
-        await api_client.transition_task(task.id, TaskStatus.BACKLOG, "supervisor")
-        await api_client.transition_task(task.id, TaskStatus.TODO, "supervisor")
-        try:
-            await _notify_resources_resumed_via_po(api_client, redis_client, task)
-        except Exception:
-            log.warning("resources_resumed_request_failed", exc_info=True)
+        # Release and the owed "resumed" notice are one API transaction; the
+        # notice replaces the wait's own record on the refused Run, so a
+        # "waiting" message still owed is superseded instead of arriving stale.
+        released = await api_client.resume_task_from_resource_wait(
+            task.id,
+            TaskResourceResumeCommand(text=RESOURCES_RESUMED_TASK_TEXT, actor="supervisor"),
+        )
+        if released.disposition is not TaskResourceResumeDisposition.RESUMED:
+            log.info("resource_wait_resume_skipped", task_status=released.task_status.value)
+            continue
+        if released.owner_notification is not None:
+            await deliver_in_tick(
+                api_client, redis_client, released.run_id, released.owner_notification, log
+            )
         resumed += 1
     return {"resumed": resumed, "expired": expired}
 
@@ -653,10 +804,10 @@ async def _clear_failed_run_iteration(api_client: SchedulerAPIClient, task) -> N
     for run in runs:
         if run.run_metadata.get("iteration") != task.current_iteration:
             continue
-        await api_client.update_run(
-            run.id,
-            {"run_metadata": {**run.run_metadata, "iteration": None}},
-        )
+        # Only the key: the API merges run metadata, and resending the rest
+        # would carry this read's copy of the Run's owner-notification record
+        # into a write the seam may have settled since.
+        await api_client.update_run(run.id, {"run_metadata": {"iteration": None}})
         return
 
 
@@ -677,26 +828,6 @@ async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -
     )
 
 
-async def _notify_resources_resumed_via_po(
-    api_client: SchedulerAPIClient, redis_client: RedisStreamClient, task
-) -> None:
-    recipient = await resolve_project_recipient(
-        api_client, str(task.project_id), event="task_resources_resumed", story_id=task.story_id
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event=OwnerNotificationEvent.TASK_RESOURCES_RESUMED,
-        text="Server capacity is available again. Tell the user that engineering has resumed.",
-        task_id=task.id,
-        story_id=task.story_id or "",
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=str(task.project_id),
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-
-
 async def supervise_stuck_tasks(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -713,6 +844,19 @@ async def supervise_stuck_tasks(
         if run is None:
             terminal_run = await select_terminal_engineering_run(api_client, task.id)
             if terminal_run is not None:
+                if task.id.startswith("pr-conflict-") and terminal_run.status is RunStatus.FAILED:
+                    try:
+                        await _supervise_failed_task(
+                            api_client,
+                            redis_client,
+                            task,
+                            logger.bind(task_id=task.id, story_id=task.story_id),
+                            set(),
+                            [terminal_run],
+                        )
+                    except Exception:
+                        logger.exception("conflict_terminal_settlement_failed", task_id=task.id)
+                    continue
                 await replay_terminal_attempt(api_client, task.id, terminal_run, "supervisor")
             continue
         state, worker_id = await attempt_state(redis_client, run, now)

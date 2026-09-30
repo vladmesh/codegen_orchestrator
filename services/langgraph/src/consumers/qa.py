@@ -20,12 +20,21 @@ from shared.contracts.acceptance import (
     parse_health_only_criteria,
     parse_scheduled_behaviours,
 )
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentCreate, IncidentType
 from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
+from shared.contracts.dto.qa_verification import QAUnverifiedCheck
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
+from shared.contracts.dto.run_result import (
+    QABlocker,
+    QABlockerCategory,
+    QAFailedCheck,
+    QAProbeLibraryOffer,
+    QAProbeRun,
+    QARunResult,
+)
 from shared.contracts.dto.telegram import BotLivenessState
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
@@ -50,7 +59,10 @@ from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
 from ._live_work import live_work_settled
 from ._qa_grant_sweep import qa_grant_sweep_loop
+from ._qa_probe_library import prepare_probe_library
 from ._qa_runner import (
+    QA_EXECUTOR_ATTEMPTS,
+    QAExecutorAttempts,
     QAResult,
     QARuntimeConfig,
     check_deployed_url_reachable,
@@ -61,6 +73,11 @@ from ._qa_runner import (
     scheduled_behaviour_facts,
 )
 from ._qa_target import QATarget
+from ._qa_telegram_identity import (
+    QA_TELEGRAM_IDENTITY_KEY,
+    identity_record,
+    prove_sandbox_telegram_identity,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -473,6 +490,7 @@ async def _run_exploratory_qa(
     msg: QAMessage,
     server_info: QAServerInfo,
     acceptance_criteria: str,
+    attempts: QAExecutorAttempts,
 ) -> tuple[QAResult | None, QABlocker | None]:
     """Run the central QA executor against one deployment.
 
@@ -516,6 +534,15 @@ async def _run_exploratory_qa(
         return None, executor_decision
     runtime = _resolve_qa_runtime(executor_decision.agent_type)
     ownership = WorkerOwnership.for_qa(msg)
+    # Proven for this run, or withdrawn for this run: the sandbox is handed the
+    # QA Telegram identity only after this, and a refused session is treated
+    # from here on exactly as a runtime without Telethon credentials.
+    runtime = await prove_sandbox_telegram_identity(runtime)
+    if (identity := identity_record(runtime)) is not None and msg.run_id:
+        await api_client.patch(
+            f"runs/{msg.run_id}",
+            json={"run_metadata": {QA_TELEGRAM_IDENTITY_KEY: identity}},
+        )
 
     # Both of these are read here, on the management host, before any executor
     # exists: the behaviour names come off this run's own criteria and the
@@ -546,10 +573,18 @@ async def _run_exploratory_qa(
         access_blocker = await preflight_bot_access(
             bot_username=msg.bot_username,
             telethon_env=runtime.telethon_env,
+            identity_refusal=runtime.telegram_identity_refusal,
         )
         if access_blocker:
             return None, access_blocker
 
+    # The seeds are due to a run that tests a Telegram bot, which is exactly
+    # the run that carries `bot_username`; the project's entries to every run.
+    library = await prepare_probe_library(
+        project_id=msg.project_id,
+        telegram_bot=bool(msg.bot_username),
+        read_entries=api_client.list_qa_probes,
+    )
     qa_result = await run_qa_centrally(
         # Who the executor belongs to, derived by the one constructor that
         # derives it: the project under test, the run that asked for the work
@@ -578,7 +613,10 @@ async def _run_exploratory_qa(
         established_facts=established_facts,
         settings_established=bool(confirmed_settings),
         jobs=jobs,
+        attempts=attempts,
+        probe_library=library.files,
     )
+    qa_result.probe_library = library.offer
     if qa_result.blocker is not None and qa_result.blocker.category in QA_INFRASTRUCTURE_BLOCKERS:
         await _alert_admins_qa_infrastructure(msg=msg, blocker=qa_result.blocker)
     return qa_result, None
@@ -634,6 +672,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
     # else once its container is deleted, so a settling path that has forgotten
     # the result would settle the Run without evidence this consumer was holding.
     qa_result: QAResult | None = None
+    attempts = QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
 
     # Inflight dedup — prevent concurrent QA on same story/application
     dedup_id = story_id if story_id else str(msg.application_id)
@@ -653,7 +692,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         blocker = await check_deployed_url_reachable(msg.deployed_url)
         if blocker:
-            return await _handle_qa_blocked(run_id=run_id, blocker=blocker)
+            return await _handle_qa_blocked(run_id=run_id, blocker=blocker, attempts=attempts)
 
         # A server to SSH into and a bot to talk to are what the agent needs, not
         # what the criteria ask for. Resolve them inside the agent branch only —
@@ -671,6 +710,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 )
                 return await _handle_qa_blocked(
                     run_id=run_id,
+                    attempts=attempts,
                     blocker=QABlocker(
                         category=QABlockerCategory.SERVER_UNAVAILABLE,
                         attempted="resolve QA server connection",
@@ -691,6 +731,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
                     return await _handle_qa_blocked(
                         run_id=run_id,
+                        attempts=attempts,
                         blocker=QABlocker(
                             category=QABlockerCategory.MISSING_BOT_USERNAME,
                             attempted="resolve Telegram bot identity from QA message",
@@ -706,6 +747,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             if not run_id:
                 return await _handle_qa_blocked(
                     run_id=run_id,
+                    attempts=attempts,
                     blocker=QABlocker(
                         category=QABlockerCategory.UNKNOWN,
                         attempted="persist QA cleanup plan",
@@ -740,9 +782,12 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 msg=msg,
                 server_info=server_info,
                 acceptance_criteria=acceptance_criteria,
+                attempts=attempts,
             )
             if exploratory_blocker:
-                return await _handle_qa_blocked(run_id=run_id, blocker=exploratory_blocker)
+                return await _handle_qa_blocked(
+                    run_id=run_id, blocker=exploratory_blocker, attempts=attempts
+                )
 
         logger.info(
             "qa_result",
@@ -764,23 +809,36 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         if qa_result.blocker:
             return await _handle_qa_blocked(
                 run_id=run_id,
+                attempts=attempts,
                 blocker=qa_result.blocker,
                 state_changes=qa_result.state_changes,
                 telegram_probe_evidence=qa_result.telegram_probe_evidence,
+                probe_runs=qa_result.probe_runs,
+                probe_library=qa_result.probe_library,
                 executor_transcript=qa_result.executor_evidence,
+                executor_attempt=qa_result.executor_attempt,
             )
         if qa_result.passed:
             return await _handle_qa_pass(
                 run_id=run_id,
+                project_id=msg.project_id,
+                attempts=attempts,
                 deployed_url=msg.deployed_url,
                 report=qa_result.report,
                 state_changes=qa_result.state_changes,
                 telegram_probe_evidence=qa_result.telegram_probe_evidence,
+                probe_runs=qa_result.probe_runs,
+                probe_library=qa_result.probe_library,
                 executor_transcript=qa_result.executor_evidence,
+                executor_attempt=qa_result.executor_attempt,
+                passed_checks=_passed_check_names(qa_result),
+                unverified_checks=qa_result.unverified_checks,
             )
         else:
             return await _handle_qa_fail(
                 run_id=run_id,
+                project_id=msg.project_id,
+                attempts=attempts,
                 qa_attempt=msg.qa_attempt,
                 qa_result=qa_result,
             )
@@ -793,6 +851,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         )
         return await _handle_qa_blocked(
             run_id=run_id,
+            attempts=attempts,
             blocker=QABlocker(
                 category=QABlockerCategory.UNKNOWN,
                 attempted="process QA job",
@@ -803,54 +862,137 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             # a 409 arrives, and QA may already have run: the fallback settles
             # the Run, so it settles it with the evidence the run produced.
             executor_transcript=qa_result.executor_evidence if qa_result else None,
+            executor_attempt=qa_result.executor_attempt if qa_result else None,
+            probe_runs=qa_result.probe_runs if qa_result else None,
+            probe_library=qa_result.probe_library if qa_result else None,
         )
     finally:
         # Always release inflight marker
         await redis.redis.delete(inflight_key)
 
 
-async def _handle_qa_pass(
+async def _handle_qa_pass(  # noqa: PLR0913 — one settled pass, each part named
     *,
     run_id: str,
+    project_id: str,
+    attempts: QAExecutorAttempts,
     deployed_url: str,
     report: str = "",
     state_changes: list[dict] | None = None,
     telegram_probe_evidence: list | None = None,
+    probe_runs: list[QAProbeRun] | None = None,
+    probe_library: QAProbeLibraryOffer | None = None,
     executor_transcript: str | None = None,
+    executor_attempt: EngineeringAttemptLedgerInput | None = None,
+    passed_checks: list[str] | None = None,
+    unverified_checks: list[QAUnverifiedCheck] | None = None,
 ) -> dict:
-    """Handle QA pass — store PASSED outcome in run."""
-    await _update_run(
+    """Handle QA pass — store PASSED outcome in run, then its probes in the library."""
+    settled = await _update_run(
         run_id,
+        attempts,
         RunStatus.COMPLETED,
         QAOutcome.PASSED,
         deployed_url=deployed_url,
         report=report,
         state_changes=state_changes or [],
         telegram_probe_evidence=telegram_probe_evidence or [],
+        probe_runs=probe_runs,
+        probe_library=probe_library,
         executor_transcript=executor_transcript,
+        executor_attempt=executor_attempt,
+        passed_checks=passed_checks or [],
+        unverified_checks=unverified_checks or [],
     )
     logger.info("qa_passed", run_id=run_id)
+    if settled and unverified_checks:
+        await _record_verification_gaps(project_id=project_id, run_id=run_id)
+    if settled and any(probe.exit_status == 0 for probe in probe_runs or []):
+        await _store_passed_probes(project_id=project_id, run_id=run_id)
     return live_work_settled({"status": "passed"})
+
+
+def _passed_check_names(qa_result: QAResult) -> list[str]:
+    """The checks this run performed and passed, by name."""
+    return [check["name"] for check in qa_result.checks if check.get("pass") is True]
+
+
+async def _record_verification_gaps(*, project_id: str, run_id: str) -> None:
+    """Write this settled Run's unverified checks on its project.
+
+    The API reads them off the settled Run itself. The verdict and the Run are
+    already written: a failure here is logged and changes neither.
+    """
+    try:
+        recorded = await api_client.record_verification_gaps_from_run(project_id, run_id)
+    except Exception as exc:
+        logger.warning(
+            "qa_verification_gaps_write_failed",
+            project_id=project_id,
+            run_id=run_id,
+            error=str(exc),
+        )
+        return
+    logger.info(
+        "qa_verification_gaps_recorded",
+        project_id=project_id,
+        run_id=run_id,
+        recorded=recorded.recorded,
+        already_recorded=recorded.already_recorded,
+    )
+
+
+async def _store_passed_probes(*, project_id: str, run_id: str) -> None:
+    """Offer this passed Run's probes to later runs of its project.
+
+    The API reads the probes off the settled Run itself, so what enters the
+    library is the record the capability endpoint scrubbed and bounded. The
+    verdict and the Run are already written: a failure here is logged and
+    changes neither.
+    """
+    try:
+        stored = await api_client.store_qa_probes_from_run(project_id, run_id)
+    except Exception as exc:
+        logger.warning(
+            "qa_probe_library_write_failed", project_id=project_id, run_id=run_id, error=str(exc)
+        )
+        return
+    logger.info(
+        "qa_probe_library_updated",
+        project_id=project_id,
+        run_id=run_id,
+        stored=stored.stored,
+        evicted=stored.evicted,
+        skipped=stored.skipped,
+    )
 
 
 async def _handle_qa_blocked(
     *,
     run_id: str,
+    attempts: QAExecutorAttempts,
     blocker: QABlocker,
     state_changes: list[dict] | None = None,
     telegram_probe_evidence: list | None = None,
+    probe_runs: list | None = None,
+    probe_library: QAProbeLibraryOffer | None = None,
     executor_transcript: str | None = None,
+    executor_attempt: EngineeringAttemptLedgerInput | None = None,
 ) -> dict:
     """Persist a non-product QA blocker for human review."""
     await _update_run(
         run_id,
+        attempts,
         RunStatus.COMPLETED,
         QAOutcome.BLOCKED,
         summary="QA could not verify the product",
         blocker=blocker,
         state_changes=state_changes or [],
         telegram_probe_evidence=telegram_probe_evidence or [],
+        probe_runs=probe_runs,
+        probe_library=probe_library,
         executor_transcript=executor_transcript,
+        executor_attempt=executor_attempt,
     )
     logger.warning("qa_blocked", run_id=run_id, category=blocker.category.value)
     return live_work_settled({"status": "qa_blocked", "blocker": blocker.category.value})
@@ -859,6 +1001,8 @@ async def _handle_qa_blocked(
 async def _handle_qa_fail(
     *,
     run_id: str,
+    project_id: str,
+    attempts: QAExecutorAttempts,
     qa_attempt: int,
     qa_result: QAResult,
 ) -> dict:
@@ -882,32 +1026,48 @@ async def _handle_qa_fail(
             attempt=qa_attempt,
             max_loops=MAX_QA_LOOPS,
         )
-        await _update_run(
+        settled = await _update_run(
             run_id,
+            attempts,
             RunStatus.COMPLETED,
             QAOutcome.EXHAUSTED,
             summary=qa_result.summary,
             failed_checks=failed_checks,
+            passed_checks=_passed_check_names(qa_result),
+            unverified_checks=qa_result.unverified_checks,
             qa_attempt=qa_attempt,
             report=qa_result.report,
             state_changes=qa_result.state_changes,
             telegram_probe_evidence=qa_result.telegram_probe_evidence,
+            probe_runs=qa_result.probe_runs,
+            probe_library=qa_result.probe_library,
             executor_transcript=qa_result.executor_evidence,
+            executor_attempt=qa_result.executor_attempt,
         )
+        if settled and qa_result.unverified_checks:
+            await _record_verification_gaps(project_id=project_id, run_id=run_id)
         return live_work_settled({"status": "qa_exhausted"})
 
-    await _update_run(
+    settled = await _update_run(
         run_id,
+        attempts,
         RunStatus.COMPLETED,
         QAOutcome.FAILED,
         summary=qa_result.summary,
         failed_checks=failed_checks,
+        passed_checks=_passed_check_names(qa_result),
+        unverified_checks=qa_result.unverified_checks,
         qa_attempt=qa_attempt,
         report=qa_result.report,
         state_changes=qa_result.state_changes,
         telegram_probe_evidence=qa_result.telegram_probe_evidence,
+        probe_runs=qa_result.probe_runs,
+        probe_library=qa_result.probe_library,
         executor_transcript=qa_result.executor_evidence,
+        executor_attempt=qa_result.executor_attempt,
     )
+    if settled and qa_result.unverified_checks:
+        await _record_verification_gaps(project_id=project_id, run_id=run_id)
 
     logger.info(
         "qa_failed",
@@ -919,11 +1079,12 @@ async def _handle_qa_fail(
 
 async def _update_run(
     run_id: str,
+    attempts: QAExecutorAttempts,
     status: RunStatus,
     qa_outcome: QAOutcome,
     **extra_result: object,
-) -> None:
-    """Update run status and result with QA outcome.
+) -> bool:
+    """Update run status and result with QA outcome; say whether this write settled it.
 
     A run this worker is still inside can be ended by something outside it —
     the temporary access it borrowed expiring underneath it, for one. That run
@@ -934,7 +1095,9 @@ async def _update_run(
     """
     if not run_id:
         logger.warning("qa_no_run_id_skip_update")
-        return
+        return False
+    extra_result.pop("executor_attempt", None)
+    accounting = attempts.accounting
     run_result = QARunResult(qa_outcome=qa_outcome, **extra_result)
     try:
         await api_client.patch(
@@ -942,6 +1105,7 @@ async def _update_run(
             json={
                 "status": status.value,
                 "result": run_result.model_dump(mode="json"),
+                "qa_accounting": accounting.model_dump(mode="json"),
             },
         )
     except httpx.HTTPStatusError as error:
@@ -953,6 +1117,8 @@ async def _update_run(
             dropped_outcome=qa_outcome.value,
             detail=error.response.text,
         )
+        return False
+    return True
 
 
 def main():

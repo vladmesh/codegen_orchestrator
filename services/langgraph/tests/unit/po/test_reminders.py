@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.queues.po import POReminderMessage, protect_po_payload, unprotect_po_payload
 from shared.queues import PO_INPUT_QUEUE, PO_REMINDERS_KEY
 from src.agents.po.reminders import _poll_once, run_reminder_poller
 
@@ -25,12 +26,15 @@ def mock_client():
 
 def _make_reminder(telegram_chat_id: str = "user-42", text: str = "check task eng-abc123") -> str:
     return json.dumps(
-        {
-            "type": "reminder",
-            "telegram_chat_id": telegram_chat_id,
-            "text": text,
-            "timestamp": "2026-02-15T14:30:00+00:00",
-        }
+        protect_po_payload(
+            PO_REMINDERS_KEY,
+            {
+                "type": "reminder",
+                "telegram_chat_id": telegram_chat_id,
+                "text": text,
+                "timestamp": "2026-02-15T14:30:00+00:00",
+            },
+        )
     )
 
 
@@ -50,6 +54,31 @@ class TestPollOnce:
         assert fields["type"] == "reminder"
         assert fields["telegram_chat_id"] == "user-42"
         assert fields["text"] == "check task eng-abc123"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_requested", [True, False])
+    async def test_carries_the_story_and_whether_the_user_asked(self, mock_client, user_requested):
+        reminder = unprotect_po_payload(PO_REMINDERS_KEY, json.loads(_make_reminder()))
+        reminder.update(story_id="story-pay", user_requested=user_requested)
+        mock_client.redis.zrangebyscore.return_value = [
+            json.dumps(protect_po_payload(PO_REMINDERS_KEY, reminder))
+        ]
+
+        await _poll_once(mock_client)
+
+        fields = mock_client.publish_flat.call_args[0][1]
+        fired = POReminderMessage.model_validate(fields)
+        assert fired.story_id == "story-pay"
+        assert fired.user_requested is user_requested
+
+    @pytest.mark.asyncio
+    async def test_a_reminder_set_before_the_flag_existed_is_not_user_requested(self, mock_client):
+        mock_client.redis.zrangebyscore.return_value = [_make_reminder()]
+
+        await _poll_once(mock_client)
+
+        fields = mock_client.publish_flat.call_args[0][1]
+        assert POReminderMessage.model_validate(fields).user_requested is False
 
     @pytest.mark.asyncio
     async def test_ignores_future_reminders(self, mock_client):
@@ -83,18 +112,16 @@ class TestPollOnce:
         mock_client.redis.zrem.assert_called_once_with(PO_REMINDERS_KEY, reminder)
 
     @pytest.mark.asyncio
-    async def test_continues_on_parse_error(self, mock_client):
-        """Invalid JSON should be removed and not block other reminders."""
+    async def test_retains_evidence_on_parse_error(self, mock_client):
+        """Authentication failure retains evidence and scheduled delivery for repair."""
         bad_entry = "not-valid-json"
         good_reminder = _make_reminder()
         mock_client.redis.zrangebyscore.return_value = [bad_entry, good_reminder]
 
-        fired = await _poll_once(mock_client)
-
-        assert fired == 1
-        # Bad entry should still be removed from ZSET
-        assert mock_client.redis.zrem.call_count == 2  # noqa: PLR2004
-        mock_client.publish_flat.assert_called_once()
+        with pytest.raises(RuntimeError, match="authentication or validation failed"):
+            await _poll_once(mock_client)
+        mock_client.redis.zrem.assert_not_called()
+        mock_client.publish_flat.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_queries_correct_score_range(self, mock_client):
@@ -115,7 +142,8 @@ class TestRunReminderPoller:
         mock_client.redis.zrangebyscore.side_effect = asyncio.CancelledError()
 
         # Should not raise — exits cleanly
-        await run_reminder_poller(mock_client)
+        with patch("src.agents.po.reminders.verify_po_storage", new_callable=AsyncMock):
+            await run_reminder_poller(mock_client)
 
     @pytest.mark.asyncio
     async def test_continues_on_error(self, mock_client):
@@ -131,7 +159,10 @@ class TestRunReminderPoller:
 
         mock_client.redis.zrangebyscore.side_effect = side_effect
 
-        with patch("src.agents.po.reminders.asyncio.sleep", new_callable=AsyncMock):
+        with (
+            patch("src.agents.po.reminders.asyncio.sleep", new_callable=AsyncMock),
+            patch("src.agents.po.reminders.verify_po_storage", new_callable=AsyncMock),
+        ):
             await run_reminder_poller(mock_client)
 
         assert call_count == 2  # noqa: PLR2004

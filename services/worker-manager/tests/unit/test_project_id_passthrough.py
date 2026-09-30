@@ -221,6 +221,7 @@ class TestWorkspaceByRepoId:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         mock_scaffolded_ws.assert_called_once_with(settings.SCAFFOLDED_WORKSPACE_PATH, "repo-1")
@@ -242,6 +243,7 @@ class TestWorkspaceByRepoId:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id=None,
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         mock_redis.xadd.assert_not_awaited()
@@ -273,6 +275,7 @@ class TestWorkspaceByRepoId:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-missing",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         mock_redis.xadd.assert_not_awaited()
@@ -341,6 +344,7 @@ class TestRepoIdRedisMeta:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         meta = decode_redis_fields(await redis.hgetall("worker:meta:w-5"))
@@ -368,6 +372,7 @@ class TestRepoIdRedisMeta:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         meta = decode_redis_fields(await redis.hgetall("worker:meta:w-5b"))
@@ -395,6 +400,7 @@ class TestRepoIdRedisMeta:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         members = await redis.smembers("workspace:active_projects")
@@ -738,6 +744,7 @@ class TestProjectMutex:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         with (
@@ -759,6 +766,7 @@ class TestProjectMutex:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
     @pytest.mark.asyncio
@@ -783,6 +791,7 @@ class TestProjectMutex:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
@@ -808,6 +817,7 @@ class TestProjectMutex:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
             assert result == "w-second"
 
@@ -1064,6 +1074,7 @@ class TestForceCleanAndReject:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
     @pytest.mark.asyncio
@@ -1089,6 +1100,7 @@ class TestForceCleanAndReject:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         mock_ws.assert_not_called()
@@ -1115,6 +1127,7 @@ class TestForceCleanAndReject:
                     attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
+                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
             )
 
         mock_ws.assert_called_once_with(settings.SCAFFOLDED_WORKSPACE_PATH, "repo-1")

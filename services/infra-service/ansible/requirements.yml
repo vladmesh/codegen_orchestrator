@@ -1,8 +1,14 @@
 ---
+# Exact versions, so every infra-service image bakes the same collections. These are the
+# versions the unpinned `>=` ranges resolved to when they were pinned (2026-09-23); bump
+# them here on purpose. community.library_inventory_filtering_v1 is a dependency of
+# community.docker and community.general, listed so that it is pinned too.
 collections:
   - name: community.docker
-    version: ">=3.0.0"
+    version: "5.3.0"
   - name: ansible.posix
-    version: ">=1.0.0"
+    version: "2.2.2"
   - name: community.general
-    version: ">=8.0.0"
+    version: "13.4.0"
+  - name: community.library_inventory_filtering_v1
+    version: "1.1.5"

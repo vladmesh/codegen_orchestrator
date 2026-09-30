@@ -14,6 +14,7 @@ import subprocess
 import pytest
 
 from scripts.shared_freshness import (
+    PRODUCTION_CONTOURS,
     SOURCE_HASH_LABEL,
     Unreadable,
     build_routes,
@@ -22,6 +23,7 @@ from scripts.shared_freshness import (
     dockerfile_bakes_shared,
     dockerfiles_baking_shared,
     makefile_routes,
+    production_contours,
     source_hash,
     tracked_images,
     uncovered_dockerfiles,
@@ -335,6 +337,121 @@ def test_a_mounted_compose_service_is_not_tracked(tree: Path):
     }
 
 
+# --- the production contours: the mount exempts nothing there -------------------
+
+PROD_RESETS_THE_MOUNT = """\
+services:
+  api:
+    volumes: !reset []
+  worker-manager:
+    mem_limit: 512m
+"""
+
+PROD_KEEPS_THE_MOUNT = """\
+services:
+  api:
+    mem_limit: 768m
+"""
+
+PROD_OVERRIDES_WITHOUT_THE_MOUNT = """\
+services:
+  api:
+    volumes: !override
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
+"""
+
+STAND_REMOUNTS_THE_TREE = """\
+services:
+  api:
+    volumes:
+      - ./shared:/app/shared
+"""
+
+
+@pytest.mark.parametrize("overlay", [PROD_RESETS_THE_MOUNT, PROD_OVERRIDES_WITHOUT_THE_MOUNT])
+def test_a_service_production_runs_from_its_image_is_tracked(tree: Path, overlay: str):
+    """The development stack mounts the tree over api; production does not, so it is compared."""
+    _write(tree, "docker-compose.prod.yml", overlay)
+
+    references = {image.reference for image in tracked_images(tree)}
+
+    assert "codegen-orchestrator/api:local" in references
+    assert compose_routes(tree)[0] == []
+
+
+def test_a_stale_image_of_a_production_service_fails_the_check(tree: Path):
+    """Production cannot silently run a stale api: its image is compared with the tree."""
+    _write(tree, "docker-compose.prod.yml", PROD_RESETS_THE_MOUNT)
+    images = _built(tree)
+    images["codegen-orchestrator/api:local"] = {SOURCE_HASH_LABEL: "0123456789abcdef"}
+
+    problems = check(tree, inspect=_inspector(images), report=lambda _: None)
+
+    assert problems == [
+        "codegen-orchestrator/api:local (docker-compose.yml service api) was built from "
+        f"0123456789abcdef, the tree is {source_hash(tree)}"
+    ]
+
+
+def test_a_production_service_image_with_an_empty_label_fails_the_check(tree: Path):
+    """A released image carries a non-empty label; one that does not cannot vouch for itself."""
+    _write(tree, "docker-compose.prod.yml", PROD_RESETS_THE_MOUNT)
+    images = _built(tree)
+    images["codegen-orchestrator/api:local"] = {SOURCE_HASH_LABEL: ""}
+
+    problems = check(tree, inspect=_inspector(images), report=lambda _: None)
+
+    assert problems == [
+        "codegen-orchestrator/api:local (docker-compose.yml service api) carries an empty "
+        f"{SOURCE_HASH_LABEL}"
+    ]
+
+
+def test_a_production_contour_that_mounts_the_tree_fails_the_check_by_name(tree: Path):
+    _write(tree, "docker-compose.prod.yml", PROD_KEEPS_THE_MOUNT)
+
+    problems = check(tree, inspect=_inspector(_built(tree)), report=lambda _: None)
+
+    assert len(problems) == 1
+    assert problems[0].startswith(
+        "docker-compose.yml: service api builds services/api/Dockerfile, which bakes shared, "
+        "and on production contour docker-compose.yml + docker-compose.prod.yml mounts ./shared"
+    )
+
+
+def test_a_stand_overlay_that_mounts_the_tree_again_fails_the_check(tree: Path):
+    """Compose merges a plain volume list by target, so the stand would run the checkout."""
+    _write(tree, "docker-compose.prod.yml", PROD_RESETS_THE_MOUNT)
+    _write(tree, "docker-compose.stand.yml", STAND_REMOUNTS_THE_TREE)
+
+    problems, _routes = compose_routes(tree)
+
+    assert len(problems) == 1
+    assert "docker-compose.yml + docker-compose.prod.yml + docker-compose.stand.yml" in problems[0]
+
+
+def test_the_production_contours_are_the_ones_the_deploy_brings_up():
+    """The first contour is deploy.yml's default COMPOSE_ARGS; the stand stacks its overlay."""
+    workflow = (REPO_ROOT / ".github/workflows/deploy.yml").read_text()
+    prod, stand = PRODUCTION_CONTOURS
+
+    assert f"'{' '.join(f'-f {name}' for name in prod)}'" in workflow
+    assert stand == (*prod, "docker-compose.stand.yml")
+    assert all((REPO_ROOT / name).is_file() for contour in PRODUCTION_CONTOURS for name in contour)
+
+
+def test_no_production_contour_of_this_repository_runs_the_tree():
+    contours = production_contours(REPO_ROOT)
+
+    assert [files for files, _volumes in contours] == list(PRODUCTION_CONTOURS)
+    assert compose_routes(REPO_ROOT)[0] == []
+    assert not any(
+        route.runs_the_tree
+        for route in compose_routes(REPO_ROOT)[1]
+        if route.origin.startswith("docker-compose.yml ")
+    )
+
+
 def test_a_compose_service_without_an_image_name_fails_the_check(tree: Path):
     (tree / "tests/compose/api.yml").write_text(
         TEST_COMPOSE.replace("    image: codegen-orchestrator/api:test\n", "")
@@ -550,6 +667,13 @@ def test_the_tracked_set_covers_the_images_that_bake_shared_and_are_reused():
         "worker-base-codex:latest",
         "codegen-orchestrator/worker-manager:local",
         "codegen-orchestrator/worker-broker:local",
+        # Mounted over in the development stack, run from the image in production.
+        "codegen-orchestrator/api:local",
+        "codegen-orchestrator/langgraph:local",
+        "codegen-orchestrator/infra-service:local",
+        "codegen-orchestrator/telegram_bot:local",
+        "codegen-orchestrator/scheduler:local",
+        "codegen-orchestrator/scaffolder:local",
         "codegen-orchestrator/worker-manager:test",
         "codegen-orchestrator/worker-broker:test",
         "codegen-orchestrator/api:test",

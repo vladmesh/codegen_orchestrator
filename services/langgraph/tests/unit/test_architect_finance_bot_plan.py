@@ -155,7 +155,7 @@ async def _run(income_free_text: IncomeFreeText, plan: _Plan) -> tuple[FinanceBo
     api = FinanceBotApi(finance_bot_brief(income_free_text))
     model = _RecordingScriptedModel(turns=_script(api, plan), seen=[])
     reset_task_chain()
-    with patch("src.agents.architect.graph.ChatOpenAI", return_value=model):
+    with patch("src.llm.openrouter.ChatOpenAI", return_value=model):
         result = await plan_finance_bot(
             api, model="scripted", base_url="http://llm.invalid", api_key="x"
         )

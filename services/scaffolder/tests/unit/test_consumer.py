@@ -1,13 +1,17 @@
 """Tests for scaffolder consumer."""
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from structlog.testing import capture_logs
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
+from shared.contracts.dto.story_failure import StoryFailureCode
+from shared.contracts.dto.task import TaskDTO
 from src.consumer import _begin_scaffold_work, _finish_scaffold_work, process_scaffold_job
 from src.scaffold import ScaffoldResult
 
@@ -71,6 +75,10 @@ def mock_github():
     gh.get_org_token.return_value = "ghs_fake"  # noqa: S106
     gh.create_repo.return_value = MagicMock(id=1177997641)
     gh.get_repo.return_value = MagicMock(allow_auto_merge=True)
+    # The consumer enters the client as an async context manager; entering yields
+    # the same client and exiting never swallows the operation's exception.
+    gh.__aenter__.return_value = gh
+    gh.__aexit__.return_value = False
     return gh
 
 
@@ -97,10 +105,12 @@ class TestProcessScaffoldJob:
     async def test_cancel_fence_skips_external_work(self, valid_job_data, mock_redis, mock_github):
         mock_redis.redis.eval.return_value = 0
 
-        with patch("src.consumer.get_github_client", return_value=mock_github):
+        with patch("src.consumer.GitHubAppClient", return_value=mock_github) as client_cls:
             result = await process_scaffold_job(valid_job_data, mock_redis)
 
         assert result == {"status": "skipped", "error": "cancelled by live teardown"}
+        client_cls.assert_not_called()
+        mock_github.__aenter__.assert_not_awaited()
         mock_github.get_org_token.assert_not_awaited()
         mock_github.create_repo.assert_not_awaited()
 
@@ -112,7 +122,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings") as mock_settings,
             patch.dict(
@@ -165,7 +175,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings") as mock_settings,
             patch.dict(
@@ -196,7 +206,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings") as mock_settings,
             patch.dict(os.environ, {"GITHUB_ORG": "test-org"}, clear=False),
@@ -225,7 +235,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings") as mock_settings,
             patch.dict(os.environ, _GITHUB_ENV),
@@ -252,7 +262,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings") as mock_settings,
             patch.dict(os.environ, _GITHUB_ENV),
@@ -272,7 +282,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings", return_value=MagicMock()),
             patch.dict(os.environ, _GITHUB_ENV),
@@ -305,7 +315,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings", return_value=MagicMock()),
             patch("src.consumer.notify_admins_best_effort", new_callable=AsyncMock) as notify,
@@ -329,7 +339,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings", return_value=MagicMock()),
             patch.dict(os.environ, _GITHUB_ENV),
@@ -349,7 +359,7 @@ class TestProcessScaffoldJob:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings") as mock_settings,
             patch.dict(os.environ, _GITHUB_ENV),
@@ -377,7 +387,7 @@ class TestProcessScaffoldJobEnsureMode:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_ensure_workspace", return_value=ensure_result) as mock_ensure,
             patch("src.consumer.run_scaffold") as mock_full,
             patch("src.consumer.get_settings") as mock_settings,
@@ -403,7 +413,7 @@ class TestProcessScaffoldJobEnsureMode:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_ensure_workspace", return_value=ensure_result),
             patch("src.consumer.get_settings") as mock_settings,
             patch.dict(os.environ, _GITHUB_ENV),
@@ -427,7 +437,7 @@ class TestProcessScaffoldJobEnsureMode:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_ensure_workspace", return_value=ensure_result),
             patch("src.consumer.get_settings", return_value=MagicMock()),
             patch.dict(os.environ, _GITHUB_ENV),
@@ -450,7 +460,7 @@ class TestProcessScaffoldJobEnsureMode:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_ensure_workspace") as mock_ensure,
             patch("src.consumer.get_settings", return_value=MagicMock()),
             patch.dict(os.environ, _GITHUB_ENV),
@@ -472,7 +482,7 @@ class TestProcessScaffoldJobEnsureMode:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.get_settings", return_value=MagicMock()),
             patch.dict(os.environ, _GITHUB_ENV),
         ):
@@ -490,7 +500,7 @@ class TestProcessScaffoldJobEnsureMode:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result) as mock_full,
             patch("src.consumer.run_ensure_workspace") as mock_ensure,
             patch("src.consumer.get_settings") as mock_settings,
@@ -514,7 +524,7 @@ class TestProcessScaffoldJobEnsureMode:
         mock_api.update_project_status.assert_called_once_with("proj-123", ProjectStatus.ACTIVE)
 
 
-def _make_story(story_id: str, status: str):
+def _make_story(story_id: str, status: str, reopened_at: str | None = None):
     """Build a StoryDTO for tests, shaped like the response the API returns.
 
     `waiting_on` is required on the DTO and follows from the status, so the
@@ -530,21 +540,62 @@ def _make_story(story_id: str, status: str):
             "waiting_on": WAITING_ON_BY_STATUS[StoryStatus(status)].value,
             "priority": 0,
             "created_by": "system",
+            "reopened_at": reopened_at,
             "created_at": "2026-03-17T00:00:00Z",
             "updated_at": "2026-03-17T00:00:00Z",
         }
     )
 
 
+def _make_task(
+    task_id: str,
+    story_id: str,
+    created_at: str = "2026-03-17T00:05:00Z",
+    status: str = "todo",
+) -> TaskDTO:
+    return TaskDTO.model_validate(
+        {
+            "id": task_id,
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "type": "feature",
+            "title": f"task {task_id}",
+            "status": status,
+            "priority": 0,
+            "current_iteration": 0,
+            "max_iterations": 3,
+            "created_by": "architect",
+            "story_id": story_id,
+            "dispatch_admitted": True,
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+    )
+
+
+async def _run_failed_scaffold(valid_job_data, mock_redis, mock_api, mock_github, error: str):
+    with (
+        patch("src.consumer.get_api_client", return_value=mock_api),
+        patch("src.consumer.GitHubAppClient", return_value=mock_github),
+        patch("src.consumer.run_scaffold", return_value=ScaffoldResult(success=False, error=error)),
+        patch("src.consumer.get_settings") as mock_settings,
+        patch.dict(os.environ, _GITHUB_ENV, clear=False),
+        capture_logs() as logs,
+    ):
+        mock_settings.return_value = MagicMock()
+        result = await process_scaffold_job(valid_job_data, mock_redis)
+    return result, logs
+
+
 class TestScaffoldFailureBlastRadius:
     @pytest.mark.asyncio
-    async def test_only_unstarted_stories_are_failed(
+    async def test_fails_stories_that_only_wait_on_the_scaffold(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
-        """A failed scaffold must not destroy work that already left `created`."""
+        """Created and planless in_progress stories fail; work with a plan or past it does not."""
         mock_api.get_stories_by_project.return_value = [
             _make_story("s-created", StoryStatus.CREATED),
-            _make_story("s-in-progress", StoryStatus.IN_PROGRESS),
+            _make_story("s-in-progress-planless", StoryStatus.IN_PROGRESS),
+            _make_story("s-in-progress-planned", StoryStatus.IN_PROGRESS),
             _make_story("s-pr-review", StoryStatus.PR_REVIEW),
             _make_story("s-deploying", StoryStatus.DEPLOYING),
             _make_story("s-testing", StoryStatus.TESTING),
@@ -554,26 +605,62 @@ class TestScaffoldFailureBlastRadius:
             _make_story("s-archived", StoryStatus.ARCHIVED),
             _make_story("s-created-2", StoryStatus.CREATED),
         ]
-        scaffold_result = ScaffoldResult(success=False, error="copier crashed")
+        tasks = {"s-in-progress-planned": [_make_task("t-1", "s-in-progress-planned")]}
+        mock_api.get_tasks_by_story.side_effect = lambda story_id: tasks.get(story_id, [])
 
-        with (
-            patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
-            patch("src.consumer.run_scaffold", return_value=scaffold_result),
-            patch("src.consumer.get_settings") as mock_settings,
-            patch.dict(os.environ, _GITHUB_ENV, clear=False),
-            capture_logs() as logs,
-        ):
-            mock_settings.return_value = MagicMock()
-            result = await process_scaffold_job(valid_job_data, mock_redis)
+        result, logs = await _run_failed_scaffold(
+            valid_job_data, mock_redis, mock_api, mock_github, "copier crashed"
+        )
 
         assert result["status"] == "failed"
-        failed_ids = [call.args[0] for call in mock_api.fail_story.await_args_list]
-        assert failed_ids == ["s-created", "s-created-2"]
+        failed = {call.args[0]: call.args[1] for call in mock_api.fail_story.await_args_list}
+        assert list(failed) == ["s-created", "s-in-progress-planless", "s-created-2"]
+        for failure in failed.values():
+            assert failure.code is StoryFailureCode.SCAFFOLD_FAILED
+            assert failure.source == "scaffolder"
+            assert failure.detail == "copier crashed"
 
         summary = next(e for e in logs if e["event"] == "scaffold_stories_failed_summary")
-        assert summary["failed_count"] == 2
+        assert summary["failed_count"] == 3
         assert summary["skipped_count"] == 8
+
+    @pytest.mark.asyncio
+    async def test_the_incident_story_taken_by_the_architect_is_failed_with_the_cause(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """story-3990e41c: in_progress, no tasks, scaffold failed on clone — it must not hide."""
+        mock_api.get_stories_by_project.return_value = [
+            _make_story("story-3990e41c", StoryStatus.IN_PROGRESS)
+        ]
+        mock_api.get_tasks_by_story.return_value = []
+        error = (
+            "Git init/fetch failed: remote: Repository not found.\n"
+            "fatal: repository 'https://x-access-token:ghs_secretvalue1234567890@github.com/o/p/' "
+            "not found"
+        )
+
+        await _run_failed_scaffold(valid_job_data, mock_redis, mock_api, mock_github, error)
+
+        (call,) = mock_api.fail_story.await_args_list
+        story_id, failure = call.args
+        assert story_id == "story-3990e41c"
+        assert "Repository not found" in failure.detail
+        assert "ghs_secretvalue" not in failure.detail
+
+    @pytest.mark.asyncio
+    async def test_a_reopened_story_with_only_old_cycle_tasks_counts_as_planless(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        mock_api.get_stories_by_project.return_value = [
+            _make_story("s-reopened", StoryStatus.IN_PROGRESS, reopened_at="2026-03-18T00:00:00Z")
+        ]
+        mock_api.get_tasks_by_story.return_value = [
+            _make_task("t-old", "s-reopened", created_at="2026-03-17T00:05:00Z", status="done")
+        ]
+
+        await _run_failed_scaffold(valid_job_data, mock_redis, mock_api, mock_github, "boom")
+
+        assert [c.args[0] for c in mock_api.fail_story.await_args_list] == ["s-reopened"]
 
     @pytest.mark.asyncio
     async def test_successful_scaffold_fails_no_story(
@@ -585,7 +672,7 @@ class TestScaffoldFailureBlastRadius:
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
             patch(
                 "src.consumer.run_scaffold",
                 return_value=ScaffoldResult(success=True, tree=".\n-- src"),
@@ -598,3 +685,178 @@ class TestScaffoldFailureBlastRadius:
 
         assert result["status"] == "success"
         mock_api.fail_story.assert_not_called()
+
+
+@pytest.fixture
+def github_lifecycle(mock_github):
+    """A constructed client whose context yields `mock_github`, with one call recorder.
+
+    The recorder orders the context's enter/exit against every GitHub call, so a
+    test can prove each call ran on the entered client while its pool was open.
+    """
+    context = AsyncMock()
+    context.__aenter__.return_value = mock_github
+    context.__aexit__.return_value = False
+    recorder = MagicMock()
+    recorder.attach_mock(context, "context")
+    recorder.attach_mock(mock_github, "github")
+    return context, recorder
+
+
+def _assert_one_operation_scope(client_cls, recorder, exc_type=None) -> list[str]:
+    """One client per operation, entered once, exited once, with every call inside."""
+    client_cls.assert_called_once_with()
+    # Uses of a call's return value (e.g. truth-testing a repository) are not GitHub calls.
+    names = [c[0] for c in recorder.mock_calls if "()" not in c[0]]
+    assert names[0] == "context.__aenter__"
+    assert names[-1] == "context.__aexit__"
+    assert names.count("context.__aenter__") == 1
+    assert names.count("context.__aexit__") == 1
+    exit_args = recorder.mock_calls[-1].args
+    assert (exit_args[0] if exit_args else None) is exc_type
+    github_calls = names[1:-1]
+    assert all(name.startswith("github.") for name in github_calls)
+    return [name.removeprefix("github.") for name in github_calls]
+
+
+class TestGitHubClientLifecycle:
+    """Each admitted scaffold operation owns exactly one GitHub HTTP pool."""
+
+    @pytest.mark.asyncio
+    async def test_full_mode_uses_one_entered_client_through_late_read_back(
+        self, valid_job_data, mock_redis, mock_api, github_lifecycle
+    ):
+        context, recorder = github_lifecycle
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=context) as client_cls,
+            patch(
+                "src.consumer.run_scaffold",
+                return_value=ScaffoldResult(success=True, tree=".\n-- src"),
+            ),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(
+                os.environ,
+                {
+                    **_GITHUB_ENV,
+                    "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+                    "REGISTRY_USER": "admin",
+                    "REGISTRY_PASSWORD": "secret",
+                },
+            ),
+        ):
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result == {"status": "success"}
+        assert _assert_one_operation_scope(client_cls, recorder) == [
+            "get_org_token",
+            "create_repo",
+            "get_org_token",
+            "set_repository_secrets",
+            "update_branch_protection",
+            "enable_repo_auto_merge",
+            "get_repo",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ensure_mode_uses_one_entered_client(
+        self, valid_job_data, mock_redis, mock_api, github_lifecycle
+    ):
+        context, recorder = github_lifecycle
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=context) as client_cls,
+            patch(
+                "src.consumer.run_ensure_workspace",
+                return_value=ScaffoldResult(success=True, tree=".\n-- src"),
+            ),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job({**valid_job_data, "mode": "ensure"}, mock_redis)
+
+        assert result == {"status": "success"}
+        assert _assert_one_operation_scope(client_cls, recorder) == ["get_org_token", "get_repo"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["full", "ensure"])
+    async def test_handled_failure_exits_the_context(
+        self, valid_job_data, mock_redis, mock_api, github_lifecycle, mode
+    ):
+        context, recorder = github_lifecycle
+        failure = ScaffoldResult(success=False, error="copier crashed")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=context) as client_cls,
+            patch("src.consumer.run_scaffold", return_value=failure),
+            patch("src.consumer.run_ensure_workspace", return_value=failure),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job({**valid_job_data, "mode": mode}, mock_redis)
+
+        assert result == {"status": "failed", "error": "copier crashed"}
+        _assert_one_operation_scope(client_cls, recorder)
+        mock_redis.redis.zrem.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mid_scaffold_github_error_still_exits_the_context(
+        self, valid_job_data, mock_redis, mock_api, mock_github, github_lifecycle
+    ):
+        context, recorder = github_lifecycle
+        request = httpx.Request("POST", "https://api.github.com/orgs/org/repos")
+        mock_github.create_repo.side_effect = httpx.HTTPStatusError(
+            "server error", request=request, response=httpx.Response(502, request=request)
+        )
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=context) as client_cls,
+            patch("src.consumer.run_scaffold") as run_scaffold,
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "failed"
+        run_scaffold.assert_not_called()
+        assert _assert_one_operation_scope(client_cls, recorder, httpx.HTTPStatusError) == [
+            "get_org_token",
+            "create_repo",
+        ]
+        mock_redis.redis.zrem.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_mid_scaffold_exits_the_context(
+        self, valid_job_data, mock_redis, mock_api, github_lifecycle
+    ):
+        context, recorder = github_lifecycle
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=context) as client_cls,
+            patch("src.consumer.run_scaffold", side_effect=asyncio.CancelledError),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(
+                os.environ,
+                {
+                    **_GITHUB_ENV,
+                    "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+                    "REGISTRY_USER": "admin",
+                    "REGISTRY_PASSWORD": "secret",
+                },
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert _assert_one_operation_scope(client_cls, recorder, asyncio.CancelledError) == [
+            "get_org_token",
+            "create_repo",
+            "get_org_token",
+            "set_repository_secrets",
+        ]
+        mock_redis.redis.zrem.assert_awaited_once()

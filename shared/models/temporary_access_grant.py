@@ -31,16 +31,10 @@ class TemporaryAccessGrant(Base):
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.id"), index=True)
 
-    # These legacy columns remain only so terminal slot history is readable.
-    # New records never populate them; a row without a target cannot be hydrated
-    # as a current capability record.
-    legacy_env_key: Mapped[str | None] = mapped_column("env_key", String(255), nullable=True)
-    legacy_subject: Mapped[str | None] = mapped_column("subject", String(255), nullable=True)
-
     channel: Mapped[str | None] = mapped_column(String(50), nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    target_application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    target_base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    target_application_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
 
     # Immutable deployed source identity, used to reject a newer target on retry.
     head_sha: Mapped[str] = mapped_column(String(64))

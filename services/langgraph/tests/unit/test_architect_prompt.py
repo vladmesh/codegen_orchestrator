@@ -62,12 +62,12 @@ class TestUsageExampleDirectives:
             "(requirement expense-text)"
         ) in SYSTEM_PROMPT
 
-    def test_an_upload_example_is_checked_through_its_observable_or_marked(self):
+    def test_an_upload_example_is_sent_by_qa_or_checked_through_its_observable_or_marked(self):
         prompt = self._prompt()
         assert "is never silently dropped" in prompt
+        assert 'Where "What QA Can Check" names that sending, the criterion states it' in prompt
         assert "check it through its observable after the fact" in prompt
-        assert "`not QA-verifiable: needs a photo upload`" in prompt
-        assert "Never write the upload itself as a step." in prompt
+        assert "`not QA-verifiable: needs <what QA cannot do>`" in prompt
 
     def test_a_requirement_with_an_undefined_input_is_returned_not_narrowed(self):
         prompt = self._prompt()
@@ -181,23 +181,29 @@ class TestCriteriaUseOnlyTheQAVocabulary:
 
     def test_the_architect_prompt_names_every_qa_capable_action(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
-        assert "a read-only HTTP GET of a route" in prompt
-        assert "a Telegram text message sent to the bot, and the bot's reply" in prompt
-        assert "a press of an inline button" in prompt
-        assert "a declared `FIRE JOB <name> ... THEN <observable>`" in prompt
+        assert "- HTTP: a read-only HTTP GET of a route on the deployed URL" in prompt
+        assert "- Telegram: a text message or command sent to the bot as the QA user" in prompt
+        assert "- Telegram: a press of an inline button the bot showed" in prompt
+        assert "- Telegram: a location sent to the bot as the QA user" in prompt
+        assert "- Telegram: a photo, file or other media sent to the bot as the QA user" in prompt
+        assert "- Scheduled job: a declared `FIRE JOB <name> ... THEN <observable>`" in prompt
 
-    def test_the_architect_prompt_verifies_a_write_or_upload_through_its_observable(self):
+    def test_the_architect_prompt_verifies_what_qa_never_does_through_its_observable(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
-        assert "never uploads a photo, file or other media" in prompt
+        assert "- an HTTP POST, PUT, PATCH or DELETE to the product's API — platform policy" in (
+            prompt
+        )
         assert "verified through its observable after the fact" in prompt
-        assert "never as a POST or an upload step" in prompt
+        assert "and never as that step" in prompt
+        assert "never uploads" not in prompt
 
     def test_the_brief_guidance_carries_the_same_rule(self):
         guidance = self._brief_guidance()
-        assert "a read-only HTTP GET" in guidance
-        assert "a Telegram text message and its reply" in guidance
-        assert "an inline button press" in guidance
-        assert "never as a POST or an upload step" in guidance
+        assert "a read-only HTTP GET of a route on the deployed URL" in guidance
+        assert "a text message or command sent to the bot as the QA user" in guidance
+        assert "a photo, file or other media sent to the bot as the QA user" in guidance
+        assert "QA never performs an HTTP POST, PUT, PATCH or DELETE" in guidance
+        assert "stated by its observable after the fact (a GET or a bot reply)" in guidance
 
 
 class TestScheduledBehaviourDirectives:
@@ -225,11 +231,25 @@ class TestScheduledBehaviourDirectives:
         assert "durable output" in lower
         assert "dispatch_status" in SYSTEM_PROMPT
 
-    def test_prefers_the_existing_worker_and_makes_a_new_provider_fully_deployable(self):
-        assert "notifications_worker" in SYSTEM_PROMPT
-        assert "Dockerfile" in SYSTEM_PROMPT
-        assert "env.contract.yaml" in SYSTEM_PROMPT
-        assert "CI build/push matrix" in SYSTEM_PROMPT
+    def test_production_schedule_needs_an_in_process_timer_calling_the_declared_job(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "notifications_worker" not in SYSTEM_PROMPT
+        assert "production fires no product job on a clock" in prompt
+        assert "in-process timer in the backend or bot" in prompt
+        assert "calls the declared job" in prompt
+        assert "`fire job` remains the qa verification form" in prompt
+
+    def test_unsupported_requirement_is_returned_before_cutting_tasks(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "returned_reason" in prompt
+        assert "capability id, manifest version and workaround" in prompt
+        assert "no task" in prompt
+
+    def test_scheduling_and_capability_blocks_stay_bounded(self):
+        scheduled = SYSTEM_PROMPT.split("## Scheduled Behaviours\n", 1)[1].split("\n## ", 1)[0]
+        capability = SYSTEM_PROMPT.split("## Capability Shape\n", 1)[1].split("\n## ", 1)[0]
+        assert len(scheduled) < 4500
+        assert len(capability) < 6500
 
     def test_teaches_the_criterion_form_qa_fires_from(self):
         assert '- FIRE JOB <name> WITH {"json": "arguments"} THEN <observable>' in SYSTEM_PROMPT
@@ -340,3 +360,41 @@ class TestDecompositionPhilosophyIsReconciled:
         assert rule in prompt
         tail = prompt[prompt.find(rule) : prompt.find(rule) + 400]
         assert "Naming the capability shape is not over-specification" in tail
+
+
+class TestQAUncheckableRequirementRule:
+    """A must-requirement QA cannot check is rewritten or returned while it is planned."""
+
+    def test_the_prefix_is_the_one_fixed_form_of_the_reason(self):
+        from shared.contracts.dto.product_brief import NOT_AUTOMATICALLY_VERIFIABLE_PREFIX
+
+        assert NOT_AUTOMATICALLY_VERIFIABLE_PREFIX == "not automatically verifiable:"
+
+    def test_the_rule_is_rendered_inside_what_qa_can_check(self):
+        from src.prompts.qa_capabilities import render_architect_capabilities
+
+        section = " ".join(render_architect_capabilities().split())
+        rule = section[section.index("**A must-requirement QA cannot check") :]
+
+        assert rule == (
+            "**A must-requirement QA cannot check is rewritten or returned at planning "
+            "time.** When the only usage example of a must-requirement — or every one of "
+            "them — needs an action this list does not name, or one QA never performs, a "
+            "criterion written as that step is never checked. Two outcomes, in this order: "
+            "- **Rewrite the check into an observable QA can check**: the example's effect, "
+            "read afterwards through one of the actions above, in the example's words. "
+            "- **Return the requirement** when no such observable exists, with "
+            "`record_requirement_coverage(requirement_id=..., returned_reason=...)`, and "
+            "start the reason with `not automatically verifiable:` followed by what QA "
+            'would need, e.g. "not automatically verifiable: QA would need to read the '
+            'email the product sends to the user". The user is told and decides; its '
+            "examples get no criterion."
+        )
+        assert " ".join(SYSTEM_PROMPT.split()).count(rule) == 1
+
+    def test_the_usage_examples_marker_defers_to_the_rule(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert (
+            "A requirement none of whose examples QA can check is rewritten or returned "
+            'as "What QA Can Check" says, never only marked.'
+        ) in prompt

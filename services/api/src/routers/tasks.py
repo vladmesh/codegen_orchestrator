@@ -24,6 +24,7 @@ from ._product_brief_helpers import (
     plan_admission_for_new_task,
     take_task_for_plan_fenced_update,
 )
+from ._resource_wait_actions import resource_wait_router
 from ._task_actions import action_router
 from ._task_helpers import (
     apply_cancellation,
@@ -41,6 +42,8 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 # Include action endpoints (start, complete, fail, reopen, resume, transition)
 router.include_router(action_router)
+# The resource wait's composite moves, each with the owner notice it owes.
+router.include_router(resource_wait_router)
 
 
 class _TaskFilters:
