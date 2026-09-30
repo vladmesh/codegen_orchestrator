@@ -869,21 +869,6 @@ class ActionsMixin:
                 run = resp.json()
                 last_status = run["status"]
 
-                if cancel_check:
-                    try:
-                        cancel_requested = await cancel_check()
-                    except Exception as exc:
-                        # A failed check cannot tell teardown from a healthy run, so
-                        # the run stays live and unproven. Fail closed.
-                        raise WorkflowCancellationUnprovenError(
-                            f"Workflow run {run_id} cancellation check could not be evaluated"
-                        ) from exc
-                    if cancel_requested and last_status != "completed":
-                        # Never returns normally.
-                        await self._cancel_and_confirm_workflow_run(
-                            owner, repo, run_id, workflow_label, timeout_seconds, poll_interval
-                        )
-
                 if run["status"] == "completed":
                     result = {
                         "id": run["id"],
@@ -914,6 +899,21 @@ class ActionsMixin:
                         f"Workflow run {run_id} failed: {run.get('conclusion')}. "
                         f"See: {run['html_url']}\n{failure_logs}"
                     )
+
+                if cancel_check:
+                    try:
+                        cancel_requested = await cancel_check()
+                    except Exception as exc:
+                        # A failed check cannot tell teardown from a healthy run, so
+                        # the run stays live and unproven. Fail closed.
+                        raise WorkflowCancellationUnprovenError(
+                            f"Workflow run {run_id} cancellation check could not be evaluated"
+                        ) from exc
+                    if cancel_requested:
+                        # Never returns normally.
+                        await self._cancel_and_confirm_workflow_run(
+                            owner, repo, run_id, workflow_label, timeout_seconds, poll_interval
+                        )
 
                 logger.info(
                     "workflow_run_in_progress",
