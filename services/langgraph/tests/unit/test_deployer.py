@@ -110,6 +110,7 @@ def _dotenv(repository_secrets: dict[str, str]) -> dict[str, str]:
 def _setup_happy_mocks(mock_api, mock_gh_cls):
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
+    gh.set_repository_secrets.return_value = 9
     gh.wait_for_workflow_completion.return_value = _SUCCESS_RUN
     gh.get_file_contents.return_value = (
         TEMPLATE_PIN.fixture_path() / ".github/workflows/deploy.yml"
