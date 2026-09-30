@@ -44,6 +44,14 @@ async def _scan_keys(redis, pattern: str) -> list[str]:
     return keys
 
 
+def _worker_id_from_stream(key: str) -> str | None:
+    """Return the worker id for a worker input/output stream."""
+    parts = key.split(":")
+    if len(parts) == 3 and parts[0] == "worker" and parts[2] in {"input", "output"}:
+        return parts[1]
+    return None
+
+
 async def _clean_orphan_streams(
     client: RedisStreamClient,
     idle_threshold_s: int = DEFAULT_IDLE_THRESHOLD_S,
@@ -59,6 +67,12 @@ async def _clean_orphan_streams(
         keys = await _scan_keys(redis, pattern)
         for key in keys:
             try:
+                worker_id = _worker_id_from_stream(key)
+                if worker_id and await redis.exists(f"worker:meta:{worker_id}"):
+                    # A turn may legitimately be quiet for much longer than the cleanup
+                    # threshold. Worker ownership, not stream IDLETIME, decides whether
+                    # worker channels are orphaned.
+                    continue
                 idle_s = await redis.object("idletime", key)
                 if idle_s >= idle_threshold_s:
                     await redis.delete(key)
