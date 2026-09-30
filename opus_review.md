@@ -10,7 +10,7 @@
 | Репозиторий | `vladmesh/codegen_orchestrator` |
 | Проверенный коммит | `3cb6dceafcd302439ebbe5b392194bf7d0b324be` (`main`, merge PR #674, 2026-09-30 14:09 +0200) |
 | Дата аудита | 2026-09-30 |
-| Актуализировано по `main` | `dd0fc410a9e934dd0bcd8b077319c5e4a2fc2534` (merge PR #680, 2026-09-30) |
+| Актуализировано по `main` | `d0eb1c8bd81b58257700586674ec8a47aa004386` (merge PR #681, 2026-09-30) |
 | Метод | 10 параллельных read-only субагентов с явными границами (api; langgraph consumers/clients; langgraph agents/nodes/subgraphs/llm/prompts; scheduler; worker-manager + worker-broker + worker-wrapper; infra-service + scaffolder + telegram_bot + фронтенды; shared; scripts/infra/CI/compose/tests; межсервисные контракты; документация). Итоговая сверка и выборочная ручная перепроверка — автором отчёта. |
 | Инструменты | чтение кода, `git grep`, AST-анализ Python 3.13 (длины функций, импорт-граф, карта роутов), `alembic upgrade head` + `compare_metadata` на временном Postgres (вне репозитория), скрипты в scratch-каталоге вне репозитория |
 
@@ -37,11 +37,11 @@
 4. **Мёртвый код** подтверждён в каждом сервисе: ~15 методов API-клиента langgraph, 7 — scheduler, пересылка `worker:events:all → orchestrator:events` без отправителя и читателя, пустой `scripts/agent_configs.yaml` с сидером в 4 местах, ≈10 мёртвых контрактных символов в `shared`, пакет `worker-manager/src/agents/` (§6.6).
 5. **Контракты.** Пути HTTP согласованы (все 227 статически разрешимых вызовов клиентов попадают в существующие маршруты). Основной дефект — **нетипизированный вход рабочего потока `worker:{id}:input`**: CONTRACTS.md ссылается на `DeveloperWorkerInput`, который никто не использует; реальная полезная нагрузка — три ad-hoc словаря (§7). Второй — **пять разных стратегий обработки «ядовитых» сообщений** вместо обещанной `{stream}:dlq` (§7).
 6. **Схема БД расходится с моделями** (5 «лишних» колонок в `temporary_access_grants`, 2 частичных уникальных индекса отсутствуют в моделях): `make makemigrations` (autogenerate) предложит удалить защитные индексы (§7.4).
-7. **Инцидентные дефекты** (раздел 9): PR #680 закрыл выпуск deploy при неполной записи secrets и снятие чужой deploy-блокировки; PR #679 закрыл deploy-handoff ordering. Открыты, среди прочего: удаление входного потока воркера во время длинного хода; GC рабочих пространств repo_id vs project_id; бесконечный повтор некорректного provisioning-сообщения; неработающая очистка очередей проекта; доступ LK-токена к внутренним маршрутам API.
+7. **Инцидентные дефекты** (раздел 9): PR #680 закрыл выпуск deploy при неполной записи secrets и снятие чужой deploy-блокировки; PR #679 закрыл deploy-handoff ordering; PR #681 закрыл удаление каналов живого воркера, project_id/repo_id workspace GC, падение Docker-events listener и несогласованный compose timeout chain. Открыты, среди прочего: бесконечный повтор некорректного provisioning-сообщения; неработающая очистка очередей проекта; доступ LK-токена к внутренним маршрутам API.
 
-### 1.2.1 Актуализация после двух итераций (2026-09-30)
+### 1.2.1 Актуализация после трёх итераций (2026-09-30)
 
-После исходного аудита в `main` смёржены две итерации:
+После исходного аудита в `main` смёржены три итерации:
 
 - **PR #679**, squash `0c4cec3561c8c0913d9bda1344702b2d71ba149f` — закрыты **A5** и **§9.11**:
   scheduler использует единый deploy-handoff seam для PR-poller, retry, infrastructure-resume и
@@ -54,9 +54,18 @@
   `WorkflowCancelledError`. PR прошёл полный CI, включая LangGraph service tests и Required CI Gate.
   **§9.16ab** перепроверен и закрыт как не-баг: `deploy.max_deploy_retries` задаёт число допустимых
   deploy failures, поэтому текущая граница `attempts >= max` соответствует контракту и не менялась.
+- **PR #681**, squash `d0eb1c8bd81b58257700586674ec8a47aa004386` — закрыты **§9.3**, **§9.5**,
+  **§9.16b**, **§9.16c**, worker-manager часть **§9.16d** и **§9.16s**: cleanup worker-streams теперь
+  проверяет durable worker ownership вместо одного IDLETIME; workspace GC разделяет project_id/repo_id
+  и сканирует worker metadata один раз; Docker event stream переподключается после error/EOF; compose
+  timeout chain ограничен единым outer budget; тяжёлые chown/transcript операции вынесены из event loop;
+  wrapper переживает git-pull timeout/невалидный UTF-8 и публикует без product hooks. Полный PR CI,
+  включая worker-manager/scheduler/langgraph/API service tests и Required CI Gate, прошёл зелёным.
+  Механическая декомпозиция `manager.py`/`wrapper.py` намеренно не смешивалась с correctness и
+  перенесена в worker-кластер PR 10; Ansible часть §9.16d остаётся в infra/residual PR 12.
 
 Остальные находки ниже считаются открытыми, если явно не помечены **DONE/CLOSED**. Полный повторный
-аудит всего дерева после #680 не выполнялся; актуализация здесь — дельта по двум смёрженным
+аудит всего дерева после #681 не выполнялся; актуализация здесь — дельта по трём смёрженным
 итерациям и обновлённая укрупнённая нарезка оставшейся работы.
 
 ### 1.3 Топ приоритетных находок
@@ -65,9 +74,9 @@
 |---|---|---|---|---|
 | T1 | **DONE #680** — deploy fail-closed при неполной записи GitHub-секретов | баг | P0 | 9.1 |
 | T2 | **DONE #680** — deploy-lock освобождается только владельцем lease-token | баг | P0 | 9.2 |
-| T3 | `queue_cleanup` удаляет `worker:*:input` при idle ≥ 600 с, ход агента до 3600 с | баг (ГИПОТЕЗА, сильная) | P0 | 9.3 |
+| T3 | **DONE #681** — cleanup каналов живого воркера fenced по `worker:meta`, а не только IDLETIME | баг | P0 | 9.3 |
 | T4 | ~100 маршрутов API не имеют авторизации сверх глобального гейта, который пропускает любой LK-bearer | безопасность | P0 | 9.4 |
-| T5 | Workspace GC: защита активных пространств никогда не срабатывает (project_id vs repo_id) | баг | P1 | 9.5 |
+| T5 | **DONE #681** — workspace GC разделяет project_id/repo_id и защищает repo активного воркера | баг | P1 | 9.5 |
 | T6 | Разделить `docs/CONTRACTS.md`, вывести CHANGELOG из «обязательного чтения» | контекст | P1 | 5.9, 8 |
 | T7 | Типизированный `WorkerTurnInput`, удалить мёртвый `developer_worker.py` | контракт | P1 | 7.1 |
 | T8 | Единый путь reject→DLQ + лимит доставок для всех потребителей | контракт | P1 | 7.2 |
@@ -565,14 +574,20 @@ finally:
 Закрыто PR #680: lock хранит уникальный lease-token и освобождается atomic compare-and-delete только текущим владельцем.
 `consumers/deploy.py:437` `SET NX` → при неудаче `_claim_deploy_job` возвращает `DeployTerminal` (458-460), `process_deploy_job` выходит изнутри `try` (983-985), а `finally` (1032-1033) безусловно делает `DEL lock_key` — удаляется чужая блокировка; при успехе удаление тоже без проверки владельца (после истечения TTL удалит блокировку нового владельца). QA делает правильно — ранний выход до `try` (`qa.py:680-685`). Сейчас deploy-worker — 1 слот/1 реплика, пересечение возможно при рестарте/PEL-replay; повтор собственного `task_id` при этом отменит собственный run (445-457, ГИПОТЕЗА о реакции супервизора). Противоречит `docs/PIPELINE_V2.md:510`.
 
-### 9.3 Удаление входного потока воркера во время длинного хода — ВЫСОКАЯ (ГИПОТЕЗА, сильные статические доказательства)
-`services/scheduler/src/tasks/queue_cleanup.py:21-28, 55-66` удаляет любой `worker:*:input` с `OBJECT IDLETIME ≥ 600` с. Wrapper обращается к входному потоку только в `lease_input` между ходами (`wrapper.py:280-289`); ход может длиться до `AGENT_TURN = 3600` с (`shared/constants.py:39`). Удаление ключа удаляет и группу потребителей, созданную при регистрации (`worker-broker/src/main.py:156-161`); далее `xreadgroup` → NOGROUP, не обрабатывается в `lease_input` (`:183`) → 500 → `raise_for_status` роняет wrapper (`wrapper.py:292-294`). Требует рантайм-подтверждения (затрагивает ли что-либо ключ во время хода).
+### 9.3 **DONE #681** — удаление входного потока воркера во время длинного хода
+PR #681 закрыл гипотезу как реальный unsafe cleanup path: для `worker:*:input/output` idle threshold
+больше не является достаточным основанием удаления. Scheduler извлекает worker id и сохраняет канал,
+пока существует `worker:meta:{id}`; orphaned streams по-прежнему удаляются по idle threshold.
+Регрессия покрывает час простоя живого worker-stream без `OBJECT IDLETIME`/DELETE.
 
 ### 9.4 LK-токен допускается к внутренним маршрутам API — СРЕДНЯЯ (ФАКТ по коду; ФАКТ по смягчению)
 `require_authenticated_caller` пропускает любой валидный LK JWT (`services/api/src/dependencies.py:356-360`). AST-скан: ~100 маршрутов без авторизации сверх гейта, например `GET /api/users` (`routers/users.py:204-209` — список всех пользователей), `POST /api/applications/{id}/stop|undeploy|redeploy`, `/from-repo` (`applications.py:456,503,536,718`), переходы story (`stories.py:784-1183`), CRUD задач, `POST /api/runs`. Смягчение: публичный nginx user-dashboard проксирует только `/api/lk/` (`services/user-dashboard/nginx.conf:19-31`), т.е. нужна сетевая доступность порта API. ARCHITECTURE.md:101 («authentication, not authorization») не упоминает эту поверхность.
 
-### 9.5 Workspace GC: защита активных пространств не срабатывает — СРЕДНЕ-ВЫСОКАЯ (ФАКТ несоответствие; ГИПОТЕЗА влияние)
-`worker-manager/src/garbage_collector.py:336` пропускает записи из `workspace:active_projects` — это **project_id** (`manager.py:301`); каталоги в `SCAFFOLDED_WORKSPACE_PATH` именуются **repo_id** (`workspace.py:25-35`). Остаётся только порог mtime 35 ч; mtime каталога верхнего уровня меняется лишь при добавлении/удалении записей → пространство, переиспользуемое несколько дней, может быть удалено под смонтированным воркером. Также GC обходит `.compose-plans` и `qa-*` и шлёт `notify-workspace-deleted` с фиктивными id (`garbage_collector.py:328`). Дополнительно: O(projects × workers) `scan_iter("worker:meta:*")` (311-317).
+### 9.5 **DONE #681** — Workspace GC project_id/repo_id
+PR #681 разделил две области идентификаторов: `workspace:active_projects` остаётся project_id fence,
+а каталоги scaffolded workspace защищаются по `repo_id` из live `worker:meta:*`. Metadata теперь
+сканируется один раз за sweep вместо O(projects × workers); `.compose-plans` и `qa-*` исключены из
+repository GC. Старые repo directories удаляются только при отсутствии live worker ownership.
 
 ### 9.6 infra-service бесконечно повторяет некорректное сообщение — СРЕДНЯЯ (ФАКТ)
 `services/infra-service/src/main.py:392` валидирует `ProvisionerMessage` внутри `try`, чей `except Exception` (427-432) только логирует; ACK нет, потребитель с `claim_pending=True` (455-456) — повтор каждые 60 с навсегда. Дополнительно: мёртвая проверка `job_data.get("job_id")` (`main.py:204`) — такого поля нет.
@@ -609,9 +624,9 @@ finally:
 | # | Находка | Доказательство | Уверенность |
 |---|---|---|---|
 | a | Сбой одного элемента блокирует всё подметание каждый тик (нет поэлементной границы ошибок) | `supervise_deploying_stories` (`deploy.py:250-253`), `supervise_stuck_stories` (`liveness.py:127`), `supervise_waiting_resource_tasks` (:748), `poll_merged_prs` (`pr_poller.py:884`), `trigger_scaffolds` (`scaffold_trigger.py:76`), `complete_stories` | ФАКТ структура |
-| b | Цепочка таймаутов compose несогласована: shim 1800 с, wrapper→broker 180 с, broker→manager 180 с, manager — 2 фазы по неограниченному, заданному воркером таймауту; `httpx.ReadTimeout` → 500 при продолжающемся compose | `compose_proxy.py:42`, `broker.py:22`, broker `main.py:294`, `routers/compose.py:26`, `compose_runner.py:438,520` | ФАКТ |
-| c | Docker events listener умирает навсегда при первой ошибке потока | `worker-manager/src/events.py:73-75`, `main.py:67-68` | ФАКТ |
-| d | Блокирующие операции в event loop: `chown -R` по переиспользуемому пространству, `rglob` транскриптов; `subprocess.run` Ansible в корутинах | `workspace.py:74-80` из `manager.py:934`; `manager.py:1388-1398`; `infra-service/.../ansible_runner.py:200-206` | ФАКТ |
+| b | **DONE #681** — compose timeout chain: manager phase ≤840 с, wrapper/broker hops 1740 с, shim остаётся outer deadline 1800 с | `routers/compose.py`, worker-broker `main.py`, wrapper `broker.py`, `compose_proxy.py` | ФАКТ |
+| c | **DONE #681** — Docker events listener переподключается после stream error и clean EOF с bounded backoff | `worker-manager/src/events.py` | ФАКТ |
+| d | **PARTIAL #681** — worker-manager `chown -R` и transcript `rglob` вынесены через `asyncio.to_thread`; `subprocess.run` Ansible в coroutine infra-service остаётся | `worker-manager/src/manager.py`; `infra-service/.../ansible_runner.py:200-206` | ФАКТ |
 | e | Scaffolder: таймаут не убивает дочерний процесс; потеря lease отменяет главный цикл; inflight-маркер снимается без ACK → дубль сообщения; ошибки full-режима не записывают `scaffold_error` → повтор каждые 30 с | `scaffold.py:51`; `consumer.py:132-138, 158-165, 458-464` | ФАКТ / ГИПОТЕЗА (намерение) |
 | f | Read-modify-write всего `project.config` (PO, scaffolder) при PATCH, заменяющем `config` целиком → потеря ключей при конкуренции; аналогично labels серверов | `routers/projects/lifecycle.py:295-296`; `tools_stories.py:216,250-258`; `tools_briefs.py:177-191`; scaffolder `consumer.py:252-255,318-327,391-416`; `infra-service/provisioner/api_client.py:46-57` | ГИПОТЕЗА |
 | g | GitHub-клиент: `get_installation_id` не кэшируется (2+ вызова на опрос); постоянный 403 повторяется 3 раза; «Unreachable» достижим после 3 rate-limit ответов | `shared/clients/github/_base.py:86-131, 159-182, 275-291` | ФАКТ |
@@ -626,7 +641,7 @@ finally:
 | p | Гонка порта в `from-repo` → необработанный `IntegrityError` (servers-версия повторяет) | `applications.py:776-800` vs `servers.py:445-448` | ФАКТ |
 | q | Редеплой-runs невидимы в `/applications/{id}/runs` (нет `run_metadata.application_id`) | `applications.py:559, 706, 797` | ФАКТ |
 | r | Уведомления о провижининге уходят админам дважды (infra-service + бот) | `infra-service/.../handlers.py:282-287`; `telegram_bot/src/notifications.py:84-96` | ФАКТ |
-| s | Wrapper: `_git_pull` без обработки `TimeoutExpired`; `decode()` без `errors=`; публикующий `git push` без `core.hooksPath=/dev/null` (хуки продукта могут превысить 60 с) | `wrapper.py:1007-1013, 1438-1439, 609-615` | ГИПОТЕЗА |
+| s | **DONE #681** — wrapper ловит git-pull timeout, декодирует output с replacement и публикует через `-c core.hooksPath=/dev/null` | `worker-wrapper/src/worker_wrapper/wrapper.py` | ФАКТ |
 | t | CI: offline `tests/live` запускается дважды (`make test-unit` и `make test-live`); контракт гейта это требует | `ci.yml:225,233`; `test-unit-local.sh:151`; `check-ci-gate.py:664-667,712-731` | ФАКТ |
 | u | `make test-clean` не чистит стеки `test-service` (разные имена проектов) | `Makefile:470` vs `:307` | ФАКТ |
 | v | `clean_live_tests.py` игнорирует сбои удаления GitHub-репозиториев и не учитывает их в итоговой проверке остатков → «fully complete» при остатках | `clean_live_tests.py:523-578, 127-189` | ФАКТ |
@@ -654,16 +669,16 @@ finally:
 |---|---|---|---|---|
 | 1 | **DONE — #679** | **Deploy handoff correctness** | A5 + §9.11: единый scheduler deploy handoff; стабильные logical-attempt Run id; exact message в Run; create Run до Story transition; queued-handoff recovery | PR CI green; post-merge CI green; 0 random scheduler deploy ids на этих путях |
 | 2 | **DONE — #680** | **Deploy execution safety** | §9.1 fail-closed при записи GitHub secrets; §9.2 owner-fenced atomic release deploy lock; §9.16h cancellation/wait terminal guards; §9.16ab перепроверен и закрыт как не-баг | полный PR CI green; LangGraph service tests green; Required CI Gate green |
-| 3 | OPEN | **Worker lifecycle & workspace safety** | §9.3 input-stream cleanup vs long turn; §9.5 project_id/repo_id workspace GC; §9.16b/c/d/s; связанный разрез worker-manager/manager.py и worker-wrapper/wrapper.py | runtime/lease semantics сначала characterization; wrapper patch-target codemod в том же PR |
+| 3 | **DONE — #681** | **Worker lifecycle & workspace safety** | §9.3 live worker-stream cleanup fence; §9.5 project_id/repo_id workspace GC; §9.16b/c; worker-manager часть §9.16d; §9.16s wrapper robustness | полный PR CI + Required CI Gate green; correctness отделён от механической декомпозиции |
 | 4 | OPEN | **Queue delivery semantics** | A8; §9.6 invalid provisioner poison; §9.10 transient API ACK; §9.16i CancelledError; единый reject→DLQ/delivery ceiling; затем StreamCodec seam из старого шага 14 | меняет poison-message behavior → контрактные тесты каждого consumer; валидные сообщения без изменения |
 | 5 | OPEN | **API authorization boundary** | §9.4: LK JWT не должен давать доступ к internal/admin surfaces; route inventory + explicit authorization classes/tests | отдельный security PR; публичные /lk/* совместимы; route-gate тест покрывает весь FastAPI registry |
 | 6 | OPEN | **DB + Run contract correctness** | A9 + A10 + §9.9: model/migration drift, partial indexes, alembic check, типизация Run status/type | Review Trigger: schema/shared contracts; compare_metadata == 0; invalid status → 422 |
 | 7 | OPEN | **Documentation/context reduction** | A1+A2, D1–D5, NODES/LOGGING/SECRETS drift; CONTRACTS index + docs/contracts/*; CHANGELOG archive/navigation; runbooks | обязательное чтение ≤15k токенов; doc-link/anchor/tests green |
 | 8 | OPEN | **Scheduler simplification & decomposition** | A3 periodic loop; A11; безопасные scheduler дедупликации; разрез supervisor/deploy.py и pr_poller.py; §9.16a/aa; локальные scheduler N+1 | log event names/state-machine order invariant; full scheduler tests; основные модули ≲600 LOC где разумно |
 | 9 | OPEN | **LangGraph decomposition & dead code** | разрез _qa_runner.py, architect.py, qa.py, deploy.py, worker_spawner.py, deployer.py; A13/A14 где доказанно dead/safe; langgraph часть §6.6; мелкие k/l/m | без compatibility re-export; codemod patch targets; service tests + consumer invariants |
-| 10 | OPEN | **Worker input contract + Redis key vocabulary** | A7 typed WorkerTurnInput; удалить мёртвый developer_worker.py; A12 builders для worker/workspace/po-response keys; worker-related dead DTO/code | Review Trigger для shared/contracts; producer→broker→wrapper serialization test |
+| 10 | OPEN | **Worker contracts + decomposition** | A7 typed WorkerTurnInput; удалить мёртвый developer_worker.py; A12 builders для worker/workspace/po-response keys; worker-related dead DTO/code; перенесённый из PR 3 механический разрез `worker-manager/manager.py` и `worker-wrapper/wrapper.py` по швам §5.6 | Review Trigger для shared/contracts; producer→broker→wrapper serialization; сначала builders/contracts, затем extraction + patch-target codemod без изменения lifecycle semantics |
 | 11 | OPEN | **API domain extraction + large-router cleanup** | A6; вынести helpers из routers/; разрез projects/access.py, stories.py, _story_actions.py, servers.py, runs.py, applications.py; §9.7/9.12 и локальные o/p/q | lock ordering неизменен; 0 функционально-локальных imports routers.* из admission; API service tests green |
-| 12 | OPEN | **CI/infra/shared/residual sweep** | A16–A20, оставшийся §6.6 dead code, compose/Makefile/check-ci-gate/live-harness splits, §9.13–9.16 residual UX/perf/CI findings (n/r/t/u/v/w/x/y/z/ad/ae), shared GitHub _actions.py cleanup и frontend contract drift | при фактическом diff >~1500–2000 LOC этот кластер допускается разделить; make ci-contract, normalized compose config, scripts/frontend tests |
+| 12 | OPEN | **CI/infra/shared/residual sweep** | A16–A20, оставшийся §6.6 dead code, compose/Makefile/check-ci-gate/live-harness splits, оставшаяся infra-service часть §9.16d (Ansible subprocess), §9.13–9.16 residual UX/perf/CI findings (n/r/t/u/v/w/x/y/z/ad/ae), shared GitHub _actions.py cleanup и frontend contract drift | при фактическом diff >~1500–2000 LOC этот кластер допускается разделить; async Ansible boundary characterization; make ci-contract, normalized compose config, scripts/frontend tests |
 
 ### 10.1 Что изменилось относительно исходного плана
 
@@ -671,9 +686,13 @@ finally:
   только giant-file splits там фактически означали много отдельных PR.
 - Новая нарезка считает один failure domain одной итерацией и складывает туда его баги,
   дедупликации и декомпозицию. Поэтому A5 и §9.11 закрылись одним PR #679, а deploy execution
-  safety (§9.1, §9.2, §9.16h) — одним PR #680; §9.16ab после проверки закрыт как не-баг.
+  safety (§9.1, §9.2, §9.16h) — одним PR #680; worker lifecycle correctness (§9.3, §9.5,
+  §9.16b/c, часть d, s) — PR #681; §9.16ab после проверки закрыт как не-баг.
 - P0/P1 correctness и security идут раньше чистого уменьшения LOC/контекста, кроме документации:
   docs вынесены в отдельный ранний PR, потому что они увеличивают стоимость каждой последующей итерации.
+- PR #681 подтвердил полезность отдельного correctness boundary: механический разрез `manager.py`/`wrapper.py`
+  не понадобился для исправлений и перенесён в PR 10 рядом с worker contracts/key vocabulary; оставшийся
+  blocking Ansible относится к infra и перенесён в PR 12.
 - Shared-contract и DB изменения не смешиваются с механическими разрезами: для них остаются Review Trigger
   и отдельные rollback boundaries.
 - Если внутри PR 12 остаток окажется слишком разнородным или >~2k LOC meaningful diff, он единственный
@@ -686,7 +705,7 @@ finally:
 - Только статический анализ; сервисы, Docker, CI, make, Ansible, фронтенд-сборка не запускались (исключение — временный Postgres вне репозитория для сравнения миграций с моделями).
 - Содержимое `tests/live/*` (~48 k строк) детально не ревьюилось — оценены только размер и роль.
 - Оценки токенов — chars/4 без реального токенайзера (±20–25%); оценки LOC — по AST/строкам целевых диапазонов, без фактического выполнения рефакторинга.
-- Баги с пометкой ГИПОТЕЗА (9.3, 9.16e/f/s/z/ac и др.) требуют рантайм-подтверждения; самые важные из них — 9.3 (удаление входного потока воркера) и 9.16f (потеря ключей `config`).
+- Баги с пометкой ГИПОТЕЗА (9.16e/f/z/ac и др.) требуют рантайм-подтверждения; после #681 наиболее важным из них остаётся 9.16f (потеря ключей `config`).
 - Внешние потребители API (кроме фронтендов и сервисов репозитория) не известны — влияет на безопасность удаления `PUT /api/projects/{id}` и типизации `RunUpdate`.
 - Не проверялись: продуктовый шаблон `codegen-product-kit`, содержимое GitHub-секретов/окружений, производственные данные (наличие строк с `run.project_id IS NULL` и т.п.).
 
