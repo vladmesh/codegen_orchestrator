@@ -505,8 +505,8 @@ def _verify_budget_wait_stop(story: Story, task: Task, refusal_event: TaskEvent)
         or notice.terminal_status is not StoryStatus.WAITING_HUMAN_REVIEW
         or notice.task_id != task.id
         or notice.expected_task_statuses != (TaskStatus.WAITING_HUMAN_REVIEW,)
-        or notice.state is not OwnerNotificationState.OWED
-        or notice.admin_state is not OwnerNotificationState.OWED
+        or notice.state is OwnerNotificationState.VOIDED
+        or notice.admin_state in {None, OwnerNotificationState.VOIDED}
     ):
         _repair_conflict("Recorded budget wait has inconsistent stop evidence.")
 
