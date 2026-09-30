@@ -28,7 +28,7 @@ from shared.redis import RedisStreamClient
 from .. import startup
 from ._github_refs import _parse_github_timestamp, _parse_owner_repo
 from ._recipients import resolve_project_recipient
-from .deploy_dispatch import deploy_run_id, dispatch_deploy
+from .deploy_dispatch import DeployHandoff, deploy_run_id, dispatch_deploy
 from .image_publication import (
     DEFAULT_BRANCH,
     IMAGE_PUBLICATION_TIMEOUT_SECONDS,
@@ -1027,19 +1027,21 @@ async def poll_merged_prs(
             await dispatch_deploy(
                 api_client,
                 redis_client,
-                run_id=run_id,
-                project_id=str(project_id),
-                story_id=story_id,
-                recipient=recipient,
-                action=action,
-                head_sha=head_sha,
-                deployed_commit_sha=deployed_commit_sha,
-                run_metadata={
-                    "triggered_by": "pr_poll",
-                    "head_sha": head_sha,
-                    "deployed_commit_sha": deployed_commit_sha,
-                },
-                transition_action="deploy",
+                DeployHandoff(
+                    run_id=run_id,
+                    project_id=str(project_id),
+                    story_id=story_id,
+                    recipient=recipient,
+                    action=action,
+                    head_sha=head_sha,
+                    deployed_commit_sha=deployed_commit_sha,
+                    run_metadata={
+                        "triggered_by": "pr_poll",
+                        "head_sha": head_sha,
+                        "deployed_commit_sha": deployed_commit_sha,
+                    },
+                    transition_action="deploy",
+                ),
             )
 
             log.info("poll_merged_deploy_triggered", run_id=run_id)
