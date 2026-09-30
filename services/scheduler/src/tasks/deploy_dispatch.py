@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 from typing import TYPE_CHECKING, Any
@@ -28,20 +29,26 @@ def deploy_run_id(prefix: str, *identity_parts: str) -> str:
     return f"{prefix}-{digest}"
 
 
+@dataclass(frozen=True)
+class DeployHandoff:
+    """One scheduler-owned deploy attempt at the API-to-Redis handoff."""
+
+    run_id: str
+    project_id: str
+    story_id: str
+    recipient: Recipient
+    action: DeployAction
+    head_sha: str
+    deployed_commit_sha: str
+    run_metadata: dict[str, Any]
+    transition_action: str | None = None
+    triggered_by: DeployTrigger = DeployTrigger.WEBHOOK
+
+
 async def dispatch_deploy(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
-    *,
-    run_id: str,
-    project_id: str,
-    story_id: str,
-    recipient: Recipient,
-    action: DeployAction,
-    head_sha: str,
-    deployed_commit_sha: str,
-    run_metadata: dict[str, Any],
-    transition_action: str | None = None,
-    triggered_by: DeployTrigger = DeployTrigger.WEBHOOK,
+    handoff: DeployHandoff,
 ) -> DeployMessage:
     """Persist one recoverable deploy handoff, then move its Story and publish it.
 
@@ -51,25 +58,25 @@ async def dispatch_deploy(
     on the same attempt rather than manufacturing another Run.
     """
     message = DeployMessage(
-        task_id=run_id,
-        project_id=project_id,
-        telegram_chat_id=recipient.telegram_chat_id,
-        unaddressed_reason=recipient.unaddressed_reason,
-        story_id=story_id,
-        triggered_by=triggered_by,
-        action=action,
-        head_sha=head_sha,
-        deployed_commit_sha=deployed_commit_sha,
+        task_id=handoff.run_id,
+        project_id=handoff.project_id,
+        telegram_chat_id=handoff.recipient.telegram_chat_id,
+        unaddressed_reason=handoff.recipient.unaddressed_reason,
+        story_id=handoff.story_id,
+        triggered_by=handoff.triggered_by,
+        action=handoff.action,
+        head_sha=handoff.head_sha,
+        deployed_commit_sha=handoff.deployed_commit_sha,
     )
     message_data = message.model_dump(mode="json")
     persisted = await api_client.create_run_if_absent(
         {
-            "id": run_id,
+            "id": handoff.run_id,
             "type": RunType.DEPLOY.value,
-            "project_id": project_id,
-            "story_id": story_id,
+            "project_id": handoff.project_id,
+            "story_id": handoff.story_id,
             "run_metadata": {
-                **run_metadata,
+                **handoff.run_metadata,
                 DEPLOY_HANDOFF_MESSAGE_KEY: message_data,
             },
         }
@@ -80,14 +87,14 @@ async def dispatch_deploy(
         and DEPLOY_HANDOFF_MESSAGE_KEY in persisted_metadata
         and persisted_metadata[DEPLOY_HANDOFF_MESSAGE_KEY] != message_data
     ):
-        raise ValueError(f"deploy handoff {run_id} already names a different message")
+        raise ValueError(f"deploy handoff {handoff.run_id} already names a different message")
 
-    if transition_action is not None:
-        await api_client.transition_story(story_id, transition_action)
+    if handoff.transition_action is not None:
+        await api_client.transition_story(handoff.story_id, handoff.transition_action)
 
     await redis_client.publish_message(DEPLOY_QUEUE, message)
     await api_client.update_run(
-        run_id,
+        handoff.run_id,
         {
             "run_metadata": {
                 DEPLOY_HANDOFF_DISPATCHED_AT_KEY: datetime.now(UTC).isoformat(),
@@ -95,7 +102,6 @@ async def dispatch_deploy(
         },
     )
     return message
-
 
 async def recover_deploy_handoff(
     api_client: SchedulerAPIClient,
