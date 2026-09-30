@@ -79,6 +79,8 @@ class DockerEventsListener:
                     if not self._running:
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, event)
+                if self._running:
+                    loop.call_soon_threadsafe(queue.put_nowait, {"_closed": True})
             except Exception as exc:  # noqa: BLE001 — hand the stream failure to the async loop
                 if self._running:
                     loop.call_soon_threadsafe(queue.put_nowait, {"_error": str(exc)})
@@ -94,6 +96,8 @@ class DockerEventsListener:
 
                 if "_error" in event:
                     raise RuntimeError(event["_error"])
+                if "_closed" in event:
+                    return
 
                 try:
                     await self._handle_event(event)
