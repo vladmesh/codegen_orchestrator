@@ -47,7 +47,6 @@ from .owner_notifications import (
     owe_owner_notification,
     owe_story_owner_notification,
 )
-from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
     _parse_owner_repo,
@@ -75,7 +74,6 @@ __all__ = [
     "_trigger_next_story",
     "complete_stories",
     "dispatch_todo_tasks",
-    "poll_merged_prs",
     "supervise_temporary_access",
     "task_dispatcher_loop",
 ]
@@ -510,9 +508,6 @@ async def task_dispatcher_loop() -> None:
                 scaffolds = await trigger_scaffolds(api_client, redis_client)
                 dispatched = await dispatch_todo_tasks(api_client, redis_client)
                 completed = await complete_stories(api_client, redis_client)
-                merged = await poll_merged_prs(api_client, redis_client)
-                await poll_ci_failures(api_client, redis_client)
-
                 # Supervisor checks
                 stuck_stories = await supervise_stuck_stories(api_client, redis_client)
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
@@ -531,7 +526,6 @@ async def task_dispatcher_loop() -> None:
                     tasks_dispatched=dispatched,
                     stories_completed=completed,
                     scaffolds_triggered=scaffolds,
-                    prs_merged=merged,
                 )
                 supervisor_active = (
                     stuck_stories.get("retried", 0)
