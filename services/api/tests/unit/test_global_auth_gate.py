@@ -100,11 +100,7 @@ def test_the_route_table_is_not_empty():
 def _route(path: str, method: str) -> APIRoute:
     for context in iter_route_contexts(app.routes):
         route = context.original_route
-        if (
-            isinstance(route, APIRoute)
-            and context.path == path
-            and method in context.methods
-        ):
+        if isinstance(route, APIRoute) and context.path == path and method in context.methods:
             return route
     raise AssertionError(f"route not found: {method} {path}")
 
