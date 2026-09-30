@@ -1,7 +1,8 @@
-"""Canonical scheduler construction and publication of deploy attempts."""
+"""Canonical scheduler construction, publication, and recovery of deploy attempts."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import hashlib
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,9 @@ from ._recipients import Recipient
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
     from shared.redis import RedisStreamClient
+
+DEPLOY_HANDOFF_MESSAGE_KEY = "deploy_handoff_message"
+DEPLOY_HANDOFF_DISPATCHED_AT_KEY = "deploy_handoff_dispatched_at"
 
 
 def deploy_run_id(prefix: str, *identity_parts: str) -> str:
@@ -38,26 +42,13 @@ async def dispatch_deploy(
     transition_action: str | None = None,
     triggered_by: DeployTrigger = DeployTrigger.WEBHOOK,
 ) -> DeployMessage:
-    """Persist the canonical deploy Run before moving the Story and publishing work.
+    """Persist one recoverable deploy handoff, then move its Story and publish it.
 
-    The Run id is supplied by the caller from stable attempt identity. Repeating a
-    handoff therefore reuses the same Run instead of minting a second attempt.
-    When a Story transition is part of the handoff, the Run is guaranteed to
-    exist first: a failed Run create can no longer leave the Story in DEPLOYING
-    with no current deploy evidence.
+    The exact queue message is stored on the Run before any Story transition.
+    A known publish failure therefore leaves durable evidence the deploying
+    supervisor can replay. The caller supplies a stable Run id, so retries land
+    on the same attempt rather than manufacturing another Run.
     """
-    await api_client.create_run_if_absent(
-        {
-            "id": run_id,
-            "type": RunType.DEPLOY.value,
-            "project_id": project_id,
-            "story_id": story_id,
-            "run_metadata": run_metadata,
-        }
-    )
-    if transition_action is not None:
-        await api_client.transition_story(story_id, transition_action)
-
     message = DeployMessage(
         task_id=run_id,
         project_id=project_id,
@@ -69,5 +60,72 @@ async def dispatch_deploy(
         head_sha=head_sha,
         deployed_commit_sha=deployed_commit_sha,
     )
+    message_data = message.model_dump(mode="json")
+    persisted = await api_client.create_run_if_absent(
+        {
+            "id": run_id,
+            "type": RunType.DEPLOY.value,
+            "project_id": project_id,
+            "story_id": story_id,
+            "run_metadata": {
+                **run_metadata,
+                DEPLOY_HANDOFF_MESSAGE_KEY: message_data,
+            },
+        }
+    )
+    persisted_metadata = getattr(persisted, "run_metadata", None)
+    if (
+        isinstance(persisted_metadata, dict)
+        and DEPLOY_HANDOFF_MESSAGE_KEY in persisted_metadata
+        and persisted_metadata[DEPLOY_HANDOFF_MESSAGE_KEY] != message_data
+    ):
+        raise ValueError(f"deploy handoff {run_id} already names a different message")
+
+    if transition_action is not None:
+        await api_client.transition_story(story_id, transition_action)
+
     await redis_client.publish_message(DEPLOY_QUEUE, message)
+    await api_client.update_run(
+        run_id,
+        {
+            "run_metadata": {
+                DEPLOY_HANDOFF_DISPATCHED_AT_KEY: datetime.now(UTC).isoformat(),
+            }
+        },
+    )
     return message
+
+
+async def recover_deploy_handoff(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    run: Any,
+    *,
+    minimum_age_minutes: float,
+) -> bool:
+    """Replay one queued handoff whose publisher died before recording success."""
+    metadata = getattr(run, "run_metadata", None) or {}
+    message_data = metadata.get(DEPLOY_HANDOFF_MESSAGE_KEY)
+    if message_data is None or metadata.get(DEPLOY_HANDOFF_DISPATCHED_AT_KEY):
+        return False
+
+    created_at = getattr(run, "created_at", None)
+    if created_at is None:
+        return False
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    age_minutes = (datetime.now(UTC) - created_at).total_seconds() / 60
+    if age_minutes < minimum_age_minutes:
+        return False
+
+    message = DeployMessage.model_validate(message_data)
+    await redis_client.publish_message(DEPLOY_QUEUE, message)
+    await api_client.update_run(
+        run.id,
+        {
+            "run_metadata": {
+                DEPLOY_HANDOFF_DISPATCHED_AT_KEY: datetime.now(UTC).isoformat(),
+            }
+        },
+    )
+    return True
