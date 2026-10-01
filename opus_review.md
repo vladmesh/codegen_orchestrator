@@ -10,7 +10,7 @@
 | Репозиторий | `vladmesh/codegen_orchestrator` |
 | Проверенный коммит | `3cb6dceafcd302439ebbe5b392194bf7d0b324be` (`main`, merge PR #674, 2026-09-30 14:09 +0200) |
 | Дата аудита | 2026-09-30 |
-| Актуализировано по `main` | `bfa256f9f0ced77e0b8c70c03b88d58e6fb7832a` (squash PR #688, 2026-10-01 UTC) |
+| Актуализировано по `main` | `f5ee83fe3a306c035cd9005b4f7212b1c22d8ede` (merge PR #689, 2026-10-01 UTC) |
 | Метод | 10 параллельных read-only субагентов с явными границами (api; langgraph consumers/clients; langgraph agents/nodes/subgraphs/llm/prompts; scheduler; worker-manager + worker-broker + worker-wrapper; infra-service + scaffolder + telegram_bot + фронтенды; shared; scripts/infra/CI/compose/tests; межсервисные контракты; документация). Итоговая сверка и выборочная ручная перепроверка — автором отчёта. |
 | Инструменты | чтение кода, `git grep`, AST-анализ Python 3.13 (длины функций, импорт-граф, карта роутов), `alembic upgrade head` + `compare_metadata` на временном Postgres (вне репозитория), скрипты в scratch-каталоге вне репозитория |
 
@@ -39,9 +39,9 @@
 6. **DONE #685 — схема БД согласована с моделями, Run type/status проверяются на HTTP- и DB-границах.** Все 14 исходных различий устранены; постоянный `compare_metadata` на мигрированной БД защищает от нового drift. Поведение partial incident indexes и Run CHECK проверяется отдельно (§7.4).
 7. **Инцидентные дефекты** (раздел 9): PR #680 закрыл выпуск deploy при неполной записи secrets и снятие чужой deploy-блокировки; PR #679 — deploy-handoff ordering; PR #681 — lifecycle/workspace correctness; PR #682 — poison/redelivery и cancellation semantics; PR #683 — доступ LK bearer к внутренним маршрутам API; PR #685 — произвольные значения Run type/status. Открыты, среди прочего: неработающая очистка очередей проекта и retry Task через промежуточный BACKLOG.
 
-### 1.2.1 Актуализация после восьми итераций + предварительного docs cleanup (2026-10-01 UTC)
+### 1.2.1 Актуализация после девяти итераций + предварительного docs cleanup (2026-10-01 UTC)
 
-После исходного аудита в `main` смёржены восемь запланированных итераций; отдельно перед PR 7 выполнен предварительный docs cleanup:
+После исходного аудита в `main` смёржены девять запланированных итераций; отдельно перед PR 7 выполнен предварительный docs cleanup:
 
 - **PR #679**, squash `0c4cec3561c8c0913d9bda1344702b2d71ba149f` — закрыты **A5** и **§9.11**:
   scheduler использует единый deploy-handoff seam для PR-poller, retry, infrastructure-resume и
@@ -109,8 +109,18 @@
   не смешивались с runtime/correctness и перераспределены ниже в PR 9/12. Полный PR CI, включая scheduler и LangGraph
   service suites, infra integration и Required CI Gate, прошёл зелёным.
 
-Остальные находки ниже считаются открытыми, если явно не помечены **DONE/CLOSED**. Полный повторный
-аудит всего дерева после #688 не выполнялся; актуализация здесь — дельта по восьми смёрженным
+- **PR #689**, merge `f5ee83fe3a306c035cd9005b4f7212b1c22d8ede` — закрыта correctness-часть **A4/§6.2** и
+  **§9.16j/k/l/m/ac/ae**; **A14** частично закрыт:
+  `RunUpdate` перенесён в shared contracts, а scheduler/langgraph используют общий typed Run read/update/settlement seam;
+  PO больше не отправляет `config.secrets`, `tree` и `specs_summary` в LLM/checkpoint; Architect получает
+  `story_id/project_id` через `InjectedState`; allocator facts объявлены в `DevOpsState`; one-shot provisioner graph
+  больше не держит process-local `MemorySaver`; Redis consumer identity включает hostname; отсутствие/пустота
+  developer-worker `INSTRUCTIONS.md` теперь fail-closed. Чистые giant-file splits и более широкий dedupe одинаковых
+  read-методов API-клиентов сознательно не вошли в correctness PR и перераспределены в PR 10–12.
+  Полный PR CI #36880656177 прошёл зелёным, включая Required CI Gate.
+
+Остальные находки ниже считаются открытыми, если явно не помечены **DONE/CLOSED/PARTIAL**. Полный повторный
+аудит всего дерева после #689 не выполнялся; актуализация здесь — дельта по девяти смёрженным
 аудиторским итерациям и отдельному docs-cleanup #686. Исходные размеры, инвентаризация и номера строк сохраняют привязку к `3cb6dce`, если
 явно не указана другая ревизия. PR #684 — отдельный workflow hotfix, в счётчик аудита не входит.
 Локальная проверка при работе над #685 дополнительно выявила legacy UTC image-GC и изоляцию
@@ -130,7 +140,7 @@ wrapper HTTP fixtures (§9.16af/ag); они закреплены за worker-к�
 | T8 | **DONE #682** — единый terminal reject→DLQ→ACK + bounded delivery для reclaiming consumers | контракт | P1 | 7.2 |
 | T9 | **DONE #685** — модели/миграции согласованы; CI сравнивает metadata и проверяет реальные индексы/ограничения | персистентность | P1 | 7.4 |
 | T10 | **DONE #688** — общий `runtime.periodic_loop` для 10 scheduler pipeline loops | дублирование | P2 | 6.1 |
-| T11 | Общий read-mixin API-клиента (scheduler/langgraph/scaffolder) + типизированный `update_run(RunUpdate)` | дублирование/контракт | P2 | 6.2 |
+| T11 | **PARTIAL #689** — typed `RunUpdate` + общий Run read/update/settlement seam готовы; broader identical-read mixin scheduler/langgraph/scaffolder остаётся | дублирование/контракт | P2 | 6.2 |
 | T12 | Разрезы: `scheduler/supervisor/deploy.py`, `langgraph/_qa_runner.py`, `worker-manager/manager.py`, `worker-wrapper/wrapper.py`, `api/routers/projects/access.py`, `scripts/check-ci-gate.py` | контекст | P2 | 5 |
 | T13 | Удаление подтверждённого мёртвого кода (~1 k строк) | объём | P2 | 6.6 |
 | T14 | **DONE #685** — Run type/status ограничены enum на API-границе и CHECK в БД | контракт/баг | P2 | 7.3, 9.9 |
@@ -242,7 +252,7 @@ api ─► PostgreSQL (единственный владелец ORM-модел�
 | A1 | P1 | CONTRACTS.md обязательна к полному чтению (47 k ток.), из которых ~42 k — фичевые инварианты | `AGENTS.md:43`; секции CONTRACTS.md 27-151, 152-311, 351-643, 644-1044, 1351-1521, 1729-1883, 2464-2649 | все | −35 k ток. на задачу | тесты читают CONTRACTS (`test_template_pin_single_source.py:29-33`, `test_architect_prompt.py:342`), якоря `#consumer-patterns` | M |
 | A2 | **PARTIAL #686** | CHANGELOG исторически был 46.9 k ток. и приглашался Navigation как «что уже сделано». #686 сжал его 2 525→477 строк (~9.4 k ток. по прежней оценке) и удалил старый `### Added/...` формат; осталось убрать его из подразумеваемого полного чтения в `AGENTS.md` | `AGENTS.md:9-20`; PR #686 | все | ещё ~9.4 k ток. при ненужном полном чтении | allowlist пина в тесте | XS |
 | A3 | **DONE #688** | Общий `runtime.periodic_loop` обслуживает 10 scheduler pipeline loops с прежними log events/failure boundaries | §6.1; PR #688 | scheduler | boilerplate удалён из loop modules | закрыто | — |
-| A4 | P2 | ~11 идентичных типизированных методов API-клиента в 2–3 сервисах; 28–29 сырых `api_client.patch(f"runs/…")` | §6.2 | scheduler, langgraph, scaffolder | −60 строк/сервис, единая типизация | patch-таргеты тестов | M |
+| A4 | **PARTIAL #689** | Общий typed Run read/update/settlement seam вынесен в `shared/clients/run_api.py`; `RunUpdate` стал shared contract. ~11 идентичных read-методов scheduler/langgraph/scaffolder и direct LangGraph run PATCH call-sites ещё остаются | §6.2; PR #689 | scheduler, langgraph, scaffolder | единая Run-валидация уже есть; дальнейший dedupe снижает LOC/контекст | patch-таргеты тестов | M |
 | A5 | **DONE #679** | Единый recoverable deploy handoff вместо 4 расходившихся create-run→publish путей | `services/scheduler/src/tasks/deploy_dispatch.py`; PR #679 | scheduler | стабильные attempt id, точный message в Run, единый порядок | закрыто | — |
 | A6 | P2 | Доменные хелперы API внутри `routers/` + 20 локальных импортов из admission-модулей | `engineering_dispatch_admission.py:181,199-201,281-285,328,391,480,506-508,590,696,853-854`; `infrastructure_park.py:103-104` | api | снятие цикла; разрез файлов становится возможен | patch-таргеты | M |
 | A7 | P1 | Вход `worker:{id}:input` без контракта; CONTRACTS ссылается на мёртвые `DeveloperWorkerInput/Output` | §7.1 | langgraph, broker, wrapper, shared | «Contracts first» нарушен | Review Trigger (`shared/contracts`) | M |
@@ -252,7 +262,7 @@ api ─► PostgreSQL (единственный владелец ORM-модел�
 | A11 | **DONE #688** | Scheduler health paths импортируют `IncidentType` из `shared.contracts.dto.incident`, не через ORM | `app_health_prober.py`, `health_checker.py`; PR #688 | scheduler, shared | scheduler больше не тянет ORM ради enum | закрыто | — |
 | A12 | P2 | Литералы ключей Redis `worker:status/meta`, `workspace:lock`, `worker:{id}:input/output`, `po:response:{rid}` без билдеров (100+ вхождений) | §6.5 | langgraph, scheduler, broker, manager, bot | рассинхронизация при опечатке | нулевой (те же строки) | S |
 | A13 | P2 | Легаси-базовые классы «узлов» без использования (`RetryPolicy`, `FunctionalNode`, `timeout_seconds`) в двух сервисах | `langgraph/src/nodes/base.py:33,47`; `infra-service/src/nodes/__init__.py` (116 строк) | langgraph, infra | −85 строк | низкий | XS |
-| A14 | P2 | Одноузловой LangGraph с `MemorySaver` для провижининга (+ утечка памяти) | `langgraph/src/graph.py:41-55`; `provisioner.py:26,114-127` | langgraph | −50…−330 строк | удаление моста меняет поведение | S/M |
+| A14 | **PARTIAL #689** | Process-local `MemorySaver` удалён из одноузлового provisioner graph; сам мост `provisioner:trigger` → graph остаётся | `langgraph/src/graph.py`; `provisioner.py` | langgraph | утечка/накопление сообщений закрыты; удаление моста всё ещё меняет поведение | отдельное решение владельца для моста | S/M |
 | A15 | P3 | `admin-frontend/src/types/api.ts` (719 строк) пишется вручную; гейт покрывает 5 страниц | `services/api/tests/unit/test_admin_frontend_contract_gate.py` | admin-frontend, api | −500 строк рукописных типов | нужен build-шаг | M |
 | A16 | P3 | Compose: `db` ×4, `redis` ×6 идентичных блоков в тестовых файлах; 5 сервисов образа langgraph и 3 scheduler повторяют ключи | §6.7 | infra/CI | −220 строк | `check-ci-gate` не понимает `extends` | S |
 | A17 | P3 | Тройной список исключений offline-live, уже разошедшийся | `Makefile:340-356`, `scripts/test-unit-local.sh:126`, `scripts/check-ci-gate.py:300-315` | CI | дрейф | низкий | XS |
@@ -725,10 +735,10 @@ ACK; после durable delivery ceiling повторяющийся сбой qua
 | g | GitHub-клиент: `get_installation_id` не кэшируется (2+ вызова на опрос); постоянный 403 повторяется 3 раза; «Unreachable» достижим после 3 rate-limit ответов | `shared/clients/github/_base.py:86-131, 159-182, 275-291` | ФАКТ |
 | h | **DONE #680** — terminal run проверяется до teardown cancellation-check; внешняя отмена run-id → `WorkflowCancelledError` | `shared/clients/github/_actions.py` | ФАКТ |
 | i | **DONE #682** — `RedisStreamClient._iter_entries` пробрасывает `CancelledError`; shutdown/`asyncio.timeout()` снова видят cancellation | `shared/redis/client.py`; PR #682 | ФАКТ |
-| j | `get_project` PO отдаёт весь `config`, включая шифртекст `config.secrets`, `tree`, `specs_summary`, в контекст LLM и чекпойнты (Architect уже это вырезает, `architect/tools.py:88-90`) | `agents/po/tools_projects.py:187-200` | ФАКТ |
-| k | Architect `create_task` принимает `story_id/project_id` от LLM, хотя они есть в `ArchitectState` | `agents/architect/tools.py:131-138` | ФАКТ |
-| l | `ResourceAllocatorNode` возвращает ключи `allocation_*`, не объявленные в `DevOpsState` — внутри подграфа они теряются | `resource_allocator.py:81-83,94-96` vs `devops/state.py:22-61` | ФАКТ ключи / ГИПОТЕЗА влияние |
-| m | Провижинг-граф с `MemorySaver` накапливает `messages` на каждый триггер (утечка памяти процесса) | `graph.py:54`, `provisioner.py:122-124` | ФАКТ |
+| j | **DONE #689** — PO `get_project` вырезает `config.secrets`, `tree`, `specs_summary` до ответа tool/LLM/checkpoint | `agents/po/tools_projects.py`; PR #689 | ФАКТ |
+| k | **DONE #689** — Architect `create_task` получает `story_id/project_id` через `InjectedState`, модель не может перенаправить задачу | `agents/architect/tools.py`; PR #689 | ФАКТ |
+| l | **DONE #689** — allocator failure/admission facts `allocation_*` объявлены в `DevOpsState` | `subgraphs/devops/state.py`; PR #689 | ФАКТ |
+| m | **DONE #689** — one-shot provisioner graph компилируется без process-local checkpointer/`MemorySaver` | `graph.py`; PR #689 | ФАКТ |
 | n | N+1: `lk.py:97-124` (3N+1), `/tasks/stats` 11 COUNT (`tasks.py:220-228`), situation-снимок PO — 5 последовательных await (`situation.py:386-390`), `get_story` — run на каждую задачу (`tools_stories.py:545-561`), `allocations.py:229,331`, `_resources_available` на задачу (`supervisor/common.py:52-88`), новый Redis-пул на каждый spawn/send/delete (`worker_spawner.py:826,1036,1151`) | см. | ФАКТ |
 | o | Чтения, берущие блокировки записи: `GET …/grant-intents/{id}` и `…/initial-owner-deployment` → `FOR UPDATE` на глобальную строку SystemConfig и story/run | `projects/access.py:325-326, 530-532, 1063, 1158` | ФАКТ |
 | p | Гонка порта в `from-repo` → необработанный `IntegrityError` (servers-версия повторяет) | `applications.py:776-800` vs `servers.py:445-448` | ФАКТ |
@@ -744,9 +754,9 @@ ACK; после durable delivery ceiling повторяющийся сбой qua
 | z | `ttl-sweep` делит concurrency-группу с e2e и может отменить стоящий в очереди dispatch; нет `timeout-minutes` | `stand-e2e.yml:63-66, 1403-1421` | ГИПОТЕЗА |
 | aa | Мёртвая DLQ-обёртка/пустые проверки: `pr_poller.py:889`, `story_completion.py:223` (условия никогда не ложны); `deploy.py:471` аннотирован `-> DeployRetryAction`, возвращает bool | см. | ФАКТ |
 | ab | **CLOSED #680 — не баг**: `deploy.max_deploy_retries` — число допустимых deploy failures; `attempts >= max` соответствует контракту | `supervisor/deploy.py`, `scripts/system_configs.yaml` | ФАКТ после перепроверки |
-| ac | Имя потребителя только по PID (`_base.py:405`) — в контейнерах все PID=1; PO-потребитель уже добавляет hostname (`po.py:154-158`) | см. | ФАКТ код / ГИПОТЕЗА влияние (сейчас 1 реплика) |
+| ac | **DONE #689** — generic LangGraph queue consumer identity включает hostname + PID | `consumers/_base.py`; PR #689 | ФАКТ |
 | ad | Пустой `apt-get install` в `services/api/Dockerfile.test:9-10` | см. | ФАКТ |
-| ae | Инструкции developer-воркера при отсутствии `INSTRUCTIONS.md` молча заменяются пустой строкой / однострочником | `prompts/__init__.py:15-17`, `worker_spawner.py:853-855` | ФАКТ |
+| ae | **DONE #689** — отсутствие или пустой `INSTRUCTIONS.md` теперь packaging error до публикации worker command; fallback удалён | `prompts/__init__.py`, `worker_spawner.py`; PR #689 | ФАКТ |
 | af | Image GC интерпретирует legacy naive UTC timestamp как локальное время: при UTC+2 новая картинка получает возраст +7200 с; актуальные writers уже пишут aware UTC | `worker-manager/src/garbage_collector.py:394-395`, `manager.py:158`; `tests/unit/test_flow.py:149-153`, перепроверено на базе `610c5576` при #685 | ФАКТ код/тест; наличие legacy значений в production не проверялось |
 | ag | Пять wrapper HTTP unit tests оставляют реальный `WORKSPACE_DIR=/workspace`: существующий каталог без Makefile завершает turn до fake agent/HTTP, хотя fixtures перенаправляют TASK/STORY paths | `packages/worker-wrapper/tests/conftest.py:6-10`, `tests/unit/test_http_integration.py`; `wrapper.py:987-992`, перепроверено при #685 | ФАКТ; дефект изоляции тестов, производственный fail-fast сохраняется |
 
@@ -756,13 +766,11 @@ ACK; после durable delivery ceiling повторяющийся сбой qua
 
 Цель этой нарезки — не делать PR на каждый пункт аудита. Один PR закрывает одну крупную границу
 ответственности и забирает соседние баги/дедупликации, если они имеют тот же failure domain.
-Ориентир остаётся **12 PR на весь аудит**, включая уже завершённые первые семь итераций. PR #686 — предварительное
-сжатие CHANGELOG и в счётчик не входит. После #688 осталось **4 аудиторских итерации; следующая — PR 9,
-LangGraph contracts + boundary cleanup**. Остаток сгруппирован так,
-чтобы correctness/contract work не смешивался с giant-file mechanics, а
-финальный platform sweep не поглощал локальные scheduler/LangGraph/API проблемы. Низкоприоритетные
-наблюдения не получают отдельного PR: они входят в ближайший тематический кластер либо закрываются
-явным решением «не делать».
+Ориентир остаётся **12 PR на весь аудит**. PR #686 — предварительное сжатие CHANGELOG и в счётчик
+не входит. После #689 завершены **9 из 12** аудиторских итераций; осталось три. Correctness-часть LangGraph
+boundary закрыта отдельно от giant-file mechanics, поэтому чистые split/dedupe хвосты перераспределены
+между PR 10–12 без создания 13-й итерации. Низкоприоритетная механика не получает отдельного PR:
+она выполняется только если укладывается в budget тематического кластера, иначе явно defer/no-do.
 
 | PR | Статус | Кластер | Что входит | Основные ограничения / приёмка |
 |---|---|---|---|---|
@@ -774,10 +782,10 @@ LangGraph contracts + boundary cleanup**. Остаток сгруппирова�
 | 6 | **DONE — #685** | **DB + Run contract correctness** | A9 + A10 + §9.9: все 14 drift differences устранены; incident indexes сохранены; guarded migration; Run enums/CHECK и reject explicit null | полный PR CI + post-merge CI green; `compare_metadata == []`; HTTP/DB vocabulary и partial-index behavior проверяются в service suite |
 | 7 | **DONE — #687** | **Documentation/context reduction** | A1 + остаток A2 после #686; D1–D5; CONTRACTS index + 8 `docs/contracts/*`; CHANGELOG demand-driven; SECRETS operational runbook split; NODES/LOGGING/architecture drift cleanup | CI green; `CONTRACTS.md` ~191k→~28k chars; default reading = index + relevant guide; runtime behavior unchanged |
 | 8 | **DONE — #688** | **Scheduler/runtime simplification** | A3 periodic loop; A11 ORM decoupling; scheduler resource-admission N+1; safe per-item containment из §9.16a; §9.16aa return annotation. Shared client dedupe и giant-file mechanics сознательно вынесены дальше | полный PR CI green: Ruff/unit + scheduler/LangGraph service suites + infra integration + Required CI Gate; deploy transactional failures продолжают propagatе |
-| 9 | **OPEN — NEXT** | **LangGraph contracts + boundary cleanup** | A4/§6.2 shared read-mixin + typed `RunUpdate`/settlement seam (главный consumer — LangGraph); разрез `_qa_runner.py`, architect/qa/deploy/worker_spawner/deployer; LangGraph dead code A13/A14; §9.16j/k/l/m/ac/ae; LangGraph-local N+1 | не тащить secrets в LLM/checkpoints; без compatibility re-export; scheduler/scaffolder подключаются только к доказанно идентичным shared reads; patch targets/codemod обновлены; service tests + consumer invariants green |
-| 10 | OPEN | **Worker contracts + decomposition** | A7 typed `WorkerTurnInput`; удалить мёртвый `developer_worker.py`; A12 builders для worker/workspace/po-response keys; worker dead DTO/code; §9.16af legacy UTC image-GC и ag workspace fixture isolation; перенесённый из #681 разрез `worker-manager/manager.py` и `worker-wrapper/wrapper.py` | Review Trigger для shared/contracts; producer→broker→wrapper serialization; характеризация времени/WORKSPACE_DIR перед extraction; существующие lifecycle fences сохранены |
-| 11 | OPEN | **API domain correctness + extraction** | A6; helpers из routers/; разрез `projects/access.py`, stories/_story_actions, servers, runs, applications; §9.7/9.12, o/p/q; §9.16f для project config/labels с cross-service characterization | lock ordering неизменен; RMW не теряет concurrent config keys; 0 функционально-локальных imports `routers.*` из admission; API service tests green |
-| 12 | OPEN | **Platform/CI/infra + mechanical residual sweep** | A16–A21; оставшийся §6.6 dead code; compose/Makefile/check-ci-gate/live-harness splits; механический `shared/redis/client.py` → validation/DLQ + `StreamCodec`; infra Ansible async §9.16d; scaffolder §9.16e/y; GitHub-client g; notification r; CI t/u/v/w/x/z/ad; frontend contract drift; оставшиеся scheduler-only mechanical splits `supervisor/deploy.py`/`pr_poller.py` только если укладываются в budget | correctness fixes идут перед mechanics; async/process boundaries characterization; `make ci-contract`, normalized compose, scripts/frontend tests; A21: operator logic живёт в `.py/.sh`, docs только ссылаются; если meaningful diff приближается к ~2k, scheduler/прочую низкоприоритетную механику явно defer/no-do вместо 13-го PR |
+| 9 | **DONE — #689** | **LangGraph contract boundaries** | shared `RunUpdate` + typed Run client seam для scheduler/langgraph; §9.16j/k/l/m/ac/ae; MemorySaver часть A14. Pure giant-file splits, direct PATCH cleanup и broader read-mixin намеренно оставлены | полный PR CI #36880656177 green; secrets/bulk artifacts не попадают в PO LLM/checkpoint; Architect ownership injected; allocator facts typed; one-shot provisioner без process-local checkpoint |
+| 10 | **OPEN — NEXT** | **Worker/LangGraph execution contracts + bounded decomposition** | A7 typed `WorkerTurnInput`; удалить мёртвый `developer_worker.py`; A12 worker/workspace/po-response key builders; worker dead DTO/code; §9.16af/ag; split `worker_spawner.py` + только связанные с worker/QA contract участки `_qa_runner.py`; перенесённый из #681 разрез `worker-manager/manager.py` и `worker-wrapper/wrapper.py`. A13 перепроверить по фактическим usage перед удалением | Review Trigger для shared/contracts; producer→broker→wrapper serialization; lifecycle/workspace fences неизменны; чистые file moves только если удерживают meaningful diff в разумном budget |
+| 11 | OPEN | **API domain correctness + client boundary cleanup** | A6; helpers из routers/; разрез `projects/access.py`, stories/_story_actions, servers, runs, applications; §9.7/9.12, o/p/q; §9.16f; **остаток A4/§6.2** — broader identical-read mixin scheduler/langgraph/scaffolder и постепенная замена direct Run PATCH на typed seam там, где это не меняет semantics | lock ordering неизменен; RMW не теряет concurrent config keys; service-specific auth/audit differences не абстрагировать; API + affected service tests green |
+| 12 | OPEN | **Platform/CI/infra + bounded mechanical residual sweep** | A16–A21; оставшийся §6.6 dead code; compose/Makefile/check-ci-gate/live-harness splits; `shared/redis/client.py` → validation/DLQ + `StreamCodec`; infra Ansible async §9.16d; scaffolder §9.16e/y; GitHub-client g; notification r; CI t/u/v/w/x/z/ad; frontend drift; оставшиеся scheduler/LangGraph pure mechanics (`supervisor/deploy.py`, `pr_poller.py`, architect/qa/deploy/deployer giant-file splits, A14 bridge decision) только в budget | correctness перед mechanics; async/process boundaries characterization; `make ci-contract`, normalized compose, scripts/frontend tests; A21 logic в `.py/.sh`; если meaningful diff приближается к ~2k, pure moves/dead-code P3 явно defer/no-do вместо 13-го PR |
 
 ### 10.1 Что изменилось относительно исходного плана
 
@@ -812,6 +820,11 @@ LangGraph contracts + boundary cleanup**. Остаток сгруппирова�
   это уточняет §9.16a: не каждый sweep можно изолировать одинаково. Не выполненные A4/§6.2 client dedupe перенесены
   в PR 9, где находится основной LangGraph consumer, а scheduler-only giant-file mechanics — в bounded residual
   PR 12 с правом явного defer/no-do, если они раздувают финальный sweep.
+- PR #689 подтвердил тот же принцип для LangGraph: correctness boundary закрыт без массового перемещения
+  тысяч строк. Typed Run seam, LLM/context redaction, injected Architect ownership, state declarations, consumer identity,
+  provisioner checkpoint leak и instruction fail-closed закрыты; broader read dedupe и giant-file splits не были нужны
+  для correctness. Остаток A4 переходит в API/client PR 11, worker/QA-linked splits — в PR 10, остальные pure LangGraph
+  mechanics — в bounded PR 12 с тем же defer/no-do правилом.
 - Shared-contract и DB изменения не смешиваются с giant-file mechanics: PR 6 выполнен с отдельной
   guarded migration/rollback boundary; для PR 10 сохраняется Review Trigger. Финальный ориентир остаётся 12 PR; если PR 12 приблизится к
   ~2k meaningful LOC, низкоприоритетная механика должна быть явно deferred/no-do, а не раздувать sweep
@@ -821,7 +834,7 @@ LangGraph contracts + boundary cleanup**. Остаток сгруппирова�
 
 ### 11.1 Ограничения аудита
 
-- Исходный аудит — статический, кроме временного Postgres для сравнения миграций с моделями. Закрытия #679–#688 подтверждены соответствующими тестами/CI, перечисленными в §1.2.1; это не повторный runtime-аудит всех оставшихся пунктов.
+- Исходный аудит — статический, кроме временного Postgres для сравнения миграций с моделями. Закрытия #679–#689 подтверждены соответствующими тестами/CI, перечисленными в §1.2.1; это не повторный runtime-аудит всех оставшихся пунктов.
 - Локальный broad-прогон #685 не был зелёным: отсутствовали Docker/привилегированные OS-возможности, LangGraph fixtures предполагали доступные non-root UID; отдельно локализованы §9.16af/ag. Merge подтверждён полным зелёным GitHub CI и post-merge CI, а не успехом локального broad.
 - Содержимое `tests/live/*` (~48 k строк) детально не ревьюилось — оценены только размер и роль.
 - Оценки токенов — chars/4 без реального токенайзера (±20–25%); оценки LOC — по AST/строкам целевых диапазонов, без фактического выполнения рефакторинга.
