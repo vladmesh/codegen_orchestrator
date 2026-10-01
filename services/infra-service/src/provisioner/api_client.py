@@ -51,10 +51,8 @@ async def update_server_labels(server_handle: str, labels: dict) -> None:
         labels: New labels dict (will be merged with existing)
 
     """
-    current = await api_client.get_server(server_handle)
-    final_labels = dict(current.labels or {}) | labels
-    await api_client.update_server(server_handle, {"labels": final_labels})
-    logger.info("api_server_labels_updated", server_handle=server_handle, labels=final_labels)
+    updated = await api_client.patch_server_labels(server_handle, labels)
+    logger.info("api_server_labels_updated", server_handle=server_handle, labels=updated.labels)
 
 
 async def list_managed_servers() -> list[ServerDTO]:
