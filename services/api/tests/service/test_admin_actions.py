@@ -136,7 +136,6 @@ def admin_deploy_head_sha(monkeypatch):
 class TestSendToArchitect:
     @pytest.mark.asyncio
     async def test_send_created_story(self, client, redis, _ensure_project):
-        # Create a story
         resp = await client.post(
             "/api/stories/",
             json={
@@ -146,19 +145,22 @@ class TestSendToArchitect:
         )
         assert resp.status_code == HTTPStatus.CREATED
         story_id = resp.json()["id"]
+        before = await redis.xlen("architect:queue")
 
-        # Send to architect
         resp = await client.post(
             f"/api/stories/{story_id}/send-to-architect",
             json={"actor": "test"},
         )
-        assert resp.status_code == HTTPStatus.OK
-        assert resp.json()["status"] == "in_progress"
 
-        # Verify message in architect:queue
-        msg = await _read_last_message(redis, "architect:queue")
-        assert msg["story_id"] == story_id
-        assert msg["is_reopen"] is False
+        assert resp.status_code == HTTPStatus.OK
+        body = resp.json()
+        assert body["status"] == "in_progress"
+        assert body["planning"]["state"] == "retrying"
+        assert body["planning"]["failed_attempts"] == 0
+        assert body["planning"]["next_attempt_at"] is not None
+        # The API no longer performs the non-transactional Redis publish. The
+        # scheduler sees the durable retrying record and is the single publisher.
+        assert await redis.xlen("architect:queue") == before
 
     @pytest.mark.asyncio
     async def test_send_wrong_status_fails(self, client, _ensure_project):
