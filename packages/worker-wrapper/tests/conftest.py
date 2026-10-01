@@ -5,9 +5,13 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _workspace_context_files(monkeypatch, tmp_path):
-    """Keep context-file writes isolated from the container-only workspace path."""
-    monkeypatch.setattr("worker_wrapper.wrapper.TASK_MD_PATH", str(tmp_path / "TASK.md"))
-    monkeypatch.setattr("worker_wrapper.wrapper.STORY_DIR", str(tmp_path / ".story"))
+    """Keep every workspace path isolated from the real container mount."""
+    workspace = tmp_path / "workspace"
+    story_dir = workspace / ".story"
+    monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(workspace))
+    monkeypatch.setattr("worker_wrapper.wrapper.TASK_MD_PATH", str(workspace / "TASK.md"))
+    monkeypatch.setattr("worker_wrapper.wrapper.STORY_DIR", str(story_dir))
+    monkeypatch.setattr("worker_wrapper.wrapper.OLD_TASKS_DIR", str(story_dir / "old_tasks"))
 
 
 class MockProcess:
