@@ -47,6 +47,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
       - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
       - WORKER_MANAGER_URL=http://worker-manager:8000
     depends_on:
