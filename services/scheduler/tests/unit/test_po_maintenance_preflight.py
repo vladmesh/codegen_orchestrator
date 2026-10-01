@@ -1,57 +1,27 @@
 """Exercise the runbook's count-only admission check without HTTP or production I/O."""
 
-import ast
 import asyncio
 from datetime import UTC, datetime
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from shared.contracts.dto.server import ServerDTO, ServerStatus
-from shared.provisioning_policy import (
-    TIME4VPS_PROVIDER,
-    normalize_provider_id,
-    provider_operation_is_authorized,
-)
 from shared.schemas import Time4VPSServer
-from shared.server_admission import IN_PROGRESS_TARGET_STATUSES, target_readiness_reconcilable
+from shared.server_admission import IN_PROGRESS_TARGET_STATUSES
+from src import maintenance_preflight
 
 
 @pytest.fixture
-def counts(monkeypatch):
-    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
-    document = (
-        Path(__file__).resolve().parents[4] / "docs/runbooks/po-redis-and-checkpoints.md"
-    ).read_text()
-    start = document.index("def po_maintenance_counts(")
-    end = document.index("\nasync def preflight():", start)
-    namespace = {
-        "TIME4VPS_PROVIDER": TIME4VPS_PROVIDER,
-        "IN_PROGRESS_TARGET_STATUSES": IN_PROGRESS_TARGET_STATUSES,
-        "target_readiness_reconcilable": target_readiness_reconcilable,
-        "provider_operation_is_authorized": provider_operation_is_authorized,
-        "ServerStatus": ServerStatus,
-    }
-    # Execute the repository-owned operator predicate, never network-supplied code.
-    exec(compile(ast.parse(document[start:end]), "po-redis-and-checkpoints.md", "exec"), namespace)  # noqa: S102
-    return namespace["po_maintenance_counts"]
+def counts():
+    return maintenance_preflight.po_maintenance_counts
 
 
 @pytest.fixture
 def run_preflight(monkeypatch, capsys):
-    document = (
-        Path(__file__).resolve().parents[4] / "docs/runbooks/po-redis-and-checkpoints.md"
-    ).read_text()
-    start = document.index("def po_maintenance_counts(")
-    end = document.index("\nsys.exit(asyncio.run(preflight()))", start)
-
     def run(servers, inventory, managed_ids):
         events = []
-        monkeypatch.setenv(
-            "PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", ",".join(sorted(managed_ids))
-        )
 
         class Provider:
             async def __aenter__(self):
@@ -74,24 +44,14 @@ def run_preflight(monkeypatch, capsys):
         async def close():
             events.append("api_closed")
 
-        namespace = {
-            "asyncio": asyncio,
-            "json": json,
-            "TIME4VPS_PROVIDER": TIME4VPS_PROVIDER,
-            "IN_PROGRESS_TARGET_STATUSES": IN_PROGRESS_TARGET_STATUSES,
-            "target_readiness_reconcilable": target_readiness_reconcilable,
-            "provider_operation_is_authorized": provider_operation_is_authorized,
-            "normalize_provider_id": normalize_provider_id,
-            "ServerStatus": ServerStatus,
-            "api_client": SimpleNamespace(get_servers=get_servers, close=close),
-            "get_time4vps_client": get_provider,
-            "managed_provider_ids": lambda _: managed_ids,
-        }
-        exec(  # noqa: S102
-            compile(ast.parse(document[start:end]), "po-redis-and-checkpoints.md", "exec"),
-            namespace,
+        monkeypatch.setattr(
+            maintenance_preflight,
+            "api_client",
+            SimpleNamespace(get_servers=get_servers, close=close),
         )
-        exit_code = asyncio.run(namespace["preflight"]())
+        monkeypatch.setattr(maintenance_preflight, "get_time4vps_client", get_provider)
+        monkeypatch.setattr(maintenance_preflight, "managed_provider_ids", lambda _: managed_ids)
+        exit_code = asyncio.run(maintenance_preflight.preflight())
         return exit_code, json.loads(capsys.readouterr().out), events
 
     return run
