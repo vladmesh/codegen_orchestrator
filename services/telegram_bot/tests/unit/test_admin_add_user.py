@@ -14,6 +14,7 @@ from src.keyboards import (
     ACTION_ADD_USER,
     PREFIX_ADMIN,
     main_menu_keyboard,
+    projects_list_keyboard,
 )
 
 
@@ -47,6 +48,12 @@ class TestMainMenuKeyboardAddUser:
         all_buttons = [btn for row in keyboard.inline_keyboard for btn in row]
         callbacks = [btn.callback_data for btn in all_buttons]
         assert f"{PREFIX_ADMIN}:{ACTION_ADD_USER}" not in callbacks
+
+
+class TestProjectKeyboard:
+    def test_project_uses_api_title(self):
+        keyboard = projects_list_keyboard([{"id": "p1", "title": "My Project", "status": "active"}])
+        assert keyboard.inline_keyboard[0][0].text == "✅ My Project"
 
 
 class TestAdminCallbackHandler:
@@ -208,6 +215,21 @@ class TestAddUserInput:
             or "exists" in reply_text.lower()
             or "существует" in reply_text.lower()
         )
+
+
+    @pytest.mark.asyncio
+    async def test_cancel_clears_pending_invite(self):
+        from src.handlers import cancel_add_user
+
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.user_data = {"awaiting_add_user": True}
+
+        await cancel_add_user(update, context)
+
+        assert "awaiting_add_user" not in context.user_data
+        update.message.reply_text.assert_awaited_once_with("Добавление пользователя отменено.")
 
     @pytest.mark.asyncio
     async def test_not_awaiting_returns_none(self):
