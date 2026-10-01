@@ -26,8 +26,13 @@ async def qa_routing_loop() -> None:
         return await supervise_testing_stories(api_client, redis_client)
 
     await runtime.periodic_loop(
-        interval=_qa_routing_interval, cycle=cycle, logger=logger,
-        started_event="qa_routing_started", cycle_event="qa_routing_cycle",
-        error_event="qa_routing_cycle_error", stopped_event="qa_routing_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_qa_routing_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="qa_routing_started",
+        cycle_event="qa_routing_cycle",
+        error_event="qa_routing_cycle_error",
+        stopped_event="qa_routing_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

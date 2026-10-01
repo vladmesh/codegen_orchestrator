@@ -73,11 +73,18 @@ async def supervise_lifecycle_once(
 async def lifecycle_supervision_loop() -> None:
     """Supervise lifecycle state on its own cadence and Redis lifecycle."""
     from ..clients.api import api_client
+
     async def cycle(redis_client: RedisStreamClient) -> None:
         await supervise_lifecycle_once(api_client, redis_client)
+
     await runtime.periodic_loop(
-        interval=_lifecycle_supervision_interval, cycle=cycle, logger=logger,
-        started_event="lifecycle_supervision_started", cycle_event=None,
-        error_event="lifecycle_supervision_cycle_error", stopped_event="lifecycle_supervision_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_lifecycle_supervision_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="lifecycle_supervision_started",
+        cycle_event=None,
+        error_event="lifecycle_supervision_cycle_error",
+        stopped_event="lifecycle_supervision_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

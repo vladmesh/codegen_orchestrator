@@ -26,8 +26,13 @@ async def story_completion_loop() -> None:
         return {"stories_completed": await complete_stories(api_client, redis_client)}
 
     await runtime.periodic_loop(
-        interval=_story_completion_interval, cycle=cycle, logger=logger,
-        started_event="story_completion_started", cycle_event="story_completion_cycle",
-        error_event="story_completion_cycle_error", stopped_event="story_completion_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_story_completion_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="story_completion_started",
+        cycle_event="story_completion_cycle",
+        error_event="story_completion_cycle_error",
+        stopped_event="story_completion_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

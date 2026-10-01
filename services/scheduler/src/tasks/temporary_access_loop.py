@@ -26,8 +26,13 @@ async def temporary_access_loop() -> None:
         return await supervise_temporary_access(api_client, redis_client)
 
     await runtime.periodic_loop(
-        interval=_temporary_access_interval, cycle=cycle, logger=logger,
-        started_event="temporary_access_started", cycle_event="temporary_access_cycle",
-        error_event="temporary_access_cycle_error", stopped_event="temporary_access_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_temporary_access_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="temporary_access_started",
+        cycle_event="temporary_access_cycle",
+        error_event="temporary_access_cycle_error",
+        stopped_event="temporary_access_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

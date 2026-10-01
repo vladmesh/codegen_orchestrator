@@ -26,8 +26,13 @@ async def owner_notification_loop() -> None:
         return await supervise_owed_owner_notifications(api_client, redis_client)
 
     await runtime.periodic_loop(
-        interval=_owner_notification_interval, cycle=cycle, logger=logger,
-        started_event="owner_notifications_started", cycle_event="owner_notifications_cycle",
-        error_event="owner_notifications_cycle_error", stopped_event="owner_notifications_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_owner_notification_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="owner_notifications_started",
+        cycle_event="owner_notifications_cycle",
+        error_event="owner_notifications_cycle_error",
+        stopped_event="owner_notifications_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

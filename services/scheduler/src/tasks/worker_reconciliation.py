@@ -76,11 +76,18 @@ async def reconcile_workers_once(
 async def worker_reconciliation_loop() -> None:
     """Periodically reconcile workers from durable terminal/settled-attempt facts."""
     from ..clients.api import api_client
+
     async def cycle(redis_client: RedisStreamClient) -> None:
         await reconcile_workers_once(api_client, redis_client)
+
     await runtime.periodic_loop(
-        interval=_reconciliation_interval, cycle=cycle, logger=logger,
-        started_event="worker_reconciliation_started", cycle_event=None,
-        error_event="worker_reconciliation_cycle_error", stopped_event="worker_reconciliation_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_reconciliation_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="worker_reconciliation_started",
+        cycle_event=None,
+        error_event="worker_reconciliation_cycle_error",
+        stopped_event="worker_reconciliation_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

@@ -44,11 +44,18 @@ async def supervise_story_once(api_client, redis_client: RedisStreamClient) -> d
 
 async def story_supervision_loop() -> None:
     from ..clients.api import api_client
+
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
         return await supervise_story_once(api_client, redis_client)
+
     await runtime.periodic_loop(
-        interval=_story_supervision_interval, cycle=cycle, logger=logger,
-        started_event="story_supervision_started", cycle_event="story_supervision_cycle",
-        error_event="story_supervision_cycle_error", stopped_event="story_supervision_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_story_supervision_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="story_supervision_started",
+        cycle_event="story_supervision_cycle",
+        error_event="story_supervision_cycle_error",
+        stopped_event="story_supervision_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

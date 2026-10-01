@@ -26,8 +26,13 @@ async def scaffold_loop() -> None:
         return {"scaffolds_triggered": await trigger_scaffolds(api_client, redis_client)}
 
     await runtime.periodic_loop(
-        interval=_scaffold_interval, cycle=cycle, logger=logger,
-        started_event="scaffold_loop_started", cycle_event="scaffold_cycle",
-        error_event="scaffold_cycle_error", stopped_event="scaffold_loop_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_scaffold_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="scaffold_loop_started",
+        cycle_event="scaffold_cycle",
+        error_event="scaffold_cycle_error",
+        stopped_event="scaffold_loop_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

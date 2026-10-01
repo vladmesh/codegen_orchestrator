@@ -481,11 +481,18 @@ async def dispatch_todo_tasks(
 async def task_dispatcher_loop() -> None:
     """Periodically dispatch admitted engineering tasks."""
     from ..clients.api import api_client
+
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
         return {"tasks_dispatched": await dispatch_todo_tasks(api_client, redis_client)}
+
     await runtime.periodic_loop(
-        interval=_dispatch_interval, cycle=cycle, logger=logger,
-        started_event="task_dispatcher_started", cycle_event="dispatcher_cycle",
-        error_event="dispatcher_cycle_error", stopped_event="task_dispatcher_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_dispatch_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="task_dispatcher_started",
+        cycle_event="dispatcher_cycle",
+        error_event="dispatcher_cycle_error",
+        stopped_event="task_dispatcher_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )

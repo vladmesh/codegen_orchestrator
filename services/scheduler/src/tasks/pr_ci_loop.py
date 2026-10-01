@@ -34,11 +34,18 @@ async def poll_pr_ci_once(api_client, redis_client: RedisStreamClient) -> dict[s
 
 async def pr_ci_loop() -> None:
     from ..clients.api import api_client
+
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
         return await poll_pr_ci_once(api_client, redis_client)
+
     await runtime.periodic_loop(
-        interval=_pr_ci_interval, cycle=cycle, logger=logger,
-        started_event="pr_ci_started", cycle_event="pr_ci_cycle",
-        error_event="pr_ci_cycle_error", stopped_event="pr_ci_stopped",
-        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+        interval=_pr_ci_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="pr_ci_started",
+        cycle_event="pr_ci_cycle",
+        error_event="pr_ci_cycle_error",
+        stopped_event="pr_ci_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
     )
