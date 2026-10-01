@@ -2,7 +2,7 @@
 
 The same shape as `product_settings.py`, one contract along: it calls only the
 two documented endpoints of the released jobs core (`codegen-product-kit`,
-`docs/CONTRACTS.md`, "Core jobs v1"), takes the deployment capability as an
+`docs/contracts/product-brief.md`, "Core jobs v1"), takes the deployment capability as an
 argument, puts it in a request header and nowhere else, and returns a bounded,
 credential-safe outcome.
 
