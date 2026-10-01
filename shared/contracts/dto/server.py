@@ -106,6 +106,13 @@ class ServerCreate(BaseModel):
     labels: dict = {}
 
 
+class ServerLabelsPatch(BaseModel):
+    """Atomic merge of labels owned by one server-side operation."""
+
+    model_config = ConfigDict(extra="forbid")
+    values: dict = Field(default_factory=dict)
+
+
 class ServerUpdate(BaseModel):
     """Update server request."""
 
