@@ -130,9 +130,12 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         return {"status": "skipped", "error": "cancelled by live teardown"}
     lease_refresh = asyncio.create_task(_refresh_scaffold_lease(redis, msg.project_id, lease))
     owner_task = asyncio.current_task()
+    lease_lost = False
 
     def cancel_work_on_lost_lease(task: asyncio.Task) -> None:
+        nonlocal lease_lost
         if not task.cancelled() and task.exception() is not None and owner_task is not None:
+            lease_lost = True
             owner_task.cancel()
 
     lease_refresh.add_done_callback(cancel_work_on_lost_lease)
@@ -156,6 +159,14 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
                 return await _process_ensure_mode(*args)
             return await _process_full_mode(*args)
 
+    except asyncio.CancelledError:
+        if not lease_lost:
+            raise
+        error = "scaffold execution lease expired"
+        log.error("scaffold_job_lease_lost")
+        if msg.mode == "ensure":
+            await _record_scaffold_error(msg, error, api, log)
+        return {"status": "failed", "error": error}
     except Exception as exc:
         error = redact_diagnostic(exc)
         log.error("scaffold_job_exception", error=error, exc_info=True)
@@ -166,8 +177,12 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         return {"status": "failed", "error": error}
     finally:
         lease_refresh.cancel()
-        with suppress(asyncio.CancelledError):
+        try:
             await lease_refresh
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.warning("scaffold_lease_refresh_failed", exc_info=True)
         await _finish_scaffold_work(redis, msg.project_id, lease)
 
 
