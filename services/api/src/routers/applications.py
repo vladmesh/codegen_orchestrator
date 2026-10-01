@@ -42,6 +42,7 @@ from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
+from ..domain.ports import PortAllocationExhaustedError, allocate_next_port
 from ..dependencies import (
     get_internal_or_admin_actor,
     get_redis_client,
@@ -912,25 +913,21 @@ async def create_from_repo(
             detail="Application already exists for this repo + server combination",
         ) from exc
 
-    # Allocate port (find next available starting from 8000)
-    port_query = (
-        select(PortAllocation.port)
-        .where(PortAllocation.server_handle == body.server_handle)
-        .with_for_update()
-    )
-    port_result = await db.execute(port_query)
-    allocated_ports = {row[0] for row in port_result.all()}
-    port = 8000
-    while port in allocated_ports:
-        port += 1
-
-    allocation = PortAllocation(
-        server_handle=body.server_handle,
-        port=port,
-        service_name=body.service_name,
-        application_id=app.id,
-    )
-    db.add(allocation)
+    # Reserve the port inside a savepoint: a concurrent allocator may choose
+    # the same gap even after SELECT FOR UPDATE because no row exists to lock yet.
+    try:
+        allocation = await allocate_next_port(
+            db,
+            server_handle=body.server_handle,
+            application_id=app.id,
+            service_name=body.service_name,
+        )
+    except PortAllocationExhaustedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Failed to allocate port after max retries",
+        ) from exc
+    port = allocation.port
 
     # Create a durable deploy handoff before publishing it.
     run_id = _make_deploy_run_id()
