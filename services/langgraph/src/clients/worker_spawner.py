@@ -44,15 +44,17 @@ from shared.contracts.worker_turn import (
     AttemptTurnMetadata,
     PreparedCheckoutBaseline,
     WorkerActiveTurn,
+    WorkerTurnInput,
     active_turn_key,
 )
 from shared.diagnostics import safe_validation_errors
 from shared.log_config import get_logger
-from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
-from shared.redis.client import DEFAULT_STREAM_MAXLEN, decode_redis_fields, decode_redis_value
+from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES, worker_output_stream
+from shared.redis.client import decode_redis_fields, decode_redis_value
 
 from ..config.constants import Timeouts
 from ..config.settings import get_settings
+from .worker_turns import ensure_worker_output_group, publish_worker_turn
 
 logger = get_logger(__name__)
 CREATION_TIMEOUT = 60
@@ -471,7 +473,7 @@ async def await_turn_output(
     broker stamps the output with the request identity it leased, so retained
     results from an earlier story turn cannot be adopted by mistake.
     """
-    output_stream = f"worker:{worker_id}:output"
+    output_stream = worker_output_stream(worker_id)
     group_name = f"langgraph-adopt-{request_id[:8]}-{uuid.uuid4().hex[:8]}"
     consumer_id = f"langgraph-adopt-{uuid.uuid4().hex[:8]}"
     try:
@@ -693,14 +695,6 @@ async def reconcile_prepared_baseline(
     )
 
 
-async def _create_output_group(redis_client, output_stream: str, group_name: str) -> None:
-    try:
-        await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
-    except redis.ResponseError as exc:
-        if "BUSYGROUP" not in str(exc):
-            raise
-
-
 async def _send_turn(
     redis_client: redis.Redis,
     worker_id: str,
@@ -709,25 +703,20 @@ async def _send_turn(
     task_content: str,
     story_md: str | None,
     branch: str | None,
+    *,
+    clear_session: bool = False,
 ) -> None:
-    """Put one turn on a worker's input stream."""
-    task_message: dict[str, Any] = {
-        "request_id": request_id,
-        "attempt_id": attempt_id,
-        "turn_deadline_seconds": Timeouts.WORKER_SPAWN,
-        "prompt": task_content,
-        "user_id": 0,  # System task
-    }
-    if story_md:
-        task_message["story_md"] = story_md
-    if branch:
-        task_message["branch"] = branch
-    await redis_client.xadd(
-        f"worker:{worker_id}:input",
-        {"data": json.dumps(task_message)},
-        maxlen=DEFAULT_STREAM_MAXLEN,
-        approximate=True,
+    """Build and publish one typed engineering turn."""
+    turn = WorkerTurnInput(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        turn_deadline_seconds=Timeouts.WORKER_SPAWN,
+        prompt=task_content,
+        story_md=story_md,
+        branch=branch,
+        clear_session=True if clear_session else None,
     )
+    await publish_worker_turn(redis_client, worker_id, turn)
     logger.info(
         "task_sent_to_worker",
         request_id=request_id,
@@ -915,8 +904,7 @@ async def request_spawn(
 
         # 4. Set up output stream consumer group BEFORE sending task
         # Use id="0" to read any existing messages (in case worker is very fast)
-        output_stream = f"worker:{worker_id}:output"
-        await _create_output_group(redis_client, output_stream, group_name)
+        output_stream = await ensure_worker_output_group(redis_client, worker_id, group_name)
 
         # 5. Send task message to worker input stream
         await record_turn_on_attempt(ownership.attempt_id, request_id)
@@ -998,7 +986,7 @@ async def request_spawn(
             logger.debug("cleanup_response_group_failed", error=str(e))
         if worker_id:
             try:
-                await redis_client.xgroup_destroy(f"worker:{worker_id}:output", group_name)
+                await redis_client.xgroup_destroy(worker_output_stream(worker_id), group_name)
             except Exception as e:
                 logger.debug("cleanup_output_group_failed", error=str(e))
         await redis_client.aclose()
@@ -1036,8 +1024,7 @@ async def send_task_to_worker(
     consumer_id = f"langgraph-reuse-{request_id[:8]}"
     group_name = f"langgraph-reuse-{request_id[:8]}"
 
-    input_stream = f"worker:{worker_id}:input"
-    output_stream = f"worker:{worker_id}:output"
+    output_stream = worker_output_stream(worker_id)
 
     try:
         prepared_head = None
@@ -1055,31 +1042,19 @@ async def send_task_to_worker(
         # group owns the position, so anything it skips is read by nobody. Output
         # retained from an earlier turn is harmless — the wait below matches on
         # this turn's request id and acks the rest.
-        try:
-            await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
-        except redis.ResponseError as e:
-            if "BUSYGROUP" not in str(e):
-                raise
+        await ensure_worker_output_group(redis_client, worker_id, group_name)
 
-        # 2. Send task to worker input stream
-        task_message = {
-            "request_id": request_id,
-            "attempt_id": ownership.attempt_id,
-            "turn_deadline_seconds": Timeouts.WORKER_SPAWN,
-            "prompt": task_content,
-        }
-        if clear_session:
-            task_message["clear_session"] = True
-        if story_md:
-            task_message["story_md"] = story_md
-        if branch:
-            task_message["branch"] = branch
+        # 2. Send one typed task turn to the existing worker.
         await record_turn_on_attempt(ownership.attempt_id, request_id)
-        await redis_client.xadd(
-            input_stream,
-            {"data": json.dumps(task_message)},
-            maxlen=DEFAULT_STREAM_MAXLEN,
-            approximate=True,
+        await _send_turn(
+            redis_client,
+            worker_id,
+            request_id,
+            ownership.attempt_id,
+            task_content,
+            story_md,
+            branch,
+            clear_session=clear_session,
         )
         logger.info(
             "task_sent_to_existing_worker",
