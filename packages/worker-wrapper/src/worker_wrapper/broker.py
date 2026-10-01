@@ -13,7 +13,7 @@ from shared.contracts.worker_turn import WorkerTurnInput
 @dataclass(frozen=True)
 class BrokerMessage:
     message_id: str
-    data: dict[str, str]
+    data: dict[str, Any]
 
 
 class WorkerBrokerClient:
