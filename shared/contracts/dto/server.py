@@ -303,11 +303,3 @@ class TargetReadinessRead(BaseModel):
     target_readiness_failure_phase: TargetReadinessPhase | None = None
     incident_id: int | None = None
 
-
-class ServerMetricsHistoryDTO(BaseModel):
-    """Server metrics history entry."""
-
-    id: int | None = None
-    server_handle: str
-    recorded_at: datetime
-    metrics: dict
