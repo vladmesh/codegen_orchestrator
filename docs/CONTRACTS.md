@@ -337,7 +337,7 @@ invariants are in [REST story, task, run, and policy surfaces](contracts/story-t
 |---|---|---|---|---|
 | `ScaffoldMessage` | `queues/scaffold.py` | scheduler-pipeline | scaffolder | scaffold durable state is claimed before work and settled through typed result paths |
 | `ArchitectMessage` | `queues/architect.py` | PO/API and scheduler-pipeline | architect consumer | story identity, not conversational state, drives decomposition |
-| `EngineeringMessage`, `EngineeringResult` | `queues/engineering.py` | scheduler-pipeline | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
+| `EngineeringMessage` | `queues/engineering.py` | scheduler-pipeline | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
 | `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler-pipeline/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
 | `QAMessage`, QA outcomes | `queues/qa.py` | supervisor/admin action | QA consumer | run id names the QA decision; criteria are resolved before publication |
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
