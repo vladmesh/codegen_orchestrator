@@ -37,6 +37,17 @@ PO_REMINDERS_KEY = "po:reminders"
 # ---------------------------------------------------------------------------
 STORY_WORKERS_KEY = "story:workers"
 
+
+def worker_input_stream(worker_id: str) -> str:
+    """Per-worker input stream name."""
+    return f"worker:{worker_id}:input"
+
+
+def worker_output_stream(worker_id: str) -> str:
+    """Per-worker output stream name."""
+    return f"worker:{worker_id}:output"
+
+
 # ---------------------------------------------------------------------------
 # Consumer group names
 # ---------------------------------------------------------------------------
