@@ -33,7 +33,7 @@ class TestDeveloperInstructions:
             prompts.load_developer_instructions()
 
     def test_empty_file_is_a_packaging_error(self, tmp_path, monkeypatch):
-        import src.prompts as prompts
+        from src import prompts
 
         instructions_dir = tmp_path / "developer_worker"
         instructions_dir.mkdir()
