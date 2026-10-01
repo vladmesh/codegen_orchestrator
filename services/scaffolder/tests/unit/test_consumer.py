@@ -331,9 +331,8 @@ class TestProcessScaffoldJob:
     async def test_repo_auto_merge_success_clears_a_prior_failure_mark(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
-        mock_api.get_project.return_value = _make_project(
-            config={"repo_auto_merge_verification": {"status": "failed", "error": "old"}}
-        )
+        prior = {"repo_auto_merge_verification": {"status": "failed", "error": "old"}}
+        mock_api.patch_project_config.return_value = _make_project(config=prior)
         scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
 
         with (
