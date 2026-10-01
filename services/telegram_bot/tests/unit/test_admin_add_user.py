@@ -216,7 +216,6 @@ class TestAddUserInput:
             or "существует" in reply_text.lower()
         )
 
-
     @pytest.mark.asyncio
     async def test_cancel_clears_pending_invite(self):
         from src.handlers import cancel_add_user

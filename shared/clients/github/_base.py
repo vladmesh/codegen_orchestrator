@@ -97,22 +97,25 @@ class GitHubAppClientBase:
             if resp.status_code in (httpx.codes.FORBIDDEN, httpx.codes.TOO_MANY_REQUESTS):
                 remaining = resp.headers.get("x-ratelimit-remaining")
                 rate_limited = resp.status_code == httpx.codes.TOO_MANY_REQUESTS or remaining == "0"
-                if rate_limited:
-                    if attempt == max_retries - 1:
-                        resp.raise_for_status()
-                    reset_time = int(resp.headers.get("x-ratelimit-reset", 0))
-                    wait_seconds = max(reset_time - time.time(), 0) + 1
-                    if wait_seconds > 60:  # noqa: PLR2004
+                if not rate_limited:
+                    resp.raise_for_status()
+                if attempt == max_retries - 1:
+                    resp.raise_for_status()
+
+                reset_header = resp.headers.get("x-ratelimit-reset")
+                wait_seconds = 2**attempt
+                if reset_header is not None:
+                    reset_wait = max(int(reset_header) - time.time(), 0) + 1
+                    if reset_wait <= 60:  # noqa: PLR2004
+                        wait_seconds = reset_wait
+                    else:
                         logger.error(
                             "github_rate_limit_exceeded_long_wait",
-                            wait_seconds=wait_seconds,
+                            wait_seconds=reset_wait,
                         )
-                        resp.raise_for_status()
-                    logger.warning("github_rate_limit_hit", wait_seconds=wait_seconds)
-                    await asyncio.sleep(wait_seconds)
-                    continue
-                # A normal permission failure is permanent for this credential.
-                resp.raise_for_status()
+                logger.warning("github_rate_limit_hit", wait_seconds=wait_seconds)
+                await asyncio.sleep(wait_seconds)
+                continue
 
             try:
                 resp.raise_for_status()

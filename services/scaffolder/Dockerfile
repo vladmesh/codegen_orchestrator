@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Tooling is part of the production image contract; pin it like the test image.
-RUN pip install --no-cache-dir uv==0.11.29 \
+RUN pip install --no-deps --no-cache-dir uv==0.11.29 \
     && uv tool install copier==9.17.1
 
 COPY --from=builder /install /usr/local

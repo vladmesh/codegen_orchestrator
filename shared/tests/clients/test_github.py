@@ -252,7 +252,7 @@ async def test_request_outside_context_still_completes(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status_code", [500, 403, 429])
+@pytest.mark.parametrize("status_code", [500, 429])
 async def test_request_retries_transient_http_statuses(client, monkeypatch, status_code):
     calls = 0
 
@@ -269,6 +269,25 @@ async def test_request_retries_transient_http_statuses(client, monkeypatch, stat
     assert response.status_code == 200
     assert calls == 3
     assert [call.args for call in sleep.await_args_list] == [(1,), (2,)]
+
+
+@pytest.mark.asyncio
+async def test_request_raises_permanent_403_without_retry(client, monkeypatch):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(403)
+
+    _mock_transport_clients(monkeypatch, httpx.MockTransport(handler))
+
+    with patch("shared.clients.github._base.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client._make_request("GET", "https://api.github.com/user", headers={})
+
+    assert calls == 1
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio

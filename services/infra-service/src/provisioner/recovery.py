@@ -55,7 +55,8 @@ async def redeploy_service(
         status="start",
     )
     try:
-        success, output = await _run_playbook(AnsibleRunner(), 
+        success, output = await _run_playbook(
+            AnsibleRunner(),
             server_ip=server_ip,
             server_handle=service.server_handle,
             playbook_name="deploy_project.yml",

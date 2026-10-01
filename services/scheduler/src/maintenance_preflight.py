@@ -54,7 +54,9 @@ def po_maintenance_counts(servers, provider_servers, managed_ids):
             or row.is_managed != (str(item.id) in managed_ids)
         )
     return {
-        "scheduled_servers": sum(server.status in IN_PROGRESS_TARGET_STATUSES for server in servers),
+        "scheduled_servers": sum(
+            server.status in IN_PROGRESS_TARGET_STATUSES for server in servers
+        ),
         "authorized_pending_setup": sum(
             server.status == ServerStatus.PENDING_SETUP
             and provider_operation_is_authorized(

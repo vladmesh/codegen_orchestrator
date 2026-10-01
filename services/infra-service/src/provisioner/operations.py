@@ -96,7 +96,9 @@ async def provision_monitoring_baseline(
     if not ssh_private_key:
         return False, "Server has no stored SSH key"
 
-    success, output = await _run_playbook(ansible_runner, 
+    success, output = await _run_playbook(
+
+        ansible_runner,
         server_ip=server_ip,
         server_handle=server.handle,
         playbook_name="provision_software.yml",
@@ -191,7 +193,8 @@ async def retrofit_qa_identity(
         "ssh_private_key": admin_key.text,
     }
     for preflight_playbook, preflight_phase in TARGET_READINESS_PREFLIGHT:
-        success, output = await _run_playbook(ansible_runner, 
+        success, output = await _run_playbook(
+            ansible_runner,
             **connection,
             playbook_name=preflight_playbook,
             timeout=Timeouts.ACCESS_PHASE,
@@ -204,7 +207,8 @@ async def retrofit_qa_identity(
     # No `qa_ssh_user` or profile variable is passed: the account and the
     # version the proof requires are the role's own defaults, so what is proved
     # is what the repository defines rather than what a caller asked for.
-    success, output = await _run_playbook(ansible_runner, 
+    success, output = await _run_playbook(
+        ansible_runner,
         **connection,
         playbook_name=QA_IDENTITY_RETROFIT_PLAYBOOK,
         timeout=Timeouts.PROVISIONING,
@@ -335,7 +339,7 @@ class GeneratedAdminIdentity(NamedTuple):
     fingerprint: str
 
 
-def cut_over_to_generated_key(
+async def cut_over_to_generated_key(
     *,
     ansible_runner: AnsibleRunner,
     ssh_manager: SSHManager,
@@ -370,7 +374,8 @@ def cut_over_to_generated_key(
         fingerprint = normalize_admin_private_key(private_key).fingerprint
     except AdminKeyRejectedError as exc:
         raise CredentialCutoverError("ssh_private_key_invalid", exc.rejection.value) from None
-    success, output = await _run_playbook(ansible_runner, 
+    success, output = await _run_playbook(
+        ansible_runner,
         server_ip=server_ip,
         server_handle=server_handle,
         playbook_name=TARGET_READINESS_LOGIN_PLAYBOOK,
@@ -496,7 +501,8 @@ async def reinstall_and_provision(  # noqa: PLR0913
 
         # Step 4: Run Access Phase
         logger.info("Running Phase 1: Access Configuration...")
-        success_access, output_access = await _run_playbook(ansible_runner, 
+        success_access, output_access = await _run_playbook(
+            ansible_runner,
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_access.yml",
@@ -516,7 +522,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
         # The root password has done its only job. From here on the host is
         # reached through the generated key, proved by a fresh login first.
         try:
-            identity = cut_over_to_generated_key(
+            identity = await cut_over_to_generated_key(
                 ansible_runner=ansible_runner,
                 ssh_manager=ssh_manager,
                 server_ip=server_ip,
@@ -539,7 +545,8 @@ async def reinstall_and_provision(  # noqa: PLR0913
 
         # Step 5: Run Software Phase
         logger.info("Running Phase 2: Software Installation...")
-        success_soft, output_soft = await _run_playbook(ansible_runner, 
+        success_soft, output_soft = await _run_playbook(
+            ansible_runner,
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_software.yml",

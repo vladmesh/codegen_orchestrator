@@ -160,7 +160,7 @@ def test_no_step_calls_ssh_without_the_helper():
 def test_steps_that_change_the_host_keep_their_single_shot_behaviour(name: str):
     step = _steps()[name]
 
-    assert step["uses"] == "appleboy/ssh-action@v1"
+    assert step["uses"] == "appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2"
     assert HELPER_CALL not in step["with"]["script"]
 
 
