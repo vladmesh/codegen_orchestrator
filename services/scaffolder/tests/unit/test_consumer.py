@@ -472,11 +472,12 @@ class TestProcessScaffoldJobEnsureMode:
         )
 
     @pytest.mark.asyncio
-    async def test_full_mode_exception_records_no_scaffold_error(
+    async def test_full_mode_exception_records_scaffold_error(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
-        """Full-mode exception behaviour is unchanged: nothing is recorded."""
+        """A terminal full-mode exception is durable before the queue entry is ACKed."""
         mock_github.create_repo.side_effect = RuntimeError("GitHub is unreachable")
+        mock_api.get_stories_by_project.return_value = []
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
@@ -487,7 +488,9 @@ class TestProcessScaffoldJobEnsureMode:
             result = await process_scaffold_job(valid_job_data, mock_redis)
 
         assert result["status"] == "failed"
-        mock_api.patch_project_config.assert_not_called()
+        mock_api.patch_project_config.assert_awaited_once_with(
+            "proj-123", values={"scaffold_error": "GitHub is unreachable"}
+        )
 
     @pytest.mark.asyncio
     async def test_full_mode_calls_run_scaffold(
