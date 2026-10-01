@@ -386,6 +386,11 @@ async def _drain_in_flight(in_flight: dict[str, asyncio.Task[None]], service_nam
     await asyncio.wait(pending, timeout=SHUTDOWN_DRAIN_SECONDS)
 
 
+def _consumer_name(service_name: str) -> str:
+    """Return a process-unique Redis consumer identity across containers."""
+    return f"{service_name}-{socket.gethostname()}-{os.getpid()}"
+
+
 async def run_queue_worker(
     service_name: str,
     queue: str,
@@ -415,7 +420,7 @@ async def run_queue_worker(
 
     setup_logging(service_name=service_name)
 
-    consumer_name = f"{service_name}-{socket.gethostname()}-{os.getpid()}"
+    consumer_name = _consumer_name(service_name)
 
     redis = RedisStreamClient()
     await redis.connect()
