@@ -26,6 +26,7 @@ from shared.contracts.dto.story import (
     StoryRecheckMode,
     StoryStatus,
 )
+from shared.contracts.dto.story_planning import dispatch_owed_record
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAOutcome
@@ -1140,12 +1141,12 @@ async def send_to_architect(
     story_id: str,
     body: AdminAction | None = None,
     db: AsyncSession = Depends(get_async_session),
-    redis: RedisStreamClient = Depends(get_redis_client),
 ) -> StoryRead:
-    """Send a story to the architect for decomposition.
+    """Persist a story handoff for the architect supervisor to publish.
 
-    Validates status is CREATED or REOPENED, transitions to IN_PROGRESS,
-    and publishes ArchitectMessage to architect:queue.
+    The transition and the owed handoff live on the same row. Redis publication
+    is intentionally owned by the scheduler recovery loop, so a publish failure
+    cannot leave an in-progress story with no recoverable architect message.
     """
     body = body or AdminAction()
     story = await _get_story_for_update(story_id, db)
@@ -1162,22 +1163,21 @@ async def send_to_architect(
 
     is_reopen = story.status == StoryStatus.REOPENED.value
 
-    # Transition: CREATED/REOPENED → IN_PROGRESS
+    # Transition and handoff obligation commit together. The scheduler's
+    # sequential planning publisher resolves the current recipient and emits the
+    # ArchitectMessage after this transaction is durable.
     _do_transition(story, StoryStatus.IN_PROGRESS)
+    story.planning = dispatch_owed_record(
+        reopen=is_reopen,
+        now=datetime.now(UTC),
+    ).model_dump(mode="json")
     await db.commit()
     await db.refresh(story)
 
-    # Publish to architect queue
-    msg = ArchitectMessage(
+    logger.info(
+        "story_architect_handoff_owed",
         story_id=story.id,
-        project_id=str(story.project_id),
-        telegram_chat_id=await resolve_project_chat_id(
-            db, story.project_id, event="story_sent_to_architect", story_id=story.id
-        ),
+        actor=body.actor,
         is_reopen=is_reopen,
-        user_report=story.user_report if is_reopen else None,
     )
-    await redis.publish_message(ARCHITECT_QUEUE, msg)
-
-    logger.info("story_sent_to_architect", story_id=story.id, actor=body.actor, is_reopen=is_reopen)
     return StoryRead.model_validate(story, from_attributes=True)
