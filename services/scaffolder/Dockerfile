@@ -25,14 +25,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     make \
-    curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh
+    && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="/root/.local/bin:$PATH"
-
-# Install copier via uv tool (cached in image layer)
-RUN uv tool install copier
+# Tooling is part of the production image contract; pin it like the test image.
+RUN pip install --no-cache-dir uv==0.11.29 \
+    && uv tool install copier==9.17.1
 
 COPY --from=builder /install /usr/local
 
