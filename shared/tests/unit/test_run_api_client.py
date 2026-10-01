@@ -2,8 +2,8 @@
 
 from unittest.mock import AsyncMock
 
-import pytest
 from pydantic import ValidationError
+import pytest
 
 from shared.clients.run_api import RunAPIClientMixin
 from shared.contracts.dto.run import RunStatus, RunUpdate
