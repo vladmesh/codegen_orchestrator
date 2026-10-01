@@ -6,7 +6,6 @@ Run standalone: python -m src.main
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import os
 from pathlib import Path
 import signal
