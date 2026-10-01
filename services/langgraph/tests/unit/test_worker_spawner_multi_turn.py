@@ -250,6 +250,10 @@ class TestSendTaskToWorker:
 
         payload = json.loads(redis_client.xadd.await_args.args[1]["data"])
         assert payload["branch"] == "story/story-123"
+        assert payload["attempt_id"] == _OWNERSHIP.attempt_id
+        assert payload["turn_deadline_seconds"] > 0
+        assert payload["prompt"] == "complete the task"
+        assert "user_id" not in payload
 
     @pytest.mark.asyncio
     @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
