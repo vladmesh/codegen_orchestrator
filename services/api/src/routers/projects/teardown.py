@@ -334,6 +334,7 @@ async def _cleanup_project_queue_messages(project_id: str) -> int:
         logger.info("project_queue_messages_cleaned", project_id=project_id, deleted=deleted)
     return deleted
 
+
 async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> None:
     """Clear everything pointing at the project, children before parents.
 
