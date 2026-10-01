@@ -79,67 +79,9 @@ before backup and again immediately before dispatch (start only the old API if
 step 2 stopped it). Keep output restricted outside the checkout:
 
 ```bash
-"${COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python scheduler-infrastructure -c '
-import asyncio, json, sys
-from shared.contracts.dto.server import ServerStatus
-from shared.provisioning_policy import TIME4VPS_PROVIDER, managed_provider_ids, normalize_provider_id, provider_operation_is_authorized
-from shared.server_admission import IN_PROGRESS_TARGET_STATUSES, target_readiness_reconcilable
-from src.clients.api import api_client
-from src.tasks.server_sync import get_time4vps_client
-
-def po_maintenance_counts(servers, provider_servers, managed_ids):
-    def completed(row):
-        return target_readiness_reconcilable(row) and bool(row.public_ip or row.host)
-    def settled_absent(row):
-        return (row.status == ServerStatus.UNREACHABLE and not row.is_managed
-            and row.provider_id is not None and row.provider_id not in managed_ids
-            and normalize_provider_id(row.provider, row.provider_id) == row.provider_id)
-    rows = [s for s in servers if s.provider == TIME4VPS_PROVIDER]
-    by_id = {}
-    for row in rows:
-        by_id.setdefault(row.provider_id, []).append(row)
-    provider_ids = [str(p.id) for p in provider_servers]
-    drift = len(provider_ids) - len(set(provider_ids))
-    drift += sum(len(v) != 1 for v in by_id.values())
-    drift += sum(s.provider_id not in provider_ids and not settled_absent(s) for s in rows)
-    for item in provider_servers:
-        matches = by_id.get(str(item.id), [])
-        if len(matches) != 1:
-            drift += 1
-            continue
-        row = matches[0]
-        drift += int(not item.ip or row.public_ip != item.ip
-            or row.host != (item.domain or item.ip)
-            or row.is_managed != (str(item.id) in managed_ids))
-    return {
-        "scheduled_servers": sum(s.status in IN_PROGRESS_TARGET_STATUSES for s in servers),
-        "authorized_pending_setup": sum(s.status == ServerStatus.PENDING_SETUP
-            and provider_operation_is_authorized(provider=s.provider,
-                provider_id=s.provider_id, is_managed=s.is_managed) for s in servers),
-        "unreconcilable_managed": sum(s.is_managed and not completed(s) for s in servers),
-        "allowlist_without_reconciled_row": sum(len(by_id.get(i, [])) != 1
-            or not completed(by_id[i][0]) for i in managed_ids),
-        "provider_inventory_drift": drift,
-    }
-
-async def preflight():
-    try:
-        servers = await api_client.get_servers()
-        provider = await get_time4vps_client()
-        if provider is None:
-            raise RuntimeError("Provider read unavailable")
-        async with provider:
-            inventory = await provider.get_servers()
-        counts = po_maintenance_counts(servers, inventory, managed_provider_ids(TIME4VPS_PROVIDER))
-        print(json.dumps(counts, sort_keys=True))
-        return int(any(counts.values()))
-    except Exception:
-        print(json.dumps({"preflight_failed": 1}))
-        return 1
-    finally:
-        await api_client.close()
-sys.exit(asyncio.run(preflight()))
-' > "$PO_REDIS_BACKUP_DIR/provisioning-preflight.log" 2>&1
+"${COMPOSE[@]}" run --rm --no-deps --pull never scheduler-infrastructure \
+  python -m src.maintenance_preflight \
+  > "$PO_REDIS_BACKUP_DIR/provisioning-preflight.log" 2>&1
 ```
 
 The scheduler's `get_servers(status=PENDING_SETUP)` calls authenticated
