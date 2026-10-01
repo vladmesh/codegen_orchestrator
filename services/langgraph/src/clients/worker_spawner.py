@@ -705,6 +705,7 @@ async def _send_turn(
     branch: str | None,
     *,
     clear_session: bool = False,
+    log_event: str = "task_sent_to_worker",
 ) -> None:
     """Build and publish one typed engineering turn."""
     turn = WorkerTurnInput(
@@ -718,7 +719,7 @@ async def _send_turn(
     )
     await publish_worker_turn(redis_client, worker_id, turn)
     logger.info(
-        "task_sent_to_worker",
+        log_event,
         request_id=request_id,
         attempt_id=attempt_id,
         worker_id=worker_id,
@@ -1055,11 +1056,7 @@ async def send_task_to_worker(
             story_md,
             branch,
             clear_session=clear_session,
-        )
-        logger.info(
-            "task_sent_to_existing_worker",
-            request_id=request_id,
-            worker_id=worker_id,
+            log_event="task_sent_to_existing_worker",
         )
 
         # 3. Wait for output
