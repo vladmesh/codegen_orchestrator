@@ -17,7 +17,7 @@ import structlog
 
 from shared.redis import RedisStreamClient
 
-from .. import startup
+from .. import runtime, startup
 from .supervisor import supervise_stage_notices, supervise_state_age_bounds
 
 logger = structlog.get_logger(__name__)
@@ -27,35 +27,35 @@ def _story_supervision_interval() -> int:
     return startup.get_config().get_int("scheduler.dispatch_interval_seconds")
 
 
-async def story_supervision_loop() -> None:
-    """Run the state-age watchdog, then the stage notices, once per cycle.
+async def supervise_story_once(api_client, redis_client: RedisStreamClient) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    try:
+        state_age = await supervise_state_age_bounds(api_client, redis_client)
+        counts.update({f"state_age_{name}": n for name, n in state_age.items()})
+    except Exception:
+        logger.exception("story_supervision_cycle_error", sweep="state_age")
+    try:
+        stage_notices = await supervise_stage_notices(api_client, redis_client)
+        counts.update({f"stage_notices_{name}": n for name, n in stage_notices.items()})
+    except Exception:
+        logger.exception("story_supervision_cycle_error", sweep="stage_notices")
+    return counts
 
-    Each sweep has its own failure boundary: a watchdog that raises does not
-    skip that cycle's notices, nor the reverse. The cycle line carries the
-    counts of every sweep that completed; a sweep that raised is named by its
-    ``story_supervision_cycle_error`` line instead.
-    """
+
+async def story_supervision_loop() -> None:
     from ..clients.api import api_client
 
-    redis_client = RedisStreamClient()
-    await redis_client.connect()
-    logger.info("story_supervision_started", interval=_story_supervision_interval())
+    async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
+        return await supervise_story_once(api_client, redis_client)
 
-    try:
-        while True:
-            counts: dict[str, int] = {}
-            try:
-                state_age = await supervise_state_age_bounds(api_client, redis_client)
-                counts.update({f"state_age_{name}": n for name, n in state_age.items()})
-            except Exception:
-                logger.exception("story_supervision_cycle_error", sweep="state_age")
-            try:
-                stage_notices = await supervise_stage_notices(api_client, redis_client)
-                counts.update({f"stage_notices_{name}": n for name, n in stage_notices.items()})
-            except Exception:
-                logger.exception("story_supervision_cycle_error", sweep="stage_notices")
-            logger.info("story_supervision_cycle", **counts)
-            await asyncio.sleep(_story_supervision_interval())
-    finally:
-        await redis_client.close()
-        logger.info("story_supervision_stopped")
+    await runtime.periodic_loop(
+        interval=_story_supervision_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="story_supervision_started",
+        cycle_event="story_supervision_cycle",
+        error_event="story_supervision_cycle_error",
+        stopped_event="story_supervision_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
+    )

@@ -8,7 +8,7 @@ import structlog
 
 from shared.redis import RedisStreamClient
 
-from .. import startup
+from .. import runtime, startup
 from .temporary_access import supervise_temporary_access
 
 logger = structlog.get_logger(__name__)
@@ -22,18 +22,17 @@ async def temporary_access_loop() -> None:
     """Sweep temporary access on its own cadence and failure boundary."""
     from ..clients.api import api_client
 
-    redis_client = RedisStreamClient()
-    await redis_client.connect()
-    logger.info("temporary_access_started", interval=_temporary_access_interval())
+    async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
+        return await supervise_temporary_access(api_client, redis_client)
 
-    try:
-        while True:
-            try:
-                counts = await supervise_temporary_access(api_client, redis_client)
-                logger.info("temporary_access_cycle", **counts)
-            except Exception:
-                logger.exception("temporary_access_cycle_error")
-            await asyncio.sleep(_temporary_access_interval())
-    finally:
-        await redis_client.close()
-        logger.info("temporary_access_stopped")
+    await runtime.periodic_loop(
+        interval=_temporary_access_interval,
+        cycle=cycle,
+        logger=logger,
+        started_event="temporary_access_started",
+        cycle_event="temporary_access_cycle",
+        error_event="temporary_access_cycle_error",
+        stopped_event="temporary_access_stopped",
+        redis_factory=RedisStreamClient,
+        sleep=asyncio.sleep,
+    )

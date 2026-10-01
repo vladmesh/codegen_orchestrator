@@ -125,65 +125,70 @@ async def supervise_stuck_stories(
     redis = redis_client._redis
 
     for story in stories:
-        story_id = story.id
-        project_id = str(story.project_id)
-        created_at = _parse_datetime(story.created_at)
-        age_minutes = (now - created_at).total_seconds() / 60
+        try:
+            story_id = story.id
+            project_id = str(story.project_id)
+            created_at = _parse_datetime(story.created_at)
+            age_minutes = (now - created_at).total_seconds() / 60
 
-        if age_minutes < _story_stuck_threshold():
-            continue
-
-        # Skip if project already has an active story (sequential processing)
-        if project_id in active_projects:
-            continue
-
-        # Retry when the architect never created a task, and — since the
-        # Product Brief boundary exists — also when it created only tasks that
-        # can never dispatch and then died holding the plan.
-        tasks = await api_client.get_tasks_by_story(story_id)
-        recovering_plan = False
-        if tasks:
-            recovering_plan = await _plan_is_abandoned_unadmitted(api_client, story_id, tasks)
-            if not recovering_plan:
+            if age_minutes < _story_stuck_threshold():
                 continue
 
-        log = logger.bind(story_id=story_id, age_minutes=round(age_minutes, 1))
+            # Skip if project already has an active story (sequential processing)
+            if project_id in active_projects:
+                continue
 
-        retry_key = f"{STORY_RETRY_KEY_PREFIX}{story_id}"
-        raw = await redis.get(retry_key)
-        current_retries = int(raw) if raw else 0
+            # Retry when the architect never created a task, and — since the
+            # Product Brief boundary exists — also when it created only tasks that
+            # can never dispatch and then died holding the plan.
+            tasks = await api_client.get_tasks_by_story(story_id)
+            recovering_plan = False
+            if tasks:
+                recovering_plan = await _plan_is_abandoned_unadmitted(api_client, story_id, tasks)
+                if not recovering_plan:
+                    continue
 
-        if current_retries >= _max_architect_retries():
-            log.error(
-                "story_terminal_failure",
-                reason="architect_retries_exhausted",
-                retries=current_retries,
+            log = logger.bind(story_id=story_id, age_minutes=round(age_minutes, 1))
+
+            retry_key = f"{STORY_RETRY_KEY_PREFIX}{story_id}"
+            raw = await redis.get(retry_key)
+            current_retries = int(raw) if raw else 0
+
+            if current_retries >= _max_architect_retries():
+                log.error(
+                    "story_terminal_failure",
+                    reason="architect_retries_exhausted",
+                    retries=current_retries,
+                )
+                await api_client.fail_story(story_id)
+                await redis.delete(retry_key)
+                failed += 1
+                continue
+
+            # Retry: the story's owner is reached through its project, so the
+            # lifecycle events this retry produces still have somewhere to go.
+            recipient = await resolve_project_recipient(
+                api_client, project_id, event="story_stuck_retry", story_id=story_id
             )
-            await api_client.fail_story(story_id)
-            await redis.delete(retry_key)
-            failed += 1
+            arch_msg = ArchitectMessage(
+                story_id=story_id,
+                project_id=project_id,
+                telegram_chat_id=recipient.telegram_chat_id,
+            )
+            await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
+            await redis.set(retry_key, current_retries + 1, ex=_story_retry_ttl())
+
+            log.warning(
+                "story_stuck_retry",
+                retry_attempt=current_retries + 1,
+                max_retries=_max_architect_retries(),
+                unadmitted_plan_recovery=recovering_plan,
+            )
+            retried += 1
+
+        except Exception:
+            logger.exception("stuck_story_supervision_contained", story_id=story.id)
             continue
-
-        # Retry: the story's owner is reached through its project, so the
-        # lifecycle events this retry produces still have somewhere to go.
-        recipient = await resolve_project_recipient(
-            api_client, project_id, event="story_stuck_retry", story_id=story_id
-        )
-        arch_msg = ArchitectMessage(
-            story_id=story_id,
-            project_id=project_id,
-            telegram_chat_id=recipient.telegram_chat_id,
-        )
-        await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
-        await redis.set(retry_key, current_retries + 1, ex=_story_retry_ttl())
-
-        log.warning(
-            "story_stuck_retry",
-            retry_attempt=current_retries + 1,
-            max_retries=_max_architect_retries(),
-            unadmitted_plan_recovery=recovering_plan,
-        )
-        retried += 1
 
     reopened = await api_client.get_stories_by_status(StoryStatus.REOPENED)
     planning_retried = await _queue_due_planning_retries(
@@ -746,50 +751,57 @@ async def supervise_waiting_resource_tasks(
     resumed = 0
     expired = 0
     for task in tasks:
-        metadata = task.failure_metadata or {}
-        started_at = _parse_datetime(
-            metadata.get("resource_wait_started_at") or task.updated_at or task.created_at
-        )
-        age_minutes = (datetime.now(UTC) - started_at).total_seconds() / 60
-        log = logger.bind(task_id=task.id, story_id=task.story_id)
-        if age_minutes >= _resource_wait_timeout_minutes():
-            await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
-            await api_client.create_task_event(
-                task.id,
-                {
-                    "event_type": "note",
-                    "details": {
-                        "reason": "resource_wait_timeout",
-                        "age_minutes": round(age_minutes, 1),
+        try:
+            metadata = task.failure_metadata or {}
+            started_at = _parse_datetime(
+                metadata.get("resource_wait_started_at") or task.updated_at or task.created_at
+            )
+            age_minutes = (datetime.now(UTC) - started_at).total_seconds() / 60
+            log = logger.bind(task_id=task.id, story_id=task.story_id)
+            if age_minutes >= _resource_wait_timeout_minutes():
+                await api_client.transition_task(
+                    task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor"
+                )
+                await api_client.create_task_event(
+                    task.id,
+                    {
+                        "event_type": "note",
+                        "details": {
+                            "reason": "resource_wait_timeout",
+                            "age_minutes": round(age_minutes, 1),
+                        },
+                        "actor": "supervisor",
                     },
-                    "actor": "supervisor",
-                },
-            )
-            await _notify_admin_failure(
+                )
+                await _notify_admin_failure(
+                    task.id,
+                    str(task.project_id),
+                    "resource wait timed out",
+                )
+                expired += 1
+                continue
+            if not await _resources_available(api_client, metadata):
+                continue
+            await _clear_failed_run_iteration(api_client, task)
+            # Release and the owed "resumed" notice are one API transaction; the
+            # notice replaces the wait's own record on the refused Run, so a
+            # "waiting" message still owed is superseded instead of arriving stale.
+            released = await api_client.resume_task_from_resource_wait(
                 task.id,
-                str(task.project_id),
-                "resource wait timed out",
+                TaskResourceResumeCommand(text=RESOURCES_RESUMED_TASK_TEXT, actor="supervisor"),
             )
-            expired += 1
+            if released.disposition is not TaskResourceResumeDisposition.RESUMED:
+                log.info("resource_wait_resume_skipped", task_status=released.task_status.value)
+                continue
+            if released.owner_notification is not None:
+                await deliver_in_tick(
+                    api_client, redis_client, released.run_id, released.owner_notification, log
+                )
+            resumed += 1
+        except Exception:
+            logger.exception("waiting_resource_task_supervision_contained", task_id=task.id)
             continue
-        if not await _resources_available(api_client, metadata):
-            continue
-        await _clear_failed_run_iteration(api_client, task)
-        # Release and the owed "resumed" notice are one API transaction; the
-        # notice replaces the wait's own record on the refused Run, so a
-        # "waiting" message still owed is superseded instead of arriving stale.
-        released = await api_client.resume_task_from_resource_wait(
-            task.id,
-            TaskResourceResumeCommand(text=RESOURCES_RESUMED_TASK_TEXT, actor="supervisor"),
-        )
-        if released.disposition is not TaskResourceResumeDisposition.RESUMED:
-            log.info("resource_wait_resume_skipped", task_status=released.task_status.value)
-            continue
-        if released.owner_notification is not None:
-            await deliver_in_tick(
-                api_client, redis_client, released.run_id, released.owner_notification, log
-            )
-        resumed += 1
+
     return {"resumed": resumed, "expired": expired}
 
 

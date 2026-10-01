@@ -477,7 +477,7 @@ async def _recover_recheck_deploy_handoff(
     redis_client: RedisStreamClient,
     run,
     log: structlog.stdlib.BoundLogger,
-) -> DeployRetryAction:
+) -> bool:
     """Publish a durable recheck deploy handoff left queued by a failed caller.
 
     The same age fence as QA handoff recovery leaves the original publisher time

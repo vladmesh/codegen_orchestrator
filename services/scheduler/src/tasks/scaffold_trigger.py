@@ -76,18 +76,21 @@ async def trigger_scaffolds(
     for project in projects:
         project_id = str(project.id)
         log = logger.bind(project_id=project_id, project_title=project.title)
-
-        if project.status == ProjectStatus.DRAFT:
-            if await _trigger_full_scaffold(project, api_client, redis_client, log):
-                triggered += 1
-        elif project.status == ProjectStatus.ACTIVE:
-            if await _trigger_ensure_scaffold(
-                project,
-                api_client,
-                redis_client,
-                log,
-            ):
-                triggered += 1
+        try:
+            if project.status == ProjectStatus.DRAFT:
+                if await _trigger_full_scaffold(project, api_client, redis_client, log):
+                    triggered += 1
+            elif project.status == ProjectStatus.ACTIVE:
+                if await _trigger_ensure_scaffold(
+                    project,
+                    api_client,
+                    redis_client,
+                    log,
+                ):
+                    triggered += 1
+        except Exception:
+            log.exception("scaffold_project_trigger_contained")
+            continue
 
     return triggered
 

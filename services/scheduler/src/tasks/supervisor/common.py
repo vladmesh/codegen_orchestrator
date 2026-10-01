@@ -63,6 +63,12 @@ async def _admissible_target_exists(
     provisioning_failed_handles = provisioning_failed_server_handles(
         await api_client.list_active_incidents()
     )
+    applications_by_server: dict[str, list] = {}
+    for application in await api_client.get_applications():
+        if application.server_handle is None:
+            continue
+        applications_by_server.setdefault(application.server_handle, []).append(application)
+
     for server in await api_client.get_servers():
         if not server_admits_application(server, provisioning_failed_handles):
             continue
@@ -76,10 +82,9 @@ async def _admissible_target_exists(
         age = (now - checked).total_seconds()
         if not 0 <= age <= _resource_wait_metrics_freshness_seconds():
             continue
-        apps = await api_client.get_applications(server.handle)
         reserved = sum(
             app.reserved_ram_mb
-            for app in apps
+            for app in applications_by_server.get(server.handle, ())
             if app.status not in {ApplicationStatus.NOT_DEPLOYED, ApplicationStatus.STOPPED}
         )
         if server.capacity_ram_mb >= max(reserved, server.used_ram_mb) + required_ram_mb:

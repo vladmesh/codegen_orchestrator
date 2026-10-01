@@ -13,7 +13,7 @@ import structlog
 
 from shared.clients.infra_client import check_http_health
 from shared.contracts.dto.application import ApplicationStatus
-from shared.models.incident import IncidentType
+from shared.contracts.dto.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
 from src.clients.api import api_client
 from src.tasks.ssl_checker import check_ssl_expiry
