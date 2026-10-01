@@ -16,6 +16,7 @@ from shared.contracts.dto.server import (
     ProvisioningFinalization,
     ProvisioningFinalizationDisposition,
     ProvisioningFinalizationResult,
+    ServerLabelsPatch,
     ServerStatus,
     SSHUser,
     TargetIdentity,
@@ -569,6 +570,24 @@ def _apply_key_change(
         server.ssh_key_fingerprint = None
         return changed
     return False
+
+
+@router.patch("/{handle}/labels", response_model=ServerRead)
+async def patch_server_labels(
+    handle: str,
+    patch: ServerLabelsPatch,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> Server:
+    """Merge server labels while holding the row lock used by other writers."""
+    server = await db.get(Server, handle, with_for_update=True)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    server.labels = dict(server.labels or {}) | patch.values
+    await db.commit()
+    await db.refresh(server)
+    return server
 
 
 @router.patch("/{handle}", response_model=ServerRead)
