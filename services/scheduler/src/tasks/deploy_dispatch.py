@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
 
-
 def deploy_run_id(prefix: str, *identity_parts: str) -> str:
     """Return one stable Run id for one logical deploy handoff."""
     canonical = "\x1f".join(identity_parts)
