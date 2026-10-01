@@ -2,7 +2,6 @@
 
 from typing import Annotated
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
@@ -51,5 +50,7 @@ def create_graph() -> StateGraph:
     graph.add_edge(START, "provisioner")
     graph.add_edge("provisioner", END)
 
-    memory = MemorySaver()
-    return graph.compile(checkpointer=memory)
+    # Provisioner invocations are independent one-shot runs. Persisting them in
+    # an in-process MemorySaver under a stable server thread id only accumulates
+    # messages across triggers and cannot survive a restart anyway.
+    return graph.compile()
