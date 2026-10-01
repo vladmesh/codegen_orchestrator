@@ -1,5 +1,6 @@
 """Service recovery for provisioner - redeploys services after server recovery."""
 
+import asyncio
 import structlog
 
 from shared.diagnostics import redact_diagnostic
@@ -14,6 +15,11 @@ logger = structlog.get_logger()
 
 MAX_ERROR_PREVIEW = 5
 MAX_ERROR_DETAIL = 500
+
+
+async def _run_playbook(runner: AnsibleRunner, **kwargs) -> tuple[bool, str]:
+    """Keep blocking Ansible execution off the infra-service event loop."""
+    return await asyncio.to_thread(runner.run_playbook, **kwargs)
 
 
 async def redeploy_service(
@@ -49,7 +55,7 @@ async def redeploy_service(
         status="start",
     )
     try:
-        success, output = AnsibleRunner().run_playbook(
+        success, output = await _run_playbook(AnsibleRunner(), 
             server_ip=server_ip,
             server_handle=service.server_handle,
             playbook_name="deploy_project.yml",
