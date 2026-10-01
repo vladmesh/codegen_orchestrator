@@ -197,6 +197,13 @@ async def get_project(project_id: str, *, config: RunnableConfig) -> str:
     resp = await api.get_raw(f"projects/{project_id}", headers=headers)
     resp.raise_for_status()
     project = resp.json()
+    # The PO may reason about project shape, but encrypted secret values and
+    # generated bulk artifacts must not enter the LLM transcript/checkpoint.
+    config_data = project.get("config")
+    if isinstance(config_data, dict):
+        project["config"] = {key: value for key, value in config_data.items() if key != "secrets"}
+    project.pop("tree", None)
+    project.pop("specs_summary", None)
     return json.dumps(project, indent=2, ensure_ascii=False)
 
 
