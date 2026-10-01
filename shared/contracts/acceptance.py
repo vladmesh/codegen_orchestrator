@@ -79,7 +79,7 @@ def parse_health_only_criteria(criteria: str) -> list[HealthCriterion] | None:
 #: bot-only observable — "THEN the bot sends today's digest to the owner" —
 #: cannot be bound and its row fails saying the criterion named no route this
 #: run could read. That is a known accepted limitation of the package path, not
-#: an oversight; `docs/CONTRACTS.md` records it and what would lift it.
+#: an oversight; `docs/contracts/kit-template-and-qa.md` records it and what would lift it.
 #:
 #: `WITH` carries the arguments the product's declared `jobs_schema` must
 #: accept, as one JSON object. A line whose arguments are not a JSON object is
@@ -110,7 +110,7 @@ class ScheduledBehaviourCriterion(BaseModel):
     reminder as emitted` — because central QA binds that row to an HTTP read of
     a named route and nothing else. A package behaviour whose observable names
     no such route is not currently bindable and its row fails naming that; the
-    limitation is known and accepted, and `docs/CONTRACTS.md` states it.
+    limitation is known and accepted, and `docs/contracts/kit-template-and-qa.md` states it.
     """
 
     model_config = ConfigDict(extra="forbid")
