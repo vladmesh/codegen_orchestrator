@@ -25,6 +25,7 @@ from shared.queues import (
     QueueBinding,
 )
 
+
 class TestQueueBinding:
     def test_frozen(self):
         b = QueueBinding(stream="s", group="g", description="d")
