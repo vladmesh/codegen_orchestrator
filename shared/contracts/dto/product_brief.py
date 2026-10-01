@@ -117,7 +117,7 @@ class SettingScope(StrEnum):
     """The subject boundary of one settings value, as the product declares it.
 
     The same two words the generated core settings contract uses
-    (`codegen-product-kit`, `docs/CONTRACTS.md`, "Core settings v1"): `product`
+    (`codegen-product-kit`, `docs/contracts/product-brief.md`, "Core settings v1"): `product`
     stores one product-wide value, `user` requires a positive local
     `subject_id`.
     """

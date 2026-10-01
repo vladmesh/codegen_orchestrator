@@ -22,7 +22,9 @@ from shared.server_admission import IN_PROGRESS_TARGET_STATUSES, target_readines
 @pytest.fixture
 def counts(monkeypatch):
     monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
-    document = (Path(__file__).resolve().parents[4] / "docs/SECRETS.md").read_text()
+    document = (
+        Path(__file__).resolve().parents[4] / "docs/runbooks/po-redis-and-checkpoints.md"
+    ).read_text()
     start = document.index("def po_maintenance_counts(")
     end = document.index("\nasync def preflight():", start)
     namespace = {
@@ -33,13 +35,15 @@ def counts(monkeypatch):
         "ServerStatus": ServerStatus,
     }
     # Execute the repository-owned operator predicate, never network-supplied code.
-    exec(compile(ast.parse(document[start:end]), "SECRETS.md", "exec"), namespace)  # noqa: S102
+    exec(compile(ast.parse(document[start:end]), "po-redis-and-checkpoints.md", "exec"), namespace)  # noqa: S102
     return namespace["po_maintenance_counts"]
 
 
 @pytest.fixture
 def run_preflight(monkeypatch, capsys):
-    document = (Path(__file__).resolve().parents[4] / "docs/SECRETS.md").read_text()
+    document = (
+        Path(__file__).resolve().parents[4] / "docs/runbooks/po-redis-and-checkpoints.md"
+    ).read_text()
     start = document.index("def po_maintenance_counts(")
     end = document.index("\nsys.exit(asyncio.run(preflight()))", start)
 
@@ -83,7 +87,10 @@ def run_preflight(monkeypatch, capsys):
             "get_time4vps_client": get_provider,
             "managed_provider_ids": lambda _: managed_ids,
         }
-        exec(compile(ast.parse(document[start:end]), "SECRETS.md", "exec"), namespace)  # noqa: S102
+        exec(  # noqa: S102
+            compile(ast.parse(document[start:end]), "po-redis-and-checkpoints.md", "exec"),
+            namespace,
+        )
         exit_code = asyncio.run(namespace["preflight"]())
         return exit_code, json.loads(capsys.readouterr().out), events
 

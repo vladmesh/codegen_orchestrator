@@ -339,7 +339,7 @@ class TestCapabilityShapeDirectives:
 
     def test_points_at_the_recipe_instead_of_restating_it(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
-        assert "docs/CONTRACTS.md" in prompt
+        assert "docs/contracts/kit-template-and-qa.md" in prompt
         assert "Installing a kit package into a generated product" in prompt
 
     def test_leaves_a_story_that_needs_no_new_capability_untouched(self):

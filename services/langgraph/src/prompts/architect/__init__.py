@@ -321,7 +321,7 @@ product.** The task's work is to obtain the kit at the ref this product is \
 pinned to, build the package wheel from it, install it with \
 `kit add <name> --wheel <path>` from the product root, and let that command \
 perform the whole product mutation including regeneration. Do not restate the \
-commands in the task: the recipe is written down once, in `docs/CONTRACTS.md` \
+commands in the task: the recipe is written down once, in `docs/contracts/kit-template-and-qa.md` \
 under "Installing a kit package into a generated product" and in the \
 engineering worker's own instructions, and the developer already has both. \
 Point the task at it, and put in the acceptance criteria what the install must \
