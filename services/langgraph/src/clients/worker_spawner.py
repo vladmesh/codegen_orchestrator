@@ -851,8 +851,6 @@ async def request_spawn(
         from src.prompts import load_developer_instructions
 
         instructions = load_developer_instructions()
-        if not instructions:
-            instructions = "Read /workspace/TASK.md for your implementation task."
 
         create_cmd = CreateWorkerCommand(
             request_id=request_id,

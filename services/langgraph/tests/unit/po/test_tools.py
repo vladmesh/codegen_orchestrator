@@ -232,6 +232,31 @@ class TestCreateProject:
         mock_api_client.post_raw.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_redacts_secrets_and_bulk_generated_artifacts(self, mock_api_client):
+        mock_api_client.get_raw.return_value = _make_response(
+            {
+                "id": "abc",
+                "title": "My Bot",
+                "config": {
+                    "modules": ["backend"],
+                    "secrets": {"TOKEN": "gAAAAA-encrypted"},
+                    "env_hints": {"TOKEN": "service token"},
+                },
+                "tree": {"services": ["backend"]},
+                "specs_summary": {"models": [{"name": "User"}]},
+            }
+        )
+
+        result = await get_project.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
+
+        parsed = json.loads(result)
+        assert parsed["config"]["modules"] == ["backend"]
+        assert parsed["config"]["env_hints"] == {"TOKEN": "service token"}
+        assert "secrets" not in parsed["config"]
+        assert "tree" not in parsed
+        assert "specs_summary" not in parsed
+
+    @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
         mock_api_client.post_raw.return_value = _make_response(
             {"id": "x", "title": "Test", "slug": "test-1234"}

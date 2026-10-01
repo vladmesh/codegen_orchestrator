@@ -388,13 +388,16 @@ def test_po_tools_hold_no_httpx_client():
 
 @pytest.mark.parametrize(("module", "class_name"), sorted(CLIENT_CLASSES.items()))
 def test_service_clients_take_their_transport_from_shared(module: str, class_name: str):
-    """Each service keeps its own application methods and its public class name."""
+    """Each service keeps the shared transport as its direct transport base."""
     tree = ast.parse((REPO_ROOT / module).read_text())
     classes = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
     assert class_name in classes, f"{module} no longer defines {class_name}"
     bases = [base.id for base in classes[class_name].bases if isinstance(base, ast.Name)]
-    assert bases == ["InternalAPIClient"], (
+    assert bases and bases[-1] == "InternalAPIClient", (
         f"{class_name} must take its transport from InternalAPIClient, got bases {bases}"
+    )
+    assert set(bases[:-1]) <= {"RunAPIClientMixin"}, (
+        f"{class_name} has an unapproved service-client mixin: {bases}"
     )
 
 

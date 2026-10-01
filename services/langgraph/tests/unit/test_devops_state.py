@@ -4,6 +4,12 @@ from src.subgraphs.devops.state import DevOpsState
 
 
 class TestDevOpsState:
+    def test_allocator_facts_are_declared(self):
+        annotations = DevOpsState.__annotations__
+        assert "allocation_failure_reason" in annotations
+        assert "allocation_required_ram_mb" in annotations
+        assert "allocation_min_disk_mb" in annotations
+
     def test_smoke_result_field_declared(self):
         """smoke_result must be a declared field in DevOpsState."""
         annotations = DevOpsState.__annotations__

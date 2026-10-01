@@ -2,6 +2,8 @@
 
 import re
 
+import pytest
+
 from scripts.platform_capabilities import load_manifest
 from src.prompts import load_developer_instructions
 from src.prompts.architect import SYSTEM_PROMPT as ARCHITECT_PROMPT
@@ -22,6 +24,23 @@ class TestDeveloperInstructions:
 
     def test_loads_successfully(self):
         assert self.content, "INSTRUCTIONS.md should not be empty"
+
+    def test_missing_file_is_a_packaging_error(self, tmp_path, monkeypatch):
+        from src import prompts
+
+        monkeypatch.setattr(prompts, "PROMPTS_DIR", tmp_path)
+        with pytest.raises(RuntimeError, match="developer instructions missing"):
+            prompts.load_developer_instructions()
+
+    def test_empty_file_is_a_packaging_error(self, tmp_path, monkeypatch):
+        from src import prompts
+
+        instructions_dir = tmp_path / "developer_worker"
+        instructions_dir.mkdir()
+        (instructions_dir / "INSTRUCTIONS.md").write_text("   \n")
+        monkeypatch.setattr(prompts, "PROMPTS_DIR", tmp_path)
+        with pytest.raises(RuntimeError, match="developer instructions are empty"):
+            prompts.load_developer_instructions()
 
     def test_contains_result_reporting_endpoints(self):
         assert "localhost:9090/result" in self.content

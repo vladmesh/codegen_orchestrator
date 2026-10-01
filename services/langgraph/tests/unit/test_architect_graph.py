@@ -147,8 +147,6 @@ class TestPlanningIdentityIsInjectedIntoTools:
                 "description": "Create model",
                 "type": "feature",
                 "acceptance_criteria": "Model exists",
-                "story_id": "story-abc",
-                "project_id": "proj-1",
             },
             "id": "call-1",
         }
@@ -178,3 +176,5 @@ class TestPlanningIdentityIsInjectedIntoTools:
 
         payload = api.create_task.call_args[0][0]
         assert payload["planning_attempt_id"] == "plan-1"
+        assert payload["story_id"] == "story-abc"
+        assert payload["project_id"] == "proj-1"
