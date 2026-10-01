@@ -17,7 +17,7 @@ from shared.allocation_freshness import (
     validate_health_check_interval,
 )
 from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
-from shared.models.incident import IncidentType
+from shared.contracts.dto.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
 from src.clients.api import api_client
 from src.metrics import parse_cadvisor, parse_node_exporter

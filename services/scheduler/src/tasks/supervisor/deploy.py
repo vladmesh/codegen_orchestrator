@@ -248,7 +248,11 @@ async def supervise_deploying_stories(
     redis = redis_client._redis
 
     for story in stories:
-        action = await _supervise_deploying_story(api_client, redis_client, redis, story)
+        try:
+            action = await _supervise_deploying_story(api_client, redis_client, redis, story)
+        except Exception:
+            logger.exception("deploy_story_supervision_contained", story_id=story.id)
+            continue
         if action is not DeploySupervisorAction.NONE:
             counts[action.value] += 1
 
@@ -477,7 +481,7 @@ async def _recover_recheck_deploy_handoff(
     redis_client: RedisStreamClient,
     run,
     log: structlog.stdlib.BoundLogger,
-) -> DeployRetryAction:
+) -> bool:
     """Publish a durable recheck deploy handoff left queued by a failed caller.
 
     The same age fence as QA handoff recovery leaves the original publisher time

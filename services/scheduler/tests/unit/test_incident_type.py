@@ -1,6 +1,6 @@
 """Unit tests for IncidentType enum."""
 
-from shared.models.incident import IncidentType
+from shared.contracts.dto.incident import IncidentType
 
 
 class TestIncidentType:
