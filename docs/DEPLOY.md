@@ -1334,17 +1334,8 @@ for backup_helper in backup-db.sh backup-db-rootless.sh; do
   test "$(stat -c '%u:%a' "/usr/local/libexec/$backup_helper")" = 0:755
   sha256sum "/usr/local/libexec/$backup_helper"
 done
-# BEGIN user-owned backup installation
-install -d -m 0700 "$backup_policy_dir" "$backup_unit_dir" "$BACKUP_DIR"
-for backup_unit in orchestrator-backup.service orchestrator-backup.timer; do
-  install -m 0644 "$BACKUP_RELEASE_ROOT/infra/systemd/$backup_unit" "$backup_unit_dir/$backup_unit.next"
-  mv -Tf "$backup_unit_dir/$backup_unit.next" "$backup_unit_dir/$backup_unit"
-done
-if ! test -f "$backup_policy"; then
-  install -m 0600 "$BACKUP_RELEASE_ROOT/infra/systemd/orchestrator-backup.env.example" "$backup_policy"
-fi
-chmod 0600 "$backup_policy"
-# END user-owned backup installation
+"$BACKUP_RELEASE_ROOT/infra/scripts/install-backup-rootless.sh" \
+  "$BACKUP_RELEASE_ROOT" "$backup_policy_dir" "$backup_policy" "$backup_unit_dir" "$BACKUP_DIR"
 # Review/edit this non-secret policy privately if the confirmed host chain changed.
 # Keep only the documented keys, with syntax shared by bash and EnvironmentFile.
 set -a
