@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from httpx import AsyncClient
 import pytest
+from test_application_undeploy_allocations import _application, _project_with_repo, _server
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.queues.deploy import (
@@ -13,8 +14,6 @@ from shared.contracts.queues.deploy import (
     DeployAction,
 )
 from shared.redis.client import RedisStreamClient
-from test_application_undeploy_allocations import _application, _project_with_repo, _server
-
 
 async def _deploy_run_for_application(
     client: AsyncClient, repo_id: str, application_id: int
