@@ -51,7 +51,7 @@ async def _run_cmd(
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except BaseException:
+    except (TimeoutError, asyncio.CancelledError):
         if proc.returncode is None:
             with suppress(ProcessLookupError):
                 proc.kill()
