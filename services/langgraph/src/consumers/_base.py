@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 import os
 import signal
+import socket
 import time
 
 from pydantic import ValidationError
@@ -414,7 +415,7 @@ async def run_queue_worker(
 
     setup_logging(service_name=service_name)
 
-    consumer_name = f"{service_name}-{os.getpid()}"
+    consumer_name = f"{service_name}-{socket.gethostname()}-{os.getpid()}"
 
     redis = RedisStreamClient()
     await redis.connect()
