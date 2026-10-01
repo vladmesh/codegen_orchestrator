@@ -73,7 +73,7 @@ pydantic-core==2.41.5
     # via pydantic
 pydantic-settings==2.12.0
     # via worker-manager (services/worker-manager/pyproject.toml)
-pyjwt==2.13.0
+pyjwt==2.15.0
     # via worker-manager (services/worker-manager/pyproject.toml)
 pynacl==1.6.2
     # via worker-manager (services/worker-manager/pyproject.toml)
@@ -106,7 +106,7 @@ typing-inspection==0.4.2
     #   fastapi
     #   pydantic
     #   pydantic-settings
-urllib3==2.6.3
+urllib3==2.8.0
     # via
     #   docker
     #   requests

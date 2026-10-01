@@ -16,7 +16,7 @@ structlog==26.1.0
 langchain-core==1.5.3
 # shared/ deps: this image COPYs shared, and importing shared.clients (the internal
 # API transport lives there) pulls in the GitHub client with it.
-pyjwt[crypto]==2.13.0
+pyjwt[crypto]==2.15.0
 cryptography==50.0.0
 pynacl==1.6.2
 pyyaml==6.0.3

@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-01
 
+- Bump PyJWT to 2.15.0, urllib3 to 2.8.0 and brace-expansion to 5.0.12 in locks and pins, closing the open Dependabot
+  alerts; also takes the frontend patch bumps of Dependabot PR #675.
+
 - `POST /applications/{id}/monitoring` switches health probing and alerts off per application without touching status or ports;
   SERVICE_DOWN incidents are now matched by application id, so a healthy sibling no longer closes them (#633, #632).
 
