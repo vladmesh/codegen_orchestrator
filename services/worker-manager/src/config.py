@@ -6,8 +6,8 @@ class WorkerManagerSettings(BaseSettings):
     ENVIRONMENT: str = "production"
     LIVE_CONTOUR: str | None = None
     LOG_LEVEL: str = "INFO"
-    REDIS_URL: str = "redis://redis:6379/0"
-    API_BASE_URL: str = "http://api:8000"
+    REDIS_URL: str = Field(min_length=1)
+    API_BASE_URL: str = Field(min_length=1)
 
     # Worker config
     WORKER_IMAGE_PREFIX: str = "worker"
@@ -20,7 +20,7 @@ class WorkerManagerSettings(BaseSettings):
     DOCKER_NETWORK: str = ""
 
     # The broker is the sole worker-visible control-plane transport.
-    WORKER_BROKER_URL: str = "http://worker-broker:8001"
+    WORKER_BROKER_URL: str = Field(min_length=1)
     WORKER_BROKER_INTERNAL_TOKEN: str = Field(min_length=1)
     WORKER_BROKER_SESSION_TTL_SECONDS: int = 3600
 
