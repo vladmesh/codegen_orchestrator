@@ -78,7 +78,6 @@ async def test_reservation_api_error_prevents_ansible_without_fallback(monkeypat
 async def test_missing_provider_credentials_consumes_the_reserved_attempt(monkeypatch):
     monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     monkeypatch.delenv("TIME4VPS_LOGIN", raising=False)
-    monkeypatch.delenv("TIME4VPS_USERNAME", raising=False)
     monkeypatch.delenv("TIME4VPS_PASSWORD", raising=False)
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server()))
