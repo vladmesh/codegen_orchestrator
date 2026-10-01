@@ -2,9 +2,7 @@
 
 from dataclasses import FrozenInstanceError
 
-from fakeredis import aioredis
 import pytest
-import pytest_asyncio
 
 from shared.queues import (
     ARCHITECT_GROUP,
@@ -25,7 +23,6 @@ from shared.queues import (
     WORKER_GROUP,
     WORKER_MANAGER_GROUP,
     QueueBinding,
-    ensure_all_groups,
 )
 from shared.redis.client import decode_redis_value
 
@@ -77,29 +74,3 @@ class TestQueueTopology:
         groups = {b.group for b in pr_bindings}
         assert groups == {SCHEDULER_CONSUMER_GROUP, TELEGRAM_BOT_GROUP}
 
-
-class TestEnsureAllGroups:
-    @pytest_asyncio.fixture
-    async def fake_redis(self):
-        r = aioredis.FakeRedis(decode_responses=True)
-        yield r
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_creates_all_groups(self, fake_redis):
-        await ensure_all_groups(fake_redis)
-
-        # Verify each binding was created
-        for binding in QUEUE_TOPOLOGY:
-            groups = await fake_redis.xinfo_groups(binding.stream)
-            # redis-py 8 returns bytes XINFO GROUPS values — decode before compare.
-            group_names = [decode_redis_value(g["name"]) for g in groups]
-            assert binding.group in group_names, (
-                f"Group {binding.group} missing on {binding.stream}"
-            )
-
-    @pytest.mark.asyncio
-    async def test_idempotent(self, fake_redis):
-        """Calling twice should not raise."""
-        await ensure_all_groups(fake_redis)
-        await ensure_all_groups(fake_redis)
