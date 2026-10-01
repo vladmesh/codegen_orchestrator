@@ -24,9 +24,7 @@ def test_qa_turn_can_omit_engineering_supervision_fields():
 
 def test_turn_rejects_unknown_fields_and_ambiguous_prompt():
     with pytest.raises(ValidationError):
-        WorkerTurnInput.model_validate(
-            {"request_id": "req-1", "prompt": "one", "mystery": "two"}
-        )
+        WorkerTurnInput.model_validate({"request_id": "req-1", "prompt": "one", "mystery": "two"})
     with pytest.raises(ValidationError, match="exactly one"):
         WorkerTurnInput(request_id="req-1", prompt="one", content="two")
 
