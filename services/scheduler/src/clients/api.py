@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel
 
 from shared.clients.internal_api import InternalAPIClient
+from shared.clients.run_api import RunAPIClientMixin
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import (
     DeployDispatchSupersede,
@@ -75,7 +76,7 @@ class StoryOwnerNotificationRead(BaseModel):
     owner_notification: OwnerNotification
 
 
-class SchedulerAPIClient(InternalAPIClient):
+class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
     """HTTP client for scheduler-required API endpoints."""
 
     def __init__(self) -> None:
@@ -260,10 +261,6 @@ class SchedulerAPIClient(InternalAPIClient):
             return existing
         return await self.create_run(run_data)
 
-    async def get_run(self, run_id: str) -> RunDTO:
-        resp = await self.request("GET", f"runs/{run_id}")
-        return RunDTO.model_validate(resp.json())
-
     async def list_runs(
         self,
         *,
@@ -330,27 +327,6 @@ class SchedulerAPIClient(InternalAPIClient):
         """Ask the API for one delivery attempt on a run-backed record."""
         resp = await self.request("POST", f"runs/{run_id}/owner-notification/attempt")
         return OwnerNotificationAttemptClaim.model_validate(resp.json())
-
-    async def update_run(self, run_id: str, data: dict) -> None:
-        """Patch run fields (status, error_message, result)."""
-        await self.request("PATCH", f"runs/{run_id}", json=data)
-
-    async def record_run_outcome_unless_settled(self, run_id: str, data: dict) -> bool:
-        """Write a terminal outcome onto a run, unless it already has one.
-
-        Both the sweep and the worker inside a run can decide it is over, and the
-        API keeps whichever answer landed first. False here means the run had
-        already recorded its own, so the caller's reason is not the one the run
-        carries — which is information, not a failure to be raised: the access
-        this was about still has to be taken back either way.
-        """
-        try:
-            await self.request("PATCH", f"runs/{run_id}", json=data)
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code != httpx.codes.CONFLICT:
-                raise
-            return False
-        return True
 
     async def withdraw_deploy_dispatch(self, run_id: str, reason: str) -> DeployDispatchWithdrawal:
         """Stop a deploy run, and learn whether it got out before the stop landed."""
