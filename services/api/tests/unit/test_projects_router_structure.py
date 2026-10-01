@@ -67,6 +67,12 @@ def test_projects_route_table_keeps_its_public_surface():
             ("200", "422"),
         ),
         (
+            "PATCH",
+            "/api/projects/{project_id}/config",
+            "patch_project_config_api_projects__project_id__config_patch",
+            ("200", "422"),
+        ),
+        (
             "DELETE",
             "/api/projects/{project_id}",
             "delete_project_api_projects__project_id__delete",
