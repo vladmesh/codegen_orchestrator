@@ -1,9 +1,9 @@
 """DevOps subgraph state definition."""
 
-from typing import Annotated
+from typing import Annotated, NotRequired
 
 from langgraph.graph.message import add_messages
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 from shared.contracts.queues.deploy import DeployOutcome
 
