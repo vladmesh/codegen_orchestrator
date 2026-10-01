@@ -1,5 +1,7 @@
 """Domain helpers for allocating runtime ports."""
 
+import inspect
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +48,10 @@ async def allocate_next_port(
             application_id=application_id,
         )
         try:
-            async with db.begin_nested():
+            nested = db.begin_nested()
+            if inspect.isawaitable(nested):
+                nested = await nested
+            async with nested:
                 db.add(allocation)
                 await db.flush()
         except IntegrityError:
