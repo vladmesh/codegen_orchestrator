@@ -19,7 +19,13 @@ from shared.contracts.dto.incident import IncidentStatus, IncidentType
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
-from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
+from shared.contracts.queues.deploy import (
+    DEPLOY_HANDOFF_DISPATCHED_AT_KEY,
+    DEPLOY_HANDOFF_MESSAGE_KEY,
+    DeployAction,
+    DeployMessage,
+    DeployTrigger,
+)
 from shared.contracts.queues.qa import QAMessage
 from shared.models import (
     Application,
@@ -62,6 +68,42 @@ logger = structlog.get_logger()
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 _GITHUB_REPO_PATH_PARTS = 2
+
+
+def _deploy_handoff_metadata(message: DeployMessage, *, application_id: int) -> dict:
+    """Persist the exact story-less deploy message before queue publication."""
+    return {
+        "application_id": application_id,
+        DEPLOY_HANDOFF_MESSAGE_KEY: message.model_dump(mode="json"),
+    }
+
+
+async def _publish_deploy_handoff(
+    redis: RedisStreamClient,
+    db: AsyncSession,
+    run: Run,
+    message: DeployMessage,
+) -> None:
+    """Publish a committed deploy handoff and persist its dispatch stamp.
+
+    A publish exception is outcome-unknown: the Run keeps the exact message and
+    stays queued so the scheduler recovery sweep can replay it after the grace
+    period. A successful publish is stamped in a second transaction.
+    """
+    try:
+        await redis.publish_message(DEPLOY_QUEUE, message)
+    except Exception as exc:
+        logger.exception("application_deploy_publish_outcome_unknown", run_id=run.id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Deploy handoff could not be confirmed",
+        ) from exc
+
+    run.run_metadata = {
+        **(run.run_metadata or {}),
+        DEPLOY_HANDOFF_DISPATCHED_AT_KEY: datetime.now(UTC).isoformat(),
+    }
+    await db.commit()
 
 
 @router.post("/", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
@@ -489,6 +531,7 @@ def stage_undeploy(
         action=DeployAction.UNDEPLOY,
         application_id=application.id,
     )
+    run.run_metadata = _deploy_handoff_metadata(msg, application_id=application.id)
     return run, msg
 
 
@@ -569,16 +612,6 @@ async def stop_application(
 
     app.status = ApplicationStatus.STOPPING
     run_id = _make_deploy_run_id()
-    run = Run(
-        id=run_id,
-        type="deploy",
-        project_id=repo.project_id,
-        run_metadata={"application_id": app.id},
-    )
-    db.add(run)
-    await db.commit()
-    await db.refresh(app)
-
     msg = DeployMessage(
         task_id=run_id,
         project_id=str(repo.project_id),
@@ -587,7 +620,16 @@ async def stop_application(
         action=DeployAction.STOP,
         application_id=app.id,
     )
-    await redis.publish_message(DEPLOY_QUEUE, msg)
+    run = Run(
+        id=run_id,
+        type="deploy",
+        project_id=repo.project_id,
+        run_metadata=_deploy_handoff_metadata(msg, application_id=app.id),
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(app)
+    await _publish_deploy_handoff(redis, db, run, msg)
 
     logger.info("application_stop_requested", app_id=application_id, actor=body.actor)
     return app
@@ -620,7 +662,7 @@ async def undeploy_application(
     await db.commit()
     await db.refresh(app)
 
-    await redis.publish_message(DEPLOY_QUEUE, msg)
+    await _publish_deploy_handoff(redis, db, _run, msg)
 
     logger.info("application_undeploy_requested", app_id=application_id, actor=body.actor)
     return app
@@ -650,12 +692,6 @@ async def redeploy_application(
         server_handle=app.server_handle,
         port=port,
     )
-    run = Run(id=run_id, type="deploy", project_id=repo.project_id)
-    db.add(deployment)
-    db.add(run)
-    await db.commit()
-    await db.refresh(app)
-
     msg = DeployMessage(
         task_id=run_id,
         project_id=str(repo.project_id),
@@ -669,7 +705,17 @@ async def redeploy_application(
         # they are still both named so nothing has to infer that they do.
         deployed_commit_sha=head_sha,
     )
-    await redis.publish_message(DEPLOY_QUEUE, msg)
+    run = Run(
+        id=run_id,
+        type="deploy",
+        project_id=repo.project_id,
+        run_metadata=_deploy_handoff_metadata(msg, application_id=app.id),
+    )
+    db.add(deployment)
+    db.add(run)
+    await db.commit()
+    await db.refresh(app)
+    await _publish_deploy_handoff(redis, db, run, msg)
 
     logger.info("application_redeploy_requested", app_id=application_id, actor=body.actor)
     return app
@@ -886,16 +932,8 @@ async def create_from_repo(
     )
     db.add(allocation)
 
-    # Create Run
+    # Create a durable deploy handoff before publishing it.
     run_id = _make_deploy_run_id()
-    run = Run(id=run_id, type="deploy", project_id=body.project_id)
-    db.add(run)
-
-    await db.commit()
-    await db.refresh(app)
-    await db.refresh(repo)
-
-    # Publish deploy message
     msg = DeployMessage(
         task_id=run_id,
         project_id=str(body.project_id),
@@ -909,7 +947,18 @@ async def create_from_repo(
         # they are still both named so nothing has to infer that they do.
         deployed_commit_sha=head_sha,
     )
-    await redis.publish_message(DEPLOY_QUEUE, msg)
+    run = Run(
+        id=run_id,
+        type="deploy",
+        project_id=body.project_id,
+        run_metadata=_deploy_handoff_metadata(msg, application_id=app.id),
+    )
+    db.add(run)
+
+    await db.commit()
+    await db.refresh(app)
+    await db.refresh(repo)
+    await _publish_deploy_handoff(redis, db, run, msg)
 
     logger.info(
         "application_created_from_repo",
