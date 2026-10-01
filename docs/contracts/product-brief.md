@@ -142,7 +142,7 @@ presents a correction.
 `ProductBriefContent.initial_settings` is an ordered list of `InitialSetting` —
 a manifest-declared `key`, an explicit `scope` (`product`, or `user` with a
 positive `subject_id`), and a JSON `value` — the same vocabulary the generated
-product's core settings contract uses (`codegen-product-kit`, `docs/CONTRACTS.md`,
+product's core settings contract uses (`codegen-product-kit`, `docs/contracts/product-brief.md`,
 "Core settings v1"), so writing them into a product later is a transcription and
 not an interpretation. `(key, scope, subject_id)` is unique within one brief. A
 credential is not a setting: a credential-shaped key or value is refused by the
@@ -256,7 +256,7 @@ brief adds nothing and the run is exactly what it was.
 
 **A QA run can invoke a *named* scheduled behaviour, and judges it on the
 product's own output.** The generated product's released core jobs contract
-(`codegen-product-kit`, `docs/CONTRACTS.md`, "Core jobs v1") is the whole of the
+(`codegen-product-kit`, `docs/contracts/product-brief.md`, "Core jobs v1") is the whole of the
 mechanism: `POST /jobs/fire` takes a `JobFire` and `POST /jobs/evidence` takes a
 `JobCommandRef`, both `contract_version: 1`. Central QA calls them through
 `services/langgraph/src/clients/product_jobs.py`, the same narrow shape as the
