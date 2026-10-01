@@ -490,11 +490,11 @@ async def _supervise_failed_task(
         # The API commits both status hops and the iteration bump under one row
         # lock. A transport failure can therefore be retried safely instead of
         # leaving the task stranded in BACKLOG between three separate writes.
-        retried = await api_client.retry_failed_task(task.id, "supervisor")
+        await api_client.retry_failed_task(task.id, "supervisor")
         log.warning(
             "task_retry",
-            new_iteration=retried.current_iteration,
-            max_iterations=retried.max_iterations,
+            new_iteration=current_iter + 1,
+            max_iterations=max_iter,
         )
         return 1, 0
     else:
