@@ -196,8 +196,11 @@ gets a fixed apology, never exception text.
 
 Canonical control-plane sources: `shared/contracts/queues/worker.py`,
 `shared/contracts/worker_control_plane.py`, and `shared/contracts/worker_turn.py`.
-The current per-worker input wire payload is still producer-owned JSON rather than the legacy
-`DeveloperWorkerInput` DTO; typing that turn envelope is tracked with the worker-contract cleanup.
+Per-worker input is the shared `WorkerTurnInput` envelope. Engineering producers
+must send `attempt_id` together with `turn_deadline_seconds`; QA executor turns
+omit both and therefore do not create engineering active-turn supervision state.
+The broker rejects unknown or malformed turn fields before leasing them, and the
+wrapper client revalidates the normalized payload before execution.
 
 Worker-manager owns container lifecycle. Developer turn I/O bypasses
 worker-manager: the wrapper/broker leases input, accepts one typed output, and
@@ -338,7 +341,7 @@ invariants are in [REST story, task, run, and policy surfaces](contracts/story-t
 | `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler-pipeline/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
 | `QAMessage`, QA outcomes | `queues/qa.py` | supervisor/admin action | QA consumer | run id names the QA decision; criteria are resolved before publication |
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
-| worker input/output | `services/langgraph/src/clients/{worker_spawner,qa_worker}.py`, wrapper/broker | developer/QA node | wrapper / developer/QA node | broker request id and accepted output settle a leased turn; input remains producer-owned JSON |
+| worker input/output | `shared/contracts/worker_turn.py`, LangGraph worker clients, wrapper/broker | developer/QA node | wrapper / developer/QA node | `WorkerTurnInput` is validated before lease; engineering turns carry attempt+deadline together, while QA turns omit both; broker request id and accepted output settle a leased turn |
 | provisioning request/result | `queues/provisioner.py` | scheduler-infrastructure / infra-service | infra-service / scheduler-infrastructure and bot | result consumers use their own group semantics |
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |

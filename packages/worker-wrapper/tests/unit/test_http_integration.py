@@ -22,6 +22,12 @@ from shared.contracts.queues.worker_result import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_workspace(monkeypatch, tmp_path):
+    """HTTP-turn tests must never inspect a host/container /workspace mount."""
+    monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path / "workspace"))
+
+
 def _make_config(**overrides) -> WorkerWrapperConfig:
     defaults = {
         "broker_url": "http://worker-broker:8001",

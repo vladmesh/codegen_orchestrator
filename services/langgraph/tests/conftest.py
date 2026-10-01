@@ -7,10 +7,6 @@ import uuid
 import pytest
 from redis.asyncio import Redis
 
-from shared.contracts.queues.developer_worker import (
-    DeveloperWorkerInput,
-    DeveloperWorkerOutput,
-)
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import (
     CreateWorkerCommand,
@@ -77,33 +73,6 @@ class TestHarness:
             worker_id=worker_id,
         )
         await self.redis.xadd("worker:responses:developer", {"data": response.model_dump_json()})
-
-    async def expect_worker_task(self, worker_id: str, timeout: int = 10) -> DeveloperWorkerInput:
-        """Waits for task in worker:developer:input."""
-        msg_data = await self._wait_for_message("worker:developer:input", timeout)
-        return DeveloperWorkerInput.model_validate_json(msg_data["data"])
-
-    async def simulate_worker_success(
-        self, task_id: str, request_id: str, commit_sha: str | None = "abc1234"
-    ):
-        """Simulates Worker completing the task successfully."""
-        output = DeveloperWorkerOutput(
-            request_id=request_id,
-            status="success",
-            task_id=task_id,
-            commit_sha=commit_sha,
-        )
-        await self.redis.xadd("worker:developer:output", {"data": output.model_dump_json()})
-
-    async def simulate_worker_crash(self, task_id: str, request_id: str):
-        """Simulates Worker crashing (OOM)."""
-        output = DeveloperWorkerOutput(
-            request_id=request_id,
-            status="failed",
-            error="Worker crashed: OOM killed",
-            task_id=task_id,
-        )
-        await self.redis.xadd("worker:developer:output", {"data": output.model_dump_json()})
 
     async def _wait_for_message(self, stream: str, timeout: int) -> dict:
         """Wait for a NEW message on Redis stream."""

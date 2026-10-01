@@ -230,6 +230,40 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
 
 
 @pytest.mark.asyncio
+async def test_lease_rejects_malformed_typed_turn_before_wrapper_execution():
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    worker_id = "typed-turn-worker"
+    token = "t" * 43
+    registration = main.Registration(
+        worker_id=worker_id,
+        token=token,
+        worker_type=WorkerType.DEVELOPER,
+        input_stream=f"worker:{worker_id}:input",
+        output_stream=f"worker:{worker_id}:output",
+    )
+    await main.register_worker(registration, main.settings.BROKER_INTERNAL_TOKEN)
+    await redis.xadd(
+        registration.input_stream,
+        {
+            "data": json.dumps(
+                {
+                    "request_id": "req-1",
+                    "attempt_id": "attempt-1",
+                    "prompt": "do the work",
+                }
+            )
+        },
+    )
+
+    with pytest.raises(main.HTTPException) as invalid:
+        await main.lease_input(worker_id, token)
+
+    assert invalid.value.status_code == 422
+    assert await redis.hgetall(active_turn_key(worker_id)) == {}
+
+
+@pytest.mark.asyncio
 async def test_a_qa_worker_gets_the_turn_protocol_and_no_control_plane(monkeypatch):
     """A QA executor's own credential runs its turn and buys nothing else.
 

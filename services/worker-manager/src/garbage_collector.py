@@ -1,6 +1,6 @@
 """Garbage collection for orphaned containers, networks, workspaces, and images."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from http import HTTPStatus
 import os
 from pathlib import Path
@@ -377,6 +377,14 @@ async def _notify_workspace_deleted(repo_id: str) -> None:
         logger.warning("workspace_gc_notify_error", repo_id=repo_id, error=str(exc))
 
 
+def _image_last_used_epoch(value: str) -> float:
+    """Interpret legacy naive image timestamps as UTC, like current writers."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
 async def garbage_collect_images(
     redis: Redis, docker: DockerClientWrapper, *, retention_seconds: int = 7 * 24 * 3600
 ) -> None:
@@ -391,8 +399,7 @@ async def garbage_collect_images(
                 continue
             last_used_str = await redis.get(f"worker:image:last_used:{tag}")
             if last_used_str:
-                last_used = datetime.fromisoformat(last_used_str)
-                age = now - last_used.timestamp()
+                age = now - _image_last_used_epoch(last_used_str)
                 if age > retention_seconds:
                     logger.info("gc_removing_image", image=tag, age=age)
                     await docker.remove_image(tag, force=True)

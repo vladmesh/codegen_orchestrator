@@ -42,12 +42,13 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
     WorkerOwnership,
 )
+from shared.contracts.worker_turn import WorkerTurnInput
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
-from shared.redis.client import DEFAULT_STREAM_MAXLEN
 
 from ..config.settings import get_settings
 from .worker_spawner import CREATION_TIMEOUT, _wait_for_response, _wait_until_ready
+from .worker_turns import ensure_worker_output_group, publish_worker_turn
 
 logger = get_logger(__name__)
 
@@ -243,18 +244,11 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
         if ready_failure:
             raise _classify_start_failure(ready_failure.output)
 
-        output_stream = f"worker:{worker_id}:output"
-        try:
-            await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
-        except redis.ResponseError as exc:
-            if "BUSYGROUP" not in str(exc):
-                raise
-
-        await redis_client.xadd(
-            f"worker:{worker_id}:input",
-            {"data": json.dumps({"request_id": request_id, "prompt": prompt, "user_id": 0})},
-            maxlen=DEFAULT_STREAM_MAXLEN,
-            approximate=True,
+        output_stream = await ensure_worker_output_group(redis_client, worker_id, group_name)
+        await publish_worker_turn(
+            redis_client,
+            worker_id,
+            WorkerTurnInput(request_id=request_id, prompt=prompt),
         )
         logger.info("qa_executor_started", worker_id=worker_id, timeout=timeout)
 

@@ -6,6 +6,7 @@ import pytest
 
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
+from src.garbage_collector import _image_last_used_epoch
 from src.manager import WorkerManager
 
 
@@ -129,6 +130,11 @@ async def test_image_caching_strategy(mock_docker_client, worker_settings):
     assert new_last_used >= last_used
 
 
+def test_legacy_naive_image_timestamp_is_utc():
+    instant = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    assert _image_last_used_epoch(instant.replace(tzinfo=None).isoformat()) == instant.timestamp()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_naive_timestamp", [False, True])
 async def test_garbage_collection_real_logic(
@@ -178,4 +184,5 @@ async def test_garbage_collection_real_logic(
     # but we can check call_args_list
     removed_images = [call.args[0] for call in mock_docker_client.remove_image.call_args_list]
     assert old_image in removed_images
+    assert new_image not in removed_images
     assert new_image not in removed_images
