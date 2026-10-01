@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from shared.clients.run_api import RunAPIClientMixin
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunUpdate
 
 
 class _RunClient(RunAPIClientMixin):
@@ -15,12 +15,7 @@ class _RunClient(RunAPIClientMixin):
 
 
 def test_unknown_run_update_field_is_rejected():
-    client = _RunClient()
-
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        client.update_run  # keep the typed seam visible to static checks
-        from shared.contracts.dto.run import RunUpdate
-
         RunUpdate.model_validate({"statuz": "failed"})
 
 
