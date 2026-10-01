@@ -179,7 +179,12 @@ class _API:
 
     async def patch_raw(self, path: str, json: dict, headers=None, **kwargs) -> MagicMock:
         self.patches.append((path, json))
-        self.project_config = json["config"]
+        if path == f"projects/{PROJECT_ID}/config":
+            for key in json.get("remove", []):
+                self.project_config.pop(key, None)
+            self.project_config.update(json.get("values", {}))
+        else:
+            self.project_config = json["config"]
         return _response({"id": PROJECT_ID, "config": self.project_config})
 
 
