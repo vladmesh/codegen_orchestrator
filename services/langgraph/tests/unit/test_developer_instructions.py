@@ -26,7 +26,7 @@ class TestDeveloperInstructions:
         assert self.content, "INSTRUCTIONS.md should not be empty"
 
     def test_missing_file_is_a_packaging_error(self, tmp_path, monkeypatch):
-        import src.prompts as prompts
+        from src import prompts
 
         monkeypatch.setattr(prompts, "PROMPTS_DIR", tmp_path)
         with pytest.raises(RuntimeError, match="developer instructions missing"):
