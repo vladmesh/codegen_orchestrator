@@ -308,7 +308,7 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
     if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT:
         await _write_empty_terminal(task_id, terminal)
     else:
-        await api_client.patch(f"runs/{task_id}", json=terminal)
+        await api_client.update_run(task_id, terminal)
     if (
         planning_task_id
         and planning_task_id.startswith("pr-conflict-")
@@ -345,7 +345,7 @@ async def _write_empty_terminal(task_id: str, terminal: dict) -> None:
     """
     try:
         try:
-            await api_client.patch(f"runs/{task_id}", json=terminal)
+            await api_client.update_run(task_id, terminal)
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
             if (
                 isinstance(exc, httpx.HTTPStatusError)
@@ -353,7 +353,7 @@ async def _write_empty_terminal(task_id: str, terminal: dict) -> None:
             ):
                 raise
             logger.warning("empty_run_write_retry", task_id=task_id, error_type=type(exc).__name__)
-            await api_client.patch(f"runs/{task_id}", json=terminal)
+            await api_client.update_run(task_id, terminal)
     except Exception as exc:
         logger.error("empty_run_write_failed", task_id=task_id, error_type=type(exc).__name__)
         raise EmptyResultSettlementError(f"empty result for run {task_id} is not settled") from None
