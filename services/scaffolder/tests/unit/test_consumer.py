@@ -371,9 +371,10 @@ class TestProcessScaffoldJob:
         ):
             assert (await process_scaffold_job(valid_job_data, mock_redis))["status"] == "success"
 
-        assert "repo_auto_merge_verification" in mock_api.patch_project_config.await_args.kwargs[
-            "remove"
-        ]
+        assert (
+            "repo_auto_merge_verification"
+            in mock_api.patch_project_config.await_args.kwargs["remove"]
+        )
 
     @pytest.mark.asyncio
     async def test_branch_protection_not_called_on_failure(
