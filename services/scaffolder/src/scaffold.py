@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import suppress
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
@@ -48,7 +49,15 @@ async def _run_cmd(
         cwd=str(cwd) if cwd else None,
         env=env,
     )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except BaseException:
+        if proc.returncode is None:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            with suppress(Exception):
+                await proc.communicate()
+        raise
     return proc.returncode, stdout.decode(), stderr.decode()
 
 
