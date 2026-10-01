@@ -3,16 +3,56 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 
-__all__ = ["AttemptTurnMetadata", "PreparedCheckoutBaseline", "WorkerActiveTurn", "active_turn_key"]
+__all__ = [
+    "AttemptTurnMetadata",
+    "PreparedCheckoutBaseline",
+    "WorkerActiveTurn",
+    "WorkerTurnInput",
+    "active_turn_key",
+]
 
 
 def active_turn_key(worker_id: str) -> str:
     """Redis hash holding the turn currently leased by this worker."""
     return f"worker:active-turn:{worker_id}"
+
+
+class WorkerTurnInput(BaseModel):
+    """Typed wire envelope for one worker input-stream turn.
+
+    Engineering turns carry an attempt id and a deadline together so the broker
+    can fence the active lease. QA executor turns intentionally omit both and
+    remain unsupervised by the engineering-attempt watchdog.
+
+    task_id, content and user_id remain accepted for rolling compatibility with
+    older queued payloads; current producers use prompt. Unknown fields are
+    rejected at the broker boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1)
+    attempt_id: str | None = Field(default=None, min_length=1)
+    turn_deadline_seconds: int | None = Field(default=None, gt=0)
+    prompt: str | None = Field(default=None, min_length=1)
+    content: str | None = Field(default=None, min_length=1)
+    task_id: str | None = Field(default=None, min_length=1)
+    story_md: str | None = None
+    branch: str | None = Field(default=None, min_length=1)
+    clear_session: bool | None = None
+    user_id: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_turn_shape(self) -> "WorkerTurnInput":
+        if (self.attempt_id is None) != (self.turn_deadline_seconds is None):
+            raise ValueError("attempt_id and turn_deadline_seconds must be provided together")
+        if (self.prompt is None) == (self.content is None):
+            raise ValueError("exactly one of prompt or content must be provided")
+        return self
 
 
 class WorkerActiveTurn(BaseModel):
