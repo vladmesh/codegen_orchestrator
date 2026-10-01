@@ -40,4 +40,3 @@ class EngineeringMessage(BaseMessage):
     story_id: str | None = Field(default=None, min_length=1)
     deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count
     branch: str | None = None  # story branch name (e.g. "story/{story_id}")
-

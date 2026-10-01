@@ -95,4 +95,3 @@ QUEUE_TOPOLOGY: list[QueueBinding] = [
     QueueBinding(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, "Product Owner input messages"),
     QueueBinding(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, "PO proactive messages → telegram-bot"),
 ]
-

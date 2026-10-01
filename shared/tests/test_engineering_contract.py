@@ -89,4 +89,3 @@ class TestEngineeringMessage:
                 telegram_chat_id="user-1",
                 story_id="",
             )
-

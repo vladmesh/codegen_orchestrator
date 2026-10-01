@@ -107,4 +107,3 @@ class TestServerUpdateHealthFields:
         update = ServerUpdate(cpu_usage_pct=55.0, uptime_seconds=3600.0)
         assert update.cpu_usage_pct == 55.0
         assert update.uptime_seconds == 3600.0
-

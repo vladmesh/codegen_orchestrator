@@ -337,7 +337,24 @@ test-integration: $(INTEGRATION_TESTS)
 
 
 
-LIVE_OFFLINE_IGNORE_FLAGS = $(shell awk 'NF && $$1 !~ /^#/ {printf "--ignore=%s ", $$1}' scripts/offline_live_ignores.txt)
+# Canonical inventory: scripts/offline_live_ignores.txt. CI contract enforces parity.
+LIVE_OFFLINE_IGNORE_FLAGS = \
+	--ignore=tests/live/test_api_crud.py \
+	--ignore=tests/live/test_bot_access_revocation.py \
+	--ignore=tests/live/test_capability_cleanup_redis.py \
+	--ignore=tests/live/test_ci_prompt.py \
+	--ignore=tests/live/test_deploy_infra.py \
+	--ignore=tests/live/test_full_pipeline.py \
+	--ignore=tests/live/test_product_brief_pipeline.py \
+	--ignore=tests/live/test_product_brief_package_pipeline.py \
+	--ignore=tests/live/test_sprint_dod.py \
+	--ignore=tests/live/test_health.py \
+	--ignore=tests/live/test_llm_channel_failover.py \
+	--ignore=tests/live/test_parallel_engineering.py \
+	--ignore=tests/live/test_pipeline_engineering.py \
+	--ignore=tests/live/test_pipeline_scaffold.py \
+	--ignore=tests/live/test_streams.py \
+	--ignore=tests/live/test_supervisor.py
 
 # Offline live regressions: no running stack or external Redis required.
 N ?= ""

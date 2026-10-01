@@ -302,4 +302,3 @@ class TargetReadinessRead(BaseModel):
     qa_target_proved_at: datetime | None = None
     target_readiness_failure_phase: TargetReadinessPhase | None = None
     incident_id: int | None = None
-

@@ -73,4 +73,3 @@ class TestQueueTopology:
         assert len(pr_bindings) == expected
         groups = {b.group for b in pr_bindings}
         assert groups == {SCHEDULER_CONSUMER_GROUP, TELEGRAM_BOT_GROUP}
-

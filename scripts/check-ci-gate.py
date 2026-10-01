@@ -715,8 +715,11 @@ def assert_offline_live_make_target() -> None:
     command = "uv run pytest tests/live/ -v --tb=short $(LIVE_OFFLINE_IGNORE_FLAGS)"
     if command not in makefile:
         fail("make test-live must run tests/live/ through LIVE_OFFLINE_IGNORE_FLAGS")
-    if "scripts/offline_live_ignores.txt" not in makefile:
-        fail("make test-live must read the canonical offline live ignore inventory")
+    start = makefile.index("LIVE_OFFLINE_IGNORE_FLAGS =")
+    end = makefile.index("\n\n# Offline live regressions", start)
+    make_ignores = set(re.findall(r"--ignore=(tests/live/[^\\\s]+)", makefile[start:end]))
+    if make_ignores != OFFLINE_LIVE_IGNORES:
+        fail("make test-live ignore inventory must match scripts/offline_live_ignores.txt")
 
 
 def compose_suites(directory: Path) -> set[str]:
