@@ -4,6 +4,7 @@ import datetime as dt
 import secrets
 
 from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 from sqlalchemy import select
@@ -329,6 +330,40 @@ ANONYMOUS_ROUTES: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+def _dependant_explicitly_accepts_bearer(dependant) -> bool:
+    """Whether this dependency subtree intentionally consumes an LK bearer.
+
+    The application gate itself consumes an optional bearer only to authenticate
+    the request. That is not authorization. A route opts into bearer access only
+    when another dependency in its own tree consumes bearer credentials: direct
+    owner checks, current-user checks, or admin/internal guards all do this.
+    """
+
+    call = dependant.call
+    if call is _optional_bearer_scheme or call is _bearer_scheme or call is get_lk_user:
+        return True
+    return any(_dependant_explicitly_accepts_bearer(child) for child in dependant.dependencies)
+
+
+def route_explicitly_accepts_bearer(route: APIRoute) -> bool:
+    """Return True only when the route declares bearer authorization beyond the gate."""
+
+    for dependency in route.dependant.dependencies:
+        # Every route inherits this application dependency. Ignore its subtree:
+        # merely authenticating a bearer must never authorize an otherwise
+        # internal-only endpoint.
+        if dependency.call is require_authenticated_caller:
+            continue
+        if _dependant_explicitly_accepts_bearer(dependency):
+            return True
+    return False
+
+
+def _request_route_explicitly_accepts_bearer(request: Request) -> bool:
+    route = request.scope.get("route")
+    return isinstance(route, APIRoute) and route_explicitly_accepts_bearer(route)
+
+
 async def require_authenticated_caller(
     request: Request,
     _is_internal: bool = Depends(is_internal_service),
@@ -355,9 +390,17 @@ async def require_authenticated_caller(
     if _is_internal:
         return
     if credentials is not None:
-        # Raises 401 for an invalid, expired or orphaned token.
+        # First establish that this is one of our live LK identities.
         await get_lk_user(credentials=credentials, db=db)
-        return
+        # Authentication is not route authorization. Internal-only is the
+        # default; a bearer reaches the handler only when that APIRoute declares
+        # another bearer-aware dependency outside this application-wide gate.
+        if _request_route_explicitly_accepts_bearer(request):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bearer access is not permitted for this route",
+        )
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authentication required",

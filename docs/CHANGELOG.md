@@ -3,6 +3,17 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-01
+
+- Align database migrations with ORM metadata and enforce Run type/status at API and database
+  boundaries, preserving incident uniqueness and rejecting invalid persisted state before migration.
+
+- Retry the stand e2e `CODEX_AUTH_JSON` secret write up to five times, so a transient GitHub 5xx
+  does not fail the run or lose the refreshed Codex token.
+
+- Make LK bearer authorization deny-by-default: valid dashboard tokens reach only routes with an
+  explicit owner/admin/current-user bearer guard; unclassified routes remain internal-only.
+
 ## 2026-09-30
 
 - Quarantine malformed and repeatedly failing Redis work before ACK, preserve transient failures for

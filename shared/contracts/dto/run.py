@@ -50,7 +50,7 @@ class RunCreate(BaseModel):
     """
 
     id: str
-    type: str
+    type: RunType
     project_id: uuid.UUID | None = None
     user_id: int | None = None
     story_id: str | None = None

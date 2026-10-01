@@ -4,14 +4,14 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput, QAAccountingFact
 
 # The create schema is the contract; the API validates against that same object
 # rather than a look-alike of its own.
-from shared.contracts.dto.run import RunCreate
+from shared.contracts.dto.run import RunCreate, RunStatus, RunType
 
 __all__ = [
     "RunBase",
@@ -25,8 +25,8 @@ class RunBase(BaseModel):
     """Base run schema."""
 
     id: str
-    type: str
-    status: str
+    type: RunType
+    status: RunStatus
     project_id: uuid.UUID | None = None
     user_id: int | None = None
     story_id: str | None = None
@@ -53,7 +53,7 @@ class RunRead(RunBase, TimestampedDTO):
 class RunUpdate(BaseModel):
     """Schema for updating a run."""
 
-    status: str | None = None
+    status: RunStatus | None = None
     # Ownership stamping: a producer that creates work on a user's behalf (a
     # durable grant intent, for one) records who it acts for, so the run's own
     # access guard can decide who may read it.
@@ -72,3 +72,12 @@ class RunUpdate(BaseModel):
     # the same locked transaction as the terminal Run transition.
     engineering_attempt: EngineeringAttemptLedgerInput | None = None
     qa_accounting: QAAccountingFact | None = None
+
+    @field_validator("status", mode="before", json_schema_input_type=RunStatus)
+    @classmethod
+    def _refuse_null_status(cls, value: Any) -> Any:
+        # Omitted fields are untouched by PATCH. Explicit null would instead
+        # overwrite the non-nullable column, so it is not an accepted input.
+        if value is None:
+            raise ValueError("status may be omitted but must not be null")
+        return value

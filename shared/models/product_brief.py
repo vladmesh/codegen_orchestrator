@@ -38,7 +38,10 @@ class ProductBrief(Base):
     """One immutable revision of a project's confirmed product intent."""
 
     __tablename__ = "product_briefs"
-    __table_args__ = (UniqueConstraint("project_id", "revision", name="uq_product_brief_revision"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "revision", name="uq_product_brief_revision"),
+        UniqueConstraint("story_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     project_id: Mapped[uuid.UUID] = mapped_column(
@@ -48,7 +51,7 @@ class ProductBrief(Base):
     #: story, and one story is backed by at most one brief, so "the tasks of this
     #: brief" and "the tasks of this story" name the same roster.
     story_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("stories.id"), unique=True, nullable=True, index=True
+        String(255), ForeignKey("stories.id"), nullable=True, index=True
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(500), nullable=False)

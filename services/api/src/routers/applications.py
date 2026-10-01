@@ -694,7 +694,7 @@ async def run_e2e(
 @router.get("/{application_id}/runs", response_model=list[RunRead])
 async def list_application_runs(
     application_id: int,
-    run_type: str | None = None,
+    run_type: RunType | None = None,
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[Run]:
