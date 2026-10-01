@@ -347,9 +347,7 @@ async def _verify_repo_auto_merge(msg, github, api, org, project_config, log) ->
             await api.patch_project_config(
                 msg.project_id,
                 values={
-                    "repo_auto_merge_verification": project_config[
-                        "repo_auto_merge_verification"
-                    ]
+                    "repo_auto_merge_verification": project_config["repo_auto_merge_verification"]
                 },
             )
         except Exception:
