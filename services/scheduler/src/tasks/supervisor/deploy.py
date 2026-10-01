@@ -283,6 +283,7 @@ async def supervise_application_deploy_handoffs(
             logger.warning("application_deploy_handoff_recovered", run_id=run.id)
     return {"recovered": recovered}
 
+
 async def _supervise_deploying_story(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
