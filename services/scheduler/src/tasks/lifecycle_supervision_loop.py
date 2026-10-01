@@ -10,7 +10,7 @@ import structlog
 
 from shared.redis import RedisStreamClient
 
-from .. import startup
+from .. import runtime, startup
 from .supervisor import (
     supervise_deploying_stories,
     supervise_failed_tasks,
@@ -73,21 +73,11 @@ async def supervise_lifecycle_once(
 async def lifecycle_supervision_loop() -> None:
     """Supervise lifecycle state on its own cadence and Redis lifecycle."""
     from ..clients.api import api_client
-
-    redis_client = RedisStreamClient()
-    await redis_client.connect()
-    logger.info(
-        "lifecycle_supervision_started",
-        interval=_lifecycle_supervision_interval(),
+    async def cycle(redis_client: RedisStreamClient) -> None:
+        await supervise_lifecycle_once(api_client, redis_client)
+    await runtime.periodic_loop(
+        interval=_lifecycle_supervision_interval, cycle=cycle, logger=logger,
+        started_event="lifecycle_supervision_started", cycle_event=None,
+        error_event="lifecycle_supervision_cycle_error", stopped_event="lifecycle_supervision_stopped",
+        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
     )
-
-    try:
-        while True:
-            try:
-                await supervise_lifecycle_once(api_client, redis_client)
-            except Exception:
-                logger.exception("lifecycle_supervision_cycle_error")
-            await asyncio.sleep(_lifecycle_supervision_interval())
-    finally:
-        await redis_client.close()
-        logger.info("lifecycle_supervision_stopped")

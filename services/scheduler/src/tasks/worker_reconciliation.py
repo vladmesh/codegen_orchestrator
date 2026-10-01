@@ -22,7 +22,7 @@ from .terminal_worker_reconciliation import reconcile_terminal_story_workers
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
-from .. import startup
+from .. import runtime, startup
 
 logger = structlog.get_logger(__name__)
 
@@ -76,20 +76,11 @@ async def reconcile_workers_once(
 async def worker_reconciliation_loop() -> None:
     """Periodically reconcile workers from durable terminal/settled-attempt facts."""
     from ..clients.api import api_client
-
-    redis_client = RedisStreamClient()
-    await redis_client.connect()
-    logger.info("worker_reconciliation_started", interval=_reconciliation_interval())
-
-    try:
-        while True:
-            try:
-                await reconcile_workers_once(api_client, redis_client)
-            except Exception:
-                # Keep the worker alive for unexpected orchestration failures. The
-                # two external scans already have narrower independent boundaries.
-                logger.exception("worker_reconciliation_cycle_error")
-            await asyncio.sleep(_reconciliation_interval())
-    finally:
-        await redis_client.close()
-        logger.info("worker_reconciliation_stopped")
+    async def cycle(redis_client: RedisStreamClient) -> None:
+        await reconcile_workers_once(api_client, redis_client)
+    await runtime.periodic_loop(
+        interval=_reconciliation_interval, cycle=cycle, logger=logger,
+        started_event="worker_reconciliation_started", cycle_event=None,
+        error_event="worker_reconciliation_cycle_error", stopped_event="worker_reconciliation_stopped",
+        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+    )

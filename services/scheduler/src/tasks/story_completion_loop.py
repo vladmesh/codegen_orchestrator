@@ -8,7 +8,7 @@ import structlog
 
 from shared.redis import RedisStreamClient
 
-from .. import startup
+from .. import runtime, startup
 from .story_completion import complete_stories
 
 logger = structlog.get_logger(__name__)
@@ -22,18 +22,12 @@ async def story_completion_loop() -> None:
     """Complete eligible stories from durable task/story state."""
     from ..clients.api import api_client
 
-    redis_client = RedisStreamClient()
-    await redis_client.connect()
-    logger.info("story_completion_started", interval=_story_completion_interval())
+    async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
+        return {"stories_completed": await complete_stories(api_client, redis_client)}
 
-    try:
-        while True:
-            try:
-                completed = await complete_stories(api_client, redis_client)
-                logger.info("story_completion_cycle", stories_completed=completed)
-            except Exception:
-                logger.exception("story_completion_cycle_error")
-            await asyncio.sleep(_story_completion_interval())
-    finally:
-        await redis_client.close()
-        logger.info("story_completion_stopped")
+    await runtime.periodic_loop(
+        interval=_story_completion_interval, cycle=cycle, logger=logger,
+        started_event="story_completion_started", cycle_event="story_completion_cycle",
+        error_event="story_completion_cycle_error", stopped_event="story_completion_stopped",
+        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+    )

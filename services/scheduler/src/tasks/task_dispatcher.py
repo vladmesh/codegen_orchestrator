@@ -63,7 +63,7 @@ __all__ = [
     "task_dispatcher_loop",
 ]
 
-from .. import startup
+from .. import runtime, startup
 
 logger = structlog.get_logger(__name__)
 
@@ -481,20 +481,11 @@ async def dispatch_todo_tasks(
 async def task_dispatcher_loop() -> None:
     """Periodically dispatch admitted engineering tasks."""
     from ..clients.api import api_client
-
-    redis_client = RedisStreamClient()
-    await redis_client.connect()
-
-    logger.info("task_dispatcher_started", interval=_dispatch_interval())
-
-    try:
-        while True:
-            try:
-                dispatched = await dispatch_todo_tasks(api_client, redis_client)
-                logger.info("dispatcher_cycle", tasks_dispatched=dispatched)
-            except Exception:
-                logger.exception("dispatcher_cycle_error")
-            await asyncio.sleep(_dispatch_interval())
-    finally:
-        await redis_client.close()
-        logger.info("task_dispatcher_stopped")
+    async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
+        return {"tasks_dispatched": await dispatch_todo_tasks(api_client, redis_client)}
+    await runtime.periodic_loop(
+        interval=_dispatch_interval, cycle=cycle, logger=logger,
+        started_event="task_dispatcher_started", cycle_event="dispatcher_cycle",
+        error_event="dispatcher_cycle_error", stopped_event="task_dispatcher_stopped",
+        redis_factory=RedisStreamClient, sleep=asyncio.sleep,
+    )
