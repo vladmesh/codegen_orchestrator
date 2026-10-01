@@ -97,7 +97,6 @@ async def provision_monitoring_baseline(
         return False, "Server has no stored SSH key"
 
     success, output = await _run_playbook(
-
         ansible_runner,
         server_ip=server_ip,
         server_handle=server.handle,

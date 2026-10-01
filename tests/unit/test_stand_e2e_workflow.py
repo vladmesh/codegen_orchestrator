@@ -78,7 +78,10 @@ def test_only_one_e2e_at_a_time():
     """They share a stand, a target server and one subscription per agent."""
     concurrency = _workflow()["concurrency"]
 
-    assert concurrency["group"] == "stand-${{ github.event_name == 'schedule' && 'ttl-sweep' || 'e2e' }}"
+    assert (
+        concurrency["group"]
+        == "stand-${{ github.event_name == 'schedule' && 'ttl-sweep' || 'e2e' }}"
+    )
     assert concurrency["cancel-in-progress"] is False
 
 
@@ -1070,7 +1073,10 @@ def test_bootstrap_installs_the_pinned_uv_toolchain_before_any_uvx_invocation():
 
     assert "Install uv" in steps
     assert steps.index("Install uv") < steps.index("Bootstrap dynamic orchestrator")
-    assert _steps()["Install uv"]["uses"] == "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78"
+    assert (
+        _steps()["Install uv"]["uses"]
+        == "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78"
+    )
     assert "uvx --from ansible-core" in bootstrap["run"]
 
 
