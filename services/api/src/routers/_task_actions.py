@@ -234,9 +234,7 @@ async def retry_failed_task(
     }
 
     task.status = TaskStatus.BACKLOG.value
-    await create_status_event(
-        task, TaskStatus.FAILED, TaskStatus.BACKLOG, body.actor, details, db
-    )
+    await create_status_event(task, TaskStatus.FAILED, TaskStatus.BACKLOG, body.actor, details, db)
     task.status = TaskStatus.TODO.value
     await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, details, db)
     task.current_iteration = next_iteration
