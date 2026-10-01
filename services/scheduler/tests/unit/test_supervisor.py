@@ -465,7 +465,8 @@ class TestSuperviseFailedTasks:
         result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result == {"retried": 1, "escalated": 0}
-        api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 2})
+        api_client.retry_failed_task.assert_awaited_once_with("task-1", "supervisor")
+        api_client.update_task.assert_not_awaited()
         api_client.park_infrastructure_refusal.assert_not_awaited()
 
     @pytest.mark.parametrize(
@@ -743,11 +744,9 @@ class TestSuperviseFailedTasks:
         result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result == {"retried": 1, "escalated": 0}
-        assert [call.args[1] for call in api_client.transition_task.call_args_list] == [
-            "backlog",
-            "todo",
-        ]
-        api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 2})
+        api_client.retry_failed_task.assert_awaited_once_with("task-1", "supervisor")
+        api_client.transition_task.assert_not_awaited()
+        api_client.update_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_fresh_metrics_escalates_without_spending_an_iteration(
