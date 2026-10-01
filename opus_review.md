@@ -365,15 +365,20 @@ api ─► PostgreSQL (единственный владелец ORM-модел�
 Одинаковый шаблон в `scaffold_loop.py:21-44`, `story_completion_loop.py:21-39`, `qa_routing_loop.py:21-39`, `temporary_access_loop.py:21-39`, `owner_notification_loop.py:21-43`, `worker_reconciliation.py:76-95`, `lifecycle_supervision_loop.py:73-93`, `story_supervision_loop.py:30-61`, `pr_ci_loop.py:21-54`, `task_dispatcher.py:481-500`:
 
 ```python
-redis_client = RedisStreamClient(); await redis_client.connect()
+redis_client = RedisStreamClient()
+await redis_client.connect()
 logger.info("X_started", interval=_X_interval())
 try:
     while True:
-        try: counts = await sweep(api_client, redis_client); logger.info("X_cycle", **counts)
-        except Exception: logger.exception("X_cycle_error")
+        try:
+            counts = await sweep(api_client, redis_client)
+            logger.info("X_cycle", **counts)
+        except Exception:
+            logger.exception("X_cycle_error")
         await asyncio.sleep(_X_interval())
 finally:
-    await redis_client.close(); logger.info("X_stopped")
+    await redis_client.close()
+    logger.info("X_stopped")
 ```
 
 Плюс «изолированные подметания» реализованы трижды (`lifecycle_supervision_loop._run_sweep` 38-49, `worker_reconciliation._run_reconciler` 37-48, inline в `story_supervision_loop.py:45-56`, `pr_ci_loop.py:37-45`).
