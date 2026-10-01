@@ -1,0 +1,17 @@
+# Offline tests/live files that require external services or dedicated live harnesses.
+tests/live/test_api_crud.py
+tests/live/test_bot_access_revocation.py
+tests/live/test_capability_cleanup_redis.py
+tests/live/test_ci_prompt.py
+tests/live/test_deploy_infra.py
+tests/live/test_full_pipeline.py
+tests/live/test_product_brief_pipeline.py
+tests/live/test_product_brief_package_pipeline.py
+tests/live/test_sprint_dod.py
+tests/live/test_health.py
+tests/live/test_llm_channel_failover.py
+tests/live/test_parallel_engineering.py
+tests/live/test_pipeline_engineering.py
+tests/live/test_pipeline_scaffold.py
+tests/live/test_streams.py
+tests/live/test_supervisor.py
