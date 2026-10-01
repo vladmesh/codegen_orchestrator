@@ -408,6 +408,14 @@ async def _handle_admin(
         )
 
 
+async def cancel_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel the pending admin invite flow without consuming the next PO message."""
+    if context.user_data.pop("awaiting_add_user", None):
+        await update.message.reply_text("Добавление пользователя отменено.")
+    else:
+        await update.message.reply_text("Нет активного добавления пользователя.")
+
+
 async def handle_add_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle text input when admin is adding a user.
 
