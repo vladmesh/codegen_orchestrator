@@ -1,6 +1,7 @@
 """Provisioner operations - password reset and OS reinstall logic."""
 
 import asyncio
+from asyncio import to_thread as _to_thread
 from datetime import UTC, datetime
 from typing import NamedTuple
 
@@ -68,7 +69,7 @@ PASSWORD_RESET_POLL_INTERVAL = Provisioning.PASSWORD_RESET_POLL_INTERVAL
 
 async def _run_playbook(runner: AnsibleRunner, **kwargs) -> tuple[bool, str]:
     """Keep blocking Ansible execution off the infra-service event loop."""
-    return await asyncio.to_thread(runner.run_playbook, **kwargs)
+    return await _to_thread(runner.run_playbook, **kwargs)
 
 
 async def provision_monitoring_baseline(
