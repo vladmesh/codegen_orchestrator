@@ -41,7 +41,9 @@ def counts(monkeypatch):
 
 @pytest.fixture
 def run_preflight(monkeypatch, capsys):
-    document = (Path(__file__).resolve().parents[4] / "docs/SECRETS.md").read_text()
+    document = (
+        Path(__file__).resolve().parents[4] / "docs/runbooks/po-redis-and-checkpoints.md"
+    ).read_text()
     start = document.index("def po_maintenance_counts(")
     end = document.index("\nsys.exit(asyncio.run(preflight()))", start)
 
