@@ -11,11 +11,11 @@ Story lifecycle is deliberately absent: the architect consumer moves the story
 to IN_PROGRESS around this agent's run, and an agent tool that moved it too
 gave one code path two Story transitions for the same story.
 
-Planning identity is deliberately absent from every tool schema: the brief id
-and the planning attempt id arrive through `InjectedState`, so the model can
-neither invent an attempt nor plan into a brief it was not given. A run that is
-not planning under a brief carries `None` for both, and then `create_task`
-sends the shape it always sent and `record_requirement_coverage` refuses.
+Planning identity is deliberately absent from every mutating tool schema:
+story/project ownership plus brief/attempt identity arrive through `InjectedState`,
+so the model can neither redirect a task to another story/project nor invent an
+attempt. A run that is not planning under a brief carries `None` for the brief
+fields, and then `create_task` sends the ordinary non-brief shape.
 
 Capability shape is deliberately absent from every tool schema too. Whether a
 capability is reuse, a shared service, a container or an in-process kit package
@@ -148,8 +148,6 @@ async def create_task(
         description: What needs to be done.
         type: One of: create, feature, fix, refactor.
         acceptance_criteria: How to verify the task is done.
-        story_id: Parent story ID.
-        project_id: Parent project ID.
     """
     blocked_by = _last_task_id.get(story_id)
 
