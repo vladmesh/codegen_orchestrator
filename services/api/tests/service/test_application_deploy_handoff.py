@@ -15,6 +15,7 @@ from shared.contracts.queues.deploy import (
 )
 from shared.redis.client import RedisStreamClient
 
+
 async def _deploy_run_for_application(
     client: AsyncClient, repo_id: str, application_id: int
 ) -> dict:
