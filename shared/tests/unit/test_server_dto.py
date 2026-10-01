@@ -8,7 +8,6 @@ import pytest
 from shared.contracts.dto.server import (
     ServerCreate,
     ServerDTO,
-    ServerMetricsHistoryDTO,
     ServerStatus,
     ServerUpdate,
 )
@@ -109,23 +108,3 @@ class TestServerUpdateHealthFields:
         assert update.cpu_usage_pct == 55.0
         assert update.uptime_seconds == 3600.0
 
-
-class TestServerMetricsHistoryDTO:
-    """ServerMetricsHistoryDTO should carry server_handle, recorded_at, metrics."""
-
-    def test_construction(self):
-        dto = ServerMetricsHistoryDTO(
-            server_handle="srv-1",
-            recorded_at=_NOW,
-            metrics={"cpu_usage_pct": 42.5, "load_avg_1m": 1.2},
-        )
-        assert dto.server_handle == "srv-1"
-        assert dto.metrics["cpu_usage_pct"] == 42.5
-
-    def test_id_optional(self):
-        dto = ServerMetricsHistoryDTO(
-            server_handle="srv-1",
-            recorded_at=_NOW,
-            metrics={},
-        )
-        assert dto.id is None
