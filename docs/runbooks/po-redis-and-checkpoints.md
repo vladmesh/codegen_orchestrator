@@ -35,7 +35,7 @@ migrations, seeding or target reconciliation.
 | Successful complete Deploy and readback | DB and Redis; all normal/independent clients stopped | Stop the entire client list in step 2, including API and infra-service; kill deferred normal connections before unpause; convert both stores |
 | Resume | Both keyed dry-runs, direct storage counts and Redis persistence verification passed; API available for LangGraph config | Start API, then released protected LangGraph, then Telegram and the other clients; remove admission fence only after validation |
 
-This follows [Switch and Reconcile](../.github/workflows/deploy.yml): promotion
+This follows [Switch and Reconcile](../../.github/workflows/deploy.yml): promotion
 follows all-service `up`, then API Alembic, local `/health`, key readability,
 `seed_system_configs.py`, scheduler recreate/wait, and production
 `src.provisioner.target_readiness`. Keep DB/Redis and runtime mounts available
@@ -165,15 +165,15 @@ use PostgreSQL, and the seeder's system-config and paid-work-control routes use
 PostgreSQL. Reconcile lists managed rows, reads the decrypted administrative key,
 runs SSH login/privilege/QA retrofit plays, and records labels/readiness/incident
 transactions through HTTP/DB; it has no Redis write dependency. Sources:
-[scheduler startup](../services/scheduler/src/infrastructure.py),
-[retry](../services/scheduler/src/tasks/provisioner_trigger.py),
-[readiness](../services/scheduler/src/runtime.py),
-[server sync](../services/scheduler/src/tasks/server_sync.py),
-[API dependencies](../services/api/src/dependencies.py),
-[server routes](../services/api/src/routers/servers.py),
-[seeder](../scripts/seed_system_configs.py),
-[reconciliation](../services/infra-service/src/provisioner/target_readiness.py) and
-[retrofit](../services/infra-service/src/provisioner/operations.py).
+[scheduler startup](../../services/scheduler/src/infrastructure.py),
+[retry](../../services/scheduler/src/tasks/provisioner_trigger.py),
+[readiness](../../services/scheduler/src/runtime.py),
+[server sync](../../services/scheduler/src/tasks/server_sync.py),
+[API dependencies](../../services/api/src/dependencies.py),
+[server routes](../../services/api/src/routers/servers.py),
+[seeder](../../scripts/seed_system_configs.py),
+[reconciliation](../../services/infra-service/src/provisioner/target_readiness.py) and
+[retrofit](../../services/infra-service/src/provisioner/operations.py).
 
 Redis [WRITE pause](https://redis.io/docs/latest/commands/client-pause/) also
 defers PUBLISH and XREADGROUP. An authorized pending server would therefore hang
@@ -194,7 +194,7 @@ of Redis `/data` outside the checkout, in an operator-owned 0700 directory with
 0600 files. Never attach them to reports. Set `PO_REDIS_BACKUP_DIR` to an absolute,
 external path, `PO_REDIS_RELEASE_SHA` to the full released main SHA, and retain
 the deployment environment's complete `DEPLOY_PATH`. First install the reviewed helpers through
-the later PO [backup operation](DEPLOY.md#later-po-operation-install-and-prove-production-nightly-backup).
+the later PO [backup operation](../DEPLOY.md#later-po-operation-install-and-prove-production-nightly-backup).
 Run every host block, including raw Docker readback, in the owning user's login session. On h01o
 that is vlad/UID 1001, not deploy or an administrator's default Docker context. Set `BACKUP_POLICY`
 to `/home/vlad/.config/codegen-orchestrator/backup.env`; its non-secret configuration supplies
@@ -417,7 +417,7 @@ existing encryption key will remain unchanged in both maintenance containers.
    the recovery operator. Old dumps/WAL archives/replicas and pre-RAG-drop copies
    remain restricted secret-bearing artifacts. Do not restore over production or
    delete restricted old artifacts here.
-   Install the reviewed shared helper through the later PO [backup operation](DEPLOY.md#later-po-operation-install-and-prove-production-nightly-backup)
+   Install the reviewed shared helper through the later PO [backup operation](../DEPLOY.md#later-po-operation-install-and-prove-production-nightly-backup)
    first. Record its generated archive path, exact bytes and `archive_list_exit=0`; a private
    temporary dump is verified before publication. Maintenance names are outside nightly retention.
    Preserve the archive and unchanged key even after conversion; historical contents are not scrubbed.
@@ -514,7 +514,7 @@ existing encryption key will remain unchanged in both maintenance containers.
    failed/mismatched Deploy, leave WRITE pause active (renew before expiry), keep
    unused clients stopped, and retain API/infra-service while active dependency
    commands settle. Do not convert or unpause for availability. Follow
-   [DEPLOY.md](DEPLOY.md#if-a-deploy-fails) only within this maintenance ordering:
+   [DEPLOY.md](../DEPLOY.md#if-a-deploy-fails) only within this maintenance ordering:
    an authorized retry must re-establish stable preflight, original-data readback,
    full Compose chain, unchanged key and uninterrupted write fence, then repeat
    dispatch, the limited stop, scheduler wait and complete Reconcile. Never apply
@@ -763,7 +763,7 @@ and pending tool work. Never delete a thread, corrupt reminder or notice obligat
 to pass startup. Old code cannot read either converted store; a separate approved
 recovery must restore the verified matching Redis/database backups before any old
 writer starts, consider forward-only migrations and newly admitted work, and keep
-admission fenced as described in [Rolling back](DEPLOY.md#rolling-back).
+admission fenced as described in [Rolling back](../DEPLOY.md#rolling-back).
 
 `make test-integration-po-tools` runs the deterministic PO graph/consumer tests
 against real PostgreSQL and the real API, using the service's dependency lock.
