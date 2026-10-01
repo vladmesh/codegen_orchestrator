@@ -61,7 +61,7 @@ from ...dependencies import (
 from ...schemas import GrantUserRequest, OwnershipTransferRequest
 from .._recipients import resolve_project_recipient
 from .._story_helpers import _do_transition, _land_on, _record_story_failure
-from ..projects_guards import check_project_access, load_locked_project
+from ..projects_guards import check_project_access, load_locked_project, load_project
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -128,7 +128,13 @@ def _intent_id(kind: GrantIntentKind, project_id: uuid.UUID, telegram_id: int) -
     return f"users-grant-{kind.value}-{project_id.hex}-{telegram_id}"
 
 
-async def _as_dto(db: AsyncSession, project: Project, intent: UsersGrantIntent) -> GrantIntent:
+async def _as_dto(
+    db: AsyncSession,
+    project: Project,
+    intent: UsersGrantIntent,
+    *,
+    for_update: bool = True,
+) -> GrantIntent:
     return GrantIntent(
         id=intent.id,
         kind=GrantIntentKind(intent.kind),
@@ -149,7 +155,7 @@ async def _as_dto(db: AsyncSession, project: Project, intent: UsersGrantIntent) 
         applied_at=intent.applied_at,
         execution_run_id=intent.execution_run_id,
         retry_history=intent.retry_history or [],
-        exhaustion=await _exhaustion(db, project, intent),
+        exhaustion=await _exhaustion(db, project, intent, for_update=for_update),
     )
 
 
@@ -177,12 +183,13 @@ async def _exhaustion(
     intent: UsersGrantIntent,
     *,
     for_stop: bool = False,
+    for_update: bool = True,
 ) -> GrantIntentExhaustion | None:
     """One typed decision for the current exhausted epoch and its retry fence."""
     if intent.kind != GrantIntentKind.INITIAL_OWNER.value or not _is_exhausted(intent):
         return None
     evidence = (
-        await _current_source_story(db, project, intent)
+        await _current_source_story(db, project, intent, for_update=for_update)
         if intent.attempts > 0 and intent.execution_run_id is not None
         else None
     )
@@ -223,7 +230,7 @@ async def _exhaustion(
             or story.quarantine_reason is not None
         ):
             command = None
-    if command is not None and await _deploy_retry_ceiling(db) == 0:
+    if command is not None and await _deploy_retry_ceiling(db, for_update=for_update) == 0:
         command = None
     if command is None and decision.action is not None:
         return decision.model_copy(update={"action": None, "retry_command": None})
@@ -308,7 +315,12 @@ def _source_matches(
 
 
 async def _current_source_story(
-    db: AsyncSession, project: Project, intent: UsersGrantIntent, *, allow_owed: bool = False
+    db: AsyncSession,
+    project: Project,
+    intent: UsersGrantIntent,
+    *,
+    allow_owed: bool = False,
+    for_update: bool = True,
 ) -> tuple[Run, Story] | None:
     owner = await db.get(User, project.owner_id)
     if (
@@ -322,8 +334,13 @@ async def _current_source_story(
     source = await db.get(Run, intent.execution_run_id) if intent.execution_run_id else None
     if source is None or source.story_id is None:
         return None
-    story = await db.scalar(select(Story).where(Story.id == source.story_id).with_for_update())
-    source = await db.scalar(select(Run).where(Run.id == source.id).with_for_update())
+    story_query = select(Story).where(Story.id == source.story_id)
+    run_query = select(Run).where(Run.id == source.id)
+    if for_update:
+        story_query = story_query.with_for_update()
+        run_query = run_query.with_for_update()
+    story = await db.scalar(story_query)
+    source = await db.scalar(run_query)
     if (
         story is None
         or source is None
@@ -525,11 +542,12 @@ async def _execution_is_live(db: AsyncSession, intent: UsersGrantIntent) -> Run 
     return run
 
 
-async def _deploy_retry_ceiling(db: AsyncSession) -> int:
-    """Read and lock the scheduler's retry ceiling for lifecycle admission."""
-    config = await db.scalar(
-        select(SystemConfig).where(SystemConfig.key == DEPLOY_RETRY_CEILING_KEY).with_for_update()
-    )
+async def _deploy_retry_ceiling(db: AsyncSession, *, for_update: bool = True) -> int:
+    """Read the scheduler retry ceiling, locking it only for lifecycle admission."""
+    query = select(SystemConfig).where(SystemConfig.key == DEPLOY_RETRY_CEILING_KEY)
+    if for_update:
+        query = query.with_for_update()
+    config = await db.scalar(query)
     if config is None:
         raise RuntimeError(f"Missing required system config: {DEPLOY_RETRY_CEILING_KEY}")
     try:
@@ -1060,7 +1078,7 @@ async def get_initial_owner_deployment(
     _is_internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> GrantIntent:
-    project = await load_locked_project(db, project_id)
+    project = await load_project(db, project_id)
     await check_project_access(
         project, x_telegram_id, db, is_internal=_is_internal, credentials=credentials
     )
@@ -1070,7 +1088,7 @@ async def get_initial_owner_deployment(
     )
     if intent is None:
         raise HTTPException(status_code=404, detail="initial-owner intent not found")
-    return await _as_dto(db, project, intent)
+    return await _as_dto(db, project, intent, for_update=False)
 
 
 @router.post("/{project_id}/users/grant-intents/{intent_id}/retry")
@@ -1155,14 +1173,14 @@ async def get_intent(
     _is_internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> GrantIntent:
-    project = await load_locked_project(db, project_id)
+    project = await load_project(db, project_id)
     await check_project_access(
         project, x_telegram_id, db, is_internal=_is_internal, credentials=credentials
     )
     intent = await db.get(UsersGrantIntent, intent_id)
     if intent is None or intent.project_id != project_id:
         raise HTTPException(status_code=404, detail="grant intent not found")
-    return await _as_dto(db, project, intent)
+    return await _as_dto(db, project, intent, for_update=False)
 
 
 @router.post("/{project_id}/users/grant-intents/{intent_id}/complete")
