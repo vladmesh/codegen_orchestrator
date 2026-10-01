@@ -104,7 +104,7 @@ jobs:
       # The runner works from the deployed revision too: the release waits compute
       # that revision's source hash and run its own release consumers.
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.DEPLOY_REVISION }}
 
@@ -112,7 +112,7 @@ jobs:
       # selects a release whose backup helper was broken. Keep target consumers
       # on DEPLOY_REVISION; fetch only this helper from the workflow's exact SHA.
       - name: Checkout the workflow backup helper
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.workflow_sha }}
           path: workflow-backup-tooling
@@ -420,7 +420,7 @@ jobs:
       # here: only the Switch promotes, and only after `up` succeeded. The stage is
       # removed however the step ends, and a stage a crashed run left is replaced.
       - name: Pull and verify this revision's worker and service releases
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         timeout-minutes: 20
         with:
           host: ${{ secrets.PROD_HOST }}
@@ -567,14 +567,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload deployed worker image digests
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: deployed-worker-images-${{ env.DEPLOY_REVISION }}
           path: ${{ runner.temp }}/deployed-worker-images.json
           if-no-files-found: error
 
       - name: Upload deployed service image digests
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: deployed-service-images-${{ env.DEPLOY_REVISION }}
           path: ${{ runner.temp }}/deployed-service-images.json
@@ -706,7 +706,7 @@ jobs:
       # recorded fails the step, and every row's outcome is listed in its output.
       - name: Reconcile managed deploy targets
         if: ${{ inputs.environment == 'production' }}
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         timeout-minutes: 30
         with:
           host: ${{ secrets.PROD_HOST }}
