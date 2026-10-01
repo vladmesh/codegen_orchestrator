@@ -31,7 +31,7 @@
 
 ### 1.2 Исполнительное резюме
 
-1. **Главная статья контекстных затрат — не код, а обязательная документация.** AGENTS.md в шаге TDD №1 требует прочитать `docs/CONTRACTS.md` (~47 k токенов). PR #686 уже сократил `docs/CHANGELOG.md` с 2 525 до 477 строк (~46.9 k → ~9.4 k ток. по той же грубой оценке), сохранив подробность только за последние 10 дней; оставшийся основной выигрыш — разделить CONTRACTS.md на индекс + файлы по границам и убрать CHANGELOG из подразумеваемого обязательного чтения (ОЦЕНКА, §5.9, §8).
+1. **DONE #687 — главный обязательный документационный контекст сокращён.** После #686 (CHANGELOG 2 525→477 строк) PR #687 разделил `docs/CONTRACTS.md` (~191 k символов) на индекс (~28 k) + 8 тематических guides и изменил AGENTS.md на «индекс + релевантная граница»; CHANGELOG теперь append/search-only, а не default reading. Открытый docs/tooling residual — A21: production logic, исполняемый прямо из Markdown, нужно вынести в `.py/.sh` (§8.4, PR 12).
 2. **Гигантские модули** (≥ 900 строк) в каждом сервисе смешивают 4–7 ответственностей; их разрез по уже существующим швам почти не уменьшает LOC, но сокращает объём чтения на типовую правку на 60–90% (ОЦЕНКА, §5).
 3. **Доказанное дублирование** остаётся в: (а) каркасе циклов scheduler (~−370 строк), (б) типизированных методах API-клиентов scheduler/langgraph/scaffolder (~11 идентичных методов), (в) «PATCH run → callback → return» в deploy-потребителях, (г) литералах ключей Redis `worker:*` (100+ вхождений без билдера), (д) повторяющихся блоках compose. Четыре расходившиеся копии create-run→publish для deploy-handoff закрыты PR #679. Остаточный безопасный потенциал сокращения остаётся порядка нескольких тысяч строк (ОЦЕНКА, §6).
 4. **Мёртвый код** подтверждён в каждом сервисе: ~15 методов API-клиента langgraph, 7 — scheduler, пересылка `worker:events:all → orchestrator:events` без отправителя и читателя, пустой `scripts/agent_configs.yaml` с сидером в 4 местах, ≈10 мёртвых контрактных символов в `shared`, пакет `worker-manager/src/agents/` (§6.6).
@@ -95,8 +95,8 @@
   `docs/CHANGELOG.md` сжат с 2 525 до 477 строк и с 188 524 до 37 617 символов (≈5×); дневная гранулярность
   сохранена за 2026-09-22…2026-10-01, более старая история сведена к крупным продуктовым milestone-записям.
   Старые `### Added/Changed/Fixed` блоки удалены вместе с избыточной детализацией. PR CI #36851047388 прошёл
-  Required CI Gate. #686 **не считается отдельной из 12 аудиторских итераций**: в PR 7 остаются CONTRACTS split,
-  Navigation/обязательное чтение и остальной doc drift.
+  Required CI Gate. #686 **не считается отдельной из 12 аудиторских итераций**; его docs-scope был завершён
+  основной документационной итерацией #687.
 
 Остальные находки ниже считаются открытыми, если явно не помечены **DONE/CLOSED**. Полный повторный
 аудит всего дерева после #687 не выполнялся; актуализация здесь — дельта по семи смёрженным
@@ -347,13 +347,13 @@ api ─► PostgreSQL (единственный владелец ORM-модел�
 
 | Документ | До, ток. | Предложение | После, ток. |
 |---|---:|---|---:|
-| `docs/CONTRACTS.md` (2 679 строк) | 47.4 k обязательных | индекс (принципы, словари, реестр очередей, consumer patterns, реестры REST и сообщений, source map, чеклист ≈ 4–5 k) + `docs/contracts/{work-admission,product-brief,pr-conflict-repair,generated-service-grants,story-task-run-surfaces,kit-template-and-qa,lifecycle-invariants,managed-target-readiness}.md`; шаг TDD №1: «индекс + файл затрагиваемой границы» | 8–12 k |
-| `docs/CHANGELOG.md` (**477 после #686**) | **~9.4 k** (если читать целиком; было 46.9 k) | #686 уже оставил подробность только за последние 10 дней, старое сжал до milestone-записей; в PR 7 изменить Navigation на «append/search, не читать целиком по умолчанию» | 0 по умолчанию |
-| `docs/SECRETS.md` (991) | 16.2 k | ранбуки 82-718, 773-909 → `docs/runbooks/po-redis-and-checkpoints.md` **вместе** с тестом, который `exec()`-ит код из SECRETS.md (`services/scheduler/tests/unit/test_po_maintenance_preflight.py:25-86`) | ~5 k |
+| `docs/CONTRACTS.md` | **DONE #687:** было 2 679 строк / ~47.4 k ток. обязательных | индекс + 8 `docs/contracts/*`; шаг TDD №1 теперь «индекс + релевантная граница» | индекс ~7 k ток.; типовая задача ~8–14 k с одним guide |
+| `docs/CHANGELOG.md` (**477 после #686**) | **DONE #687:** ~9.4 k, но больше не default reading | Navigation = append/search when needed; не читать end-to-end по умолчанию | 0 по умолчанию |
+| `docs/SECRETS.md` | **DONE #687:** было 991 строк / ~16.2 k ток. | production PO Redis/checkpoint procedures вынесены в `docs/runbooks/po-redis-and-checkpoints.md`; архитектурный документ сокращён | ~4–5 k; A21 остаётся из-за executable snippets в runbook |
 | `docs/TESTING.md` | 13.6 k | удалить карточные нарративы 3-43, 57-89 | ~12.2 k |
 | `docs/resource-management.md`, `VISION.md`, `docs/playbooks/line2-engineering.md` | 7.9 k достижимых | слить актуальное с SECRETS.md; архивировать остальное (`playbooks` сам объявляет себя устаревшим, строки 14-17) | 0 достижимых |
 
-Итог после #686 (ОЦЕНКА): исторический CHANGELOG уже уменьшен примерно на 37.5 k ток.; PR 7 должен убрать оставшиеся ~9.4 k из default reading и снизить обязательный CONTRACTS-вход с ~47 k до индекс + релевантный leaf (~10–14 k суммарно на типовую контрактную задачу). Нельзя руками править/перемещать `docs/PLATFORM_CAPABILITIES.md` — он генерируется `scripts/platform_capabilities.py:25-29` и проверяется `services/langgraph/tests/unit/test_platform_capabilities.py`.
+Итог после #687 (ОЦЕНКА): CHANGELOG больше не входит в default reading, а обязательный CONTRACTS-вход снижен с ~47 k ток. до индекс + релевантный guide (~8–14 k на типовую контрактную задачу). Нельзя руками править/перемещать `docs/PLATFORM_CAPABILITIES.md` — он генерируется `scripts/platform_capabilities.py:25-29` и проверяется `services/langgraph/tests/unit/test_platform_capabilities.py`.
 
 ### 5.10 Скрипты и тесты
 
@@ -781,7 +781,7 @@ Scheduler/runtime simplification**. Остаток сгруппирован та
 - P0/P1 correctness и security идут раньше чистого уменьшения LOC/контекста, кроме документации:
   docs вынесены в отдельную раннюю итерацию, потому что они увеличивают стоимость каждой последующей работы.
   Перед ней #686 отдельно сжал CHANGELOG ≈5× по прямому решению владельца; это не новая 13-я итерация, а уменьшение
-  скоупа PR 7. Архивный split CHANGELOG больше не нужен — остаётся только убрать его из default reading.
+  скоупа PR 7. #687 завершил Navigation/default-reading cleanup и CONTRACTS split; дальнейший docs residual — только A21 в PR 12.
 - PR #681 подтвердил полезность отдельного correctness boundary: механический разрез `manager.py`/`wrapper.py`
   не понадобился для исправлений и перенесён в PR 10 рядом с worker contracts/key vocabulary; оставшийся
   blocking Ansible относится к infra и перенесён в PR 12.
