@@ -9,6 +9,7 @@ Handles automated server provisioning:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -48,6 +49,11 @@ from .operations import (
     reinstall_and_provision,
 )
 from .ssh_manager import SSHManager
+
+
+async def _run_playbook(runner: AnsibleRunner, **kwargs) -> tuple[bool, str]:
+    """Keep blocking Ansible execution off the infra-service event loop."""
+    return await asyncio.to_thread(runner.run_playbook, **kwargs)
 
 logger = structlog.get_logger()
 
@@ -311,7 +317,7 @@ class ProvisionerNode(FunctionalNode):
         logger.info("provisioning_existing_setup", server_handle=server_handle)
 
         # Phase 1: Access
-        success_access, output_access = self.ansible_runner.run_playbook(
+        success_access, output_access = await _run_playbook(self.ansible_runner, 
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_access.yml",
@@ -377,7 +383,7 @@ class ProvisionerNode(FunctionalNode):
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
 
         # Phase 2: Software
-        success_soft, output_soft = self.ansible_runner.run_playbook(
+        success_soft, output_soft = await _run_playbook(self.ansible_runner, 
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_software.yml",
