@@ -27,7 +27,6 @@ from shared.contracts.dto.story import (
     StoryStatus,
 )
 from shared.contracts.dto.story_planning import dispatch_owed_record
-from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -36,7 +35,7 @@ from shared.models.product_brief import ProductBrief
 from shared.models.repository import Repository
 from shared.models.run import Run
 from shared.models.story import Story
-from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE
+from shared.queues import DEPLOY_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
@@ -65,7 +64,7 @@ from ..schemas.story import (
     StoryUpdate,
 )
 from ._owner_notice_settlement import notice_router
-from ._recipients import resolve_project_chat_id, resolve_project_recipient
+from ._recipients import resolve_project_recipient
 from ._story_actions import action_router
 from ._story_diagnostics import diagnostics_router
 from ._story_helpers import (
