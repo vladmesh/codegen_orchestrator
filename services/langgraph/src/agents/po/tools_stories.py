@@ -248,11 +248,9 @@ async def create_story(
     # The architect needs this spec when decomposing a newly created project.
     # Persist it before any path can publish the story for downstream work.
     if action == "create" and description:
-        current_config = proj_resp.json().get("config", {})
-        current_config["detailed_spec"] = description
         patch_resp = await api.patch_raw(
-            f"projects/{project_id}",
-            json={"config": current_config},
+            f"projects/{project_id}/config",
+            json={"values": {"detailed_spec": description}},
             headers=headers,
         )
         patch_resp.raise_for_status()
