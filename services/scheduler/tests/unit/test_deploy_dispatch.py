@@ -19,6 +19,7 @@ from src.tasks.deploy_dispatch import (
     dispatch_deploy,
     recover_deploy_handoff,
 )
+from src.tasks.supervisor.deploy import supervise_application_deploy_handoffs
 
 
 def test_deploy_run_id_is_stable_for_one_logical_attempt():
@@ -160,3 +161,39 @@ async def test_recent_or_already_dispatched_handoff_is_not_replayed():
     assert await recover_deploy_handoff(api, redis, recent, minimum_age_minutes=5) is False
     assert await recover_deploy_handoff(api, redis, dispatched, minimum_age_minutes=5) is False
     redis.publish_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_application_handoff_sweep_replays_only_old_storyless_runs(monkeypatch):
+    api = AsyncMock()
+    redis = AsyncMock()
+    message = DeployMessage(
+        task_id="deploy-admin-stable",
+        project_id="project-1",
+        unaddressed_reason="admin action",
+        action=DeployAction.STOP,
+        application_id=17,
+    )
+    old_storyless = SimpleNamespace(
+        id=message.task_id,
+        story_id=None,
+        created_at=datetime.now(UTC) - timedelta(minutes=10),
+        run_metadata={DEPLOY_HANDOFF_MESSAGE_KEY: message.model_dump(mode="json")},
+    )
+    story_run = SimpleNamespace(
+        id="deploy-story",
+        story_id="story-1",
+        created_at=datetime.now(UTC) - timedelta(minutes=10),
+        run_metadata={DEPLOY_HANDOFF_MESSAGE_KEY: message.model_dump(mode="json")},
+    )
+    api.list_runs.return_value = [old_storyless, story_run]
+    monkeypatch.setattr(
+        "src.tasks.supervisor.deploy._qa_handoff_recovery_minutes",
+        lambda: 5,
+    )
+
+    result = await supervise_application_deploy_handoffs(api, redis)
+
+    assert result == {"recovered": 1}
+    redis.publish_message.assert_awaited_once_with(DEPLOY_QUEUE, message)
+    api.update_run.assert_awaited_once()

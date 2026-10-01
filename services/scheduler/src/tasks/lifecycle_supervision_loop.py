@@ -12,6 +12,7 @@ from shared.redis import RedisStreamClient
 
 from .. import runtime, startup
 from .supervisor import (
+    supervise_application_deploy_handoffs,
     supervise_deploying_stories,
     supervise_failed_tasks,
     supervise_stuck_stories,
@@ -59,6 +60,7 @@ async def supervise_lifecycle_once(
         ("stuck_tasks", supervise_stuck_tasks),
         ("failed_tasks", supervise_failed_tasks),
         ("waiting_resources", supervise_waiting_resource_tasks),
+        ("application_deploy_handoffs", supervise_application_deploy_handoffs),
         ("deploying", supervise_deploying_stories),
         ("waiting_user_secret", supervise_waiting_user_secret_stories),
     )

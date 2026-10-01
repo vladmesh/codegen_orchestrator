@@ -28,6 +28,10 @@ class DeployAction(StrEnum):
 # Actions that act on one already-deployed application instead of on repository state.
 LIFECYCLE_ACTIONS = frozenset({DeployAction.STOP, DeployAction.UNDEPLOY})
 
+# Durable handoff metadata shared by every deploy producer and scheduler recovery.
+DEPLOY_HANDOFF_MESSAGE_KEY = "deploy_handoff_message"
+DEPLOY_HANDOFF_DISPATCHED_AT_KEY = "deploy_handoff_dispatched_at"
+
 
 class DeployOutcome(StrEnum):
     """Outcome stored in run.result for dispatcher consumption."""

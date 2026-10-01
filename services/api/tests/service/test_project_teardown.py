@@ -26,7 +26,7 @@ from shared.contracts.dto.project import ProjectStatus, TeardownStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.telegram import TokenRejectionReason, TokenVerdictStatus
 from shared.contracts.queues.deploy import DeployAction, DeployTrigger
-from shared.queues import DEPLOY_QUEUE
+from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.tests.ssh_key_fixtures import fleet_private_key
 
 OWNER = "100714"
@@ -297,6 +297,42 @@ async def _secret_keys(client: AsyncClient, project_id: str) -> list[str]:
 async def _deploy_messages(redis: Redis, count: int) -> list[dict]:
     entries = await redis.xrevrange(DEPLOY_QUEUE, count=count)
     return [json.loads(fields["data"]) for _entry_id, fields in entries]
+
+
+@pytest.mark.asyncio
+async def test_delete_project_cleans_wrapped_queue_messages_and_pending_entries(
+    client: AsyncClient, user_client: AsyncClient, redis: Redis
+):
+    """Deletion removes this project from every pipeline queue without leaving lost PEL rows."""
+    project_id, _ = await _make_project(client, "Queue cleanup target")
+    other_project_id, _ = await _make_project(client, "Queue cleanup survivor")
+
+    tracked: list[tuple[str, str, str, str]] = []
+    for queue in (DEPLOY_QUEUE, QA_QUEUE):
+        group = f"teardown-cleanup-{uuid.uuid4().hex}"
+        await redis.xgroup_create(queue, group, id="$", mkstream=True)
+        target_id = await redis.xadd(
+            queue, {"data": json.dumps({"project_id": project_id, "kind": "target"})}
+        )
+        survivor_id = await redis.xadd(
+            queue, {"data": json.dumps({"project_id": other_project_id, "kind": "survivor"})}
+        )
+        read = await redis.xreadgroup(group, "cleanup-test", {queue: ">"}, count=1)
+        assert read and read[0][1][0][0] == target_id
+        tracked.append((queue, group, target_id, survivor_id))
+
+    deleted = await user_client.delete(
+        f"/api/projects/{project_id}", headers={"X-Telegram-ID": OWNER}
+    )
+    assert deleted.status_code == HTTPStatus.NO_CONTENT, deleted.text
+
+    for queue, group, target_id, survivor_id in tracked:
+        rows = dict(await redis.xrange(queue))
+        assert target_id not in rows
+        assert survivor_id in rows
+        pending = await redis.xpending(queue, group)
+        assert pending["pending"] == 0
+        await redis.xgroup_destroy(queue, group)
 
 
 @pytest.mark.asyncio

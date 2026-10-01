@@ -50,8 +50,18 @@ async def check_project_access(
     return actor
 
 
+async def load_project(db: AsyncSession, project_id: uuid.UUID) -> Project:
+    """Load one project without taking a write-intent row lock."""
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
 async def load_locked_project(db: AsyncSession, project_id: uuid.UUID) -> Project:
-    """Load one project under the lock used by every config writer."""
+    """Load one project under the lock used by config writers and lifecycle mutations."""
     query = select(Project).where(Project.id == project_id).with_for_update()
     project = (await db.execute(query)).scalar_one_or_none()
     if project is None:
@@ -59,4 +69,4 @@ async def load_locked_project(db: AsyncSession, project_id: uuid.UUID) -> Projec
     return project
 
 
-__all__ = ["check_project_access", "load_locked_project"]
+__all__ = ["check_project_access", "load_locked_project", "load_project"]

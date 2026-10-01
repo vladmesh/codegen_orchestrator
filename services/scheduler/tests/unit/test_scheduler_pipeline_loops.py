@@ -99,6 +99,7 @@ async def test_lifecycle_supervisors_keep_historical_order_but_fail_independentl
     stuck_tasks = sweep("stuck_tasks", {"timed_out": 1})
     failed_tasks = sweep("failed_tasks", {"retried": 2})
     waiting_resources = sweep("waiting_resources", {"resumed": 3})
+    application_handoffs = sweep("application_deploy_handoffs", {"recovered": 6})
     deploying = sweep("deploying", {"tested": 4})
     waiting_secret = sweep("waiting_user_secret", {"redispatched": 5})
 
@@ -109,6 +110,11 @@ async def test_lifecycle_supervisors_keep_historical_order_but_fail_independentl
         lifecycle_supervision_loop,
         "supervise_waiting_resource_tasks",
         waiting_resources,
+    )
+    monkeypatch.setattr(
+        lifecycle_supervision_loop,
+        "supervise_application_deploy_handoffs",
+        application_handoffs,
     )
     monkeypatch.setattr(lifecycle_supervision_loop, "supervise_deploying_stories", deploying)
     monkeypatch.setattr(
@@ -125,6 +131,7 @@ async def test_lifecycle_supervisors_keep_historical_order_but_fail_independentl
         "stuck_tasks",
         "failed_tasks",
         "waiting_resources",
+        "application_deploy_handoffs",
         "deploying",
         "waiting_user_secret",
     ]
@@ -132,6 +139,7 @@ async def test_lifecycle_supervisors_keep_historical_order_but_fail_independentl
         "stuck_tasks_timed_out": 1,
         "failed_tasks_retried": 2,
         "waiting_resources_resumed": 3,
+        "application_deploy_handoffs_recovered": 6,
         "deploying_tested": 4,
         "waiting_user_secret_redispatched": 5,
     }
@@ -140,6 +148,7 @@ async def test_lifecycle_supervisors_keep_historical_order_but_fail_independentl
         stuck_tasks,
         failed_tasks,
         waiting_resources,
+        application_handoffs,
         deploying,
         waiting_secret,
     ):

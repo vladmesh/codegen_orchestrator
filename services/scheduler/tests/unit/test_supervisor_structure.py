@@ -15,6 +15,7 @@ def test_supervisor_is_a_package_with_a_small_runtime_facade():
 
     supervisor = importlib.import_module("src.tasks.supervisor")
     assert set(supervisor.__all__) == {
+        "supervise_application_deploy_handoffs",
         "supervise_deploying_stories",
         "supervise_failed_tasks",
         "supervise_stage_notices",
