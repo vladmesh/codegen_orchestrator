@@ -74,7 +74,8 @@ async def test_empty_planned_attempt_keeps_its_budget_and_owes_a_reason_only_at_
     result = await supervise_failed_tasks(api, AsyncMock())
     if iteration < 3:
         assert result == {"retried": 1, "escalated": 0}
-        api.update_task.assert_awaited_once_with(task.id, {"current_iteration": 3})
+        api.retry_failed_task.assert_awaited_once_with(task.id, "supervisor")
+        api.update_task.assert_not_awaited()
         api.stop_story.assert_not_awaited()
     else:
         assert result == {"retried": 0, "escalated": 1}

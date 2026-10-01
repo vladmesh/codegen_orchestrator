@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 #: Every function that publishes an `ArchitectMessage`, and what it publishes for.
 #: Only `_publish_due_planning_retry` publishes for a `retrying` planning record;
-#: the others start a story that has no planning record to owe yet.
+#: API-owned durable handoffs write that record and publish nothing.
 ARCHITECT_PUBLISHERS = {
     # The one publisher of a due `retrying` record.
     ("services/scheduler/src/tasks/supervisor/liveness.py", "_publish_due_planning_retry"),
@@ -25,8 +25,6 @@ ARCHITECT_PUBLISHERS = {
     ("services/scheduler/src/tasks/supervisor/liveness.py", "supervise_stuck_stories"),
     # The next queued story of a project, once the active one completed.
     ("services/scheduler/src/tasks/story_completion.py", "_trigger_next_story"),
-    # The operator's send of a `created` or `reopened` story.
-    ("services/api/src/routers/stories.py", "send_to_architect"),
     # The PO starting new work or a reopen.
     ("services/langgraph/src/agents/po/tools_stories.py", "create_story"),
     ("services/langgraph/src/agents/po/tools_stories.py", "reopen_story"),

@@ -6,7 +6,6 @@ Run standalone: python -m src.main
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import os
 from pathlib import Path
 import signal
@@ -130,9 +129,12 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         return {"status": "skipped", "error": "cancelled by live teardown"}
     lease_refresh = asyncio.create_task(_refresh_scaffold_lease(redis, msg.project_id, lease))
     owner_task = asyncio.current_task()
+    lease_lost = False
 
     def cancel_work_on_lost_lease(task: asyncio.Task) -> None:
+        nonlocal lease_lost
         if not task.cancelled() and task.exception() is not None and owner_task is not None:
+            lease_lost = True
             owner_task.cancel()
 
     lease_refresh.add_done_callback(cancel_work_on_lost_lease)
@@ -156,18 +158,32 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
                 return await _process_ensure_mode(*args)
             return await _process_full_mode(*args)
 
+    except asyncio.CancelledError:
+        if not lease_lost:
+            raise
+        error = "scaffold execution lease expired"
+        log.error("scaffold_job_lease_lost")
+        if msg.mode == "ensure":
+            await _record_scaffold_error(msg, error, api, log)
+        return {"status": "failed", "error": error}
     except Exception as exc:
         error = redact_diagnostic(exc)
         log.error("scaffold_job_exception", error=error, exc_info=True)
-        if msg.mode == "ensure":
-            # An exception is an ensure failure like any other: recorded, so the
-            # API parks the project's stories instead of refusing them silently.
-            await _record_scaffold_error(msg, error, api, log)
+        # A handled exception is terminal for this queue delivery. Record it for
+        # both modes so the periodic scaffold trigger does not silently enqueue
+        # the same broken work forever after this entry is ACKed.
+        await _record_scaffold_error(msg, error, api, log)
+        if msg.mode != "ensure":
+            await _fail_stories_waiting_on_scaffold(msg, error, api, log)
         return {"status": "failed", "error": error}
     finally:
         lease_refresh.cancel()
-        with suppress(asyncio.CancelledError):
+        try:
             await lease_refresh
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.warning("scaffold_lease_refresh_failed", exc_info=True)
         await _finish_scaffold_work(redis, msg.project_id, lease)
 
 
@@ -247,12 +263,12 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
 
     log.error("scaffold_job_failed", error=result.error)
 
-    # Mark project so scaffold_trigger stops retrying every cycle
+    # Mark project so scaffold_trigger stops retrying every cycle.
     try:
-        project = await api.get_project(msg.project_id)
-        config = dict(project.config) if project.config else {}
-        config["scaffold_error"] = result.error or "unknown error"
-        await api.update_project_config(msg.project_id, config)
+        await api.patch_project_config(
+            msg.project_id,
+            values={"scaffold_error": result.error or "unknown error"},
+        )
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
 
@@ -317,14 +333,22 @@ async def _verify_repo_auto_merge(msg, github, api, org, project_config, log) ->
             raise RuntimeError("GitHub read-back reported allow_auto_merge=false")
         if "repo_auto_merge_verification" in project_config:
             project_config.pop("repo_auto_merge_verification")
-            await api.update_project_config(msg.project_id, project_config)
+            await api.patch_project_config(
+                msg.project_id,
+                remove=["repo_auto_merge_verification"],
+            )
         log.info("repo_auto_merge_verified")
     except Exception as exc:
         error = redact_diagnostic(exc)
         log.error("repo_auto_merge_verification_failed", error=error, exc_info=True)
         project_config["repo_auto_merge_verification"] = {"status": "failed", "error": error}
         try:
-            await api.update_project_config(msg.project_id, project_config)
+            await api.patch_project_config(
+                msg.project_id,
+                values={
+                    "repo_auto_merge_verification": project_config["repo_auto_merge_verification"]
+                },
+            )
         except Exception:
             log.exception("repo_auto_merge_failure_mark_write_failed")
         await notify_admins_best_effort(
@@ -388,33 +412,33 @@ async def _record_scaffold_error(msg, error: str, api, log) -> None:
     operator's infrastructure retry is what removes it.
     """
     try:
-        project = await api.get_project(msg.project_id)
-        config = dict(project.config) if project.config else {}
-        config["scaffold_error"] = error
-        await api.update_project_config(msg.project_id, config)
+        await api.patch_project_config(msg.project_id, values={"scaffold_error": error})
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
 
 
 async def _update_project_on_success(msg, result, api, settings, log) -> dict:
-    """Update project config with tree and specs after successful scaffold/ensure."""
+    """Update owned config keys without replacing concurrent config writes."""
     workspace = Path(settings.workspace_base_path) / msg.repository_id
-    project = await api.get_project(msg.project_id)
-    config = dict(project.config) if project.config else {}
-    config["tree"] = result.tree
-    config["workspace_ready"] = True
+    values = {
+        "tree": result.tree,
+        "workspace_ready": True,
+    }
     if result.template_commit:
-        config["service_template"] = {
+        values["service_template"] = {
             "source": msg.template_repo,
             "requested_ref": msg.template_ref,
             "commit": result.template_commit,
         }
-    config.pop("scaffold_error", None)
     specs_summary = extract_specs_summary(workspace)
     if specs_summary:
-        config["specs_summary"] = specs_summary
-    await api.update_project_config(msg.project_id, config)
-    return config
+        values["specs_summary"] = specs_summary
+    project = await api.patch_project_config(
+        msg.project_id,
+        values=values,
+        remove=["scaffold_error"],
+    )
+    return dict(project.config or {})
 
 
 async def run_worker() -> None:
@@ -442,6 +466,7 @@ async def run_worker() -> None:
                 break
             if msg is None:
                 continue
+            settled = False
             try:
                 bind_message_context(msg.data)
                 try:
@@ -460,10 +485,12 @@ async def run_worker() -> None:
                         failure=DLQ_FAILURE_VALIDATION,
                         reason={"errors": safe_validation_errors(exc)},
                     )
+                    settled = True
                     continue
                 result = await process_scaffold_job(msg.data, redis)
                 msg.data.update(result)
                 await redis.ack(SCAFFOLD_QUEUE, SCAFFOLD_GROUP, msg.message_id)
+                settled = True
                 logger.debug("job_acked", entry_id=msg.message_id)
             except asyncio.CancelledError:
                 raise
@@ -475,6 +502,7 @@ async def run_worker() -> None:
                     data=msg.data,
                     reason={"error": "scaffold processing repeatedly failed"},
                 ):
+                    settled = True
                     logger.error(
                         "scaffold_delivery_exhausted",
                         entry_id=msg.message_id,
@@ -487,9 +515,12 @@ async def run_worker() -> None:
                     error_type=type(e).__name__,
                 )
             finally:
-                # Clear inflight marker so the scheduler can re-trigger if needed
+                # Only a terminal queue settlement may release the scheduler's
+                # dedup marker. A processing failure that stays pending must
+                # keep it until reclaim or TTL; otherwise the next scheduler
+                # tick can publish a duplicate alongside the pending entry.
                 project_id = msg.data.get("project_id")
-                if project_id:
+                if settled and project_id:
                     inflight_key = f"scaffold:inflight:{project_id}"
                     await redis.redis.delete(inflight_key)
                 unbind_message_context()

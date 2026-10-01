@@ -700,6 +700,15 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
         )
         return TaskDTO.model_validate(resp.json())
 
+    async def retry_failed_task(self, task_id: str, actor: str = "supervisor") -> TaskDTO:
+        """Commit FAILED → BACKLOG → TODO and the iteration bump as one API action."""
+        resp = await self.request(
+            "POST",
+            f"tasks/{task_id}/retry-failed",
+            json={"actor": actor},
+        )
+        return TaskDTO.model_validate(resp.json())
+
     async def start_engineering_attempt(
         self, command: EngineeringAttemptStartCommand
     ) -> EngineeringAttemptStartRead:

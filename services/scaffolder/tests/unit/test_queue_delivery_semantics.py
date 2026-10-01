@@ -53,3 +53,27 @@ async def test_invalid_scaffold_message_is_quarantined(monkeypatch):
     redis.redis.delete.assert_awaited_once_with("scaffold:inflight:proj-1")
     assert redis.closed is True
     api.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pending_processing_failure_keeps_inflight_marker(monkeypatch):
+    redis = _FakeRedisClient()
+    api = AsyncMock()
+
+    monkeypatch.setattr(consumer, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(consumer, "get_api_client", lambda: api)
+    monkeypatch.setattr(consumer, "setup_logging", lambda **_kwargs: None)
+    monkeypatch.setattr(consumer, "_shutdown", False)
+    monkeypatch.setattr(consumer.ScaffoldMessage, "model_validate", lambda _data: object())
+
+    async def fail_processing(_data, _redis):
+        raise RuntimeError("transient processing failure")
+
+    monkeypatch.setattr(consumer, "process_scaffold_job", fail_processing)
+
+    with pytest.raises(asyncio.CancelledError):
+        await consumer.run_worker()
+
+    redis.redis.delete.assert_not_awaited()
+    assert redis.closed is True
+    api.close.assert_awaited_once()

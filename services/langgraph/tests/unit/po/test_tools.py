@@ -843,10 +843,11 @@ class TestCreateStory:
             config=_make_config("user-42"),
         )
 
-        # Should PATCH project config with detailed_spec
+        # Should patch only the owned detailed_spec key.
         mock_api_client.patch_raw.assert_called_once()
-        patched_config = mock_api_client.patch_raw.call_args[1]["json"]["config"]
-        assert patched_config["detailed_spec"] == "Build a recipe bot"
+        call = mock_api_client.patch_raw.call_args
+        assert call.args[0] == f"projects/{BRIEF_PROJECT_ID}/config"
+        assert call.kwargs["json"] == {"values": {"detailed_spec": "Build a recipe bot"}}
 
     @pytest.mark.asyncio
     async def test_spec_persistence_failure_does_not_publish_to_architect(

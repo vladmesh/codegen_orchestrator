@@ -198,6 +198,22 @@ def failed_record(
     )
 
 
+def dispatch_owed_record(*, reopen: bool, now: datetime) -> StoryPlanning:
+    """Persist an architect handoff that still needs to be published.
+
+    The API writes this record in the same transaction that moves a story into
+    planning. The scheduler is then the one publisher, so a process crash or
+    Redis failure after the database commit cannot strand the story.
+    """
+    return StoryPlanning(
+        state=StoryPlanningState.RETRYING,
+        failed_attempts=0,
+        next_attempt_at=now,
+        reopen=reopen,
+        recorded_at=now,
+    )
+
+
 def operator_retry_record(
     parked: StoryPlanning | None, *, max_retries: int, now: datetime
 ) -> StoryPlanning:

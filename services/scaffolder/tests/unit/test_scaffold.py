@@ -1,5 +1,6 @@
 """Tests for scaffold core logic."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ from structlog.testing import capture_logs
 from src.scaffold import (
     ScaffoldResult,
     _capture_tree,
+    _run_cmd,
     _workspace_has_files,
     run_ensure_workspace,
     run_scaffold,
@@ -41,6 +43,32 @@ def settings():
 @pytest.fixture
 def fake_token():
     return "ghs_testtoken_for_scaffold"  # noqa: S106
+
+
+@pytest.mark.asyncio
+async def test_run_cmd_kills_child_after_timeout():
+    process = MagicMock()
+    process.returncode = None
+    calls = 0
+
+    async def communicate():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await asyncio.sleep(60)
+        return b"", b""
+
+    process.communicate = communicate
+    process.kill = MagicMock()
+
+    with (
+        patch("src.scaffold.asyncio.create_subprocess_exec", return_value=process),
+        pytest.raises(TimeoutError),
+    ):
+        await _run_cmd(["slow-command"], timeout=0.001)
+
+    process.kill.assert_called_once()
+    assert calls == 2
 
 
 class TestRunScaffold:

@@ -346,19 +346,20 @@ class TestSuperviseFailedTasks:
                 max_iterations=3,
             )
         ]
-        api_client.transition_task.return_value = {}
-        api_client.update_task.return_value = {}
+        api_client.retry_failed_task.return_value = _make_task(
+            id="task-1",
+            story_id="story-1",
+            status="todo",
+            current_iteration=1,
+            max_iterations=3,
+        )
 
         result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result["retried"] == 1
-        # Should transition: failed -> backlog -> todo
-        calls = api_client.transition_task.call_args_list
-        assert len(calls) == 2  # noqa: PLR2004
-        assert calls[0].args == ("task-1", "backlog", "supervisor")
-        assert calls[1].args == ("task-1", "todo", "supervisor")
-        # Should increment current_iteration
-        api_client.update_task.assert_called_once_with("task-1", {"current_iteration": 1})
+        api_client.retry_failed_task.assert_awaited_once_with("task-1", "supervisor")
+        api_client.transition_task.assert_not_awaited()
+        api_client.update_task.assert_not_awaited()
 
     _PARK = EngineeringInfrastructurePark(
         task_id="task-1",
@@ -464,7 +465,8 @@ class TestSuperviseFailedTasks:
         result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result == {"retried": 1, "escalated": 0}
-        api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 2})
+        api_client.retry_failed_task.assert_awaited_once_with("task-1", "supervisor")
+        api_client.update_task.assert_not_awaited()
         api_client.park_infrastructure_refusal.assert_not_awaited()
 
     @pytest.mark.parametrize(
@@ -488,7 +490,8 @@ class TestSuperviseFailedTasks:
         routed = await supervise_failed_tasks(api_client, redis_client)
 
         assert routed == {"retried": 1, "escalated": 0}
-        api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 1})
+        api_client.retry_failed_task.assert_awaited_once_with("task-1", "supervisor")
+        api_client.update_task.assert_not_awaited()
         api_client.park_infrastructure_refusal.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -601,10 +604,8 @@ class TestSuperviseFailedTasks:
 
         assert parked.current_iteration == 0
         api_client.park_infrastructure_refusal.assert_awaited_once()
-        api_client.update_task.assert_awaited_once_with("task-next", {"current_iteration": 1})
-        assert {call.args[0] for call in api_client.transition_task.await_args_list} == {
-            "task-next"
-        }
+        api_client.retry_failed_task.assert_awaited_once_with("task-next", "supervisor")
+        api_client.update_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_escalates_to_whr_when_retries_exhausted(self, api_client, redis_client):
@@ -743,11 +744,9 @@ class TestSuperviseFailedTasks:
         result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result == {"retried": 1, "escalated": 0}
-        assert [call.args[1] for call in api_client.transition_task.call_args_list] == [
-            "backlog",
-            "todo",
-        ]
-        api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 2})
+        api_client.retry_failed_task.assert_awaited_once_with("task-1", "supervisor")
+        api_client.transition_task.assert_not_awaited()
+        api_client.update_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_fresh_metrics_escalates_without_spending_an_iteration(

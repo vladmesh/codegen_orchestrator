@@ -177,16 +177,18 @@ async def _project_config(project_id: str, headers: dict[str, str]) -> dict:
 async def _write_pointer(
     project_id: str, config: dict, brief_id: str | None, headers: dict[str, str]
 ) -> None:
-    """Point the project at the revision in flight, or at none at all."""
-    updated = dict(config)
+    """Point the project at the revision without replacing unrelated config."""
     if brief_id is None:
-        updated.pop(PRODUCT_BRIEF_POINTER_KEY, None)
+        if PRODUCT_BRIEF_POINTER_KEY not in config:
+            return
+        payload = {"remove": [PRODUCT_BRIEF_POINTER_KEY]}
     else:
-        updated[PRODUCT_BRIEF_POINTER_KEY] = brief_id
-    if updated == config:
-        return
+        if config.get(PRODUCT_BRIEF_POINTER_KEY) == brief_id:
+            return
+        payload = {"values": {PRODUCT_BRIEF_POINTER_KEY: brief_id}}
+
     response = await _get_api().patch_raw(
-        f"projects/{project_id}", json={"config": updated}, headers=headers
+        f"projects/{project_id}/config", json=payload, headers=headers
     )
     response.raise_for_status()
 

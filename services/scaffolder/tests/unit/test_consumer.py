@@ -65,7 +65,7 @@ def mock_api():
     api = AsyncMock()
     api.get_project.return_value = _make_project()
     api.update_project_status.return_value = None
-    api.update_project_config.return_value = None
+    api.patch_project_config.return_value = _make_project()
     return api
 
 
@@ -115,6 +115,33 @@ class TestProcessScaffoldJob:
         mock_github.create_repo.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_lost_lease_fails_only_the_current_job(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """Lease loss cancels scaffold work without cancelling the consumer loop caller."""
+
+        async def lose_lease(*_args):
+            await asyncio.sleep(0)
+            raise RuntimeError("lease disappeared")
+
+        async def slow_scaffold(**_kwargs):
+            await asyncio.sleep(60)
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
+            patch("src.consumer._refresh_scaffold_lease", side_effect=lose_lease),
+            patch("src.consumer.run_scaffold", side_effect=slow_scaffold),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result == {"status": "failed", "error": "scaffold execution lease expired"}
+        mock_redis.redis.zrem.assert_awaited_once()
+        mock_api.patch_project_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_success_updates_status_and_tree(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
@@ -162,10 +189,9 @@ class TestProcessScaffoldJob:
             token="ghs_fake",  # noqa: S106
         )
 
-        # Should have saved tree to config
-        mock_api.update_project_config.assert_called_once()
-        config_call = mock_api.update_project_config.call_args
-        assert "tree" in config_call[0][1]
+        # Should have saved tree without replacing unrelated config.
+        mock_api.patch_project_config.assert_called_once()
+        assert "tree" in mock_api.patch_project_config.call_args.kwargs["values"]
 
     @pytest.mark.asyncio
     async def test_scaffold_failure_leaves_project_as_draft(
@@ -324,7 +350,7 @@ class TestProcessScaffoldJob:
             result = await process_scaffold_job(valid_job_data, mock_redis)
 
         assert result["status"] == "success"
-        failure_config = mock_api.update_project_config.await_args_list[-1].args[1]
+        failure_config = mock_api.patch_project_config.await_args_list[-1].kwargs["values"]
         assert failure_config["repo_auto_merge_verification"]["status"] == "failed"
         notify.assert_awaited_once()
 
@@ -332,9 +358,8 @@ class TestProcessScaffoldJob:
     async def test_repo_auto_merge_success_clears_a_prior_failure_mark(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
-        mock_api.get_project.return_value = _make_project(
-            config={"repo_auto_merge_verification": {"status": "failed", "error": "old"}}
-        )
+        prior = {"repo_auto_merge_verification": {"status": "failed", "error": "old"}}
+        mock_api.patch_project_config.return_value = _make_project(config=prior)
         scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
 
         with (
@@ -347,7 +372,8 @@ class TestProcessScaffoldJob:
             assert (await process_scaffold_job(valid_job_data, mock_redis))["status"] == "success"
 
         assert (
-            "repo_auto_merge_verification" not in mock_api.update_project_config.await_args.args[1]
+            "repo_auto_merge_verification"
+            in mock_api.patch_project_config.await_args.kwargs["remove"]
         )
 
     @pytest.mark.asyncio
@@ -402,7 +428,7 @@ class TestProcessScaffoldJobEnsureMode:
         # Should NOT change project status (project is already ACTIVE)
         mock_api.update_project_status.assert_not_called()
         # Should update config with workspace_ready
-        mock_api.update_project_config.assert_called_once()
+        mock_api.patch_project_config.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_ensure_skipped_returns_skipped_status(
@@ -423,7 +449,7 @@ class TestProcessScaffoldJobEnsureMode:
 
         assert result["status"] == "skipped"
         # Should NOT update config when skipped
-        mock_api.update_project_config.assert_not_called()
+        mock_api.patch_project_config.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ensure_failure_records_scaffold_error_and_keeps_config(
@@ -445,9 +471,9 @@ class TestProcessScaffoldJobEnsureMode:
             result = await process_scaffold_job(ensure_job_data, mock_redis)
 
         assert result == {"status": "failed", "error": "Git clone failed: denied"}
-        mock_api.update_project_config.assert_awaited_once_with(
+        mock_api.patch_project_config.assert_awaited_once_with(
             "proj-123",
-            {"modules": ["backend"], "tree": ".", "scaffold_error": "Git clone failed: denied"},
+            values={"scaffold_error": "Git clone failed: denied"},
         )
 
     @pytest.mark.asyncio
@@ -469,16 +495,17 @@ class TestProcessScaffoldJobEnsureMode:
 
         assert result == {"status": "failed", "error": "GitHub is unreachable"}
         mock_ensure.assert_not_called()
-        mock_api.update_project_config.assert_awaited_once_with(
-            "proj-123", {"scaffold_error": "GitHub is unreachable"}
+        mock_api.patch_project_config.assert_awaited_once_with(
+            "proj-123", values={"scaffold_error": "GitHub is unreachable"}
         )
 
     @pytest.mark.asyncio
-    async def test_full_mode_exception_records_no_scaffold_error(
+    async def test_full_mode_exception_records_scaffold_error(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
-        """Full-mode exception behaviour is unchanged: nothing is recorded."""
+        """A terminal full-mode exception is durable before the queue entry is ACKed."""
         mock_github.create_repo.side_effect = RuntimeError("GitHub is unreachable")
+        mock_api.get_stories_by_project.return_value = []
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
@@ -489,7 +516,9 @@ class TestProcessScaffoldJobEnsureMode:
             result = await process_scaffold_job(valid_job_data, mock_redis)
 
         assert result["status"] == "failed"
-        mock_api.update_project_config.assert_not_called()
+        mock_api.patch_project_config.assert_awaited_once_with(
+            "proj-123", values={"scaffold_error": "GitHub is unreachable"}
+        )
 
     @pytest.mark.asyncio
     async def test_full_mode_calls_run_scaffold(

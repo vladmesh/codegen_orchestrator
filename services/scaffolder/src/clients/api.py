@@ -49,13 +49,25 @@ class ScaffolderAPIClient(InternalAPIClient):
         await self.request("PATCH", f"repositories/{repo_id}", json=fields)
         logger.info("repository_updated", repo_id=repo_id, fields=list(fields.keys()))
 
-    async def update_project_config(self, project_id: str, config: dict) -> None:
-        await self.request(
+    async def patch_project_config(
+        self,
+        project_id: str,
+        *,
+        values: dict | None = None,
+        remove: list[str] | None = None,
+    ) -> ProjectDTO:
+        resp = await self.request(
             "PATCH",
-            f"projects/{project_id}",
-            json={"config": config},
+            f"projects/{project_id}/config",
+            json={"values": values or {}, "remove": remove or []},
         )
-        logger.info("project_config_updated", project_id=project_id)
+        logger.info(
+            "project_config_patched",
+            project_id=project_id,
+            set_keys=sorted((values or {}).keys()),
+            removed_keys=sorted(remove or []),
+        )
+        return ProjectDTO.model_validate(resp.json())
 
     async def get_stories_by_project(self, project_id: str) -> list[StoryDTO]:
         resp = await self.request("GET", f"stories/?project_id={project_id}")

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectConfigPatch, ProjectStatus
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.contracts.vocab import AgentType
 from shared.models import Project, Repository
@@ -264,6 +264,42 @@ async def update_project(
 
     logger.info("project_patched", project_id=str(project.id), status=project.status)
 
+    return project
+
+
+@router.patch("/{project_id}/config", response_model=ProjectRead)
+async def patch_project_config(
+    project_id: uuid.UUID,
+    patch: ProjectConfigPatch,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+) -> Project:
+    """Atomically update only the named top-level project config keys."""
+    project = await load_locked_project(db, project_id)
+    await check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
+
+    config = dict(project.config or {})
+    for key in patch.remove:
+        config.pop(key, None)
+    config.update(patch.values)
+    project.config = _vet_config_write(config, project)
+
+    await db.commit()
+    await db.refresh(project)
+    logger.info(
+        "project_config_patched",
+        project_id=str(project.id),
+        set_keys=sorted(patch.values),
+        removed_keys=sorted(patch.remove),
+    )
     return project
 
 
