@@ -44,6 +44,13 @@ responses do not prove live backend freshness or production recovery.
 
 ## Test Layers
 
+Run vocabulary and schema reconciliation are covered by the required API service
+suite against the PostgreSQL database created by `alembic upgrade head`.
+`test_schema_metadata.py` compares that schema with ORM metadata; migration and
+integrity cases exercise the data preflights, timestamp backfill, Run CHECK
+constraints and partial incident indexes. HTTP cases verify that invalid Run
+values are refused before persistence and that omitted status leaves it intact.
+
 | Layer | Location | Dependencies | CI | Speed |
 |-------|----------|-------------|-----|-------|
 | **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks) | Pre-push + CI | ~12s (parallel) |

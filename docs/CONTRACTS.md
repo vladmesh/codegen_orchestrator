@@ -1891,6 +1891,24 @@ route, and it says so rather than being prevented from happening.
 
 ## Lifecycle and security invariants
 
+### Run vocabulary and persisted schema
+
+`RunType` and `RunStatus` in `shared/contracts/dto/run.py` own the Run vocabulary.
+Run creation, responses and list filters use those enums; updates may omit
+`status`, but an explicit null or unknown status is rejected with 422 before
+writing. Unknown create types and filter values are also 422. These checks
+preserve the existing paid-run admission and locked terminal-outcome rules.
+The `runs` table retains string columns with matching CHECK constraints, so
+direct database writers cannot persist another vocabulary.
+
+Schema migrations reject unknown persisted Run values and populated retired QA
+observation fields before changing data or constraints; they do not reinterpret
+unknown outcomes. Product Brief and requirement-coverage timestamps are required.
+The reconciliation preserves known dates, fills a missing date from its paired
+timestamp, and uses the migration transaction time only when both are absent.
+The API service suite compares the fully migrated PostgreSQL schema with ORM
+metadata and verifies the active-incident uniqueness predicates.
+
 ### Typed `Run.result` and terminal ownership
 
 `shared/contracts/dto/run_result.py` defines typed deploy and QA result families.

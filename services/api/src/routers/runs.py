@@ -394,10 +394,10 @@ async def list_runs(  # noqa: PLR0913
     project_id: uuid.UUID | None = None,
     task_id: str | None = None,
     story_id: str | None = None,
-    run_type: str | None = None,
+    run_type: RunType | None = None,
     # alias keeps the public query param name; a parameter literally named
     # `status` would shadow the fastapi.status module used below
-    run_status: str | None = Query(None, alias="status"),
+    run_status: RunStatus | None = Query(None, alias="status"),
     user_id: int | None = None,
     started_after: datetime | None = None,
     started_before: datetime | None = None,
