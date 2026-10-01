@@ -191,6 +191,68 @@ async def fail_task(
     return to_read(task)
 
 
+@action_router.post("/{task_id}/retry-failed", response_model=TaskRead)
+async def retry_failed_task(
+    task_id: str,
+    body: TaskTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> TaskRead:
+    """Atomically move one failed task onto its next automatic iteration.
+
+    The old supervisor performed FAILED → BACKLOG → TODO and the iteration bump
+    as three HTTP writes. Any failure between them could strand the task in
+    BACKLOG or replay an already-used iteration. This endpoint locks the task and
+    commits both status events and the new iteration together.
+    """
+    body = body or TaskTransition(actor="supervisor")
+    task = await get_task_for_update(task_id, db)
+    if task.status != TaskStatus.FAILED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"reason": "task_not_failed", "status": task.status},
+        )
+    if task.current_iteration >= task.max_iterations:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "task_retry_exhausted",
+                "current_iteration": task.current_iteration,
+                "max_iterations": task.max_iterations,
+            },
+        )
+
+    next_iteration = task.current_iteration + 1
+    validate_transition(TaskStatus.FAILED, TaskStatus.BACKLOG)
+    validate_transition(TaskStatus.BACKLOG, TaskStatus.TODO)
+    details = {
+        **body.details,
+        "action": "automatic_retry",
+        "previous_iteration": task.current_iteration,
+        "iteration": next_iteration,
+        "max_iterations": task.max_iterations,
+    }
+
+    task.status = TaskStatus.BACKLOG.value
+    await create_status_event(
+        task, TaskStatus.FAILED, TaskStatus.BACKLOG, body.actor, details, db
+    )
+    task.status = TaskStatus.TODO.value
+    await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, details, db)
+    task.current_iteration = next_iteration
+
+    await db.commit()
+    await db.refresh(task)
+    logger.info(
+        "task_automatic_retry_committed",
+        task_id=task.id,
+        actor=body.actor,
+        iteration=next_iteration,
+        max_iterations=task.max_iterations,
+    )
+    return to_read(task)
+
+
 @action_router.post("/{task_id}/reopen", response_model=TaskRead)
 async def reopen_task(
     task_id: str,
