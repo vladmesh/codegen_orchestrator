@@ -67,7 +67,7 @@ class Time4VPSClient:
 
         Args:
             username: Time4VPS account login. Callers pass it explicitly; the env
-                fallback is TIME4VPS_USERNAME.
+                fallback is TIME4VPS_LOGIN.
             password: Time4VPS password. Defaults to TIME4VPS_PASSWORD env var.
 
         Note: access to the API is restricted by an IP allowlist on the provider side.
@@ -75,7 +75,7 @@ class Time4VPSClient:
         {"error":["ipnotallowed","unauthorized"]}.
         """
         self.base_url = "https://billing.time4vps.com/api"
-        self.username = username or os.getenv("TIME4VPS_USERNAME")
+        self.username = username or os.getenv("TIME4VPS_LOGIN")
         self.password = password or os.getenv("TIME4VPS_PASSWORD")
         self._auth_header: str | None = None
         self._client: httpx.AsyncClient | None = None
