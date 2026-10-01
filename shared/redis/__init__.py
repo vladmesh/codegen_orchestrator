@@ -1,4 +1,7 @@
 from .client import (
+    DEFAULT_MAX_DELIVERIES,
+    DLQ_FAILURE_DELIVERY_EXHAUSTED,
+    DLQ_FAILURE_VALIDATION,
     RedisStreamClient,
     StreamMessage,
     TypedMessage,
@@ -8,6 +11,9 @@ from .client import (
 )
 
 __all__ = [
+    "DEFAULT_MAX_DELIVERIES",
+    "DLQ_FAILURE_DELIVERY_EXHAUSTED",
+    "DLQ_FAILURE_VALIDATION",
     "RedisStreamClient",
     "StreamMessage",
     "TypedMessage",

@@ -15,6 +15,7 @@ from structlog.testing import capture_logs
 
 from shared.contracts.base import BaseMessage
 from shared.redis.client import (
+    DLQ_FAILURE_VALIDATION,
     RedisStreamClient,
     StreamMessage,
     TypedMessage,
@@ -811,3 +812,52 @@ class TestNewerPublisherIsNotDestructive:
         """Tolerance is read-side only: the write side keeps ``extra="forbid"``."""
         with pytest.raises(ValueError, match="cost_usd"):
             StrictSample(name="hello", cost_usd=0.42)
+
+
+class TestDeliverySemantics:
+    async def test_terminal_reject_quarantines_before_ack(self, client, fake_redis):
+        await client.publish("s", {"bad": "payload"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100, auto_ack=False):
+            if msg is not None:
+                break
+
+        await client.reject_entry(
+            "s",
+            "g",
+            msg.message_id,
+            data=msg.data,
+            failure=DLQ_FAILURE_VALIDATION,
+            reason={"error": "invalid"},
+        )
+
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 0
+        quarantined = await fake_redis.xrange(dlq_stream("s"))
+        assert len(quarantined) == 1
+        assert quarantined[0][1]["failure"] == DLQ_FAILURE_VALIDATION
+
+    async def test_delivery_ceiling_quarantines_instead_of_processing_again(
+        self, client, fake_redis
+    ):
+        await client.publish("s", {"work": "repeat"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100, auto_ack=False):
+            if msg is not None:
+                break
+        client.delivery_count = AsyncMock(return_value=6)
+
+        exhausted = await client.reject_if_exhausted(
+            "s", "g", msg.message_id, data=msg.data, max_deliveries=5
+        )
+
+        assert exhausted is True
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 0
+        quarantined = await fake_redis.xrange(dlq_stream("s"))
+        assert quarantined[0][1]["failure"] == "delivery_exhausted"
+
+    async def test_consumer_cancellation_propagates(self, client, fake_redis):
+        fake_redis.xreadgroup = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            async for _ in client.consume("s", "g", "c1", block_ms=100):
+                pass

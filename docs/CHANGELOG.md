@@ -8,7 +8,15 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 - Retry the stand e2e `CODEX_AUTH_JSON` secret write up to five times, so a transient GitHub 5xx
   does not fail the run or lose the refreshed Codex token.
 
+- Make LK bearer authorization deny-by-default: valid dashboard tokens reach only routes with an
+  explicit owner/admin/current-user bearer guard; unclassified routes remain internal-only.
+
 ## 2026-09-30
+
+- Quarantine malformed and repeatedly failing Redis work before ACK, preserve transient failures for
+  bounded reclaim, and propagate cancellation so queue consumers no longer lose or loop poison entries.
+
+- Persist scheduler deploy Runs and exact queue handoffs before Story transitions, with stable attempt IDs and queued-handoff recovery so dispatch failures cannot strand DEPLOYING stories.
 
 - Report every LangGraph service-test setup, call and teardown duration to measure native
   notification waits separately from fixture and CI overhead.

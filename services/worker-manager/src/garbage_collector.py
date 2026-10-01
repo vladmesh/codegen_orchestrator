@@ -302,25 +302,26 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
     Scans SCAFFOLDED_WORKSPACE_PATH for old workspaces. Also cleans
     stale workspace:active_projects entries.
     """
-    # Clean stale active_projects entries — remove projects with no live worker.
-    # `project_id` in a worker's metadata is that evidence: the acquisition
-    # writes it before it makes the project active, so a project can never be in
-    # the set with its holder's metadata not yet visible here, and this sweep
-    # cannot take a workspace away from a worker that is mid-acquisition.
-    active_projects = await redis.smembers("workspace:active_projects")
-    for project_id in active_projects:
-        has_worker = False
-        async for key in redis.scan_iter(match="worker:meta:*"):
-            meta = decode_redis_fields(await redis.hgetall(key))
-            if meta.get("project_id") == project_id:
-                has_worker = True
-                break
-        if not has_worker:
-            await redis.srem("workspace:active_projects", project_id)
-            logger.info("workspace_gc_cleared_stale_project", project_id=project_id)
+    # Build the ownership view once. The lifecycle fence is keyed by project_id,
+    # while scaffolded directories are keyed by repo_id; comparing one namespace
+    # to the other used to make every old active repo eligible for deletion.
+    active_projects = {
+        decode_redis_value(value) for value in await redis.smembers("workspace:active_projects")
+    }
+    live_project_ids: set[str] = set()
+    live_repo_ids: set[str] = set()
+    async for key in redis.scan_iter(match="worker:meta:*"):
+        meta = decode_redis_fields(await redis.hgetall(key))
+        if project_id := meta.get("project_id"):
+            live_project_ids.add(project_id)
+        if repo_id := meta.get("repo_id"):
+            live_repo_ids.add(repo_id)
 
-    # Refresh after cleanup
-    active_projects = await redis.smembers("workspace:active_projects")
+    stale_projects = active_projects - live_project_ids
+    if stale_projects:
+        await redis.srem("workspace:active_projects", *sorted(stale_projects))
+        for project_id in sorted(stale_projects):
+            logger.info("workspace_gc_cleared_stale_project", project_id=project_id)
 
     now = time.time()
     for base_path in [settings.SCAFFOLDED_WORKSPACE_PATH]:
@@ -333,7 +334,9 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
             continue
 
         for entry in entries:
-            if entry in active_projects:
+            if entry == ".compose-plans" or entry.startswith(workspace_mod.QA_WORKSPACE_PREFIX):
+                continue
+            if entry in live_repo_ids:
                 continue
             ws_dir = Path(base_path) / entry
             try:

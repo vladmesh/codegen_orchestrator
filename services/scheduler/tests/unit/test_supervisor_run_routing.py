@@ -825,7 +825,7 @@ class TestSuperviseDeployingStories:
             },
             result={"deploy_outcome": DeployOutcome.RETRY.value},
         )
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
         # First retry
         redis_client._redis.incr.return_value = 1
 
@@ -841,7 +841,7 @@ class TestSuperviseDeployingStories:
         deploy_msg = deploy_calls[0][0][1]
         assert deploy_msg.head_sha == "a" * 40
 
-        run_data = api_client.create_run.call_args[0][0]
+        run_data = api_client.create_run_if_absent.call_args[0][0]
         assert run_data["run_metadata"]["head_sha"] == "a" * 40
 
     @pytest.mark.asyncio
@@ -1140,7 +1140,7 @@ class TestSuperviseDeployingStories:
             )
 
         assert action is RefusedDeployAction.REDISPATCHED
-        api_client.create_run.assert_awaited_once()
+        api_client.create_run_if_absent.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_applied_owner_seed_secret_recovery_falls_through_to_normal_deploy(
@@ -1178,7 +1178,7 @@ class TestSuperviseDeployingStories:
                 logger,
             )
 
-        api_client.create_run.assert_awaited_once()
+        api_client.create_run_if_absent.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_cancelled_deploy_is_redeployed_not_left_waiting(self, api_client, redis_client):
@@ -1199,7 +1199,7 @@ class TestSuperviseDeployingStories:
             run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40},
             result={"deploy_outcome": DeployOutcome.CANCELLED.value},
         )
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
         redis_client._redis.incr.return_value = 1
 
         result = await supervise_deploying_stories(api_client, redis_client)
@@ -1231,7 +1231,7 @@ class TestSuperviseDeployingStories:
             run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40},
             result={"deploy_outcome": DeployOutcome.IMAGES_NOT_PUBLISHED.value},
         )
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
         redis_client._redis.incr.return_value = 1
 
         result = await supervise_deploying_stories(api_client, redis_client)
@@ -1543,7 +1543,7 @@ class TestSuperviseWaitingUserSecretStories:
             result=_WAITING_SECRET_RESULT,
         )
         api_client.list_project_secret_keys.return_value = ["TELEGRAM_BOT_TOKEN", "OTHER"]
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
 
         result = await supervise_waiting_user_secret_stories(api_client, redis_client)
 
@@ -1555,7 +1555,7 @@ class TestSuperviseWaitingUserSecretStories:
         ]
         assert len(deploy_calls) == 1
         assert deploy_calls[0][0][1].head_sha == "a" * 40
-        run_data = api_client.create_run.call_args[0][0]
+        run_data = api_client.create_run_if_absent.call_args[0][0]
         assert run_data["run_metadata"]["head_sha"] == "a" * 40
 
         # No repeated request to the user — the request is one-shot on entry to the wait.
@@ -2696,7 +2696,7 @@ class TestDeployRefusedByAdmission:
         if expected.resumes_when_target_admissible:
             assert result["redispatched"] == 1
             mock_notify.assert_not_called()
-            api_client.create_run.assert_called_once()
+            api_client.create_run_if_absent.assert_called_once()
             published = redis_client.publish_message.call_args
             assert published.args[0] == DEPLOY_QUEUE
             assert published.args[1].head_sha == "b" * 40
@@ -2798,7 +2798,7 @@ class TestDeployRefusedByAdmission:
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 1
-        created = api_client.create_run.call_args.args[0]
+        created = api_client.create_run_if_absent.call_args.args[0]
         assert created["run_metadata"]["infrastructure_wait_started_at"] == started.isoformat()
 
     @pytest.mark.asyncio
@@ -2913,7 +2913,7 @@ class TestSettingsSeedFailureRouting:
                 "settings_seed": [_seeded(failure)],
             },
         )
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
         redis_client._redis.incr.return_value = 1
 
         result = await supervise_deploying_stories(api_client, redis_client)
@@ -2964,7 +2964,7 @@ class TestSettingsSeedFailureRouting:
             status=GrantIntentStatus.APPLIED,
             disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
         )
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
         redis_client._redis.incr.return_value = 1
 
         result = await supervise_deploying_stories(api_client, redis_client)
@@ -3010,7 +3010,7 @@ class TestSettingsSeedFailureRouting:
             status=GrantIntentStatus.APPLIED,
             disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
         )
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
         redis_client._redis.incr.return_value = 1
 
         result = await supervise_deploying_stories(api_client, redis_client)
@@ -3090,7 +3090,7 @@ class TestSettingsSeedFailureRouting:
             status=GrantIntentStatus.APPLIED,
             disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
         )
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
         redis_client._redis.incr.return_value = 1
 
         with patch("src.tasks.supervisor.deploy._reconciled_success_result", return_value=None):
@@ -3352,7 +3352,7 @@ class TestSettingsSeedFailureRouting:
                 "settings_seed": [_seeded(failure) for failure in failures],
             },
         )
-        api_client.create_run.return_value = {}
+        api_client.create_run_if_absent.return_value = {}
         redis_client._redis.incr.return_value = 1
 
         result = await supervise_deploying_stories(api_client, redis_client)

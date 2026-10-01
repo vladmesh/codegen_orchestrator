@@ -87,19 +87,24 @@ taken from the default value.
 ### Who may reach the API at all
 
 One dependency on the FastAPI application, `require_authenticated_caller`, stands in front of
-every route. It admits two credentials: a valid `X-Internal-Key`, and an LK bearer token. It
-admits nothing else — in particular `X-Telegram-ID` on its own is not an identity, because the
-header names a user without proving one and anything that can reach the API's port can send it.
-The routes that answer anonymously are listed, with a reason each, in `ANONYMOUS_ROUTES` in
+every route. A valid `X-Internal-Key` authenticates a service and may enter the authenticated API
+surface. An LK bearer is narrower: after its token is validated, it reaches a handler only when
+that `APIRoute` explicitly declares another bearer-aware dependency (for example an owner,
+current-user, or administrator guard). A route with no such dependency is internal-only by
+default. `X-Telegram-ID` on its own is never an identity, because the header names a user without
+proving one and anything that can reach the API's port can send it. The routes that answer
+anonymously are listed, with a reason each, in `ANONYMOUS_ROUTES` in
 `services/api/src/dependencies.py`: `GET /`, `GET /health`, and the LK token exchange
 `POST /api/lk/auth/token`, whose caller has no token yet by definition.
 
-Enforcement lives in that one place so a router included without a guard of its own is still
-closed. `services/api/tests/unit/test_global_auth_gate.py` walks `app.routes` and fails if any
+Enforcement lives in that one place so a router included without an authorization guard of its
+own is both authenticated and internal-only by default. `services/api/tests/unit/test_global_auth_gate.py`
+walks `app.routes` and fails if any
 route outside the allowlist answers an anonymous caller, so a new router cannot arrive open.
 
-Getting through the gate is authentication, not authorization: `resolve_actor` still judges a
-request that names a user as that user, and `is_admin` on `POST /api/users` is refused unless
+For bearer callers, getting through token validation is still not authorization: the route must
+first opt into bearer access, then `resolve_actor` or the route's admin/current-user guard judges
+the authenticated subject. `is_admin` on `POST /api/users` is refused unless
 the caller is an internal service.
 
 ### Talking to the internal API

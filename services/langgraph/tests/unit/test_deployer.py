@@ -110,6 +110,7 @@ def _dotenv(repository_secrets: dict[str, str]) -> dict[str, str]:
 def _setup_happy_mocks(mock_api, mock_gh_cls):
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
+    gh.set_repository_secrets.return_value = 9
     gh.wait_for_workflow_completion.return_value = _SUCCESS_RUN
     gh.get_file_contents.return_value = (
         TEMPLATE_PIN.fixture_path() / ".github/workflows/deploy.yml"
@@ -329,10 +330,43 @@ class TestDeployerNodeErrors:
         """Deploy should fail when ORCHESTRATOR_HOSTNAME/REGISTRY_USER/PASSWORD are missing."""
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 
-        await deployer.run(base_state)
+        result = await deployer.run(base_state)
 
-        # _write_deploy_secrets should have returned False (secrets not written)
+        assert result["deployment_result"]["status"] == "failed"
+        assert "GitHub Actions secrets are incomplete" in result["errors"][0]
         gh.set_repository_secrets.assert_not_called()
+        gh.create_or_reset_tag.assert_not_awaited()
+        gh.trigger_workflow_dispatch.assert_not_awaited()
+        mock_api.create_deployment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch.dict(
+        os.environ,
+        {
+            "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+            "REGISTRY_USER": "registry-user",
+            "REGISTRY_PASSWORD": "registry-password",
+        },
+    )
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_partial_secret_write_refuses_before_fence_or_dispatch(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """A partial secret update must never deploy stale repository values."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.set_repository_secrets.return_value = 1
+        base_state["fence_active_deploys"] = True
+
+        result = await deployer.run(base_state)
+
+        assert result["deployment_result"]["status"] == "failed"
+        assert "GitHub Actions secrets are incomplete" in result["errors"][0]
+        gh.set_repository_secrets.assert_awaited_once()
+        gh.fence_workflow.assert_not_awaited()
+        gh.create_or_reset_tag.assert_not_awaited()
+        gh.trigger_workflow_dispatch.assert_not_awaited()
+        mock_api.create_deployment.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.logger")
@@ -581,6 +615,7 @@ class TestDeployerNodeFailures:
     async def test_handles_workflow_failure(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
+        gh.set_repository_secrets.return_value = 9
         mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
         mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
         gh.wait_for_workflow_completion.side_effect = RuntimeError(
@@ -602,6 +637,7 @@ class TestDeployerNodeFailures:
     async def test_handles_timeout(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
+        gh.set_repository_secrets.return_value = 9
         mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
         mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
         gh.wait_for_workflow_completion.side_effect = TimeoutError(

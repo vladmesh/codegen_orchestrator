@@ -429,7 +429,7 @@ class TestTerminalConsumerMessages:
         assert "cancel_settlement_failed" in redis.redis.set.await_args.args
 
     @pytest.mark.asyncio()
-    async def test_validation_error_is_acked_with_safe_diagnostics(self, mock_api_client):
+    async def test_validation_error_is_quarantined_with_safe_diagnostics(self, mock_api_client):
         from src.consumers._base import run_queue_worker, validate_queued_message
 
         class Job(BaseModel):
@@ -448,12 +448,15 @@ class TestTerminalConsumerMessages:
         redis.connect = AsyncMock()
         redis.close = AsyncMock()
         redis.ack = AsyncMock()
+        redis.reject_entry = AsyncMock()
+        redis.reject_if_exhausted = AsyncMock(return_value=False)
         redis.consume = consume
 
         with patch("src.consumers._base.RedisStreamClient", return_value=redis):
             await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
 
-        redis.ack.assert_awaited_once_with("queue", "capability-workers", "1-0")
+        redis.reject_entry.assert_awaited_once()
+        redis.ack.assert_not_awaited()
 
     @pytest.mark.asyncio()
     async def test_downstream_validation_error_remains_unacked(self, mock_api_client):
@@ -475,9 +478,11 @@ class TestTerminalConsumerMessages:
         redis.connect = AsyncMock()
         redis.close = AsyncMock()
         redis.ack = AsyncMock()
+        redis.reject_if_exhausted = AsyncMock(return_value=False)
         redis.consume = consume
 
         with patch("src.consumers._base.RedisStreamClient", return_value=redis):
             await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
 
+        redis.reject_if_exhausted.assert_awaited_once()
         redis.ack.assert_not_awaited()

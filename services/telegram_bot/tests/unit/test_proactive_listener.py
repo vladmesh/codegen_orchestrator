@@ -15,6 +15,7 @@ def mock_client():
     client = MagicMock()
     client.consume = MagicMock()
     client.ack = AsyncMock()
+    client.reject_entry = AsyncMock()
     # The delivery path reads the PEL delivery count to bound its attempts and
     # acks the entry itself; a first delivery is count 1.
     client.delivery_count = AsyncMock(return_value=1)
@@ -96,7 +97,7 @@ class TestProactiveListener:
         with patch("src.proactive.notify_admins_best_effort", new=AsyncMock()) as alert:
             task = await listener.start(mock_bot)
             for _ in range(200):
-                if mock_client.ack.await_count:
+                if mock_client.reject_entry.await_count:
                     break
                 await asyncio.sleep(0.01)
             task.cancel()
@@ -105,9 +106,9 @@ class TestProactiveListener:
             except asyncio.CancelledError:
                 pass
 
-        # Should not crash, and the entry is settled — given up on with an admin
-        # alert — rather than left pending forever.
-        mock_client.ack.assert_awaited()
+        # Should not crash, and exhaustion is quarantined (which performs the
+        # terminal ACK in the real client) after the admin alert.
+        mock_client.reject_entry.assert_awaited_once()
         alert.assert_awaited_once()
 
     @pytest.mark.asyncio

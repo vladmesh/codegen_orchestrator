@@ -187,6 +187,7 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
     assert await redis.hgetall(f"worker:status:{worker_id}") == {"status": "running"}
 
     forwarded = {}
+    client_timeouts = []
 
     def upstream(request: httpx.Request) -> httpx.Response:
         forwarded["url"] = str(request.url)
@@ -196,12 +197,16 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(upstream)
-    monkeypatch.setattr(
-        main.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs)
-    )
+
+    def client_factory(**kwargs):
+        client_timeouts.append(kwargs.get("timeout"))
+        return real_async_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", client_factory)
 
     compose_response = await main.compose(worker_id, {"args": ["up", "-d"]}, worker_token)
     assert compose_response.status_code == 400
+    assert client_timeouts[-1] == 1740
     assert json.loads(compose_response.body) == {"detail": "compose command rejected"}
     assert forwarded == {
         "url": f"{main.settings.WORKER_MANAGER_URL}/api/worker/{worker_id}/infra/compose",

@@ -607,7 +607,14 @@ class WorkerWrapper:
 
         try:
             pushed = subprocess.run(
-                ["/usr/bin/git", "push", "origin", f"HEAD:refs/heads/{branch}"],
+                [
+                    "/usr/bin/git",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "push",
+                    "origin",
+                    f"HEAD:refs/heads/{branch}",
+                ],
                 cwd=WORKSPACE_DIR,
                 capture_output=True,
                 text=True,
@@ -1004,13 +1011,17 @@ class WorkerWrapper:
         Pulls from the current branch (story branch or main).
         """
         branch = self._get_git_branch() or "main"
-        result = subprocess.run(
-            ["/usr/bin/git", "pull", "--rebase=false", "origin", branch],  # noqa: S603
-            cwd=WORKSPACE_DIR,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        try:
+            result = subprocess.run(
+                ["/usr/bin/git", "pull", "--rebase=false", "origin", branch],  # noqa: S603
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("git_pull_failed", error=str(exc), branch=branch)
+            return
         if result.returncode != 0:
             logger.warning("git_pull_failed", stderr=result.stderr, branch=branch)
 
@@ -1435,8 +1446,8 @@ class WorkerWrapper:
             limit_exceeded,
             stopped_after_result,
         ) = await self._collect_agent_output(proc, timeout_seconds=timeout_seconds)
-        stdout = stdout_bytes.decode().strip()
-        stderr = stderr_bytes.decode().strip()
+        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
         self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
         return stdout, stderr, limit_exceeded, stopped_after_result
 

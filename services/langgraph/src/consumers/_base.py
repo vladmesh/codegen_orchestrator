@@ -41,7 +41,7 @@ from shared.diagnostics import safe_validation_errors
 from shared.log_config import setup_logging
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import WORKER_GROUP
-from shared.redis import RedisStreamClient
+from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 
 from ..clients.api import api_client
 from ._live_work import execute_live_work, live_work_active
@@ -325,29 +325,41 @@ async def _process_entry(
             logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
     except TerminalMessageValidationError as exc:
         # A schema error cannot become valid when reclaimed from the PEL.
-        # ACK it after recording a payload-safe terminal diagnostic.
+        # Quarantine it before ACK so the rejected work remains inspectable.
         logger.error(
             "terminal_message_validation_failed",
             entry_id=msg.message_id,
             worker=service_name,
             errors=safe_validation_errors(exc.validation_error),
         )
-        try:
-            await redis.ack(queue, group, msg.message_id)
-        except Exception as ack_exc:
-            logger.error(
-                "terminal_message_ack_failed",
-                entry_id=msg.message_id,
-                worker=service_name,
-                error_type=type(ack_exc).__name__,
-                exc_info=True,
-            )
+        await redis.reject_entry(
+            queue,
+            group,
+            msg.message_id,
+            data=msg.data,
+            failure=DLQ_FAILURE_VALIDATION,
+            reason={"errors": safe_validation_errors(exc.validation_error)},
+        )
     except asyncio.CancelledError:
         # Shutdown or teardown took this job. It was not ACKed, so the entry
         # stays in the PEL and is reclaimed once its lease expires.
         logger.info("job_cancelled", entry_id=msg.message_id, worker=service_name)
         raise
     except Exception as exc:
+        if await redis.reject_if_exhausted(
+            queue,
+            group,
+            msg.message_id,
+            data=msg.data,
+            reason={"error": "queue job repeatedly failed", "worker": service_name},
+        ):
+            logger.error(
+                "job_delivery_exhausted",
+                entry_id=msg.message_id,
+                error_type=type(exc).__name__,
+                worker=service_name,
+            )
+            return
         logger.error(
             "job_processing_error",
             entry_id=msg.message_id,

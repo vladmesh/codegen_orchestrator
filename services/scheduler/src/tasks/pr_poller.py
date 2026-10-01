@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 from typing import TYPE_CHECKING
-import uuid
 
 import structlog
 
@@ -19,17 +18,17 @@ from shared.contracts.dto.users_grant import (
     GrantIntentLifecycleDisposition,
     GrantIntentLifecycleResult,
 )
-from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
+from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.notifications import notify_admins_best_effort
-from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
 
 from .. import startup
 from ._github_refs import _parse_github_timestamp, _parse_owner_repo
 from ._recipients import resolve_project_recipient
+from .deploy_dispatch import DeployHandoff, deploy_run_id, dispatch_deploy
 from .image_publication import (
     DEFAULT_BRANCH,
     IMAGE_PUBLICATION_TIMEOUT_SECONDS,
@@ -963,16 +962,16 @@ async def poll_merged_prs(
                 api_client, str(project_id), event="deploy_after_pr_merge", story_id=story_id
             )
 
-            # Determine action: "create" for first deploy, "feature" for subsequent
+            # Determine action: CREATE for first deploy, FEATURE for subsequent.
             all_stories = await api_client.get_stories_by_project(project_id)
             has_completed = any(s.status in _COMPLETED_STATUSES for s in all_stories)
-            action = "feature" if has_completed else "create"
+            action = DeployAction.FEATURE if has_completed else DeployAction.CREATE
 
             # Initial access is an intent lifecycle, never a stable deploy Run.
             # Every merged PR has its own immutable attempt even before a story has
             # completed, which prevents QA/fix cycles from reusing an old SHA.
             seed_lifecycle = None
-            if await _needs_initial_owner_seed(api_client, project_id, action):
+            if await _needs_initial_owner_seed(api_client, project_id, action.value):
                 seed_lifecycle = GrantIntentLifecycleResult.model_validate(
                     await api_client.resume_initial_owner_grant(
                         project_id,
@@ -1001,53 +1000,49 @@ async def poll_merged_prs(
                     )
                     continue
 
-            # The story leaves PR_REVIEW exactly once, on the paths that are actually
-            # taking it further.
-            await api_client.transition_story(story_id, "deploy")
-
             if seed_lifecycle is not None:
                 if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+                    await api_client.transition_story(story_id, "deploy")
                     deployed += 1
                     continue
                 if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+                    await api_client.transition_story(story_id, "deploy")
                     log.info(
                         "poll_merged_initial_owner_intent_in_flight",
                         intent_id=seed_lifecycle.intent_id,
                     )
                     continue
                 if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+                    await api_client.transition_story(story_id, "deploy")
                     log.info(
                         "poll_merged_initial_owner_intent_stale_target",
                         intent_id=seed_lifecycle.intent_id,
                     )
                     continue
 
-            run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
-            run_data = {
-                "id": run_id,
-                "type": "deploy",
-                "project_id": str(project_id),
-                "story_id": story_id,
-                "run_metadata": {
-                    "triggered_by": "pr_poll",
-                    "head_sha": head_sha,
-                    "deployed_commit_sha": deployed_commit_sha,
-                },
-            }
-            await api_client.create_run(run_data)
-
-            deploy_msg = DeployMessage(
-                task_id=run_id,
-                project_id=str(project_id),
-                telegram_chat_id=recipient.telegram_chat_id,
-                unaddressed_reason=recipient.unaddressed_reason,
-                story_id=story_id,
-                triggered_by=DeployTrigger.WEBHOOK,
-                action=action,
-                head_sha=head_sha,
-                deployed_commit_sha=deployed_commit_sha,
+            # Persist the immutable attempt before moving the Story. If Run
+            # creation fails, PR_REVIEW remains the retry surface; a repeat uses
+            # the same id instead of manufacturing a second deploy attempt.
+            run_id = deploy_run_id("deploy-poll", story_id, deployed_commit_sha)
+            await dispatch_deploy(
+                api_client,
+                redis_client,
+                DeployHandoff(
+                    run_id=run_id,
+                    project_id=str(project_id),
+                    story_id=story_id,
+                    recipient=recipient,
+                    action=action,
+                    head_sha=head_sha,
+                    deployed_commit_sha=deployed_commit_sha,
+                    run_metadata={
+                        "triggered_by": "pr_poll",
+                        "head_sha": head_sha,
+                        "deployed_commit_sha": deployed_commit_sha,
+                    },
+                    transition_action="deploy",
+                ),
             )
-            await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
 
             log.info("poll_merged_deploy_triggered", run_id=run_id)
             deployed += 1

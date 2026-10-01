@@ -52,7 +52,6 @@ from shared.contracts.queues.deploy import (
     DeployAction,
     DeployMessage,
     DeployOutcome,
-    DeployTrigger,
 )
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.qa import QAMessage
@@ -68,6 +67,7 @@ if TYPE_CHECKING:
 
 from ... import startup
 from .._recipients import resolve_project_recipient
+from ..deploy_dispatch import DeployHandoff, deploy_run_id, dispatch_deploy, recover_deploy_handoff
 from ..owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
@@ -283,11 +283,20 @@ async def _supervise_deploying_story(
     ):
         return DeploySupervisorAction.NONE
 
-    # A recheck deploy persists the exact message before publication. A process
-    # can die after that commit, so a queued recheck without its dispatch stamp
-    # is recoverable. Other queued deploys have no reconstructable handoff.
+    # Recheck deploys predate the canonical scheduler handoff metadata. Recover
+    # that shape first, then every new scheduler-born queued deploy through the
+    # exact message persisted on its Run before the Story moved.
     if run.status is RunStatus.QUEUED:
         recovered = await _recover_recheck_deploy_handoff(api_client, redis_client, run, log)
+        if not recovered:
+            recovered = await recover_deploy_handoff(
+                api_client,
+                redis_client,
+                run,
+                minimum_age_minutes=_qa_handoff_recovery_minutes(),
+            )
+            if recovered:
+                log.warning("deploy_handoff_recovered", run_id=run.id)
         return DeploySupervisorAction.RETRIED if recovered else DeploySupervisorAction.NONE
 
     if run.status is RunStatus.RUNNING:
@@ -1037,39 +1046,30 @@ async def _redispatch_deploy_under_bound(  # noqa: PLR0913
         await _notify_admin_failure(run.id, project_id, f"deploy retries exhausted ({attempts})")
         return DeployRetryAction.FAILED
 
-    # Re-publish deploy message for retry
-    new_run_id = f"deploy-retry-{uuid.uuid4().hex[:8]}"
-    await api_client.create_run(
-        {
-            "id": new_run_id,
-            "type": RunType.DEPLOY.value,
-            "project_id": project_id,
-            "story_id": story_id,
-            "status": RunStatus.QUEUED.value,
-            "run_metadata": {
+    # One logical retry owns one stable Run and one recoverable queue handoff.
+    new_run_id = deploy_run_id("deploy-retry", run.id, str(attempts))
+    retry_recipient = await resolve_project_recipient(
+        api_client, project_id, event="deploy_retry", story_id=story_id
+    )
+    await dispatch_deploy(
+        api_client,
+        redis_client,
+        DeployHandoff(
+            run_id=new_run_id,
+            project_id=project_id,
+            story_id=story_id,
+            recipient=retry_recipient,
+            action=DeployAction.FEATURE,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
+            run_metadata={
                 "triggered_by": "supervisor_retry",
                 "attempt": attempts,
                 "head_sha": head_sha,
                 "deployed_commit_sha": deployed_commit_sha,
             },
-        }
+        ),
     )
-
-    retry_recipient = await resolve_project_recipient(
-        api_client, project_id, event="deploy_retry", story_id=story_id
-    )
-    deploy_msg = DeployMessage(
-        task_id=new_run_id,
-        project_id=project_id,
-        telegram_chat_id=retry_recipient.telegram_chat_id,
-        unaddressed_reason=retry_recipient.unaddressed_reason,
-        story_id=story_id,
-        triggered_by=DeployTrigger.WEBHOOK,
-        action="feature",
-        head_sha=head_sha,
-        deployed_commit_sha=deployed_commit_sha,
-    )
-    await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
     log.info(
         "deploy_supervisor_retry",
         new_run_id=new_run_id,
@@ -1434,37 +1434,27 @@ async def _handle_deploy_infrastructure_wait(
             log.info("infrastructure_wait_owner_intent_stale_target", run_id=run.id)
             return RefusedDeployAction.WAITING
 
-    new_run_id = f"deploy-infra-{uuid.uuid4().hex[:8]}"
-    await api_client.create_run(
-        {
-            "id": new_run_id,
-            "type": RunType.DEPLOY.value,
-            "project_id": project_id,
-            "story_id": story_id,
-            "status": RunStatus.QUEUED.value,
-            "run_metadata": {
+    new_run_id = deploy_run_id("deploy-infra", run.id)
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="deploy_after_infrastructure_wait", story_id=story_id
+    )
+    await dispatch_deploy(
+        api_client,
+        redis_client,
+        DeployHandoff(
+            run_id=new_run_id,
+            project_id=project_id,
+            story_id=story_id,
+            recipient=recipient,
+            action=DeployAction.FEATURE,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
+            run_metadata={
                 "triggered_by": "supervisor_infrastructure_wait",
                 "head_sha": head_sha,
                 "deployed_commit_sha": deployed_commit_sha,
                 INFRASTRUCTURE_WAIT_STARTED_KEY: waiting_since.isoformat(),
             },
-        }
-    )
-    recipient = await resolve_project_recipient(
-        api_client, project_id, event="deploy_after_infrastructure_wait", story_id=story_id
-    )
-    await redis_client.publish_message(
-        DEPLOY_QUEUE,
-        DeployMessage(
-            task_id=new_run_id,
-            project_id=project_id,
-            telegram_chat_id=recipient.telegram_chat_id,
-            unaddressed_reason=recipient.unaddressed_reason,
-            story_id=story_id,
-            triggered_by=DeployTrigger.WEBHOOK,
-            action=DeployAction.FEATURE,
-            head_sha=head_sha,
-            deployed_commit_sha=deployed_commit_sha,
         ),
     )
     log.info("deploy_infrastructure_wait_redispatched", run_id=run.id, new_run_id=new_run_id)
@@ -1661,10 +1651,10 @@ async def _redispatch_waiting_deploy(
 
     head_sha is resolved from the source run exactly as the RETRY path does; a
     missing head_sha is a typed failure (fail the story, notify admin), never a
-    silent fallback to the default branch. The story is moved to DEPLOYING before
-    the deploy message is created so it leaves the WAITING set; if the publish then
-    fails, next tick re-derives the wait from the old run rather than wedging on a
-    queued run with no message. An exhausted owner-grant intent is failed from
+    silent fallback to the default branch. For an ordinary re-dispatch the next
+    deploy Run, including its exact queue message, is persisted before the Story
+    leaves WAITING_USER_SECRET. A failed publication is therefore recoverable
+    from the queued Run. An exhausted owner-grant intent is failed from
     WAITING_USER_SECRET instead, so this path issues exactly one Story transition.
 
     Returns True once re-dispatched, False if the story was failed instead.
@@ -1687,17 +1677,16 @@ async def _redispatch_waiting_deploy(
         _log_exhausted_grant_intent(lifecycle, log)
         return False
 
-    # The story leaves WAITING_USER_SECRET exactly once, on the paths that are
-    # actually taking it further.
-    await api_client.transition_story(story_id, "deploy")
-
     if disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+        await api_client.transition_story(story_id, "deploy")
         log.info("waiting_secret_resumed_owner_intent", run_id=run.id)
         return True
     if disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+        await api_client.transition_story(story_id, "deploy")
         log.info("waiting_secret_owner_intent_in_flight", run_id=run.id)
         return True
     if disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+        await api_client.transition_story(story_id, "deploy")
         log.info("waiting_secret_owner_intent_stale_target", run_id=run.id)
         return True
 
@@ -1710,37 +1699,30 @@ async def _redispatch_waiting_deploy(
         )
         return False
 
-    new_run_id = f"deploy-secret-{uuid.uuid4().hex[:8]}"
-    await api_client.create_run(
-        {
-            "id": new_run_id,
-            "type": RunType.DEPLOY.value,
-            "project_id": project_id,
-            "story_id": story_id,
-            "status": RunStatus.QUEUED.value,
-            "run_metadata": {
+    # Persist the next attempt before WAITING_USER_SECRET leaves the retry set.
+    new_run_id = deploy_run_id("deploy-secret", run.id)
+    secret_recipient = await resolve_project_recipient(
+        api_client, project_id, event="deploy_after_user_secret", story_id=story_id
+    )
+    await dispatch_deploy(
+        api_client,
+        redis_client,
+        DeployHandoff(
+            run_id=new_run_id,
+            project_id=project_id,
+            story_id=story_id,
+            recipient=secret_recipient,
+            action=DeployAction.FEATURE,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
+            run_metadata={
                 "triggered_by": "supervisor_user_secret",
                 "head_sha": head_sha,
                 "deployed_commit_sha": deployed_commit_sha,
             },
-        }
+            transition_action="deploy",
+        ),
     )
-
-    secret_recipient = await resolve_project_recipient(
-        api_client, project_id, event="deploy_after_user_secret", story_id=story_id
-    )
-    deploy_msg = DeployMessage(
-        task_id=new_run_id,
-        project_id=project_id,
-        telegram_chat_id=secret_recipient.telegram_chat_id,
-        unaddressed_reason=secret_recipient.unaddressed_reason,
-        story_id=story_id,
-        triggered_by=DeployTrigger.WEBHOOK,
-        action="feature",
-        head_sha=head_sha,
-        deployed_commit_sha=deployed_commit_sha,
-    )
-    await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
     log.info("waiting_user_secret_redispatched", story_id=story_id, new_run_id=new_run_id)
     return True
 

@@ -712,6 +712,13 @@ class DeployerNode(FunctionalNode):
                     owner=owner,
                     repo=repo,
                 )
+                return {
+                    "deployment_result": {
+                        "status": "failed",
+                        "error": "Failed to write all required GitHub Actions secrets",
+                    },
+                    "errors": ["Deploy refused: GitHub Actions secrets are incomplete"],
+                }
 
             # 2.5 Fence older runs when this deploy must be the last writer, and
             # only once the payload above is already the repository's. What the
