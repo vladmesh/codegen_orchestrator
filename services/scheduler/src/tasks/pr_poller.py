@@ -881,171 +881,176 @@ async def poll_merged_prs(
     # success and error alike.
     async with GitHubAppClient() as github:
         for story in stories:
-            story_id = story.id
-            project_id = str(story.project_id)
-            log = logger.bind(story_id=story_id, project_id=project_id)
+        try:
+                story_id = story.id
+                project_id = str(story.project_id)
+                log = logger.bind(story_id=story_id, project_id=project_id)
 
-            if not project_id:
-                continue
-
-            repo = await api_client.get_primary_repository(project_id)
-            if not repo:
-                log.warning("poll_merged_no_repo")
-                continue
-
-            git_url = repo.git_url or ""
-            owner, repo_name = _parse_owner_repo(git_url)
-
-            # complete_stories stores the exact PR number — use it for precise lookup.
-            # This prevents picking up stale merged PRs from previous QA fix cycles.
-            if not story.pr_number:
-                log.warning("poll_merged_no_pr_number")
-                continue
-
-            pr_data = await _current_pull_request(
-                api_client,
-                github,
-                redis_client,
-                story_id=story_id,
-                project_id=project_id,
-                owner=owner,
-                repo_name=repo_name,
-                pr_number=story.pr_number,
-                log=log,
-            )
-            if pr_data is None or not pr_data.get("merged_at"):
-                continue
-
-            merged_pr = pr_data
-            head_sha = merged_pr.get("head", {}).get("sha", "")
-            # What the story produced and what gets deployed are two different
-            # commits. No merge method makes the branch's new HEAD equal the pull
-            # request head — a merge creates a commit, squash and rebase rewrite
-            # one — and the project's CI publishes images from the branch, so the
-            # deployed commit is the merge commit and nothing else.
-            deployed_commit_sha = merged_pr.get("merge_commit_sha") or ""
-            log.info(
-                "poll_merged_pr_found",
-                pr_number=merged_pr["number"],
-                merged_at=merged_pr["merged_at"],
-                deployed_commit_sha=deployed_commit_sha,
-            )
-            if not deployed_commit_sha:
-                # Fail closed rather than deploying the pull request head: its
-                # images are never published, so the deploy would pull nothing or,
-                # worse, something else.
-                log.error("poll_merged_no_merge_commit_sha", pr_number=merged_pr["number"])
-                continue
-
-            # Nothing is created until this commit's images exist. The story stays in
-            # PR_REVIEW while the project's CI is still building, so the next tick
-            # asks again; the bound is measured from the merge, so it cannot be
-            # restarted by asking.
-            if not await _images_ready_for_deploy(
-                api_client,
-                github,
-                redis_client,
-                owner=owner,
-                repo_name=repo_name,
-                repository_url=git_url,
-                story_id=story_id,
-                project_id=project_id,
-                head_sha=head_sha,
-                deployed_commit_sha=deployed_commit_sha,
-                pull_request=merged_pr,
-                existing_timeline=getattr(story, "generated_product_timeline", None),
-                log=log,
-            ):
-                continue
-
-            recipient = await resolve_project_recipient(
-                api_client, str(project_id), event="deploy_after_pr_merge", story_id=story_id
-            )
-
-            # Determine action: CREATE for first deploy, FEATURE for subsequent.
-            all_stories = await api_client.get_stories_by_project(project_id)
-            has_completed = any(s.status in _COMPLETED_STATUSES for s in all_stories)
-            action = DeployAction.FEATURE if has_completed else DeployAction.CREATE
-
-            # Initial access is an intent lifecycle, never a stable deploy Run.
-            # Every merged PR has its own immutable attempt even before a story has
-            # completed, which prevents QA/fix cycles from reusing an old SHA.
-            seed_lifecycle = None
-            if await _needs_initial_owner_seed(api_client, project_id, action.value):
-                seed_lifecycle = GrantIntentLifecycleResult.model_validate(
-                    await api_client.resume_initial_owner_grant(
-                        project_id,
-                        story_id=story_id,
-                        head_sha=head_sha,
-                        deployed_commit_sha=deployed_commit_sha,
-                        merged_pr_number=story.pr_number,
-                    )
-                )
-                log.info(
-                    "poll_merged_initial_owner_lifecycle",
-                    intent_id=seed_lifecycle.intent_id,
-                    disposition=seed_lifecycle.disposition.value,
-                    run_id=seed_lifecycle.execution_run_id,
-                )
-                if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
-                    # The API committed the current matching Story stop and
-                    # both owed notices with exhaustion. A stale result grants
-                    # no authority to stop whatever work is now current.
-                    if seed_lifecycle.exhaustion is None:
-                        raise ValueError("initial-owner exhaustion requires typed readback")
-                    log.warning(
-                        "poll_merged_initial_owner_exhausted",
-                        retry_action=seed_lifecycle.exhaustion.action,
-                        exhausted_execution_run_id=seed_lifecycle.exhaustion.exhausted_execution_run_id,
-                    )
+                if not project_id:
                     continue
 
-            if seed_lifecycle is not None:
-                if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
-                    await api_client.transition_story(story_id, "deploy")
-                    deployed += 1
-                    continue
-                if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
-                    await api_client.transition_story(story_id, "deploy")
-                    log.info(
-                        "poll_merged_initial_owner_intent_in_flight",
-                        intent_id=seed_lifecycle.intent_id,
-                    )
-                    continue
-                if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
-                    await api_client.transition_story(story_id, "deploy")
-                    log.info(
-                        "poll_merged_initial_owner_intent_stale_target",
-                        intent_id=seed_lifecycle.intent_id,
-                    )
+                repo = await api_client.get_primary_repository(project_id)
+                if not repo:
+                    log.warning("poll_merged_no_repo")
                     continue
 
-            # Persist the immutable attempt before moving the Story. If Run
-            # creation fails, PR_REVIEW remains the retry surface; a repeat uses
-            # the same id instead of manufacturing a second deploy attempt.
-            run_id = deploy_run_id("deploy-poll", story_id, deployed_commit_sha)
-            await dispatch_deploy(
-                api_client,
-                redis_client,
-                DeployHandoff(
-                    run_id=run_id,
-                    project_id=str(project_id),
+                git_url = repo.git_url or ""
+                owner, repo_name = _parse_owner_repo(git_url)
+
+                # complete_stories stores the exact PR number — use it for precise lookup.
+                # This prevents picking up stale merged PRs from previous QA fix cycles.
+                if not story.pr_number:
+                    log.warning("poll_merged_no_pr_number")
+                    continue
+
+                pr_data = await _current_pull_request(
+                    api_client,
+                    github,
+                    redis_client,
                     story_id=story_id,
-                    recipient=recipient,
-                    action=action,
+                    project_id=project_id,
+                    owner=owner,
+                    repo_name=repo_name,
+                    pr_number=story.pr_number,
+                    log=log,
+                )
+                if pr_data is None or not pr_data.get("merged_at"):
+                    continue
+
+                merged_pr = pr_data
+                head_sha = merged_pr.get("head", {}).get("sha", "")
+                # What the story produced and what gets deployed are two different
+                # commits. No merge method makes the branch's new HEAD equal the pull
+                # request head — a merge creates a commit, squash and rebase rewrite
+                # one — and the project's CI publishes images from the branch, so the
+                # deployed commit is the merge commit and nothing else.
+                deployed_commit_sha = merged_pr.get("merge_commit_sha") or ""
+                log.info(
+                    "poll_merged_pr_found",
+                    pr_number=merged_pr["number"],
+                    merged_at=merged_pr["merged_at"],
+                    deployed_commit_sha=deployed_commit_sha,
+                )
+                if not deployed_commit_sha:
+                    # Fail closed rather than deploying the pull request head: its
+                    # images are never published, so the deploy would pull nothing or,
+                    # worse, something else.
+                    log.error("poll_merged_no_merge_commit_sha", pr_number=merged_pr["number"])
+                    continue
+
+                # Nothing is created until this commit's images exist. The story stays in
+                # PR_REVIEW while the project's CI is still building, so the next tick
+                # asks again; the bound is measured from the merge, so it cannot be
+                # restarted by asking.
+                if not await _images_ready_for_deploy(
+                    api_client,
+                    github,
+                    redis_client,
+                    owner=owner,
+                    repo_name=repo_name,
+                    repository_url=git_url,
+                    story_id=story_id,
+                    project_id=project_id,
                     head_sha=head_sha,
                     deployed_commit_sha=deployed_commit_sha,
-                    run_metadata={
-                        "triggered_by": "pr_poll",
-                        "head_sha": head_sha,
-                        "deployed_commit_sha": deployed_commit_sha,
-                    },
-                    transition_action="deploy",
-                ),
-            )
+                    pull_request=merged_pr,
+                    existing_timeline=getattr(story, "generated_product_timeline", None),
+                    log=log,
+                ):
+                    continue
 
-            log.info("poll_merged_deploy_triggered", run_id=run_id)
-            deployed += 1
+                recipient = await resolve_project_recipient(
+                    api_client, str(project_id), event="deploy_after_pr_merge", story_id=story_id
+                )
+
+                # Determine action: CREATE for first deploy, FEATURE for subsequent.
+                all_stories = await api_client.get_stories_by_project(project_id)
+                has_completed = any(s.status in _COMPLETED_STATUSES for s in all_stories)
+                action = DeployAction.FEATURE if has_completed else DeployAction.CREATE
+
+                # Initial access is an intent lifecycle, never a stable deploy Run.
+                # Every merged PR has its own immutable attempt even before a story has
+                # completed, which prevents QA/fix cycles from reusing an old SHA.
+                seed_lifecycle = None
+                if await _needs_initial_owner_seed(api_client, project_id, action.value):
+                    seed_lifecycle = GrantIntentLifecycleResult.model_validate(
+                        await api_client.resume_initial_owner_grant(
+                            project_id,
+                            story_id=story_id,
+                            head_sha=head_sha,
+                            deployed_commit_sha=deployed_commit_sha,
+                            merged_pr_number=story.pr_number,
+                        )
+                    )
+                    log.info(
+                        "poll_merged_initial_owner_lifecycle",
+                        intent_id=seed_lifecycle.intent_id,
+                        disposition=seed_lifecycle.disposition.value,
+                        run_id=seed_lifecycle.execution_run_id,
+                    )
+                    if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+                        # The API committed the current matching Story stop and
+                        # both owed notices with exhaustion. A stale result grants
+                        # no authority to stop whatever work is now current.
+                        if seed_lifecycle.exhaustion is None:
+                            raise ValueError("initial-owner exhaustion requires typed readback")
+                        log.warning(
+                            "poll_merged_initial_owner_exhausted",
+                            retry_action=seed_lifecycle.exhaustion.action,
+                            exhausted_execution_run_id=seed_lifecycle.exhaustion.exhausted_execution_run_id,
+                        )
+                        continue
+
+                if seed_lifecycle is not None:
+                    if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+                        await api_client.transition_story(story_id, "deploy")
+                        deployed += 1
+                        continue
+                    if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+                        await api_client.transition_story(story_id, "deploy")
+                        log.info(
+                            "poll_merged_initial_owner_intent_in_flight",
+                            intent_id=seed_lifecycle.intent_id,
+                        )
+                        continue
+                    if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+                        await api_client.transition_story(story_id, "deploy")
+                        log.info(
+                            "poll_merged_initial_owner_intent_stale_target",
+                            intent_id=seed_lifecycle.intent_id,
+                        )
+                        continue
+
+                # Persist the immutable attempt before moving the Story. If Run
+                # creation fails, PR_REVIEW remains the retry surface; a repeat uses
+                # the same id instead of manufacturing a second deploy attempt.
+                run_id = deploy_run_id("deploy-poll", story_id, deployed_commit_sha)
+                await dispatch_deploy(
+                    api_client,
+                    redis_client,
+                    DeployHandoff(
+                        run_id=run_id,
+                        project_id=str(project_id),
+                        story_id=story_id,
+                        recipient=recipient,
+                        action=action,
+                        head_sha=head_sha,
+                        deployed_commit_sha=deployed_commit_sha,
+                        run_metadata={
+                            "triggered_by": "pr_poll",
+                            "head_sha": head_sha,
+                            "deployed_commit_sha": deployed_commit_sha,
+                        },
+                        transition_action="deploy",
+                    ),
+                )
+
+                log.info("poll_merged_deploy_triggered", run_id=run_id)
+                deployed += 1
+
+        except Exception:
+            logger.exception("pr_story_poll_contained", story_id=story.id)
+            continue
 
     return deployed
 
