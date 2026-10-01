@@ -255,8 +255,35 @@ async def test_the_routing_fact_cannot_be_written_through_the_run_patch(async_cl
 
 
 @pytest.mark.asyncio
-async def test_a_generic_run_with_a_qa_alias_cannot_prove_routing(async_client) -> None:
-    """``POST /api/runs/`` accepts a noncanonical type such as ``"qa "``.
+@pytest.mark.parametrize("forgery", ["none", "metadata", "column", "both"])
+async def test_a_qa_alias_is_refused_at_create_ingress(
+    async_client, db_session: AsyncSession, forgery: str
+) -> None:
+    """A noncanonical type cannot create a Run, with or without forged routing facts."""
+    project_id, story_id = await _testing_story(async_client)
+    run_id = f"qa-alias-{uuid.uuid4().hex[:8]}"
+    body = {"id": run_id, "type": "qa ", "project_id": project_id, "story_id": story_id}
+    if forgery in {"metadata", "both"}:
+        body["run_metadata"] = {QA_ROUTED_KEY: {"story_id": story_id}}
+    if forgery in {"column", "both"}:
+        body["qa_routed_at"] = "2026-09-22T00:00:00Z"
+
+    refused = await async_client.post("/api/runs/", json=body)
+
+    assert refused.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT, refused.text
+    assert any(
+        error["loc"] == ["body", "type"] and error["type"] == "enum"
+        for error in refused.json()["detail"]
+    )
+    assert await db_session.get(Run, run_id) is None
+    assert (await async_client.get(f"/api/runs/{run_id}")).status_code == (
+        status.HTTP_404_NOT_FOUND
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_generic_deploy_run_cannot_prove_qa_routing(async_client) -> None:
+    """A valid generic deploy Run is not a QA routing fact.
 
     Neither forged metadata nor a supplied ``qa_routed_at`` makes such a run
     look routed: the reserved key is refused with no Run row, the column is not
@@ -264,8 +291,8 @@ async def test_a_generic_run_with_a_qa_alias_cannot_prove_routing(async_client) 
     still TESTING.
     """
     project_id, story_id = await _testing_story(async_client)
-    run_id = f"qa-alias-{uuid.uuid4().hex[:8]}"
-    body = {"id": run_id, "type": "qa ", "project_id": project_id, "story_id": story_id}
+    run_id = f"deploy-{uuid.uuid4().hex[:8]}"
+    body = {"id": run_id, "type": "deploy", "project_id": project_id, "story_id": story_id}
 
     forged = await async_client.post(
         "/api/runs/",
