@@ -75,16 +75,6 @@ class DockerClientWrapper:
             await asyncio.sleep(poll_interval)
         raise RuntimeError(f"container {container_id} still exists after removal wait")
 
-    async def pause_container(self, container_id: str) -> None:
-        """Pause a container."""
-        container = await self.get_container(container_id)
-        await self._run(container.pause)
-
-    async def unpause_container(self, container_id: str) -> None:
-        """Unpause a container."""
-        container = await self.get_container(container_id)
-        await self._run(container.unpause)
-
     async def inspect_container(self, container_id: str) -> dict[str, Any]:
         """Inspect a container."""
         # container attrs are cached, need to reload to get fresh status
