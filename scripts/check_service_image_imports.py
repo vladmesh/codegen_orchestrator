@@ -79,7 +79,6 @@ EXTRA_IMPORT_MODULES = {"langgraph": ("src.consumers.po",)}
 # connect to a service, but settings modules validate their required values at import.
 IMPORT_ENV = {
     "API_BASE_URL": "http://127.0.0.1:9",
-    "WORKER_BROKER_INTERNAL_TOKEN": "test-worker-broker-internal-token",
     "DATABASE_URL": "postgresql+asyncpg://test:test@127.0.0.1:5432/test",
     "DEFAULT_AGENT_TYPE": "claude",
     "GITHUB_APP_ID": "12345",

@@ -24,8 +24,6 @@ from shared.queues import (
     WORKER_MANAGER_GROUP,
     QueueBinding,
 )
-from shared.redis.client import decode_redis_value
-
 
 class TestQueueBinding:
     def test_frozen(self):

@@ -7,14 +7,9 @@ Single source of truth for all stream/group bindings.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
 import structlog
 
 from shared.contracts.queues.worker import WorkerChannels
-
-if TYPE_CHECKING:
-    from redis.asyncio import Redis
 
 logger = structlog.get_logger(__name__)
 
