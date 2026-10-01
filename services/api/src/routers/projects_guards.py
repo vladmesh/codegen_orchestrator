@@ -52,7 +52,9 @@ async def check_project_access(
 
 async def load_project(db: AsyncSession, project_id: uuid.UUID) -> Project:
     """Load one project without taking a write-intent row lock."""
-    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
