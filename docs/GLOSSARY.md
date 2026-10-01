@@ -13,12 +13,12 @@ A long-lived process. One container = one service.
 **A role, not a service name.** Any service or component that listens to a Redis queue.
 
 A service becomes a consumer only in the context of a specific queue:
-- `langgraph` — consumer of `engineering:queue`, `deploy:queue`
+- `langgraph` — PO service consuming `po:input`; `engineering-worker`, `deploy-worker`, `qa-worker`, and `architect` are separate consumer entrypoints built from the same image
 - `infra-service` — consumer of `provisioner:queue` (provisioning)
 - `worker-manager` — consumer of `worker:commands`
 - `worker-wrapper` — consumer of `worker:*:input` (inside the worker container)
 
-> **Important:** Do not confuse this with a service name. There is no `engineering-consumer` service — there is the `langgraph` service, which is a consumer of the `engineering:queue` queue.
+> **Important:** a consumer role is not the same thing as the `langgraph` PO service. Engineering, deploy, QA, and architect run as their own container entrypoints from the shared image.
 
 ### Worker
 A Docker container with a CLI coding agent inside, started by `worker-manager` on the management host. There are exactly two kinds, and they differ in what they are given, not in how they are started.
@@ -213,10 +213,8 @@ A Redis Stream for managing Workers.
 ### Story Worker Registry
 The Redis hash `story:workers` — a `story_id → worker_id` reuse mapping. The engineering consumer writes it after the first spawn. Worker teardown compare-deletes the binding of the worker it removes, and a binding left naming a worker with neither status nor metadata is evicted on the next lookup. Terminal-story reconciliation retains it as legacy ownership evidence until canonical worker teardown is observed complete.
 
-### Callback Stream
-A Redis Stream for the progress Events of a specific Run.
-
-**Name format:** `task_progress:{task_id}` (still uses the task prefix)
+### Response and worker streams
+There is no generic `task_progress:{task_id}` callback stream. Cross-service work uses the queues in the [contracts queue registry](CONTRACTS.md#queue-registry); direct PO replies use `po:response:{request_id}`, proactive notifications use `po:proactive`, and coding-worker turns use broker-owned worker streams.
 
 ---
 
