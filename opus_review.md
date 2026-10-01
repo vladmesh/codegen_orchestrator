@@ -10,7 +10,7 @@
 | Репозиторий | `vladmesh/codegen_orchestrator` |
 | Проверенный коммит | `3cb6dceafcd302439ebbe5b392194bf7d0b324be` (`main`, merge PR #674, 2026-09-30 14:09 +0200) |
 | Дата аудита | 2026-09-30 |
-| Актуализировано по `main` | `9365082ac6aa7108ea82ece9219454bebad42129` (squash PR #694, 2026-10-01 UTC) |
+| Актуализировано по `main` | `5247356dc2a8836719bf6ae20065ed18dee4fe9e` (squash PR #695, 2026-10-01 UTC) |
 | Метод | 10 параллельных read-only субагентов с явными границами (api; langgraph consumers/clients; langgraph agents/nodes/subgraphs/llm/prompts; scheduler; worker-manager + worker-broker + worker-wrapper; infra-service + scaffolder + telegram_bot + фронтенды; shared; scripts/infra/CI/compose/tests; межсервисные контракты; документация). Итоговая сверка и выборочная ручная перепроверка — автором отчёта. |
 | Инструменты | чтение кода, `git grep`, AST-анализ Python 3.13 (длины функций, импорт-граф, карта роутов), `alembic upgrade head` + `compare_metadata` на временном Postgres (вне репозитория), скрипты в scratch-каталоге вне репозитория |
 
@@ -171,9 +171,17 @@
   Полный PR CI #36933029921 прошёл зелёным, включая Ruff, Fast Checks, все service/integration legs,
   Service Image Entrypoint Imports и Required CI Gate.
 
-После #694 обязательных открытых findings этого аудита нет: ниже исходные находки считаются закрытыми,
+- **PR #695**, squash `5247356dc2a8836719bf6ae20065ed18dee4fe9e` — **post-merge follow-up к #694, не новая аудиторская итерация**.
+  После merge #694 push-to-main DIND обнаружил пропущенный fail-fast config surface: worker-manager в
+  `tests/compose/integration/backend-dind.yml` не получал обязательный `API_BASE_URL`. #695 добавил
+  `API_BASE_URL=http://api:8000` и unit contract, который требует `REDIS_URL`, `API_BASE_URL`,
+  `WORKER_BROKER_URL` и `WORKER_BROKER_INTERNAL_TOKEN` в обоих worker-manager compose surfaces.
+  PR CI #36934613361 прошёл зелёным. Финальный post-merge CI #36935375437 на `main` также полностью
+  зелёный: Backend Docker-in-Docker Integration Tests, LangGraph service suite и Required CI Gate — success.
+
+После #694 + post-merge follow-up #695 обязательных открытых findings этого аудита нет: ниже исходные находки считаются закрытыми,
 если помечены **DONE/CLOSED**, либо сознательно не выполняются, если помечены **RECHECKED/NO-DO**. Полный повторный
-аудит всего дерева после #694 не выполнялся; актуализация здесь — дельта по тринадцати смёрженным
+аудит всего дерева после #695 не выполнялся; актуализация здесь — дельта по тринадцати смёрженным
 аудиторским итерациям и отдельному docs-cleanup #686. Исходные размеры, инвентаризация и номера строк сохраняют привязку к `3cb6dce`, если
 явно не указана другая ревизия. PR #684 — отдельный workflow hotfix, в счётчик аудита не входит.
 Локальная проверка при работе над #685 дополнительно выявила legacy UTC image-GC и изоляцию
@@ -851,7 +859,7 @@ PR #686 — предварительное сжатие CHANGELOG и в счёт
 | 10 | **DONE — #690** | **Worker/LangGraph execution contracts** | A7 typed `WorkerTurnInput`; legacy developer-worker DTO/test harness removal; worker input/output builders (часть A12); §9.16af/ag; bounded `worker_turns.py` extraction. A13 перепроверен и снят с safe-dead-code списка | полный CI #36893265954 green; producer→broker→wrapper typed boundary; QA semantics сохранены; giant worker files не двигались без необходимости |
 | 11 | **DONE — #692** | **API domain correctness + recoverable application handoffs** | §9.7 project queue cleanup; application-часть §9.12 durable exact-message handoff + scheduler recovery; §9.16o read locks; §9.16p shared transactional port allocator; §9.16q application Run metadata; первый `src/domain/` seam. Broad A6/A4 mechanics и §9.16f не смешивались с correctness | полный CI #36909369162 green: Ruff/unit + API/LangGraph/scheduler service suites + backend/infra integrations + Required CI Gate; publish-outcome-unknown recoverable, lock ordering writer paths сохранён |
 | 12 | **DONE — #693** | **Final correctness residuals** | §9.8 atomic failed-Task retry; story-часть §9.12 durable architect handoff; project-config часть §9.16f atomic key patch; §9.16e scaffolder subprocess/lease/error/inflight settlement safety | полный CI #36914590766 green: Ruff + Fast Checks + API/LangGraph/scheduler service suites + backend/infra/frontend/po-tools/template integrations + Required CI Gate |
-| 13 | **DONE — #694** | **Residual cleanup + recheck** | §9.13–9.15 UX; остаток §9.16d/f/g/r/t/u/v/w/x/y/z/ad и bounded n/aa cleanup; A17/A19/A21; atomic server-label merge; GitHub retry/cache; single provisioning notifier; CI/live cleanup; action/tool pinning; fail-fast config vocabulary; bounded dead-code/dedupe. A4/A6/A12–A16/A18/StreamCodec/giant-file/bridge mechanics перепроверены и явно NO-DO там, где не было отдельного correctness выигрыша | полный CI #36933029921 green: Ruff + Fast Checks + service/integration matrix + Service Image Entrypoint Imports + Required CI Gate; аудит закрыт без PR14 |
+| 13 | **DONE — #694 (+ post-merge follow-up #695)** | **Residual cleanup + recheck** | §9.13–9.15 UX; остаток §9.16d/f/g/r/t/u/v/w/x/y/z/ad и bounded n/aa cleanup; A17/A19/A21; atomic server-label merge; GitHub retry/cache; single provisioning notifier; CI/live cleanup; action/tool pinning; fail-fast config vocabulary; bounded dead-code/dedupe. A4/A6/A12–A16/A18/StreamCodec/giant-file/bridge mechanics перепроверены и явно NO-DO там, где не было отдельного correctness выигрыша | PR CI #36933029921 green; #695 follow-up PR CI #36934613361 green; финальный post-merge main CI #36935375437 green, включая DIND + Required CI Gate; аудит закрыт без PR14 |
 
 ### 10.1 Что изменилось относительно исходного плана
 
