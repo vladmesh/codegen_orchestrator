@@ -44,8 +44,8 @@ from shared.ssh_keys import (
 )
 
 from ..database import get_async_session
-from ..domain.ports import PortAllocationExhaustedError, allocate_next_port as reserve_next_port
 from ..dependencies import get_redis_client, require_internal_or_admin
+from ..domain.ports import PortAllocationExhaustedError, allocate_next_port as reserve_next_port
 from ..schemas import (
     AllocateNextPortRequest,
     ApplicationRead,
