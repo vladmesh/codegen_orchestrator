@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -89,6 +89,29 @@ class ProjectUpdate(BaseModel):
     status: ProjectStatus | None = None
     config: dict[str, Any] | None = None
     project_spec: dict | None = None
+
+
+class ProjectConfigPatch(BaseModel):
+    """Atomic top-level project config mutation.
+
+    Callers name only the keys they own. The API applies the mutation while the
+    project row is locked, so two services updating unrelated keys cannot
+    overwrite each other's values with stale whole-config snapshots.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    values: dict[str, Any] = {}
+    remove: list[str] = []
+
+    @model_validator(mode="after")
+    def _disjoint_operations(self) -> "ProjectConfigPatch":
+        overlap = set(self.values) & set(self.remove)
+        if overlap:
+            raise ValueError(
+                "config keys cannot be both set and removed: " + ", ".join(sorted(overlap))
+            )
+        return self
 
 
 class TeardownStatus(StrEnum):
