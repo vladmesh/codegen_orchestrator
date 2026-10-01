@@ -289,7 +289,9 @@ async def complete_stories(
                 # the same 422. Take the story out of the retry set with the reason
                 # attached, and leave the decision to a person.
                 log.warning("story_pr_no_commits_between", branch=branch)
-                await _park_story_without_commits(api_client, story_id, branch, str(no_commits), log)
+                await _park_story_without_commits(
+                    api_client, story_id, branch, str(no_commits), log
+                )
                 continue
             except Exception:
                 log.exception("story_pr_creation_failed", branch=branch)

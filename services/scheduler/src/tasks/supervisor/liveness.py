@@ -759,7 +759,9 @@ async def supervise_waiting_resource_tasks(
             age_minutes = (datetime.now(UTC) - started_at).total_seconds() / 60
             log = logger.bind(task_id=task.id, story_id=task.story_id)
             if age_minutes >= _resource_wait_timeout_minutes():
-                await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
+                await api_client.transition_task(
+                    task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor"
+                )
                 await api_client.create_task_event(
                     task.id,
                     {
