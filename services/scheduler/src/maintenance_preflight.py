@@ -10,7 +10,6 @@ from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
     managed_provider_ids,
     normalize_provider_id,
-    provider_operation_is_authorized,
 )
 from shared.server_admission import IN_PROGRESS_TARGET_STATUSES, target_readiness_reconcilable
 
@@ -59,11 +58,9 @@ def po_maintenance_counts(servers, provider_servers, managed_ids):
         ),
         "authorized_pending_setup": sum(
             server.status == ServerStatus.PENDING_SETUP
-            and provider_operation_is_authorized(
-                provider=server.provider,
-                provider_id=server.provider_id,
-                is_managed=server.is_managed,
-            )
+            and server.provider == TIME4VPS_PROVIDER
+            and server.is_managed
+            and server.provider_id in managed_ids
             for server in servers
         ),
         "unreconcilable_managed": sum(

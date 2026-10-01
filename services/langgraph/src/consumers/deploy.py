@@ -364,7 +364,7 @@ async def _handle_lifecycle_action(
     }
     if lifecycle_result.get("error"):
         run_patch["error_message"] = lifecycle_result["error"]
-    await api_client.update_run(task_id, run_patch)
+    await api_client.patch(f"runs/{task_id}", json=run_patch)
 
     # Update application status on success
     if lifecycle_result["status"] == "success":

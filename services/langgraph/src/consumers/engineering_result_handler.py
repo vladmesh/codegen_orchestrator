@@ -308,7 +308,7 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
     if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT:
         await _write_empty_terminal(task_id, terminal)
     else:
-        await api_client.update_run(task_id, terminal)
+        await api_client.patch(f"runs/{task_id}", json=terminal)
     if (
         planning_task_id
         and planning_task_id.startswith("pr-conflict-")

@@ -121,7 +121,6 @@ class Provisioner:
             "finalize_provisioning": finalize,
             "update_server_status": status,
             "create_incident": incident,
-            "notify_admins_best_effort": AsyncMock(),
             "redeploy_all_services": AsyncMock(return_value=(0, 0, [])),
         }.items():
             monkeypatch.setattr(handlers, name, fake)
