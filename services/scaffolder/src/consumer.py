@@ -170,10 +170,12 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     except Exception as exc:
         error = redact_diagnostic(exc)
         log.error("scaffold_job_exception", error=error, exc_info=True)
-        if msg.mode == "ensure":
-            # An exception is an ensure failure like any other: recorded, so the
-            # API parks the project's stories instead of refusing them silently.
-            await _record_scaffold_error(msg, error, api, log)
+        # A handled exception is terminal for this queue delivery. Record it for
+        # both modes so the periodic scaffold trigger does not silently enqueue
+        # the same broken work forever after this entry is ACKed.
+        await _record_scaffold_error(msg, error, api, log)
+        if msg.mode != "ensure":
+            await _fail_stories_waiting_on_scaffold(msg, error, api, log)
         return {"status": "failed", "error": error}
     finally:
         lease_refresh.cancel()
