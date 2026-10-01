@@ -213,6 +213,14 @@ def test_the_marker_job_commits_exactly_the_digests_the_dind_suite_pulled():
         assert any(item.startswith(f"{passed}=${{{passed}") for item in runner_env), passed
 
 
+def test_backend_dind_worker_manager_declares_fail_fast_service_endpoints():
+    compose = yaml.safe_load(DIND_COMPOSE.read_text())
+    environment = set(compose["services"]["worker-manager"]["environment"])
+
+    assert "API_BASE_URL=http://api:8000" in environment
+    assert "WORKER_BROKER_URL=http://172.31.0.31:8001" in environment
+
+
 def test_backend_dind_is_a_required_predecessor_of_the_worker_release_marker():
     """A failed DinD suite must make the same CI DAG refuse publication.
 
