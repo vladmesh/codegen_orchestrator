@@ -168,7 +168,7 @@ class ProvisionerNode(FunctionalNode):
         """Initialize Time4VPS and prove that provider ID and IP identify one server."""
         from shared.clients.time4vps import Time4VPSClient
 
-        time4vps_username = os.getenv("TIME4VPS_LOGIN") or os.getenv("TIME4VPS_USERNAME")
+        time4vps_username = os.getenv("TIME4VPS_LOGIN")
         time4vps_password = os.getenv("TIME4VPS_PASSWORD")
 
         if not time4vps_username or not time4vps_password:
