@@ -85,10 +85,10 @@ def run_preflight(monkeypatch, capsys):
             "get_time4vps_client": get_provider,
             "managed_provider_ids": lambda _: managed_ids,
         }
-        exec(
+        exec(  # noqa: S102
             compile(ast.parse(document[start:end]), "po-redis-and-checkpoints.md", "exec"),
             namespace,
-        )  # noqa: S102
+        )
         exit_code = asyncio.run(namespace["preflight"]())
         return exit_code, json.loads(capsys.readouterr().out), events
 
