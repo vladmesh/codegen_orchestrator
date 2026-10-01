@@ -881,7 +881,7 @@ async def poll_merged_prs(
     # success and error alike.
     async with GitHubAppClient() as github:
         for story in stories:
-        try:
+            try:
                 story_id = story.id
                 project_id = str(story.project_id)
                 log = logger.bind(story_id=story_id, project_id=project_id)
@@ -1048,9 +1048,9 @@ async def poll_merged_prs(
                 log.info("poll_merged_deploy_triggered", run_id=run_id)
                 deployed += 1
 
-        except Exception:
-            logger.exception("pr_story_poll_contained", story_id=story.id)
-            continue
+            except Exception:
+                logger.exception("pr_story_poll_contained", story_id=story.id)
+                continue
 
     return deployed
 
