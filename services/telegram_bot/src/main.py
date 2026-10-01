@@ -43,7 +43,7 @@ from shared.log_config import setup_logging  # noqa: E402
 
 from .clients.api import api_client  # noqa: E402
 from .config import get_settings  # noqa: E402
-from .handlers import handle_add_user_input, handle_callback_query  # noqa: E402
+from .handlers import cancel_add_user, handle_add_user_input, handle_callback_query  # noqa: E402
 from .keyboards import main_menu_keyboard  # noqa: E402
 from .middleware import auth_middleware, is_admin  # noqa: E402
 from .notifications import ProvisionerNotifier  # noqa: E402
@@ -512,6 +512,7 @@ def main() -> None:
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("cancel", cancel_add_user))
 
     # One update-level gate covers messages, commands and callback queries.
     app.add_handler(TypeHandler(Update, auth_middleware), group=-1)
