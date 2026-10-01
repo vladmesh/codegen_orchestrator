@@ -8,6 +8,7 @@ Each test creates an entity via POST, reads it back, and validates the JSON
 response against the corresponding DTO from shared/contracts/dto/.
 """
 
+import asyncio
 import uuid
 
 from httpx import AsyncClient
@@ -210,6 +211,16 @@ async def test_server_response_validates_as_dto(async_client: AsyncClient):
         f"/api/servers/{handle}", json={"ssh_user": "invalid user"}
     )
     assert invalid_resp.status_code == 422
+
+    await async_client.patch(f"/api/servers/{handle}", json={"labels": {"existing": "keep"}})
+    first, second = await asyncio.gather(
+        async_client.patch(f"/api/servers/{handle}/labels", json={"values": {"one": "1"}}),
+        async_client.patch(f"/api/servers/{handle}/labels", json={"values": {"two": "2"}}),
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    final = (await async_client.get(f"/api/servers/{handle}")).json()["labels"]
+    assert final == {"existing": "keep", "one": "1", "two": "2"}
 
 
 # ── Application ──────────────────────────────────────────────
