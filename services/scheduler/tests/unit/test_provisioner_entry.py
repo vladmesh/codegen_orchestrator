@@ -112,19 +112,13 @@ async def test_processing_error_is_not_acked(monkeypatch):
     assert client.acked == []  # left in PEL for retry
 
 
-async def test_failure_notification_error_does_not_block_ack(monkeypatch):
-    """A best-effort admin notification cannot poison-loop a committed result."""
-    from shared import notifications
-    from src.tasks import provisioner_result_listener as listener
+async def test_failed_result_is_processed_then_acked(monkeypatch):
+    """Terminal notification is owned by the Telegram results consumer, not scheduler."""
 
     async def _update(server_id, server):
         return None
 
-    async def _notify(*args, **kwargs):
-        raise RuntimeError("users API down")
-
     monkeypatch.setattr(listener.api_client, "update_server", _update)
-    monkeypatch.setattr(notifications, "notify_admins", _notify)
 
     client = FakeClient()
     entry = _entry(
@@ -153,16 +147,11 @@ async def test_superseded_result_causes_no_mutation_or_notification(monkeypatch)
     from src.tasks import provisioner_result_listener as listener
 
     update_calls: list = []
-    notify_calls: list = []
 
     async def _update(server_id, server):
         update_calls.append((server_id, server))
 
-    async def _notify(*args, **kwargs):
-        notify_calls.append((args, kwargs))
-
     monkeypatch.setattr(listener.api_client, "update_server", _update)
-    monkeypatch.setattr(listener, "notify_admins_best_effort", _notify)
 
     result = ProvisionerResult(
         request_id="r", status=ResultStatus.SUPERSEDED, server_handle="srv-1"
@@ -170,4 +159,3 @@ async def test_superseded_result_causes_no_mutation_or_notification(monkeypatch)
     await listener.process_provisioner_result(result)
 
     assert update_calls == []  # no status mutation
-    assert notify_calls == []  # no failure notification
