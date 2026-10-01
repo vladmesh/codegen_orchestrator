@@ -17,7 +17,6 @@ import structlog
 
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerDTO, ServerStatus, TargetIdentity, target_identity
-from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
     authorize_run_owned_target,
@@ -287,11 +286,6 @@ class ProvisionerNode(FunctionalNode):
                 "episode_id": provisioning_episode_id,
                 "identity": expected_identity.model_dump(mode="json"),
             },
-        )
-        await notify_admins_best_effort(
-            f"❌ Server *{server_handle}* reinstall FAILED: {message[:200]}",
-            level="error",
-            server_handle=server_handle,
         )
         return {
             "messages": [{"message": f"❌ Reinstall failed: {message}"}],
