@@ -133,8 +133,8 @@ async def create_task(
     description: str,
     type: str,
     acceptance_criteria: str,
-    story_id: str,
-    project_id: str,
+    story_id: Annotated[str, InjectedState("story_id")],
+    project_id: Annotated[str, InjectedState("project_id")],
     planning_attempt_id: Annotated[str | None, InjectedState("planning_attempt_id")] = None,
 ) -> dict:
     """Create a new task for a story.
