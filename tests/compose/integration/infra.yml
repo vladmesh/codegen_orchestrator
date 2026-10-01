@@ -95,7 +95,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - GITHUB_ORG_NAME=test-org
-      - TIME4VPS_USERNAME=test
+      - TIME4VPS_LOGIN=test
       - TIME4VPS_PASSWORD=test
       - HEALTH_CHECK_INTERVAL=60
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
