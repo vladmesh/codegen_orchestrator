@@ -3,18 +3,35 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunType
 
 from .base import Base
+
+_RUN_TYPES = ", ".join(f"'{run_type.value}'" for run_type in RunType)
+_RUN_STATUSES = ", ".join(f"'{status.value}'" for status in RunStatus)
 
 
 class Run(Base):
     """Run model - tracks asynchronous operations like engineering, deploy, etc."""
 
     __tablename__ = "runs"
+    __table_args__ = (
+        CheckConstraint(f"type IN ({_RUN_TYPES})", name="ck_runs_type_valid"),
+        CheckConstraint(f"status IN ({_RUN_STATUSES})", name="ck_runs_status_valid"),
+    )
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     type: Mapped[str] = mapped_column(String(50), index=True)

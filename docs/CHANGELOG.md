@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-01
 
+- Align database migrations with ORM metadata and enforce Run type/status at API and database
+  boundaries, preserving incident uniqueness and rejecting invalid persisted state before migration.
+
 - Retry the stand e2e `CODEX_AUTH_JSON` secret write up to five times, so a transient GitHub 5xx
   does not fail the run or lose the refreshed Codex token.
 
