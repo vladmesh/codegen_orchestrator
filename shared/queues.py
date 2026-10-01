@@ -7,6 +7,7 @@ Single source of truth for all stream/group bindings.
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import structlog
 
 from shared.contracts.queues.worker import WorkerChannels
