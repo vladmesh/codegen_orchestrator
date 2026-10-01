@@ -42,12 +42,12 @@ from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..domain.ports import PortAllocationExhaustedError, allocate_next_port
 from ..dependencies import (
     get_internal_or_admin_actor,
     get_redis_client,
     require_internal_or_admin,
 )
+from ..domain.ports import PortAllocationExhaustedError, allocate_next_port
 from ..schemas import (
     ApplicationCreate,
     ApplicationHealthHistoryCreate,
