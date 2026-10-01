@@ -1,5 +1,6 @@
 """Project teardown and destructive deletion routes."""
 
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -33,7 +34,13 @@ from shared.models import (
     TaskEvent,
     VerificationGap,
 )
-from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
+from shared.queues import (
+    ARCHITECT_QUEUE,
+    DEPLOY_QUEUE,
+    ENGINEERING_QUEUE,
+    QA_QUEUE,
+    SCAFFOLD_QUEUE,
+)
 from shared.redis.client import RedisStreamClient
 
 from ...config import get_settings
@@ -271,14 +278,35 @@ async def get_teardown_status(
     return state
 
 
-_QUEUES_TO_CLEAN = [ARCHITECT_QUEUE, SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]
+_QUEUES_TO_CLEAN = [ARCHITECT_QUEUE, SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE, QA_QUEUE]
+
+
+def _queued_project_id(fields: dict[str, str]) -> str | None:
+    """Return the project id from either supported Redis stream encoding."""
+    direct = fields.get("project_id")
+    if direct is not None:
+        return direct
+
+    encoded = fields.get("data")
+    if encoded is None:
+        return None
+    try:
+        payload = json.loads(encoded)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("project_id")
+    return str(value) if value is not None else None
 
 
 async def _cleanup_project_queue_messages(project_id: str) -> int:
     """Remove stale queue messages referencing a deleted project.
 
-    Scans all pipeline queues and deletes messages whose project_id matches.
-    Best-effort — failures are logged but don't block project deletion.
+    Pipeline messages are normally wrapped in the shared Redis client data JSON
+    field. Before deleting a matching entry, acknowledge it from every consumer-
+    group PEL so a later reclaim never observes a missing stream entry.
+    Best-effort — failures are logged but do not block project deletion.
     """
     settings = get_settings()
     r = aioredis.from_url(settings.redis_url, decode_responses=True)
@@ -287,13 +315,17 @@ async def _cleanup_project_queue_messages(project_id: str) -> int:
         for queue in _QUEUES_TO_CLEAN:
             try:
                 entries = await r.xrange(queue)
+                groups = await r.xinfo_groups(queue) if entries else []
             except Exception as exc:
                 logger.debug("queue_scan_failed", queue=queue, error=str(exc))
                 continue
             for entry_id, fields in entries:
-                if fields.get("project_id") == project_id:
-                    await r.xdel(queue, entry_id)
-                    deleted += 1
+                if _queued_project_id(fields) != project_id:
+                    continue
+                for group in groups:
+                    await r.xack(queue, group["name"], entry_id)
+                await r.xdel(queue, entry_id)
+                deleted += 1
         # Also clear scaffold inflight marker
         await r.delete(f"scaffold:inflight:{project_id}")
     finally:
@@ -301,7 +333,6 @@ async def _cleanup_project_queue_messages(project_id: str) -> int:
     if deleted:
         logger.info("project_queue_messages_cleaned", project_id=project_id, deleted=deleted)
     return deleted
-
 
 async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> None:
     """Clear everything pointing at the project, children before parents.
