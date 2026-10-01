@@ -2,7 +2,16 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    true,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared.contracts.dto.application import (
@@ -57,6 +66,19 @@ class Application(Base):
         DateTime(timezone=True), nullable=True, default=None
     )
     uptime_pct_24h: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
+    # Administrative monitoring switch, independent of `status`: while false the
+    # health prober neither probes this application nor alerts about it. Changing
+    # it never touches deployment status, port allocations or the bot binding.
+    monitoring_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
+    monitoring_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    monitoring_changed_by: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, default=None
+    )
 
     # Ports allocated to this application (one per microservice/module)
     port_allocations = relationship("PortAllocation", backref="application", lazy="selectin")

@@ -1,11 +1,11 @@
 """Applications router — runtime state of deployed units."""
 
-from datetime import UTC
+from datetime import UTC, datetime
 import secrets
 from urllib.parse import urlparse
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +15,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.incident import IncidentStatus, IncidentType
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
@@ -23,6 +24,7 @@ from shared.contracts.queues.qa import QAMessage
 from shared.models import (
     Application,
     Deployment,
+    Incident,
     PortAllocation,
     Project,
     Repository,
@@ -34,11 +36,16 @@ from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_redis_client, require_internal_or_admin
+from ..dependencies import (
+    get_internal_or_admin_actor,
+    get_redis_client,
+    require_internal_or_admin,
+)
 from ..schemas import (
     ApplicationCreate,
     ApplicationHealthHistoryCreate,
     ApplicationHealthHistoryRead,
+    ApplicationMonitoringUpdate,
     ApplicationRead,
     ApplicationUpdate,
     FromRepoRequest,
@@ -220,6 +227,93 @@ async def update_application(
 
     await db.commit()
     await db.refresh(application)
+    return application
+
+
+# ---------------------------------------------------------------------------
+# Monitoring switch
+# ---------------------------------------------------------------------------
+
+_ACTIVE_INCIDENT_STATUSES = (IncidentStatus.DETECTED.value, IncidentStatus.RECOVERING.value)
+
+
+async def _active_service_down_incidents(application: Application, db: AsyncSession) -> list:
+    """Active SERVICE_DOWN incidents that belong to this application, not its server."""
+    rows = (
+        await db.execute(
+            select(Incident)
+            .where(
+                Incident.server_handle == application.server_handle,
+                Incident.incident_type == IncidentType.SERVICE_DOWN.value,
+                Incident.status.in_(_ACTIVE_INCIDENT_STATUSES),
+            )
+            .with_for_update()
+        )
+    ).scalars()
+    return [
+        incident
+        for incident in rows
+        if (incident.details or {}).get("application_id") == application.id
+    ]
+
+
+@router.post("/{application_id}/monitoring", response_model=ApplicationRead)
+async def set_application_monitoring(
+    application_id: int,
+    body: ApplicationMonitoringUpdate,
+    db: AsyncSession = Depends(get_async_session),
+    actor: str = Depends(get_internal_or_admin_actor),
+    console_operator: str | None = Header(None, alias="X-Admin-Console-Operator"),
+) -> Application:
+    """Disable or re-enable health monitoring of one application.
+
+    Only the monitoring fields change. Deployment status, port allocations, the
+    bot binding and the application's containers are left alone, and nothing is
+    published. Muting is not a recovery: an open SERVICE_DOWN incident of this
+    application stays open with a `monitoring_muted` marker, so its history is
+    kept and the next probe after re-enabling decides from fresh evidence.
+    """
+    application = (
+        await db.execute(
+            select(Application).where(Application.id == application_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    if application.monitoring_enabled == body.enabled:
+        return application
+
+    if actor == "internal_service" and console_operator and console_operator.strip():
+        # The admin console proxy authenticates with the internal key and names
+        # its basic-auth operator; keep who it was in the audit trail.
+        actor = f"admin_console:{console_operator.strip()}"
+    now = datetime.now(UTC)
+    application.monitoring_enabled = body.enabled
+    application.monitoring_changed_at = now
+    application.monitoring_changed_by = actor
+
+    event = {
+        "action": "monitoring_enabled" if body.enabled else "monitoring_disabled",
+        "at": now.isoformat(),
+        "by": actor,
+        "reason": body.reason,
+    }
+    for incident in await _active_service_down_incidents(application, db):
+        details = dict(incident.details or {})
+        details["monitoring_muted"] = not body.enabled
+        details["monitoring_events"] = [*details.get("monitoring_events", []), event]
+        incident.details = details
+
+    await db.commit()
+    await db.refresh(application)
+    logger.info(
+        "application_monitoring_changed",
+        app_id=application_id,
+        monitoring_enabled=body.enabled,
+        actor=actor,
+        reason=body.reason,
+    )
     return application
 
 

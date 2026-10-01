@@ -23,6 +23,9 @@ def _make_application(**overrides):
         "created_at": now,
         "updated_at": now,
         "port_allocations": [],
+        "monitoring_enabled": True,
+        "monitoring_changed_at": None,
+        "monitoring_changed_by": None,
     }
     defaults.update(overrides)
 
@@ -56,6 +59,8 @@ def _mock_session(get_return=None, scalars_all=None):
             obj.updated_at = now
         if not hasattr(obj, "port_allocations") or obj.port_allocations is None:
             obj.port_allocations = []
+        if getattr(obj, "monitoring_enabled", None) is None:
+            obj.monitoring_enabled = True  # the column's insert default
 
     session.refresh = _refresh
 

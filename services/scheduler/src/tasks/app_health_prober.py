@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import httpx
 import structlog
 
 from shared.clients.infra_client import check_http_health
@@ -31,8 +32,52 @@ def _ssl_expiry_warning_days() -> int:
     return startup.get_config().get_int("health.ssl_expiry_warning_days")
 
 
-# In-memory state for consecutive failure tracking (reset on worker restart)
+# In-memory state for consecutive failure tracking (reset on worker restart).
+# An application missing from it has no failure history in this worker: it was
+# never probed here, or its monitoring was switched since the count was taken.
 _consecutive_failures: dict[int, int] = {}
+# The monitoring generation (`monitoring_changed_at`) each count belongs to. A
+# count taken before an off/on switch is stale even if the off state was never
+# observed by a cycle.
+_monitoring_generation: dict[int, datetime | None] = {}
+
+
+class MonitoringDisabledError(Exception):
+    """The API refused a prober incident write: the application is muted now."""
+
+
+def _refused_as_muted(exc: httpx.HTTPStatusError) -> bool:
+    return exc.response.status_code == httpx.codes.CONFLICT
+
+
+async def _create_incident_if_monitored(api_client: object, **kwargs) -> None:
+    """Create an incident unless the switch went off; the API decides under its lock."""
+    try:
+        await api_client.create_incident(**kwargs, if_monitored=True)
+    except httpx.HTTPStatusError as exc:
+        if _refused_as_muted(exc):
+            raise MonitoringDisabledError from exc
+        raise
+
+
+async def _resolve_incident_if_monitored(api_client: object, incident_id: int) -> None:
+    try:
+        await api_client.resolve_incident(incident_id, if_monitored=True)
+    except httpx.HTTPStatusError as exc:
+        if _refused_as_muted(exc):
+            raise MonitoringDisabledError from exc
+        raise
+
+
+async def _app_service_down_incidents(app, api_client: object) -> list:
+    """Active SERVICE_DOWN incidents of this application, not of its whole server.
+
+    Several applications share a server; an incident is this application's only
+    when its details name it. A legacy incident without an application id belongs
+    to nobody here, so it neither suppresses nor is closed by any application.
+    """
+    active = await api_client.get_active_incidents(app.server_handle, IncidentType.SERVICE_DOWN)
+    return [i for i in active if i.details.get("application_id") == app.id]
 
 
 async def check_application(
@@ -40,10 +85,16 @@ async def check_application(
     server_ip: str,
     consecutive_failures: int,
     api_client: object,
+    *,
+    has_history: bool = True,
 ) -> int:
     """Check a single application's health.
 
-    Returns updated consecutive failure count.
+    *has_history* is False when this worker holds no failure count for the
+    application. Returns updated consecutive failure count. Raises
+    MonitoringDisabledError when the API refused an incident write because the
+    application's monitoring was switched off while it was being probed; no alert
+    is sent for a refused write.
     """
     app_id = app.id
     ports = app.ports
@@ -76,13 +127,12 @@ async def check_application(
 
         await api_client.update_application(app_id, fields)
 
-        # Auto-resolve SERVICE_DOWN incidents on recovery
-        if consecutive_failures > 0:
-            active = await api_client.get_active_incidents(
-                app.server_handle, IncidentType.SERVICE_DOWN
-            )
-            for incident in active:
-                await api_client.resolve_incident(incident.id)
+        # Auto-resolve this application's SERVICE_DOWN incidents on recovery. With
+        # no failure history in this worker (a restart, or monitoring re-enabled)
+        # an incident may still be open from before, so look it up too.
+        if consecutive_failures > 0 or not has_history:
+            for incident in await _app_service_down_incidents(app, api_client):
+                await _resolve_incident_if_monitored(api_client, incident.id)
                 await notify_admins_best_effort(
                     f"Application *{app.service_name}* on {server_ip} is back — "
                     "SERVICE_DOWN incident resolved.",
@@ -106,11 +156,9 @@ async def check_application(
 
         # Create SERVICE_DOWN incident after threshold
         if consecutive_failures >= _consecutive_failure_threshold():
-            active = await api_client.get_active_incidents(
-                app.server_handle, IncidentType.SERVICE_DOWN
-            )
-            if not active:
-                await api_client.create_incident(
+            if not await _app_service_down_incidents(app, api_client):
+                await _create_incident_if_monitored(
+                    api_client,
                     server_handle=app.server_handle,
                     incident_type=IncidentType.SERVICE_DOWN,
                     details={
@@ -144,7 +192,8 @@ async def check_application(
                 app.server_handle, IncidentType.SSL_EXPIRING
             )
             if not active:
-                await api_client.create_incident(
+                await _create_incident_if_monitored(
+                    api_client,
                     server_handle=app.server_handle,
                     incident_type=IncidentType.SSL_EXPIRING,
                     details={
@@ -185,9 +234,20 @@ async def app_health_probe_cycle(client: object | None = None) -> None:
     """
     client = client or api_client
 
-    # Get all applications (exclude not_deployed)
+    # Get all applications (exclude not_deployed and those with monitoring disabled)
     apps = await client.get_applications()
-    deployed_apps = [a for a in apps if a.status != ApplicationStatus.NOT_DEPLOYED.value]
+    for app in apps:
+        if not app.monitoring_enabled or (
+            app.id in _monitoring_generation
+            and _monitoring_generation[app.id] != app.monitoring_changed_at
+        ):
+            # Forget the failure count: after a switch, health transitions are
+            # decided from fresh probes, not from a count gathered before it.
+            _consecutive_failures.pop(app.id, None)
+        _monitoring_generation[app.id] = app.monitoring_changed_at
+    deployed_apps = [
+        a for a in apps if a.status != ApplicationStatus.NOT_DEPLOYED.value and a.monitoring_enabled
+    ]
 
     if not deployed_apps:
         return
@@ -217,8 +277,14 @@ async def app_health_probe_cycle(client: object | None = None) -> None:
                 server_ip=server_ip,
                 consecutive_failures=prev_failures,
                 api_client=client,
+                has_history=app_id in _consecutive_failures,
             )
             _consecutive_failures[app_id] = new_failures
+        except MonitoringDisabledError:
+            # Switched off mid-probe: no alert went out, and this probe's count
+            # must not carry over into a later re-enable.
+            _consecutive_failures.pop(app_id, None)
+            logger.info("app_health_monitoring_disabled_mid_probe", app_id=app_id)
         except Exception:
             logger.error(
                 "app_health_check_error",

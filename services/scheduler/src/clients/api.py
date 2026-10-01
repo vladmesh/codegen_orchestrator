@@ -745,10 +745,16 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
         incident_type: str,
         details: dict,
         affected_services: list[str] | None = None,
+        *,
+        if_monitored: bool = False,
     ) -> IncidentDTO:
+        """Create an incident; *if_monitored* makes the API refuse it (409) when the
+        application named in *details* has monitoring disabled."""
+        guard = {"params": {"if_monitored": "true"}} if if_monitored else {}
         resp = await self.request(
             "POST",
             "incidents/",
+            **guard,
             json={
                 "server_handle": server_handle,
                 "incident_type": incident_type,
@@ -772,12 +778,16 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
         )
         return [IncidentDTO.model_validate(i) for i in resp.json()]
 
-    async def resolve_incident(self, incident_id: int) -> IncidentDTO:
+    async def resolve_incident(
+        self, incident_id: int, *, if_monitored: bool = False
+    ) -> IncidentDTO:
         from datetime import UTC, datetime
 
+        guard = {"params": {"if_monitored": "true"}} if if_monitored else {}
         resp = await self.request(
             "PATCH",
             f"incidents/{incident_id}",
+            **guard,
             json={
                 "status": "resolved",
                 "resolved_at": datetime.now(UTC).isoformat(),

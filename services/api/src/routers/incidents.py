@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.dml import ReturningInsert
 
 from shared.contracts.dto.incident import IncidentType
-from shared.models import Incident, IncidentStatus
+from shared.models import Application, Incident, IncidentStatus
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
@@ -22,12 +22,42 @@ _ACTIVE_PROVISIONING_FAILURE = (
 )
 
 
+_IF_MONITORED = Query(
+    False,
+    description=(
+        "Health-prober guard: refuse with 409 when the incident's application "
+        "(details.application_id) has monitoring disabled. Checked under the "
+        "application's row lock, the one the monitoring switch takes."
+    ),
+)
+
+
+async def _refuse_unless_monitored(details: dict | None, db: AsyncSession) -> None:
+    """Serialize a prober write with the monitoring switch of its application."""
+    application_id = (details or {}).get("application_id")
+    if application_id is None:
+        return
+    application = (
+        await db.execute(
+            select(Application).where(Application.id == application_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if application is not None and not application.monitoring_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Monitoring is disabled for this application",
+        )
+
+
 @router.post("/", response_model=IncidentRead, status_code=status.HTTP_201_CREATED)
 async def create_incident(
     incident_in: IncidentCreate,
+    if_monitored: bool = _IF_MONITORED,
     db: AsyncSession = Depends(get_async_session),
 ) -> Incident:
     """Create a new incident."""
+    if if_monitored:
+        await _refuse_unless_monitored(incident_in.details, db)
     incident = Incident(
         server_handle=incident_in.server_handle,
         incident_type=incident_in.incident_type,
@@ -152,12 +182,16 @@ async def get_incident(
 async def update_incident(
     incident_id: int,
     incident_update: IncidentUpdate,
+    if_monitored: bool = _IF_MONITORED,
     db: AsyncSession = Depends(get_async_session),
 ) -> Incident:
     """Update incident status and details."""
     incident = await db.get(Incident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+    if if_monitored:
+        await _refuse_unless_monitored(incident.details, db)
+        await db.refresh(incident)
 
     # Update fields if provided
     if incident_update.status is not None:

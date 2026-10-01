@@ -7,6 +7,7 @@ from .application import (
     ApplicationCreate,
     ApplicationHealthHistoryCreate,
     ApplicationHealthHistoryRead,
+    ApplicationMonitoringUpdate,
     ApplicationRead,
     ApplicationUpdate,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "ApplicationCreate",
     "ApplicationHealthHistoryCreate",
     "ApplicationHealthHistoryRead",
+    "ApplicationMonitoringUpdate",
     "ApplicationRead",
     "ApplicationUpdate",
     "BrainstormCreate",

@@ -155,12 +155,13 @@ class TestFullProbeFlow:
                     detected_at=datetime.now(UTC),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
+                    details={"application_id": 1},
                 )
             ]
             await prober.app_health_probe_cycle(mock_api)
 
         # Incident should be resolved
-        mock_api.resolve_incident.assert_called_with(42)
+        mock_api.resolve_incident.assert_called_with(42, if_monitored=True)
 
     @pytest.mark.asyncio
     async def test_ssl_expiry_creates_incident(self, mock_api):
