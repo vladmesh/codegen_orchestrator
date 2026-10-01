@@ -536,22 +536,6 @@ class WorkerManager:
                 raise RuntimeError(f"{type(e).__name__}: {message}") from None
             raise
 
-    async def pause_worker(self, worker_id: str) -> None:
-        """Pause a running worker."""
-        container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
-        await self.docker.pause_container(container_name)
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.PAUSED})
-        logger.info("worker_paused", worker_id=worker_id)
-
-    async def resume_worker(self, worker_id: str) -> None:
-        """Resume a paused worker."""
-        container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
-        await self.docker.unpause_container(container_name)
-        await self.redis.hset(
-            f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING}
-        )
-        logger.info("worker_resumed", worker_id=worker_id)
-
     # --- Garbage collection (delegated to garbage_collector module) ---
 
     async def garbage_collect_orphaned_resources(self) -> None:

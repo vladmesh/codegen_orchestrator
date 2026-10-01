@@ -238,7 +238,6 @@ class TestTheReinstallRoute:
         monkeypatch.setattr("src.provisioner.node.handle_provisioning_success", success)
         monkeypatch.setattr("src.provisioner.node.update_server_status", AsyncMock())
         monkeypatch.setattr("src.provisioner.node.create_incident", AsyncMock())
-        monkeypatch.setattr("src.provisioner.node.notify_admins_best_effort", AsyncMock())
         monkeypatch.setattr(
             "src.provisioner.node.reinstall_and_provision",
             AsyncMock(

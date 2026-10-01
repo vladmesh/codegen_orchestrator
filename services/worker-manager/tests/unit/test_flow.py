@@ -23,7 +23,7 @@ def patch_settings(worker_settings):
 @pytest.mark.asyncio
 async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
     """
-    Test the full lifecycle: Create -> Status -> Pause -> Resume -> Delete
+    Test the supported lifecycle: Create -> Status -> Delete
     """
     # Setup
     redis = aioredis.FakeRedis(decode_responses=True)
@@ -38,8 +38,6 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
 
     # Configure AsyncMocks
     mock_docker_client.run_container = AsyncMock(return_value=mock_container)
-    mock_docker_client.pause_container = AsyncMock()
-    mock_docker_client.unpause_container = AsyncMock()
     mock_docker_client.remove_container = AsyncMock()
     mock_docker_client.image_exists = AsyncMock(
         return_value=True
@@ -69,22 +67,7 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
     assert status == WorkerStatus.RUNNING
     mock_docker_client.run_container.assert_called_once()
 
-    # 2. Pause (Simulating auto-pause or manual pause)
-    # We verify that pause_container is called
-    await manager.pause_worker(worker_id)  # API to be implemented
-
-    mock_docker_client.pause_container.assert_called_with("worker-test-" + worker_id)
-    status = await manager.get_worker_status(worker_id)
-    assert status == WorkerStatus.PAUSED
-
-    # 3. Resume
-    await manager.resume_worker(worker_id)  # API to be implemented
-
-    mock_docker_client.unpause_container.assert_called_with("worker-test-" + worker_id)
-    status = await manager.get_worker_status(worker_id)
-    assert status == WorkerStatus.RUNNING
-
-    # 4. Delete
+    # 2. Delete
     await manager.delete_worker(worker_id)
 
     mock_docker_client.remove_container.assert_called_with("worker-test-" + worker_id, force=True)

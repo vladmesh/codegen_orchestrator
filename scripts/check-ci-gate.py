@@ -30,6 +30,7 @@ BUILDX_BOOTSTRAP = BUILDX_RETRY_ACTION.parent / "bootstrap.sh"
 UV_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-uv-with-retry" / "action.yml"
 CI_INFRA_HELPER = ROOT / "scripts" / "ci-infra.sh"
 TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
+OFFLINE_LIVE_IGNORE_FILE = ROOT / "scripts" / "offline_live_ignores.txt"
 MAKEFILE = ROOT / "Makefile"
 LINT_PATH_EXPR = "$(if $(LINT_PATH),$(LINT_PATH),.)"
 
@@ -298,21 +299,11 @@ BUILDX_SETUP_COMMAND = (
     'bash "${GITHUB_ACTION_PATH}/bootstrap.sh"'
 )
 OFFLINE_LIVE_IGNORES = {
-    "tests/live/test_api_crud.py",
-    "tests/live/test_capability_cleanup_redis.py",
-    "tests/live/test_ci_prompt.py",
-    "tests/live/test_deploy_infra.py",
-    "tests/live/test_full_pipeline.py",
-    "tests/live/test_product_brief_pipeline.py",
-    "tests/live/test_product_brief_package_pipeline.py",
-    "tests/live/test_sprint_dod.py",
-    "tests/live/test_health.py",
-    "tests/live/test_llm_channel_failover.py",
-    "tests/live/test_pipeline_engineering.py",
-    "tests/live/test_pipeline_scaffold.py",
-    "tests/live/test_streams.py",
-    "tests/live/test_supervisor.py",
+    line.strip()
+    for line in OFFLINE_LIVE_IGNORE_FILE.read_text().splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
 }
+
 UNIT_TEST_API_BASE_URL = "http://127.0.0.1:9"
 
 # --- Third-party action pins ------------------------------------------------
@@ -665,11 +656,11 @@ def assert_fast_checks(jobs: dict[str, Any]) -> None:
             fail(f"make lint must cover CI Ruff command: {command}")
     if positions != sorted(positions):
         fail("make lint must run Ruff format check before Ruff lint check")
-    step = step_by_name(job, "Run offline live regressions")
-    if step.get("if"):
-        fail("offline live regressions must not be conditional")
-    if step.get("run") != "make test-live":
-        fail("offline live regressions must call make test-live")
+    if any(
+        isinstance(step, dict) and step.get("name") == "Run offline live regressions"
+        for step in job.get("steps", [])
+    ):
+        fail("fast-checks must not run tests/live twice; make test-unit already owns offline live")
     for stale_step in [
         "Run live cleanup auth/FK regression",
         "Run live cleanup ssh_user regression",
@@ -715,9 +706,8 @@ def assert_offline_live_unit_runner() -> None:
         fail("test-unit-local must use the unreachable unit-test API endpoint, not a host service")
     if "live-offline|tests/live|" not in script:
         fail("test-unit-local ALL_SUITES must include offline tests/live")
-    for ignored in OFFLINE_LIVE_IGNORES:
-        if f"--ignore={ignored}" not in script:
-            fail(f"test-unit-local offline live suite is missing ignore {ignored}")
+    if "scripts/offline_live_ignores.txt" not in script:
+        fail("test-unit-local must read the canonical offline live ignore inventory")
 
 
 def assert_offline_live_make_target() -> None:
@@ -725,9 +715,11 @@ def assert_offline_live_make_target() -> None:
     command = "uv run pytest tests/live/ -v --tb=short $(LIVE_OFFLINE_IGNORE_FLAGS)"
     if command not in makefile:
         fail("make test-live must run tests/live/ through LIVE_OFFLINE_IGNORE_FLAGS")
-    for ignored in OFFLINE_LIVE_IGNORES:
-        if f"--ignore={ignored}" not in makefile:
-            fail(f"make test-live is missing ignore {ignored}")
+    start = makefile.index("LIVE_OFFLINE_IGNORE_FLAGS =")
+    end = makefile.index("\n\n# Offline live regressions", start)
+    make_ignores = set(re.findall(r"--ignore=(tests/live/[^\\\s]+)", makefile[start:end]))
+    if make_ignores != OFFLINE_LIVE_IGNORES:
+        fail("make test-live ignore inventory must match scripts/offline_live_ignores.txt")
 
 
 def compose_suites(directory: Path) -> set[str]:
@@ -1957,7 +1949,12 @@ def main() -> None:
     assert_layer_cache(jobs)
     assert_template_compatibility(jobs)
     assert_gate(jobs)
-    assert_pinned_actions()
+    for workflow_path in (
+        WORKFLOW,
+        ROOT / ".github" / "workflows" / "deploy.yml",
+        ROOT / ".github" / "workflows" / "stand-e2e.yml",
+    ):
+        assert_pinned_actions(workflow_path)
     assert_download_retries(jobs)
     assert_infra_marker_exposed(jobs)
     assert_job_timeouts(jobs)

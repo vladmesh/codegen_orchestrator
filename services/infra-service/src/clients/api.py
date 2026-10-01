@@ -28,6 +28,7 @@ from shared.contracts.dto.server import (
     ProvisioningFinalization,
     ProvisioningFinalizationResult,
     ServerDTO,
+    ServerLabelsPatch,
     TargetReadinessRead,
     TargetReadinessReport,
 )
@@ -94,6 +95,14 @@ class InfrastructureAPIClient(InternalAPIClient):
         """Update server fields."""
         resp = await self.request("PATCH", f"servers/{server_handle}", json=payload)
         return resp.json()
+
+    async def patch_server_labels(self, server_handle: str, values: dict) -> ServerDTO:
+        """Atomically merge labels without a stale read-modify-write cycle."""
+        patch = ServerLabelsPatch(values=values)
+        resp = await self.request(
+            "PATCH", f"servers/{server_handle}/labels", json=patch.model_dump(mode="json")
+        )
+        return ServerDTO.model_validate(resp.json())
 
     async def reserve_provisioning_attempt(
         self, server_handle: str, max_attempts: int

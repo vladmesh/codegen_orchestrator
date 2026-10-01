@@ -1,7 +1,6 @@
 """Provisioner Result Listener.
 
 Listens to provisioner:results stream and updates server status in DB via API.
-Notifies admins on provisioning failures.
 """
 
 import os
@@ -14,7 +13,6 @@ from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.diagnostics import safe_validation_errors
-from shared.notifications import notify_admins_best_effort
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 from src.clients.api import api_client
@@ -135,8 +133,7 @@ async def _handle_success(result: ProvisionerResult, log) -> None:
 
 
 async def _handle_failure(result: ProvisionerResult, log) -> None:
-    """Handle failed provisioning - update server to unreachable and notify admins."""
-    errors_str = ", ".join(result.errors) if result.errors else "Unknown error"
+    """Handle failed provisioning by updating the server observation only."""
 
     try:
         update = ServerUpdate(status=ServerStatus.UNREACHABLE)
@@ -162,12 +159,3 @@ async def _handle_failure(result: ProvisionerResult, log) -> None:
                 status_code=e.response.status_code,
                 error=str(e),
             )
-
-    message = f"Provisioning failed for server `{result.server_handle}`\nErrors: {errors_str}"
-    await notify_admins_best_effort(
-        message,
-        level="error",
-        component="provisioner_result_listener",
-        server_handle=result.server_handle,
-        request_id=result.request_id,
-    )

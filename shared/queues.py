@@ -7,14 +7,10 @@ Single source of truth for all stream/group bindings.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import structlog
 
 from shared.contracts.queues.worker import WorkerChannels
-
-if TYPE_CHECKING:
-    from redis.asyncio import Redis
 
 logger = structlog.get_logger(__name__)
 
@@ -95,42 +91,3 @@ QUEUE_TOPOLOGY: list[QueueBinding] = [
     QueueBinding(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, "Product Owner input messages"),
     QueueBinding(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, "PO proactive messages → telegram-bot"),
 ]
-
-
-async def ensure_all_groups(redis: Redis) -> None:
-    """Create every consumer group declared in QUEUE_TOPOLOGY.
-
-    Idempotent — silently skips groups that already exist.
-    Should be called on worker startup.
-
-    Args:
-        redis: Connected Redis client
-    """
-    for binding in QUEUE_TOPOLOGY:
-        try:
-            await redis.xgroup_create(
-                binding.stream,
-                binding.group,
-                id="0",
-                mkstream=True,
-            )
-            logger.info(
-                "consumer_group_created",
-                queue=binding.stream,
-                group=binding.group,
-            )
-        except Exception as e:
-            if "BUSYGROUP" in str(e):
-                logger.debug(
-                    "consumer_group_exists",
-                    queue=binding.stream,
-                    group=binding.group,
-                )
-            else:
-                logger.error(
-                    "consumer_group_creation_failed",
-                    queue=binding.stream,
-                    group=binding.group,
-                    error=str(e),
-                )
-                raise

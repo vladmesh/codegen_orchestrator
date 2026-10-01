@@ -106,6 +106,13 @@ class ServerCreate(BaseModel):
     labels: dict = {}
 
 
+class ServerLabelsPatch(BaseModel):
+    """Atomic merge of labels owned by one server-side operation."""
+
+    model_config = ConfigDict(extra="forbid")
+    values: dict = Field(default_factory=dict)
+
+
 class ServerUpdate(BaseModel):
     """Update server request."""
 
@@ -295,12 +302,3 @@ class TargetReadinessRead(BaseModel):
     qa_target_proved_at: datetime | None = None
     target_readiness_failure_phase: TargetReadinessPhase | None = None
     incident_id: int | None = None
-
-
-class ServerMetricsHistoryDTO(BaseModel):
-    """Server metrics history entry."""
-
-    id: int | None = None
-    server_handle: str
-    recorded_at: datetime
-    metrics: dict

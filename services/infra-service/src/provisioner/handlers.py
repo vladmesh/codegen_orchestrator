@@ -13,7 +13,6 @@ from shared.contracts.dto.server import (
     TargetIdentity,
 )
 from shared.diagnostics import safe_validation_errors
-from shared.notifications import notify_admins_best_effort
 from shared.qa_identity import provisioning_complete_labels
 from shared.qa_target_profile import QATargetProof
 
@@ -56,12 +55,6 @@ async def _fail_provisioning_success(
     if identity is not None:
         details["identity"] = identity.model_dump(mode="json")
     await create_incident(server_handle, IncidentType.PROVISIONING_FAILED, details)
-    await notify_admins_best_effort(
-        f"❌ Server *{server_handle}* provisioned, but {what_failed} ({reason}). "
-        "The server is NOT ready.",
-        level="error",
-        server_handle=server_handle,
-    )
     return {
         "messages": [
             {"message": f"❌ Provisioning of {server_handle} failed: {what_failed} ({reason})"}
@@ -277,14 +270,6 @@ The server is now configured with:
 
     if is_recovery and (services_redeployed > 0 or services_failed > 0):
         message += f"\n📦 Services: {services_redeployed} redeployed, {services_failed} failed"
-    # Send notification
-    await notify_admins_best_effort(
-        f"Server *{server_handle}* {recovery_text}provisioned successfully! "
-        f"IP: {server_ip}. Server is now READY.",
-        level="success",
-        server_handle=server_handle,
-    )
-
     return {
         "messages": [{"message": message}],
         "provisioning_result": {

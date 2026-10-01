@@ -43,8 +43,8 @@ CLEAN_ENV=(
     WORKER_MANAGER_URL="http://localhost:8001"
     WORKER_REDIS_URL="redis://localhost:6379/0"
     WORKER_API_URL="http://localhost:8000"
-    BROKER_INTERNAL_TOKEN="test-worker-broker-internal-token"
     WORKER_BROKER_INTERNAL_TOKEN="test-worker-broker-internal-token"
+    WORKER_BROKER_URL="http://localhost:8001"
     LK_DOMAIN="https://lk.test.example.com"
     TELEGRAM_MAX_CONCURRENT_UPDATES="8"
     INTERNAL_API_KEY="test-internal-key"
@@ -123,7 +123,7 @@ run_tests_parallel() {
 
 # --- Shared test list ---
 
-OFFLINE_LIVE_IGNORE_ARGS="--ignore=tests/live/test_api_crud.py --ignore=tests/live/test_capability_cleanup_redis.py --ignore=tests/live/test_ci_prompt.py --ignore=tests/live/test_deploy_infra.py --ignore=tests/live/test_full_pipeline.py --ignore=tests/live/test_product_brief_pipeline.py --ignore=tests/live/test_product_brief_package_pipeline.py --ignore=tests/live/test_health.py --ignore=tests/live/test_llm_channel_failover.py --ignore=tests/live/test_parallel_engineering.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_sprint_dod.py --ignore=tests/live/test_streams.py --ignore=tests/live/test_supervisor.py"
+OFFLINE_LIVE_IGNORE_ARGS="$(awk 'NF && $1 !~ /^#/ {printf "--ignore=%s ", $1}' "$ROOT/scripts/offline_live_ignores.txt")"
 
 # Every entry here is a CI claim on a test directory, and it covers that directory
 # recursively: scripts/check-ci-gate.py walks the tree and fails when a file pytest

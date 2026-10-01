@@ -14,8 +14,8 @@ from src.config import BrokerSettings
 
 
 def test_broker_internal_token_cannot_be_empty():
-    with pytest.raises(ValueError, match="BROKER_INTERNAL_TOKEN"):
-        BrokerSettings(BROKER_INTERNAL_TOKEN="")
+    with pytest.raises(ValueError, match="WORKER_BROKER_INTERNAL_TOKEN"):
+        BrokerSettings(WORKER_BROKER_INTERNAL_TOKEN="")
 
 
 def test_worker_credential_is_worker_scoped_and_constant_time_verifiable():
@@ -42,7 +42,7 @@ async def test_worker_credentials_cannot_cross_worker_boundaries():
             input_stream="worker:one:input",
             output_stream="worker:one:output",
         ),
-        main.settings.BROKER_INTERNAL_TOKEN,
+        main.settings.WORKER_BROKER_INTERNAL_TOKEN,
     )
     await main.register_worker(
         main.Registration(
@@ -52,7 +52,7 @@ async def test_worker_credentials_cannot_cross_worker_boundaries():
             input_stream="worker:two:input",
             output_stream="worker:two:output",
         ),
-        main.settings.BROKER_INTERNAL_TOKEN,
+        main.settings.WORKER_BROKER_INTERNAL_TOKEN,
     )
 
     with pytest.raises(main.HTTPException) as denied:
@@ -77,7 +77,7 @@ async def test_session_expiry_and_all_worker_paths_require_scoped_credentials(mo
                 output_stream=f"worker:{worker_id}:output",
                 session_ttl_seconds=2,
             ),
-            main.settings.BROKER_INTERNAL_TOKEN,
+            main.settings.WORKER_BROKER_INTERNAL_TOKEN,
         )
 
     await main.set_session("one", main.SessionUpdate(session_id="session-1"), token_one)
@@ -111,7 +111,7 @@ async def test_session_expiry_and_all_worker_paths_require_scoped_credentials(mo
 async def test_output_stream_retention_is_bounded(monkeypatch):
     redis = FakeAsyncRedis(decode_responses=True)
     main.app.state.redis = redis
-    monkeypatch.setattr(main.settings, "STREAM_MAXLEN", 2)
+    monkeypatch.setattr(main.settings, "WORKER_BROKER_STREAM_MAXLEN", 2)
     token = "a" * 43
     await main.register_worker(
         main.Registration(
@@ -121,7 +121,7 @@ async def test_output_stream_retention_is_bounded(monkeypatch):
             input_stream="worker:one:input",
             output_stream="worker:one:output",
         ),
-        main.settings.BROKER_INTERNAL_TOKEN,
+        main.settings.WORKER_BROKER_INTERNAL_TOKEN,
     )
     for index in range(3):
         await main.submit_output(
@@ -156,7 +156,7 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
         await main.register_worker(registration, "wrong-internal-token")
     assert denied.value.status_code == 403
 
-    await main.register_worker(registration, main.settings.BROKER_INTERNAL_TOKEN)
+    await main.register_worker(registration, main.settings.WORKER_BROKER_INTERNAL_TOKEN)
     await redis.xadd(
         registration.input_stream,
         {
@@ -242,7 +242,7 @@ async def test_lease_rejects_malformed_typed_turn_before_wrapper_execution():
         input_stream=f"worker:{worker_id}:input",
         output_stream=f"worker:{worker_id}:output",
     )
-    await main.register_worker(registration, main.settings.BROKER_INTERNAL_TOKEN)
+    await main.register_worker(registration, main.settings.WORKER_BROKER_INTERNAL_TOKEN)
     await redis.xadd(
         registration.input_stream,
         {
@@ -285,7 +285,7 @@ async def test_a_qa_worker_gets_the_turn_protocol_and_no_control_plane(monkeypat
             output_stream=f"worker:{worker_id}:output",
             session_ttl_seconds=60,
         ),
-        main.settings.BROKER_INTERNAL_TOKEN,
+        main.settings.WORKER_BROKER_INTERNAL_TOKEN,
     )
     assert await redis.hget(credential_key(worker_id), "worker_type") == WorkerType.QA.value
 

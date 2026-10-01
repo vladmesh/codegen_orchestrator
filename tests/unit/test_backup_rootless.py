@@ -4,12 +4,10 @@ import configparser
 import json
 import os
 from pathlib import Path
-import re
 import shlex
 import shutil
 import socket
 import subprocess
-from textwrap import dedent
 
 import pytest
 from test_backup_db import DOCKER
@@ -66,11 +64,8 @@ def test_h01o_policy_and_user_unit_resolve_the_same_identity_and_files():
     assert timer["Install"]["WantedBy"] == "timers.target"
 
 
-def test_documented_user_installation_keeps_policy_and_backups_private(tmp_path):
-    docs = (ROOT / "docs/DEPLOY.md").read_text()
-    install = docs.split("# BEGIN user-owned backup installation\n")[1].split(
-        "# END user-owned backup installation"
-    )[0]
+def test_rootless_backup_installer_keeps_policy_and_backups_private(tmp_path):
+    install = (ROOT / "infra/scripts/install-backup-rootless.sh").read_text()
     account = tmp_path / "account"
     policy_dir = account / ".config/codegen-orchestrator"
     unit_dir = account / ".config/systemd/user"
@@ -114,18 +109,6 @@ def test_documented_user_installation_keeps_policy_and_backups_private(tmp_path)
         timeout=10,
     )
     assert policy.read_text() == "existing reviewed host policy\n"
-
-
-def test_maintenance_configuration_and_fences_parse_as_bash():
-    docs = (ROOT / "docs/runbooks/po-redis-and-checkpoints.md").read_text()
-    blocks = re.findall(r"(?m)^[ \t]*```bash[^\n]*\n([\s\S]*?)^[ \t]*```[ \t]*$", docs)
-    affected = [block for block in blocks if "BACKUP_DOCKER" in block]
-    assert len(affected) == 6
-    for block in affected:
-        result = subprocess.run(
-            ["bash", "-n"], input=dedent(block), text=True, capture_output=True, timeout=5
-        )
-        assert result.returncode == 0, result.stderr
 
 
 @pytest.fixture

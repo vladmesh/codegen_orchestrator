@@ -9,6 +9,7 @@ Handles automated server provisioning:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -17,7 +18,6 @@ import structlog
 
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerDTO, ServerStatus, TargetIdentity, target_identity
-from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
     authorize_run_owned_target,
@@ -49,6 +49,12 @@ from .operations import (
     reinstall_and_provision,
 )
 from .ssh_manager import SSHManager
+
+
+async def _run_playbook(runner: AnsibleRunner, **kwargs) -> tuple[bool, str]:
+    """Keep blocking Ansible execution off the infra-service event loop."""
+    return await asyncio.to_thread(runner.run_playbook, **kwargs)
+
 
 logger = structlog.get_logger()
 
@@ -163,7 +169,7 @@ class ProvisionerNode(FunctionalNode):
         """Initialize Time4VPS and prove that provider ID and IP identify one server."""
         from shared.clients.time4vps import Time4VPSClient
 
-        time4vps_username = os.getenv("TIME4VPS_LOGIN") or os.getenv("TIME4VPS_USERNAME")
+        time4vps_username = os.getenv("TIME4VPS_LOGIN")
         time4vps_password = os.getenv("TIME4VPS_PASSWORD")
 
         if not time4vps_username or not time4vps_password:
@@ -288,11 +294,6 @@ class ProvisionerNode(FunctionalNode):
                 "identity": expected_identity.model_dump(mode="json"),
             },
         )
-        await notify_admins_best_effort(
-            f"❌ Server *{server_handle}* reinstall FAILED: {message[:200]}",
-            level="error",
-            server_handle=server_handle,
-        )
         return {
             "messages": [{"message": f"❌ Reinstall failed: {message}"}],
             "errors": state.get("errors", []) + ["Reinstall failed"],
@@ -317,7 +318,8 @@ class ProvisionerNode(FunctionalNode):
         logger.info("provisioning_existing_setup", server_handle=server_handle)
 
         # Phase 1: Access
-        success_access, output_access = self.ansible_runner.run_playbook(
+        success_access, output_access = await _run_playbook(
+            self.ansible_runner,
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_access.yml",
@@ -352,7 +354,7 @@ class ProvisionerNode(FunctionalNode):
         # generated key as the administrative account, and everything after it
         # runs through that identity.
         try:
-            identity = cut_over_to_generated_key(
+            identity = await cut_over_to_generated_key(
                 ansible_runner=self.ansible_runner,
                 ssh_manager=self.ssh_manager,
                 server_ip=server_ip,
@@ -383,7 +385,8 @@ class ProvisionerNode(FunctionalNode):
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
 
         # Phase 2: Software
-        success_soft, output_soft = self.ansible_runner.run_playbook(
+        success_soft, output_soft = await _run_playbook(
+            self.ansible_runner,
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_software.yml",

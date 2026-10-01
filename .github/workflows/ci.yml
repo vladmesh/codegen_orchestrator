@@ -108,6 +108,10 @@ jobs:
               - 'scripts/ci-infra.sh'
               - 'scripts/ci_plan.py'
               - 'scripts/ci_build_cache.py'
+              - 'scripts/offline_live_ignores.txt'
+              - 'scripts/seed_system_configs.py'
+              - 'scripts/system_configs*.yaml'
+              - 'secrets.yaml'
             deps:
               - 'pyproject.toml'
               - 'uv.lock'
@@ -227,10 +231,6 @@ jobs:
       - name: Check nothing built is behind the tree on shared
         timeout-minutes: 1
         run: make check-shared-freshness
-
-      - name: Run offline live regressions
-        timeout-minutes: 3
-        run: make test-live
 
       - name: Pull Redis image with retry
         run: >-

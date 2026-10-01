@@ -3,7 +3,7 @@
 from pydantic import ValidationError
 import pytest
 
-from shared.contracts.queues.engineering import EngineeringMessage, EngineeringResult
+from shared.contracts.queues.engineering import EngineeringMessage
 
 
 class TestEngineeringMessage:
@@ -89,15 +89,3 @@ class TestEngineeringMessage:
                 telegram_chat_id="user-1",
                 story_id="",
             )
-
-
-class TestEngineeringResult:
-    def test_branch_field(self):
-        result = EngineeringResult(
-            request_id="req-1",
-            status="success",
-            files_changed=["foo.py"],
-            commit_sha="abc123",
-            branch="story/story-abc",
-        )
-        assert result.branch == "story/story-abc"

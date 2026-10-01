@@ -1,6 +1,6 @@
 from pydantic import Field
 
-from shared.contracts.base import BaseMessage, BaseResult
+from shared.contracts.base import BaseMessage
 from shared.contracts.vocab import ActionType
 
 
@@ -40,11 +40,3 @@ class EngineeringMessage(BaseMessage):
     story_id: str | None = Field(default=None, min_length=1)
     deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count
     branch: str | None = None  # story branch name (e.g. "story/{story_id}")
-
-
-class EngineeringResult(BaseResult):
-    """Engineering task result."""
-
-    files_changed: list[str] | None = None
-    commit_sha: str | None = None
-    branch: str | None = None

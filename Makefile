@@ -337,6 +337,7 @@ test-integration: $(INTEGRATION_TESTS)
 
 
 
+# Canonical inventory: scripts/offline_live_ignores.txt. CI contract enforces parity.
 LIVE_OFFLINE_IGNORE_FLAGS = \
 	--ignore=tests/live/test_api_crud.py \
 	--ignore=tests/live/test_bot_access_revocation.py \
@@ -465,9 +466,13 @@ danger-prod-reset:
 # Cleanup test containers and volumes (all test projects)
 test-clean:
 	@echo "🧹 Cleaning up test containers and volumes..."
-	@for yml in tests/compose/integration/*.yml tests/compose/service/*.yml; do \
-		name=$$(basename $$yml .yml); \
-		docker compose -p $(TEST_PROJECT)_$$name -f $$yml down -v --remove-orphans 2>/dev/null || true; \
+	@for yml in tests/compose/integration/*.yml; do \
+		name=$(basename $yml .yml); \
+		docker compose -p $(TEST_PROJECT)_$name -f $yml down -v --remove-orphans 2>/dev/null || true; \
+	done
+	@for yml in tests/compose/service/*.yml; do \
+		name=$(basename $yml .yml); \
+		docker compose -p $(TEST_PROJECT)_service_$name -f $yml down -v --remove-orphans 2>/dev/null || true; \
 	done
 	@echo "✅ Test cleanup complete"
 

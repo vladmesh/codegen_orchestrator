@@ -36,6 +36,8 @@ class GitHubAppClientBase:
         # shape differs so a broad token is never served where a scoped one was asked
         # for, nor the other way round.
         self._token_cache: dict[int | tuple[int, str], tuple[str, datetime]] = {}
+        self._installation_cache: dict[tuple[str, str], int] = {}
+        self._org_installation_cache: dict[str, int] = {}
         self._http_client: httpx.AsyncClient | None = None
 
         if not self.app_id:
@@ -86,49 +88,47 @@ class GitHubAppClientBase:
         for attempt in range(max_retries):
             try:
                 resp = await client.request(method, url, headers=headers, **kwargs)
-
-                # Handle Rate Limiting
-                if resp.status_code in (httpx.codes.FORBIDDEN, httpx.codes.TOO_MANY_REQUESTS):
-                    remaining = resp.headers.get("x-ratelimit-remaining")
-                    if remaining == "0":
-                        reset_time = int(resp.headers.get("x-ratelimit-reset", 0))
-                        wait_seconds = max(reset_time - time.time(), 0) + 1
-
-                        if wait_seconds > 60:  # noqa: PLR2004
-                            # Fail fast if wait is too long
-                            logger.error(
-                                "github_rate_limit_exceeded_long_wait",
-                                wait_seconds=wait_seconds,
-                            )
-                            resp.raise_for_status()
-
-                        logger.warning("github_rate_limit_hit", wait_seconds=wait_seconds)
-                        await asyncio.sleep(wait_seconds)
-                        continue
-
-                resp.raise_for_status()
-                return resp
-
-            except httpx.HTTPStatusError as e:
-                if attempt == max_retries - 1:
-                    raise
-                # Only retry server errors or rate limits (if not handled above)
-                if (
-                    e.response.status_code < httpx.codes.INTERNAL_SERVER_ERROR
-                    and e.response.status_code
-                    not in (
-                        httpx.codes.FORBIDDEN,
-                        httpx.codes.TOO_MANY_REQUESTS,
-                    )
-                ):
-                    raise
-                await asyncio.sleep(2**attempt)  # Exponential backoff
             except httpx.RequestError:
                 if attempt == max_retries - 1:
                     raise
                 await asyncio.sleep(2**attempt)
+                continue
 
-        raise RuntimeError("Unreachable")
+            if resp.status_code in (httpx.codes.FORBIDDEN, httpx.codes.TOO_MANY_REQUESTS):
+                remaining = resp.headers.get("x-ratelimit-remaining")
+                rate_limited = resp.status_code == httpx.codes.TOO_MANY_REQUESTS or remaining == "0"
+                if not rate_limited:
+                    resp.raise_for_status()
+                if attempt == max_retries - 1:
+                    resp.raise_for_status()
+
+                reset_header = resp.headers.get("x-ratelimit-reset")
+                wait_seconds = 2**attempt
+                if reset_header is not None:
+                    reset_wait = max(int(reset_header) - time.time(), 0) + 1
+                    if reset_wait <= 60:  # noqa: PLR2004
+                        wait_seconds = reset_wait
+                    else:
+                        logger.error(
+                            "github_rate_limit_exceeded_long_wait",
+                            wait_seconds=reset_wait,
+                        )
+                logger.warning("github_rate_limit_hit", wait_seconds=wait_seconds)
+                await asyncio.sleep(wait_seconds)
+                continue
+
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < httpx.codes.INTERNAL_SERVER_ERROR:
+                    raise
+                if attempt == max_retries - 1:
+                    raise
+                await asyncio.sleep(2**attempt)
+                continue
+            return resp
+
+        raise AssertionError("GitHub request retry loop invariant violated")
 
     def _load_private_key(self) -> str:
         if self._private_key:
@@ -158,6 +158,9 @@ class GitHubAppClientBase:
 
     async def get_installation_id(self, owner: str, repo: str) -> int:
         """Get installation ID for a specific repo."""
+        cache_key = (owner, repo)
+        if cache_key in self._installation_cache:
+            return self._installation_cache[cache_key]
         jwt_token = self._generate_jwt()
         headers = {
             "Authorization": f"Bearer {jwt_token}",
@@ -167,10 +170,14 @@ class GitHubAppClientBase:
         resp = await self._make_request(
             "GET", f"https://api.github.com/repos/{owner}/{repo}/installation", headers=headers
         )
-        return resp.json()["id"]
+        installation_id = resp.json()["id"]
+        self._installation_cache[cache_key] = installation_id
+        return installation_id
 
     async def get_org_installation_id(self, org: str) -> int:
         """Get installation ID for an organization."""
+        if org in self._org_installation_cache:
+            return self._org_installation_cache[org]
         jwt_token = self._generate_jwt()
         headers = {
             "Authorization": f"Bearer {jwt_token}",
@@ -179,7 +186,9 @@ class GitHubAppClientBase:
         resp = await self._make_request(
             "GET", f"https://api.github.com/orgs/{org}/installation", headers=headers
         )
-        return resp.json()["id"]
+        installation_id = resp.json()["id"]
+        self._org_installation_cache[org] = installation_id
+        return installation_id
 
     async def get_first_org_installation(self) -> dict:
         """Get the first organization installation for this GitHub App.

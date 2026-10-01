@@ -38,7 +38,7 @@ class Registration(BaseModel):
     input_stream: str
     output_stream: str
     consumer_group: str = "worker_group"
-    session_ttl_seconds: int = Field(default=settings.SESSION_TTL_SECONDS, gt=0)
+    session_ttl_seconds: int = Field(default=settings.WORKER_BROKER_SESSION_TTL_SECONDS, gt=0)
 
 
 class Submission(BaseModel):
@@ -106,7 +106,7 @@ async def _worker(
 
 
 def _internal(token: str | None) -> None:
-    if not token or not secrets.compare_digest(token, settings.BROKER_INTERNAL_TOKEN):
+    if not token or not secrets.compare_digest(token, settings.WORKER_BROKER_INTERNAL_TOKEN):
         raise HTTPException(403, "invalid broker internal credential")
 
 
@@ -213,7 +213,7 @@ async def submit_output(
     await redis.xadd(
         metadata["output_stream"],
         output_fields,
-        maxlen=settings.STREAM_MAXLEN,
+        maxlen=settings.WORKER_BROKER_STREAM_MAXLEN,
         approximate=True,
     )
     # ACK comes after the typed output is durably accepted. A failed submission leaves the

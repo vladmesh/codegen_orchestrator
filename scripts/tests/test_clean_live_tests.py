@@ -49,6 +49,7 @@ def test_verify_no_residue_fails_closed(
     )
     monkeypatch.setattr(clean_live_tests, "run_cmd", lambda *args, **kwargs: next(calls))
     monkeypatch.setattr(clean_live_tests, "collect_remote_residue", dict)
+    monkeypatch.setattr(clean_live_tests, "list_org_repositories", lambda: [])
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
     if manifest:
         path = Path(tmp_path) / ".live-manifests" / "run.json"
@@ -63,6 +64,7 @@ def test_verify_no_residue_accepts_proven_absence(monkeypatch, tmp_path):
     calls = iter([_result(), _result(), _result(stdout="")])
     monkeypatch.setattr(clean_live_tests, "run_cmd", lambda *args, **kwargs: next(calls))
     monkeypatch.setattr(clean_live_tests, "collect_remote_residue", dict)
+    monkeypatch.setattr(clean_live_tests, "list_org_repositories", lambda: [])
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
 
     clean_live_tests.verify_no_residue()
@@ -85,12 +87,28 @@ def test_verify_no_residue_reports_a_stack_no_db_row_points_at(monkeypatch, tmp_
         "collect_remote_residue",
         lambda: {"vps-1": [f"container live-te-{'a' * 32}-backend-1"]},
     )
+    monkeypatch.setattr(clean_live_tests, "list_org_repositories", lambda: [])
 
     with pytest.raises(clean_live_tests.CleanupFailure) as error:
         clean_live_tests.verify_no_residue()
 
     assert "deployed_stacks=1" in str(error.value)
     assert f"vps-1: container live-te-{'a' * 32}-backend-1" in str(error.value)
+
+
+def test_verify_no_residue_counts_github_repositories(monkeypatch, tmp_path):
+    calls = iter([_result(), _result(), _result(stdout="")])
+    monkeypatch.setattr(clean_live_tests, "run_cmd", lambda *args, **kwargs: next(calls))
+    monkeypatch.setattr(clean_live_tests, "collect_remote_residue", dict)
+    monkeypatch.setattr(
+        clean_live_tests,
+        "list_org_repositories",
+        lambda: ["live-te-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    )
+    monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="github_repositories=1"):
+        clean_live_tests.verify_no_residue()
 
 
 def test_allocation_residue_query_qualifies_project_title(monkeypatch, tmp_path):

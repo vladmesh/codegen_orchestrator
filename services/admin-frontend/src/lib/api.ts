@@ -23,6 +23,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new ApiError(response.status, `${response.status} ${response.statusText}`)
   }
 
+  if (response.status === 204) return undefined as T
   return response.json()
 }
 
