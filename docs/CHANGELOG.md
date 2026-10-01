@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-01
 
+- Retry the stand e2e `CODEX_AUTH_JSON` secret write up to five times, so a transient GitHub 5xx
+  does not fail the run or lose the refreshed Codex token.
+
 - Make LK bearer authorization deny-by-default: valid dashboard tokens reach only routes with an
   explicit owner/admin/current-user bearer guard; unclassified routes remain internal-only.
 
