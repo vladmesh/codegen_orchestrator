@@ -255,6 +255,34 @@ async def supervise_deploying_stories(
     return counts
 
 
+async def supervise_application_deploy_handoffs(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+) -> dict[str, int]:
+    """Recover story-less deploy handoffs committed by API application actions.
+
+    The API writes the exact DeployMessage on the Run before publishing it. If
+    the request dies after commit but before the dispatch stamp is persisted,
+    this sweep replays that same message after the ordinary handoff grace period.
+    """
+    runs = await api_client.list_runs(
+        run_type=RunType.DEPLOY.value,
+        status=RunStatus.QUEUED.value,
+    )
+    recovered = 0
+    for run in runs:
+        if run.story_id is not None:
+            continue
+        if await recover_deploy_handoff(
+            api_client,
+            redis_client,
+            run,
+            minimum_age_minutes=_qa_handoff_recovery_minutes(),
+        ):
+            recovered += 1
+            logger.warning("application_deploy_handoff_recovered", run_id=run.id)
+    return {"recovered": recovered}
+
 async def _supervise_deploying_story(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
