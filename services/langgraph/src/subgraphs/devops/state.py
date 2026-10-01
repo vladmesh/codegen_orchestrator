@@ -1,6 +1,6 @@
 """DevOps subgraph state definition."""
 
-from typing import Annotated
+from typing import Annotated, NotRequired
 
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
@@ -30,6 +30,9 @@ class DevOpsState(TypedDict):
     run_id: str | None
     project_spec: dict | None
     allocated_resources: dict
+    allocation_failure_reason: NotRequired[str]
+    allocation_required_ram_mb: NotRequired[int]
+    allocation_min_disk_mb: NotRequired[int]
     repo_info: dict | None
     provided_secrets: dict  # secrets provided by PO
     env_overrides: dict  # deploy-time literal overrides, see DeployMessage.env_overrides

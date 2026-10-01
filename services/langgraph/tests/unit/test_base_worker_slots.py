@@ -38,6 +38,16 @@ def _redis(consume):
     return redis
 
 
+class TestConsumerIdentity:
+    def test_name_includes_container_hostname(self, monkeypatch):
+        import src.consumers._base as base
+
+        monkeypatch.setattr(base.socket, "gethostname", lambda: "container-a")
+        monkeypatch.setattr(base.os, "getpid", lambda: 1)
+
+        assert base._consumer_name("engineering-worker") == "engineering-worker-container-a-1"
+
+
 class TestSlotGate:
     """The gate alone, without a Redis loop around it."""
 

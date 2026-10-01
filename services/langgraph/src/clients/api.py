@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from shared.clients.internal_api import InternalAPIClient
+from shared.clients.run_api import RunAPIClientMixin
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
@@ -59,7 +60,7 @@ def bot_liveness_path(project_id: str) -> str:
     return f"projects/{project_id}/telegram/liveness"
 
 
-class LanggraphAPIClient(InternalAPIClient):
+class LanggraphAPIClient(RunAPIClientMixin, InternalAPIClient):
     """HTTP client for LangGraph's required API endpoints."""
 
     def __init__(self) -> None:
@@ -150,10 +151,6 @@ class LanggraphAPIClient(InternalAPIClient):
         return await self._patch_json(f"service-deployments/{deployment_id}", json=payload)
 
     # --- Runs ---
-
-    async def get_run(self, run_id: str) -> RunDTO:
-        data = await self._get_json(f"runs/{run_id}")
-        return RunDTO.model_validate(data)
 
     async def list_story_engineering_runs(self, story_id: str) -> list[RunDTO]:
         """Every engineering attempt of one story, newest first."""

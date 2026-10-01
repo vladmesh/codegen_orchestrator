@@ -1,10 +1,12 @@
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput, QAAccountingFact
 from shared.contracts.dto.run_result import (
     DeployRunResult,
     EngineeringRunResult,
@@ -57,6 +59,37 @@ class RunCreate(BaseModel):
     task_id: str | None = None
     run_metadata: dict[str, Any] = {}
     callback_stream: str | None = None
+
+
+class RunUpdate(BaseModel):
+    """Typed partial update for a Run.
+
+    This is a cross-service HTTP contract: LangGraph and Scheduler both settle
+    Runs through the same API surface, so validation belongs with the shared
+    Run vocabulary rather than in the API service alone.
+    """
+
+    status: RunStatus | None = None
+    user_id: int | None = None
+    run_metadata: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
+    error_message: str | None = None
+    error_traceback: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    iteration: int | None = None
+    agent_profile: dict[str, Any] | None = None
+    transcript_path: str | None = None
+    transcript_truncated: bool | None = None
+    engineering_attempt: EngineeringAttemptLedgerInput | None = None
+    qa_accounting: QAAccountingFact | None = None
+
+    @field_validator("status", mode="before", json_schema_input_type=RunStatus)
+    @classmethod
+    def _refuse_null_status(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("status may be omitted but must not be null")
+        return value
 
 
 class RunDTO(TimestampedDTO):
