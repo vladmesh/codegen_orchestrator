@@ -247,12 +247,12 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
 
     log.error("scaffold_job_failed", error=result.error)
 
-    # Mark project so scaffold_trigger stops retrying every cycle
+    # Mark project so scaffold_trigger stops retrying every cycle.
     try:
-        project = await api.get_project(msg.project_id)
-        config = dict(project.config) if project.config else {}
-        config["scaffold_error"] = result.error or "unknown error"
-        await api.update_project_config(msg.project_id, config)
+        await api.patch_project_config(
+            msg.project_id,
+            values={"scaffold_error": result.error or "unknown error"},
+        )
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
 
@@ -317,14 +317,20 @@ async def _verify_repo_auto_merge(msg, github, api, org, project_config, log) ->
             raise RuntimeError("GitHub read-back reported allow_auto_merge=false")
         if "repo_auto_merge_verification" in project_config:
             project_config.pop("repo_auto_merge_verification")
-            await api.update_project_config(msg.project_id, project_config)
+            await api.patch_project_config(
+                msg.project_id,
+                remove=["repo_auto_merge_verification"],
+            )
         log.info("repo_auto_merge_verified")
     except Exception as exc:
         error = redact_diagnostic(exc)
         log.error("repo_auto_merge_verification_failed", error=error, exc_info=True)
         project_config["repo_auto_merge_verification"] = {"status": "failed", "error": error}
         try:
-            await api.update_project_config(msg.project_id, project_config)
+            await api.patch_project_config(
+                msg.project_id,
+                values={"repo_auto_merge_verification": project_config["repo_auto_merge_verification"]},
+            )
         except Exception:
             log.exception("repo_auto_merge_failure_mark_write_failed")
         await notify_admins_best_effort(
@@ -388,33 +394,33 @@ async def _record_scaffold_error(msg, error: str, api, log) -> None:
     operator's infrastructure retry is what removes it.
     """
     try:
-        project = await api.get_project(msg.project_id)
-        config = dict(project.config) if project.config else {}
-        config["scaffold_error"] = error
-        await api.update_project_config(msg.project_id, config)
+        await api.patch_project_config(msg.project_id, values={"scaffold_error": error})
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
 
 
 async def _update_project_on_success(msg, result, api, settings, log) -> dict:
-    """Update project config with tree and specs after successful scaffold/ensure."""
+    """Update owned config keys without replacing concurrent config writes."""
     workspace = Path(settings.workspace_base_path) / msg.repository_id
-    project = await api.get_project(msg.project_id)
-    config = dict(project.config) if project.config else {}
-    config["tree"] = result.tree
-    config["workspace_ready"] = True
+    values = {
+        "tree": result.tree,
+        "workspace_ready": True,
+    }
     if result.template_commit:
-        config["service_template"] = {
+        values["service_template"] = {
             "source": msg.template_repo,
             "requested_ref": msg.template_ref,
             "commit": result.template_commit,
         }
-    config.pop("scaffold_error", None)
     specs_summary = extract_specs_summary(workspace)
     if specs_summary:
-        config["specs_summary"] = specs_summary
-    await api.update_project_config(msg.project_id, config)
-    return config
+        values["specs_summary"] = specs_summary
+    project = await api.patch_project_config(
+        msg.project_id,
+        values=values,
+        remove=["scaffold_error"],
+    )
+    return dict(project.config or {})
 
 
 async def run_worker() -> None:
