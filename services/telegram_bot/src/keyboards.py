@@ -73,13 +73,13 @@ def projects_list_keyboard(projects: list[dict]) -> InlineKeyboardMarkup:
     """Build projects list keyboard with details buttons.
 
     Args:
-        projects: List of project dicts with 'id' and 'name' keys.
+        projects: List of project dicts with 'id' and 'title' keys.
     """
     keyboard = []
 
     for project in projects[:10]:  # Limit to 10 projects
         project_id = project.get("id", "")
-        name = project.get("name", "Unknown")
+        name = project.get("title", "Unknown")
         status = project.get("status", "")
         status_emoji = "✅" if status == "active" else "📝" if status == "draft" else "⚪"
 
