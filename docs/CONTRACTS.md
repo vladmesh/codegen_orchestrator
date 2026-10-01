@@ -61,8 +61,8 @@ are repository-relative.
 | `qa:queue` | `qa-consumers` | `queues/qa.py` | deploy supervisor or admin action | langgraph QA consumer |
 | `worker:commands` | `worker_manager` | `queues/worker.py` | langgraph | worker-manager |
 | `worker:responses:developer` | response stream | `queues/worker.py` | worker-manager | langgraph |
-| `worker:{worker_id}:input` | broker session | `queues/developer_worker.py` | developer node | worker-wrapper/broker |
-| `worker:{worker_id}:output` | broker session | `queues/developer_worker.py` | worker-wrapper/broker | developer node |
+| `worker:{worker_id}:input` | broker session | producer JSON envelope (`worker_spawner.py` / `qa_worker.py`) | developer/QA node | worker-wrapper/broker |
+| `worker:{worker_id}:output` | broker session | wrapper output envelope | worker-wrapper/broker | developer/QA node |
 | `provisioner:queue` | `infrastructure-workers` | `queues/provisioner.py` | scheduler-infrastructure | infra-service |
 | `provisioner:results` | scheduler / bot groups | `queues/provisioner.py` | infra-service | scheduler-infrastructure, telegram-bot |
 | `po:input` | `po-consumer` | `queues/po.py` | bot and system producers | PO consumer |
@@ -156,7 +156,7 @@ in cleartext. `consume_typed`, the proactive `consume` path, and the bot's direc
 response XREAD authenticate/decode before validation or delivery. Runtime has no
 plaintext read/write fallback. PO and bot startup authenticate retained PO
 payloads and refuse released plaintext before consumption; the offline,
-quiesced converter is described in [SECRETS.md](SECRETS.md#production-po-redis-upgrade).
+quiesced converter is described in [PO Redis production runbook](runbooks/po-redis-and-checkpoints.md#production-po-redis-upgrade).
 
 PO reminders protect the entire JSON member before ZADD; the poller authenticates
 before validating and publishing a separately protected input. Latest owner
@@ -194,10 +194,10 @@ gets a fixed apology, never exception text.
 
 ### Worker command and turn rules
 
-Canonical sources: `shared/contracts/queues/worker.py`,
-`shared/contracts/queues/developer_worker.py`,
-`shared/contracts/worker_control_plane.py`, and
-`shared/contracts/worker_turn.py`.
+Canonical control-plane sources: `shared/contracts/queues/worker.py`,
+`shared/contracts/worker_control_plane.py`, and `shared/contracts/worker_turn.py`.
+The current per-worker input wire payload is still producer-owned JSON rather than the legacy
+`DeveloperWorkerInput` DTO; typing that turn envelope is tracked with the worker-contract cleanup.
 
 Worker-manager owns container lifecycle. Developer turn I/O bypasses
 worker-manager: the wrapper/broker leases input, accepts one typed output, and
@@ -338,7 +338,7 @@ invariants are in [REST story, task, run, and policy surfaces](contracts/story-t
 | `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler-pipeline/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
 | `QAMessage`, QA outcomes | `queues/qa.py` | supervisor/admin action | QA consumer | run id names the QA decision; criteria are resolved before publication |
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
-| developer input/output | `queues/developer_worker.py` | developer node / wrapper | wrapper / developer node | broker request id and single typed accepted output settle a leased turn |
+| worker input/output | `services/langgraph/src/clients/{worker_spawner,qa_worker}.py`, wrapper/broker | developer/QA node | wrapper / developer/QA node | broker request id and accepted output settle a leased turn; input remains producer-owned JSON |
 | provisioning request/result | `queues/provisioner.py` | scheduler-infrastructure / infra-service | infra-service / scheduler-infrastructure and bot | result consumers use their own group semantics |
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
