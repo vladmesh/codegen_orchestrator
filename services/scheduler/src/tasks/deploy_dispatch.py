@@ -8,7 +8,13 @@ import hashlib
 from typing import TYPE_CHECKING, Any
 
 from shared.contracts.dto.run import RunType
-from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
+from shared.contracts.queues.deploy import (
+    DEPLOY_HANDOFF_DISPATCHED_AT_KEY,
+    DEPLOY_HANDOFF_MESSAGE_KEY,
+    DeployAction,
+    DeployMessage,
+    DeployTrigger,
+)
 from shared.queues import DEPLOY_QUEUE
 
 from ._recipients import Recipient
@@ -18,8 +24,6 @@ if TYPE_CHECKING:
 
     from ..clients.api import SchedulerAPIClient
 
-DEPLOY_HANDOFF_MESSAGE_KEY = "deploy_handoff_message"
-DEPLOY_HANDOFF_DISPATCHED_AT_KEY = "deploy_handoff_dispatched_at"
 
 
 def deploy_run_id(prefix: str, *identity_parts: str) -> str:
