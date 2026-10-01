@@ -1334,7 +1334,7 @@ for backup_helper in backup-db.sh backup-db-rootless.sh; do
   test "$(stat -c '%u:%a' "/usr/local/libexec/$backup_helper")" = 0:755
   sha256sum "/usr/local/libexec/$backup_helper"
 done
-"$BACKUP_RELEASE_ROOT/infra/scripts/install-backup-rootless.sh" \
+bash "$BACKUP_RELEASE_ROOT/infra/scripts/install-backup-rootless.sh" \
   "$BACKUP_RELEASE_ROOT" "$backup_policy_dir" "$backup_policy" "$backup_unit_dir" "$BACKUP_DIR"
 # Review/edit this non-secret policy privately if the confirmed host chain changed.
 # Keep only the documented keys, with syntax shared by bash and EnvironmentFile.
