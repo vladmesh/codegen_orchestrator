@@ -7,6 +7,7 @@ import uuid
 from pydantic import BaseModel
 
 from shared.contracts.dto.base import TimestampedDTO
+
 # The create schema is the contract; the API validates against that same object
 # rather than a look-alike of its own.
 from shared.contracts.dto.run import RunCreate, RunStatus, RunType, RunUpdate
@@ -46,4 +47,3 @@ class RunRead(RunBase, TimestampedDTO):
 
     # Read-only: written only by the story transition that routed this QA run.
     qa_routed_at: datetime | None = None
-
