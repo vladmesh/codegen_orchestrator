@@ -248,11 +248,7 @@ async def supervise_deploying_stories(
     redis = redis_client._redis
 
     for story in stories:
-        try:
-            action = await _supervise_deploying_story(api_client, redis_client, redis, story)
-        except Exception:
-            logger.exception("deploy_story_supervision_contained", story_id=story.id)
-            continue
+        action = await _supervise_deploying_story(api_client, redis_client, redis, story)
         if action is not DeploySupervisorAction.NONE:
             counts[action.value] += 1
 
