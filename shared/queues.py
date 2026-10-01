@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from shared.contracts.queues.worker import WorkerChannels
+
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
@@ -39,13 +41,13 @@ STORY_WORKERS_KEY = "story:workers"
 
 
 def worker_input_stream(worker_id: str) -> str:
-    """Per-worker input stream name."""
-    return f"worker:{worker_id}:input"
+    """Per-worker input stream name from the canonical worker channel pattern."""
+    return WorkerChannels.INPUT_PATTERN.format(worker_id=worker_id)
 
 
 def worker_output_stream(worker_id: str) -> str:
-    """Per-worker output stream name."""
-    return f"worker:{worker_id}:output"
+    """Per-worker output stream name from the canonical worker channel pattern."""
+    return WorkerChannels.OUTPUT_PATTERN.format(worker_id=worker_id)
 
 
 # ---------------------------------------------------------------------------
