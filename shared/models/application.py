@@ -68,8 +68,11 @@ class Application(Base):
     uptime_pct_24h: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
     # Administrative monitoring switch, independent of `status`: while false the
-    # health prober neither probes this application nor alerts about it. Changing
-    # it never touches deployment status, port allocations or the bot binding.
+    # health prober neither probes this application nor opens or resolves its
+    # incidents (so sends no new alerts; one accepted just before the switch may
+    # still be delivered). Changing it never touches deployment status, port
+    # allocations or the bot binding. `monitoring_changed_at` is the generation a
+    # probe's incident write must still match.
     monitoring_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=true()
     )

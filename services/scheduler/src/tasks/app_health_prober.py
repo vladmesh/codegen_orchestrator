@@ -50,19 +50,32 @@ def _refused_as_muted(exc: httpx.HTTPStatusError) -> bool:
     return exc.response.status_code == httpx.codes.CONFLICT
 
 
-async def _create_incident_if_monitored(api_client: object, **kwargs) -> None:
-    """Create an incident unless the switch went off; the API decides under its lock."""
+def monitoring_generation(app) -> str:
+    """The switch generation a probe starts from; the API compares it under its lock."""
+    changed_at = app.monitoring_changed_at
+    return "initial" if changed_at is None else changed_at.isoformat()
+
+
+async def _create_incident_if_monitored(api_client: object, app, **kwargs) -> None:
+    """Create an incident unless the switch moved since the probe began.
+
+    The API decides under the application's row lock. A notification already
+    accepted before a later switch may still be delivered: muting stops new
+    incident transitions, it does not recall alerts sent before it.
+    """
     try:
-        await api_client.create_incident(**kwargs, if_monitored=True)
+        await api_client.create_incident(**kwargs, monitoring_generation=monitoring_generation(app))
     except httpx.HTTPStatusError as exc:
         if _refused_as_muted(exc):
             raise MonitoringDisabledError from exc
         raise
 
 
-async def _resolve_incident_if_monitored(api_client: object, incident_id: int) -> None:
+async def _resolve_incident_if_monitored(api_client: object, app, incident_id: int) -> None:
     try:
-        await api_client.resolve_incident(incident_id, if_monitored=True)
+        await api_client.resolve_incident(
+            incident_id, monitoring_generation=monitoring_generation(app)
+        )
     except httpx.HTTPStatusError as exc:
         if _refused_as_muted(exc):
             raise MonitoringDisabledError from exc
@@ -76,8 +89,14 @@ async def _app_service_down_incidents(app, api_client: object) -> list:
     when its details name it. A legacy incident without an application id belongs
     to nobody here, so it neither suppresses nor is closed by any application.
     """
-    active = await api_client.get_active_incidents(app.server_handle, IncidentType.SERVICE_DOWN)
-    return [i for i in active if i.details.get("application_id") == app.id]
+    active = await api_client.list_active_incidents()  # detected + recovering
+    return [
+        i
+        for i in active
+        if i.incident_type is IncidentType.SERVICE_DOWN
+        and i.server_handle == app.server_handle
+        and i.details.get("application_id") == app.id
+    ]
 
 
 async def check_application(
@@ -132,7 +151,7 @@ async def check_application(
         # an incident may still be open from before, so look it up too.
         if consecutive_failures > 0 or not has_history:
             for incident in await _app_service_down_incidents(app, api_client):
-                await _resolve_incident_if_monitored(api_client, incident.id)
+                await _resolve_incident_if_monitored(api_client, app, incident.id)
                 await notify_admins_best_effort(
                     f"Application *{app.service_name}* on {server_ip} is back — "
                     "SERVICE_DOWN incident resolved.",
@@ -159,6 +178,7 @@ async def check_application(
             if not await _app_service_down_incidents(app, api_client):
                 await _create_incident_if_monitored(
                     api_client,
+                    app,
                     server_handle=app.server_handle,
                     incident_type=IncidentType.SERVICE_DOWN,
                     details={
@@ -194,6 +214,7 @@ async def check_application(
             if not active:
                 await _create_incident_if_monitored(
                     api_client,
+                    app,
                     server_handle=app.server_handle,
                     incident_type=IncidentType.SSL_EXPIRING,
                     details={

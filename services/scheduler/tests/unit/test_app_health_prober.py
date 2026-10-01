@@ -71,6 +71,7 @@ def mock_api_client():
     client.create_app_health_history = AsyncMock(return_value={})
     client.create_incident = AsyncMock(return_value=_make_incident())
     client.get_active_incidents = AsyncMock(return_value=[])
+    client.list_active_incidents = AsyncMock(return_value=[])
     client.resolve_incident = AsyncMock()
     client.delete_old_app_health_history = AsyncMock(return_value={"deleted": 0})
     return client
@@ -210,7 +211,7 @@ class TestCheckApplication:
         """Recovery after failures → reset fail count, auto-resolve incidents."""
         app = _make_app()
         health_result = {"healthy": True, "status_code": 200, "response_time_ms": 45}
-        mock_api_client.get_active_incidents.return_value = [_make_incident(incident_id=42)]
+        mock_api_client.list_active_incidents.return_value = [_make_incident(incident_id=42)]
 
         with (
             patch(
@@ -234,7 +235,9 @@ class TestCheckApplication:
             )
 
         assert fail_count == 0
-        mock_api_client.resolve_incident.assert_called_once_with(42, if_monitored=True)
+        mock_api_client.resolve_incident.assert_called_once_with(
+            42, monitoring_generation="initial"
+        )
 
 
 class TestAppHealthProbeCycle:
@@ -413,7 +416,7 @@ class TestMonitoringSwitch:
         mock_api_client.create_incident = AsyncMock(side_effect=refused)
         mock_api_client.resolve_incident = AsyncMock(side_effect=refused)
         if open_incident:
-            mock_api_client.get_active_incidents.return_value = [_make_incident(incident_id=9)]
+            mock_api_client.list_active_incidents.return_value = [_make_incident(incident_id=9)]
         mock_api_client.get_servers.return_value = [_server()]
         mock_api_client.get_applications.return_value = [_make_app(app_id=1)]
         app_health_prober._consecutive_failures[1] = failures
@@ -434,7 +437,7 @@ class TestMonitoringSwitch:
             *mock_api_client.create_incident.call_args_list,
             *mock_api_client.resolve_incident.call_args_list,
         ]:
-            assert call.kwargs["if_monitored"] is True
+            assert call.kwargs["monitoring_generation"] == "initial"
         assert (
             mock_api_client.create_incident.call_count + mock_api_client.resolve_incident.call_count
             == 1
@@ -475,7 +478,7 @@ class TestMonitoringSwitch:
 
         mock_api_client.get_servers.return_value = [_server()]
         mock_api_client.get_applications.return_value = [_make_app(app_id=1)]
-        mock_api_client.get_active_incidents.return_value = [
+        mock_api_client.list_active_incidents.return_value = [
             _make_incident(incident_id=39, application_id=1)
         ]
         with (
@@ -487,7 +490,9 @@ class TestMonitoringSwitch:
             ssl.return_value = None
             await app_health_prober.app_health_probe_cycle(mock_api_client)
 
-        mock_api_client.resolve_incident.assert_called_once_with(39, if_monitored=True)
+        mock_api_client.resolve_incident.assert_called_once_with(
+            39, monitoring_generation="initial"
+        )
 
 
 class TestIncidentsAreScopedToApplication:
@@ -497,7 +502,7 @@ class TestIncidentsAreScopedToApplication:
     async def test_healthy_app_does_not_close_sibling_incident(self, mock_api_client):
         from src.tasks import app_health_prober
 
-        mock_api_client.get_active_incidents.return_value = [
+        mock_api_client.list_active_incidents.return_value = [
             _make_incident(incident_id=7, application_id=1)
         ]
         with (
@@ -520,7 +525,7 @@ class TestIncidentsAreScopedToApplication:
     async def test_sibling_incident_does_not_suppress_own_alert(self, mock_api_client):
         from src.tasks import app_health_prober
 
-        mock_api_client.get_active_incidents.return_value = [
+        mock_api_client.list_active_incidents.return_value = [
             _make_incident(incident_id=7, application_id=1)
         ]
         with (
@@ -561,7 +566,7 @@ class TestIncidentsAreScopedToApplication:
 
         mock_api_client.create_incident = AsyncMock(side_effect=create_incident)
         mock_api_client.resolve_incident = AsyncMock(side_effect=resolve)
-        mock_api_client.get_active_incidents = AsyncMock(side_effect=lambda *a: list(incidents))
+        mock_api_client.list_active_incidents = AsyncMock(side_effect=lambda *a: list(incidents))
         mock_api_client.get_servers.return_value = [_server()]
         mock_api_client.get_applications.return_value = [
             _make_app(app_id=1, ports=[{"port": 8001, "service_name": "a"}]),
@@ -588,3 +593,46 @@ class TestIncidentsAreScopedToApplication:
         assert mock_api_client.create_incident.call_count == 1
         mock_api_client.resolve_incident.assert_not_called()
         assert [i.details["application_id"] for i in incidents] == [1]
+
+
+def test_monitoring_generation_names_the_switch_a_probe_started_from():
+    from src.tasks.app_health_prober import monitoring_generation
+
+    assert monitoring_generation(_make_app()) == "initial"
+    at = datetime(2026, 10, 1, 18, 0, 0, 123456, tzinfo=UTC)
+    assert monitoring_generation(_make_app(monitoring_changed_at=at)) == at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_recovering_incident_of_the_app_is_resolved_and_not_duplicated(mock_api_client):
+    """Both active statuses are this application's incident, as the switch treats them."""
+    from src.tasks import app_health_prober
+
+    app_health_prober._consecutive_failures.clear()
+    mock_api_client.list_active_incidents.return_value = [
+        _make_incident(incident_id=5, status="recovering")
+    ]
+    with (
+        patch.object(app_health_prober, "check_http_health", new_callable=AsyncMock) as http,
+        patch.object(app_health_prober, "check_ssl_expiry", new_callable=AsyncMock) as ssl,
+        patch.object(app_health_prober, "notify_admins_best_effort", new_callable=AsyncMock),
+    ):
+        ssl.return_value = None
+        http.return_value = _FAIL
+        await app_health_prober.check_application(
+            app=_make_app(),
+            server_ip="10.0.0.1",
+            consecutive_failures=5,
+            api_client=mock_api_client,
+        )
+        mock_api_client.create_incident.assert_not_called()
+
+        http.return_value = _OK
+        await app_health_prober.check_application(
+            app=_make_app(),
+            server_ip="10.0.0.1",
+            consecutive_failures=0,
+            api_client=mock_api_client,
+            has_history=False,
+        )
+    mock_api_client.resolve_incident.assert_called_once_with(5, monitoring_generation="initial")

@@ -179,24 +179,41 @@ async def test_guarded_incident_writes_are_refused_for_a_muted_application(
             "details": {"application_id": application_id},
         }
 
-    refused = await async_client.post("/api/incidents/?if_monitored=true", json=payload(app_id))
+    refused = await async_client.post(
+        "/api/incidents/?if_monitored=true&monitoring_generation=initial", json=payload(app_id)
+    )
     assert refused.status_code == HTTPStatus.CONFLICT, refused.text
     refused = await async_client.patch(
-        f"/api/incidents/{open_incident}?if_monitored=true",
+        f"/api/incidents/{open_incident}?if_monitored=true&monitoring_generation=initial",
         json={"status": IncidentStatus.RESOLVED.value},
     )
     assert refused.status_code == HTTPStatus.CONFLICT, refused.text
     still_open = (await async_client.get(f"/api/incidents/{open_incident}")).json()
     assert still_open["status"] == IncidentStatus.DETECTED.value
 
-    allowed = await async_client.post("/api/incidents/?if_monitored=true", json=payload(sibling_id))
+    allowed = await async_client.post(
+        "/api/incidents/?if_monitored=true&monitoring_generation=initial", json=payload(sibling_id)
+    )
     assert allowed.status_code == HTTPStatus.CREATED, allowed.text
     unguarded = await async_client.post("/api/incidents/", json=payload(app_id))
     assert unguarded.status_code == HTTPStatus.CREATED, unguarded.text
 
-    await async_client.post(f"/api/applications/{app_id}/monitoring", json={"enabled": True})
+    reenabled = await async_client.post(
+        f"/api/applications/{app_id}/monitoring", json={"enabled": True}
+    )
+    generation = reenabled.json()["monitoring_changed_at"]
+
+    # A probe that began before the off/on switch carries the old generation.
+    stale = await async_client.patch(
+        f"/api/incidents/{open_incident}",
+        params={"if_monitored": "true", "monitoring_generation": "initial"},
+        json={"status": IncidentStatus.RESOLVED.value},
+    )
+    assert stale.status_code == HTTPStatus.CONFLICT, stale.text
+
     resolved = await async_client.patch(
-        f"/api/incidents/{open_incident}?if_monitored=true",
+        f"/api/incidents/{open_incident}",
+        params={"if_monitored": "true", "monitoring_generation": generation},
         json={"status": IncidentStatus.RESOLVED.value},
     )
     assert resolved.status_code == HTTPStatus.OK, resolved.text

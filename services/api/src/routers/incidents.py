@@ -1,6 +1,6 @@
 """Incidents router."""
 
-from datetime import UTC
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, text
@@ -26,13 +26,37 @@ _IF_MONITORED = Query(
     False,
     description=(
         "Health-prober guard: refuse with 409 when the incident's application "
-        "(details.application_id) has monitoring disabled. Checked under the "
-        "application's row lock, the one the monitoring switch takes."
+        "(details.application_id) has monitoring disabled, or its monitoring was "
+        "switched since the probe began (see monitoring_generation). Checked under "
+        "the application's row lock, the one the monitoring switch takes."
     ),
 )
+_MONITORING_GENERATION = Query(
+    None,
+    description=(
+        "With if_monitored: the application's monitoring_changed_at the probe "
+        "started from, ISO-8601, or 'initial' when it was never switched."
+    ),
+)
+INITIAL_MONITORING_GENERATION = "initial"
 
 
-async def _refuse_unless_monitored(details: dict | None, db: AsyncSession) -> None:
+def _same_generation(current: datetime | None, expected: str) -> bool:
+    if expected == INITIAL_MONITORING_GENERATION:
+        return current is None
+    try:
+        expected_at = datetime.fromisoformat(expected)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="monitoring_generation must be ISO-8601 or 'initial'",
+        ) from exc
+    return current is not None and current == expected_at
+
+
+async def _refuse_unless_monitored(
+    details: dict | None, generation: str | None, db: AsyncSession
+) -> None:
     """Serialize a prober write with the monitoring switch of its application."""
     application_id = (details or {}).get("application_id")
     if application_id is None:
@@ -42,10 +66,19 @@ async def _refuse_unless_monitored(details: dict | None, db: AsyncSession) -> No
             select(Application).where(Application.id == application_id).with_for_update()
         )
     ).scalar_one_or_none()
-    if application is not None and not application.monitoring_enabled:
+    if application is None:
+        return
+    if not application.monitoring_enabled:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Monitoring is disabled for this application",
+        )
+    if generation is not None and not _same_generation(
+        application.monitoring_changed_at, generation
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Monitoring was switched since this probe began",
         )
 
 
@@ -53,11 +86,12 @@ async def _refuse_unless_monitored(details: dict | None, db: AsyncSession) -> No
 async def create_incident(
     incident_in: IncidentCreate,
     if_monitored: bool = _IF_MONITORED,
+    monitoring_generation: str | None = _MONITORING_GENERATION,
     db: AsyncSession = Depends(get_async_session),
 ) -> Incident:
     """Create a new incident."""
     if if_monitored:
-        await _refuse_unless_monitored(incident_in.details, db)
+        await _refuse_unless_monitored(incident_in.details, monitoring_generation, db)
     incident = Incident(
         server_handle=incident_in.server_handle,
         incident_type=incident_in.incident_type,
@@ -183,6 +217,7 @@ async def update_incident(
     incident_id: int,
     incident_update: IncidentUpdate,
     if_monitored: bool = _IF_MONITORED,
+    monitoring_generation: str | None = _MONITORING_GENERATION,
     db: AsyncSession = Depends(get_async_session),
 ) -> Incident:
     """Update incident status and details."""
@@ -190,7 +225,7 @@ async def update_incident(
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     if if_monitored:
-        await _refuse_unless_monitored(incident.details, db)
+        await _refuse_unless_monitored(incident.details, monitoring_generation, db)
         await db.refresh(incident)
 
     # Update fields if provided

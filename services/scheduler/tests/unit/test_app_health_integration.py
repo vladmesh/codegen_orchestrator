@@ -53,6 +53,7 @@ def mock_api():
     client.create_app_health_history = AsyncMock(return_value={})
     client.create_incident = AsyncMock(return_value={"id": 1})
     client.get_active_incidents = AsyncMock(return_value=[])
+    client.list_active_incidents = AsyncMock(return_value=[])
     client.resolve_incident = AsyncMock()
     client.delete_old_app_health_history = AsyncMock(return_value={"deleted": 0})
     return client
@@ -136,7 +137,7 @@ class TestFullProbeFlow:
             # 3 consecutive failures
             for _ in range(3):
                 mock_http.return_value = fail_result
-                mock_api.get_active_incidents.return_value = []
+                mock_api.list_active_incidents.return_value = []
                 await prober.app_health_probe_cycle(mock_api)
 
             # SERVICE_DOWN incident should have been created
@@ -146,7 +147,7 @@ class TestFullProbeFlow:
 
             # Now recover
             mock_http.return_value = ok_result
-            mock_api.get_active_incidents.return_value = [
+            mock_api.list_active_incidents.return_value = [
                 IncidentDTO(
                     id=42,
                     server_handle="vps-123",
@@ -161,7 +162,7 @@ class TestFullProbeFlow:
             await prober.app_health_probe_cycle(mock_api)
 
         # Incident should be resolved
-        mock_api.resolve_incident.assert_called_with(42, if_monitored=True)
+        mock_api.resolve_incident.assert_called_with(42, monitoring_generation="initial")
 
     @pytest.mark.asyncio
     async def test_ssl_expiry_creates_incident(self, mock_api):
