@@ -465,6 +465,7 @@ async def run_worker() -> None:
                 break
             if msg is None:
                 continue
+            settled = False
             try:
                 bind_message_context(msg.data)
                 try:
@@ -483,10 +484,12 @@ async def run_worker() -> None:
                         failure=DLQ_FAILURE_VALIDATION,
                         reason={"errors": safe_validation_errors(exc)},
                     )
+                    settled = True
                     continue
                 result = await process_scaffold_job(msg.data, redis)
                 msg.data.update(result)
                 await redis.ack(SCAFFOLD_QUEUE, SCAFFOLD_GROUP, msg.message_id)
+                settled = True
                 logger.debug("job_acked", entry_id=msg.message_id)
             except asyncio.CancelledError:
                 raise
@@ -498,6 +501,7 @@ async def run_worker() -> None:
                     data=msg.data,
                     reason={"error": "scaffold processing repeatedly failed"},
                 ):
+                    settled = True
                     logger.error(
                         "scaffold_delivery_exhausted",
                         entry_id=msg.message_id,
@@ -510,9 +514,12 @@ async def run_worker() -> None:
                     error_type=type(e).__name__,
                 )
             finally:
-                # Clear inflight marker so the scheduler can re-trigger if needed
+                # Only a terminal queue settlement may release the scheduler's
+                # dedup marker. A processing failure that stays pending must
+                # keep it until reclaim or TTL; otherwise the next scheduler
+                # tick can publish a duplicate alongside the pending entry.
                 project_id = msg.data.get("project_id")
-                if project_id:
+                if settled and project_id:
                     inflight_key = f"scaffold:inflight:{project_id}"
                     await redis.redis.delete(inflight_key)
                 unbind_message_context()
