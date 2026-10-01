@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.engineering_dispatch import ENGINEERING_DISPATCH_REFUSAL_KEY
 from shared.contracts.dto.engineering_execution import (
     ENGINEERING_INFRASTRUCTURE_KEY,
     EngineeringExecutionPhase,
@@ -41,6 +42,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotificationState,
 )
 from shared.contracts.dto.pr_conflict_repair import (
+    PR_CONFLICT_READMIT_ACTION,
     PR_CONFLICT_REPAIR_KEY,
     PRConflictRepairCommand,
     PRConflictRepairEvidence,
@@ -157,8 +159,11 @@ async def repair_pr_conflicts(
         and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
         and reason.get("code") == StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED.value
     )
+    # A paid refusal before any Run left the attempt unspent: this same command
+    # re-admits the Task once the Story still carries that refusal's own stop.
+    refusal = await _unspent_refusal(task, story, db)
     if story.status not in {StoryStatus.PR_REVIEW.value, StoryStatus.IN_PROGRESS.value}:
-        if not (released_park or exhausted_park):
+        if not (released_park or exhausted_park or refusal is not None):
             _repair_conflict("This human-review reason does not permit conflict recovery.")
     if task is None and story.status == StoryStatus.IN_PROGRESS.value:
         _repair_conflict("The story has engineering work in progress.")
@@ -248,33 +253,14 @@ async def repair_pr_conflicts(
         outcome = PRConflictRepairOutcome.ADMITTED
     else:
         evidence = await _repair_admission_evidence(task, story, repository.id, db)
-        if exhausted_park:
+        if refusal is not None:
+            outcome = await _readmit_refused_task(
+                task, story, refusal, identity, head_sha, default_sha, db
+            )
+        elif exhausted_park:
             outcome = PRConflictRepairOutcome.EXHAUSTED
-        elif not live and (
-            task.status
-            in {
-                TaskStatus.DONE.value,
-                TaskStatus.CANCELLED.value,
-                TaskStatus.WAITING_HUMAN_REVIEW.value,
-            }
-            or (
-                task.status == TaskStatus.FAILED.value
-                and task.current_iteration >= evidence.max_iterations
-            )
-        ):
-            failure = StoryFailure(
-                code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
-                source="scheduler",
-                detail=(
-                    f"PR #{story.pr_number} is still dirty at "
-                    f"{head_sha}; repair Task {tid} ended {task.status} at iteration "
-                    f"{task.current_iteration}. One repair Task is allowed, with iteration "
-                    f"ceiling {evidence.max_iterations}; automatic repair allowance exhausted."
-                ),
-            )
-            _record_story_failure(story, failure, StoryStatus.WAITING_HUMAN_REVIEW)
-            if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
-                _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+        elif not live and _repair_ended(task, evidence):
+            _record_repair_exhausted(story, task, head_sha, evidence)
             await db.commit()
             outcome = PRConflictRepairOutcome.EXHAUSTED
         else:
@@ -291,6 +277,92 @@ async def repair_pr_conflicts(
         if outcome is PRConflictRepairOutcome.EXHAUSTED
         else None,
     )
+
+
+def _repair_ended(task: Task, evidence: PRConflictRepairEvidence) -> bool:
+    return task.status in {
+        TaskStatus.DONE.value,
+        TaskStatus.CANCELLED.value,
+        TaskStatus.WAITING_HUMAN_REVIEW.value,
+    } or (
+        task.status == TaskStatus.FAILED.value and task.current_iteration >= evidence.max_iterations
+    )
+
+
+def _record_repair_exhausted(
+    story: Story, task: Task, head_sha: str, evidence: PRConflictRepairEvidence
+) -> None:
+    failure = StoryFailure(
+        code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
+        source="scheduler",
+        detail=(
+            f"PR #{story.pr_number} is still dirty at "
+            f"{head_sha}; repair Task {task.id} ended {task.status} at iteration "
+            f"{task.current_iteration}. One repair Task is allowed, with iteration "
+            f"ceiling {evidence.max_iterations}; automatic repair allowance exhausted."
+        ),
+    )
+    _record_story_failure(story, failure, StoryStatus.WAITING_HUMAN_REVIEW)
+    if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+
+
+async def _unspent_refusal(task: Task | None, story: Story, db: AsyncSession):
+    from ._pr_conflict_attempt import records_admission_refusal, unspent_dispatch_refusal
+
+    if task is None or story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        return None
+
+    events = list(
+        (
+            await db.scalars(
+                select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
+            )
+        ).all()
+    )
+    runs = list(
+        (
+            await db.scalars(
+                select(Run).where(Run.task_id == task.id, Run.type == RunType.ENGINEERING.value)
+            )
+        ).all()
+    )
+    refusal = await unspent_dispatch_refusal(task, events, runs, db)
+    if refusal is None or not records_admission_refusal(story, task, refusal):
+        return None
+    return refusal
+
+
+async def _readmit_refused_task(task, story, refusal, identity, head_sha, default_sha, db):
+    """Return the refused Task to dispatch in its unspent iteration and bound.
+
+    The native status edges carry the re-admission action, which supersedes the
+    committed refusal's dispatch fence; the generic transition route refuses it.
+    """
+    audit = {
+        "action": PR_CONFLICT_READMIT_ACTION,
+        "decision_id": refusal.decision_id,
+        "iteration": task.current_iteration,
+        "head_sha": head_sha,
+        "default_sha": default_sha,
+        "previous_quarantine": story.quarantine_reason,
+    }
+    for before, after in (
+        (TaskStatus.WAITING_HUMAN_REVIEW, TaskStatus.BACKLOG),
+        (TaskStatus.BACKLOG, TaskStatus.TODO),
+    ):
+        validate_transition(task.status, after)
+        task.status = after.value
+        await create_status_event(task, before, after, identity, audit, db)
+    task.failure_metadata = {
+        key: value
+        for key, value in (task.failure_metadata or {}).items()
+        if key not in {ENGINEERING_DISPATCH_REFUSAL_KEY, "detail", "engineering_budget"}
+    }
+    _do_transition(story, StoryStatus.IN_PROGRESS)
+    story.quarantine_reason = None
+    await db.commit()
+    return PRConflictRepairOutcome.ADMITTED
 
 
 async def _repair_admission_evidence(

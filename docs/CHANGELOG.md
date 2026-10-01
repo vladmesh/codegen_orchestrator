@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-02
+
+- A paid refusal of a PR-conflict repair before any Run no longer spends the attempt: the Story says no budget (limit, spend),
+  and the same repair command re-admits it after a top-up; a migration restamps stuck stops (c351).
+
 ## 2026-10-01
 
 - Bump PyJWT to 2.15.0, urllib3 to 2.8.0 and brace-expansion to 5.0.12 in locks and pins, closing the open Dependabot

@@ -23,6 +23,7 @@ from shared.contracts.dto.story import (
     StoryUnverifiedDecisionCreate,
     StoryUnverifiedDecisionKind,
 )
+from shared.contracts.dto.story_failure import StoryFailureCode
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
 
@@ -327,6 +328,14 @@ async def list_stories(project_id: str, *, config: RunnableConfig) -> str:
 #: about, a `failed` one the platform retries. A parked story
 #: (`waiting_human_review`) is returned by a person, never reopened from chat.
 REOPENABLE_STATUSES = frozenset({"completed", "failed"})
+#: Conflict repair stops refused before any Run: the repair attempt is unspent,
+#: so the same repair request is retried once the cause (e.g. budget) is fixed.
+CONFLICT_REPAIR_REFUSAL_STOPS = frozenset(
+    {
+        StoryFailureCode.ENGINEERING_BUDGET_DENIED.value,
+        StoryFailureCode.ENGINEERING_DISPATCH_REFUSED.value,
+    }
+)
 
 
 @tool
@@ -343,7 +352,9 @@ async def reopen_story(
     - A platform retry of a `failed` story: `user_report` is optional; pass it
       only when the user said what went wrong.
     - A story waiting for human review because its PR was refused as dirty:
-      request one bounded conflict repair on its existing branch and PR.
+      request one bounded conflict repair on its existing branch and PR. The
+      same request retries a repair the platform refused to start (for example
+      no budget) once that cause is fixed.
 
     Args:
         story_id: ID of the completed or failed story to reopen.
@@ -359,11 +370,13 @@ async def reopen_story(
     record = current.json()
     status = record["status"]
     quarantine = record.get("quarantine_reason") or {}
-    if (
-        status == "waiting_human_review"
-        and quarantine.get("reason") == "github_app_merge_refused"
-        and quarantine.get("mergeable_state") == "dirty"
-        and quarantine.get("pr_number") == record.get("pr_number")
+    if status == "waiting_human_review" and (
+        (
+            quarantine.get("reason") == "github_app_merge_refused"
+            and quarantine.get("mergeable_state") == "dirty"
+            and quarantine.get("pr_number") == record.get("pr_number")
+        )
+        or quarantine.get("code") in CONFLICT_REPAIR_REFUSAL_STOPS
     ):
         command = PRConflictRepairCommand(
             project_id=record["project_id"],

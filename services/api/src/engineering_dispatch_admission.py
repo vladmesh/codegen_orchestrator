@@ -517,7 +517,8 @@ async def _dispose_conflict_refusal(task, story, decision_id, started, command, 
     detail = (
         f"PR #{story.pr_number}: repair Task {task.id}, decision {decision_id}, "
         f"iteration {task.current_iteration}, ceiling {task.max_iterations}: "
-        f"{disposition.reason.value}. {started.admission.message}"
+        f"{disposition.reason.value}. {await _budget_words(started.engineering_budget, db)}"
+        f"{started.admission.message}"
     )
     audit = {
         ENGINEERING_DISPATCH_REFUSAL_KEY: disposition.model_dump(mode="json"),
@@ -536,15 +537,45 @@ async def _dispose_conflict_refusal(task, story, decision_id, started, command, 
         task, before, TaskStatus.WAITING_HUMAN_REVIEW, command.origin.value, audit, db
     )
     task.failure_metadata = {**(task.failure_metadata or {}), **audit}
+    # No Run exists, so the repair attempt is unspent: the stop names the
+    # refusal, never exhaustion, and the ordinary repair command re-admits it.
     _record_story_failure(
         story,
         StoryFailure(
-            code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED, source="scheduler", detail=detail
+            code=StoryFailureCode.ENGINEERING_BUDGET_DENIED
+            if disposition.reason is EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED
+            else StoryFailureCode.ENGINEERING_DISPATCH_REFUSED,
+            source="scheduler",
+            detail=detail,
         ),
         StoryStatus.WAITING_HUMAN_REVIEW,
     )
     _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
     return disposition
+
+
+def _usd(microusd: int) -> str:
+    return f"${microusd / 1_000_000:,.2f}"
+
+
+async def _budget_words(budget, db: AsyncSession) -> str:
+    """The limit and spend a budget denial was decided on, read in its transaction."""
+    from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
+    from shared.models import EngineeringBudgetPolicy
+
+    if budget is None or budget.outcome is not EngineeringBudgetAdmissionOutcome.DENIED:
+        return ""
+    limit = await db.scalar(
+        select(EngineeringBudgetPolicy.limit_microusd).where(
+            EngineeringBudgetPolicy.user_id == budget.user_id
+        )
+    )
+    return (
+        f"No budget: limit {_usd(limit)}, spent {_usd(budget.known_spend_microusd)}, "
+        f"held {_usd(budget.active_held_microusd)}, available "
+        f"{_usd(budget.available_microusd or 0)}; one attempt reserves "
+        f"{_usd(budget.reservation_microusd)}. "
+    )
 
 
 async def _workspace_refusal(

@@ -6,10 +6,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.engineering_dispatch import ENGINEERING_DISPATCH_REFUSAL_KEY
+from shared.contracts.dto.engineering_dispatch import (
+    ENGINEERING_DISPATCH_REFUSAL_KEY,
+    EngineeringDispatchRefusalDisposition,
+)
 from shared.contracts.dto.engineering_execution import EngineeringExecutionPhase
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.pr_conflict_repair import (
+    PR_CONFLICT_READMIT_ACTION,
     PR_CONFLICT_REPAIR_ATTEMPT_KEY,
     PR_CONFLICT_REPAIR_KEY,
     PRConflictRepairAttemptCommand,
@@ -31,7 +35,7 @@ from shared.contracts.dto.story_failure import (
     story_failure_owner_text,
 )
 from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
-from shared.models import Repository, Run, Story, Task, TaskEvent
+from shared.models import Repository, Run, Story, Task, TaskEvent, WorkAdmissionAudit
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
@@ -149,7 +153,7 @@ def _recorded_outcome(events, run_id, command):
 
 
 def _pending_dispatch_refusal(events):
-    """Only the native resume status edge supersedes a committed no-Run stop."""
+    """Only a native resume or re-admission status edge supersedes a no-Run stop."""
     saved = None
     for event in events:
         if event.event_type != TaskEventType.STATUS_CHANGE.value:
@@ -162,10 +166,77 @@ def _pending_dispatch_refusal(events):
         elif (
             event.from_status == TaskStatus.WAITING_HUMAN_REVIEW.value
             and event.to_status == TaskStatus.BACKLOG.value
-            and event.details.get("action") == "operator_resume"
+            and event.details.get("action") in {"operator_resume", PR_CONFLICT_READMIT_ACTION}
         ):
             saved = None
     return saved
+
+
+#: Story stops a committed no-Run paid refusal records; neither spends the attempt.
+ADMISSION_REFUSAL_STOPS = frozenset(
+    {StoryFailureCode.ENGINEERING_BUDGET_DENIED, StoryFailureCode.ENGINEERING_DISPATCH_REFUSED}
+)
+
+
+async def unspent_dispatch_refusal(task, events, runs, db):
+    """The paid refusal parking this Task when no repair work began after it, else None.
+
+    A repair attempt is spent by an engineering Run of the Task's iteration
+    (a pre-handoff abort reached no worker). A paid refusal creates no Run, so
+    its attempt stays unspent. Only immutable rows decide: the refusal status
+    edge, its paid-gate audit and the Run rows; Story text grants nothing here.
+    """
+    saved = _pending_dispatch_refusal(events)
+    if task.status != TaskStatus.WAITING_HUMAN_REVIEW.value or saved is None:
+        return None
+    try:
+        disposition = EngineeringDispatchRefusalDisposition.model_validate(saved)
+    except ValidationError:
+        return None
+    audits = (
+        await db.scalars(
+            select(WorkAdmissionAudit).where(
+                WorkAdmissionAudit.subject == "paid_work",
+                WorkAdmissionAudit.reference_id == disposition.decision_id,
+            )
+        )
+    ).all()
+    if len(audits) != 1 or await db.get(Run, disposition.decision_id) is not None:
+        return None
+    audit = audits[0]
+    payload = audit.command_payload or {}
+    if (
+        disposition.task_id != task.id
+        or audit.reason != disposition.reason.value
+        or audit.outcome not in {"denied", "deferred"}
+        or payload.get("type") != RunType.ENGINEERING.value
+        or payload.get("project_id") != str(task.project_id)
+        or payload.get("story_id") != task.story_id
+        or payload.get("task_id") != task.id
+        or (payload.get("run_metadata") or {}).get("iteration") != task.current_iteration
+        or any(
+            run.task_id == task.id
+            and not (run.run_metadata or {}).get("pre_handoff_aborted")
+            and type((run.run_metadata or {}).get("iteration")) is int
+            and run.run_metadata["iteration"] >= task.current_iteration
+            for run in runs
+        )
+    ):
+        return None
+    return disposition
+
+
+def records_admission_refusal(story, task, disposition) -> bool:
+    """Whether the Story's stop is this refusal's own stop, not a later unrelated one."""
+    try:
+        failure = StoryFailure.model_validate(story.quarantine_reason)
+    except ValidationError:
+        return False
+    return (
+        failure.code in ADMISSION_REFUSAL_STOPS
+        and task.id in failure.detail
+        and disposition.decision_id in failure.detail
+    )
 
 
 def _verify_recorded_stop(story):
