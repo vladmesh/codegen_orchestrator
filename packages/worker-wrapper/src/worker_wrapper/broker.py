@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from shared.contracts.queues.worker_result import WorkerResult
+from shared.contracts.worker_turn import WorkerTurnInput
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,11 @@ class WorkerBrokerClient:
             return None
         response.raise_for_status()
         payload = response.json()
-        return BrokerMessage(message_id=payload["lease_id"], data=payload["data"])
+        turn = WorkerTurnInput.model_validate(payload["data"])
+        return BrokerMessage(
+            message_id=payload["lease_id"],
+            data=turn.model_dump(mode="python", exclude_none=True),
+        )
 
     async def submit_output(self, lease_id: str, result: WorkerResult) -> None:
         response = await self._client.post(
