@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput, QAAccountingFact
@@ -68,6 +68,8 @@ class RunUpdate(BaseModel):
     Runs through the same API surface, so validation belongs with the shared
     Run vocabulary rather than in the API service alone.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     status: RunStatus | None = None
     user_id: int | None = None
