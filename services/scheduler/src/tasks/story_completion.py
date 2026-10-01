@@ -177,138 +177,145 @@ async def complete_stories(
         )
 
     for story in stories:
-        story_id, project_id = story.id, str(story.project_id)
-
-        tasks = await api_client.get_tasks_by_story(story_id)
-
-        # Skip if no tasks (architect may not have run yet)
-        if not tasks:
-            logger.debug("complete_stories_skip_no_tasks", story_id=story_id)
-            continue
-
-        task_statuses = [t.status for t in tasks]
-        # A cancelled task is not outstanding work, so it cannot be waited on.
-        # Counting it was what stranded a story for ever: an operator cancelling
-        # a task through `DELETE /api/tasks/{id}`, and — since the Product Brief
-        # boundary exists — the corpse of a superseded plan, which the takeover
-        # cancels because nothing will ever release it.
-        live_statuses = [s for s in task_statuses if s != TaskStatus.CANCELLED]
-        if not live_statuses:
-            # Every task cancelled is not a finished story: there is nothing on
-            # the branch to open a PR for. Somebody has to decide what happens
-            # to this story, so it stays in progress rather than completing.
-            logger.debug(
-                "complete_stories_skip_all_cancelled",
-                story_id=story_id,
-                task_count=len(task_statuses),
-            )
-            continue
-        # Check if all non-cancelled tasks are done
-        if not all(s == TaskStatus.DONE for s in live_statuses):
-            logger.debug(
-                "complete_stories_skip_not_all_done",
-                story_id=story_id,
-                task_statuses=task_statuses,
-            )
-            continue
-
-        # A deploy code-fix has no Task row, but still writes to the story
-        # branch using the registered story worker. Do not publish a PR or
-        # tear that worker down while its engineering attempt is live.
-        if await _has_live_deploy_fix(api_client, story_id):
-            logger.debug("complete_stories_skip_live_deploy_fix", story_id=story_id)
-            continue
-
-        log = logger.bind(story_id=story_id, project_id=project_id)
-
-        # Get repository to create PR
-        repo = await api_client.get_primary_repository(project_id) if project_id else None
-        if not repo:
-            log.error("complete_stories_no_repo", project_id=project_id)
-            continue
-
-        git_url = repo.git_url or ""
-        owner, repo_name = _parse_owner_repo(git_url)
-        branch = f"story/{story_id}"
-
-        # Create PR from story branch to main
         try:
-            # One GitHub HTTP pool spans every GitHub call of this completion and is
-            # closed on success and error alike.
-            async with GitHubAppClient() as github:
-                pr = await _resolve_current_cycle_pr(
-                    github,
-                    story=story,
-                    owner=owner,
-                    repo_name=repo_name,
-                    branch=branch,
-                )
-                pr_number = pr["number"]
-                await api_client.update_story(story_id, {"pr_number": pr_number})
-                pr_node_id = pr.get("node_id", "")
-                pr_merged = pr.get("merged_at") is not None
+            story_id, project_id = story.id, str(story.project_id)
 
-                if pr_merged:
-                    # PR already merged while the story was in_progress (e.g. a
-                    # person merged it, or an auto-merge request enabled before the
-                    # PR poller became the only automated merger fired).
-                    # Transition to pr_review so poll_merged_prs() picks it up
-                    # and triggers deploy.
-                    log.info(
-                        "story_pr_already_merged",
-                        pr_number=pr_number,
+            tasks = await api_client.get_tasks_by_story(story_id)
+
+            # Skip if no tasks (architect may not have run yet)
+            if not tasks:
+                logger.debug("complete_stories_skip_no_tasks", story_id=story_id)
+                continue
+
+            task_statuses = [t.status for t in tasks]
+            # A cancelled task is not outstanding work, so it cannot be waited on.
+            # Counting it was what stranded a story for ever: an operator cancelling
+            # a task through `DELETE /api/tasks/{id}`, and — since the Product Brief
+            # boundary exists — the corpse of a superseded plan, which the takeover
+            # cancels because nothing will ever release it.
+            live_statuses = [s for s in task_statuses if s != TaskStatus.CANCELLED]
+            if not live_statuses:
+                # Every task cancelled is not a finished story: there is nothing on
+                # the branch to open a PR for. Somebody has to decide what happens
+                # to this story, so it stays in progress rather than completing.
+                logger.debug(
+                    "complete_stories_skip_all_cancelled",
+                    story_id=story_id,
+                    task_count=len(task_statuses),
+                )
+                continue
+            # Check if all non-cancelled tasks are done
+            if not all(s == TaskStatus.DONE for s in live_statuses):
+                logger.debug(
+                    "complete_stories_skip_not_all_done",
+                    story_id=story_id,
+                    task_statuses=task_statuses,
+                )
+                continue
+
+            # A deploy code-fix has no Task row, but still writes to the story
+            # branch using the registered story worker. Do not publish a PR or
+            # tear that worker down while its engineering attempt is live.
+            if await _has_live_deploy_fix(api_client, story_id):
+                logger.debug("complete_stories_skip_live_deploy_fix", story_id=story_id)
+                continue
+
+            log = logger.bind(story_id=story_id, project_id=project_id)
+
+            # Get repository to create PR
+            repo = await api_client.get_primary_repository(project_id) if project_id else None
+            if not repo:
+                log.error("complete_stories_no_repo", project_id=project_id)
+                continue
+
+            git_url = repo.git_url or ""
+            owner, repo_name = _parse_owner_repo(git_url)
+            branch = f"story/{story_id}"
+
+            # Create PR from story branch to main
+            try:
+                # One GitHub HTTP pool spans every GitHub call of this completion and is
+                # closed on success and error alike.
+                async with GitHubAppClient() as github:
+                    pr = await _resolve_current_cycle_pr(
+                        github,
+                        story=story,
+                        owner=owner,
+                        repo_name=repo_name,
                         branch=branch,
                     )
-                    if not await finalize_story_worker_teardown(
-                        redis_client,
-                        story_id=story_id,
-                        project_id=project_id,
-                        request_id=f"pr-review-story-{story_id}",
-                    ):
+                    pr_number = pr["number"]
+                    await api_client.update_story(story_id, {"pr_number": pr_number})
+                    pr_node_id = pr.get("node_id", "")
+                    pr_merged = pr.get("merged_at") is not None
+
+                    if pr_merged:
+                        # PR already merged while the story was in_progress (e.g. a
+                        # person merged it, or an auto-merge request enabled before the
+                        # PR poller became the only automated merger fired).
+                        # Transition to pr_review so poll_merged_prs() picks it up
+                        # and triggers deploy.
+                        log.info(
+                            "story_pr_already_merged",
+                            pr_number=pr_number,
+                            branch=branch,
+                        )
+                        if not await finalize_story_worker_teardown(
+                            redis_client,
+                            story_id=story_id,
+                            project_id=project_id,
+                            request_id=f"pr-review-story-{story_id}",
+                        ):
+                            continue
+                        await api_client.transition_story(story_id, "pr_review")
+                        await _trigger_next_story(api_client, redis_client, project_id)
+                        completed += 1
                         continue
-                    await api_client.transition_story(story_id, "pr_review")
-                    await _trigger_next_story(api_client, redis_client, project_id)
-                    completed += 1
-                    continue
 
-                # No GitHub auto-merge: a merge GitHub performs later, by itself,
-                # starts the product's push-main CI with whatever registry secrets
-                # the repository holds by then. The PR poller re-reads this PR after
-                # checks settle, writes the current registry secrets and merges in
-                # the same tick, or parks a GitHub refusal with notices.
-                log.info(
-                    "story_pr_created",
-                    pr_number=pr_number,
-                    branch=branch,
-                    node_id=pr_node_id[:20] if pr_node_id else "",
+                    # No GitHub auto-merge: a merge GitHub performs later, by itself,
+                    # starts the product's push-main CI with whatever registry secrets
+                    # the repository holds by then. The PR poller re-reads this PR after
+                    # checks settle, writes the current registry secrets and merges in
+                    # the same tick, or parks a GitHub refusal with notices.
+                    log.info(
+                        "story_pr_created",
+                        pr_number=pr_number,
+                        branch=branch,
+                        node_id=pr_node_id[:20] if pr_node_id else "",
+                    )
+            except NoCommitsBetweenError as no_commits:
+                # Not a transient error: the branch carries no commit of its own, so
+                # every later tick asks GitHub the same impossible question and gets
+                # the same 422. Take the story out of the retry set with the reason
+                # attached, and leave the decision to a person.
+                log.warning("story_pr_no_commits_between", branch=branch)
+                await _park_story_without_commits(
+                    api_client, story_id, branch, str(no_commits), log
                 )
-        except NoCommitsBetweenError as no_commits:
-            # Not a transient error: the branch carries no commit of its own, so
-            # every later tick asks GitHub the same impossible question and gets
-            # the same 422. Take the story out of the retry set with the reason
-            # attached, and leave the decision to a person.
-            log.warning("story_pr_no_commits_between", branch=branch)
-            await _park_story_without_commits(api_client, story_id, branch, str(no_commits), log)
-            continue
+                continue
+            except Exception:
+                log.exception("story_pr_creation_failed", branch=branch)
+                continue
+
+            if not await finalize_story_worker_teardown(
+                redis_client,
+                story_id=story_id,
+                project_id=project_id,
+                request_id=f"pr-review-story-{story_id}",
+            ):
+                continue
+
+            # Transition story to pr_review (poll_merged_prs handles deploy after merge)
+            await api_client.transition_story(story_id, "pr_review")
+            log.info("story_pr_review", task_count=len(tasks), pr_number=pr_number)
+
+            # Trigger next queued story for this project (doesn't need PR to merge)
+            await _trigger_next_story(api_client, redis_client, project_id)
+
+            completed += 1
+
         except Exception:
-            log.exception("story_pr_creation_failed", branch=branch)
+            logger.exception("story_completion_contained", story_id=story.id)
             continue
-
-        if not await finalize_story_worker_teardown(
-            redis_client,
-            story_id=story_id,
-            project_id=project_id,
-            request_id=f"pr-review-story-{story_id}",
-        ):
-            continue
-
-        # Transition story to pr_review (poll_merged_prs handles deploy after merge)
-        await api_client.transition_story(story_id, "pr_review")
-        log.info("story_pr_review", task_count=len(tasks), pr_number=pr_number)
-
-        # Trigger next queued story for this project (doesn't need PR to merge)
-        await _trigger_next_story(api_client, redis_client, project_id)
-
-        completed += 1
 
     return completed

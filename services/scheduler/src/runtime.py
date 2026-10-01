@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from pathlib import Path
 
 import structlog
 
 from shared.config_store import ConfigStoreUnavailableError
+from shared.redis import RedisStreamClient
 
 from . import startup
 
@@ -33,6 +34,36 @@ async def initialize_configs(required_keys: Collection[str], *, service_name: st
                 retry_in_seconds=CONFIG_VALIDATION_RETRY_SECONDS,
             )
             await asyncio.sleep(CONFIG_VALIDATION_RETRY_SECONDS)
+
+
+async def periodic_loop(
+    *,
+    interval: Callable[[], float],
+    cycle: Callable[[RedisStreamClient], Awaitable[Mapping[str, object] | None]],
+    logger: structlog.stdlib.BoundLogger,
+    started_event: str,
+    cycle_event: str | None,
+    error_event: str,
+    stopped_event: str,
+    redis_factory: Callable[[], RedisStreamClient] = RedisStreamClient,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Run one Redis-backed periodic worker with a stable lifecycle."""
+    redis_client = redis_factory()
+    await redis_client.connect()
+    logger.info(started_event, interval=interval())
+    try:
+        while True:
+            try:
+                fields = await cycle(redis_client)
+                if cycle_event is not None:
+                    logger.info(cycle_event, **dict(fields or {}))
+            except Exception:
+                logger.exception(error_event)
+            await sleep(interval())
+    finally:
+        await redis_client.close()
+        logger.info(stopped_event)
 
 
 async def run_workers(

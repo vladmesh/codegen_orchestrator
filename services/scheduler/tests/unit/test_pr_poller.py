@@ -1866,19 +1866,17 @@ async def test_poll_merged_prs_github_error_keeps_its_handling_and_closes_the_po
 
 
 @pytest.mark.asyncio
-async def test_poll_merged_prs_escaping_error_closes_the_pool():
+async def test_poll_merged_prs_story_error_is_contained_and_closes_the_pool():
     recorder, github = MagicMock(), AsyncMock()
     context = entered_client(github, recorder, "github")
     api, redis = _merged_poll_world(github)
     api.transition_story.side_effect = RuntimeError("API is down")
 
-    with (
-        patch("src.tasks.pr_poller.GitHubAppClient", return_value=context),
-        pytest.raises(RuntimeError, match="API is down"),
-    ):
-        await poll_merged_prs(api, redis)
+    with patch("src.tasks.pr_poller.GitHubAppClient", return_value=context):
+        assert await poll_merged_prs(api, redis) == 0
 
-    assert assert_one_operation_scope(recorder, "github", RuntimeError)
+    assert api.transition_story.await_count == 2
+    assert_one_operation_scope(recorder, "github")
 
 
 @pytest.mark.asyncio
