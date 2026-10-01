@@ -24,8 +24,8 @@ LIVE_DIR = REPO_ROOT / "tests" / "live"
 PIPELINE_HELPERS = LIVE_DIR / "pipeline_helpers.py"
 STAGE5_SMOKE = REPO_ROOT / "tests" / "integration" / "template" / "stage5_mock_smoke.py"
 CI_GATE = REPO_ROOT / "scripts" / "check-ci-gate.py"
-# The seed itself holds the pin; the focused kit/QA contract guide and changelog record the release boundary.
-# Those are records rather than copies read by code. The fixture tree is a vendored render
+# The seed itself holds the pin; the focused kit/QA contract guide and changelog record
+# the release boundary. Those are records rather than copies read by code. The fixture tree is a vendored render
 # whose own files mention the revision they came from.
 LITERAL_ALLOWED = {
     "scripts/system_configs.yaml",
