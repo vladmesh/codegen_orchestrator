@@ -28,9 +28,7 @@ async def _deploy_run_for_application(
     )
     assert runs.status_code == HTTPStatus.OK, runs.text
     matches = [
-        run
-        for run in runs.json()
-        if run["run_metadata"].get("application_id") == application_id
+        run for run in runs.json() if run["run_metadata"].get("application_id") == application_id
     ]
     assert len(matches) == 1, matches
     return matches[0]
