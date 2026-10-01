@@ -148,117 +148,22 @@ async def my_node(state: dict) -> dict:
 
 ---
 
-## Standard Events Reference
+## Event names and fields
 
-### API Service
+Event names are implementation telemetry, not a stable cross-service API. Do not maintain an exhaustive
+copied event catalogue here: it drifts as workflows are renamed. The source of truth is the literal event
+name passed to `structlog` in the service that emits it.
 
-| Event | Level | Description | Context Fields |
-|-------|-------|-------------|----------------|
-| `http_request` | info | HTTP request completed | `method`, `path`, `status_code`, `duration_ms` |
-| `creating_project` | info | Project creation started | `project_id`, `name` |
-| `project_updated` | info | Project updated | `project_id`, `status` |
-| `project_patched` | info | Project patched | `project_id`, `status` |
-| `project_creation_failed_duplicate` | warning | Duplicate project ID | `project_id` |
-| `openrouter_fetching_models` | info | Fetching models from OpenRouter | — |
-| `openrouter_models_cached` | info | Models cached | `model_count` |
-| `openrouter_fetch_failed` | error | OpenRouter API failed | `error`, `error_type` |
+When adding or changing an event:
 
-### LangGraph Worker
+- use a stable `snake_case` name describing the event, not prose;
+- include identifiers needed to correlate the operation (`correlation_id`, project/story/task/run/worker ids as applicable);
+- log typed outcomes/dispositions rather than secret-bearing payloads;
+- update dashboards/alerts/tests that explicitly query that event name in the same change.
 
-| Event | Level | Description | Context Fields |
-|-------|-------|-------------|----------------|
-| `message_received` | info | Message from Telegram | `chat_id`, `message_length` |
-| `node_start` | info | Node execution started | `node` |
-| `node_complete` | info | Node execution completed | `node`, `duration_ms`, `state_updates` |
-| `node_failed` | error | Node execution failed | `node`, `duration_ms`, `error`, `error_type` |
-| `spawning_developer_worker` | info | Developer worker spawn | `repo_name` |
-| `spawning_factory_worker` | info | Factory worker spawn | `repo` |
-| `service_deployment_record_created` | info | Deployment recorded | `service_name` |
-| `unknown_tool_called` | warning | Unknown tool requested | `tool_name` |
-| `conversation_history_cleared` | info | Thread history cleared | — |
-| `llm_channel_ready` | info / warning | Startup, once per channel of an agent's chain: can it answer? | `agent`, `channel`, `model`, `position`, `status` (`ready` or a failure class), `reason`, `cli_version`, `timeout_s` |
-| `llm_channel_used` | info | A channel of an agent's LLM channel chain answered a model call | `agent`, `channel`, `model`, `position`, `duration_s` |
-| `llm_channel_failed` | warning | A channel failed the call; the chain tried the next one | `agent`, `channel`, `model`, `position`, `failure_class`, `http_status` (when the provider or CLI output names one), `reason`, `duration_s` |
-| `llm_degraded_note_added` | info | The PO's call reached openrouter after codex and claude failed it; the emergency note was appended | `agent`, `position` |
-| `llm_alert_sent` | info | An LLM operator alert reached at least one administrator; its dedup key is set | `kind`, `subject`, `delivery`, `realert_window_hours`, `agent`, `channel`, `failure_class` (a channel 402) |
-| `llm_alert_failed` | error | An LLM operator alert reached nobody, raised or timed out; the key stays unset | `kind`, `subject`, `delivery` or `error_type`, `agent`, `channel` |
-| `llm_alert_deduplicated` | debug | The alert's key is set: sent within the re-alert window | `kind`, `subject` |
-| `llm_alert_dedup_unreadable` / `llm_alert_dedup_unrecorded` | warning | Redis failed reading / writing the dedup key; the alert is sent anyway | `kind`, `subject`, `error_type` |
-| `llm_alert_rearmed` / `llm_alert_rearm_failed` | info / warning | The low-balance alert was re-armed (balance back above threshold) | `kind`, `subject` |
-| `llm_alert_config_missing` / `llm_alert_config_invalid` / `llm_alert_config_unreadable` | warning | An `llm.*` alert config key fell back to its default | `key`, `default` |
-| `openrouter_balance` | info | One successful OpenRouter balance read | `balance_usd`, `threshold_usd`, `below_threshold`, `alert_sent`, `alert_outcome` |
-| `openrouter_balance_read_failed` | warning | The balance read failed; a 401/402/403 is alerted | `reason`, `failure_class`, `alert_outcome` |
-| `openrouter_balance_check_idle` / `openrouter_balance_check_started` | info | The balance check has no OpenRouter key and stops / runs | `missing_env` / `key_source` (`management` or `po_inference`) |
-| `architect_job_success` / `architect_job_failed` | info / error | Planning attempt finished | `llm_channels` (answering channels), `llm_channel_failures` (`channel:failure_class`) |
-
-### Provisioner
-
-| Event | Level | Description | Context Fields |
-|-------|-------|-------------|----------------|
-| `password_reset_triggered` | info | Password reset started | `server_handle`, `server_id` |
-| `password_reset_completed` | info | Password reset done | `server_handle` |
-| `password_reset_timeout` | error | Password reset timeout | `error` |
-| `os_reinstall_start` | info | OS reinstall started | `server_handle`, `server_id` |
-| `reinstall_task_created` | info | Reinstall task queued | `task_id` |
-| `os_reinstall_completed` | info | OS reinstall done | `server_handle` |
-| `reinstall_timeout` | error | Reinstall timeout | `error` |
-| `ssh_access_ok` | info | SSH connection success | `server_handle` |
-| `ssh_access_failed` | info | SSH connection failed | `server_handle` |
-| `service_redeployment_start` | info | Redeployment started | `server_handle` |
-| `services_found_for_redeployment` | info | Services to redeploy | `server_handle`, `count` |
-| `service_redeployed` | info | Service redeployed | `service_name` |
-| `service_redeploy_failed` | error | Redeployment failed | `service_name`, `error` |
-| `ansible_stderr` | warning | Ansible stderr output | `output` |
-| `ansible_playbook_timeout` | error | Ansible timeout | `playbook`, `timeout` |
-
-### Scheduler services
-
-| Event | Level | Description | Context Fields |
-|-------|-------|-------------|----------------|
-| `scheduler_pipeline_started` | info | Pipeline dispatcher started | — |
-| `scheduler_infrastructure_started` | info | Infrastructure loops started | — |
-| `scheduler_maintenance_started` | info | Maintenance loops started | — |
-| `service_workers_started` | info | The process launched its owned long-lived loops | `service`, `workers` |
-| `service_shutdown_requested` | info | One scheduler process received cancellation | `service` |
-| `service_worker_failed` | error | One loop failed and the process is stopping its siblings | `service` |
-| `service_workers_stopped` | info | Every loop in the process has stopped | `service` |
-| `health_check_start` | info | Health check started | `servers_count` |
-| `server_healthy` | debug | Server is healthy | `server_handle` |
-| `incident_recovery_triggered` | info | Recovery triggered | `server_handle` |
-| `github_sync_start` | info | GitHub sync started | `org_name` |
-| `github_repos_fetched` | info | Repos fetched | `org_name`, `repo_count` |
-| `server_sync_worker_started` | info | Server sync started | — |
-| `server_reappeared` | info | Server back online | `server_ip` |
-| `server_missing_from_time4vps` | warning | Server not in provider | `server_ip` |
-| `server_sync_complete` | info | Sync cycle finished | counters, `duration_sec` |
-| `server_sync_incomplete` | error | Cycle aborted, counters are meaningless | `reason`, counters |
-| `time4vps_http_error` | error | Provider answered 4xx/5xx | `method`, `url`, `status_code`, `body` |
-| `server_details_sync_start` | info | Details sync started | — |
-| `server_details_sync_complete` | info | Details sync done | `updated_count` |
-| `server_pending_setup_trigger` | info | Setup triggered | `server_handle` |
-
-### Telegram Bot
-
-| Event | Level | Description | Context Fields |
-|-------|-------|-------------|----------------|
-| `telegram_bot_starting` | info | Bot starting | — |
-| `message_received` | info | Telegram message received | `user_id`, `chat_id`, `correlation_id` |
-| `message_published` | info | Published to Redis | `stream` |
-| `sending_message` | info | Sending response | `chat_id`, `reply_to_message_id` |
-| `message_sent` | info | Response sent | `chat_id` |
-| `invalid_outgoing_message` | warning | Invalid message format | `payload` |
-
-### Worker Manager
-
-| Event | Level | Description | Context Fields |
-|-------|-------|-------------|----------------|
-| `spawn_request_received` | info | Spawn request | `request_id`, `repo`, `branch` |
-| `docker_container_creating` | info | Container creating | `request_id`, `image` |
-| `docker_container_created` | info | Container created | `request_id`, `container_id` |
-| `worker_execution_complete` | info | Worker finished | `request_id`, `exit_code`, `duration_sec` |
-| `spawn_result_published` | info | Result published | `request_id`, `channel` |
-
----
+To discover current events, search the relevant service for `logger.info(`, `logger.warning(`,
+`logger.error(`, and `logger.exception(`. Cross-service tracing should rely on correlation/id fields,
+not on an assumed global event vocabulary.
 
 ## Querying Logs
 

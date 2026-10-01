@@ -8,12 +8,12 @@ between the two files.
 
 | Document | When to read it |
 |----------|-------------|
-| [docs/CONTRACTS.md](docs/CONTRACTS.md) | Before changing DTOs, queues, the API |
+| [docs/CONTRACTS.md](docs/CONTRACTS.md) | Contract index. Read it first, then only the relevant `docs/contracts/*` guide for the boundary you change |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | To understand the system as a whole |
 | [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md) | The generation pipeline stage by stage |
 | [docs/NODES.md](docs/NODES.md) | A description of the LangGraph agent nodes |
 | [docs/GLOSSARY.md](docs/GLOSSARY.md) | What an entity is called and what it means |
-| [docs/CHANGELOG.md](docs/CHANGELOG.md) | What has already been done |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Append a merged change or search recent history when needed; do not read end-to-end by default |
 | [docs/coding-agents.md](docs/coding-agents.md) | Coding-agent integration and instruction injection |
 | [docs/TESTING.md](docs/TESTING.md) | Test layers, commands, and CI coverage |
 | [docs/SECRETS.md](docs/SECRETS.md) | Secret isolation and operational handling |
@@ -40,7 +40,7 @@ What stays here is the product: code, contracts, and the documents that describe
 
 Red → Green → Refactor. No exceptions.
 
-1. **Context**: read the card spec and `docs/CONTRACTS.md`
+1. **Context**: read the card spec, the `docs/CONTRACTS.md` index, and only the relevant `docs/contracts/*` guide for the boundary you change
 2. **Red**: write a test in `services/<service>/tests/{unit,integration}/`, make sure it fails
 3. **Green**: the minimal code to make the test pass
 4. **Gate**: `make test-unit` + `make lint`, plus a CHANGELOG entry.
@@ -63,7 +63,7 @@ clear error; required mappings and typed objects are accessed directly. Which se
 is set by the environment-variable rule below.
 
 **Contracts first** — statuses, queue names, and messages use the types in `shared/`; do not
-construct ad-hoc dict payloads or invent string values. Check `docs/CONTRACTS.md` before changing
+construct ad-hoc dict payloads or invent string values. Check the `docs/CONTRACTS.md` index and the relevant `docs/contracts/*` guide before changing
 DTOs, queues, or API boundaries.
 
 **Terminology** — use the terms defined in `docs/GLOSSARY.md`. In particular, a Worker is an

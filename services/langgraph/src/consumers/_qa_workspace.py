@@ -65,7 +65,7 @@ class ProductObservation:
     reply recorded here is product output for every other purpose in this run
     and still does not answer a package behaviour's observable. That is a known
     accepted limitation of the package path, not an oversight: see
-    `docs/CONTRACTS.md`.
+    `docs/contracts/kit-template-and-qa.md`.
     """
 
     position: int

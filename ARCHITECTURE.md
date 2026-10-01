@@ -24,8 +24,8 @@ Codegen Orchestrator is a multi-agent system for automatic project generation an
 ### Planning Layer (Stories → Tasks → Runs)
 
 A three-level abstraction for product management:
-- **Story** — a high-level requirement from the user (through the PO). Statuses: `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (also: `waiting_human_review`, `failed`, `reopened`).
-- **Task** — a concrete technical task. Statuses: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (also: `blocked`, `waiting_human_review`, `failed`, `cancelled`). Tasks can have dependencies (`blocked_by_task_id`).
+- **Story** — a high-level requirement from the user (through the PO). Main statuses: `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed`; exceptional/parked states include `waiting_human_review`, `waiting_user_secret`, `failed`, `reopened`, and `archived`.
+- **Task** — a concrete technical task. Main statuses: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done`; exceptional/parked states include `blocked`, `waiting_resources`, `waiting_human_review`, `failed`, and `cancelled`. Tasks can have dependencies (`blocked_by_task_id`).
 - **Run** — a unit of execution (engineering or deploy). Bound to a Task through `task_id`.
 
 **Pipeline** (the scheduler + scaffolder services) automatically prepares the project and decomposes a Story into Tasks:
@@ -72,7 +72,7 @@ taken from the default value.
 | `scaffolder` | Preparation of repositories for new projects (copier + make setup + git push). Consumes `scaffold:queue`, saves the tree to the DB. A light image without the Docker SDK and without an LLM |
 | `worker-manager` | Docker containers with CLI agents and a broker-authenticated `docker compose` proxy for sidecar infrastructure (Flat Dev Environment). Mounts pre-scaffolded workspace volumes. Workers run in the isolated `codegen_worker` network. |
 | `worker-broker` | The only service on both control-plane and worker networks. Authenticates per-worker credentials and brokers worker streams, sessions, status and Compose requests. |
-| `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
+| `langgraph` | PO runtime (`po:input` consumer + ReactAgent). The same image also provides separate `engineering-worker`, `deploy-worker`, `qa-worker`, and `architect` container entrypoints; those roles are not the `langgraph` service itself. |
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
 | `scheduler-pipeline` | Ten loops with independent failure boundaries: `task_dispatcher` (engineering admission/dispatch), `scaffold`, `story_completion`, `lifecycle_supervision`, `qa_routing`, `pr_ci` (merged-PR handling and CI-failure routing), `worker_reconciliation`, `temporary_access` cleanup, `owner_notifications` recovery and `story_supervision` (state-age watchdog, stage notices). A container of the shared `scheduler` image |
 | `scheduler-infrastructure` | Fail-closed Time4VPS server sync, health checks, provisioner trigger and restart-safe result consumption. A container of the shared `scheduler` image |
@@ -129,15 +129,13 @@ graph TD
 
     PO --> |"tools: API calls"| API[API Service]
     PO --> |"XADD architect:queue"| ArchQueue[architect:queue]
-    PO --> |"XADD deploy:queue"| DeployQueue[deploy:queue]
-    PO -.-> |"po:proactive"| Bot
 
     API --> |"data"| DB[(PostgreSQL)]
 
     ScaffoldLoop[Scaffold loop<br/>scheduler-pipeline, 30s poll] --> |"draft project + stories"| ScaffoldQueue[scaffold:queue]
     ScaffoldQueue --> Scaffolder[Scaffolder Service]
     Scaffolder --> |"copier + make setup + git push"| API
-    Scaffolder --> |"saves tree, status=scaffolded"| API
+    Scaffolder --> |"saves tree, status=active"| API
 
     ArchQueue --> ArchConsumer[Architect Consumer<br/>architect container]
     ArchConsumer --> |"LLM: story → tasks<br/>(sees tree + specs)"| API
@@ -162,7 +160,7 @@ graph TD
     EngGraph --> |"task done → API"| API
     QAResult --> |"run.result = QAOutcome"| API
     QARouting[QA routing loop] --> |"QA FAILED → fix task"| API
-    Dispatcher -.-> |"story completed → po:proactive"| Bot
+    OwnerNotices[Owner notification loop] --> |"po:proactive"| Bot
 ```
 
 ### Data flows
@@ -184,7 +182,7 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        │      │                    Scaffolder Service
                        │      │                    │ copier + make setup + git push
                        │      │                    │ saves tree → API
-                       │      │                    └ project.status = scaffolded
+                       │      │                    └ project.status = active
                        │      │
                        ├──► XADD architect:queue → Architect Consumer (architect container)
                        │                              │ LLM decomposition (sees tree + specs)
@@ -200,7 +198,7 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        Telegram Bot → User
 
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
-All tasks done → Dispatcher creates PR story/* → main (no GitHub auto-merge) → story pr_review
+All tasks done → story-completion loop creates PR story/* → main (no GitHub auto-merge) → story pr_review
 Checks green → PR poller writes the repo's REGISTRY_* secrets, then merges → push-main CI publishes the merge commit's images → PR poller observes them → deploy:queue → deploy
 Deploy success → run.result = DeployOutcome → supervisor → qa:queue → QA consumer runs deterministic checks, then its assigned subscription executor → story testing
 QA pass → run.result = QAOutcome.PASSED → supervisor → story completed → PO notification
@@ -214,9 +212,9 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
 - **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (the PR poller merges on green)
-- **DevOps Subgraph**: typed environment-contract resolution and Ansible deployment via infra-service. Deploy failures use deterministic typed outcomes; unclassified subgraph and smoke failures resolve to RETRY.
-- **QA Consumer**: runs deterministic probes first, then its assigned subscription executor centrally — the only executor there is, so a failure to start it ends the run as a typed infrastructure outcome. Deployment access is limited by a per-run capability set and an unprivileged SSH identity. Pass → story completed. Fail → creates a fix task and returns to engineering.
-- **Unified Redis Consumers**: every consumer reads through `RedisStreamClient.consume()` / `consume_typed()` with PEL recovery (`claim_pending=True`) — an entry left unacked is reclaimed by the running consumer on its next `XAUTOCLAIM` sweep, restart or no restart, and a poison entry goes to `{stream}:dlq` rather than being ACKed away. The PO consumer reads through the same client and differs only in what it does with an entry: it dispatches concurrently, and keeps the ids it has in flight so its own sweep cannot hand it work it is already running. Delivery stays at-least-once between processes, as it is for every other consumer. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns) and [ERROR_HANDLING.md](docs/ERROR_HANDLING.md)
+- **DevOps Subgraph**: resolves the typed deployment environment and drives the repository's GitHub Actions deployment workflow. `infra-service` is used for provisioning/recovery operations, not the normal application deploy path. Deploy failures use deterministic typed outcomes.
+- **QA Consumer**: runs deterministic probes first, then its assigned subscription executor centrally. It writes a typed QA result; scheduler supervision owns the resulting Story transition and creates any required fix task. Deployment access is limited by a per-run capability set and an unprivileged SSH identity.
+- **Durable Redis consumers**: service consumers use the shared `RedisStreamClient` manual-ACK/Pending Entries List machinery with bounded reclaim. Terminal rejects are quarantined to DLQ before ACK; transient failures remain pending for redelivery. Worker-broker's per-worker input lease is a separate transport boundary. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns) and [ERROR_HANDLING.md](docs/ERROR_HANDLING.md)
 
 ## External dependencies
 

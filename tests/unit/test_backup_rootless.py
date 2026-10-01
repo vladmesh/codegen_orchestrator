@@ -117,7 +117,7 @@ def test_documented_user_installation_keeps_policy_and_backups_private(tmp_path)
 
 
 def test_maintenance_configuration_and_fences_parse_as_bash():
-    docs = (ROOT / "docs/SECRETS.md").read_text()
+    docs = (ROOT / "docs/runbooks/po-redis-and-checkpoints.md").read_text()
     blocks = re.findall(r"(?m)^[ \t]*```bash[^\n]*\n([\s\S]*?)^[ \t]*```[ \t]*$", docs)
     affected = [block for block in blocks if "BACKUP_DOCKER" in block]
     assert len(affected) == 6

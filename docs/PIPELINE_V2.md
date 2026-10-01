@@ -155,7 +155,7 @@ inside a claimed planning attempt:
 
 - the consumer claims the attempt before invoking the agent, and plans nothing
   when the claim reports `in_progress` (another architect owns it) — see
-  `docs/CONTRACTS.md`, "The Product Brief coverage-to-dispatch boundary";
+  `docs/contracts/product-brief.md`, "The Product Brief coverage-to-dispatch boundary";
 - the claim is heartbeated while the agent runs, and the beat stops however the
   run ends;
 - every task is created under the attempt, so it is `dispatch_admitted=false`
@@ -487,7 +487,7 @@ retries the same commit only when at least one recorded failure is in
 spending that retry bound, while a schema-refused value, pinned core or mixed
 deterministic failure is terminal artifact repair. A story with no brief, or a
 brief with no settings, seeds nothing. See
-`docs/CONTRACTS.md`, "A brief carries typed initial settings, and never a
+`docs/contracts/product-brief.md`, "A brief carries typed initial settings, and never a
 secret".
 
 Only the released Core settings v1's exact undeclared-key 404 and
