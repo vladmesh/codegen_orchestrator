@@ -1,6 +1,10 @@
 """Runtime facade for scheduler supervision ticks."""
 
-from .deploy import supervise_deploying_stories, supervise_waiting_user_secret_stories
+from .deploy import (
+    supervise_application_deploy_handoffs,
+    supervise_deploying_stories,
+    supervise_waiting_user_secret_stories,
+)
 from .liveness import (
     supervise_failed_tasks,
     supervise_stuck_stories,
@@ -12,6 +16,7 @@ from .stage_notices import supervise_stage_notices
 from .state_age import supervise_state_age_bounds
 
 __all__ = [
+    "supervise_application_deploy_handoffs",
     "supervise_deploying_stories",
     "supervise_failed_tasks",
     "supervise_stage_notices",
