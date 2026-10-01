@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 # validates against those same objects rather than look-alikes of its own.
 from shared.contracts.dto.application import (
     ApplicationCreate,
+    ApplicationMonitoringUpdate,
     ApplicationUpdate,
 )
 from shared.contracts.dto.base import TimestampedDTO
@@ -18,6 +19,7 @@ __all__ = [
     "ApplicationCreate",
     "ApplicationHealthHistoryCreate",
     "ApplicationHealthHistoryRead",
+    "ApplicationMonitoringUpdate",
     "ApplicationRead",
     "ApplicationUpdate",
 ]
@@ -36,6 +38,9 @@ class ApplicationRead(TimestampedDTO):
     response_time_ms: int | None = None
     ssl_expires_at: datetime | None = None
     uptime_pct_24h: float | None = None
+    monitoring_enabled: bool
+    monitoring_changed_at: datetime | None = None
+    monitoring_changed_by: str | None = None
     ports: list[PortAllocationRead] = Field(default=[], validation_alias="port_allocations")
 
 

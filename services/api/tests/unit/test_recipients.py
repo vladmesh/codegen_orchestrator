@@ -125,6 +125,9 @@ def _application(**overrides):
         "created_at": now,
         "updated_at": now,
         "port_allocations": [],
+        "monitoring_enabled": True,
+        "monitoring_changed_at": None,
+        "monitoring_changed_by": None,
     }
     defaults.update(overrides)
     obj = MagicMock()

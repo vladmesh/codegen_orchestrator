@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-01
 
+- `POST /applications/{id}/monitoring` switches health probing and alerts off per application without touching status or ports;
+  SERVICE_DOWN incidents are now matched by application id, so a healthy sibling no longer closes them (#633, #632).
+
 - Split the monolithic contracts reference into a focused index and boundary guides, and refresh stale architecture/agent/secret docs so default context stays small and current.
 
 - Historical changelog detail before 2026-09-22 is compacted to product milestones; recent ten-day entries stay granular so the file remains useful without becoming required historical context.

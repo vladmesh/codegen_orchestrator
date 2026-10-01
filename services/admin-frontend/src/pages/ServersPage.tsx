@@ -677,6 +677,11 @@ function IncidentsTab({ handle }: { handle: string }) {
             </td>
             <td className="px-4 py-2">
               <StatusBadge status={inc.status} />
+              {inc.details?.monitoring_muted === true && !inc.resolved_at && (
+                <span className="ml-2 inline-block rounded bg-yellow-900/50 px-1.5 py-0.5 text-xs text-yellow-400">
+                  muted
+                </span>
+              )}
             </td>
             <td className="px-4 py-2 text-xs text-muted-foreground">
               {relativeTime(inc.detected_at)}

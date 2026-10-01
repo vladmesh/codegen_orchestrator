@@ -40,6 +40,9 @@ class ApplicationDTO(TimestampedDTO):
     response_time_ms: int | None = None
     ssl_expires_at: datetime | None = None
     uptime_pct_24h: float | None = None
+    monitoring_enabled: bool = True
+    monitoring_changed_at: datetime | None = None
+    monitoring_changed_by: str | None = None
     ports: list[dict[str, Any]] = []
 
 
@@ -54,6 +57,18 @@ class ApplicationCreate(BaseModel):
     service_name: str
     reserved_ram_mb: int = Field(default=DEFAULT_APPLICATION_RESERVED_RAM_MB, ge=1)
     status: ApplicationStatus = ApplicationStatus.NOT_DEPLOYED
+
+
+class ApplicationMonitoringUpdate(BaseModel):
+    """Administrative switch for health monitoring of one application.
+
+    Not a status change: deployment status, port allocations and the bot binding
+    stay as they are. Disabling is not a recovery either; an open SERVICE_DOWN
+    incident of the application stays open and is marked muted.
+    """
+
+    enabled: bool
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class ApplicationUpdate(BaseModel):

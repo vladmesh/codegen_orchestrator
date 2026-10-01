@@ -537,6 +537,9 @@ export interface Application {
   response_time_ms?: number | null
   ssl_expires_at?: string | null
   uptime_pct_24h?: number | null
+  monitoring_enabled: boolean
+  monitoring_changed_at?: string | null
+  monitoring_changed_by?: string | null
 }
 
 export interface ApplicationHealthMetrics {

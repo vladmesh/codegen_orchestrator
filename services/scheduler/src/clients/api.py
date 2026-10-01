@@ -76,6 +76,13 @@ class StoryOwnerNotificationRead(BaseModel):
     owner_notification: OwnerNotification
 
 
+def _monitoring_guard(monitoring_generation: str | None) -> dict:
+    """Query params of a health-prober incident write; none for other callers."""
+    if monitoring_generation is None:
+        return {}
+    return {"params": {"if_monitored": "true", "monitoring_generation": monitoring_generation}}
+
+
 class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
     """HTTP client for scheduler-required API endpoints."""
 
@@ -745,10 +752,17 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
         incident_type: str,
         details: dict,
         affected_services: list[str] | None = None,
+        *,
+        monitoring_generation: str | None = None,
     ) -> IncidentDTO:
+        """Create an incident. With *monitoring_generation* the API refuses it (409)
+        when the application named in *details* has monitoring disabled or switched
+        since that generation."""
+        guard = _monitoring_guard(monitoring_generation)
         resp = await self.request(
             "POST",
             "incidents/",
+            **guard,
             json={
                 "server_handle": server_handle,
                 "incident_type": incident_type,
@@ -772,12 +786,16 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
         )
         return [IncidentDTO.model_validate(i) for i in resp.json()]
 
-    async def resolve_incident(self, incident_id: int) -> IncidentDTO:
+    async def resolve_incident(
+        self, incident_id: int, *, monitoring_generation: str | None = None
+    ) -> IncidentDTO:
         from datetime import UTC, datetime
 
+        guard = _monitoring_guard(monitoring_generation)
         resp = await self.request(
             "PATCH",
             f"incidents/{incident_id}",
+            **guard,
             json={
                 "status": "resolved",
                 "resolved_at": datetime.now(UTC).isoformat(),

@@ -143,6 +143,12 @@ export function ApplicationDetailPage() {
     onSuccess: invalidateAll,
   })
 
+  const monitoringMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      api.post<Application>(`/applications/${id}/monitoring`, { enabled }),
+    onSuccess: invalidateAll,
+  })
+
   const e2eMutation = useMutation({
     mutationFn: () => api.post<unknown>(`/applications/${id}/run-e2e`, { actor: 'admin' }),
     onSuccess: invalidateAll,
@@ -176,6 +182,14 @@ export function ApplicationDetailPage() {
           )}
           <h1 className="text-2xl font-bold text-foreground">{app.service_name}</h1>
           <StatusBadge status={app.status} />
+          {!app.monitoring_enabled && (
+            <span
+              className="inline-block rounded bg-yellow-900/50 px-2 py-0.5 text-xs font-medium text-yellow-400"
+              title={app.monitoring_changed_at ? `since ${formatDate(app.monitoring_changed_at)}` : undefined}
+            >
+              monitoring off
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {canStop && (
@@ -198,6 +212,17 @@ export function ApplicationDetailPage() {
               variant="red"
             />
           )}
+          <ConfirmButton
+            label={app.monitoring_enabled ? 'Disable monitoring' : 'Enable monitoring'}
+            confirmText={
+              app.monitoring_enabled
+                ? 'Stop health probes and alerts for this application? Status and ports stay as they are.'
+                : 'Resume health probes and alerts for this application?'
+            }
+            pendingLabel="Saving..."
+            onConfirm={() => monitoringMutation.mutate(!app.monitoring_enabled)}
+            isPending={monitoringMutation.isPending}
+          />
           <ConfirmButton
             label="Redeploy"
             confirmText="Redeploy this application?"
