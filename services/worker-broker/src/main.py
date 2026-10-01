@@ -58,9 +58,7 @@ def _decode(value: Any) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
 
 
-def _active_turn(
-    worker_id: str, lease_id: str, turn: WorkerTurnInput
-) -> WorkerActiveTurn | None:
+def _active_turn(worker_id: str, lease_id: str, turn: WorkerTurnInput) -> WorkerActiveTurn | None:
     """Build supervision state only for typed engineering turns."""
     if turn.attempt_id is None:
         return None
