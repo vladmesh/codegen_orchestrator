@@ -14,7 +14,6 @@ from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.diagnostics import safe_validation_errors
-from shared.notifications import notify_admins_best_effort
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 from src.clients.api import api_client
