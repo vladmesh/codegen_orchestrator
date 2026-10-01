@@ -32,7 +32,7 @@ graph TD
     Architect --> |tasks| API
     Dispatcher --> |"scaffold:queue"| Scaffolder[Scaffolder]
     Dispatcher --> |"engineering:queue"| Eng[Engineering Worker]
-    Dispatcher --> |"deploy:queue"| Dep[Deploy Worker]
+    PRCI[PR/CI loop] --> |"deploy:queue"| Dep[Deploy Worker]
     Dep --> |"qa:queue"| QA[QA Worker]
 
     Eng --> |manages| Workers[Coding Agent Containers]
@@ -56,7 +56,7 @@ Stage by stage: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes and thei
 |---|---|
 | `api` | FastAPI, the single source of truth over PostgreSQL. Every other service reads and writes through it. |
 | `telegram_bot` | The user interface; owns PO sessions. |
-| `langgraph` | The PO agent and the Engineering/DevOps subgraphs. |
+| `langgraph` | PO Redis consumer + ReactAgent runtime. The shared image also supplies the separate worker/architect entrypoints below. |
 | `architect` | Splits a story into tasks. Its own container, not part of the scheduler. |
 | `scheduler-pipeline` | Task/story lifecycle plus independent PR/CI, supervision, notification, QA and access loops. |
 | `scheduler-infrastructure` | Server sync, health checks, provisioning triggers and result recovery. |
@@ -64,8 +64,11 @@ Stage by stage: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes and thei
 | `scaffolder` | Prepares the repository: copier, `make setup`, first push. Runs before the architect. |
 | `engineering-worker`, `deploy-worker`, `qa-worker` | Redis-stream consumers. Separate entrypoints on the shared `langgraph` image. |
 | `worker-manager` | Starts and reaps the coding-agent containers, isolated on the `codegen_worker` network. |
+| `worker-broker` | Authenticated bridge between isolated coding workers and control-plane streams, status/session APIs, and Compose proxy operations. |
 | `infra-service` | Ansible runner: provisions and configures the servers projects land on. |
 | `admin-frontend` | React SPA on 3001 behind nginx basic auth: projects, tasks, workers, queues. |
+| `caddy` | Public reverse proxy/TLS edge for production endpoints and the self-hosted registry. |
+| `registry` | Self-hosted Docker Registry used by CI/deploy image flow. |
 | `user-dashboard` | The end user's own view of their projects. |
 | `loki`, `promtail`, `grafana` | Structured logs and dashboards. |
 
