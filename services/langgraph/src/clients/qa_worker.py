@@ -45,6 +45,7 @@ from shared.contracts.queues.worker import (
 from shared.contracts.worker_turn import WorkerTurnInput
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
+
 from ..config.settings import get_settings
 from .worker_spawner import CREATION_TIMEOUT, _wait_for_response, _wait_until_ready
 from .worker_turns import ensure_worker_output_group, publish_worker_turn
