@@ -192,6 +192,8 @@ def collect_residue_state(
 def verify_no_residue(project_ids: list[str] | None = None):
     remote_residue = collect_remote_residue()
     residue = collect_residue_state(project_ids, remote_residue=remote_residue)
+    github_residue = contour_repo_residue(list_org_repositories())
+    residue["github_repositories"] = len(github_residue)
     remaining = {kind: count for kind, count in residue.items() if count}
     if remaining:
         details = ", ".join(f"{kind}={count}" for kind, count in sorted(remaining.items()))
@@ -576,6 +578,8 @@ asyncio.run(cleanup())
     print(res.stdout)
     if res.stderr:
         print(res.stderr)
+    if res.returncode != 0 or "Failed to delete " in res.stdout:
+        raise CleanupFailure("one or more GitHub repositories could not be deleted")
 
 
 def _teardown_psql(sql: str) -> db_teardown.SqlResult:
