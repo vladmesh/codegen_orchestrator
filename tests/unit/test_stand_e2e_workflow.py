@@ -2134,3 +2134,67 @@ def test_the_qa_session_is_a_protected_value_of_every_artifact_admission():
     assert {"TELETHON_API_HASH", "TELETHON_SESSION"} <= PROTECTED_STAND_SECRET_NAMES
     # TELETHON_API_ID is an application number, not a credential: never a needle.
     assert "TELETHON_API_ID" not in PROTECTED_STAND_SECRET_NAMES
+
+
+def _run_codex_auth_persist(tmp_path: Path, step: dict, gh_failures: int) -> tuple:
+    runner_temp = tmp_path / "runner"
+    profile = runner_temp / "stand-codex-profile"
+    profile.mkdir(parents=True)
+    auth = json.dumps({"tokens": {"access_token": "a", "refresh_token": "r"}})
+    (profile / "auth.json").write_text(auth)
+    (runner_temp / "stand-codex-remote-profile-installed").touch()
+    (runner_temp / "stand-bootstrap.key").touch()
+    remote_source = tmp_path / "remote-auth.json"
+    remote_source.write_text(auth)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "gh-calls"
+    fakes = {
+        "gh": f"""#!/bin/bash
+cat >/dev/null
+echo call >> "{calls}"
+test "$(wc -l < "{calls}")" -gt {gh_failures} || {{ echo 'HTTP 500: Server Error' >&2; exit 1; }}
+""",
+        "sleep": "#!/bin/bash\nexit 0\n",
+        "scp": f'#!/bin/bash\ncp "{remote_source}" "${{@: -1}}"\n',
+    }
+    for name, body in fakes.items():
+        (bin_dir / name).write_text(body)
+        (bin_dir / name).chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "RUNNER_TEMP": str(runner_temp),
+        "GITHUB_REPOSITORY": "owner/repo",
+        "GH_TOKEN": "token",
+        "PROD_HOST": "203.0.113.1",
+        "SSH_OPTS": "",
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"]], env=env, capture_output=True, text=True, check=False
+    )
+    attempts = len(calls.read_text().splitlines()) if calls.exists() else 0
+    return result, attempts
+
+
+@pytest.mark.parametrize(
+    "step_name",
+    ["Persist preflight-refreshed Codex auth profile", "Persist refreshed Codex auth profile"],
+)
+def test_codex_auth_persist_retries_a_transient_github_secret_write_failure(tmp_path, step_name):
+    result, attempts = _run_codex_auth_persist(tmp_path, _steps()[step_name], gh_failures=2)
+
+    assert result.returncode == 0, result.stderr
+    assert attempts == 3
+
+
+@pytest.mark.parametrize(
+    "step_name",
+    ["Persist preflight-refreshed Codex auth profile", "Persist refreshed Codex auth profile"],
+)
+def test_codex_auth_persist_fails_closed_after_bounded_secret_write_attempts(tmp_path, step_name):
+    result, attempts = _run_codex_auth_persist(tmp_path, _steps()[step_name], gh_failures=100)
+
+    assert result.returncode != 0
+    assert attempts == 5
+    assert "codex_auth_persist_failed" in result.stderr

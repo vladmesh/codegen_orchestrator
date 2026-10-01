@@ -413,7 +413,12 @@ jobs:
           set -euo pipefail
           test -n "${GH_TOKEN}" || { echo "codex_auth_persist_refused: STAND_GITHUB_SECRETS_WRITE_TOKEN is not configured" >&2; exit 1; }
           profile="${RUNNER_TEMP}/stand-codex-profile"
-          gh secret set CODEX_AUTH_JSON --env stand --repo "${GITHUB_REPOSITORY}" < "${profile}/auth.json"
+          # GitHub's secrets API answers transient 5xx; the refreshed token must land.
+          for attempt in 1 2 3 4 5; do
+            gh secret set CODEX_AUTH_JSON --env stand --repo "${GITHUB_REPOSITORY}" < "${profile}/auth.json" && break
+            test "${attempt}" -lt 5 || { echo "codex_auth_persist_failed: CODEX_AUTH_JSON write failed after ${attempt} attempts" >&2; exit 1; }
+            sleep $((attempt * 10))
+          done
 
       - name: Preflight ephemeral machines
         env:
@@ -1029,7 +1034,12 @@ jobs:
           PY
           touch "${RUNNER_TEMP}/stand-codex-refreshed-auth-valid"
           test -n "${GH_TOKEN}" || { echo "codex_auth_persist_refused: STAND_GITHUB_SECRETS_WRITE_TOKEN is not configured" >&2; exit 1; }
-          gh secret set CODEX_AUTH_JSON --env stand --repo "${GITHUB_REPOSITORY}" < "${remote_auth}"
+          # GitHub's secrets API answers transient 5xx; the refreshed token must land.
+          for attempt in 1 2 3 4 5; do
+            gh secret set CODEX_AUTH_JSON --env stand --repo "${GITHUB_REPOSITORY}" < "${remote_auth}" && break
+            test "${attempt}" -lt 5 || { echo "codex_auth_persist_failed: CODEX_AUTH_JSON write failed after ${attempt} attempts" >&2; exit 1; }
+            sleep $((attempt * 10))
+          done
 
       # Copy only the runner's public reports.  This short-lived handoff is how
       # the fresh cleanup runner can build the one final acceptance artifact.

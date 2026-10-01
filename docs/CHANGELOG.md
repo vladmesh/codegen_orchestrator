@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-01
+
+- Retry the stand e2e `CODEX_AUTH_JSON` secret write up to five times, so a transient GitHub 5xx
+  does not fail the run or lose the refreshed Codex token.
+
 ## 2026-09-30
 
 - Report every LangGraph service-test setup, call and teardown duration to measure native
