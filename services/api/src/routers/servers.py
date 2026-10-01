@@ -44,6 +44,7 @@ from shared.ssh_keys import (
 )
 
 from ..database import get_async_session
+from ..domain.ports import PortAllocationExhaustedError, allocate_next_port as reserve_next_port
 from ..dependencies import get_redis_client, require_internal_or_admin
 from ..schemas import (
     AllocateNextPortRequest,
@@ -408,51 +409,27 @@ async def allocate_next_port(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> PortAllocation:
-    """Atomically find and allocate the next available port.
-
-    Uses SELECT FOR UPDATE to prevent race conditions between concurrent
-    allocation requests. Retries with the next port if a conflict occurs.
-    """
-    from sqlalchemy.exc import IntegrityError
-
+    """Atomically find and allocate the next available port."""
     if not await db.get(Server, handle):
         raise HTTPException(status_code=404, detail="Server not found")
 
-    max_retries = 10
-    for _attempt in range(max_retries):
-        # Get all allocated ports with row-level lock
-        query = (
-            select(PortAllocation.port)
-            .where(PortAllocation.server_handle == handle)
-            .with_for_update()
-        )
-        result = await db.execute(query)
-        allocated_ports = {row[0] for row in result.all()}
-
-        # Find next available
-        port = req.start_port
-        while port in allocated_ports:
-            port += 1
-
-        allocation = PortAllocation(
+    try:
+        allocation = await reserve_next_port(
+            db,
             server_handle=handle,
-            port=port,
-            service_name=req.service_name,
             application_id=req.application_id,
+            service_name=req.service_name,
+            start_port=req.start_port,
         )
-        db.add(allocation)
-        try:
-            await db.commit()
-            await db.refresh(allocation)
-            return allocation
-        except IntegrityError:
-            await db.rollback()
-            continue
+    except PortAllocationExhaustedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Failed to allocate port after max retries",
+        ) from exc
 
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail="Failed to allocate port after max retries",
-    )
+    await db.commit()
+    await db.refresh(allocation)
+    return allocation
 
 
 def _refuse_a_keyless_managed_result(
