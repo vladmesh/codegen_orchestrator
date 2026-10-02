@@ -91,11 +91,15 @@ def _owner_text(code: str, detail: str) -> str:
     )
 
 
+_TIMESTAMPS = ("created_at", "reopened_at")
+
+
 def _rows(connection, sql: str, params: dict, *json_columns: str):
-    statement = sa.text(sql)
-    if json_columns:
-        statement = statement.columns(*(sa.column(name, sa.JSON) for name in json_columns))
-    return connection.execute(statement, params).all()
+    """Rows with JSON and timestamp columns typed by name (keyword types match
+    result columns by name; positional ones would match by position)."""
+    types = {name: sa.DateTime(timezone=True) for name in _TIMESTAMPS if name in sql}
+    types.update(dict.fromkeys(json_columns, sa.JSON))
+    return connection.execute(sa.text(sql).columns(**types), params).all()
 
 
 def _refusal_edge(connection, story):
