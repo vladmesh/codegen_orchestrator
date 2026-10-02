@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-02
 
+- Old product name swept: AGENTS/TESTING name Ummanu and its worker-packet broad check, the BitLaunch helper
+  reads `~/ummanu/.env`, and `.gitignore` ignores `ummanu-data/`.
 - The deploy `.env` ends in a newline: a generated workflow's appended `PUBLIC_BASE_URL` glued onto the last
   variable, `USERS_GRANT_CAPABILITY`, so every initial-owner grant got 403 `grant_rejected` (story-92b433c8).
 - Conflict repair attempts count started Runs: a paid refusal keeps the Task todo and stops only the Story with "no budget"

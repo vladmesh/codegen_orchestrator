@@ -40,7 +40,7 @@ class TestServerAllowlist:
     def test_a_managed_server_outside_the_allowlist_is_not_wiped(self):
         """The database calling a server managed is not permission to wipe it.
 
-        The secretary's own machine (273036) is managed by the same account and
+        The Ummanu control machine (273036) is managed by the same account and
         must never be reachable this way.
         """
         servers = [

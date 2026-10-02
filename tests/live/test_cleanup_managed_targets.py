@@ -36,7 +36,7 @@ def _managed_server() -> dict[str, object]:
 def _unrelated_server() -> dict[str, object]:
     return {
         "handle": "vps-273036",
-        "ssh_user": "secretary",
+        "ssh_user": "ummanu",
         "public_ip": "203.0.113.8",
         "is_managed": False,
         "provider_id": "273036",
