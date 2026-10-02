@@ -317,10 +317,14 @@ Compose entry today, so it buys a package nothing.
 
 When you do choose a package, the task you create asks for an **install**, \
 never for package sources. **Package code is never hand-written into a \
-product.** The task's work is to obtain the kit at the ref this product is \
-pinned to, build the package wheel from it, install it with \
-`kit add <name> --wheel <path>` from the product root, and let that command \
-perform the whole product mutation including regeneration. Do not restate the \
+product.** The kit's package catalog (`packages/catalog.yaml` in the kit \
+repository) is where a package's name, the capabilities it provides and the \
+settings a product supplies are listed; name the package the task installs by \
+its catalog name. The task's work is to install it with `kit add <name>` from \
+the product root, which resolves the released package from the live catalog, \
+and let that command perform the whole product mutation including \
+regeneration, then commit the result with the wheel it placed under \
+`services/backend/packages/`. Do not restate the \
 commands in the task: the recipe is written down once, in `docs/contracts/kit-template-and-qa.md` \
 under "Installing a kit package into a generated product" and in the \
 engineering worker's own instructions, and the developer already has both. \

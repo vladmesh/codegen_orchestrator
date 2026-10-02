@@ -334,8 +334,16 @@ class TestCapabilityShapeDirectives:
     def test_the_package_task_installs_and_never_hand_writes_package_code(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
         assert "Package code is never hand-written into a product." in prompt
-        assert "`kit add <name> --wheel <path>`" in prompt
+        assert "install it with `kit add <name>` from the product root" in prompt
+        assert "resolves the released package from the live catalog" in prompt
         assert "regeneration" in prompt.lower()
+        assert "--wheel" not in prompt
+        assert "build the package wheel" not in prompt
+
+    def test_names_the_catalog_as_where_packages_are_listed(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert "package catalog (`packages/catalog.yaml`" in prompt
+        assert "name the package the task installs by its catalog name" in prompt
 
     def test_points_at_the_recipe_instead_of_restating_it(self):
         prompt = " ".join(SYSTEM_PROMPT.split())

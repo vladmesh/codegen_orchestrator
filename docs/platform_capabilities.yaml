@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 10
+version: 11
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -20,7 +20,7 @@ derived_from:
     # The commit the pinned release resolves to. The release tag itself is written down only
     # in `scripts/system_configs.yaml` (`scheduler.service_template_ref`); a test ties this
     # commit to the vendored render of that pin, so moving the pin fails until it is updated.
-    commit: 04e2d94826f0dd6b46be3d7345b46cdd677db7ed
+    commit: 1de7aa6c02cfcf212b2d21919defbb3d77383998
     note: >-
       The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is
       still an admitted Copier source, but no new product is scaffolded from it.
@@ -74,12 +74,10 @@ can:
     name: Actions on a schedule or later
     plain: The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
     how: >-
-      A timer loop inside the product's own long-running bot or backend process. The kit's jobs
-      core (`POST /jobs/fire`) only records and dispatches a declared named job; it schedules
-      nothing, and the platform fires a product's jobs only while QA checks it. Trap: nothing
-      calls the `reminders` package's `reminders.tick` in production, so a product with
-      reminders must run its own timer loop that fires it, or no reminder is ever sent. The
-      bot's library is installed without its job-queue extra.
+      The kit core timer loop fires each timer an installed package declares, in production
+      with no caller: reminders `reminders.tick` every 60 s. Other schedules need a timer
+      loop in the product's own bot or backend; `POST /jobs/fire` only records and dispatches a
+      declared job. The bot's library has no job-queue extra.
   - id: user_settings
     name: Settings without a new version
     plain: The owner later changes settings, such as the list of languages or the texts, without a new version of the bot.
@@ -310,16 +308,23 @@ kit:
     - name: settings v1
       plain: Declared product or per-user settings the platform writes and the product reads.
     - name: jobs v1
-      plain: Declared named jobs a caller fires; records and dispatches them, schedules nothing.
+      plain: Declared named jobs a caller or the core timer fires; records and dispatches them.
+    - name: caller identity v1
+      plain: >-
+        Package routes serve only the caller verified by `X-Identity-Capability`
+        (`USER_IDENTITY_CAPABILITY`), `X-User-Channel`, `X-User-External-Id`; `user_ref` is
+        `<channel>:<external_id>`.
     - name: events v1
       plain: Durable product events on Redis Streams, each handled once per consuming service.
+  catalog: >-
+    the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings;
+    install with `kit add <name>`.
   packages:
     - name: reminders
-      version: 0.3.0
+      version: 0.4.0
       plain: >-
-        One-time text reminders (create, list, cancel); due reminders are emitted only when
-        something fires its `reminders.tick` job, and nothing fires it in production: the
-        product must run its own timer loop.
+        One-time text reminders (create, list, cancel) per verified caller; `/reminders`
+        takes no `user_ref`; seed `reminder_owner_ref` canonically (`telegram:<id>`).
 
 deploy_targets:
   - service: backend

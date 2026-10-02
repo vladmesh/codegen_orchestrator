@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 10, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 11, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -31,7 +31,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ## Technical detail
 
-Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `04e2d94826f0dd6b46be3d7345b46cdd677db7ed`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
+Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `1de7aa6c02cfcf212b2d21919defbb3d77383998`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
 
 Code it was read from:
 
@@ -65,7 +65,7 @@ How: `postgres:16` service `db` with the named volume `db_data`, deployed with t
 
 #### Actions on a schedule or later
 
-How: A timer loop inside the product's own long-running bot or backend process. The kit's jobs core (`POST /jobs/fire`) only records and dispatches a declared named job; it schedules nothing, and the platform fires a product's jobs only while QA checks it. Trap: nothing calls the `reminders` package's `reminders.tick` in production, so a product with reminders must run its own timer loop that fires it, or no reminder is ever sent. The bot's library is installed without its job-queue extra.
+How: The kit core timer loop fires each timer an installed package declares, in production with no caller: reminders `reminders.tick` every 60 s. Other schedules need a timer loop in the product's own bot or backend; `POST /jobs/fire` only records and dispatches a declared job. The bot's library has no job-queue extra.
 
 #### Settings without a new version
 
@@ -115,7 +115,7 @@ Why: Postgres and Redis get host ports allocated, but production compose publish
 
 Why: Nothing snapshots or copies the `db_data` volume; it lives only on the product's server.
 
-### Kit at 04e2d94826f0
+### Kit at 1de7aa6c02cf
 
 Modules:
 
@@ -126,12 +126,13 @@ Core contracts every backend carries:
 
 - users: Per-user access for the bot; the platform grants and revokes Telegram users.
 - settings v1: Declared product or per-user settings the platform writes and the product reads.
-- jobs v1: Declared named jobs a caller fires; records and dispatches them, schedules nothing.
+- jobs v1: Declared named jobs a caller or the core timer fires; records and dispatches them.
+- caller identity v1: Package routes serve only the caller verified by `X-Identity-Capability` (`USER_IDENTITY_CAPABILITY`), `X-User-Channel`, `X-User-External-Id`; `user_ref` is `<channel>:<external_id>`.
 - events v1: Durable product events on Redis Streams, each handled once per consuming service.
 
-Packages:
+Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings; install with `kit add <name>`.
 
-- `reminders` 0.3.0: One-time text reminders (create, list, cancel); due reminders are emitted only when something fires its `reminders.tick` job, and nothing fires it in production: the product must run its own timer loop.
+- `reminders` 0.4.0: One-time text reminders (create, list, cancel) per verified caller; `/reminders` takes no `user_ref`; seed `reminder_owner_ref` canonically (`telegram:<id>`).
 
 ### Deploy targets
 

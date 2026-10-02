@@ -517,7 +517,14 @@ def _bot_main() -> str:
     ``startup`` composes the two steps instead, and it is what the builder wires.
     """
     access_import = (
-        "from services.tg_bot.src.access import TELEGRAM_CHANNEL, is_active, telegram_external_id\n"
+        "from services.tg_bot.src.access import (\n"
+        "    IDENTITY_CAPABILITY_HEADER,\n"
+        "    TELEGRAM_CHANNEL,\n"
+        "    USER_CHANNEL_HEADER,\n"
+        "    USER_EXTERNAL_ID_HEADER,\n"
+        "    is_active,\n"
+        "    telegram_external_id,\n"
+        ")\n"
     )
     menu_import = (
         "from services.tg_bot.src.menu import "

@@ -31,10 +31,11 @@ SYSTEM_CONFIG = SYSTEM_CONFIGS_PATH
 COMPOSE_LABEL = "com.docker.compose.project"
 COMMAND_TIMEOUT_SECONDS = 20 * 60
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
-# The one package the kit publishes today. Nothing publishes its wheel, so the recipe
-# builds it from the kit source at the ref the product is pinned to.
+# The package the smoke installs from the kit's catalog. `kit add` resolves it from the
+# catalog read at the pinned kit ref, so the version it lands is fixed by the pin: the
+# newest catalog version the pinned core admits.
 KIT_PACKAGE = "reminders"
-KIT_PACKAGE_DISTRIBUTION = "codegen-kit-reminders"
+KIT_PACKAGE_VERSION = "0.4.0"
 KIT_PACKAGE_WHEEL_GLOB = "codegen_kit_reminders-*.whl"
 ACTIVE_PACKAGES_RELPATH = Path("codegen_kit/_active_packages.py")
 BACKEND_MANIFEST_RELPATH = Path("services/backend/manifest.yaml")
@@ -410,9 +411,11 @@ asyncio.run(verify_denial())
     def _prove_kit_package_install(self, resolved_commit: str) -> None:
         """Install a kit package the way an engineering worker has to, and check the contract.
 
-        Nothing publishes the package wheel, so the recipe builds it from the kit source at
-        the ref the product is pinned to. The proof runs on its own render: the smoke's own
-        product stays package-free, which is what every product without a package looks like.
+        The worker runs `kit add <name>`, which reads the kit's live catalog. The smoke reads
+        that catalog at the pinned ref instead of the kit's default branch, so a later package
+        release cannot change what it installs. The proof runs on its own render: the smoke's
+        own product stays package-free, which is what every product without a package looks
+        like.
         """
         product = self.package_workspace / "product"
         product.mkdir(parents=True)
@@ -431,9 +434,16 @@ asyncio.run(verify_denial())
                 f"generated={read_active_packages(product)}"
             )
 
-        wheel = self._build_package_wheel(resolved_commit)
         self._run(
-            [str(product / ".venv/bin/kit"), "add", KIT_PACKAGE, "--wheel", str(wheel)],
+            [
+                str(product / ".venv/bin/kit"),
+                "add",
+                KIT_PACKAGE,
+                "--catalog-source",
+                self._git_source(),
+                "--catalog-ref",
+                self.template.ref,
+            ],
             cwd=product,
             phase=f"kit add {KIT_PACKAGE}",
         )
@@ -442,13 +452,23 @@ asyncio.run(verify_denial())
         self.installed_packages.extend(identities)
         if [identity["name"] for identity in identities] != [KIT_PACKAGE]:
             raise AssertionError(f"generated contract does not record the package: {identities}")
+        if identities[0]["version"] != KIT_PACKAGE_VERSION or not identities[0].get(
+            "manifest_sha256"
+        ):
+            raise AssertionError(
+                f"generated contract does not record {KIT_PACKAGE} {KIT_PACKAGE_VERSION} "
+                f"with its manifest digest: {identities}"
+            )
         if read_listed_packages(product) != [KIT_PACKAGE]:
             raise AssertionError(
                 f"manifest allowlist does not list the package: {read_listed_packages(product)}"
             )
-        installed_wheel = product / "services/backend/packages" / wheel.name
-        if not installed_wheel.is_file():
-            raise AssertionError(f"kit add copied no wheel to {installed_wheel}")
+        installed = sorted((product / "services/backend/packages").glob(KIT_PACKAGE_WHEEL_GLOB))
+        if [wheel.name.split("-")[1] for wheel in installed] != [KIT_PACKAGE_VERSION]:
+            raise AssertionError(
+                f"kit add did not place one {KIT_PACKAGE} {KIT_PACKAGE_VERSION} wheel under "
+                f"services/backend/packages: {installed}"
+            )
         self._prove_central_qa_reads_the_generated_contract(product)
 
     def _prove_central_qa_reads_the_generated_contract(self, product: Path) -> None:
@@ -485,35 +505,6 @@ asyncio.run(verify_denial())
         for expected in (KIT_PACKAGE, QA_FACTS_URL, "refuses to boot", *activation.package_jobs):
             if expected not in facts:
                 raise AssertionError(f"the QA package facts do not state {expected!r}: {facts}")
-
-    def _build_package_wheel(self, resolved_commit: str) -> Path:
-        """Build the package wheel from the kit source at the ref the product is pinned to."""
-        kit = self.package_workspace / "kit"
-        wheels = self.package_workspace / "wheels"
-        self._run(
-            ["git", "clone", "--quiet", self._git_source(), str(kit)],
-            phase="clone the kit source",
-        )
-        self._run(
-            ["git", "-C", str(kit), "checkout", "--quiet", resolved_commit],
-            phase="check out the pinned kit ref",
-        )
-        self._run(
-            [
-                "uv",
-                "build",
-                "--wheel",
-                str(kit / "packages" / KIT_PACKAGE_DISTRIBUTION),
-                "--out-dir",
-                str(wheels),
-            ],
-            cwd=kit,
-            phase="build the package wheel",
-        )
-        built = sorted(wheels.glob(KIT_PACKAGE_WHEEL_GLOB))
-        if len(built) != 1:
-            raise AssertionError(f"expected exactly one {KIT_PACKAGE_DISTRIBUTION} wheel: {built}")
-        return built[0]
 
     def _run_service_python(self, service: str, source: str, *, phase: str) -> None:
         self._run(

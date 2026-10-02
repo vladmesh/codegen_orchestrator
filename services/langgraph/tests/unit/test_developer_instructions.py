@@ -139,13 +139,16 @@ class TestDeveloperInstructions:
     def test_states_the_kit_package_install_recipe(self):
         instructions = " ".join(self.content.split())
         assert "Package code is never hand-written into a product." in instructions
-        assert ".copier-answers.yml" in instructions
-        assert "_commit" in instructions
-        assert "uv build --wheel" in instructions
-        assert "kit add <name> --wheel <path>" in instructions
-        assert "kit add reminders --wheel" in instructions
+        assert ".venv/bin/kit add <name>" in instructions
+        assert "resolves the kit's live catalog" in instructions
+        assert "package catalog (`packages/catalog.yaml`" in instructions
+        assert "Do not build a wheel yourself" in instructions
         assert "codegen_kit/_active_packages.py" in instructions
+        assert "Commit everything it changed, including the wheel under" in instructions
         assert "services/backend/packages/" in instructions
+        assert "uv build" not in instructions
+        assert "--wheel" not in instructions
+        assert "_commit" not in instructions
 
     def test_states_that_regeneration_is_part_of_a_manifest_or_package_change(self):
         instructions = " ".join(self.content.split())

@@ -21,32 +21,51 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.6.4` tag, object
-`2fe1dc027834d4118eff21af81dc942909aa7ebf`, which dereferences to
-`04e2d94826f0dd6b46be3d7345b46cdd677db7ed`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.6.4` tree is its `backend,tg_bot`
-Copier render and records that tag in `_commit`.
+The production boundary is the annotated `0.7.0` tag, object
+`138e542b7ae187bb1037aafc3d55b1745fb5a152`, which dereferences to
+`1de7aa6c02cfcf212b2d21919defbb3d77383998`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.7.0` tree is its `backend,tg_bot`
+Copier render and records that tag in `_commit`. The root `codegen-kit-tooling`
+dependency and its lock resolve the same commit.
 It represents the committed checkout: generated ignored `.env` and `TASK.md`
-are omitted; every versioned rendered file retains the producer's bytes.
+are omitted; every versioned rendered file retains the producer's bytes. It is
+rendered with `copier copy --trust --defaults --vcs-ref=<tag>` and the answers
+its `.copier-answers.yml` records, and only the files a fresh `git add -A` of the
+render would track are vendored; the `uv.lock` Copier's task writes resolves
+third-party packages at render time.
 Its main-push image workflow runs frozen root sync, frozen `services/backend`
 sync, and generation in that order before building either service image.
 The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
-after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs. The kit's
-[release proofs](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md)
-cover PostgreSQL preserving upgrade/readback above int32 and real HTTP logging.
-Existing Copier products retain owned ORM files: their later update must reconcile
-`User.id`, `UserChannel.user_id`, and `Setting.subject_id` and apply the forward
-migration. Downgrade refuses data or sequence values outside int32. This pin
-changes new-product scaffolding; it does not migrate deployed products.
-The generated deployment runs on `ubuntu-24.04`, keeps `DEPLOY_HOST` raw for
-native SSH and appleboy/ssh-action, and brackets IPv6 only in the native SCP
-remote destination. The same two compose files, target, options and three
-attempts remain. Root tooling and its lock resolve the released commit; backend
-and bot retain their own frozen service environments. Application/tooling
-versions remain `0.1.0`; minimum Copier remains `9.0.0`.
+after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs, as since the
+kit's [0.6.3 release](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md).
 
+Kit core `2.1.0`, which this tag ships, adds two things a generated product now does:
+
+- **A core timer loop.** The backend fires the timers an installed package declares in its
+  manifest, once per slot through the ordinary jobs path (`command_id`
+  `core-timer:<job>:<slot instant>`, `fired_by_run` `core-timer`), so reminders `0.4.0` fires
+  `reminders.tick` every 60 seconds in production with no external caller. A product without a
+  package timer starts no loop.
+- **Verified caller identity for package routes.** A package route depends on
+  `codegen_kit.caller_identity`, which requires `X-Identity-Capability` equal to the backend's
+  `generated_secret` `USER_IDENTITY_CAPABILITY` together with `X-User-Channel` and
+  `X-User-External-Id`, answers 401 or 403 otherwise, and hands the route the canonical
+  `user_ref` `<channel>:<external_id>`. `USER_IDENTITY_CAPABILITY` is declared in the backend env
+  contract with consumers `backend` and `tg_bot`; the deployment secret resolver generates it like
+  every other `generated_secret`, and the bot reads it from the deploy `.env` through its compose
+  `env_file`. The generated bot calls package routes through
+  `BackendClient.request_as_telegram_user`.
+
+Reminders `0.4.0` is a breaking change for its callers: `/reminders` takes no `user_ref` in a body,
+query or path and acts only for the verified caller, while the stored `user_ref` and the
+`reminders.due` payload carry the canonical form. The `reminders.reminder_owner_ref` setting stays
+opaque, but only its canonical form (`telegram:<id>`) lets that user see the seeded reminder.
+Central QA's identity headers are not yet sent by the orchestrator; they arrive with the next
+card. `POST /jobs/fire` of `reminders.tick` with `X-Jobs-Capability` is unchanged.
+
+This pin changes new-product scaffolding; it does not migrate deployed products.
 Existing products need a reviewed Copier update on a clean review branch:
-`copier update --defaults --trust --vcs-ref=0.6.4 --conflict=rej`. Preserve selected
+`copier update --defaults --trust --vcs-ref=0.7.0 --conflict=rej`. Preserve selected
 modules and owned application/spec/environment bytes, back up ignored real
 environment data through the product's restricted procedure, and compare its
 bytes locally without exposing credentials. Read back answers/source, tooling
@@ -55,11 +74,12 @@ new answers can coexist with `.rej`: Copier installs the candidate workflow
 while retaining rejected local hunks in the artifact and committed predecessor.
 Reconcile each hunk deliberately, retain reviewed unrelated customizations,
 resolve rejection artifacts and validate the product before its normal reviewed
-merge and image publication. No bulk updater or remote workflow patch exists.
-The immutable [release notes](https://github.com/vladmesh/codegen-product-kit/blob/04e2d94826f0dd6b46be3d7345b46cdd677db7ed/docs/releases/0.6.4.md)
-and generated `infra/README.md` describe this boundary; the release document's
-preparation heading predates publication, whose annotated identity above was
-independently read back. External action execution, remote authentication and
+merge and image publication. Copier keeps the product-owned
+`services/backend/src/app/lifespan.py`, so the timer loop has to be reconciled into it by hand, and
+`USER_IDENTITY_CAPABILITY` has to be added to the preserved `.env` files. No bulk updater or remote
+workflow patch exists. The immutable
+[release notes](https://github.com/vladmesh/codegen-product-kit/blob/1de7aa6c02cfcf212b2d21919defbb3d77383998/docs/releases/0.7.0.md)
+describe this boundary and the update steps. External action execution, remote authentication and
 production deployment are outside the nonconnecting validation boundary.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
@@ -89,18 +109,36 @@ substituted, or accepted for a new scaffold.
 
 A kit package is an installed wheel that declares a `codegen_kit.packages` entry point, and the
 generated product activates one only when it is both installed and listed under `packages:` in
-`services/backend/manifest.yaml`. Nothing publishes those wheels: `kit add <name> --wheel
-<artifact>` deliberately takes an artifact path, because package publication and catalog
-resolution are outside package protocol v1. The recipe an engineering worker follows therefore
-builds the wheel from the kit source at the ref the product is pinned to, which the product itself
-records in `.copier-answers.yml` (`_src_path`, `_commit`): obtain the kit at `_commit`, `uv build
---wheel packages/<distribution>`, then `kit add <name> --wheel <built wheel>` from the product
-root. Nothing has to be vendored into a product that will never install a package.
+`services/backend/manifest.yaml`. The kit lists every package it offers in its package catalog,
+`packages/catalog.yaml` in the kit repository: each package's name, distribution, a one-line
+summary, the user-language capabilities it provides, the settings a product supplies, the
+environment it needs, and its released versions with each version's tag and `requires_core`. The
+catalog is where a package's name, capabilities and settings are looked up.
 
-`kit add` performs the whole product mutation — the wheel copy under
-`services/backend/packages/`, the backend dependency and its lock entry, the entry-point-only
-dependency record dependency linting needs, the manifest allowlist entry, `uv sync --frozen` of
-the backend environment, and regeneration. Package code is never hand-written into a product.
+The recipe an engineering worker follows is one command, from the product root:
+
+```bash
+.venv/bin/kit add <name>
+```
+
+`kit add <name>` reads the catalog live from the kit repository's default branch, picks the
+newest released version whose `requires_core` admits the product's core, fetches that version's
+annotated package tag `packages/<name>/v<version>`, builds the wheel, and refuses it unless its
+distribution, version and entry point equal the catalog entry. It then performs the whole product
+mutation — the wheel copy under `services/backend/packages/`, the backend dependency and its lock
+entry, the entry-point-only dependency record dependency linting needs, the manifest allowlist
+entry, `uv sync --frozen` of the backend environment, and regeneration. The result, including the
+committed wheel under `services/backend/packages/`, is committed: that wheel is the installation
+boundary the product's own CI and images consume. Package code is never hand-written into a
+product, and nothing has to be vendored into a product that will never install a package.
+
+Because the catalog is read live, releasing a new package version is a kit catalog entry and a
+package tag; it does not move the orchestrator's kit pin. A product's core only filters versions
+(kit core `2.1.0` resolves reminders `0.4.0`, core `2.0.0` resolves `0.3.0`). `--catalog-source`
+and `--catalog-ref` point the read at another repository or ref; the stage-5 smoke uses
+`--catalog-ref` with the pinned tag so its install is deterministic. `kit add <name> --wheel
+<artifact>` remains the kit's explicit-artifact escape hatch for an already built wheel; no
+orchestrator recipe uses it.
 
 Regeneration is part of installing or changing a package or a manifest, not an optional follow-up.
 Generation writes the active package set with each package's manifest digest into
@@ -123,8 +161,9 @@ The orchestrator states this recipe to the engineering worker in
 `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. The stage-5 template
 compatibility smoke proves it against a real render rather than a replica: it renders a second
 product from the same pinned ref, asserts that a product with no packages ships `packages: []` and
-an empty `ACTIVE_PACKAGES`, installs `reminders` through `kit add`, and asserts the generated
-contract then records the package's name, version and manifest digest.
+an empty `ACTIVE_PACKAGES`, installs `reminders` through `kit add reminders --catalog-ref <pinned
+tag>`, and asserts the generated contract then records the package's name, version `0.4.0` and
+manifest digest, and that the wheel was placed under `services/backend/packages/`.
 
 ## Central QA of a product that carries a kit package
 

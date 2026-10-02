@@ -539,7 +539,7 @@ wheels = [
 [[package]]
 name = "codegen-kit-tooling"
 version = "0.1.0"
-source = { git = "https://github.com/vladmesh/codegen-product-kit.git?rev=04e2d94826f0dd6b46be3d7345b46cdd677db7ed#04e2d94826f0dd6b46be3d7345b46cdd677db7ed" }
+source = { git = "https://github.com/vladmesh/codegen-product-kit.git?rev=1de7aa6c02cfcf212b2d21919defbb3d77383998#1de7aa6c02cfcf212b2d21919defbb3d77383998" }
 dependencies = [
     { name = "datamodel-code-generator", extra = ["http"] },
     { name = "jinja2" },
@@ -585,7 +585,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "api", editable = "services/api" },
-    { name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=04e2d94826f0dd6b46be3d7345b46cdd677db7ed" },
+    { name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=1de7aa6c02cfcf212b2d21919defbb3d77383998" },
     { name = "copier", specifier = ">=9.17.1" },
     { name = "deptry", specifier = ">=0.22.0" },
     { name = "fakeredis", specifier = ">=2.34.1" },
