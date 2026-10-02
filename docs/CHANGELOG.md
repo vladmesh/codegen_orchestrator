@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Conflict repair attempts count started Runs: a paid refusal keeps the Task todo and stops only the Story with "no budget"
   (limit, spend), so the same repair command resumes it; a migration unsticks released refusals (c351).
+- [hotfix] The scaffolder image links copier into /usr/local/bin again (#694 left it off PATH, so every scaffold
+  failed); the service-image check now fails an image missing an executable its service runs by name.
 
 ## 2026-10-01
 

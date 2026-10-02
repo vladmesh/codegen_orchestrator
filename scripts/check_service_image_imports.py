@@ -75,6 +75,16 @@ SERVICE_IMAGES = (
 # shipped LangGraph entry module and so must be checked with the eager consumers.
 EXTRA_IMPORT_MODULES = {"langgraph": ("src.consumers.po",)}
 
+# Executables a service runs by name, so each must be on its image's PATH. Importing the
+# modules cannot see a missing one: it surfaces only when the first job shells out.
+REQUIRED_EXECUTABLES = {"scaffolder": ("copier", "git", "make", "uv")}
+
+EXECUTABLES_PROBE = (
+    "import shutil, sys; "
+    "missing = [name for name in sys.argv[1:] if shutil.which(name) is None]; "
+    "sys.exit(f'not on PATH, but run by name: {missing}' if missing else 0)"
+)
+
 # These are deliberately inert values. The check imports modules only and must not
 # connect to a service, but settings modules validate their required values at import.
 IMPORT_ENV = {
@@ -288,6 +298,21 @@ def check_service_image(service: ServiceImage, modules: tuple[str, ...]) -> tupl
             "; ".join(f"import {module}" for module in modules),
         ]
     )
+    executables = REQUIRED_EXECUTABLES.get(service.name, ())
+    if executables:
+        run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "python",
+                service.tag,
+                "-c",
+                EXECUTABLES_PROBE,
+                *executables,
+            ]
+        )
     probe = capture(
         [
             "docker",

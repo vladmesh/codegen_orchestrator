@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -143,3 +144,37 @@ def test_a_drifted_image_still_fails_the_check(guard, monkeypatch):
         guard.main([])
 
     assert exit_info.value.code == 1
+
+
+def test_the_scaffolder_image_must_carry_the_executables_it_runs(guard):
+    """A scaffold shells out to copier, make and git by name; uv runs make setup."""
+    assert set(guard.REQUIRED_EXECUTABLES["scaffolder"]) == {"copier", "git", "make", "uv"}
+
+
+def test_the_executables_probe_fails_on_a_name_missing_from_path(guard):
+    """The scaffolder image once linked copier outside PATH; only a paid stand run saw it."""
+    probe = [sys.executable, "-c", guard.EXECUTABLES_PROBE]
+
+    assert subprocess.run([*probe, "python3"], check=False).returncode == 0
+    missing = subprocess.run(
+        [*probe, "python3", "no-such-executable-xyz"], check=False, capture_output=True, text=True
+    )
+    assert missing.returncode == 1
+    assert "no-such-executable-xyz" in missing.stderr
+    assert "python3" not in missing.stderr
+
+
+def test_the_scaffolder_image_is_probed_for_its_executables(guard, monkeypatch):
+    scaffolder = next(image for image in guard.SERVICE_IMAGES if image.name == "scaffolder")
+    commands = []
+    monkeypatch.setattr(guard, "run", commands.append)
+    monkeypatch.setattr(guard, "capture", lambda command: "{}")
+    monkeypatch.setattr(
+        guard.service_image_locks, "check_image", lambda name, lock, pyproject, probe: []
+    )
+
+    guard.check_service_image(scaffolder, ("src.main",))
+
+    assert [scaffolder.tag, "-c", guard.EXECUTABLES_PROBE, "copier", "git", "make", "uv"] == (
+        commands[-1][commands[-1].index(scaffolder.tag) :]
+    )
