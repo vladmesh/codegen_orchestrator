@@ -43,10 +43,10 @@ class TestBuildDotenv:
         )
         next_path = tmp_path / ".env.next"
         script = (
-            f"sed '/^PUBLIC_BASE_URL=/d' {dotenv_path} > {next_path} && "
-            f"printf 'PUBLIC_BASE_URL=http://%s:%s\\n' 203.0.113.7 8020 >> {next_path}"
+            'sed \'/^PUBLIC_BASE_URL=/d\' "$1" > "$2" && '
+            "printf 'PUBLIC_BASE_URL=http://%s:%s\\n' 203.0.113.7 8020 >> \"$2\""
         )
-        subprocess.run(["sh", "-c", script], check=True)
+        subprocess.run(["sh", "-c", script, "sh", str(dotenv_path), str(next_path)], check=True)
 
         parsed = dict(line.split("=", 1) for line in next_path.read_text().splitlines() if line)
         assert parsed["USERS_GRANT_CAPABILITY"] == capability
