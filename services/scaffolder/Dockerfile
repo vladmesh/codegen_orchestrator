@@ -35,7 +35,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Tooling is part of the production image contract; copy the pinned uv binary
 # without adding an unlocked Python distribution to the production interpreter.
 COPY --from=builder /uv /usr/local/bin/uv
-RUN uv tool install copier==9.17.1
+# uv links tool executables into ~/.local/bin by default, which is not on PATH here;
+# link copier into /usr/local/bin so scaffold.py can run it by name.
+RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install copier==9.17.1
 
 COPY --from=builder /install /usr/local
 
