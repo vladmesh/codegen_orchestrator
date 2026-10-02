@@ -52,7 +52,7 @@ secrets
 .live-manifests/
 
 # Task-pipeline board runtime state (never committed)
-secretary-data/
+ummanu-data/
 
 # Live harness runtime artifacts
 .live-runs/

@@ -149,7 +149,7 @@ def main() -> int:
     parser.add_argument(
         "--env-file",
         type=Path,
-        default=Path.home() / "secretary" / ".env",
+        default=Path.home() / "ummanu" / ".env",
         help="fallback source for BITLAUNCH_API_KEY when it is not in the environment",
     )
     sub = parser.add_subparsers(dest="command", required=True)

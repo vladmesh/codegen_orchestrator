@@ -45,9 +45,9 @@ Red → Green → Refactor. No exceptions.
 3. **Green**: the minimal code to make the test pass
 4. **Gate**: `make test-unit` + `make lint`, plus a CHANGELOG entry.
 
-**Broad check under Secretary (one canonical form):**
-`python3 -m secretary check broad --reuse --module shared` — the same suite as `make test-unit`
-(`python -m shared` runs the tree's `scripts/test-unit-local.sh`, fixture env included).
+**Broad check under Ummanu (one canonical form):** run the broad check exactly as the Ummanu
+worker packet prints it (`ummanu check broad --reuse --module shared`) — the same suite as
+`make test-unit` (`python -m shared` runs the tree's `scripts/test-unit-local.sh`, fixture env included).
 Order: focused tests while editing → this broad check once, after the last edit, on the dirty tree →
 commit. The receipt is keyed by the content tree, so committing the same content keeps it: after the
 commit quote `check show --module shared`, do not run the suite again. Do not wrap `make test-unit`
