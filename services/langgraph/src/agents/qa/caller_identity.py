@@ -1,6 +1,6 @@
 """The one user a central QA run reads the product's package routes as.
 
-Kit core 2.1 (template 0.7.0) verifies the caller of every package route: a
+Kit core 2.1 (the caller-identity core) verifies the caller of every package route: a
 trusted caller presents the product's `USER_IDENTITY_CAPABILITY` in
 `X-Identity-Capability` and names an *active* user in `X-User-Channel` and
 `X-User-External-Id`, and the route acts for the canonical `user_ref`
