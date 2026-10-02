@@ -3,7 +3,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 import os
-import uuid
 
 import jwt
 import pytest
@@ -96,14 +95,14 @@ async def decisions(db, tid):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("later", [False, True], ids=["iteration0", "bounded-retry"])
-async def test_budget_refusal_is_atomic_once_and_native_resume_creates_real_next_run(
+async def test_budget_refusal_is_atomic_once_and_the_repair_command_resumes_the_unspent_attempt(
     async_client, db_session, dirty_story, later
 ):
     sid, tid, policy_url, version = await ready_task(async_client, db_session, dirty_story, later)
     before_runs, before_events = await history(db_session, tid)
     original_bound = (await db_session.get(Task, tid)).max_iterations
-    # Discard the deciding response. Concurrent native repeats see the committed
-    # non-TODO Task and cannot buy another decision or overwrite its notices.
+    # Discard the deciding response. Concurrent native repeats see the stopped
+    # Story and cannot buy another decision or overwrite its notices.
     await async_client.post(DISPATCH, json={"task_id": tid})
     replies = await asyncio.gather(
         *[async_client.post(DISPATCH, json={"task_id": tid}) for _ in range(5)]
@@ -111,9 +110,12 @@ async def test_budget_refusal_is_atomic_once_and_native_resume_creates_real_next
     assert all(r.json()["reason"] == "task_not_dispatchable" for r in replies)
     task = await db_session.get(Task, tid, populate_existing=True)
     story = await db_session.get(Story, sid, populate_existing=True)
-    assert task.status == story.status == "waiting_human_review"
+    # No Run was bought, so the Task keeps its unspent attempt; only the Story stops.
+    assert (task.status, story.status) == ("todo", "waiting_human_review")
     assert task.current_iteration == int(later)
     assert task.max_iterations == original_bound
+    assert story.quarantine_reason["code"] == "engineering_budget_denied"
+    assert "No budget: limit $0.00" in story.quarantine_reason["detail"]
     assert story.owner_notification["state"] == story.owner_notification["admin_state"] == "owed"
     owed = story.owner_notification
     audits = await decisions(db_session, tid)
@@ -132,16 +134,16 @@ async def test_budget_refusal_is_atomic_once_and_native_resume_creates_real_next
     )
     after_runs, after_events = await history(db_session, tid)
     assert after_runs == before_runs and after_events[: len(before_events)] == before_events
-    assert len(after_events) == len(before_events) + 2
-    # The operator button shares admission and cannot spawn from human review.
-    assert (await async_client.post(f"/api/tasks/{tid}/spawn-worker")).status_code == 422
+    # One immutable note records the decision; it adds no status edge.
+    (note,) = after_events[len(before_events) :]
+    assert note[1]["engineering_dispatch_refusal"] == {
+        "task_id": tid,
+        "decision_id": did,
+        "reason": "engineering_budget_denied",
+    }
+    # No operator start path walks past the stopped Story.
+    assert (await async_client.post(f"/api/tasks/{tid}/spawn-worker")).status_code == 409
     assert (await async_client.post(f"/api/tasks/{tid}/start")).status_code == 409
-    forged = await async_client.post(
-        f"/api/tasks/{tid}/transition",
-        params={"to_status": "backlog"},
-        json={"actor": "admin", "details": {"action": "operator_resume"}},
-    )
-    assert forged.status_code == 409, forged.text
     # Restore real policy capacity through its existing versioned API.
     restored = await async_client.put(
         policy_url,
@@ -153,41 +155,29 @@ async def test_budget_refusal_is_atomic_once_and_native_resume_creates_real_next
         },
     )
     assert restored.status_code == 200, restored.text
-    # Funding by itself does not clear the stop.
+    # Funding by itself does not restart the stopped Story.
     assert (await async_client.post(DISPATCH, json={"task_id": tid})).json()[
         "reason"
     ] == "task_not_dispatchable"
-    owner_id = int(policy_url.rsplit("/", 1)[1])
-    unauthorised = await async_client.post(
-        f"/api/tasks/{tid}/resume",
-        headers=bearer(owner_id),
-        json={"guidance": "Borrow admin actor", "actor": "admin"},
-    )
-    assert unauthorised.status_code == 403, unauthorised.text
-    admin = await async_client.post(
-        "/api/users/", json={"telegram_id": uuid.uuid4().int % 1_000_000_000, "is_admin": True}
-    )
-    assert admin.status_code == 201, admin.text
-    resumed = await async_client.post(
-        f"/api/tasks/{tid}/resume",
-        headers=bearer(admin.json()["id"]),
-        json={"guidance": "Budget restored", "retries": 4},
-    )
-    assert resumed.status_code == 200, resumed.text
-    assert resumed.json()["current_iteration"] == int(later) + 1
-    assert resumed.json()["max_iterations"] == int(later) + 5
-    again = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=dirty_story[1])
-    assert (
-        again.json()["outcome"] == "reused" and again.json()["max_iterations"] == int(later) + 5
-    ), again.text
+    # The ordinary repair command is admissible again; a lost response repeats.
+    for _ in range(2):
+        repaired = await async_client.post(
+            f"/api/stories/{sid}/repair-pr-conflicts", json=dirty_story[1]
+        )
+        assert repaired.status_code == 200, repaired.text
+        assert repaired.json()["outcome"] == "reused" and repaired.json()["task_id"] == tid
+        assert repaired.json()["max_iterations"] == original_bound
+    await db_session.refresh(story)
+    assert (story.status, story.quarantine_reason) == ("in_progress", None)
+    assert story.owner_notification == owed
+    # The command wrote no Task edge: the Task never left todo.
+    assert (await history(db_session, tid))[1] == after_events
     admitted = await async_client.post(DISPATCH, json={"task_id": tid})
     assert admitted.json()["outcome"] == "admitted", admitted.text
     rid = admitted.json()["run_id"]
     run = await db_session.get(Run, rid)
-    assert run.run_metadata["iteration"] == int(later) + 1 and rid != did
+    assert run.run_metadata["iteration"] == int(later) and rid != did
     assert (await async_client.post(DISPATCH, json={"task_id": tid})).json()["run_id"] == rid
-    await db_session.refresh(story)
-    assert story.status == "in_progress" and story.owner_notification == owed
     assert [
         r for r in (await history(db_session, tid))[0] if r[0] in {old[0] for old in before_runs}
     ] == before_runs
@@ -275,14 +265,26 @@ async def test_current_work_and_admission_outrank_old_discovery(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["pr", "cycle", "foreign_story", "unrelated_stop", "live_work"])
-async def test_resume_cannot_borrow_old_refusal_for_replaced_or_busy_work(
+@pytest.mark.parametrize(
+    "change", ["pr", "cycle", "foreign_story", "unsettled_sibling", "live_work"]
+)
+async def test_repair_command_cannot_resume_replaced_or_busy_work(
     async_client, db_session, dirty_story, change
 ):
     sid, tid, policy_url, version = await ready_task(async_client, db_session, dirty_story, False)
     stopped = await async_client.post(DISPATCH, json={"task_id": tid})
     assert stopped.json()["refusal_disposition"], stopped.text
     notice = (await async_client.get(f"/api/stories/{sid}/owner-notification")).json()
+    restored = await async_client.put(
+        policy_url,
+        json={
+            "limit_microusd": 100,
+            "attempt_reservation_microusd": 10,
+            "state": "enabled",
+            "version": version,
+        },
+    )
+    assert restored.status_code == 200
     if change == "pr":
         changed = await async_client.patch(f"/api/stories/{sid}", json={"pr_number": 4})
         assert changed.status_code == 200
@@ -298,22 +300,7 @@ async def test_resume_cannot_borrow_old_refusal_for_replaced_or_busy_work(
             f"/api/tasks/{tid}", json={"story_id": other.json()["id"]}
         )
         assert changed.status_code == 200
-    elif change == "unrelated_stop":
-        changed = await async_client.patch(
-            f"/api/stories/{sid}", json={"quarantine_reason": {"reason": "unrelated"}}
-        )
-        assert changed.status_code == 200
     else:
-        restored = await async_client.put(
-            policy_url,
-            json={
-                "limit_microusd": 100,
-                "attempt_reservation_microusd": 10,
-                "state": "enabled",
-                "version": version,
-            },
-        )
-        assert restored.status_code == 200
         other = await async_client.post(
             "/api/tasks/",
             json={
@@ -323,24 +310,27 @@ async def test_resume_cannot_borrow_old_refusal_for_replaced_or_busy_work(
                 "status": "todo",
             },
         )
-        admitted = await async_client.post(
-            DISPATCH,
-            json={
-                "task_id": other.json()["id"],
-                "origin": "admin",
-                "overrides": ["story_waiting_human_review"],
-            },
-        )
-        assert admitted.json()["outcome"] == "admitted", admitted.text
+        assert other.status_code in {200, 201}, other.text
+        if change == "live_work":
+            admitted = await async_client.post(
+                DISPATCH,
+                json={
+                    "task_id": other.json()["id"],
+                    "origin": "admin",
+                    "overrides": ["story_waiting_human_review"],
+                },
+            )
+            assert admitted.json()["outcome"] == "admitted", admitted.text
     before = await history(db_session, tid)
     response = await async_client.post(
-        f"/api/tasks/{tid}/resume",
-        json={"guidance": "Old refusal does not grant permission", "actor": "admin"},
+        f"/api/stories/{sid}/repair-pr-conflicts", json=dirty_story[1]
     )
     assert response.status_code == 409, response.text
     assert await history(db_session, tid) == before
     task = await db_session.get(Task, tid, populate_existing=True)
-    assert (task.status, task.current_iteration) == ("waiting_human_review", 0)
+    assert (task.status, task.current_iteration) == ("todo", 0)
+    story = await db_session.get(Story, sid, populate_existing=True)
+    assert story.status == "waiting_human_review"
     assert (await async_client.get(f"/api/stories/{sid}/owner-notification")).json() == notice
 
 
@@ -397,7 +387,12 @@ async def test_other_native_no_run_refusals_preserve_their_routing_and_budget_pr
         assert response.json()["reason"] == reason, response.text
         task = await db_session.get(Task, tid, populate_existing=True)
         story = await db_session.get(Story, sid, populate_existing=True)
-        assert task.status == story.status == "waiting_human_review"
+        infrastructure = reason.startswith("executor_") or reason == "workspace_ensure_failed"
+        # An infrastructure park parks the Task; a paid refusal leaves it unspent.
+        assert task.status == ("waiting_human_review" if infrastructure else "todo")
+        assert story.status == "waiting_human_review"
+        if not infrastructure:
+            assert story.quarantine_reason["code"] == "engineering_dispatch_refused"
         assert (
             task.current_iteration == 0
             and story.owner_notification["state"]

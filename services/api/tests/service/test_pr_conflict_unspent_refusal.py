@@ -5,18 +5,26 @@ from pathlib import Path
 import uuid
 
 import pytest
-from sqlalchemy import select
-from test_pr_conflict_dispatch_refusal import DISPATCH, decisions, history, ready_task
+from sqlalchemy import delete, select
+from test_pr_conflict_dispatch_refusal import DISPATCH, bearer, decisions, history, ready_task
 from test_pr_conflict_repair import dirty_story as _dirty_story
 
-from shared.models import Run, Story, Task
+from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import (
+    StoryFailure,
+    StoryFailureCode,
+    story_failure_admin_text,
+    story_failure_owner_text,
+)
+from shared.models import Run, Story, Task, TaskEvent, WorkAdmissionAudit
 
 dirty_story = _dirty_story
-MIGRATION = "d7a1c5e9b3f4_restamp_unspent_conflict_refusal_stops.py"
+MIGRATION = "d7a1c5e9b3f4_unspend_released_conflict_refusals.py"
+REFUSAL = "engineering_dispatch_refusal"
 
 
-async def refuse(client, db, fixture, *, later=False):
-    sid, tid, policy_url, version = await ready_task(client, db, fixture, later)
+async def refuse(client, db, fixture):
+    sid, tid, policy_url, version = await ready_task(client, db, fixture, False)
     refused = await client.post(DISPATCH, json={"task_id": tid})
     assert refused.json()["reason"] == "engineering_budget_denied", refused.text
     assert refused.json()["refusal_disposition"]["task_id"] == tid
@@ -34,6 +42,66 @@ async def top_up(client, policy_url, version):
         },
     )
     assert restored.status_code == 200, restored.text
+
+
+async def released_shape(db, sid, tid):
+    """Rewrite a current refusal into exactly what released code committed for it.
+
+    Released `_dispose_conflict_refusal` moved the Task `todo -> in_dev ->
+    waiting_human_review` with the refusal audit on both edges and in its
+    failure metadata, and stopped the Story as exhausted with owed notices.
+    The real paid audit, budget reservation and Run absence stay as decided.
+    """
+    from src.routers._story_helpers import _record_story_failure
+
+    note = await db.scalar(
+        select(TaskEvent)
+        .where(TaskEvent.task_id == tid, TaskEvent.event_type == "note")
+        .order_by(TaskEvent.id.desc())
+    )
+    assert REFUSAL in note.details
+    decision = note.details[REFUSAL]
+    audit_row = await db.scalar(
+        select(WorkAdmissionAudit).where(WorkAdmissionAudit.reference_id == decision["decision_id"])
+    )
+    task = await db.get(Task, tid, populate_existing=True)
+    story = await db.get(Story, sid, populate_existing=True)
+    detail = (
+        f"PR #{story.pr_number}: repair Task {tid}, decision {decision['decision_id']}, "
+        f"iteration {task.current_iteration}, ceiling {task.max_iterations}: "
+        f"{decision['reason']}. {audit_row.message}"
+    )
+    audit = {
+        REFUSAL: decision,
+        "detail": detail,
+        "engineering_budget": note.details["engineering_budget"],
+    }
+    await db.execute(delete(TaskEvent).where(TaskEvent.id == note.id))
+    for before, after, actor in (
+        ("todo", "in_dev", "internal_service"),
+        ("in_dev", "waiting_human_review", "dispatcher"),
+    ):
+        db.add(
+            TaskEvent(
+                task_id=tid,
+                event_type="status_change",
+                from_status=before,
+                to_status=after,
+                actor=actor,
+                details=audit,
+            )
+        )
+    task.status = "waiting_human_review"
+    task.failure_metadata = {**(task.failure_metadata or {}), **audit}
+    _record_story_failure(
+        story,
+        StoryFailure(
+            code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED, source="scheduler", detail=detail
+        ),
+        StoryStatus.WAITING_HUMAN_REVIEW,
+    )
+    await db.commit()
+    return detail, audit
 
 
 async def run_migration(db):
@@ -59,7 +127,7 @@ async def run_migration(db):
 
 
 async def give_up(client, db, tid):
-    """A real repair Run starts and ends gave_up: the attempt is spent."""
+    """A real repair Run is bought, starts and ends gave_up: the attempt is spent."""
     sid = (await db.get(Task, tid, populate_existing=True)).story_id
     admitted = await client.post(DISPATCH, json={"task_id": tid})
     assert admitted.json()["outcome"] == "admitted", admitted.text
@@ -72,7 +140,6 @@ async def give_up(client, db, tid):
     )
     assert failed.status_code == 200, failed.text
     run = await db.get(Run, rid, populate_existing=True)
-    task = await db.get(Task, tid, populate_existing=True)
     story = await db.get(Story, sid, populate_existing=True)
     events = (await client.get(f"/api/tasks/{tid}/events")).json()
     admission = next(
@@ -92,61 +159,7 @@ async def give_up(client, db, tid):
         },
     )
     assert settled.json()["outcome"] == "exhausted", settled.text
-    assert task.current_iteration == run.run_metadata["iteration"]
     return rid
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("later", [False, True], ids=["iteration0", "bounded-retry"])
-async def test_budget_refusal_says_no_budget_and_top_up_readmits_in_the_same_cycle(
-    async_client, db_session, dirty_story, later
-):
-    sid, tid, policy_url, version = await refuse(async_client, db_session, dirty_story, later=later)
-    command = dirty_story[1]
-    story = await db_session.get(Story, sid, populate_existing=True)
-    task = await db_session.get(Task, tid, populate_existing=True)
-    cycle, bound, iteration = story.reopened_at, task.max_iterations, task.current_iteration
-    assert story.status == task.status == "waiting_human_review"
-    reason = story.quarantine_reason
-    assert reason["code"] == "engineering_budget_denied", reason
-    assert "No budget: limit $0.00, spent $0.00" in reason["detail"]
-    notice = story.owner_notification
-    assert "engineering budget" in notice["text"] and "after repair" not in notice["text"]
-    assert "request the conflict repair again" in notice["text"]
-    (did,) = [a.reference_id for a in await decisions(db_session, tid)]
-    runs_before, _ = await history(db_session, tid)
-    # The forged client edge cannot claim the native re-admission action.
-    forged = await async_client.post(
-        f"/api/tasks/{tid}/transition",
-        params={"to_status": "backlog"},
-        json={"actor": "owner", "details": {"action": "pr_conflict_readmit"}},
-    )
-    assert forged.status_code == 409, forged.text
-
-    await top_up(async_client, policy_url, version)
-    repaired = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
-    assert repaired.status_code == 200, repaired.text
-    assert repaired.json()["outcome"] == "admitted" and repaired.json()["task_id"] == tid
-    # A lost response repeats harmlessly.
-    again = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
-    assert again.json()["outcome"] == "reused", again.text
-    story = await db_session.get(Story, sid, populate_existing=True)
-    task = await db_session.get(Task, tid, populate_existing=True)
-    assert (story.status, story.quarantine_reason, story.reopened_at) == (
-        "in_progress",
-        None,
-        cycle,
-    )
-    assert (task.status, task.current_iteration, task.max_iterations) == ("todo", iteration, bound)
-    assert "engineering_dispatch_refusal" not in task.failure_metadata
-    admitted = await async_client.post(DISPATCH, json={"task_id": tid})
-    assert admitted.json()["outcome"] == "admitted", admitted.text
-    run = await db_session.get(Run, admitted.json()["run_id"])
-    assert run.run_metadata["iteration"] == iteration and run.id != did
-    runs_after, _ = await history(db_session, tid)
-    assert all(run in runs_after for run in runs_before)
-    tasks = (await db_session.scalars(select(Task).where(Task.story_id == sid))).all()
-    assert sum(t.id.startswith("pr-conflict-") for t in tasks) == 1
 
 
 @pytest.mark.asyncio
@@ -156,8 +169,8 @@ async def test_a_real_repair_run_spends_the_attempt_and_the_next_command_is_exha
     sid, tid, policy_url, version = await refuse(async_client, db_session, dirty_story)
     await top_up(async_client, policy_url, version)
     command = dirty_story[1]
-    readmitted = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
-    assert readmitted.json()["outcome"] == "admitted", readmitted.text
+    resumed = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
+    assert resumed.json()["outcome"] == "reused", resumed.text
     rid = await give_up(async_client, db_session, tid)
     story = await db_session.get(Story, sid, populate_existing=True)
     assert story.quarantine_reason["code"] == "pr_conflict_repair_exhausted"
@@ -173,65 +186,82 @@ async def test_a_real_repair_run_spends_the_attempt_and_the_next_command_is_exha
 
 
 @pytest.mark.asyncio
-async def test_migration_restamps_the_stuck_refusal_and_the_standard_command_then_works(
+async def test_migration_returns_the_released_stuck_shape_to_an_unspent_attempt(
     async_client, db_session, dirty_story
 ):
     sid, tid, policy_url, version = await refuse(async_client, db_session, dirty_story)
-    # The shape released code left: the refusal's Story stop labelled as exhausted.
-    story = await db_session.get(Story, sid, populate_existing=True)
-    legacy = {**story.quarantine_reason, "code": "pr_conflict_repair_exhausted"}
-    story.quarantine_reason = legacy
-    await db_session.commit()
+    detail, audit = await released_shape(db_session, sid, tid)
     await top_up(async_client, policy_url, version)
     command = dirty_story[1]
+    # Released data is stuck: the ordinary command answers exhausted and writes nothing.
     stuck = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
     assert stuck.json()["outcome"] == "exhausted", stuck.text
-    before = await history(db_session, tid)
+    runs, events = await history(db_session, tid)
+    story = await db_session.get(Story, sid, populate_existing=True)
+    owed = story.owner_notification
+    assert "still has conflicts after repair" in owed["text"]
 
+    await run_migration(db_session)
+    task = await db_session.get(Task, tid, populate_existing=True)
+    assert (task.status, task.current_iteration) == ("todo", 0)
+    assert REFUSAL not in task.failure_metadata and "pr_conflict_repair" in task.failure_metadata
+    migrated_runs, migrated_events = await history(db_session, tid)
+    assert migrated_runs == runs and migrated_events[: len(events)] == events
+    added = migrated_events[len(events) :]
+    assert [e[1]["migration"] for e in added] == ["d7a1c5e9b3f4", "d7a1c5e9b3f4"]
+    assert all(e[1]["decision_id"] == audit[REFUSAL]["decision_id"] for e in added)
+    story = await db_session.get(Story, sid, populate_existing=True)
+    assert story.status == "waiting_human_review"
+    failure = StoryFailure.model_validate(story.quarantine_reason)
+    assert failure.code is StoryFailureCode.ENGINEERING_BUDGET_DENIED
+    assert failure.detail.startswith(detail) and "No budget at the decision: spent $0.00" in (
+        failure.detail
+    )
+    # Both audiences now name the refusal, in exactly the native texts, and
+    # keep their delivery state: the owed notice delivers the corrected cause.
+    notice = story.owner_notification
+    assert notice["text"] == story_failure_owner_text(failure)
+    assert notice["admin_text"] == story_failure_admin_text(sid, str(story.project_id), failure)
+    assert "after repair" not in notice["text"] and "engineering budget" in notice["text"]
+    assert {k: v for k, v in notice.items() if k not in {"text", "admin_text"}} == {
+        k: v for k, v in owed.items() if k not in {"text", "admin_text"}
+    }
+    snapshot = (story.quarantine_reason, story.owner_notification, await history(db_session, tid))
     await run_migration(db_session)
     story = await db_session.get(Story, sid, populate_existing=True)
-    assert story.quarantine_reason == {**legacy, "code": "engineering_budget_denied"}
-    assert story.status == "waiting_human_review"
-    assert await history(db_session, tid) == before
-    await run_migration(db_session)
-    assert (await db_session.get(Story, sid, populate_existing=True)).quarantine_reason == {
-        **legacy,
-        "code": "engineering_budget_denied",
-    }
+    assert (
+        story.quarantine_reason,
+        story.owner_notification,
+        await history(db_session, tid),
+    ) == snapshot
 
     repaired = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
-    assert repaired.json()["outcome"] == "admitted", repaired.text
+    assert repaired.json()["outcome"] == "reused", repaired.text
     admitted = await async_client.post(DISPATCH, json={"task_id": tid})
     assert admitted.json()["outcome"] == "admitted", admitted.text
+    run = await db_session.get(Run, admitted.json()["run_id"])
+    assert run.run_metadata["iteration"] == 0
+    assert [a.reference_id for a in await decisions(db_session, tid)] == [
+        audit[REFUSAL]["decision_id"]
+    ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shape", ["real_run", "unrelated_stop", "resumed_then_spent"])
-async def test_migration_leaves_every_other_stop_alone(
+@pytest.mark.parametrize("shape", ["real_run", "resumed_then_spent", "unsettled_sibling"])
+async def test_migration_leaves_every_other_history_alone(
     async_client, db_session, dirty_story, shape
 ):
     sid, tid, policy_url, version = await refuse(async_client, db_session, dirty_story)
     command = dirty_story[1]
     await top_up(async_client, policy_url, version)
-    if shape == "unrelated_stop":
-        # Exhaustion text on a Story whose Task never left its refusal and has
-        # no matching decision in the stop: not this card's proven shape.
-        story = await db_session.get(Story, sid, populate_existing=True)
-        story.quarantine_reason = {
-            **story.quarantine_reason,
-            "code": "pr_conflict_repair_exhausted",
-            "detail": "Unrelated operator stop",
-        }
-        await db_session.commit()
-    elif shape == "real_run":
-        readmitted = await async_client.post(
-            f"/api/stories/{sid}/repair-pr-conflicts", json=command
-        )
-        assert readmitted.json()["outcome"] == "admitted", readmitted.text
+    if shape == "real_run":
+        resumed = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
+        assert resumed.json()["outcome"] == "reused", resumed.text
         await give_up(async_client, db_session, tid)
-    else:
-        from test_pr_conflict_dispatch_refusal import bearer
-
+    elif shape == "resumed_then_spent":
+        # The released stuck shape, recovered by the native operator resume and
+        # then genuinely exhausted by a real Run.
+        await released_shape(db_session, sid, tid)
         admin = await async_client.post(
             "/api/users/", json={"telegram_id": uuid.uuid4().int % 1_000_000_000, "is_admin": True}
         )
@@ -243,13 +273,30 @@ async def test_migration_leaves_every_other_stop_alone(
         )
         assert resumed.status_code == 200, resumed.text
         await give_up(async_client, db_session, tid)
+    else:
+        # The released stuck shape, but other cycle work is not settled.
+        await released_shape(db_session, sid, tid)
+        other = await async_client.post(
+            "/api/tasks/",
+            json={
+                "project_id": command["project_id"],
+                "story_id": sid,
+                "title": "Unsettled work",
+                "status": "todo",
+            },
+        )
+        assert other.status_code in {200, 201}, other.text
     story = await db_session.get(Story, sid, populate_existing=True)
+    assert story.quarantine_reason["code"] == "pr_conflict_repair_exhausted"
     before = (story.status, story.quarantine_reason, story.owner_notification)
+    task_before = await db_session.get(Task, tid, populate_existing=True)
+    task_state = (task_before.status, task_before.failure_metadata)
     runs = await history(db_session, tid)
     await run_migration(db_session)
     story = await db_session.get(Story, sid, populate_existing=True)
     assert (story.status, story.quarantine_reason, story.owner_notification) == before
+    task = await db_session.get(Task, tid, populate_existing=True)
+    assert (task.status, task.failure_metadata) == task_state
     assert await history(db_session, tid) == runs
-    if shape != "unrelated_stop":
-        exhausted = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
-        assert exhausted.json()["outcome"] == "exhausted", exhausted.text
+    exhausted = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
+    assert exhausted.json()["outcome"] == "exhausted", exhausted.text

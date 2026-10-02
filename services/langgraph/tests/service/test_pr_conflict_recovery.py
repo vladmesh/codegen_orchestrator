@@ -168,7 +168,7 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(  # noq
         await real_redis.set(EXECUTOR_DIAGNOSTICS_REDIS_KEY, snapshot.model_dump_json())
         if ending.startswith("budget-"):
             await exercise_budget_refusal(
-                api, real_redis, sid, project, repair, original["id"], ending
+                api, real_redis, sid, project, repair, original["id"], ending, telegram
             )
             return
         delayed_dispatch = await begin_dispatch(real_redis, sid, ending)
@@ -216,8 +216,8 @@ async def test_dirty_pr_reaches_real_admitted_run_and_durable_exhaustion(  # noq
         await api.close()
 
 
-def assert_refusal_preserves_task_history(before_events, events, expected_details):
-    # Atomic retries share created_at; the events API does not order timestamp ties.
+def assert_refusal_preserves_task_history(before_events, events, expected_details, iteration):
+    # The events API does not order timestamp ties; compare by id.
     before_by_id = {event["id"]: event for event in before_events}
     after_by_id = {event["id"]: event for event in events}
     assert len(before_by_id) == len(before_events)
@@ -225,28 +225,21 @@ def assert_refusal_preserves_task_history(before_events, events, expected_detail
     assert before_by_id.keys() <= after_by_id.keys()
     assert all(after_by_id[event_id] == event for event_id, event in before_by_id.items())
     added = [event for event in events if event["id"] not in before_by_id]
-    assert len(added) == 2
-    for source, target, actor in [
-        ("todo", "in_dev", "internal_service"),
-        ("in_dev", "waiting_human_review", "dispatcher"),
-    ]:
-        matching = [
-            event
-            for event in added
-            if (event["from_status"], event["to_status"]) == (source, target)
-        ]
-        assert len(matching) == 1
-        event = matching[0]
-        assert event["task_id"] == expected_details["engineering_dispatch_refusal"]["task_id"]
-        assert event["event_type"] == "status_change" and event["iteration"] is None
-        assert event["actor"] == actor and event["details"] == expected_details
+    # No Run was bought: the Task keeps its unspent attempt in todo, and only an
+    # immutable note records the paid decision. There is no status edge.
+    assert len(added) == 1
+    event = added[0]
+    assert event["task_id"] == expected_details["engineering_dispatch_refusal"]["task_id"]
+    assert event["event_type"] == "note" and event["iteration"] == iteration
+    assert event["from_status"] is None and event["to_status"] is None
+    assert event["actor"] == "dispatcher" and event["details"] == expected_details
 
 
 def usd(microusd):
     return f"${microusd / 1_000_000:,.2f}"
 
 
-async def exercise_budget_refusal(api, redis, sid, project, repair, original_id, ending):
+async def exercise_budget_refusal(api, redis, sid, project, repair, original_id, ending, telegram):
     url = f"engineering-budget-policies/{project['owner_id']}"
     policy = await set_budget_policy(
         api,
@@ -278,7 +271,7 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
     await asyncio.to_thread(scheduler, "refusal-lost", sid)
     task = await api.get_task(repair["id"])
     story = await api.get_story(sid)
-    assert task.status.value == story.status.value == "waiting_human_review"
+    assert (task.status.value, story.status.value) == ("todo", "waiting_human_review")
     assert task.current_iteration == int(later) and task.max_iterations == repair["max_iterations"]
     audits = await rows(
         "SELECT * FROM work_admission_audits WHERE subject='paid_work' "
@@ -327,6 +320,7 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
             # omits it. This fixture's enabled zero limit gives exactly zero capacity.
             "engineering_budget": budget | {"available_microusd": 0},
         },
+        int(later),
     )
     assert await redis.xrange(ENGINEERING_QUEUE) == publications
     notice = await api.get(f"stories/{sid}/owner-notification")
@@ -350,23 +344,34 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
             "version": policy["version"],
         },
     )
-    # Existing authenticated internal/admin recovery deliberately grants the
-    # next iteration and ceiling; money alone cannot resume a parked Task.
+    # Money alone does not restart the stopped Story.
     refused = await api.post(
         "work-admission/engineering-dispatches", json={"task_id": repair["id"]}
     )
     assert refused["reason"] == "task_not_dispatchable"
-    resumed = await api.post(
-        f"tasks/{repair['id']}/resume", json={"guidance": "Policy capacity restored", "retries": 4}
-    )
-    assert (
-        resumed["current_iteration"] == int(later) + 1
-        and resumed["max_iterations"] == int(later) + 5
+    # The owner's ordinary repair request through the PO is admissible again:
+    # the attempt is unspent, so the same Task resumes in its iteration and bound.
+    from src.agents.po import tools_stories
+    from src.agents.po.tools import get_all_tools
+
+    registered = next(tool for tool in get_all_tools() if tool.name == "reopen_story")
+    with patch.object(tools_stories, "_get_api", return_value=api):
+        response = await registered.ainvoke(
+            {"story_id": sid}, config={"configurable": {"telegram_chat_id": str(telegram)}}
+        )
+    assert f"resumed for conflict repair in Task {repair['id']}" in response, response
+    resumed_story = await api.get_story(sid)
+    assert resumed_story.status.value == "in_progress" and resumed_story.quarantine_reason is None
+    resumed = await api.get_task(repair["id"])
+    assert (resumed.status.value, resumed.current_iteration, resumed.max_iterations) == (
+        "todo",
+        int(later),
+        repair["max_iterations"],
     )
     await asyncio.to_thread(scheduler, "dispatch", sid)
     after = await rows("SELECT * FROM runs WHERE task_id=%s ORDER BY created_at", repair["id"])
     assert len(after) == len(before_runs) + 1 and after[:-1] == before_runs
-    assert after[-1]["metadata"]["iteration"] == int(later) + 1
+    assert after[-1]["metadata"]["iteration"] == int(later)
     messages = [
         EngineeringMessage.model_validate_json(fields[b"data"])
         for _, fields in await redis.xrange(ENGINEERING_QUEUE)

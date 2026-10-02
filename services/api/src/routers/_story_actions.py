@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.clients.github import GitHubAppClient
-from shared.contracts.dto.engineering_dispatch import ENGINEERING_DISPATCH_REFUSAL_KEY
 from shared.contracts.dto.engineering_execution import (
     ENGINEERING_INFRASTRUCTURE_KEY,
     EngineeringExecutionPhase,
@@ -42,7 +41,6 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotificationState,
 )
 from shared.contracts.dto.pr_conflict_repair import (
-    PR_CONFLICT_READMIT_ACTION,
     PR_CONFLICT_REPAIR_KEY,
     PRConflictRepairCommand,
     PRConflictRepairEvidence,
@@ -103,6 +101,7 @@ from .projects_guards import check_project_access, load_locked_project
 logger = structlog.get_logger()
 
 _LIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED.value, RunStatus.RUNNING.value})
+_SETTLED_TASK_STATUSES = frozenset({TaskStatus.DONE.value, TaskStatus.CANCELLED.value})
 
 action_router = APIRouter()
 action_router.include_router(pr_conflict_attempt_router)
@@ -159,17 +158,16 @@ async def repair_pr_conflicts(
         and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
         and reason.get("code") == StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED.value
     )
-    # A paid refusal before any Run left the attempt unspent: this same command
-    # re-admits the Task once the Story still carries that refusal's own stop.
-    refusal = await _unspent_refusal(task, story, db)
+    current = [row for row in tasks if in_work_cycle(row.created_at, story.reopened_at, row.status)]
+    bought = await _bought_iterations(task, db)
+    unspent = _unspent_repair(task, story, current, bought)
     if story.status not in {StoryStatus.PR_REVIEW.value, StoryStatus.IN_PROGRESS.value}:
-        if not (released_park or exhausted_park or refusal is not None):
+        if not (released_park or exhausted_park or unspent):
             _repair_conflict("This human-review reason does not permit conflict recovery.")
     if task is None and story.status == StoryStatus.IN_PROGRESS.value:
         _repair_conflict("The story has engineering work in progress.")
     if command.expected_head_sha is None and not (released_park or task is not None):
         _repair_conflict("Automatic admission requires the observed PR head.")
-    current = [row for row in tasks if in_work_cycle(row.created_at, story.reopened_at, row.status)]
     if any(row.project_id != story.project_id for row in current):
         _repair_conflict("A story Task belongs to another project.")
     if task is None and (
@@ -253,20 +251,17 @@ async def repair_pr_conflicts(
         outcome = PRConflictRepairOutcome.ADMITTED
     else:
         evidence = await _repair_admission_evidence(task, story, repository.id, db)
-        if refusal is not None:
-            outcome = await _readmit_refused_task(
-                task, story, refusal, identity, head_sha, default_sha, db
-            )
-        elif exhausted_park:
-            outcome = PRConflictRepairOutcome.EXHAUSTED
-        elif not live and _repair_ended(task, evidence):
-            _record_repair_exhausted(story, task, head_sha, evidence)
-            await db.commit()
-            outcome = PRConflictRepairOutcome.EXHAUSTED
-        else:
-            if story.status != StoryStatus.IN_PROGRESS.value:
-                _repair_conflict("A pending repair has inconsistent story state.")
-            outcome = PRConflictRepairOutcome.REUSED
+        outcome = await _settle_existing_repair(
+            task,
+            story,
+            evidence,
+            head_sha,
+            unspent=unspent,
+            exhausted_park=exhausted_park,
+            live=live,
+            bought=bought,
+            db=db,
+        )
     return PRConflictRepairRead(
         outcome=outcome,
         story_id=story.id,
@@ -277,6 +272,46 @@ async def repair_pr_conflicts(
         if outcome is PRConflictRepairOutcome.EXHAUSTED
         else None,
     )
+
+
+def _unspent_repair(task: Task | None, story: Story, current: list[Task], bought: list[int]):
+    """Whether a stopped Story's repair Task still holds its unspent attempt.
+
+    The cycle's repair Task still waits in `todo` and no Run was bought for its
+    iteration (a paid refusal buys none), while all other cycle work is settled.
+    The stopped Story is then simply admissible again; no Story text decides it.
+    """
+    return (
+        task is not None
+        and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
+        and task.status == TaskStatus.TODO.value
+        and not any(iteration >= task.current_iteration for iteration in bought)
+        and all(row.status in _SETTLED_TASK_STATUSES for row in current if row.id != task.id)
+    )
+
+
+async def _settle_existing_repair(
+    task, story, evidence, head_sha, *, unspent, exhausted_park, live, bought, db
+):
+    """The repeat request's outcome for the cycle's existing repair Task."""
+    if unspent:
+        _do_transition(story, StoryStatus.IN_PROGRESS)
+        story.quarantine_reason = None
+        await db.commit()
+        return PRConflictRepairOutcome.REUSED
+    if exhausted_park:
+        return PRConflictRepairOutcome.EXHAUSTED
+    if not live and _repair_ended(task, evidence):
+        # Exhaustion counts bought work: a Task that ended without any repair
+        # Run was never an attempt, so it is refused rather than called spent.
+        if not bought:
+            _repair_conflict("The repair Task ended before any repair Run was bought.")
+        _record_repair_exhausted(story, task, head_sha, evidence)
+        await db.commit()
+        return PRConflictRepairOutcome.EXHAUSTED
+    if story.status != StoryStatus.IN_PROGRESS.value:
+        _repair_conflict("A pending repair has inconsistent story state.")
+    return PRConflictRepairOutcome.REUSED
 
 
 def _repair_ended(task: Task, evidence: PRConflictRepairEvidence) -> bool:
@@ -307,62 +342,28 @@ def _record_repair_exhausted(
         _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
 
 
-async def _unspent_refusal(task: Task | None, story: Story, db: AsyncSession):
-    from ._pr_conflict_attempt import records_admission_refusal, unspent_dispatch_refusal
+async def _bought_iterations(task: Task | None, db: AsyncSession) -> list[int]:
+    """Iterations of the repair Task's engineering Runs that spent an attempt.
 
-    if task is None or story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
-        return None
-
-    events = list(
-        (
-            await db.scalars(
-                select(TaskEvent).where(TaskEvent.task_id == task.id).order_by(TaskEvent.id)
-            )
-        ).all()
-    )
-    runs = list(
-        (
-            await db.scalars(
-                select(Run).where(Run.task_id == task.id, Run.type == RunType.ENGINEERING.value)
-            )
-        ).all()
-    )
-    refusal = await unspent_dispatch_refusal(task, events, runs, db)
-    if refusal is None or not records_admission_refusal(story, task, refusal):
-        return None
-    return refusal
-
-
-async def _readmit_refused_task(task, story, refusal, identity, head_sha, default_sha, db):
-    """Return the refused Task to dispatch in its unspent iteration and bound.
-
-    The native status edges carry the re-admission action, which supersedes the
-    committed refusal's dispatch fence; the generic transition route refuses it.
+    Only the paid gate's admission creates an engineering Run, with its budget
+    hold, iteration and queue handoff; a refusal creates none. A Run aborted
+    before handoff provably reached no worker and spends nothing. Column-only:
+    the Task rows this route holds fence any new Run for the Task.
     """
-    audit = {
-        "action": PR_CONFLICT_READMIT_ACTION,
-        "decision_id": refusal.decision_id,
-        "iteration": task.current_iteration,
-        "head_sha": head_sha,
-        "default_sha": default_sha,
-        "previous_quarantine": story.quarantine_reason,
-    }
-    for before, after in (
-        (TaskStatus.WAITING_HUMAN_REVIEW, TaskStatus.BACKLOG),
-        (TaskStatus.BACKLOG, TaskStatus.TODO),
-    ):
-        validate_transition(task.status, after)
-        task.status = after.value
-        await create_status_event(task, before, after, identity, audit, db)
-    task.failure_metadata = {
-        key: value
-        for key, value in (task.failure_metadata or {}).items()
-        if key not in {ENGINEERING_DISPATCH_REFUSAL_KEY, "detail", "engineering_budget"}
-    }
-    _do_transition(story, StoryStatus.IN_PROGRESS)
-    story.quarantine_reason = None
-    await db.commit()
-    return PRConflictRepairOutcome.ADMITTED
+    if task is None:
+        return []
+    rows = (
+        await db.execute(
+            select(Run.run_metadata).where(
+                Run.task_id == task.id, Run.type == RunType.ENGINEERING.value
+            )
+        )
+    ).scalars()
+    return [
+        metadata["iteration"]
+        for metadata in (row or {} for row in rows)
+        if not metadata.get("pre_handoff_aborted") and type(metadata.get("iteration")) is int
+    ]
 
 
 async def _repair_admission_evidence(

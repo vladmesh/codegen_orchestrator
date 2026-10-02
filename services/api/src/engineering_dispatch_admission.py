@@ -500,12 +500,18 @@ async def _park_infrastructure_refusal(
 
 
 async def _dispose_conflict_refusal(task, story, decision_id, started, command, db):
-    """Dispose the paid gate's own no-Run decision on its already-fenced rows."""
-    from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+    """Dispose the paid gate's own no-Run decision on its already-fenced rows.
 
-    from .routers._pr_conflict_attempt import _start_interrupted_dispatch
+    No Run exists, so the repair attempt is unspent: the Task stays `todo` in its
+    iteration and bound, and only the Story stops, naming the refusal (never
+    exhaustion) with both owed audiences. The ordinary repair command returns
+    the Story to work once the cause is fixed; a Story out of `in_progress`
+    already refuses conflict dispatch before the paid gate.
+    """
+    from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+    from shared.contracts.dto.task import TaskEventType
+
     from .routers._story_helpers import _do_transition, _record_story_failure
-    from .routers._task_helpers import create_status_event, validate_transition
 
     if started.run_id is not None or not started.admission.message:
         raise RuntimeError("Conflict refusal requires a no-Run paid decision with its message")
@@ -520,25 +526,24 @@ async def _dispose_conflict_refusal(task, story, decision_id, started, command, 
         f"{disposition.reason.value}. {await _budget_words(started.engineering_budget, db)}"
         f"{started.admission.message}"
     )
-    audit = {
-        ENGINEERING_DISPATCH_REFUSAL_KEY: disposition.model_dump(mode="json"),
-        "detail": detail,
-        **(
-            {"engineering_budget": started.engineering_budget.model_dump(mode="json")}
-            if started.engineering_budget is not None
-            else {}
-        ),
-    }
-    await _start_interrupted_dispatch(task, audit, db)
-    validate_transition(task.status, TaskStatus.WAITING_HUMAN_REVIEW)
-    before = task.status
-    task.status = TaskStatus.WAITING_HUMAN_REVIEW.value
-    await create_status_event(
-        task, before, TaskStatus.WAITING_HUMAN_REVIEW, command.origin.value, audit, db
+    # Task history keeps the decision as a note; it is no status edge or fence.
+    db.add(
+        TaskEvent(
+            task_id=task.id,
+            event_type=TaskEventType.NOTE.value,
+            actor=command.origin.value,
+            iteration=task.current_iteration,
+            details={
+                ENGINEERING_DISPATCH_REFUSAL_KEY: disposition.model_dump(mode="json"),
+                "detail": detail,
+                **(
+                    {"engineering_budget": started.engineering_budget.model_dump(mode="json")}
+                    if started.engineering_budget is not None
+                    else {}
+                ),
+            },
+        )
     )
-    task.failure_metadata = {**(task.failure_metadata or {}), **audit}
-    # No Run exists, so the repair attempt is unspent: the stop names the
-    # refusal, never exhaustion, and the ordinary repair command re-admits it.
     _record_story_failure(
         story,
         StoryFailure(
@@ -880,7 +885,7 @@ async def _conflict_dispatch_story(task, overrides, db):
         return None, None
     from shared.contracts.dto.pr_conflict_repair import cycle_stamp
 
-    from .routers._pr_conflict_attempt import _admission_evidence, _pending_dispatch_refusal
+    from .routers._pr_conflict_attempt import _admission_evidence
     from .routers._story_helpers import _get_story_for_update
 
     story = await _get_story_for_update(task.story_id, db)
@@ -894,7 +899,6 @@ async def _conflict_dispatch_story(task, overrides, db):
     evidence = await _admission_evidence(task, story, events, db)
     if (
         story.status != StoryStatus.IN_PROGRESS.value
-        or _pending_dispatch_refusal(events) is not None
         or story.pr_number != evidence.pr_number
         or cycle_stamp(story.reopened_at or story.created_at)
         != cycle_stamp(evidence.cycle_started_at)

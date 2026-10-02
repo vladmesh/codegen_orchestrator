@@ -12,9 +12,6 @@ from shared.contracts.dto.task import TaskStatus
 
 PR_CONFLICT_REPAIR_KEY = "pr_conflict_repair"
 PR_CONFLICT_REPAIR_ATTEMPT_KEY = "pr_conflict_repair_attempt"
-#: The status-edge action of the repair command re-admitting a Task whose
-#: committed no-Run paid refusal left its attempt unspent.
-PR_CONFLICT_READMIT_ACTION = "pr_conflict_readmit"
 
 
 def cycle_stamp(moment: datetime) -> datetime:

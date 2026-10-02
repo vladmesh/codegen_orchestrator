@@ -225,10 +225,11 @@ ENGINEERING_DISPATCH_REFUSAL_KEY = "engineering_dispatch_refusal"
 
 
 class EngineeringDispatchRefusalDisposition(BaseModel):
-    """Admission committed human review for this Task and its current Story.
+    """Admission committed human review for this Task's current Story.
 
     `decision_id` references WorkAdmissionAudit, and budget admission when the
-    paid gate reached it. No Run exists for this decision.
+    paid gate reached it. No Run exists for this decision, so the Task stays
+    `todo` with its repair attempt unspent.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -272,6 +273,6 @@ class EngineeringDispatchRead(BaseModel):
     #: For a typed pre-agent infrastructure refusal, what the same admission
     #: transaction did to the task and story. `None` for every other decision.
     infrastructure_park: EngineeringInfrastructureParkDisposition | None = None
-    #: The conflict refusal's Task/Story stop and both owed notice audiences
-    #: committed together. Consumers perform no independent start/park writes.
+    #: The conflict refusal's Story stop and both owed notice audiences, committed
+    #: together; the Task stays todo. Consumers perform no start/park writes.
     refusal_disposition: EngineeringDispatchRefusalDisposition | None = None

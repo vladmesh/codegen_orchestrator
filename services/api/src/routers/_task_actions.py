@@ -16,7 +16,6 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusalDisposition,
 )
 from shared.contracts.dto.engineering_execution import ENGINEERING_INFRASTRUCTURE_KEY
-from shared.contracts.dto.pr_conflict_repair import PR_CONFLICT_READMIT_ACTION
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskEventType, TaskStatus
@@ -468,7 +467,6 @@ async def _validate_conflict_resume(task, story, runs, db):
     from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 
     from ._pr_conflict_attempt import (
-        ADMISSION_REFUSAL_STOPS,
         _admission_evidence,
         _pending_dispatch_refusal,
         _verify_recorded_stop,
@@ -492,11 +490,7 @@ async def _validate_conflict_resume(task, story, runs, db):
         failure = StoryFailure.model_validate(story.quarantine_reason)
         if (
             failure.code
-            not in {
-                StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
-                StoryFailureCode.NO_NEW_COMMIT,
-                *ADMISSION_REFUSAL_STOPS,
-            }
+            not in {StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED, StoryFailureCode.NO_NEW_COMMIT}
             or task.id not in failure.detail
         ):
             _refuse_resume("conflict_resume_refused", "The Story has no matching conflict stop.")
@@ -574,10 +568,7 @@ def _refuse_unfenced_conflict_start(task: Task) -> None:
 
 
 def _refuse_client_resume_audit(task: Task, body: TaskTransition) -> None:
-    if task.id.startswith("pr-conflict-") and body.details.get("action") in {
-        RESUME_ACTION,
-        PR_CONFLICT_READMIT_ACTION,
-    }:
+    if task.id.startswith("pr-conflict-") and body.details.get("action") == RESUME_ACTION:
         raise HTTPException(409, detail={"code": "conflict_resume_requires_operator_command"})
 
 

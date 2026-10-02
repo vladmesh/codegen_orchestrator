@@ -15,27 +15,24 @@ no Run and a deferred paid gate result does not itself count an engineering atte
 | Non-TODO/unadmitted Task, blocker, internal/legacy/draft project, workspace pending, roster change, stale cycle/PR or Story review | Admission refuses without Task/Story disposition; dispatcher waits for later eligibility. |
 | Failed workspace ensure | Admission's native infrastructure park and workspace audit; infrastructure retry clears the exact park. |
 | Sibling status/live Run, own live Run, finished current-iteration Run | Locked admission refuses busy work or returns a repair; dispatcher uses admitted-start or scoped terminal settlement, without buying another attempt. |
-| Emergency stop, paid-count deferral, first/later budget denial | Paid gate audits the real decision; conflict admission commits Task/Story human review and both owed audiences together. The Story stop is `engineering_budget_denied` (detail names limit, spend, available and the per-attempt reservation) or `engineering_dispatch_refused`, never `pr_conflict_repair_exhausted`: no Run exists, so the repair attempt is unspent. |
+| Emergency stop, paid-count deferral, first/later budget denial | Paid gate audits the real decision and buys no Run, so the repair attempt is unspent: the Task stays `todo` in its iteration and bound with an immutable decision note, and the Story alone stops with both owed audiences. The stop is `engineering_budget_denied` (limit, spend, available, per-attempt reservation) or `engineering_dispatch_refused`, never `pr_conflict_repair_exhausted`. |
 | Executor unavailable/confirmation required | Paid gate audits; admission commits the existing infrastructure park, even for deferred confirmation; scheduler consumes it and infrastructure retry owns recovery. |
 | Admitted/lost-response start, operator spawn | Admission creates a real Run/hold; dispatcher publishes then uses locked admitted-start; operator spawn locks admission/start before publication. Generic conflict start remains refused. |
 | Terminal/reclaimed/stuck/failed/finished-Run recovery | Consumer persists the real Run; scoped attempt-outcome owns retry/ending. Reclaim ACKs terminal work; native supervision or TODO recovery settles it. Infrastructure/resource/no-new-commit priorities remain. |
 | Deliberate human recovery | Authenticated internal/admin Task resume checks the current conflict admission and matching stop, records the fresh iteration/bound, and returns Task/Story eligibility. Admission recognises only that native audited bound; prior decisions/Runs remain history. |
 
-`EngineeringDispatchRead.refusal_disposition` names the parked conflict Task and
+`EngineeringDispatchRead.refusal_disposition` names the conflict Task and
 the immutable paid decision reference, never a Run FK. The scheduler consumes
 the committed result without another start, Story stop or notice write. Lost
-responses converge through the non-TODO fence and normal owed-notice delivery.
+responses converge because conflict dispatch refuses a Story out of
+`in_progress` before the paid gate, and through normal owed-notice delivery.
 Other Task dispatch policy and the released dirty-Story restart boundary retain
 their existing ownership.
 The native resume status event alone may extend the bound; generic conflict
-transition/reopen bodies cannot claim `action=operator_resume` or
-`action=pr_conflict_readmit`, and client note events have no status edges that
-could supply that authority.
-An immutable no-Run stop continues to fence dispatch after mutable status or
-metadata changes until a deliberate resume or repair re-admission supersedes it.
-Revision `d7a1c5e9b3f4` restamps, by code only, stops released code mislabelled
-`pr_conflict_repair_exhausted` for that same immutable no-Run shape. Current conflict
-admission and live-work checks also precede workspace-failure parks.
+transition/reopen bodies cannot claim `action=operator_resume`, and client note
+events have no status edges that could supply that authority.
+Current conflict admission and live-work checks also precede workspace-failure
+parks.
 
 `POST /api/stories/{id}/repair-pr-conflicts` accepts `PRConflictRepairCommand`
 and returns `PRConflictRepairRead`. The scheduler supplies the observed head;
@@ -55,20 +52,20 @@ the required `llm.task_default_max_iterations` bound, which normal engineering
 dispatch enforces. No Run or queue message is created here; ordinary task
 dispatch uses `/work-admission/engineering-dispatches`.
 
-A repair attempt is spent by an engineering Run of the Task's current iteration
-(pre-handoff aborts excluded), never by Task creation or an admission refusal.
-While the Task sits in human review behind a committed no-Run paid refusal at its
-current iteration (refusal status edge, its single `paid_work` audit naming this
-Task/Story/iteration, no Run for the decision or the iteration) and the Story
-still carries that refusal's own stop, this same command re-admits it: Task
-`waiting_human_review → backlog → todo` with `action=pr_conflict_readmit` status
-edges, unchanged iteration and bound, Story back to `in_progress` in the same
-cycle. That native edge supersedes the refusal's dispatch fence; the generic
-transition route refuses the action. Story text alone grants nothing.
+A repair attempt is spent by bought work: an engineering Run the paid gate
+admitted for the Task (its budget hold, iteration identity and queue handoff),
+excluding a Run aborted before handoff. Task creation and admission refusals
+spend nothing. While the Story is stopped in `waiting_human_review`, the repair
+Task is still `todo`, no Run was bought for its current iteration and all other
+cycle Tasks are settled, a repeated request is admissible again: the Story
+returns to `in_progress` in the same cycle and the same Task stays dispatchable
+with its iteration and bound (`reused`). No Task edge is written and no Story
+text decides it.
 
 Once this Task completes, exhausts its failed-iteration retries, is cancelled or
-requires human review, a still dirty PR exhausts repair rather than creating
-another Task, even if its head changed. The native iteration ceiling permits
+requires human review after bought work, a still dirty PR exhausts repair rather
+than creating another Task, even if its head changed. A Task that ended with no
+bought Run is refused instead of called exhausted. The native iteration ceiling permits
 iteration zero followed by retries up to `max_iterations`; a failed attempt
 below that ceiling remains eligible for the ordinary supervisor retry.
 Exhaustion commits the named PR, Task and bound with both owed notice audiences.
