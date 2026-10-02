@@ -572,8 +572,7 @@ async def _budget_words(budget, db: AsyncSession) -> str:
     )
     return (
         f"No budget: limit {_usd(limit)}, spent {_usd(budget.known_spend_microusd)}, "
-        f"held {_usd(budget.active_held_microusd)}, available "
-        f"{_usd(budget.available_microusd or 0)}; one attempt reserves "
+        f"available {_usd(budget.available_microusd or 0)}; one attempt reserves "
         f"{_usd(budget.reservation_microusd)}. "
     )
 

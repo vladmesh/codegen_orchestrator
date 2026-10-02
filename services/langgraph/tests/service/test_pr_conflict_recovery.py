@@ -242,6 +242,10 @@ def assert_refusal_preserves_task_history(before_events, events, expected_detail
         assert event["actor"] == actor and event["details"] == expected_details
 
 
+def usd(microusd):
+    return f"${microusd / 1_000_000:,.2f}"
+
+
 async def exercise_budget_refusal(api, redis, sid, project, repair, original_id, ending):
     url = f"engineering-budget-policies/{project['owner_id']}"
     policy = await set_budget_policy(
@@ -299,11 +303,15 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
         == before_runs
     )
     events = await api.get(f"tasks/{repair['id']}/events")
+    # The refusal stop names the budget it was decided on: no budget, never exhaustion.
     detail = (
         f"PR #{story.pr_number}: repair Task {repair['id']}, decision {did}, "
         f"iteration {int(later)}, ceiling {repair['max_iterations']}: "
-        f"engineering_budget_denied. {audits[0]['message']}"
+        f"engineering_budget_denied. No budget: limit $0.00, "
+        f"spent {usd(budget['known_spend_microusd'])}, available $0.00; one attempt "
+        f"reserves {usd(budget['reservation_microusd'])}. {audits[0]['message']}"
     )
+    assert story.quarantine_reason["code"] == "engineering_budget_denied"
     assert story.quarantine_reason["detail"] == detail
     assert_refusal_preserves_task_history(
         before_events,

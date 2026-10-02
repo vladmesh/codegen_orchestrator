@@ -123,7 +123,8 @@ def _unspent_refusal_stop(connection, story) -> str | None:
         return None
     runs = connection.execute(
         sa.text(
-            "SELECT id, run_metadata FROM runs "
+            # The ORM attribute run_metadata maps to the column "metadata".
+            "SELECT id, metadata AS run_metadata FROM runs "
             "WHERE id = :did OR (task_id = :tid AND type = 'engineering')"
         ).columns(sa.column("id"), sa.column("run_metadata", sa.JSON)),
         {"did": decision_id, "tid": task_id},
