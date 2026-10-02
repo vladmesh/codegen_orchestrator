@@ -26,6 +26,19 @@ def test_empty_engineering_tells_the_owner_nothing_was_produced_and_a_person_mus
     assert "Nothing more happens automatically" in text
 
 
+def test_a_budget_refusal_tells_the_owner_no_budget_not_exhaustion():
+    failure = StoryFailure(
+        code=StoryFailureCode.ENGINEERING_BUDGET_DENIED,
+        source="scheduler",
+        detail="No budget: limit $5.00, spent $5.00",
+    )
+    text = story_failure_owner_text(failure)
+    assert "engineering budget" in text and "nothing was spent" in text
+    assert "limit $5.00, spent $5.00" in text
+    assert "request the conflict repair again" in text
+    assert "still has conflicts" not in text and "platform problem" not in text
+
+
 def test_the_detail_is_redacted_before_it_can_be_stored():
     failure = StoryFailure(
         code=StoryFailureCode.SCAFFOLD_FAILED,

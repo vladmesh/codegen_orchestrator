@@ -63,6 +63,40 @@ def refusal(admitted, monkeypatch):
     return task, story, events, runs, db, writes
 
 
+def released_park(task, story, events):
+    """Rewrite the refusal into what released code committed: a parked Task, exhausted stop.
+
+    Operator resume still owns such unmigrated parked data, so its fences are
+    exercised on exactly that shape.
+    """
+    from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+    from src.routers._story_helpers import _record_story_failure
+
+    note = events.pop()
+    audit = note.details
+    for before, after in (("todo", "in_dev"), ("in_dev", "waiting_human_review")):
+        events.append(
+            TaskEvent(
+                task_id=task.id,
+                event_type="status_change",
+                from_status=before,
+                to_status=after,
+                details=audit,
+            )
+        )
+    task.status = "waiting_human_review"
+    task.failure_metadata = {**(task.failure_metadata or {}), **audit}
+    _record_story_failure(
+        story,
+        StoryFailure(
+            code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
+            source="scheduler",
+            detail=audit["detail"],
+        ),
+        admission.StoryStatus.WAITING_HUMAN_REVIEW,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "reason,outcome",
@@ -73,7 +107,7 @@ def refusal(admitted, monkeypatch):
     ],
 )
 @pytest.mark.parametrize("iteration", [0, 1])
-async def test_no_run_refusal_disposes_task_story_and_both_notices(
+async def test_no_run_refusal_stops_the_story_and_leaves_the_task_unspent(
     refusal, reason, outcome, iteration
 ):
     task, story, events, runs, db, writes = refusal
@@ -93,8 +127,16 @@ async def test_no_run_refusal_disposes_task_story_and_both_notices(
     result = await admission.admit_engineering_dispatch(
         EngineeringDispatchCommand(task_id=task.id), db
     )
-    assert task.status == story.status == "waiting_human_review"
+    # No Run was bought: the Task keeps its attempt in todo; only the Story stops.
+    assert (task.status, story.status) == ("todo", "waiting_human_review")
     assert task.current_iteration == iteration and task.max_iterations == 3
+    assert story.quarantine_reason["code"] == (
+        "engineering_budget_denied"
+        if reason == "engineering_budget_denied"
+        else "engineering_dispatch_refused"
+    )
+    assert events[-1].event_type == "note" and events[-1].iteration == iteration
+    assert events[-1].details["engineering_dispatch_refusal"]["task_id"] == task.id
     assert result.run_id is None
     assert result.refusal_disposition.task_id == task.id
     decision = result.refusal_disposition.decision_id
@@ -186,6 +228,7 @@ async def test_native_resume_bound_is_admitted_without_rewriting_original_eviden
 
     task, story, events, runs, db, writes = refusal
     await admission.admit_engineering_dispatch(EngineeringDispatchCommand(task_id=task.id), db)
+    released_park(task, story, events)
     original = events[0].details.copy()
     monkeypatch.setattr(_task_actions, "get_task_for_update", AsyncMock(return_value=task))
     monkeypatch.setattr(_task_actions, "_get_story_for_update", AsyncMock(return_value=story))
@@ -211,6 +254,7 @@ async def test_resume_refuses_stale_conflict_or_unrelated_stop(refusal, monkeypa
 
     task, story, events, runs, db, writes = refusal
     await admission.admit_engineering_dispatch(EngineeringDispatchCommand(task_id=task.id), db)
+    released_park(task, story, events)
     if change == "cycle":
         story.reopened_at = story.created_at + timedelta(seconds=1)
     elif change == "pr":
@@ -255,14 +299,13 @@ async def test_generic_body_cannot_forge_native_resume_authority(refusal, monkey
 
 
 @pytest.mark.asyncio
-async def test_status_and_metadata_reset_cannot_borrow_refusal_recovery(refusal):
+async def test_task_resets_cannot_dispatch_past_the_stopped_story(refusal):
     task, story, _, _, db, writes = refusal
     await admission.admit_engineering_dispatch(EngineeringDispatchCommand(task_id=task.id), db)
     admission.start_paid_run.reset_mock()
-    task.status = "todo"
     task.failure_metadata = None
     task.current_iteration += 1
-    story.status = "in_progress"
+    assert story.status == "waiting_human_review"
     result = await admission.admit_engineering_dispatch(
         EngineeringDispatchCommand(task_id=task.id), db
     )
@@ -275,8 +318,9 @@ async def test_status_and_metadata_reset_cannot_borrow_refusal_recovery(refusal)
 async def test_older_iteration_cannot_borrow_native_resume(refusal, monkeypatch):
     from src.routers import _task_actions
 
-    task, story, _, _, db, _ = refusal
+    task, story, events, _, db, _ = refusal
     await admission.admit_engineering_dispatch(EngineeringDispatchCommand(task_id=task.id), db)
+    released_park(task, story, events)
     monkeypatch.setattr(_task_actions, "get_task_for_update", AsyncMock(return_value=task))
     monkeypatch.setattr(_task_actions, "_get_story_for_update", AsyncMock(return_value=story))
     monkeypatch.setattr(_task_actions, "to_read", lambda row: row)

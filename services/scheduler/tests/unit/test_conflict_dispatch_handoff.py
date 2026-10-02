@@ -156,7 +156,9 @@ async def test_budget_denied_conflict_task_reaches_durable_native_review():
             assert await dispatcher.dispatch_todo_tasks(api, stream) == 0
             await supervise_stuck_tasks(api, stream)
             assert await supervise_failed_tasks(api, stream) == {"retried": 0, "escalated": 0}
-    assert task.status == story.status == "waiting_human_review"
+    # No Run was bought: the Task keeps its unspent attempt, only the Story stops.
+    assert (task.status, story.status) == ("todo", "waiting_human_review")
+    assert story.quarantine_reason["code"] == "engineering_budget_denied"
     assert story.owner_notification["state"] == story.owner_notification["admin_state"] == "owed"
     assert task.current_iteration == 0 and len(audits) == 1
     api.transition_task.assert_not_awaited()

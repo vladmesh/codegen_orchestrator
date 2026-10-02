@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-02
+
+- Conflict repair attempts count started Runs: a paid refusal keeps the Task todo and stops only the Story with "no budget"
+  (limit, spend), so the same repair command resumes it; a migration unsticks released refusals (c351).
+
 ## 2026-10-01
 
 - Bump PyJWT to 2.15.0, urllib3 to 2.8.0 and brace-expansion to 5.0.12 in locks and pins, closing the open Dependabot

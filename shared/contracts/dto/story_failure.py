@@ -62,6 +62,12 @@ class StoryFailureCode(StrEnum):
     #: The deploy could not compute the required production environment.
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
     PR_CONFLICT_REPAIR_EXHAUSTED = "pr_conflict_repair_exhausted"
+    #: The paid gate refused a conflict repair's dispatch for budget before any
+    #: Run existed. The repair attempt is unspent; the detail names limit and spend.
+    ENGINEERING_BUDGET_DENIED = "engineering_budget_denied"
+    #: The paid gate refused a conflict repair's dispatch for another non-infrastructure
+    #: reason (emergency stop, paid-work limit) before any Run existed.
+    ENGINEERING_DISPATCH_REFUSED = "engineering_dispatch_refused"
     INITIAL_OWNER_DEPLOYMENT_EXHAUSTED = "initial_owner_deployment_exhausted"
 
 
@@ -92,6 +98,14 @@ _OWNER_WORDS: dict[StoryFailureCode, str] = {
     StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED: (
         "Work on this change stopped: its pull request still has conflicts after repair."
     ),
+    StoryFailureCode.ENGINEERING_BUDGET_DENIED: (
+        "Work on this change stopped before the conflict repair began: the engineering "
+        "budget does not cover another attempt, so nothing was spent on it."
+    ),
+    StoryFailureCode.ENGINEERING_DISPATCH_REFUSED: (
+        "Work on this change stopped before the conflict repair began: the platform did "
+        "not start paid engineering work, so nothing was spent on it."
+    ),
     StoryFailureCode.SCAFFOLD_FAILED: (
         "Work on this change stopped before it began: the platform could not create the "
         "project's code repository, so nothing was built."
@@ -121,6 +135,12 @@ def story_failure_owner_text(failure: StoryFailure) -> str:
             f"{_OWNER_WORDS[failure.code]} Cause reported by the {failure.source}: "
             f"{failure.detail} No further deployment will run automatically; "
             "a person has to fix it or decide the next steps."
+        )
+    if failure.code is StoryFailureCode.ENGINEERING_BUDGET_DENIED:
+        return (
+            f"{_OWNER_WORDS[failure.code]} Cause reported by the {failure.source}: "
+            f"{failure.detail} Nothing more happens automatically; a person has to fix it: "
+            "raise the engineering budget, then request the conflict repair again."
         )
     return (
         f"{_OWNER_WORDS[failure.code]} Cause reported by the {failure.source}: "

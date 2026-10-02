@@ -71,32 +71,29 @@ def test_budget_refusal_readback_preserves_complete_history_despite_timestamp_ti
         "engineering_budget": {"attempt_id": "real-decision", "outcome": "denied"},
     }
     after = deepcopy(before)
-    after.extend(
+    # The refusal buys no Run: the Task stays todo and one note records the decision.
+    after.append(
         {
-            "id": event_id,
+            "id": 163,
             "task_id": "pr-conflict-task",
             "created_at": "2026-09-29T14:24:04.000000Z",
             "updated_at": "2026-09-29T14:24:04.000000Z",
-            "event_type": "status_change",
-            "from_status": source,
-            "to_status": target,
-            "iteration": None,
-            "actor": "internal_service" if source == "todo" else "dispatcher",
+            "event_type": "note",
+            "from_status": None,
+            "to_status": None,
+            "iteration": 1,
+            "actor": "dispatcher",
             "details": deepcopy(expected_details),
         }
-        for event_id, source, target in [
-            (163, "todo", "in_dev"),
-            (164, "in_dev", "waiting_human_review"),
-        ]
     )
     mutations = {
         "mutated_details": ((1, "details", "iteration"), 1),
         "mutated_status": ((1, "to_status"), "done"),
         "wrong_refusal_status": ((-1, "to_status"), "done"),
-        "wrong_refusal_type": ((-1, "event_type"), "note"),
+        "wrong_refusal_type": ((-1, "event_type"), "status_change"),
         "wrong_refusal_actor": ((-1, "actor"), "admin"),
         "wrong_refusal_task": ((-1, "task_id"), "foreign-task"),
-        "wrong_refusal_iteration": ((-1, "iteration"), 1),
+        "wrong_refusal_iteration": ((-1, "iteration"), 0),
         "wrong_refusal_decision": (
             (-1, "details", "engineering_dispatch_refusal", "decision_id"),
             "unrelated",
@@ -127,10 +124,10 @@ def test_budget_refusal_readback_preserves_complete_history_despite_timestamp_ti
     elif change == "extra_event":
         after.append(after[-1] | {"id": 165})
     if accepted:
-        recovery.assert_refusal_preserves_task_history(before, after, expected_details)
+        recovery.assert_refusal_preserves_task_history(before, after, expected_details, 1)
     else:
         with pytest.raises(AssertionError):
-            recovery.assert_refusal_preserves_task_history(before, after, expected_details)
+            recovery.assert_refusal_preserves_task_history(before, after, expected_details, 1)
 
 
 @pytest.mark.asyncio

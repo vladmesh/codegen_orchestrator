@@ -101,6 +101,7 @@ from .projects_guards import check_project_access, load_locked_project
 logger = structlog.get_logger()
 
 _LIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED.value, RunStatus.RUNNING.value})
+_SETTLED_TASK_STATUSES = frozenset({TaskStatus.DONE.value, TaskStatus.CANCELLED.value})
 
 action_router = APIRouter()
 action_router.include_router(pr_conflict_attempt_router)
@@ -157,14 +158,16 @@ async def repair_pr_conflicts(
         and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
         and reason.get("code") == StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED.value
     )
+    current = [row for row in tasks if in_work_cycle(row.created_at, story.reopened_at, row.status)]
+    started = await _started_iterations(task, db)
+    unspent = _unspent_repair(task, story, current, started)
     if story.status not in {StoryStatus.PR_REVIEW.value, StoryStatus.IN_PROGRESS.value}:
-        if not (released_park or exhausted_park):
+        if not (released_park or exhausted_park or unspent):
             _repair_conflict("This human-review reason does not permit conflict recovery.")
     if task is None and story.status == StoryStatus.IN_PROGRESS.value:
         _repair_conflict("The story has engineering work in progress.")
     if command.expected_head_sha is None and not (released_park or task is not None):
         _repair_conflict("Automatic admission requires the observed PR head.")
-    current = [row for row in tasks if in_work_cycle(row.created_at, story.reopened_at, row.status)]
     if any(row.project_id != story.project_id for row in current):
         _repair_conflict("A story Task belongs to another project.")
     if task is None and (
@@ -248,39 +251,17 @@ async def repair_pr_conflicts(
         outcome = PRConflictRepairOutcome.ADMITTED
     else:
         evidence = await _repair_admission_evidence(task, story, repository.id, db)
-        if exhausted_park:
-            outcome = PRConflictRepairOutcome.EXHAUSTED
-        elif not live and (
-            task.status
-            in {
-                TaskStatus.DONE.value,
-                TaskStatus.CANCELLED.value,
-                TaskStatus.WAITING_HUMAN_REVIEW.value,
-            }
-            or (
-                task.status == TaskStatus.FAILED.value
-                and task.current_iteration >= evidence.max_iterations
-            )
-        ):
-            failure = StoryFailure(
-                code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
-                source="scheduler",
-                detail=(
-                    f"PR #{story.pr_number} is still dirty at "
-                    f"{head_sha}; repair Task {tid} ended {task.status} at iteration "
-                    f"{task.current_iteration}. One repair Task is allowed, with iteration "
-                    f"ceiling {evidence.max_iterations}; automatic repair allowance exhausted."
-                ),
-            )
-            _record_story_failure(story, failure, StoryStatus.WAITING_HUMAN_REVIEW)
-            if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
-                _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
-            await db.commit()
-            outcome = PRConflictRepairOutcome.EXHAUSTED
-        else:
-            if story.status != StoryStatus.IN_PROGRESS.value:
-                _repair_conflict("A pending repair has inconsistent story state.")
-            outcome = PRConflictRepairOutcome.REUSED
+        outcome = await _settle_existing_repair(
+            task,
+            story,
+            evidence,
+            head_sha,
+            unspent=unspent,
+            exhausted_park=exhausted_park,
+            live=live,
+            started=started,
+            db=db,
+        )
     return PRConflictRepairRead(
         outcome=outcome,
         story_id=story.id,
@@ -291,6 +272,102 @@ async def repair_pr_conflicts(
         if outcome is PRConflictRepairOutcome.EXHAUSTED
         else None,
     )
+
+
+def _unspent_repair(task: Task | None, story: Story, current: list[Task], started: list[int]):
+    """Whether a stopped Story's repair Task still holds its unspent attempt.
+
+    The cycle's repair Task still waits in `todo` and no repair Run started for
+    its iteration (a paid refusal creates none), while other cycle work is settled.
+    The stopped Story is then simply admissible again; no Story text decides it.
+    """
+    return (
+        task is not None
+        and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
+        and task.status == TaskStatus.TODO.value
+        and not any(iteration >= task.current_iteration for iteration in started)
+        and all(row.status in _SETTLED_TASK_STATUSES for row in current if row.id != task.id)
+    )
+
+
+async def _settle_existing_repair(
+    task, story, evidence, head_sha, *, unspent, exhausted_park, live, started, db
+):
+    """The repeat request's outcome for the cycle's existing repair Task."""
+    if unspent:
+        _do_transition(story, StoryStatus.IN_PROGRESS)
+        story.quarantine_reason = None
+        await db.commit()
+        return PRConflictRepairOutcome.REUSED
+    if exhausted_park:
+        return PRConflictRepairOutcome.EXHAUSTED
+    if not live and _repair_ended(task, evidence):
+        # Exhaustion counts started work: a Task that ended before any repair
+        # Run started was never an attempt, so it is refused, not called spent.
+        if not started:
+            _repair_conflict("The repair Task ended before any repair Run started.")
+        _record_repair_exhausted(story, task, head_sha, evidence)
+        await db.commit()
+        return PRConflictRepairOutcome.EXHAUSTED
+    if story.status != StoryStatus.IN_PROGRESS.value:
+        _repair_conflict("A pending repair has inconsistent story state.")
+    return PRConflictRepairOutcome.REUSED
+
+
+def _repair_ended(task: Task, evidence: PRConflictRepairEvidence) -> bool:
+    return task.status in {
+        TaskStatus.DONE.value,
+        TaskStatus.CANCELLED.value,
+        TaskStatus.WAITING_HUMAN_REVIEW.value,
+    } or (
+        task.status == TaskStatus.FAILED.value and task.current_iteration >= evidence.max_iterations
+    )
+
+
+def _record_repair_exhausted(
+    story: Story, task: Task, head_sha: str, evidence: PRConflictRepairEvidence
+) -> None:
+    failure = StoryFailure(
+        code=StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED,
+        source="scheduler",
+        detail=(
+            f"PR #{story.pr_number} is still dirty at "
+            f"{head_sha}; repair Task {task.id} ended {task.status} at iteration "
+            f"{task.current_iteration}. One repair Task is allowed, with iteration "
+            f"ceiling {evidence.max_iterations}; automatic repair allowance exhausted."
+        ),
+    )
+    _record_story_failure(story, failure, StoryStatus.WAITING_HUMAN_REVIEW)
+    if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+
+
+async def _started_iterations(task: Task | None, db: AsyncSession) -> list[int]:
+    """Iterations of the repair Task's engineering Runs whose work began.
+
+    Work began when the engineering consumer took the Run up: it records
+    `running` with `started_at` before any agent turn, and nothing else writes
+    `started_at`. A Run that was only admitted (queued, budget held) and was
+    cancelled, aborted or failed before a consumer took it up spends nothing;
+    a paid refusal creates no Run at all. Column-only: the Task rows this route
+    holds fence any new Run for the Task.
+    """
+    if task is None:
+        return []
+    rows = (
+        await db.execute(
+            select(Run.run_metadata).where(
+                Run.task_id == task.id,
+                Run.type == RunType.ENGINEERING.value,
+                Run.started_at.is_not(None),
+            )
+        )
+    ).scalars()
+    return [
+        metadata["iteration"]
+        for metadata in (row or {} for row in rows)
+        if type(metadata.get("iteration")) is int
+    ]
 
 
 async def _repair_admission_evidence(

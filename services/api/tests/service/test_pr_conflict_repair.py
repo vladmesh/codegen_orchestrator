@@ -1,6 +1,7 @@
 """Atomic dirty-PR admission and released-state recovery on real PostgreSQL."""
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import uuid
@@ -155,6 +156,22 @@ async def test_released_dirty_quarantine_recovers_without_new_cycle(
     assert story.pr_number == 3
 
 
+def started_run(db, task, status="failed"):
+    """A repair Run of the Task's iteration that a consumer took up: work began."""
+    db.add(
+        Run(
+            id=f"eng-{uuid.uuid4().hex[:12]}",
+            type="engineering",
+            status=status,
+            project_id=task.project_id,
+            story_id=task.story_id,
+            task_id=task.id,
+            run_metadata={"iteration": task.current_iteration},
+            started_at=datetime.now(UTC),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_ci_retry_keeps_conflict_repair_cycle_and_bound(
     async_client, db_session, dirty_story
@@ -164,6 +181,7 @@ async def test_ci_retry_keeps_conflict_repair_cycle_and_bound(
     assert repair.status_code == 200, repair.text
     task = await db_session.get(Task, repair.json()["task_id"])
     task.status = "done"
+    started_run(db_session, task, "completed")
     await db_session.commit()
     await async_client.post(f"/api/stories/{sid}/pr_review")
     retry = await async_client.post(f"/api/stories/{sid}/retry-after-ci-failure")
@@ -191,6 +209,8 @@ async def test_terminal_repair_exhausts_once_even_after_head_changes(
         task.current_iteration = task.max_iterations
     # Ordinary failure settlement may replace failure_metadata; identity survives.
     task.failure_metadata = {"last_failure": "synthetic failure"}
+    # Exhaustion counts started repair work, so the ended Task carries its Run.
+    started_run(db_session, task, "completed" if ending == "done" else "failed")
     await db_session.commit()
     pr["head"]["sha"] = "c" * 40
     command["expected_head_sha"] = "c" * 40
@@ -209,6 +229,25 @@ async def test_terminal_repair_exhausts_once_even_after_head_changes(
     await db_session.refresh(story)
     assert story.owner_notification == before
     assert len((await db_session.scalars(select(Task).where(Task.story_id == sid))).all()) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["cancelled", "waiting_human_review"])
+async def test_a_repair_task_that_ended_before_any_started_run_is_not_exhausted(
+    async_client, db_session, dirty_story, ending
+):
+    sid, command, _, _, _ = dirty_story
+    url = f"/api/stories/{sid}/repair-pr-conflicts"
+    first = await async_client.post(url, json=command)
+    task = await db_session.get(Task, first.json()["task_id"])
+    task.status = ending
+    await db_session.commit()
+    refused = await async_client.post(url, json=command)
+    assert refused.status_code == 409, refused.text
+    assert "before any repair Run started" in refused.json()["detail"]["message"]
+    story = await db_session.get(Story, sid, populate_existing=True)
+    assert story.status == "in_progress" and story.quarantine_reason is None
+    assert story.owner_notification is None
 
 
 @pytest.mark.asyncio

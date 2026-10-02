@@ -1896,6 +1896,57 @@ class TestDirtyQuarantineRecovery:
         assert kwargs["headers"]["X-Telegram-ID"] == "user-42"
         mock_stream_client.publish_message.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("code", "requested"),
+        [
+            ("engineering_budget_denied", True),
+            ("engineering_dispatch_refused", True),
+            ("pr_conflict_repair_exhausted", False),
+        ],
+    )
+    async def test_refused_repair_is_requested_again_but_exhaustion_is_not(
+        self, mock_api_client, mock_stream_client, code, requested
+    ):
+        mock_api_client.get_raw.return_value = _make_response(
+            {
+                "id": "story-abc",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "title": "Dirty story",
+                "status": "waiting_human_review",
+                "pr_number": 3,
+                "created_at": "2026-09-29T00:00:00Z",
+                "reopened_at": None,
+                "quarantine_reason": {
+                    "reason": "story_failure",
+                    "code": code,
+                    "source": "scheduler",
+                    "detail": "PR #3: repair Task pr-conflict-1, decision eng-1",
+                },
+            }
+        )
+        mock_api_client.post_raw.return_value = _make_response(
+            {
+                "outcome": "admitted",
+                "story_id": "story-abc",
+                "task_id": "pr-conflict-1",
+                "pr_number": 3,
+                "max_iterations": 3,
+                "reason": None,
+            }
+        )
+        result = await reopen_story.ainvoke(
+            {"story_id": "story-abc"}, config=_make_config("user-42")
+        )
+        if requested:
+            assert "pr-conflict-1" in result
+            (path,), _ = mock_api_client.post_raw.call_args
+            assert path == "stories/story-abc/repair-pr-conflicts"
+        else:
+            assert "was not reopened" in result
+            mock_api_client.post_raw.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
 
 class TestNoteToAdmins:
     @pytest.mark.asyncio
