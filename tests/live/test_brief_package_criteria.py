@@ -27,6 +27,7 @@ from pipeline_helpers import (
 )
 import pytest
 
+from services.langgraph.src.agents.qa.caller_identity import QA_PLATFORM_USER_REF
 from services.langgraph.src.agents.qa.packages import observable_paths, observation_answers
 from shared.contracts.acceptance import parse_scheduled_behaviours
 
@@ -53,9 +54,22 @@ def test_the_criterion_observable_binds_a_read_of_the_package_route():
     assert observation_answers(
         behaviour.observable,
         "http_get",
-        f"{BRIEF_PACKAGE_ROUTE}?user_ref={BRIEF_PACKAGE_OWNER_REF}",
+        BRIEF_PACKAGE_ROUTE,
     )
     assert BRIEF_PACKAGE_REMINDER_STATE in behaviour.observable
+
+
+def test_the_seeded_owner_is_the_user_central_qa_reads_as():
+    """A package route answers for the verified caller, never for a `user_ref` query.
+
+    This variant has no bot, so central QA reads `GET /reminders` as the platform
+    QA identity. The seeded reminder is visible to that read only when its owner
+    is the same canonical `user_ref`.
+    """
+    assert BRIEF_PACKAGE_OWNER_REF == QA_PLATFORM_USER_REF == "qa:central-qa"
+    assert BRIEF_PACKAGE_SCENARIO.settings_value == BRIEF_PACKAGE_OWNER_REF
+    assert "user_ref" not in BRIEF_PACKAGE_ACCEPTANCE_CRITERION
+    assert BRIEF_PACKAGE_OWNER_REF in BRIEF_PACKAGE_ACCEPTANCE_CRITERION
 
 
 def test_a_dispatch_record_and_an_unrelated_read_answer_nothing():

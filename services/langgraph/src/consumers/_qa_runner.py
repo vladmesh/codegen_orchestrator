@@ -45,6 +45,7 @@ from shared.telegram_access_probe import (
 )
 
 from ..agents.qa.acceptance import CriteriaAdjustment, prepare_central_qa_criteria
+from ..agents.qa.caller_identity import QACallerIdentity
 from ..agents.qa.capability_service import QACapabilityService
 from ..agents.qa.packages import (
     ACTIVE_PACKAGE_CONTRACT,
@@ -1464,6 +1465,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     attempts: QAExecutorAttempts,
     acceptance: PackageAcceptance | None = None,
     probe_library: Sequence[QAProbeLibraryFile] = (),
+    caller_identity: QACallerIdentity | None = None,
 ) -> QAResult:
     """Run the one assigned executor over this run's capability endpoint."""
     calls = build_qa_callables(
@@ -1476,6 +1478,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             else None
         ),
         jobs=jobs,
+        caller_identity=caller_identity,
     )
     secrets = handed_over_secrets(runtime)
     if secrets:
@@ -1697,6 +1700,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     attempts: QAExecutorAttempts | None = None,
     timeout: int = QA_TIMEOUT,
     probe_library: Sequence[QAProbeLibraryFile] = (),
+    caller_identity: QACallerIdentity | None = None,
 ) -> QAResult:
     """Run QA with cleanup residue reported as a blocker on every exit path."""
     grant = QAGrantOutcome(marker=new_grant_marker())
@@ -1785,6 +1789,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             attempts=attempts,
                             acceptance=acceptance,
                             probe_library=probe_library,
+                            caller_identity=caller_identity,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
             if attempts.started:

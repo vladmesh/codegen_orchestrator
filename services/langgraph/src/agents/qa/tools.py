@@ -60,6 +60,7 @@ from ...clients.product_jobs import (
 )
 from ...consumers._qa_target import QATargetError, QATargetSession, loopback_http_status
 from ...consumers._qa_workspace import QAWorkspace
+from .caller_identity import QACallerIdentity, scrub
 
 logger = structlog.get_logger(__name__)
 
@@ -74,32 +75,47 @@ def _truncate(text: str) -> str:
     return text[:MAX_BODY]
 
 
-def _remote_tools(session: QATargetSession, record, refuse, observe) -> dict:
+def _remote_tools(  # noqa: PLR0913 — one run's reach, each part named
+    session: QATargetSession,
+    record,
+    refuse,
+    observe,
+    scrubbed: Callable[[str], str],
+    identity: QACallerIdentity | None = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
+) -> dict:
     """The calls that leave the QA runtime, each bounded by the capability set.
 
     None of these carries a rule of its own: `http_get` can only address the
     deployed URL in the set, `localhost_http_get` only a port in it,
     `remote_read` only what resolves inside its physical root, and the docker
     calls only a container that is in it.
+
+    `http_get` is the only call that carries the run's caller identity, and it
+    carries it as request headers of a runtime-side request to the deployed
+    URL. `localhost_http_get` stays anonymous: it is a curl on the target, and
+    the capability must never reach the target's argument vector.
     """
     capabilities = session.capabilities
+    identity_headers = identity.headers() if identity is not None else {}
 
     async def http_get(path: str) -> dict:
         base = capabilities.deployed_url.rstrip("/")
         url = f"{base}{path if path.startswith('/') else '/' + path}"
         try:
             async with httpx.AsyncClient(
-                timeout=PUBLIC_PROBE_TIMEOUT, follow_redirects=False
+                timeout=PUBLIC_PROBE_TIMEOUT, follow_redirects=False, transport=http_transport
             ) as client:
-                response = await client.get(url)
+                response = await client.get(url, headers=identity_headers)
         except httpx.HTTPError as exc:
-            record("http_get", url, f"transport error: {exc}")
-            return {"error": f"transport error: {exc}", "url": url}
+            error = scrubbed(f"transport error: {exc}")
+            record("http_get", url, error)
+            return {"error": error, "url": url}
         result = {
             "url": url,
             "status": response.status_code,
-            "headers": dict(response.headers),
-            "body": _truncate(response.text),
+            "headers": {name: scrubbed(value) for name, value in response.headers.items()},
+            "body": scrubbed(_truncate(response.text)),
         }
         record("http_get", f"GET {url}", f"{response.status_code} {result['body']}")
         if response.status_code < HTTP_ERROR:
@@ -570,6 +586,8 @@ def build_qa_callables(
     probe_runner: Callable[..., object] | None = None,
     jobs: QAJobsCapability | None = None,
     jobs_client_factory: Callable[[str], GeneratedServiceJobsClient] | None = None,
+    caller_identity: QACallerIdentity | None = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict[str, Callable]:
     """Build the whole reach of exactly one QA run, keyed by call name.
 
@@ -593,26 +611,49 @@ def build_qa_callables(
             generated jobs capability. Like the Telegram credentials, no
             executor ever sees the capability itself.
         jobs_client_factory: override for the product jobs client, for tests.
+        caller_identity: the verified user this run reads package routes as,
+            present only when the deployment has a caller-identity core and
+            the runtime proved the identity active. `http_get` sends it as
+            headers; its capability is scrubbed from everything recorded or
+            returned here, and no executor ever sees it.
+        http_transport: override for `http_get`'s transport, for tests.
     """
     capabilities = session.capabilities
+    # The one place the run's evidence is written: every recorded request and
+    # response, every observation and every refusal passes through `scrub`.
+    secrets = (caller_identity.capability,) if caller_identity is not None else ()
+
+    def scrubbed(text: str) -> str:
+        return scrub(text, secrets)
 
     def record(tool: str, request: str, response: str) -> None:
-        workspace.record(tool, request, response)
+        workspace.record(tool, scrubbed(request), scrubbed(response))
 
     def refuse(tool: str, request: str, error: QATargetError) -> dict:
-        record(tool, request, f"refused: {error}")
-        logger.info("qa_tool_refused", tool=tool, error=str(error))
-        return {"error": str(error)}
+        detail = scrubbed(str(error))
+        record(tool, request, f"refused: {detail}")
+        logger.info("qa_tool_refused", tool=tool, error=detail)
+        return {"error": detail}
 
     def observe(tool: str, subject: str) -> None:
         """One successful read of the product's own output, as the runner saw it."""
-        workspace.record_observation(tool, subject)
+        workspace.record_observation(tool, scrubbed(subject))
 
     def write_qa_report(markdown: str) -> str:
         workspace.write_report(markdown)
         return f"QA report stored ({len(markdown)} characters)."
 
-    callables: dict[str, Callable] = dict(_remote_tools(session, record, refuse, observe))
+    callables: dict[str, Callable] = dict(
+        _remote_tools(
+            session,
+            record,
+            refuse,
+            observe,
+            scrubbed,
+            identity=caller_identity,
+            http_transport=http_transport,
+        )
+    )
     callables["record_probe"] = workspace.record_probe
     callables["write_qa_report"] = write_qa_report
     if jobs is not None and jobs.behaviours:

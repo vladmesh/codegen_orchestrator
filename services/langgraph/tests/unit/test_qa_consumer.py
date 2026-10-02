@@ -18,6 +18,7 @@ import httpx
 import pytest
 import respx
 
+from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployRunStart
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
@@ -1736,3 +1737,153 @@ class TestAnUnverifiedCheckSettlesOnTheChecksThatRan:
         ]
         assert run_result["unverified_checks"] == []
         gaps_api.record_verification_gaps_from_run.assert_not_called()
+
+
+IDENTITY_CAPABILITY = "identity-capability-stays-in-memory"  # noqa: S105
+GRANT_CAPABILITY = "grant-capability-stays-in-memory"  # noqa: S105
+BOTH_CAPABILITIES = {
+    "USER_IDENTITY_CAPABILITY": IDENTITY_CAPABILITY,
+    "USERS_GRANT_CAPABILITY": GRANT_CAPABILITY,
+}
+
+
+def _users_core(*, grant_status: int = 200, access_status: str = "active"):
+    """The product's users core, answering for whatever identity it is asked about."""
+    grants: list[httpx.Request] = []
+
+    def grant(request: httpx.Request) -> httpx.Response:
+        grants.append(request)
+        return httpx.Response(grant_status, json={})
+
+    def access(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "user_id": 1,
+                "status": access_status,
+                "channel": request.url.params["channel"],
+                "external_id": request.url.params["external_id"],
+            },
+        )
+
+    respx.post("https://weather.example.com/users/grant").mock(side_effect=grant)
+    respx.get("https://weather.example.com/users/access").mock(side_effect=access)
+    return grants
+
+
+class TestOneQACallerIdentityPerRun:
+    """Which user a run reads package routes as, decided once before the executor starts.
+
+    One row per case of the rule. Each row is a whole consumer run with the
+    executor stood in for, so what is asserted is what the run hands the
+    executor and the runner — or the blocker it stops on instead.
+    """
+
+    CASES = {
+        # A bot run reaches the identity only with the QA account proved for the
+        # run and admitted by the bot, so that account is the identity.
+        "bot-run-reads-as-the-proved-telegram-account": {
+            "bot_username": "weather_bot",
+            "secrets": BOTH_CAPABILITIES,
+            "core": {},
+            "reads_as": f"telegram:{QA_TEST_TELEGRAM_ID}",
+            "blocker": None,
+        },
+        "run-without-a-bot-reads-as-the-platform-qa-identity": {
+            "bot_username": None,
+            "secrets": BOTH_CAPABILITIES,
+            "core": {},
+            "reads_as": "qa:central-qa",
+            "blocker": None,
+        },
+        # A product older than the caller-identity core: no grant, no headers,
+        # no fact — the run is exactly what it was.
+        "no-identity-capability-stored-leaves-the-run-unchanged": {
+            "bot_username": None,
+            "secrets": {"USERS_GRANT_CAPABILITY": GRANT_CAPABILITY},
+            "core": {},
+            "reads_as": None,
+            "blocker": None,
+        },
+        "an-inactive-proof-blocks-instead-of-reading-anonymously": {
+            "bot_username": None,
+            "secrets": BOTH_CAPABILITIES,
+            "core": {"access_status": "inactive"},
+            "reads_as": None,
+            "blocker": "inactive",
+        },
+        "a-refused-grant-blocks-instead-of-reading-anonymously": {
+            "bot_username": "weather_bot",
+            "secrets": BOTH_CAPABILITIES,
+            "core": {"grant_status": 403},
+            "reads_as": None,
+            "blocker": "grant_rejected",
+        },
+        "no-grant-capability-stored-blocks-instead-of-reading-anonymously": {
+            "bot_username": None,
+            "secrets": {"USER_IDENTITY_CAPABILITY": IDENTITY_CAPABILITY},
+            "core": {},
+            "reads_as": None,
+            "blocker": "capability_unavailable",
+        },
+    }
+
+    @respx.mock
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", list(CASES.values()), ids=list(CASES))
+    async def test_the_identity_the_run_reads_as(
+        self, mock_api_client, mock_redis, qa_message_data, case
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data["bot_username"] = case["bot_username"]
+        _with_secrets(mock_api_client, **case["secrets"])
+        grants = _users_core(**case["core"])
+        with (
+            patch("src.consumers.qa.preflight_bot_access", new=AsyncMock(return_value=None)),
+            patch(
+                "src.consumers.qa.prove_sandbox_telegram_identity",
+                new=AsyncMock(
+                    side_effect=lambda runtime: replace(runtime, telegram_identity_proven=True)
+                ),
+            ),
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        patched = [call.kwargs["json"] for call in mock_api_client.patch.call_args_list]
+        if case["blocker"] is not None:
+            # No executor, so no read of any kind — anonymous or otherwise.
+            mock_run.assert_not_called()
+            assert result["status"] == "qa_blocked"
+            blocker = patched[-1]["result"]["blocker"]
+            assert blocker["category"] == QABlockerCategory.QA_ACCESS_GRANT_FAILED.value
+            assert blocker["received"].startswith(f"{case['blocker']}:")
+            assert IDENTITY_CAPABILITY not in str(patched)
+            assert GRANT_CAPABILITY not in str(patched)
+            return
+
+        identity = mock_run.call_args.kwargs["caller_identity"]
+        facts = "\n".join(mock_run.call_args.kwargs["established_facts"])
+        recorded = [
+            one["run_metadata"]["qa_caller_identity"]
+            for one in patched
+            if "qa_caller_identity" in one.get("run_metadata", {})
+        ]
+        if case["reads_as"] is None:
+            assert identity is None
+            assert grants == []
+            assert "verified user" not in facts
+            assert recorded == []
+            return
+
+        assert identity.user_ref == case["reads_as"]
+        assert identity.capability == IDENTITY_CAPABILITY
+        [grant] = grants
+        assert grant.headers.get_list("X-Grant-Capability") == [GRANT_CAPABILITY]
+        channel, external_id = case["reads_as"].split(":")
+        assert json.loads(grant.content) == {"channel": channel, "external_id": external_id}
+        assert f"verified user `{case['reads_as']}`" in facts
+        assert IDENTITY_CAPABILITY not in facts
+        assert recorded == [{"user_ref": case["reads_as"], "active": True}]

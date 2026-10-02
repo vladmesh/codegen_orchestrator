@@ -78,9 +78,7 @@ class TestProductBriefPackagePipeline:
         ctx = product_brief_package_pipeline
         observable = ctx["brief_acceptance"]["criterion"]["observable"]
 
-        assert observation_answers(
-            observable, "http_get", f"{BRIEF_PACKAGE_ROUTE}?user_ref={BRIEF_PACKAGE_OWNER_REF}"
-        ), observable
+        assert observation_answers(observable, "http_get", BRIEF_PACKAGE_ROUTE), observable
         assert BRIEF_PACKAGE_REMINDER_STATE in observable
         assert not observation_answers(observable, "fire_job", BRIEF_PACKAGE_JOB_NAME)
 

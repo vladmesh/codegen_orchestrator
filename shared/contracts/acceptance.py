@@ -106,10 +106,12 @@ class ScheduledBehaviourCriterion(BaseModel):
 
     `observable` is prose, and for a service's own behaviour it may name any
     product output. For a behaviour declared by a kit package it must name a
-    route on the deployed product — `GET /reminders?user_ref=42 shows the
-    reminder as emitted` — because central QA binds that row to an HTTP read of
-    a named route and nothing else. A package behaviour whose observable names
-    no such route is not currently bindable and its row fails naming that; the
+    route on the deployed product — `GET /reminders shows the reminder as
+    emitted` — because central QA binds that row to an HTTP read of a named
+    route and nothing else. A package route answers for the verified caller, so
+    the read names no `user_ref`: QA's `http_get` carries the run's QA identity.
+    A package behaviour whose observable names no such route is not currently
+    bindable and its row fails naming that; the
     limitation is known and accepted, and `docs/contracts/kit-template-and-qa.md` states it.
     """
 

@@ -203,8 +203,8 @@ def parse_job_owners(source: str) -> dict[str, str]:
 def observable_paths(observable: str) -> tuple[str, ...]:
     """The product routes a criterion's observable names, if it names any.
 
-    An observable that says where to look — "GET /reminders?user_ref=42 shows
-    the reminder as emitted" — tells the run which read answers it, and the
+    An observable that says where to look — "GET /reminders shows the
+    reminder as emitted" — tells the run which read answers it, and the
     platform requires that read rather than accepting an unrelated one. An
     observable that names no route leaves the run to read what it can, and the
     result says so instead of pretending the read was narrowed.

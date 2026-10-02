@@ -20,6 +20,7 @@ from shared.contracts.acceptance import (
     parse_health_only_criteria,
     parse_scheduled_behaviours,
 )
+from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentCreate, IncidentType
@@ -52,6 +53,13 @@ from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis import RedisStreamClient
 from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
 
+from ..agents.qa.caller_identity import (
+    QA_CALLER_IDENTITY_KEY,
+    QACallerIdentity,
+    caller_identity_facts,
+    caller_identity_record,
+    resolve_qa_caller_identity,
+)
 from ..agents.qa.tools import QAJobsCapability
 from ..clients.api import api_client, bot_liveness_path
 from ..config.settings import get_settings
@@ -436,6 +444,38 @@ async def _confirmed_initial_settings(story_id: str | None) -> list[InitialSetti
     return list(brief.content.initial_settings)
 
 
+async def _stored_secrets(project_id: str) -> dict:
+    """The project's own encrypted secrets, decrypted here, in this process's memory.
+
+    Every deployment capability a QA run uses is read through this one call and
+    stays on the management host: it is handed to the run's calls as a value,
+    never to the executor, its environment, the `qa` CLI or the trace.
+    """
+    project = await api_client.get_project(project_id)
+    if project is None:
+        logger.warning("qa_project_secrets_project_missing", project_id=project_id)
+        return {}
+    stored = (project.config or {}).get("secrets") or {}
+    return decrypt_dict(stored) if stored else {}
+
+
+async def _resolve_caller_identity(
+    msg: QAMessage,
+) -> tuple[QACallerIdentity | None, QABlocker | None]:
+    """Choose and prove the one user this run reads package routes as.
+
+    Called after the bot preflight, so a run that tests a bot reaches here only
+    with the QA Telegram account proved for this run and admitted by the bot:
+    that account is the identity, and what the executor creates through the bot
+    is what it reads back. Any other run reads as the platform's QA identity.
+    """
+    return await resolve_qa_caller_identity(
+        deployed_url=msg.deployed_url,
+        secrets=await _stored_secrets(msg.project_id),
+        telegram_account_id=QA_TEST_TELEGRAM_ID if msg.bot_username else None,
+    )
+
+
 async def _resolve_jobs_capability(
     *,
     project_id: str,
@@ -459,12 +499,7 @@ async def _resolve_jobs_capability(
     """
     if not behaviours:
         return None
-    project = await api_client.get_project(project_id)
-    if project is None:
-        logger.warning("qa_jobs_capability_project_missing", project_id=project_id)
-        return None
-    stored = (project.config or {}).get("secrets") or {}
-    capability = decrypt_dict(stored).get(_JOBS_FIRE_CAPABILITY) if stored else None
+    capability = (await _stored_secrets(project_id)).get(_JOBS_FIRE_CAPABILITY)
     if not isinstance(capability, str) or not capability:
         logger.info(
             "qa_jobs_capability_unavailable",
@@ -578,6 +613,18 @@ async def _run_exploratory_qa(
         if access_blocker:
             return None, access_blocker
 
+    # The user package routes are read as, proved active before any executor
+    # exists. A deployment without the caller-identity core is unchanged.
+    caller_identity, identity_blocker = await _resolve_caller_identity(msg)
+    if identity_blocker:
+        return None, identity_blocker
+    if (identity := caller_identity_record(caller_identity)) is not None and msg.run_id:
+        await api_client.patch(
+            f"runs/{msg.run_id}",
+            json={"run_metadata": {QA_CALLER_IDENTITY_KEY: identity}},
+        )
+    established_facts.extend(caller_identity_facts(caller_identity))
+
     # The seeds are due to a run that tests a Telegram bot, which is exactly
     # the run that carries `bot_username`; the project's entries to every run.
     library = await prepare_probe_library(
@@ -615,6 +662,7 @@ async def _run_exploratory_qa(
         jobs=jobs,
         attempts=attempts,
         probe_library=library.files,
+        caller_identity=caller_identity,
     )
     qa_result.probe_library = library.offer
     if qa_result.blocker is not None and qa_result.blocker.category in QA_INFRASTRUCTURE_BLOCKERS:

@@ -60,8 +60,8 @@ Reminders `0.4.0` is a breaking change for its callers: `/reminders` takes no `u
 query or path and acts only for the verified caller, while the stored `user_ref` and the
 `reminders.due` payload carry the canonical form. The `reminders.reminder_owner_ref` setting stays
 opaque, but only its canonical form (`telegram:<id>`) lets that user see the seeded reminder.
-Central QA's identity headers are not yet sent by the orchestrator; they arrive with the next
-card. `POST /jobs/fire` of `reminders.tick` with `X-Jobs-Capability` is unchanged.
+Central QA reads those routes as one verified QA user (see "Central QA reads package routes as a
+verified QA user" below). `POST /jobs/fire` of `reminders.tick` with `X-Jobs-Capability` is unchanged.
 
 This pin changes new-product scaffolding; it does not migrate deployed products.
 Existing products need a reviewed Copier update on a clean review branch:
@@ -209,7 +209,7 @@ declared, and they are rows in the run's result whatever the executor submits:
    because an event that never left the core cannot have been consumed.
 
 **What this establishes, and what it does not.** The observable is prose an architect wrote — "GET
-/reminders?user_ref=42 shows the reminder as emitted" — and no runner-side rule reads English. The
+/reminders shows the reminder as emitted" — and no runner-side rule reads English. The
 division of labour is therefore stated rather than fudged: *the executor judges the observable*,
 and *the platform establishes that the work was done and that the executor judged it*, refusing a
 verdict that rests on nothing the product did. A passing row says which read it is bound to and
@@ -230,9 +230,47 @@ itself wrote — the marker is read anchored to the end of the output, so a resp
 the text of a `200` marker cannot speak for `curl` and a failing route stays failed; and its path
 matches a route the observable names.
 
+**Central QA reads package routes as a verified QA user.** Kit core `2.1.0` takes a package
+route's owner from the verified caller, so `GET /reminders` names no `user_ref` and an anonymous
+read is 401. A run against a deployment that stores a `USER_IDENTITY_CAPABILITY` therefore has
+exactly one QA identity, chosen once in `resolve_qa_caller_identity`
+(`services/langgraph/src/agents/qa/caller_identity.py`) after the bot preflight and before any
+executor starts:
+
+- a run testing a bot reads as the QA Telegram account the run already proved and the bot already
+  admitted, `telegram:<QA_TEST_TELEGRAM_ID>`, so what the executor creates through the bot as that
+  account is what it reads back;
+- any other run reads as the platform QA identity, channel `qa`, external id `central-qa`
+  (`qa:central-qa`);
+- a deployment with no stored `USER_IDENTITY_CAPABILITY` (a product older than kit `0.7.0`) gets no
+  identity and its run is unchanged.
+
+The runtime makes that identity active with `POST /users/grant` under the deployment's stored
+`USERS_GRANT_CAPABILITY` and requires `GET /users/access` to report it `active`. A grant that is
+not proved — no stored grant capability, a refused grant, an unreachable or malformed access read,
+an inactive user — blocks the run as `qa_access_grant_failed` before an executor starts, with the
+bounded failure kind as the reason; QA never falls back to anonymous reads. The run's metadata
+records `qa_caller_identity` (`user_ref` and `active`), and the run's facts tell the executor which
+`user_ref` its reads act as and that no request names a `user_ref` itself.
+
+Only the runtime-side `http_get` of the deployed URL carries the identity: it sends exactly one
+`X-Identity-Capability` (the stored `USER_IDENTITY_CAPABILITY`), one `X-User-Channel` and one
+`X-User-External-Id` on every request when the run has an identity, and none of them otherwise.
+`localhost_http_get` is a curl on the target and stays anonymous, because the capability must never
+reach the target's argument vector; an identity-bearing package route is read with `http_get`, and
+the platform facts say so. The same secret rule as the jobs capability applies to both the
+identity capability and the grant capability: they exist only in runtime memory and as request
+headers, never in a URL, a recorded request or response, an observation, the trace, an error or
+log message, a verdict, the executor's environment or the `qa` CLI arguments. It is enforced where
+each is built: the grant client is constructed only in `resolve_qa_caller_identity` and its
+failures are a closed set of kinds, and `build_qa_callables` scrubs the identity capability from
+every recorded request and response, observation, refusal and `http_get` answer. The live
+`mega-brief-package` variant seeds `reminders.reminder_owner_ref` as `qa:central-qa`, the identity
+its bot-less run reads as, so the seeded reminder is the one `GET /reminders` lists.
+
 **A bot-only observable is not currently bindable, and that is accepted.** A package behaviour
 criterion is accepted only when its observable names a route on the deployed product — for the
-reminders package, `GET /reminders?user_ref=42` showing the reminder in state `emitted` after
+reminders package, `GET /reminders` showing the reminder in state `emitted` after
 `reminders.tick`. An observable phrased as bot delivery — "THEN the bot sends the reminder text to
 its owner" — names no such route, so nothing binds to it and its row fails saying the criterion
 named no observable this run could read, even though this run's `telegram_probe` may have recorded
@@ -294,7 +332,7 @@ whole package route: the architect plans the capability as a package, the engine
 installs it with the kit recipe above, and central QA judges the package behaviour under the rules
 of this section. Because those rules bind a behaviour row only to a read of a route the criterion's
 observable *names*, the variant's product contract asks for exactly one criterion line —
-`FIRE JOB reminders.tick WITH {"at": …} THEN GET /reminders?user_ref=… shows that reference's
+`FIRE JOB reminders.tick WITH {"at": …} THEN GET /reminders read as qa:central-qa shows the seeded
 reminder in state emitted` — and the harness refuses the published criterion, before the run is
 paid for, when `observation_answers` cannot bind a `/reminders` read to it. The variant's expected
 behaviour shape is its own: `reminders.tick` carries the `at` its declared `jobs_schema` requires,
