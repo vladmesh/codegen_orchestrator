@@ -5,7 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-02
 
-- Conflict repair attempts count bought Runs: a paid refusal keeps the Task todo and stops only the Story with "no budget"
+- Conflict repair attempts count started Runs: a paid refusal keeps the Task todo and stops only the Story with "no budget"
   (limit, spend), so the same repair command resumes it; a migration unsticks released refusals (c351).
 
 ## 2026-10-01

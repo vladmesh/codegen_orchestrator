@@ -617,6 +617,11 @@ async def finish_repair(api, sid, project_id, repair, run, ending):
                 "todo" if iteration < repair["max_iterations"] else "waiting_human_review"
             )
     else:
+        # The consumer's own first write: the repair Run's work began.
+        await api.patch(
+            f"runs/{run['id']}",
+            json={"status": "running", "started_at": datetime.now(UTC).isoformat()},
+        )
         await api.patch(
             f"runs/{run['id']}",
             json={

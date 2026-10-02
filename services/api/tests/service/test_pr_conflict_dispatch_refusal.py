@@ -110,7 +110,7 @@ async def test_budget_refusal_is_atomic_once_and_the_repair_command_resumes_the_
     assert all(r.json()["reason"] == "task_not_dispatchable" for r in replies)
     task = await db_session.get(Task, tid, populate_existing=True)
     story = await db_session.get(Story, sid, populate_existing=True)
-    # No Run was bought, so the Task keeps its unspent attempt; only the Story stops.
+    # No Run exists, so the Task keeps its unspent attempt; only the Story stops.
     assert (task.status, story.status) == ("todo", "waiting_human_review")
     assert task.current_iteration == int(later)
     assert task.max_iterations == original_bound

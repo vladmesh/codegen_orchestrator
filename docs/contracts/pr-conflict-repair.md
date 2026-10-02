@@ -52,20 +52,21 @@ the required `llm.task_default_max_iterations` bound, which normal engineering
 dispatch enforces. No Run or queue message is created here; ordinary task
 dispatch uses `/work-admission/engineering-dispatches`.
 
-A repair attempt is spent by bought work: an engineering Run the paid gate
-admitted for the Task (its budget hold, iteration identity and queue handoff),
-excluding a Run aborted before handoff. Task creation and admission refusals
-spend nothing. While the Story is stopped in `waiting_human_review`, the repair
-Task is still `todo`, no Run was bought for its current iteration and all other
-cycle Tasks are settled, a repeated request is admissible again: the Story
-returns to `in_progress` in the same cycle and the same Task stays dispatchable
-with its iteration and bound (`reused`). No Task edge is written and no Story
-text decides it.
+A repair attempt is spent only when a repair Run's work began: the engineering
+consumer took the Run up and recorded `running` with `started_at`, the one
+writer of that field. Task creation, admission refusals and an admitted Run that
+was cancelled, aborted or failed before any consumer took it up spend nothing.
+While the Story is stopped in `waiting_human_review`, the repair Task is still
+`todo`, no Run started for its current iteration and all other cycle Tasks are
+settled, a repeated request is admissible again: the Story returns to
+`in_progress` in the same cycle and the same Task stays dispatchable with its
+iteration and bound (`reused`). No Task edge is written and no Story text
+decides it.
 
 Once this Task completes, exhausts its failed-iteration retries, is cancelled or
-requires human review after bought work, a still dirty PR exhausts repair rather
-than creating another Task, even if its head changed. A Task that ended with no
-bought Run is refused instead of called exhausted. The native iteration ceiling permits
+requires human review after started work, a still dirty PR exhausts repair rather
+than creating another Task, even if its head changed. A Task that ended before
+any repair Run started is refused instead of called exhausted. The native iteration ceiling permits
 iteration zero followed by retries up to `max_iterations`; a failed attempt
 below that ceiling remains eligible for the ordinary supervisor retry.
 Exhaustion commits the named PR, Task and bound with both owed notice audiences.

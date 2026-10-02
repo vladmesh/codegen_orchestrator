@@ -2,14 +2,14 @@
 
 Released code answered a no-Run paid refusal of a PR-conflict repair Task by
 parking the Task in human review and stopping its Story as
-`pr_conflict_repair_exhausted`, although no repair Run was ever bought. Current
+`pr_conflict_repair_exhausted`, although no repair Run ever existed. Current
 code leaves such a Task in `todo` and stops only the Story with the refusal's own
 cause, after which the ordinary repair command is admissible again.
 
 This data migration converts exactly that released shape. Provenance comes from
 immutable Task, TaskEvent, paid-audit and Run rows only: the Task's last status
-edge is the refusal's own edge, its paid decision bought no Run, and no Run was
-bought for its iteration. In released code an exhausted stop on that Story's
+edge is the refusal's own edge, its paid decision created no Run, and no Run
+(started or not) exists for its iteration. In released code an exhausted stop on that Story's
 current-cycle repair Task can then only stem from that zero-Run refusal: the
 attempt settlement writes one only for a Run of the current iteration, and the
 repair command's exhaustion only for a Task with no later edge than the stop.

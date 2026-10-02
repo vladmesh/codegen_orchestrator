@@ -1,5 +1,6 @@
 """A paid refusal before any Run leaves the conflict repair attempt unspent."""
 
+from datetime import UTC, datetime
 import importlib.util
 from pathlib import Path
 import uuid
@@ -16,7 +17,7 @@ from shared.contracts.dto.story_failure import (
     story_failure_admin_text,
     story_failure_owner_text,
 )
-from shared.models import Run, Story, Task, TaskEvent, WorkAdmissionAudit
+from shared.models import Project, Run, Story, Task, TaskEvent, WorkAdmissionAudit
 
 dirty_story = _dirty_story
 MIGRATION = "d7a1c5e9b3f4_unspend_released_conflict_refusals.py"
@@ -126,14 +127,24 @@ async def run_migration(db):
     await db.commit()
 
 
+async def consumer_takes_up(client, rid):
+    """The engineering consumer's own first write: the Run's work began."""
+    taken = await client.patch(
+        f"/api/runs/{rid}",
+        json={"status": "running", "started_at": datetime.now(UTC).isoformat()},
+    )
+    assert taken.status_code == 200, taken.text
+
+
 async def give_up(client, db, tid):
-    """A real repair Run is bought, starts and ends gave_up: the attempt is spent."""
+    """A real repair Run is admitted, starts and ends gave_up: the attempt is spent."""
     sid = (await db.get(Task, tid, populate_existing=True)).story_id
     admitted = await client.post(DISPATCH, json={"task_id": tid})
     assert admitted.json()["outcome"] == "admitted", admitted.text
     rid = admitted.json()["run_id"]
     started = await client.post(f"{DISPATCH}/start", json={"task_id": tid, "run_id": rid})
     assert started.json()["outcome"] == "started", started.text
+    await consumer_takes_up(client, rid)
     failed = await client.patch(
         f"/api/runs/{rid}",
         json={"status": "failed", "result": {"engineering_status": "gave_up"}},
@@ -183,6 +194,46 @@ async def test_a_real_repair_run_spends_the_attempt_and_the_next_command_is_exha
     assert task.status == "waiting_human_review"
     refused = await async_client.post(DISPATCH, json={"task_id": tid})
     assert refused.json()["reason"] == "task_not_dispatchable", refused.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("taken_up", [False, True], ids=["never-started", "started"])
+async def test_only_a_started_repair_run_spends_the_attempt(
+    async_client, db_session, dirty_story, taken_up
+):
+    sid, command, _, _, _ = dirty_story
+    url = f"/api/stories/{sid}/repair-pr-conflicts"
+    tid = (await async_client.post(url, json=command)).json()["task_id"]
+    task = await db_session.get(Task, tid)
+    project = await db_session.get(Project, task.project_id)
+    project.config = {**project.config, "workspace_ready": True}
+    await db_session.commit()
+    # Admission buys the Run and its hold; no consumer has taken it up yet.
+    admitted = await async_client.post(DISPATCH, json={"task_id": tid})
+    assert admitted.json()["outcome"] == "admitted", admitted.text
+    rid = admitted.json()["run_id"]
+    if taken_up:
+        await consumer_takes_up(async_client, rid)
+    # An operator cancels the Run and its Task through the existing routes.
+    cancelled = await async_client.patch(f"/api/runs/{rid}", json={"status": "cancelled"})
+    assert cancelled.status_code == 200, cancelled.text
+    removed = await async_client.delete(f"/api/tasks/{tid}")
+    assert removed.status_code in {200, 204}, removed.text
+    assert (await db_session.get(Task, tid, populate_existing=True)).status == "cancelled"
+    response = await async_client.post(url, json=command)
+    story = await db_session.get(Story, sid, populate_existing=True)
+    if taken_up:
+        assert response.json()["outcome"] == "exhausted", response.text
+        assert story.quarantine_reason["code"] == "pr_conflict_repair_exhausted"
+    else:
+        # Admission without a start is no attempt: never labelled exhausted.
+        assert response.status_code == 409, response.text
+        assert "before any repair Run started" in response.json()["detail"]["message"]
+        assert (story.status, story.quarantine_reason, story.owner_notification) == (
+            "in_progress",
+            None,
+            None,
+        )
 
 
 @pytest.mark.asyncio

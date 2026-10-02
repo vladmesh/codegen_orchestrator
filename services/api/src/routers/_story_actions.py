@@ -159,8 +159,8 @@ async def repair_pr_conflicts(
         and reason.get("code") == StoryFailureCode.PR_CONFLICT_REPAIR_EXHAUSTED.value
     )
     current = [row for row in tasks if in_work_cycle(row.created_at, story.reopened_at, row.status)]
-    bought = await _bought_iterations(task, db)
-    unspent = _unspent_repair(task, story, current, bought)
+    started = await _started_iterations(task, db)
+    unspent = _unspent_repair(task, story, current, started)
     if story.status not in {StoryStatus.PR_REVIEW.value, StoryStatus.IN_PROGRESS.value}:
         if not (released_park or exhausted_park or unspent):
             _repair_conflict("This human-review reason does not permit conflict recovery.")
@@ -259,7 +259,7 @@ async def repair_pr_conflicts(
             unspent=unspent,
             exhausted_park=exhausted_park,
             live=live,
-            bought=bought,
+            started=started,
             db=db,
         )
     return PRConflictRepairRead(
@@ -274,24 +274,24 @@ async def repair_pr_conflicts(
     )
 
 
-def _unspent_repair(task: Task | None, story: Story, current: list[Task], bought: list[int]):
+def _unspent_repair(task: Task | None, story: Story, current: list[Task], started: list[int]):
     """Whether a stopped Story's repair Task still holds its unspent attempt.
 
-    The cycle's repair Task still waits in `todo` and no Run was bought for its
-    iteration (a paid refusal buys none), while all other cycle work is settled.
+    The cycle's repair Task still waits in `todo` and no repair Run started for
+    its iteration (a paid refusal creates none), while other cycle work is settled.
     The stopped Story is then simply admissible again; no Story text decides it.
     """
     return (
         task is not None
         and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
         and task.status == TaskStatus.TODO.value
-        and not any(iteration >= task.current_iteration for iteration in bought)
+        and not any(iteration >= task.current_iteration for iteration in started)
         and all(row.status in _SETTLED_TASK_STATUSES for row in current if row.id != task.id)
     )
 
 
 async def _settle_existing_repair(
-    task, story, evidence, head_sha, *, unspent, exhausted_park, live, bought, db
+    task, story, evidence, head_sha, *, unspent, exhausted_park, live, started, db
 ):
     """The repeat request's outcome for the cycle's existing repair Task."""
     if unspent:
@@ -302,10 +302,10 @@ async def _settle_existing_repair(
     if exhausted_park:
         return PRConflictRepairOutcome.EXHAUSTED
     if not live and _repair_ended(task, evidence):
-        # Exhaustion counts bought work: a Task that ended without any repair
-        # Run was never an attempt, so it is refused rather than called spent.
-        if not bought:
-            _repair_conflict("The repair Task ended before any repair Run was bought.")
+        # Exhaustion counts started work: a Task that ended before any repair
+        # Run started was never an attempt, so it is refused, not called spent.
+        if not started:
+            _repair_conflict("The repair Task ended before any repair Run started.")
         _record_repair_exhausted(story, task, head_sha, evidence)
         await db.commit()
         return PRConflictRepairOutcome.EXHAUSTED
@@ -342,27 +342,31 @@ def _record_repair_exhausted(
         _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
 
 
-async def _bought_iterations(task: Task | None, db: AsyncSession) -> list[int]:
-    """Iterations of the repair Task's engineering Runs that spent an attempt.
+async def _started_iterations(task: Task | None, db: AsyncSession) -> list[int]:
+    """Iterations of the repair Task's engineering Runs whose work began.
 
-    Only the paid gate's admission creates an engineering Run, with its budget
-    hold, iteration and queue handoff; a refusal creates none. A Run aborted
-    before handoff provably reached no worker and spends nothing. Column-only:
-    the Task rows this route holds fence any new Run for the Task.
+    Work began when the engineering consumer took the Run up: it records
+    `running` with `started_at` before any agent turn, and nothing else writes
+    `started_at`. A Run that was only admitted (queued, budget held) and was
+    cancelled, aborted or failed before a consumer took it up spends nothing;
+    a paid refusal creates no Run at all. Column-only: the Task rows this route
+    holds fence any new Run for the Task.
     """
     if task is None:
         return []
     rows = (
         await db.execute(
             select(Run.run_metadata).where(
-                Run.task_id == task.id, Run.type == RunType.ENGINEERING.value
+                Run.task_id == task.id,
+                Run.type == RunType.ENGINEERING.value,
+                Run.started_at.is_not(None),
             )
         )
     ).scalars()
     return [
         metadata["iteration"]
         for metadata in (row or {} for row in rows)
-        if not metadata.get("pre_handoff_aborted") and type(metadata.get("iteration")) is int
+        if type(metadata.get("iteration")) is int
     ]
 
 
