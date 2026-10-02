@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-02
 
+- The deploy `.env` ends in a newline: a generated workflow's appended `PUBLIC_BASE_URL` glued onto the last
+  variable, `USERS_GRANT_CAPABILITY`, so every initial-owner grant got 403 `grant_rejected` (story-92b433c8).
 - Conflict repair attempts count started Runs: a paid refusal keeps the Task todo and stops only the Story with "no budget"
   (limit, spend), so the same repair command resumes it; a migration unsticks released refusals (c351).
 - [hotfix] The scaffolder image links copier into /usr/local/bin again (#694 left it off PATH, so every scaffold

@@ -19,7 +19,10 @@ def build_dotenv(secrets: dict[str, str]) -> str:
     """Build dotenv file content from a secrets dict.
 
     Keys are sorted for deterministic output. Values containing
-    special characters are double-quoted.
+    special characters are double-quoted. Every line, including the last,
+    ends in a newline: target-side deploy scripts append lines to this file
+    (`printf 'KEY=...\\n' >> .env`), and an unterminated last line would glue
+    the appended line onto the last value.
     """
     lines = []
     for key in sorted(secrets):
@@ -29,7 +32,7 @@ def build_dotenv(secrets: dict[str, str]) -> str:
             lines.append(f'{key}="{escaped}"')
         else:
             lines.append(f"{key}={value}")
-    return "\n".join(lines)
+    return "".join(f"{line}\n" for line in lines)
 
 
 def encode_dotenv(dotenv_content: str) -> str:
