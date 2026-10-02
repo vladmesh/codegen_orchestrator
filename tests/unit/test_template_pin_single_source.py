@@ -89,7 +89,7 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
 
 def test_production_pin_is_the_immutable_kit_release() -> None:
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 4)
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 7, 0)
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -98,7 +98,7 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    corrected_commit = "04e2d94826f0dd6b46be3d7345b46cdd677db7ed"
+    corrected_commit = "1de7aa6c02cfcf212b2d21919defbb3d77383998"
 
     assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
     assert answers["_src_path"] == template_pin.TEMPLATE_PIN.source
@@ -107,6 +107,7 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     assert f"rev={corrected_commit}" in lock
     assert "1d0c0fdd8b12bf1548ab3f97882e5edee7c55763" not in project
     assert "9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914" not in project
+    assert "04e2d94826f0dd6b46be3d7345b46cdd677db7ed" not in project
 
 
 def test_pinned_fixture_syncs_both_locked_environments_before_generation() -> None:
@@ -195,3 +196,29 @@ def test_the_live_override_still_wins_over_the_moved_pin(
     monkeypatch.setenv(helpers.TEMPLATE_REF_ENV, stand_ref)
 
     assert helpers.resolve_template() == (stand_source, stand_ref)
+
+
+def test_released_render_hands_the_identity_capability_to_the_bot() -> None:
+    """The backend owns the generated caller-identity secret and the bot receives it.
+
+    The deploy `.env` carries every resolved `generated_secret`, so the bot holds the
+    capability only if its compose service reads that file or names the variable.
+    """
+    fixture = template_pin.TEMPLATE_PIN.fixture_path()
+    contract = yaml.safe_load((fixture / "services/backend/env.contract.yaml").read_text())
+    entry = contract["entries"]["USER_IDENTITY_CAPABILITY"]
+
+    assert entry["source"] == "generated_secret"
+    assert set(entry["consumers"]) == {"backend", "tg_bot"}
+    for compose_name in ("compose.base.yml", "compose.prod.yml"):
+        compose = yaml.safe_load((fixture / "infra" / compose_name).read_text())
+        bot = compose["services"]["tg_bot"]
+        environment = bot.get("environment", {})
+        names = (
+            set(environment)
+            if isinstance(environment, dict)
+            else {item.split("=", 1)[0] for item in environment}
+        )
+        assert "../.env" in bot.get("env_file", []) or "USER_IDENTITY_CAPABILITY" in names, (
+            compose_name
+        )

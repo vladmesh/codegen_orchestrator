@@ -136,9 +136,9 @@ SWEEP_TIMEOUT_SECONDS = 300
 BRIEF_SUITE_TIMEOUT_SECONDS = MEGA_BRIEF_PRODUCTIVE_SECONDS
 BRIEF_HARD_STOP_SECONDS = MEGA_BRIEF_HARD_STOP_SECONDS
 BRIEF_CLEANUP_GRACE_SECONDS = BRIEF_HARD_STOP_SECONDS - BRIEF_SUITE_TIMEOUT_SECONDS
-# The package variant of the brief pays for a kit install — obtain the kit at
-# this product's pin, build the wheel, `kit add`, regenerate — before its own
-# engineering starts, so it is given its own longer window and the same shape of
+# The package variant of the brief pays for a kit install — `kit add <name>`
+# resolves the live catalog, builds the released tag and regenerates — before its
+# own engineering starts, so it is given its own longer window and the same shape of
 # cleanup grace after it.
 BRIEF_PACKAGE_SUITE_TIMEOUT_SECONDS = MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS
 BRIEF_PACKAGE_HARD_STOP_SECONDS = MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS

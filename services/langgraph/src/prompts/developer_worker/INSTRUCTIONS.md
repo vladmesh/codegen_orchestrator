@@ -221,31 +221,23 @@ settings and job names. **Package code is never hand-written into a product.** A
 installed, never copied in by hand, and the core activates one only when it is both installed and
 listed in the backend manifest.
 
-Nothing publishes the package wheels, so build the wheel from the kit at the exact ref this
-product is pinned to. `.copier-answers.yml` records that pin: `_src_path` is the kit source and
-`_commit` the ref.
+The kit lists every package it offers in its package catalog (`packages/catalog.yaml` in the kit
+repository): each package's name, the capabilities it provides, the settings a product supplies and
+its released versions. Install a package by its catalog name, from the product root:
 
 ```bash
-# 1. Read the pin this product was scaffolded from
-grep -E '^_(src_path|commit):' .copier-answers.yml
-
-# 2. Obtain the kit at exactly that ref
-git clone https://github.com/vladmesh/codegen-product-kit.git /tmp/kit
-git -C /tmp/kit checkout <_commit>
-
-# 3. Build the package wheel from that source
-uv build --wheel /tmp/kit/packages/codegen-kit-reminders --out-dir /tmp/kit-wheels
-
-# 4. Install it into this product
-.venv/bin/kit add reminders --wheel /tmp/kit-wheels/codegen_kit_reminders-0.1.0-py3-none-any.whl
+.venv/bin/kit add <name>
 ```
 
-`kit add <name> --wheel <path>` performs the whole product mutation and is the only supported way
-to install one: it copies that exact wheel under `services/backend/packages/`, adds the backend
-dependency and its lock entry, records the entry-point-only dependency so dependency linting
-accepts it, adds the name to the manifest's `packages:` allowlist, synchronizes the backend
-environment, and regenerates the product contract. Do not perform any of those steps by hand, and
-do not stop before the command has run.
+`kit add <name>` resolves the kit's live catalog, picks the newest released version this product's
+core admits, builds that released tag, verifies the wheel against the catalog entry, and performs
+the whole product mutation: it copies the wheel under `services/backend/packages/`, adds the
+backend dependency and its lock entry, records the entry-point-only dependency so dependency
+linting accepts it, adds the name to the manifest's `packages:` allowlist, synchronizes the backend
+environment, and regenerates the product contract. It is the only supported way to install a
+package. Do not build a wheel yourself and do not perform any of those steps by hand, and do not
+stop before the command has run. Commit everything it changed, including the wheel under
+`services/backend/packages/`: the committed wheel is what the product's CI and images install.
 
 Verify the install before reporting success: `services/backend/manifest.yaml` lists the package
 under `packages:`, and the generated `codegen_kit/_active_packages.py` records its name, version

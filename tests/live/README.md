@@ -183,8 +183,9 @@ then gets a 10-minute cleanup grace before the runner kills the process group �
 `MEGA_BRIEF_PRODUCTIVE_SECONDS` and `MEGA_BRIEF_HARD_STOP_SECONDS`, and the grace is their
 difference, not a third number. `mega-brief-package` runs the same lifecycle under a longer
 productive window — 65 minutes, then a 15-minute cleanup grace — because
-its engineering turn obtains the kit, builds the package wheel, installs it with `kit add` and
-regenerates the product contract before any of its own work starts. A recreate's readiness wait and the QA executor switch that follows it are separately
+its engineering turn installs the package with `kit add <name>`, which resolves the kit's live
+catalog, builds the released package tag and regenerates the product contract, before any of its
+own work starts. A recreate's readiness wait and the QA executor switch that follows it are separately
 limited to three minutes each; runner preflight and final sweep are each five minutes.
 
 For the largest workflow path, provisioning has a 45-minute budget. Its configured waits include

@@ -90,6 +90,7 @@ class KitPackage(KitItem):
 class Kit(_Model):
     modules: list[KitItem] = Field(min_length=1)
     core: list[KitItem]
+    catalog: str = Field(min_length=1)
     packages: list[KitPackage]
 
 
@@ -218,7 +219,7 @@ def render_document(manifest: CapabilityManifest) -> str:
     lines += [f"- `{module.name}`: {module.plain}" for module in manifest.kit.modules]
     lines += ["", "Core contracts every backend carries:", ""]
     lines += [f"- {core.name}: {core.plain}" for core in manifest.kit.core]
-    lines += ["", "Packages:", ""]
+    lines += ["", f"Packages, from the catalog: {' '.join(manifest.kit.catalog.split())}", ""]
     lines += [
         f"- `{package.name}` {package.version}: {' '.join(package.plain.split())}"
         for package in manifest.kit.packages
@@ -297,7 +298,7 @@ def render_architect_block(manifest: CapabilityManifest) -> str:
     lines += [
         "Kit modules: " + "; ".join(f"{m.name}: {_clause(m.plain)}" for m in kit.modules) + ".",
         "Kit core: " + "; ".join(f"{c.name}: {_clause(c.plain)}" for c in kit.core) + ".",
-        "Kit packages: "
+        f"Kit packages (catalog: {_clause(kit.catalog)}): "
         + "; ".join(f"{p.name} {p.version}: {_clause(p.plain)}" for p in kit.packages)
         + ".",
         "Secret kinds: " + ", ".join(kind.source for kind in manifest.secret_kinds) + ".",

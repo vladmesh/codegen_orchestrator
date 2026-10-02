@@ -212,7 +212,7 @@ class TestTheManifestIsVersionedAndReviewed:
     def test_it_carries_a_version_and_the_owner_review_marker(self):
         manifest = load_manifest()
 
-        assert manifest.version == 10
+        assert manifest.version == 11
         assert manifest.status == "owner-reviewed"
         assert manifest.review == "product list agreed by the owner 2026-09-28"
 
@@ -307,11 +307,32 @@ class TestTheArchitectBlock:
         assert all(" ".join(item.technical.split()) in block for item in manifest.cannot)
         assert "Derived keys (no others exist): " in block
 
-    def test_it_warns_that_nothing_fires_reminders_tick_in_production(self):
+    def test_it_states_that_the_core_timer_fires_reminders_tick_in_production(self):
         block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
 
-        assert "nothing calls the `reminders` package's `reminders.tick` in production" in block
-        assert "must run its own timer loop" in block
+        assert (
+            "The kit core timer loop fires each timer an installed package declares, "
+            "in production with no caller: reminders `reminders.tick` every 60 s."
+        ) in block
+        assert "nothing calls the `reminders` package's `reminders.tick`" not in block
+        assert "must run its own timer loop" not in block
+
+    def test_it_states_the_identity_bearing_reminders_api(self):
+        block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
+
+        assert "reminders 0.4.0" in block
+        for header in ("X-Identity-Capability", "X-User-Channel", "X-User-External-Id"):
+            assert f"`{header}`" in block
+        assert "`USER_IDENTITY_CAPABILITY`" in block
+        assert "`user_ref` is `<channel>:<external_id>`" in block
+        assert "`/reminders` takes no `user_ref`" in block
+        assert "seed `reminder_owner_ref` canonically (`telegram:<id>`)" in block
+
+    def test_it_names_the_package_catalog(self):
+        block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
+
+        assert "`packages/catalog.yaml`" in block
+        assert "install with `kit add <name>`" in block
 
 
 class TestThePromptsCarryTheBlock:

@@ -352,8 +352,9 @@ def test_mega_brief_has_a_50_minute_productive_deadline_and_a_separate_cleanup_g
 def test_the_package_brief_variant_is_one_named_suite_with_its_own_budget():
     """The PO dispatches the package route by name, not by pytest target.
 
-    Its window is its own: the variant pays for a kit install — obtain the kit,
-    build the wheel, `kit add`, regenerate — before its own engineering starts,
+    Its window is its own: the variant pays for a kit install — `kit add <name>`
+    resolves the catalog, builds the released tag, regenerates — before its own
+    engineering starts,
     and spending the digest variant's ledger on that is how a paid run dies
     inside its own deadline.
     """

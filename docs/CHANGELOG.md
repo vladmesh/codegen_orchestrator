@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-02
 
+- Products scaffold from kit 0.7.0 (core timer, verified caller identity, package catalog); workers install
+  packages with `kit add <name>` from the live catalog instead of hand-building a wheel at `_commit`.
 - Old product name swept: AGENTS/TESTING name Ummanu and its worker-packet broad check, the BitLaunch helper
   reads `~/ummanu/.env`, and `.gitignore` ignores `ummanu-data/`.
 - The deploy `.env` ends in a newline: a generated workflow's appended `PUBLIC_BASE_URL` glued onto the last
