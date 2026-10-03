@@ -345,6 +345,27 @@ class TestCapabilityShapeDirectives:
         assert "package catalog (`packages/catalog.yaml`" in prompt
         assert "name the package the task installs by its catalog name" in prompt
 
+    def test_plans_packages_only_from_the_live_catalog_block(self):
+        """The catalog arrives per run, in the block the consumer builds from the reader."""
+        from src.consumers.architect import KIT_CATALOG_HEADING
+
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert f'as the "{KIT_CATALOG_HEADING}" block' in prompt
+        assert "plan a capability as a package only when a package listed there covers it" in (
+            prompt
+        )
+        assert "When the block says the catalog is unavailable, no package can be planned" in (
+            prompt
+        )
+
+    def test_a_covering_catalog_package_is_reuse_ahead_of_building_it_anew(self):
+        """Without this the ladder's rung 2 hand-builds what the catalog already released."""
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        reuse = prompt.find("**Reuse what exists.**")
+        shared = prompt.find("**A shared service.**")
+        note = prompt.find("install that package (rung 4) rather than building the same capability")
+        assert reuse < note < shared, (reuse, note, shared)
+
     def test_points_at_the_recipe_instead_of_restating_it(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
         assert "docs/contracts/kit-template-and-qa.md" in prompt

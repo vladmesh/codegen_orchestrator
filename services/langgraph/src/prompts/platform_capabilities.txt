@@ -1,4 +1,4 @@
-## Platform capabilities (manifest v11, owner-reviewed)
+## Platform capabilities (manifest v12, owner-reviewed)
 What a product built here can and cannot have. The product is a Telegram bot and has no web address.
 Can:
 - Plain HTTP self links: The bot can include plain HTTP self links; their address can change when the product moves.

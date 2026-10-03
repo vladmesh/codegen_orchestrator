@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import json
+import re
 import tomllib
 
 from packaging.markers import default_environment
@@ -36,10 +37,25 @@ TOOLING = frozenset({"pip", "setuptools", "wheel"})
 LOCK = "requirements.lock"
 PYPROJECT = "pyproject.toml"
 
+# A direct reference pinned as exactly as ``==`` pins a release: a VCS URL at a full commit.
+# The lock records it by that URL, because the version is whatever the commit builds.
+_COMMIT_PIN = re.compile(r"git\+\S+@[0-9a-f]{40}")
+
+
+def is_commit_pin(pin: str) -> bool:
+    """Whether a lock pin is a VCS URL at a full commit rather than a release version."""
+    return _COMMIT_PIN.fullmatch(pin) is not None
+
+
 # Standard library only: it runs on the image's interpreter, before anything is known
 # about what that image has installed.
 PROBE = """
 import importlib.metadata, json, os, platform, sys
+
+def direct_url(dist):
+    # PEP 610: how a distribution installed from a URL or VCS got there, if it did.
+    raw = dist.read_text("direct_url.json")
+    return json.loads(raw) if raw else None
 
 def full_version(info):
     version = f"{info.major}.{info.minor}.{info.micro}"
@@ -53,6 +69,7 @@ print(json.dumps({
             "name": dist.metadata["Name"],
             "version": dist.version,
             "requires": dist.requires or [],
+            "direct_url": direct_url(dist),
         }
         for dist in importlib.metadata.distributions()
     ],
@@ -80,14 +97,31 @@ class Distribution:
     name: str
     version: str
     requires: tuple[str, ...] = ()
+    #: Where a VCS install came from, as ``<vcs>+<url>@<commit>`` (the shape of a lock's
+    #: commit pin), read from its PEP 610 ``direct_url.json``; ``None`` for anything else.
+    source: str | None = None
+
+
+def vcs_source(direct_url: object) -> str | None:
+    """``<vcs>+<url>@<commit>`` of a PEP 610 VCS ``direct_url.json``, else ``None``."""
+    if not isinstance(direct_url, Mapping):
+        return None
+    vcs_info = direct_url.get("vcs_info")
+    if not isinstance(vcs_info, Mapping):
+        return None
+    vcs, url, commit = vcs_info.get("vcs"), direct_url.get("url"), vcs_info.get("commit_id")
+    if not (isinstance(vcs, str) and isinstance(url, str) and isinstance(commit, str)):
+        return None
+    return f"{vcs}+{url}@{commit}"
 
 
 def parse_lock(text: str, environment: Mapping[str, str]) -> dict[str, str]:
     """``{canonical name: version}`` of every pin in a ``uv pip compile`` lock.
 
-    A pin whose marker does not hold in ``environment`` is not installed there, so it is
-    left out. A line that is not an exact ``name==version`` pin raises: a lock this
-    cannot read is a hole in the check, never a line to skip.
+    A ``name @ git+<url>@<commit>`` pin maps to its URL instead (``is_commit_pin``). A pin
+    whose marker does not hold in ``environment`` is not installed there, so it is left
+    out. A line that is neither an exact ``name==version`` pin nor a VCS pin at a full
+    commit raises: a lock this cannot read is a hole in the check, never a line to skip.
     """
     pins: dict[str, str] = {}
     for number, raw in enumerate(text.splitlines(), start=1):
@@ -99,20 +133,32 @@ def parse_lock(text: str, environment: Mapping[str, str]) -> dict[str, str]:
         except InvalidRequirement as error:
             raise ValueError(f"line {number} of the lock is not a requirement: {raw!r}") from error
         specifiers = list(requirement.specifier)
-        if len(specifiers) != 1 or specifiers[0].operator != "==":
+        if requirement.url is not None:
+            if not is_commit_pin(requirement.url):
+                raise ValueError(f"line {number} of the lock is not an exact pin: {raw!r}")
+            pin = requirement.url
+        elif len(specifiers) != 1 or specifiers[0].operator != "==":
             raise ValueError(f"line {number} of the lock is not an exact pin: {raw!r}")
+        else:
+            pin = specifiers[0].version
         if requirement.marker and not requirement.marker.evaluate(dict(environment)):
             continue
         name = canonicalize_name(requirement.name)
         if name in pins:
             raise ValueError(f"line {number} of the lock pins {name} a second time")
-        pins[name] = specifiers[0].version
+        pins[name] = pin
     return pins
 
 
 def locked_distributions(pins: Mapping[str, str]) -> dict[str, Distribution]:
-    """The lock alone, as distributions whose own requirements are unknown."""
-    return {name: Distribution(name, version) for name, version in pins.items()}
+    """The lock alone, as distributions whose own requirements are unknown.
+
+    A commit pin is its own source: the lock names the commit, not the version it builds.
+    """
+    return {
+        name: Distribution(name, pin, source=pin if is_commit_pin(pin) else None)
+        for name, pin in pins.items()
+    }
 
 
 def installed_distributions(
@@ -128,7 +174,8 @@ def installed_distributions(
     for entry in entries:
         name = canonicalize_name(str(entry["name"]))
         requires = tuple(str(requirement) for requirement in entry["requires"])
-        dist = Distribution(name, str(entry["version"]), requires)
+        source = vcs_source(entry.get("direct_url"))
+        dist = Distribution(name, str(entry["version"]), requires, source)
         previous = found.get(name)
         if previous is not None and Version(previous.version) != Version(dist.version):
             problems.append(
@@ -147,21 +194,49 @@ def drift(
 ) -> list[str]:
     """Every difference between the image's installed set and its lock.
 
-    Only ``TOOLING`` and the service's own package are ignored on the installed side.
+    Only ``TOOLING`` and the service's own package are ignored on the installed side. A
+    commit pin is compared by provenance: the installed distribution must record, in its
+    PEP 610 ``direct_url.json``, a VCS install of the same repository URL at the same
+    commit. Missing provenance, another URL or another commit is drift.
     """
     ignored = TOOLING | {canonicalize_name(own_package)}
-    actual = {name: dist.version for name, dist in installed.items() if name not in ignored}
+    actual = {name: dist for name, dist in installed.items() if name not in ignored}
     problems = []
     for name in sorted(actual.keys() | pins.keys()):
         locked = pins.get(name)
-        version = actual.get(name)
+        dist = actual.get(name)
+        version = None if dist is None else dist.version
         if locked is None:
             problems.append(f"{image}: {name} {version} is installed, but {LOCK} does not pin it")
-        elif version is None:
+        elif dist is None:
             problems.append(f"{image}: {LOCK} pins {name} {locked}, but it is not installed")
+        elif is_commit_pin(locked):
+            if dist.source is None:
+                problems.append(
+                    f"{image}: {name} {version} is installed without VCS provenance, "
+                    f"but {LOCK} pins {locked}"
+                )
+            elif dist.source != locked:
+                problems.append(
+                    f"{image}: {name} is installed from {dist.source}, but {LOCK} pins {locked}"
+                )
         elif Version(version) != Version(locked):
             problems.append(f"{image}: {name} is installed at {version}, but {LOCK} pins {locked}")
     return problems
+
+
+def _satisfies(requirement: Requirement, dist: Distribution) -> bool:
+    """Whether one distribution, locked or installed, satisfies one requirement.
+
+    A URL requirement is satisfied only by a distribution from that same source: a commit
+    pin of that URL, or an install whose provenance records it. A lock's commit pin carries
+    no version, so it satisfies no version range.
+    """
+    if requirement.url:
+        return dist.source == requirement.url
+    if is_commit_pin(dist.version):
+        return not requirement.specifier
+    return requirement.specifier.contains(dist.version, prereleases=True)
 
 
 def unsatisfied(
@@ -193,7 +268,7 @@ def unsatisfied(
         if dist is None:
             problems.append(f"{image}: {via} requires {requirement}, which {LOCK} does not pin")
             return
-        if not requirement.specifier.contains(dist.version, prereleases=True):
+        if not _satisfies(requirement, dist):
             problems.append(
                 f"{image}: {via} requires {requirement}, but {LOCK} pins {name} {dist.version}"
             )

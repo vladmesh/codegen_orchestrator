@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 11, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 12, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -130,9 +130,7 @@ Core contracts every backend carries:
 - caller identity v1: Package routes serve only the caller verified by `X-Identity-Capability` (`USER_IDENTITY_CAPABILITY`), `X-User-Channel`, `X-User-External-Id`; `user_ref` is `<channel>:<external_id>`.
 - events v1: Durable product events on Redis Streams, each handled once per consuming service.
 
-Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings; install with `kit add <name>`.
-
-- `reminders` 0.4.0: One-time text reminders (create, list, cancel) per verified caller; `/reminders` takes no `user_ref`; seed `reminder_owner_ref` canonically (`telegram:<id>`).
+Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings; it is read live from the kit's default branch at planning time and the planning instructions list each installable package; install with `kit add <name>`; a new package release needs no orchestrator change.
 
 ### Deploy targets
 

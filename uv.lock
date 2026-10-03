@@ -1562,6 +1562,7 @@ source = { editable = "services/langgraph" }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncssh" },
+    { name = "codegen-kit-tooling" },
     { name = "cryptography" },
     { name = "ddgs" },
     { name = "httpx" },
@@ -1584,6 +1585,7 @@ dependencies = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "asyncssh", specifier = ">=2.24.0" },
+    { name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=1de7aa6c02cfcf212b2d21919defbb3d77383998" },
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "ddgs", specifier = ">=7.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },

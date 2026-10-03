@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 11
+version: 12
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -316,15 +316,14 @@ kit:
         `<channel>:<external_id>`.
     - name: events v1
       plain: Durable product events on Redis Streams, each handled once per consuming service.
+  # Packages are not listed here: the Architect reads them live from the kit's catalog at
+  # planning time (services/langgraph/src/kit_catalog.py), so a package release needs no
+  # change to this manifest or to the orchestrator.
   catalog: >-
     the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings;
-    install with `kit add <name>`.
-  packages:
-    - name: reminders
-      version: 0.4.0
-      plain: >-
-        One-time text reminders (create, list, cancel) per verified caller; `/reminders`
-        takes no `user_ref`; seed `reminder_owner_ref` canonically (`telegram:<id>`).
+    it is read live from the kit's default branch at planning time and the planning
+    instructions list each installable package; install with `kit add <name>`; a new package
+    release needs no orchestrator change.
 
 deploy_targets:
   - service: backend

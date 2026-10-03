@@ -212,7 +212,7 @@ class TestTheManifestIsVersionedAndReviewed:
     def test_it_carries_a_version_and_the_owner_review_marker(self):
         manifest = load_manifest()
 
-        assert manifest.version == 11
+        assert manifest.version == 12
         assert manifest.status == "owner-reviewed"
         assert manifest.review == "product list agreed by the owner 2026-09-28"
 
@@ -317,22 +317,32 @@ class TestTheArchitectBlock:
         assert "nothing calls the `reminders` package's `reminders.tick`" not in block
         assert "must run its own timer loop" not in block
 
-    def test_it_states_the_identity_bearing_reminders_api(self):
+    def test_it_states_the_identity_bearing_package_api(self):
         block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
 
-        assert "reminders 0.4.0" in block
         for header in ("X-Identity-Capability", "X-User-Channel", "X-User-External-Id"):
             assert f"`{header}`" in block
         assert "`USER_IDENTITY_CAPABILITY`" in block
         assert "`user_ref` is `<channel>:<external_id>`" in block
-        assert "`/reminders` takes no `user_ref`" in block
-        assert "seed `reminder_owner_ref` canonically (`telegram:<id>`)" in block
 
     def test_it_names_the_package_catalog(self):
         block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
 
         assert "`packages/catalog.yaml`" in block
         assert "install with `kit add <name>`" in block
+
+    def test_it_lists_no_package_of_its_own(self):
+        """Packages come from the kit's live catalog at planning time, not from here.
+
+        A static list would make a package release wait for an orchestrator edit, and
+        would go on offering a version the kit no longer releases.
+        """
+        block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
+
+        assert "read live from the kit's default branch at planning time" in block
+        assert "a new package release needs no orchestrator change" in block
+        assert "reminders 0.4.0" not in block
+        assert not hasattr(load_manifest().kit, "packages")
 
 
 class TestThePromptsCarryTheBlock:

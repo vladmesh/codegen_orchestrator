@@ -157,6 +157,27 @@ by reference and never for hand-written package code. The decision is carried in
 description and acceptance criteria, not in a `TaskCreate` field: no tool argument names a
 capability shape.
 
+Which packages exist the architect learns from the same live catalog `kit add` installs from, not
+from a list of the orchestrator's own. At planning time `services/langgraph/src/kit_catalog.py`
+fetches `packages/catalog.yaml` from the kit's default branch over HTTP (`KIT_CATALOG_SOURCE`, a
+raw-file base, and `KIT_CATALOG_REF`, default `HEAD`; a bounded timeout and a five-minute
+in-process cache of a successful read), parses it with the pinned kit tooling's own
+`framework.catalog.parse_catalog`, and keeps the packages with a version that admits the pinned
+`CORE_VERSION`. Every run's briefing carries a "Kit package catalog" block with each installable
+package's name, summary, capabilities, the settings it asks for and its required environment, and
+the rule that a capability is a package only when a listed package covers it. A failed read
+(transport, status, YAML or validation) never falls back to an older or hard-coded list: the block
+says the catalog is unavailable and that no package can be planned in that run. `create_task`
+enforces the same boundary on what the plan writes. Each `kit add` invocation in a task is split
+with `shlex` and parsed by the pinned kit's own CLI parser (`framework.cli._parser`), so the check
+accepts exactly what the installed `kit` accepts: an invocation that sets the wheel option in any
+spelling that parser takes (`--wheel`, `--wh`, `--wheel=…`), names a package the briefed catalog
+does not list, cannot be parsed, or comes while the catalog was unavailable is refused, as is a
+`.whl` file named anywhere or a kit distribution installed through pip or uv. The architect reads
+the reason and repairs the task. It is a planning lint that keeps task text on the catalog route,
+not a security boundary: a command assembled from shell variables or aliases is beyond it. So releasing a new package, or a new version of
+one, needs no orchestrator change: it is plannable once the kit's catalog lists it.
+
 The orchestrator states this recipe to the engineering worker in
 `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. The stage-5 template
 compatibility smoke proves it against a real render rather than a replica: it renders a second

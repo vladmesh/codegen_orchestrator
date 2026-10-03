@@ -328,6 +328,13 @@ is never passed into coding-worker containers.
 | `ARCHITECT_LLM_API_KEY` | Architect agent LLM API key |
 | `SUMMARIZATION_MODEL` | Summarization model name (`anthropic/claude-haiku-4-5`) |
 
+The Architect reads the kit's live package catalog at planning time from
+`KIT_CATALOG_SOURCE` (a raw-file base, default
+`https://raw.githubusercontent.com/vladmesh/codegen-product-kit`) at `KIT_CATALOG_REF` (default
+`HEAD`, the kit's default branch). Neither is a secret and both are optional; the architect
+container needs outbound HTTPS to that host. See
+[contracts/kit-template-and-qa.md](contracts/kit-template-and-qa.md).
+
 Numeric PO summarization tuning is not environment or secret configuration. Production reads
 `llm.summarization_max_tokens`, `llm.summarization_trigger_tokens`, and
 `llm.summarization_max_summary_tokens` from required system config seeded by
@@ -911,7 +918,10 @@ distributions and fails the `Required CI Gate` on:
 
 - **drift** — an installed distribution the lock does not pin, a pinned one that is missing, or one
   at another version, each named with the image, the package and both versions. Only `pip`,
-  `setuptools`, `wheel` and the service's own package are ignored;
+  `setuptools`, `wheel` and the service's own package are ignored. A lock line pinned to a VCS URL
+  at a full commit (langgraph's `codegen-kit-tooling`) is compared by provenance instead: the
+  installed distribution's PEP 610 `direct_url.json` must name the same repository URL and commit,
+  and missing provenance, another URL or another commit is drift;
 - **a stale lock** — a `pyproject.toml` requirement, followed through every installed distribution's
   own requirements and extras, that the installed (that is, locked) set does not satisfy.
 

@@ -55,6 +55,7 @@ from ..agents.architect.tools import reset_task_chain
 from ..capability_feasibility import capability_conflicts
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
+from ..kit_catalog import KitCatalog, KitCatalogAnswer, get_kit_catalog_reader
 from ..llm import (
     InvalidChannelChainError,
     LLMAgent,
@@ -814,6 +815,61 @@ def _settings_briefing(attempt: _PlanningAttempt) -> str:
     )
 
 
+#: The heading of the catalog block; the prompt's "Capability Shape" points at it by name.
+KIT_CATALOG_HEADING = "Kit package catalog"
+
+
+def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
+    """The kit packages this run may plan, read live from the kit's catalog.
+
+    Every run gets the block, brief-backed or not, because any run may place a new
+    capability. When the catalog could not be read the block says so: no package can be
+    planned this time, and nothing stands in for the list.
+    """
+    if not isinstance(catalog, KitCatalog):
+        return (
+            f"\n\n{KIT_CATALOG_HEADING}: unavailable this time ({catalog.source}: "
+            f"{catalog.failure.value}, {catalog.detail}).\n"
+            "No kit package can be planned in this run: create no task that runs "
+            '`kit add`. Place the capability in another shape from "Capability Shape", '
+            "or, where only a package could meet a requirement, return it with "
+            "returned_reason saying the kit package catalog was unavailable."
+        )
+    rule = (
+        "Plan a capability as a kit package only when a package listed here covers it, "
+        "and install it only as `kit add <name>` with the name exactly as listed: never "
+        "from a wheel file or another built artifact. A capability no listed package "
+        'covers is not a package: take another shape from "Capability Shape" or return '
+        "the requirement."
+    )
+    heading = (
+        f"\n\n{KIT_CATALOG_HEADING} (read live from {catalog.source}; versions that "
+        f"admit kit core {catalog.core_version}):\n"
+    )
+    if not catalog.packages:
+        return heading + "No package the pinned kit core can install is listed.\n" + rule
+    entries = []
+    for installable in catalog.packages:
+        package = installable.package
+        lines = [
+            f"- {package.name} (installs {installable.version.version}): {package.summary}",
+            "  capabilities: " + "; ".join(package.capabilities),
+        ]
+        if package.settings:
+            lines.append(
+                "  settings it asks for: "
+                + "; ".join(f"{setting.name}: {setting.summary}" for setting in package.settings)
+            )
+        required = [variable for variable in package.environment if variable.required]
+        if required:
+            lines.append(
+                "  required environment: "
+                + "; ".join(f"{variable.name}: {variable.summary}" for variable in required)
+            )
+        entries.append("\n".join(lines))
+    return heading + "\n".join(entries) + "\n" + rule
+
+
 def _recorded_scaffold_error(project: ProjectDTO) -> str | None:
     """The failure the scaffolder recorded on the project, if it recorded one."""
     error = (project.config or {}).get(SCAFFOLD_ERROR_KEY)
@@ -1055,6 +1111,8 @@ async def _plan(
                 f"Start by calling get_story and get_project_spec."
             )
         user_content += _requirements_briefing(planning)
+        catalog = await get_kit_catalog_reader().read()
+        user_content += _kit_catalog_briefing(catalog)
 
         initial_state = {
             "messages": [{"role": "user", "content": user_content}],
@@ -1062,6 +1120,9 @@ async def _plan(
             "project_id": msg.project_id,
             "telegram_chat_id": msg.telegram_chat_id,
             **_planning_state(planning),
+            "kit_catalog_packages": (
+                sorted(catalog.names) if isinstance(catalog, KitCatalog) else None
+            ),
         }
 
         config = {
