@@ -95,6 +95,23 @@ async def test_grant_sends_capability_only_as_header_and_requires_active_readbac
             ],
             GrantFailureKind.MALFORMED_ACCESS,
         ),
+        # A status that is not a string at all is malformed too, not a crash.
+        (
+            [
+                httpx.Response(200, request=httpx.Request("POST", "https://service/users/grant")),
+                httpx.Response(
+                    200,
+                    json={
+                        "user_id": 12,
+                        "status": [],
+                        "channel": "telegram",
+                        "external_id": "84",
+                    },
+                    request=httpx.Request("GET", "https://service/users/access"),
+                ),
+            ],
+            GrantFailureKind.MALFORMED_ACCESS,
+        ),
     ],
 )
 async def test_grant_client_returns_a_bounded_safe_failure(responses, failure):

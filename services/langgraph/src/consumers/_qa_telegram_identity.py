@@ -113,16 +113,14 @@ def identity_record(runtime: QARuntimeConfig) -> dict | None:
     return {"handed_over": False, "reason": refusal.reason, "detail": refusal.detail}
 
 
-REDACTED = "[redacted: QA Telegram credential]"
-
-
 def handed_over_secrets(runtime: QARuntimeConfig) -> tuple[str, ...]:
     """The credential values this run's sandbox may hold, to be kept out of evidence.
 
     The sandbox writes them to a private file and the `qa` CLI never prints
-    them, but an agent with a shell can still print what it holds. Whatever it
-    says is scrubbed of these values before it becomes a transcript, a verdict
-    or a report on the Run.
+    them, but an agent with a shell can still print what it holds. They join the
+    run's one redaction set where the runtime enters the run
+    (`run_qa_centrally`), so whatever the agent says is scrubbed of them before
+    it becomes a transcript, a verdict or a report on the Run.
     """
     if not (runtime.telegram_identity_proven and runtime.telethon_env):
         return ()
@@ -131,11 +129,3 @@ def handed_over_secrets(runtime: QARuntimeConfig) -> tuple[str, ...]:
         for name in ("TELETHON_SESSION", "TELETHON_API_HASH")
         if (value := runtime.telethon_env.get(name, ""))
     )
-
-
-def redact(text: str | None, secrets: tuple[str, ...]) -> str | None:
-    if not text or not secrets:
-        return text
-    for secret in secrets:
-        text = text.replace(secret, REDACTED)
-    return text

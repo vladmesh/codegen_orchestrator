@@ -39,8 +39,8 @@ from shared.qa_probe_library import _SEEDS, seed_probes
 from src.agents.qa.capability_service import QACapabilityService
 from src.agents.qa.tools import build_qa_callables
 from src.consumers._qa_probe_library import build_probe_library, prepare_probe_library
+from src.consumers._qa_redaction import TELEGRAM_CREDENTIAL, QARunRedaction
 from src.consumers._qa_target import QACapabilities, QATarget, QATargetSession
-from src.consumers._qa_telegram_identity import redact
 from src.consumers._qa_workspace import MAX_PROBES, qa_workspace
 
 PROJECT = "116c9678-5872-4ce5-8332-9a267ab27604"
@@ -184,8 +184,7 @@ async def endpoint(tmp_path):
                 "TELETHON_API_HASH": API_HASH,
                 "TELETHON_SESSION": SESSION,
             },
-            probe_secrets=(SESSION, API_HASH),
-            redact_text=redact,
+            redaction=QARunRedaction((SESSION, API_HASH), label=TELEGRAM_CREDENTIAL),
         )
         started = await service.start()
         try:

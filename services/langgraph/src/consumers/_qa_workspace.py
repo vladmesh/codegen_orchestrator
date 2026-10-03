@@ -30,6 +30,8 @@ from shared.contracts.dto.run_result import (
     QATelegramProbeEvidence,
 )
 
+from ._qa_redaction import QARunRedaction
+
 logger = structlog.get_logger(__name__)
 
 QA_WORKSPACE_ROOT = "/tmp/qa-runs"  # noqa: S108 — container-local, one dir per run
@@ -114,6 +116,11 @@ class QAWorkspace:
     #: order. Written by the runtime, so what a run looked at is the runner's
     #: fact and not an executor's account of itself.
     observations: list[ProductObservation] = field(default_factory=list)
+    #: The run's one set of secrets, shared with the runner, the calls and the
+    #: endpoint. Everything this workspace retains — trace, observations,
+    #: Telegram and probe evidence, report and verdict — is scrubbed of it
+    #: first, before any bound is applied.
+    redaction: QARunRedaction = field(default_factory=QARunRedaction)
     _trace: list[dict] = field(default_factory=list)
 
     @property
@@ -155,6 +162,7 @@ class QAWorkspace:
         the verdict in its own workspace also means the run is judged from what
         the runner received, not from a container's exit status.
         """
+        raw = self.redaction.text(raw)
         self.verdict = raw
         self.verdict_path.write_text(raw, encoding="utf-8")
 
@@ -165,7 +173,8 @@ class QAWorkspace:
         the write guard is decided from, so the thing being watched must not be
         able to author it.
         """
-        entry = {"tool": tool, "request": request[:4000], "response": response[:4000]}
+        scrub = self.redaction.text
+        entry = {"tool": tool, "request": scrub(request)[:4000], "response": scrub(response)[:4000]}
         self._trace.append(entry)
         with self.trace_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -188,13 +197,17 @@ class QAWorkspace:
     def record_observation(self, tool: str, subject: str) -> None:
         """Note that this run read the product's own output, and what it read."""
         self.observations.append(
-            ProductObservation(position=len(self._trace), tool=tool, subject=subject)
+            ProductObservation(
+                position=len(self._trace), tool=tool, subject=self.redaction.text(subject)
+            )
         )
 
     def record_telegram_probe(
         self, evidence: QATelegramProbeEvidence, blocker: QABlocker | None = None
     ) -> None:
         """Retain runner-owned Telegram evidence until it is persisted on the run."""
+        evidence = self.redaction.value(evidence)
+        blocker = self.redaction.value(blocker)
         self.telegram_probe_evidence.append(evidence)
         if blocker is not None and self.telegram_probe_blocker is None:
             self.telegram_probe_blocker = blocker
@@ -265,6 +278,8 @@ class QAWorkspace:
             return {"error": f"duration_ms must be between 0 and {MAX_PROBE_DURATION_MS}"}
 
         def bounded(value: str, already_truncated: bool) -> tuple[str, bool]:
+            # Scrub first: a bound applied before it could leave a fragment.
+            value = self.redaction.text(value)
             if len(value) <= MAX_PROBE_TEXT:
                 return value, already_truncated
             return (
@@ -278,9 +293,9 @@ class QAWorkspace:
         probe = QAProbeRun(
             id=f"probe-{len(self.probe_runs) + 1}",
             platform=platform,
-            name=name.strip(),
+            name=self.redaction.text(name.strip()),
             source=bounded_source,
-            arguments=arguments,
+            arguments=[self.redaction.text(value) for value in arguments],
             stdout=bounded_stdout,
             stderr=bounded_stderr,
             exit_status=exit_status,
@@ -300,7 +315,7 @@ class QAWorkspace:
         )
 
     def write_report(self, markdown: str) -> None:
-        self.report_path.write_text(markdown, encoding="utf-8")
+        self.report_path.write_text(self.redaction.text(markdown), encoding="utf-8")
 
     def read_report(self) -> str:
         if not self.report_path.exists():

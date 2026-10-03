@@ -2203,7 +2203,7 @@ def _package_scenario_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
                 "name": "reminders.tick",
                 "arguments": {"at": "2999-01-01T00:00:00Z"},
                 "observable": (
-                    "GET /reminders?user_ref=owner-e2e shows that reference's reminder in "
+                    "GET /reminders read as qa:central-qa shows the seeded reminder in "
                     "state emitted"
                 ),
             }

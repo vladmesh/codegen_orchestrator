@@ -418,7 +418,7 @@ class TestAPackagesBehaviourUsesTheChainAServicesBehaviourUses:
     CRITERIA = (
         "- GET /health returns 200\n"
         '- FIRE JOB reminders.tick WITH {"at": "2026-09-07T10:00:00Z"} THEN GET '
-        "/reminders?user_ref=42 shows the reminder as emitted\n"
+        "/reminders shows the reminder as emitted\n"
     )
 
     def test_the_criteria_declare_the_package_behaviour_and_it_is_retained(self):
@@ -497,24 +497,24 @@ class FakeWorkspace:
 TICK = ScheduledBehaviourCriterion(
     name="reminders.tick",
     arguments={"at": "2026-09-07T10:00:00Z"},
-    observable="GET /reminders?user_ref=42 shows the reminder as emitted",
+    observable="GET /reminders shows the reminder as emitted",
 )
 SWEEP = ScheduledBehaviourCriterion(
     name="reminders.sweep",
-    observable="GET /reminders?user_ref=42 no longer shows the cancelled reminder",
+    observable="GET /reminders no longer shows the cancelled reminder",
 )
 #: A read of the package's own route, after the fire.
-READ = (4, "http_get", "/reminders?user_ref=42")
-SWEEP_READ = (7, "http_get", "/reminders?user_ref=42")
+READ = (4, "http_get", "/reminders")
+SWEEP_READ = (7, "http_get", "/reminders")
 JUDGED = {
     "name": "reminders.tick delivers the reminder",
     "pass": True,
-    "detail": "GET /reminders?user_ref=42 showed the reminder as emitted",
+    "detail": "GET /reminders showed the reminder as emitted",
 }
 JUDGED_SWEEP = {
     "name": "reminders.sweep clears it",
     "pass": True,
-    "detail": "GET /reminders?user_ref=42 no longer lists it",
+    "detail": "GET /reminders no longer lists it",
 }
 TICK_ROW = behaviour_check_name("reminders", "reminders.tick")
 SWEEP_ROW = behaviour_check_name("reminders", "reminders.sweep")
@@ -548,7 +548,9 @@ class TestWhichReadAnswersACriterion:
 
     def test_a_route_the_observable_names_is_the_read_it_asks_for(self):
         assert observable_paths(TICK.observable) == ("/reminders",)
-        assert observation_answers(TICK.observable, "http_get", "/reminders?user_ref=42")
+        assert observation_answers(TICK.observable, "http_get", "/reminders")
+        # The binder reads the path; a query string does not change which route was read.
+        assert observation_answers(TICK.observable, "http_get", "/reminders?limit=10")
         assert observation_answers(TICK.observable, "http_get", "/reminders/7")
 
     def test_an_unrelated_path_is_not_that_read(self):
@@ -565,10 +567,10 @@ class TestWhichReadAnswersACriterion:
         assert not observation_answers(prose, "http_get", "/health")
 
     def test_a_check_may_quote_the_request_the_run_made(self):
-        tokens = observation_tokens("http_get", "/reminders?user_ref=42")
+        tokens = observation_tokens("http_get", "/reminders?limit=10")
 
         assert "/reminders" in tokens
-        assert "/reminders?user_ref=42" in tokens
+        assert "/reminders?limit=10" in tokens
         assert "telegram" in observation_tokens("telegram_probe", "@weather_bot")
 
 
@@ -704,7 +706,7 @@ class TestABehaviourRestsOnAReadOfTheProduct:
 
         assert result.passed is True
         detail = _row(result, TICK_ROW)["detail"]
-        assert "http_get /reminders?user_ref=42" in detail
+        assert "http_get /reminders" in detail
         assert TICK.observable in detail
         assert JUDGED["name"] in detail
         # The row states the limit of what the platform established.

@@ -23,8 +23,8 @@ import pytest
 from shared.qa_probe_cli import QA_PROBE_SCRIPT, QA_PROBE_USAGE
 from src.agents.qa.capability_service import QACapabilityService
 from src.agents.qa.tools import build_qa_callables
+from src.consumers._qa_redaction import TELEGRAM_CREDENTIAL, QARunRedaction
 from src.consumers._qa_target import QACapabilities, QATarget, QATargetSession
-from src.consumers._qa_telegram_identity import redact
 from src.consumers._qa_workspace import qa_workspace
 
 TARGET = QATarget(
@@ -68,8 +68,7 @@ async def endpoint(tmp_path):
             capabilities=CAPABILITIES.describe(),
             submit_verdict=workspace.submit_verdict,
             advertised_host="127.0.0.1",
-            probe_secrets=("session-secret", "api-hash"),
-            redact_text=redact,
+            redaction=QARunRedaction(("session-secret", "api-hash"), label=TELEGRAM_CREDENTIAL),
         )
         started = await service.start()
         try:

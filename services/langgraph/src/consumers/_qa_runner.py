@@ -45,6 +45,7 @@ from shared.telegram_access_probe import (
 )
 
 from ..agents.qa.acceptance import CriteriaAdjustment, prepare_central_qa_criteria
+from ..agents.qa.caller_identity import QACallerIdentity
 from ..agents.qa.capability_service import QACapabilityService
 from ..agents.qa.packages import (
     ACTIVE_PACKAGE_CONTRACT,
@@ -71,6 +72,7 @@ from ..agents.qa.tools import (
 )
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
 from ..prompts.qa import build_qa_instructions, build_qa_prompt
+from ._qa_redaction import TELEGRAM_CREDENTIAL, QARunRedaction
 from ._qa_target import (
     CONTAINER_PROBE_ATTEMPTS,
     CONTAINER_PROBE_RETRY_DELAY,
@@ -88,7 +90,7 @@ from ._qa_target import (
     new_grant_marker,
     qa_target_grant,
 )
-from ._qa_telegram_identity import QATelegramIdentityRefusal, handed_over_secrets, redact
+from ._qa_telegram_identity import QATelegramIdentityRefusal, handed_over_secrets
 from ._qa_workspace import QAWorkspace, qa_workspace
 
 logger = structlog.get_logger(__name__)
@@ -1410,8 +1412,34 @@ def _cleanup_blocker(residues: list[str]) -> QABlocker:
     )
 
 
-def _apply_cleanup_residue(qa_result: QAResult, residues: list[str]) -> QAResult:
-    """Residual workspace or access turns any QA verdict into a blocker."""
+def _retained(qa_result: QAResult, redaction: QARunRedaction) -> QAResult:
+    """The run's result as it may leave the process: no capability value in it."""
+    for name in (
+        "summary",
+        "raw",
+        "report",
+        "checks",
+        "blocker",
+        "state_changes",
+        "telegram_probe_evidence",
+        "probe_runs",
+        "unverified_checks",
+        "executor_evidence",
+    ):
+        setattr(qa_result, name, redaction.value(getattr(qa_result, name)))
+    return qa_result
+
+
+def _apply_cleanup_residue(
+    qa_result: QAResult, residues: list[str], *, redaction: QARunRedaction | None = None
+) -> QAResult:
+    """Residual workspace or access turns any QA verdict into a blocker.
+
+    It is the last step of every path out of `run_qa_centrally`, so it is where
+    the result is scrubbed of the run's capability set before it leaves.
+    """
+    if redaction is not None:
+        qa_result = _retained(qa_result, redaction)
     if not residues:
         return qa_result
     logger.error("qa_cleanup_residual", residual=residues)
@@ -1464,8 +1492,15 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     attempts: QAExecutorAttempts,
     acceptance: PackageAcceptance | None = None,
     probe_library: Sequence[QAProbeLibraryFile] = (),
+    caller_identity: QACallerIdentity | None = None,
+    redaction: QARunRedaction | None = None,
 ) -> QAResult:
-    """Run the one assigned executor over this run's capability endpoint."""
+    """Run the one assigned executor over this run's capability endpoint.
+
+    `redaction` is the run's one set of secrets. The calls, the workspace, the
+    endpoint and the transcript handling below all read that same object.
+    """
+    redaction = redaction if redaction is not None else workspace.redaction
     calls = build_qa_callables(
         session=session,
         workspace=workspace,
@@ -1476,21 +1511,22 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             else None
         ),
         jobs=jobs,
+        caller_identity=caller_identity,
+        redaction=redaction,
     )
-    secrets = handed_over_secrets(runtime)
-    if secrets:
-        # The sandbox may print the credential it holds; the report and the
-        # verdict it submits are scrubbed on the way in, before either is kept.
-        store_report = calls["write_qa_report"]
+    # The sandbox may print the credential or the token it holds, or a
+    # capability a product reflected; the report and the verdict it submits are
+    # scrubbed on the way in, before either is kept.
+    store_report = calls["write_qa_report"]
 
-        def write_qa_report(markdown: str) -> str:
-            return store_report(redact(markdown, secrets))
+    def write_qa_report(markdown: str) -> str:
+        return store_report(redaction.text(markdown))
 
-        calls["write_qa_report"] = write_qa_report
+    calls["write_qa_report"] = write_qa_report
     service = QACapabilityService(
         calls=calls,
         capabilities=session.capabilities.describe(),
-        submit_verdict=lambda raw: workspace.submit_verdict(redact(raw, secrets)),
+        submit_verdict=lambda raw: workspace.submit_verdict(redaction.text(raw)),
         advertised_host=runtime.capability_host,
         # Only an identity this run proved is served to the sandbox.
         telegram_identity=runtime.telethon_env if runtime.telegram_identity_proven else None,
@@ -1499,8 +1535,8 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             if runtime.telegram_identity_refusal
             else None
         ),
-        probe_secrets=secrets,
-        redact_text=redact,
+        # The endpoint adds the run token it mints to this same set.
+        redaction=redaction,
     )
     prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
     if prepared_criteria.adjustments:
@@ -1523,6 +1559,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             timeout=timeout,
             attempts=attempts,
             probe_library=probe_library,
+            redaction=redaction,
         )
         if executor_run is not None:
             return settle_unverified_checks(
@@ -1582,6 +1619,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
     timeout: int,
     attempts: QAExecutorAttempts,
     probe_library: Sequence[QAProbeLibraryFile] = (),
+    redaction: QARunRedaction | None = None,
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
     """Retry only transient subscription-executor failures.
 
@@ -1599,7 +1637,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
     )
     last: QAExecutorUnavailable | None = None
     said = attempts
-    secrets = handed_over_secrets(runtime)
+    scrub = (redaction or QARunRedaction()).text
     for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
         try:
             run = await run_qa_executor(
@@ -1619,8 +1657,8 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
         except QAExecutorUnavailable as exc:
             # What the sandbox said is evidence, and it may have printed the
             # credential it was handed; the value never reaches the Run.
-            exc.detail = redact(exc.detail, secrets) or ""
-            exc.transcript = redact(exc.transcript, secrets)
+            exc.detail = scrub(exc.detail) or ""
+            exc.transcript = scrub(exc.transcript)
             last = exc
             said = said.with_attempt(attempt, exc.transcript, exc.attempt)
             logger.warning(
@@ -1640,7 +1678,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
             verdict=run.verdict_submitted,
             calls_served=run.calls_served,
         )
-        return run, None, said.with_attempt(attempt, redact(run.transcript, secrets), run.attempt)
+        return run, None, said.with_attempt(attempt, scrub(run.transcript), run.attempt)
     return None, last, said
 
 
@@ -1697,13 +1735,24 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     attempts: QAExecutorAttempts | None = None,
     timeout: int = QA_TIMEOUT,
     probe_library: Sequence[QAProbeLibraryFile] = (),
+    caller_identity: QACallerIdentity | None = None,
+    redaction: QARunRedaction | None = None,
 ) -> QAResult:
-    """Run QA with cleanup residue reported as a blocker on every exit path."""
+    """Run QA with cleanup residue reported as a blocker on every exit path.
+
+    `redaction` is the run's one set of secrets. The Telegram credentials the
+    runtime hands the sandbox join it here, where the runtime enters the run.
+    The workspace retains nothing unscrubbed of it, and the result leaves here
+    scrubbed of it on every path.
+    """
+    redaction = redaction if redaction is not None else QARunRedaction()
+    redaction.add(*handed_over_secrets(runtime), label=TELEGRAM_CREDENTIAL)
     grant = QAGrantOutcome(marker=new_grant_marker())
     attempts = attempts or QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
     workspace: QAWorkspace | None = None
     try:
         with qa_workspace() as workspace:
+            workspace.redaction = redaction
             async with qa_target_grant(
                 target=target,
                 fleet_ssh_key=fleet_ssh_key,
@@ -1785,6 +1834,8 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             attempts=attempts,
                             acceptance=acceptance,
                             probe_library=probe_library,
+                            caller_identity=caller_identity,
+                            redaction=redaction,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
             if attempts.started:
@@ -1827,6 +1878,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
+            redaction=redaction,
         )
     except QATargetHarnessError as exc:
         # The target's harness could not answer as the current profile, or a
@@ -1853,6 +1905,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
+            redaction=redaction,
         )
     except (QAGrantError, QACapabilityError) as exc:
         logger.error("qa_grant_failed", server_ip=target.server_ip, error=str(exc))
@@ -1885,6 +1938,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
+            redaction=redaction,
         )
     except Exception as exc:
         logger.exception("qa_central_run_failed", server_ip=target.server_ip)
@@ -1902,9 +1956,10 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
+            redaction=redaction,
         )
 
-    return _apply_cleanup_residue(qa_result, _residues(grant, workspace))
+    return _apply_cleanup_residue(qa_result, _residues(grant, workspace), redaction=redaction)
 
 
 def _residues(grant: QAGrantOutcome, workspace: QAWorkspace | None) -> list[str]:

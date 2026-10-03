@@ -120,6 +120,7 @@ from services.langgraph.src.agents.po.tools_notices import LATEST_OWNER_EVENT_KE
 # The observation binder central QA judges a package behaviour row with. The
 # harness reads the architect's published observable through the same function
 # the paid run will, so a criterion that could never bind is caught here.
+from services.langgraph.src.agents.qa.caller_identity import QA_PLATFORM_USER_REF
 from services.langgraph.src.agents.qa.packages import observation_answers
 
 # The PO reminder gate's per-story records, named by the gate itself so the
@@ -357,7 +358,12 @@ BRIEF_PACKAGE_JOB_ARGUMENT = "at"
 # the criterion spells is deterministic instead of racing the run's clock.
 BRIEF_PACKAGE_TICK_AT = "2999-01-01T00:00:00Z"
 BRIEF_PACKAGE_ROUTE = "/reminders"
-BRIEF_PACKAGE_OWNER_REF = "owner-e2e"
+# A package route answers for the caller the product's core verified, and this
+# variant has no bot, so central QA reads it as the platform QA identity. The
+# seeded owner is that same canonical `user_ref`, so the seeded reminder is the
+# one QA's `GET /reminders` lists. It is the runtime's own constant: one stable
+# value with no Telegram account behind it and nothing to derive per run.
+BRIEF_PACKAGE_OWNER_REF = QA_PLATFORM_USER_REF
 BRIEF_PACKAGE_REMINDER_STATE = "emitted"
 BRIEF_PACKAGE_SETTINGS_KEY = "reminders.reminder_owner_ref"
 
@@ -369,8 +375,8 @@ BRIEF_PACKAGE_SETTINGS_KEY = "reminders.reminder_owner_ref"
 BRIEF_PACKAGE_ACCEPTANCE_CRITERION = (
     f'- FIRE JOB {BRIEF_PACKAGE_JOB_NAME} WITH {{"{BRIEF_PACKAGE_JOB_ARGUMENT}": '
     f'"{BRIEF_PACKAGE_TICK_AT}"}} THEN GET '
-    f"{BRIEF_PACKAGE_ROUTE}?user_ref={BRIEF_PACKAGE_OWNER_REF} shows that reference's "
-    f"reminder in state {BRIEF_PACKAGE_REMINDER_STATE}"
+    f"{BRIEF_PACKAGE_ROUTE} read as {BRIEF_PACKAGE_OWNER_REF} shows the seeded reminder "
+    f"in state {BRIEF_PACKAGE_REMINDER_STATE}"
 )
 
 BRIEF_PRODUCTIVE_DEADLINE_SECONDS = PRODUCTIVE_DEADLINE_SECONDS
@@ -474,9 +480,11 @@ outside over HTTP, and reaches the rest of the product only by publishing its du
 it makes no synchronous call into the product and the product makes none into it.
 
 Its HTTP surface is served by the deployed backend under the prefix
-`{BRIEF_PACKAGE_ROUTE}`: `POST {BRIEF_PACKAGE_ROUTE}` records one,
-`GET {BRIEF_PACKAGE_ROUTE}?user_ref=<ref>` lists that reference's reminders with their
-state, and `DELETE {BRIEF_PACKAGE_ROUTE}/<id>?user_ref=<ref>` cancels one.
+`{BRIEF_PACKAGE_ROUTE}` and acts for the caller the product's core verifies, whose user
+reference is `<channel>:<external_id>`: `POST {BRIEF_PACKAGE_ROUTE}` records one for the
+caller, `GET {BRIEF_PACKAGE_ROUTE}` lists the caller's reminders with their state, and
+`DELETE {BRIEF_PACKAGE_ROUTE}/<id>` cancels one of the caller's. No request names a user
+reference itself.
 
 The moment is evaluated by the named scheduled behaviour `{BRIEF_PACKAGE_JOB_NAME}`,
 whose single argument `{BRIEF_PACKAGE_JOB_ARGUMENT}` is the date-time it evaluates
@@ -564,8 +572,7 @@ def _package_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | No
     by design.  Judged here, against the binder itself, a criterion that could
     never pass stops the run before it is paid for rather than after.
     """
-    read = f"{BRIEF_PACKAGE_ROUTE}?user_ref={BRIEF_PACKAGE_OWNER_REF}"
-    if not observation_answers(behaviour.observable, "http_get", read):
+    if not observation_answers(behaviour.observable, "http_get", BRIEF_PACKAGE_ROUTE):
         return (
             "Architect published an observable central QA cannot bind to a read of "
             f"{BRIEF_PACKAGE_ROUTE}, so its package behaviour row fails by design: "

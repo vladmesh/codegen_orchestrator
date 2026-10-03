@@ -1323,7 +1323,7 @@ class TestProductBriefInitialSettings:
             _mock_api_get_project,
             mock_redis,
             valid_job_data,
-            [InitialSetting(key="reminders.reminder_owner_ref", value="owner-e2e")],
+            [InitialSetting(key="reminders.reminder_owner_ref", value="qa:central-qa")],
         )
 
         user_msg = state["messages"][0]["content"]

@@ -793,7 +793,7 @@ class _FakeProduct:
 
 
 #: The package's own route, and the reminder it shows once the tick has run.
-REMINDERS_ROUTE = "/reminders?user_ref=42"
+REMINDERS_ROUTE = "/reminders"
 
 #: What a run that judged the behaviour submits: a check that names it and
 #: quotes the read it rests on.
@@ -804,9 +804,7 @@ OBSERVED_JSON = json.dumps(
             {
                 "name": "reminders.tick delivers the reminder",
                 "pass": True,
-                "detail": (
-                    "after the fire, GET /reminders?user_ref=42 showed the reminder as emitted"
-                ),
+                "detail": ("after the fire, GET /reminders showed the reminder as emitted"),
             }
         ],
         "summary": "OK",
@@ -909,7 +907,7 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
     CRITERIA = (
         "- GET /health returns 200\n"
         '- FIRE JOB reminders.tick WITH {"at": "2026-09-07T10:00:00Z"} THEN GET '
-        "/reminders?user_ref=42 shows the reminder as emitted\n"
+        "/reminders shows the reminder as emitted\n"
     )
     BEHAVIOUR_ROW = "package reminders behaviour reminders.tick produced its observable"
     CONNECTION_ROW = "package reminders is active in the deployed product"
@@ -1066,7 +1064,7 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
         assert self._row(result, self.CONNECTION_ROW)["pass"] is True
         behaviour = self._row(result, self.BEHAVIOUR_ROW)
         assert behaviour["pass"] is True
-        assert "http_get /reminders?user_ref=42" in behaviour["detail"]
+        assert "http_get /reminders" in behaviour["detail"]
         assert "reminders.tick delivers the reminder" in behaviour["detail"]
         # What the platform does and does not claim, in the row itself.
         assert "the work was done and that the executor judged it" in behaviour["detail"]

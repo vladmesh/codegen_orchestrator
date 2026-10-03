@@ -4,7 +4,7 @@
 and the architect's capability ladder puts a shared service *above* the package
 option: choosing it is permitted behaviour. A worker asked for the reminder
 capability can therefore hand-write a `reminders.tick` job and a
-`GET /reminders?user_ref=…` route, and that product satisfies every criterion
+`GET /reminders` route, and that product satisfies every criterion
 this suite reads off the control plane — the published behaviour parses, the
 fire is dispatched, the route answers, central QA passes. On it, the deployed
 active-package set is empty, so `run_package_activation_checks` finds no
