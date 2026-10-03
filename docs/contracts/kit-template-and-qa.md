@@ -261,10 +261,19 @@ reach the target's argument vector; an identity-bearing package route is read wi
 the platform facts say so. The same secret rule as the jobs capability applies to both the
 identity capability and the grant capability: they exist only in runtime memory and as request
 headers, never in a URL, a recorded request or response, an observation, the trace, an error or
-log message, a verdict, the executor's environment or the `qa` CLI arguments. It is enforced where
-each is built: the grant client is constructed only in `resolve_qa_caller_identity` and its
-failures are a closed set of kinds, and `build_qa_callables` scrubs the identity capability from
-every recorded request and response, observation, refusal and `http_get` answer. The live
+log message, a verdict, the executor's environment or the `qa` CLI arguments. The grant client is
+constructed only in `resolve_qa_caller_identity`, and its failures are a closed set of kinds. A
+product can still reflect a capability back, in a body, a log line or an error, so the run holds
+one runtime-only redaction set (`QARunRedaction`, `services/langgraph/src/consumers/_qa_redaction.py`)
+of every capability it has: `USER_IDENTITY_CAPABILITY`, `USERS_GRANT_CAPABILITY` and, when stored,
+`JOBS_FIRE_CAPABILITY`. It is built once in `consumers/qa.py` from the project's secrets and
+applied at two boundaries. At the **executor boundary**, `build_qa_callables` wraps every call it
+builds, so each result is scrubbed before the executor receives it, including any call added
+later. At the **retention boundary**, `QAWorkspace` scrubs everything it keeps (trace,
+observations, Telegram and probe evidence, report, verdict). The runner applies the same set, next
+to the handed-over Telegram credentials, to the executor's report, verdict, probe output and
+transcript, and `run_qa_centrally` scrubs its result on every exit path. The scrub runs before
+any bound. A text already cut by someone else has a trailing fragment of a value redacted too. The live
 `mega-brief-package` variant seeds `reminders.reminder_owner_ref` as `qa:central-qa`, the identity
 its bot-less run reads as, so the seeded reminder is the one `GET /reminders` lists.
 

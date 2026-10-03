@@ -34,6 +34,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import functools
+import inspect
 
 import httpx
 import structlog
@@ -58,9 +60,10 @@ from ...clients.product_jobs import (
     JobCallFailure,
     JobCallOutcome,
 )
+from ...consumers._qa_redaction import QARunRedaction
 from ...consumers._qa_target import QATargetError, QATargetSession, loopback_http_status
 from ...consumers._qa_workspace import QAWorkspace
-from .caller_identity import QACallerIdentity, scrub
+from .caller_identity import QACallerIdentity
 
 logger = structlog.get_logger(__name__)
 
@@ -108,14 +111,15 @@ def _remote_tools(  # noqa: PLR0913 — one run's reach, each part named
             ) as client:
                 response = await client.get(url, headers=identity_headers)
         except httpx.HTTPError as exc:
-            error = scrubbed(f"transport error: {exc}")
+            error = f"transport error: {exc}"
             record("http_get", url, error)
             return {"error": error, "url": url}
         result = {
             "url": url,
             "status": response.status_code,
-            "headers": {name: scrubbed(value) for name, value in response.headers.items()},
-            "body": scrubbed(_truncate(response.text)),
+            "headers": dict(response.headers),
+            # Scrubbed before it is cut, so the cut cannot leave a fragment.
+            "body": _truncate(scrubbed(response.text)),
         }
         record("http_get", f"GET {url}", f"{response.status_code} {result['body']}")
         if response.status_code < HTTP_ERROR:
@@ -587,6 +591,7 @@ def build_qa_callables(
     jobs: QAJobsCapability | None = None,
     jobs_client_factory: Callable[[str], GeneratedServiceJobsClient] | None = None,
     caller_identity: QACallerIdentity | None = None,
+    redaction: QARunRedaction | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict[str, Callable]:
     """Build the whole reach of exactly one QA run, keyed by call name.
@@ -614,30 +619,33 @@ def build_qa_callables(
         caller_identity: the verified user this run reads package routes as,
             present only when the deployment has a caller-identity core and
             the runtime proved the identity active. `http_get` sends it as
-            headers; its capability is scrubbed from everything recorded or
-            returned here, and no executor ever sees it.
+            headers, and no executor ever sees its capability.
+        redaction: the run's capability values (`consumers/_qa_redaction`). Every
+            call's result is scrubbed of them before the executor receives it,
+            and the workspace scrubs them out of everything it retains. The
+            values the identity and the jobs capability hold are always in it.
         http_transport: override for `http_get`'s transport, for tests.
     """
     capabilities = session.capabilities
-    # The one place the run's evidence is written: every recorded request and
-    # response, every observation and every refusal passes through `scrub`.
-    secrets = (caller_identity.capability,) if caller_identity is not None else ()
-
-    def scrubbed(text: str) -> str:
-        return scrub(text, secrets)
+    redaction = (redaction or QARunRedaction()).including(
+        caller_identity.capability if caller_identity is not None else None,
+        jobs.capability if jobs is not None else None,
+    )
+    # The retention boundary: the workspace scrubs everything it keeps.
+    workspace.redact_with(redaction)
 
     def record(tool: str, request: str, response: str) -> None:
-        workspace.record(tool, scrubbed(request), scrubbed(response))
+        workspace.record(tool, request, response)
 
     def refuse(tool: str, request: str, error: QATargetError) -> dict:
-        detail = scrubbed(str(error))
+        detail = redaction.text(str(error))
         record(tool, request, f"refused: {detail}")
         logger.info("qa_tool_refused", tool=tool, error=detail)
         return {"error": detail}
 
     def observe(tool: str, subject: str) -> None:
         """One successful read of the product's own output, as the runner saw it."""
-        workspace.record_observation(tool, scrubbed(subject))
+        workspace.record_observation(tool, subject)
 
     def write_qa_report(markdown: str) -> str:
         workspace.write_report(markdown)
@@ -649,7 +657,7 @@ def build_qa_callables(
             record,
             refuse,
             observe,
-            scrubbed,
+            redaction.text,
             identity=caller_identity,
             http_transport=http_transport,
         )
@@ -672,4 +680,26 @@ def build_qa_callables(
         )
         callables["telegram_probe"] = telegram.telegram_probe
         callables["telegram_click_button"] = telegram.telegram_click_button
-    return callables
+    # The executor boundary: every call, including any added above later.
+    return {name: _at_executor_boundary(call, redaction) for name, call in callables.items()}
+
+
+def _at_executor_boundary(call: Callable, redaction: QARunRedaction) -> Callable:
+    """`call`, whose result is scrubbed of the run's capabilities before it is returned.
+
+    `functools.wraps` keeps the signature, so a front-end binding arguments
+    against it sees exactly the call it wraps.
+    """
+    if inspect.iscoroutinefunction(call):
+
+        @functools.wraps(call)
+        async def scrubbed_async(*args, **kwargs):
+            return redaction.value(await call(*args, **kwargs))
+
+        return scrubbed_async
+
+    @functools.wraps(call)
+    def scrubbed(*args, **kwargs):
+        return redaction.value(call(*args, **kwargs))
+
+    return scrubbed

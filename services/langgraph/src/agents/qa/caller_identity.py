@@ -21,8 +21,9 @@ A grant that is not proved is a typed blocker, never a silent anonymous run.
 
 Both capabilities live in runtime memory and request headers only. The grant
 client is built here and nowhere else in QA; the identity's headers are added by
-`http_get` in `agents/qa/tools.py`, which scrubs the value from everything it
-records or returns.
+`http_get` in `agents/qa/tools.py`. Both values are in the run's one redaction
+set (`consumers/_qa_redaction.py`), which keeps them out of every call result and
+everything the run retains.
 """
 
 from __future__ import annotations
@@ -35,12 +36,9 @@ import structlog
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 
 from ...clients.users_grant import GeneratedServiceGrantClient
+from ...consumers._qa_redaction import USER_IDENTITY_CAPABILITY, USERS_GRANT_CAPABILITY
 
 logger = structlog.get_logger(__name__)
-
-#: The product's generated secrets, by the names its env contract gives them.
-USER_IDENTITY_CAPABILITY = "USER_IDENTITY_CAPABILITY"
-USERS_GRANT_CAPABILITY = "USERS_GRANT_CAPABILITY"
 
 #: The kit core's caller-identity headers (CONTRACTS.md "Core caller identity v1").
 IDENTITY_CAPABILITY_HEADER = "X-Identity-Capability"
@@ -53,7 +51,6 @@ QA_PLATFORM_CHANNEL = "qa"
 QA_PLATFORM_EXTERNAL_ID = "central-qa"
 TELEGRAM_CHANNEL = "telegram"
 
-REDACTED = "[redacted: QA caller identity capability]"
 #: The key on `Run.run_metadata` naming the user this run read package routes as.
 QA_CALLER_IDENTITY_KEY = "qa_caller_identity"
 
@@ -144,7 +141,7 @@ async def resolve_qa_caller_identity(
     user_ref = canonical_user_ref(channel, external_id)
     grant_capability = _stored(secrets, USERS_GRANT_CAPABILITY)
     if grant_capability is None:
-        logger.warning("qa_caller_identity_grant_unavailable", user_ref=user_ref)
+        logger.warning("qa_caller_identity_grant_unavailable", caller=user_ref)
         return None, _grant_blocker(
             user_ref,
             f"capability_unavailable: the deployment holds {USER_IDENTITY_CAPABILITY} but no "
@@ -155,13 +152,13 @@ async def resolve_qa_caller_identity(
     )
     if not proof.active:
         failure = proof.failure.value if proof.failure is not None else "unverified"
-        logger.warning("qa_caller_identity_not_active", user_ref=user_ref, failure=failure)
+        logger.warning("qa_caller_identity_not_active", caller=user_ref, failure=failure)
         return None, _grant_blocker(
             user_ref,
             f"{failure}: the product did not report {user_ref} active, so package routes "
             "cannot be read as a verified user",
         )
-    logger.info("qa_caller_identity_active", user_ref=user_ref)
+    logger.info("qa_caller_identity_active", caller=user_ref)
     return QACallerIdentity(channel, external_id, identity_capability), None
 
 
@@ -197,11 +194,3 @@ def caller_identity_facts(identity: QACallerIdentity | None) -> list[str]:
             "a package route reads back."
         )
     return facts
-
-
-def scrub(text: str, secrets: tuple[str, ...]) -> str:
-    """Replace every credential value in `text`; the identity's only redaction rule."""
-    for secret in secrets:
-        if secret:
-            text = text.replace(secret, REDACTED)
-    return text

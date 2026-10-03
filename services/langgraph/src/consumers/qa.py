@@ -68,6 +68,7 @@ from ._base import run_queue_worker, validate_queued_message
 from ._live_work import live_work_settled
 from ._qa_grant_sweep import qa_grant_sweep_loop
 from ._qa_probe_library import prepare_probe_library
+from ._qa_redaction import JOBS_FIRE_CAPABILITY, QARunRedaction
 from ._qa_runner import (
     QA_EXECUTOR_ATTEMPTS,
     QAExecutorAttempts,
@@ -88,12 +89,6 @@ from ._qa_telegram_identity import (
 )
 
 logger = structlog.get_logger(__name__)
-
-#: The generated product's job-fire capability, as its environment contract
-#: names it. Resolved on the management host from the project's own encrypted
-#: secrets and put in one request header there; it never enters the executor
-#: container, its environment, the `qa` CLI's arguments or any verdict text.
-_JOBS_FIRE_CAPABILITY = "JOBS_FIRE_CAPABILITY"  # noqa: S105
 
 MAX_QA_LOOPS = 2  # max QA→Engineering cycles before story is marked failed
 QA_INFLIGHT_TTL = 1500  # 25 min TTL for inflight marker
@@ -460,7 +455,7 @@ async def _stored_secrets(project_id: str) -> dict:
 
 
 async def _resolve_caller_identity(
-    msg: QAMessage,
+    msg: QAMessage, stored: dict
 ) -> tuple[QACallerIdentity | None, QABlocker | None]:
     """Choose and prove the one user this run reads package routes as.
 
@@ -471,7 +466,7 @@ async def _resolve_caller_identity(
     """
     return await resolve_qa_caller_identity(
         deployed_url=msg.deployed_url,
-        secrets=await _stored_secrets(msg.project_id),
+        secrets=stored,
         telegram_account_id=QA_TEST_TELEGRAM_ID if msg.bot_username else None,
     )
 
@@ -482,6 +477,7 @@ async def _resolve_jobs_capability(
     deployed_url: str,
     behaviours: list[ScheduledBehaviourCriterion],
     ownership: WorkerOwnership,
+    stored: dict,
 ) -> QAJobsCapability | None:
     """Resolve this deployment's job-fire capability, here on the management host.
 
@@ -499,7 +495,7 @@ async def _resolve_jobs_capability(
     """
     if not behaviours:
         return None
-    capability = (await _stored_secrets(project_id)).get(_JOBS_FIRE_CAPABILITY)
+    capability = stored.get(JOBS_FIRE_CAPABILITY)
     if not isinstance(capability, str) or not capability:
         logger.info(
             "qa_jobs_capability_unavailable",
@@ -584,11 +580,18 @@ async def _run_exploratory_qa(
     # settings off the confirmed brief, so neither is something an executor
     # could have guessed or inferred from prose.
     behaviours = parse_scheduled_behaviours(acceptance_criteria)
+    # The project's secrets are read once. Every capability this run may hold
+    # comes from here, and so does the one set the run keeps them out of
+    # everything with: each call result before the executor sees it, and
+    # everything the run retains.
+    stored = await _stored_secrets(msg.project_id)
+    redaction = QARunRedaction.from_stored(stored)
     jobs = await _resolve_jobs_capability(
         project_id=msg.project_id,
         deployed_url=msg.deployed_url,
         behaviours=behaviours,
         ownership=ownership,
+        stored=stored,
     )
     confirmed_settings = await _confirmed_initial_settings(msg.story_id)
     established_facts: list[str] = [
@@ -615,7 +618,7 @@ async def _run_exploratory_qa(
 
     # The user package routes are read as, proved active before any executor
     # exists. A deployment without the caller-identity core is unchanged.
-    caller_identity, identity_blocker = await _resolve_caller_identity(msg)
+    caller_identity, identity_blocker = await _resolve_caller_identity(msg, stored)
     if identity_blocker:
         return None, identity_blocker
     if (identity := caller_identity_record(caller_identity)) is not None and msg.run_id:
@@ -663,6 +666,7 @@ async def _run_exploratory_qa(
         attempts=attempts,
         probe_library=library.files,
         caller_identity=caller_identity,
+        redaction=redaction,
     )
     qa_result.probe_library = library.offer
     if qa_result.blocker is not None and qa_result.blocker.category in QA_INFRASTRUCTURE_BLOCKERS:

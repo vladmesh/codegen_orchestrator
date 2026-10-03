@@ -102,7 +102,8 @@ class GeneratedServiceGrantClient:
         ):
             return GrantProof(active=False, failure=GrantFailureKind.MALFORMED_ACCESS)
         access_status = payload.get("status")
-        if access_status not in {"active", "inactive"}:
+        # Any non-string or unknown status is malformed, never a crash.
+        if not isinstance(access_status, str) or access_status not in {"active", "inactive"}:
             return GrantProof(active=False, failure=GrantFailureKind.MALFORMED_ACCESS)
         if access_status != "active":
             return GrantProof(active=False, failure=GrantFailureKind.INACTIVE)
@@ -149,6 +150,7 @@ class GeneratedServiceGrantClient:
         ):
             return GrantProof(active=False, failure=GrantFailureKind.MALFORMED_ACCESS)
         access_status = payload.get("status")
-        if access_status not in {"active", "inactive"}:
+        # Any non-string or unknown status is malformed, never a crash.
+        if not isinstance(access_status, str) or access_status not in {"active", "inactive"}:
             return GrantProof(active=False, failure=GrantFailureKind.MALFORMED_ACCESS)
         return GrantProof(active=access_status == "active")

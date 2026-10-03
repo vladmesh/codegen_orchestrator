@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-02
 
-- Central QA reads kit 0.7.0 package routes as one granted, active QA user (`telegram:<qa id>` or
-  `qa:central-qa`): `http_get` sends the caller-identity headers, and an unproved grant blocks the run.
+- Central QA reads kit 0.7.0 package routes as one granted QA user via `http_get` identity headers;
+  call results and retained evidence are scrubbed of the run's capabilities.
 - Products scaffold from kit 0.7.0 (core timer, verified caller identity, package catalog); workers install
   packages with `kit add <name>` from the live catalog instead of hand-building a wheel at `_commit`.
 - Old product name swept: AGENTS/TESTING name Ummanu and its worker-packet broad check, the BitLaunch helper

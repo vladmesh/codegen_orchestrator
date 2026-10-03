@@ -21,6 +21,7 @@ shares the host, that is what has to refuse.
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import re
 import shlex
 from types import SimpleNamespace
@@ -37,6 +38,7 @@ from shared.qa_identity import QAIdentityRejection
 from shared.qa_target_profile import QA_DOCKER_REQUIRED_VERBS, QA_TARGET_PROFILE_VERSION
 from shared.telegram_bot_probe import TELEGRAM_PROBE_PROCESS_TIMEOUT
 from src.clients.qa_worker import QAExecutorRun, QAExecutorUnavailable
+from src.consumers._qa_redaction import REDACTED, QARunRedaction
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
     GRANT_MARKER_PREFIX,
@@ -285,6 +287,10 @@ class ExecutorHarness:
         self.tools = _ToolLookup(self)
 
     async def call(self, name: str, **args):
+        return await self.call_with(name, args)
+
+    async def call_with(self, name: str, args: dict):
+        """The same call, for arguments that include one named `name`."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 self._url,
@@ -364,6 +370,7 @@ def central_run(tmp_path):
         provisioning=None,
         unavailable=None,
         runtime=RUNTIME,
+        redaction=None,
     ):
         connection = conn or FakeConn()
         factory = _executor_factory(behaviour, unavailable=unavailable)
@@ -389,6 +396,7 @@ def central_run(tmp_path):
                 grant_journal=record,
                 provisioning_journal=provisioning_record,
                 established_facts=[],
+                redaction=redaction,
             )
         return result, connection, factory, record
 
@@ -637,6 +645,59 @@ class TestCleanTargetPassesExploratoryQA:
         assert session not in result.report
         assert session not in result.summary
         assert "[redacted: QA Telegram credential]" in result.report
+
+    async def test_a_capability_in_the_executors_own_words_is_redacted_before_it_is_kept(
+        self, central_run
+    ):
+        """A value a product reflected can still be repeated by the executor itself."""
+        identity, grant, jobs = "identity-cap-value", "grant-cap-value", "jobs-cap-value"
+        redaction = QARunRedaction.from_stored(
+            {
+                "USER_IDENTITY_CAPABILITY": identity,
+                "USERS_GRANT_CAPABILITY": grant,
+                "JOBS_FIRE_CAPABILITY": jobs,
+            }
+        )
+        said = f"the log showed {identity} {grant} {jobs}"
+
+        async def behaviour(graph):
+            await graph.tools["write_qa_report"].ainvoke({"markdown": f"# QA\n{said}"})
+            await graph.call_with(
+                "record_probe",
+                {
+                    "platform": "http",
+                    "name": "health",
+                    "source": f"curl -H 'X: {identity}'",
+                    "arguments": [],
+                    "stdout": said,
+                    "stderr": said,
+                    "exit_status": 0,
+                    "duration_ms": 3,
+                },
+            )
+            return json.dumps(
+                {
+                    "pass": True,
+                    "checks": [{"name": "health", "pass": True, "detail": said}],
+                    "summary": said,
+                }
+            )
+
+        result, _, _, _ = await central_run(behaviour=behaviour, redaction=redaction)
+
+        assert result.passed is True
+        kept = {
+            "report": result.report,
+            "verdict": result.raw,
+            "summary": result.summary,
+            "checks": json.dumps(result.checks),
+            "probe runs": repr(result.probe_runs),
+        }
+        for where, text in kept.items():
+            for value in (identity, grant, jobs):
+                assert value not in text, where
+        assert REDACTED in result.report
+        assert REDACTED in result.raw
 
     async def test_the_run_uses_its_own_identity_not_the_fleet_key(self, tmp_path):
         """The fleet key installs and removes a key; it is not what QA connects with."""
