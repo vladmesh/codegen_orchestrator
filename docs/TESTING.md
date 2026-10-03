@@ -721,6 +721,12 @@ remote SHA. They exercise the wrapper's pre-agent refusal and the existing Run/S
 infrastructure parking seam without Docker or paid model calls. DinD mounts `/tmp`
 before its workspace/transcript child volumes so its entrypoint cannot hide them.
 Container assertions are CI evidence only when that candidate's job executes.
+`test_codex_shell_credentials.py` verifies the shipped Codex version against its
+image pin, then uses native app-server `command/exec` to run a shell through the
+developer runner's actual environment policy. A loopback broker rotates synthetic
+tokens; the shell invokes the installed Git helper twice and checks absent token
+environment/files. No thread or model turn is created. This check runs in main's
+DinD job and is required on the merged SHA before DoD1 or activation is claimed.
 Worker-path coverage is available through `make test-live-engineering`
 (`tests/live/test_pipeline_engineering.py`). Use `make test-live-mega-noop` for the deterministic
 scaffold, engineering, deploy and QA path, or a named `make stand-run SUITE=...` for model-backed

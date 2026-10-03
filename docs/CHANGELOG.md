@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-03
 
+- Repository auth parks offer the existing admin retry; gh permits auth-valued arguments,
+  and Codex developer shells inherit only process settings and the scoped broker identity.
 - The Git credential helper accepts native repeated array attributes while rejecting ambiguous
   repository fields, so Git 2.55 can acquire credentials for checkout and publication.
 - Developer Git/gh acquire repository credentials on demand, so reused workers and long turns

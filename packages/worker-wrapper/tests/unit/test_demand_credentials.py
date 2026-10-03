@@ -56,7 +56,42 @@ def test_gh_reacquires_without_token_in_argv(monkeypatch):
         credentials.gh_command(["auth", "login"])
 
 
-def test_native_gh_child_uses_new_auth_for_later_command(tmp_path, monkeypatch, capfd):
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["issue", "list", "--label", "auth"],
+        ["--repo", "auth", "issue", "list"],
+        ["-Rauth", "issue", "list", "--label", "auth"],
+    ],
+)
+def test_gh_non_auth_command_accepts_auth_argument(args, monkeypatch):
+    monkeypatch.setattr(credentials, "repository_from_origin", lambda: "org/repo")
+    mint = MagicMock(return_value="synthetic-command-token")
+    monkeypatch.setattr(credentials, "request_token", mint)
+    run = MagicMock(return_value=MagicMock(returncode=0))
+    monkeypatch.setattr(credentials.subprocess, "run", run)
+    assert credentials.gh_command(args) == 0
+    assert run.call_args.args[0] == ["/usr/lib/codegen/gh", *args]
+    assert run.call_args.kwargs["env"]["GH_TOKEN"] == mint.return_value
+    assert "synthetic-command-token" not in str(run.call_args.args)
+    mint.assert_called_once_with("org/repo")
+
+
+@pytest.mark.parametrize("prefix", [[], ["--help"], ["-h"], ["--version"], ["--repo", "org/repo"]])
+@pytest.mark.parametrize("subcommand", ["login", "setup-git", "token", "status"])
+def test_gh_auth_command_refuses_before_credentials(prefix, subcommand, monkeypatch):
+    mint = MagicMock(side_effect=AssertionError("mint"))
+    run = MagicMock(side_effect=AssertionError("native gh"))
+    monkeypatch.setattr(credentials, "request_token", mint)
+    monkeypatch.setattr(credentials.subprocess, "run", run)
+    with pytest.raises(ValueError, match="persistent gh"):
+        credentials.gh_command([*prefix, "auth", subcommand])
+    mint.assert_not_called()
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize("args", [["api", "repos/org/repo"], ["issue", "list", "--label", "auth"]])
+def test_native_gh_child_uses_new_auth_for_later_command(args, tmp_path, monkeypatch, capfd):
     native = tmp_path / "native-gh"
     native.write_text(
         f"#!{sys.executable} -I\nimport os, sys\n"
@@ -81,7 +116,7 @@ def test_native_gh_child_uses_new_auth_for_later_command(tmp_path, monkeypatch, 
         monkeypatch.setattr(credentials.subprocess, "run", run)
         for token in ("synthetic-first", "synthetic-after-expiry"):
             broker.token = token
-            assert credentials.gh_command(["api", "repos/org/repo"]) == 0
+            assert credentials.gh_command(args) == 0
             output = capfd.readouterr()
             assert token not in output.out + output.err
             assert output.out == "authenticated\n"

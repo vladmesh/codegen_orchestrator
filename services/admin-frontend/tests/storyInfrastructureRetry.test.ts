@@ -42,6 +42,43 @@ test('a failed workspace ensure park exposes the same retry target', () => {
   )?.refusal, 'workspace_ensure_failed')
 })
 
+test('repository auth refusal offers retry with the exact attempt and refusal', async () => {
+  const auth = { ...evidence, refusal: 'repository_auth_unavailable', attempt_id: 'auth-1' }
+  const parked = { ...story, quarantine_reason: { engineering_infrastructure: auth } }
+  const target = infrastructureRetryTarget(parked, [
+    { ...task, failure_metadata: { engineering_infrastructure: auth } },
+  ])
+  assert.deepEqual(target, {
+    taskId: 'task-1', attemptId: 'auth-1', refusal: auth.refusal, detail: auth.detail,
+  })
+  const calls: Array<{ path: string, body: unknown }> = []
+  await requestInfrastructureRetry({
+    post: async <T>(path: string, body: unknown): Promise<T> => {
+      calls.push({ path, body })
+      return {} as T
+    },
+  }, parked.id, target!)
+  assert.deepEqual(calls, [{
+    path: '/stories/story-1/retry-infrastructure-attempt',
+    body: {
+      task_id: 'task-1', attempt_id: 'auth-1', refusal: auth.refusal, actor: 'admin',
+    },
+  }])
+})
+
+test('repository auth retry refuses mismatched or foreign attempt evidence', () => {
+  const auth = { ...evidence, refusal: 'repository_auth_unavailable' }
+  for (const mismatch of [
+    { attempt_id: 'foreign-attempt' }, { task_id: 'foreign-task' },
+    { refusal: 'project_locked' }, { execution_phase: 'agent_started' },
+  ]) {
+    assert.equal(infrastructureRetryTarget(
+      { ...story, quarantine_reason: { engineering_infrastructure: auth } },
+      [{ ...task, failure_metadata: { engineering_infrastructure: { ...auth, ...mismatch } } }],
+    ), null)
+  }
+})
+
 test('QA, product, budget, and mismatched task parks expose no retry target', () => {
   assert.equal(infrastructureRetryTarget({ ...story, quarantine_reason: { blocker: {} } }, [task]), null)
   assert.equal(infrastructureRetryTarget({ ...story, quarantine_reason: { reason: 'product' } }, [task]), null)

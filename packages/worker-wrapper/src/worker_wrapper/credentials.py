@@ -73,8 +73,17 @@ def repository_from_origin() -> str:
 def gh_command(args: list[str]) -> int:
     # Native auth writes persistent configuration or prints the token. Workers
     # authenticate each command here instead, including --repo invocations.
-    if "auth" in args:
-        raise ValueError("persistent gh authentication is unavailable in workers")
+    arguments = iter(args)
+    for argument in arguments:
+        if argument in {"--repo", "-R", "--hostname"}:
+            next(arguments)  # Native leading options with a separate value.
+        elif argument.startswith("-") and argument != "--":
+            continue
+        else:
+            command = next(arguments) if argument == "--" else argument
+            if command == "auth":
+                raise ValueError("persistent gh authentication is unavailable in workers")
+            break
     environment = {
         key: value for key, value in os.environ.items() if key not in {"GITHUB_TOKEN", "GH_TOKEN"}
     }

@@ -180,6 +180,9 @@ Neither argv nor logs carry it. Helper entrypoints use isolated Python and the
 root-owned shared runtime, so product modules cannot shadow their imports.
 Git's repeated array attributes are ignored; duplicate scalar repository fields
 still refuse before credential acquisition.
+Codex developer shells use an explicit process-and-broker allowlist, overriding
+the mounted profile's shell policy without placing credential values in argv.
+QA retains its separate restricted environment and receives no developer policy.
 Developer helper children inherit the existing broker identity; it was already
 readable to the agent through `/proc`, so server authorization remains the boundary.
 Worker-manager requires `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY_PATH` at startup;

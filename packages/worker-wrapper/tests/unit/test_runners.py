@@ -74,6 +74,12 @@ class TestCodexRunner:
             "exec",
             "--sandbox",
             "danger-full-access",
+            "-c",
+            'shell_environment_policy={inherit="all",ignore_default_excludes=true,'
+            "exclude=[],set={},experimental_use_profile=false,include_only=["
+            '"HOME","LANG","LC_ALL","LC_CTYPE","PATH","PYTHONPATH",'
+            '"PYTHONNOUSERSITE","TERM","TMPDIR","TZ",'
+            '"WORKER_BROKER_URL","WORKER_BROKER_TOKEN","WORKER_ID"]}',
             "Read TASK.md and AGENTS.md",
         ]
 

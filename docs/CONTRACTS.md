@@ -224,6 +224,8 @@ and repository-scoped caching with a five-minute margin remain on the platform.
 `pre_agent_refused/repository_auth_unavailable`. The worker client preserves it
 through the developer result and terminal Run so the existing supervisor parks
 the Story as infrastructure, without spending a generic engineering retry.
+The admin retry consumer recognizes `repository_auth_unavailable` and offers the
+existing action only when Story and Task refusal/attempt evidence match exactly.
 
 ## Consumer patterns
 

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 import traceback
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +13,7 @@ from fakeredis import aioredis
 import pytest
 from test_infra_git_no_product_hooks import _OWNERSHIP, _docker_mock, _git, _make_product_repo
 from worker_wrapper.config import WorkerWrapperConfig
+from worker_wrapper.runners.codex import CodexRunner
 from worker_wrapper.wrapper import WorkerWrapper, build_agent_subprocess_env
 
 from shared.contracts.dto.engineering_execution import EngineeringExecutionPhase
@@ -23,6 +25,27 @@ from src import git_ops
 from src.manager import WorkerManager
 
 OLD_TOKEN = "synthetic-released-expired-token"  # noqa: S105 - harmless canary
+
+
+def test_codex_shell_configuration_preserves_only_scoped_helper_identity():
+    command = CodexRunner().build_command("Read TASK.md")
+    configs = [command[index + 1] for index, arg in enumerate(command) if arg == "-c"]
+    assert len(configs) == 1
+    policy = tomllib.loads(configs[0])["shell_environment_policy"]
+    assert policy["inherit"] == "all"
+    assert policy["ignore_default_excludes"] is True
+    assert policy["exclude"] == [] and policy["set"] == {}
+    assert policy["experimental_use_profile"] is False
+    names = set(policy["include_only"])
+    assert {"WORKER_BROKER_URL", "WORKER_BROKER_TOKEN", "WORKER_ID"} <= names
+    assert {"HOME", "PATH", "PYTHONNOUSERSITE"} <= names
+    assert {name for name in names if "TOKEN" in name or "KEY" in name or "SECRET" in name} == {
+        "WORKER_BROKER_TOKEN"
+    }
+    assert not {"GITHUB_TOKEN", "GH_TOKEN", "CODEX_API_KEY", "QA_CAPABILITY_TOKEN"} & names
+    qa = CodexRunner(allow_non_git_workspace=True).build_command("Read TASK.md")
+    assert "--skip-git-repo-check" in qa
+    assert all("WORKER_BROKER" not in arg for arg in qa)
 
 
 @pytest.mark.parametrize("attribute", ["capability", "wwwauth", "state", "future"])
