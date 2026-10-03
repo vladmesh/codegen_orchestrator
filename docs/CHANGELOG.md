@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-03
 
+- Products scaffold from kit 0.7.1, whose template lifespan tests no longer start package runtimes, so a product
+  that runs `kit add reminders` keeps a green CI unit leg without Redis; both tooling pins move to `56da5c83`.
 - mega-noop's second story installs `reminders` with a new `@@ kit-add` directive; health-only QA
   reads as the verified QA identity, so the suite proves the install, `/reminders` and the timer's emit.
 - The Architect plans kit packages from the kit's live catalog, not a static list, and `create_task`

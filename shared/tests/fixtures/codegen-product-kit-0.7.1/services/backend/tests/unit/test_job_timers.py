@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Generator
+from collections.abc import AsyncIterator, Generator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -40,6 +40,7 @@ AT_ONLY = {
 SLOT = datetime(2026, 10, 2, 19, 43, tzinfo=UTC)
 SECONDS_TO_NEXT_SLOT = 32.5
 TWO_SLOTS = 2
+LIFECYCLE_ORDER = ["packages-started", "timer-loop-started", "packages-stopped"]
 
 
 class Stop(Exception):
@@ -223,19 +224,60 @@ async def test_the_production_fire_uses_the_jobs_core_in_its_own_session(
     assert len(emitted) == 1
 
 
+class PackageLifecycle:
+    """Recording no-op package startup and shutdown around the real timer loop.
+
+    The lifespan tests prove the timer-loop lifecycle, not the packages: an installed
+    package's real runtime (the reminders Redis consumer) must not start in the unit
+    leg, which runs without Redis.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.loops: list[TimerLoop | None] = []
+        self.loop_running_at_shutdown: list[bool] = []
+
+    async def startup(self, application: FastAPI) -> None:
+        self.events.append("packages-started")
+
+    async def shutdown(self, application: FastAPI, *, suppress_errors: bool = False) -> None:
+        loop = application.state.codegen_timer_loop
+        self.loop_running_at_shutdown.append(loop is not None and loop.running)
+        self.events.append("packages-stopped")
+
+    def start_timer_loop(self, timers: Mapping[str, int]) -> TimerLoop | None:
+        loop = timers_module.start_timer_loop(timers)
+        self.loops.append(loop)
+        self.events.append("timer-loop-started")
+        return loop
+
+
+@pytest.fixture()
+def package_lifecycle(monkeypatch: pytest.MonkeyPatch) -> PackageLifecycle:
+    lifecycle = PackageLifecycle()
+    monkeypatch.setattr(lifespan_module, "startup_packages", lifecycle.startup)
+    monkeypatch.setattr(lifespan_module, "shutdown_packages", lifecycle.shutdown)
+    monkeypatch.setattr(lifespan_module, "start_timer_loop", lifecycle.start_timer_loop)
+    return lifecycle
+
+
 @pytest.mark.asyncio
 async def test_lifespan_starts_no_loop_without_declared_timers(
-    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    app: FastAPI, package_lifecycle: PackageLifecycle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(lifespan_module, "JOB_TIMERS", {})
 
     async with app.router.lifespan_context(app):
         assert app.state.codegen_timer_loop is None
 
+    assert package_lifecycle.loops == [None]
+    assert package_lifecycle.events == LIFECYCLE_ORDER
+    assert package_lifecycle.loop_running_at_shutdown == [False]
+
 
 @pytest.mark.asyncio
 async def test_lifespan_starts_one_loop_for_declared_timers_and_stops_it(
-    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    app: FastAPI, package_lifecycle: PackageLifecycle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fired = asyncio.Event()
     slots: list[tuple[str, datetime]] = []
@@ -256,4 +298,7 @@ async def test_lifespan_starts_one_loop_for_declared_timers_and_stops_it(
         await asyncio.wait_for(fired.wait(), timeout=5)
 
     assert [job for job, _ in slots] == [TICK]
+    assert package_lifecycle.loops == [loop]
+    assert package_lifecycle.events == LIFECYCLE_ORDER
+    assert package_lifecycle.loop_running_at_shutdown == [False]
     assert loop.running is False

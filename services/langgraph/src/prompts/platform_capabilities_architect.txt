@@ -1,5 +1,5 @@
-## Platform capabilities, technical (manifest v12, owner-reviewed)
-What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@1de7aa6c02cf.
+## Platform capabilities, technical (manifest v13, owner-reviewed)
+What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@56da5c83cb8d.
 Can (how):
 - Plain HTTP self links [http_self_address]: Required derived `PUBLIC_BASE_URL` is the single backend's HTTP endpoint shared by resolver, deployer and smoke; IPv6 is bracketed. Missing/ambiguous allocations and effective native/mapped loopback, unspecified or multicast addresses fail with the key named. IPv6 deploy reads released executable transport at the built commit, refusing unverified workflows or .rej with DEPLOY_HOST named. Existing products need a reviewed kit update and reconciled merge. No domain/TLS/frontend/inbound webhook capability is added.
 - Telegram bot [telegram_bot]: Kit module `tg_bot` (python-telegram-bot 21.4, `run_polling`), so the bot needs no web address. Kit module `backend` (FastAPI) is always included: the PO adds it to every project. The deployer reports `http://{server_ip}:{port}` of the backend's allocated port, the only port a product publishes; there is no domain name and no https.

@@ -15,7 +15,7 @@ from scripts.template_pin import TEMPLATE_PIN
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = Path(".github/workflows/deploy.yml")
 PREVIOUS_REF = ".".join(map(str, (0, 6, 3)))
-RELEASE_SHA = "1de7aa6c02cfcf212b2d21919defbb3d77383998"
+RELEASE_SHA = "56da5c83cb8d011823ce2cb70345415b223b93ab"
 
 
 def run(command, cwd, **kwargs):
