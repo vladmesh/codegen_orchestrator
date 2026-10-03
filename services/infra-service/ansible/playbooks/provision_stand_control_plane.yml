@@ -26,6 +26,12 @@
     # How long a host that dropped SSH or rebooted during the settle has to
     # answer again before the bootstrap fails as unreachable.
     stand_first_boot_reconnect_timeout_seconds: 180
+    # Every download from the internet waits this long per attempt and gets
+    # this many bounded retries: one slow read (run 37085191952 timed out on
+    # the uv release after get_url's default 10 s) must not fail the stand.
+    stand_download_timeout_seconds: 60
+    stand_download_retries: 5
+    stand_download_retry_delay_seconds: 10
     # Without keepalives a rebooted host leaves the session hanging for many
     # minutes (runs 35594323906, 35597245917); this notices it within ~60 s.
     ansible_ssh_extra_args: -o ServerAliveInterval=15 -o ServerAliveCountMax=4
@@ -131,6 +137,11 @@
         owner: root
         group: root
         mode: "0644"
+        timeout: "{{ stand_download_timeout_seconds }}"
+      register: stand_docker_signing_key
+      until: stand_docker_signing_key is succeeded
+      retries: "{{ stand_download_retries }}"
+      delay: "{{ stand_download_retry_delay_seconds }}"
 
     - name: Read Debian architecture for Docker repository
       ansible.builtin.command: dpkg --print-architecture
@@ -173,6 +184,11 @@
         url: "https://github.com/astral-sh/uv/releases/download/{{ stand_uv_version }}/uv-x86_64-unknown-linux-gnu.tar.gz"
         dest: "/tmp/uv-{{ stand_uv_version }}.tar.gz"
         mode: "0644"
+        timeout: "{{ stand_download_timeout_seconds }}"
+      register: stand_uv_download
+      until: stand_uv_download is succeeded
+      retries: "{{ stand_download_retries }}"
+      delay: "{{ stand_download_retry_delay_seconds }}"
 
     - name: Extract pinned uv for stand runner
       ansible.builtin.unarchive:

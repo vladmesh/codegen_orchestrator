@@ -800,6 +800,28 @@ def test_control_plane_apt_operations_tolerate_a_late_lock_with_a_bounded_wait()
     assert apt_tasks["Install Docker Engine and compose tooling"]["update_cache"] is True
 
 
+def test_control_plane_downloads_survive_a_transient_timeout_with_bounded_retries():
+    """Run 37085191952 lost the stand to one 10 s read timeout on the uv release."""
+    [play] = yaml.safe_load(CONTROL_PLANE_PLAYBOOK.read_text())
+    variables = play["vars"]
+    downloads = [
+        task for task in [*play["pre_tasks"], *play["tasks"]] if "ansible.builtin.get_url" in task
+    ]
+
+    assert {task["name"] for task in downloads} == {
+        "Download Docker signing key",
+        "Download pinned uv for stand runner",
+    }
+    assert variables["stand_download_timeout_seconds"] > 10
+    assert 0 < variables["stand_download_retries"] <= 10
+    assert variables["stand_download_retry_delay_seconds"] > 0
+    for task in downloads:
+        assert task["ansible.builtin.get_url"]["timeout"] == "{{ stand_download_timeout_seconds }}"
+        assert task["until"] == f"{task['register']} is succeeded"
+        assert task["retries"] == "{{ stand_download_retries }}"
+        assert task["delay"] == "{{ stand_download_retry_delay_seconds }}"
+
+
 def _first_boot_settle_tasks() -> tuple[dict, list[dict]]:
     [play] = yaml.safe_load(CONTROL_PLANE_PLAYBOOK.read_text())
     return play, play["pre_tasks"]

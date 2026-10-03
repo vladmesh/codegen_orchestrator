@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-03
+
+- [hotfix] Stand control-plane downloads (Docker key, uv) wait 60 s per attempt with 5 bounded retries,
+  so one slow read no longer fails the after-merge stand bootstrap (run 37085191952).
+
 ## 2026-10-02
 
 - Central QA reads kit 0.7.0 package routes as one granted QA user via `http_get` identity headers;
