@@ -135,7 +135,6 @@ async def _handle_deploy_success(  # noqa: PLR0913
     so dispatcher can hand off to QA.
     """
     if grant_intent is not None:
-        await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
         failure = await _apply_grant_intent(
             task_id=task_id,
             project_id=project_id,
@@ -143,6 +142,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
             application_id=application_id,
             secret_values=result.get("secret_values", {}),
             intent=grant_intent,
+            fence=fence,
         )
         if failure is not None:
             return await _handle_owner_access_failure(
@@ -159,7 +159,6 @@ async def _handle_deploy_success(  # noqa: PLR0913
             )
 
     if temporary_access_grant is not None and temporary_access_operation is not None:
-        await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
         failure = await _apply_temporary_access_operation(
             task_id=task_id,
             project_id=project_id,
@@ -167,6 +166,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
             secret_values=result.get("secret_values", {}),
             grant=temporary_access_grant,
             operation=temporary_access_operation,
+            fence=fence,
         )
         if failure is not None:
             return await _handle_owner_access_failure(
@@ -276,16 +276,20 @@ async def _apply_grant_intent(  # noqa: PLR0913
     application_id: int | None,
     secret_values: dict,
     intent: GrantIntent,
+    fence: DeployFence,
 ) -> str | None:
     """Execute exactly one durable intent after deploy health checks.
 
     The capability comes only from this deploy's in-memory resolver output.
     Every persisted or logged result below is a bounded diagnostic, never the
-    capability or a decrypted project secret.
+    capability or a decrypted project secret. The product grant and every
+    intent completion each check the deploy lock immediately before they are
+    made.
     """
     if intent.status is GrantIntentStatus.APPLIED:
         return None
     if intent.target_application_id is not None and intent.target_application_id != application_id:
+        await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
         await api_client.complete_users_grant_intent(
             project_id,
             intent.id,
@@ -296,6 +300,7 @@ async def _apply_grant_intent(  # noqa: PLR0913
         return "target_application_mismatch"
     capability = secret_values.get(_USERS_GRANT_CAPABILITY)
     if not isinstance(capability, str) or not capability:
+        await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
         await api_client.complete_users_grant_intent(
             project_id,
             intent.id,
@@ -304,15 +309,18 @@ async def _apply_grant_intent(  # noqa: PLR0913
             detail="capability_unavailable",
         )
         return "capability_unavailable"
+    await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
     proof = await GeneratedServiceGrantClient(deployed_url).grant_and_resolve(
         channel=intent.channel, external_id=intent.external_id, capability=capability
     )
     if not proof.active:
         safe_failure = proof.failure.value if proof.failure is not None else "unverified"
+        await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
         await api_client.complete_users_grant_intent(
             project_id, intent.id, execution_run_id=task_id, active=False, detail=safe_failure
         )
         return safe_failure
+    await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
     try:
         await api_client.complete_users_grant_intent(
             project_id, intent.id, execution_run_id=task_id, active=True
@@ -332,8 +340,13 @@ async def _apply_temporary_access_operation(
     secret_values: dict,
     grant: TemporaryAccessGrantDTO,
     operation: str,
+    fence: DeployFence,
 ) -> str | None:
-    """Use this deploy's capability only while its durable operation is current."""
+    """Use this deploy's capability only while its durable operation is current.
+
+    The remote grant or revoke checks the deploy lock after the grant is re-read,
+    immediately before it is made.
+    """
     if (
         grant.project_id != project_id
         or application_id != grant.target_application_id
@@ -368,6 +381,7 @@ async def _apply_temporary_access_operation(
     if not isinstance(capability, str) or not capability:
         return "capability_unavailable"
     client = GeneratedServiceGrantClient(current.target_base_url)
+    await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
     if operation == "grant":
         proof = await client.grant_and_resolve(
             channel=current.channel, external_id=current.external_id, capability=capability

@@ -116,15 +116,19 @@ async def _create_deployment_record(
 
     Application should already exist (created during resource allocation).
 
+    Each of the three writes checks the deploy lock immediately before it is
+    made, with nothing awaited in between; a lost lock is never swallowed into a
+    missing record.
+
     Returns:
         application_id if successfully resolved, None otherwise.
     """
-    await deploy_fence.ensure_held(DeployWrite.DEPLOYMENT_RECORD)
     try:
         # Find existing Application (created during allocation)
         application_id = None
         repo = await api_client.get_primary_repository(project_id)
         if repo:
+            await deploy_fence.ensure_held(DeployWrite.DEPLOYMENT_RECORD)
             app = await api_client.get_or_create_application(
                 repo_id=repo.id,
                 server_handle=server_handle,
@@ -133,6 +137,7 @@ async def _create_deployment_record(
             application_id = app.get("id")
 
             # Update Application status to running
+            await deploy_fence.ensure_held(DeployWrite.DEPLOYMENT_RECORD)
             await api_client.update_application(
                 application_id, {"status": ApplicationStatus.RUNNING.value}
             )
@@ -151,9 +156,12 @@ async def _create_deployment_record(
         if deployed_sha:
             payload["deployed_sha"] = deployed_sha
 
+        await deploy_fence.ensure_held(DeployWrite.DEPLOYMENT_RECORD)
         await api_client.create_deployment(payload)
         logger.info("deployment_record_created", service_name=service_name)
         return application_id
+    except DeployFenceLost:
+        raise
     except Exception as e:
         logger.error(
             "deployment_record_error",
@@ -283,6 +291,8 @@ class DeployerNode(FunctionalNode):
             # boundary and asks the same question first.
             claim = await self._claim_dispatch(deploy_run_id, deploy_fence)
             _require_live_lease(claim, datetime.now(UTC))
+            # The claim is an API round trip the lock can expire during.
+            await deploy_fence.ensure_held(DeployWrite.WORKFLOW_DISPATCH)
             await github.rerun_failed_jobs(owner, repo, run_id)
             await asyncio.sleep(3)
 
@@ -430,6 +440,9 @@ class DeployerNode(FunctionalNode):
             # Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
             _require_live_lease(claim, dispatch_time)
+            # The claim is an API round trip the lock can expire during, so the
+            # dispatch itself checks again with nothing awaited in between.
+            await deploy_fence.ensure_held(DeployWrite.WORKFLOW_DISPATCH)
             if pin_tag:
                 await github.trigger_workflow_dispatch(owner, repo, DEPLOY_WORKFLOW, ref=pin_tag)
             else:
@@ -528,8 +541,9 @@ class DeployerNode(FunctionalNode):
     ) -> DeployDispatchClaim | None:
         """Take the dispatch boundary, or refuse to cross it.
 
-        Called immediately before every call that starts work on GitHub Actions,
-        so it is also where a dispatch or rerun checks the project deploy lock.
+        Called immediately before every call that starts work on GitHub Actions.
+        The claim is itself a write, so it checks the project deploy lock first;
+        the dispatch or rerun that follows checks again after the claim returns.
         A plain read of the run status cannot do this job: between reading it and
         dispatching, a revoke can cancel the run, see no Actions run to fence,
         clear the value and finish, and only then does this deploy write the

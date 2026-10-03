@@ -26,6 +26,7 @@ import pytest
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.dto.product_brief import InitialSetting, ProductBriefContent
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.temporary_access import TemporaryAccessStatus
 from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY, GrantIntent, GrantIntentKind
 from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
 from src.clients.product_settings import SettingSeedProof
@@ -70,6 +71,50 @@ CONTRACT = {
 }
 
 
+_TERMINAL = {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
+_OUTCOME_FIELDS = ("status", "result", "error_message")
+
+
+class RunRecord:
+    """The deploy's own Run as the API keeps it.
+
+    Like `PATCH /runs/{id}`, it refuses to rewrite the outcome of a Run that has
+    recorded one (409), so a test proves the deploy publishes its terminal
+    outcome last instead of assuming an API that lets it be overwritten.
+    """
+
+    def __init__(self, run_metadata: dict) -> None:
+        self.run_metadata = run_metadata
+        self.fields: dict = {"status": RunStatus.QUEUED.value}
+        self.writes: list[dict] = []
+
+    def read(self, task_id: str):
+        assert task_id == TASK_ID
+        return make_run(
+            id=TASK_ID,
+            status=self.fields["status"],
+            result=self.fields.get("result"),
+            run_metadata=self.run_metadata,
+        )
+
+    def write(self, update: dict) -> None:
+        if self.fields["status"] in _TERMINAL and "result" in self.fields:
+            rewritten = [
+                field
+                for field in _OUTCOME_FIELDS
+                if field in update and update[field] != self.fields.get(field)
+            ]
+            if rewritten:
+                request = httpx.Request("PATCH", f"http://api/runs/{TASK_ID}")
+                raise httpx.HTTPStatusError(
+                    f"cannot rewrite {', '.join(rewritten)}",
+                    request=request,
+                    response=httpx.Response(409, request=request),
+                )
+        self.writes.append(update)
+        self.fields.update(update)
+
+
 @dataclass
 class Deploy:
     """One deploy of `PROJECT_ID`, wired to doubles of everything but Redis."""
@@ -84,11 +129,11 @@ class Deploy:
     grants: AsyncMock
     settings: AsyncMock
     ssh: AsyncMock
+    run_record: RunRecord
 
-    async def run(self, **message) -> dict:
-        from src.consumers.deploy import process_deploy_job
-
-        job = {
+    @staticmethod
+    def message(**overrides) -> dict:
+        return {
             "task_id": TASK_ID,
             "project_id": PROJECT_ID,
             "telegram_chat_id": "12345",
@@ -99,17 +144,17 @@ class Deploy:
             "head_sha": HEAD_SHA,
             "deployed_commit_sha": BUILT_SHA,
             "fence_active_deploys": True,
-            **message,
+            **overrides,
         }
-        return await process_deploy_job(job, self.stream)
+
+    async def run(self, **overrides) -> dict:
+        from src.consumers.deploy import process_deploy_job
+
+        return await process_deploy_job(self.message(**overrides), self.stream)
 
     def run_writes(self) -> list[dict]:
-        """What this deploy wrote to its own Run, in order."""
-        return [
-            call.kwargs["json"]
-            for call in self.api.patch.await_args_list
-            if call.args == (f"runs/{TASK_ID}",)
-        ]
+        """What this deploy wrote to its own Run and the API accepted, in order."""
+        return self.run_record.writes
 
     def run_outcomes(self) -> list[str]:
         return [
@@ -123,11 +168,16 @@ def deploy():
     stream = AsyncMock()
     stream.redis = redis
 
+    run_record = RunRecord({USERS_GRANT_INTENT_KEY: INTENT.id})
+
+    async def patch_api(path: str, json: dict):
+        if path == f"runs/{TASK_ID}":
+            run_record.write(json)
+        return {}
+
     api = MagicMock()
-    api.patch = AsyncMock()
-    api.get_run = AsyncMock(
-        return_value=make_run(id=TASK_ID, run_metadata={USERS_GRANT_INTENT_KEY: INTENT.id})
-    )
+    api.patch = AsyncMock(side_effect=patch_api)
+    api.get_run = AsyncMock(side_effect=run_record.read)
     api.start_run = AsyncMock(return_value=make_run_start(run_id=TASK_ID))
     api.get_project = AsyncMock(return_value=make_project(config={"modules": ["backend"]}))
     api.get_primary_repository = AsyncMock(
@@ -269,6 +319,7 @@ def deploy():
             grants=grants,
             settings=settings,
             ssh=ssh,
+            run_record=run_record,
         )
 
 
@@ -352,6 +403,12 @@ DEPLOY_WRITES = [
             d.github.trigger_workflow_dispatch.await_count
             + d.deployer_api.claim_deploy_dispatch.await_count
         ),
+        id="dispatch-claim",
+    ),
+    pytest.param(
+        DeployWrite.WORKFLOW_DISPATCH,
+        2,
+        lambda d: d.github.trigger_workflow_dispatch.await_count,
         id="workflow-dispatch",
     ),
     pytest.param(
@@ -364,9 +421,25 @@ DEPLOY_WRITES = [
         DeployWrite.DEPLOYMENT_RECORD,
         1,
         lambda d: (
+            d.deployer_api.get_or_create_application.await_count
+            + d.deployer_api.update_application.await_count
+            + d.deployer_api.create_deployment.await_count
+        ),
+        id="deployment-application",
+    ),
+    pytest.param(
+        DeployWrite.DEPLOYMENT_RECORD,
+        2,
+        lambda d: (
             d.deployer_api.update_application.await_count
             + d.deployer_api.create_deployment.await_count
         ),
+        id="deployment-application-status",
+    ),
+    pytest.param(
+        DeployWrite.DEPLOYMENT_RECORD,
+        3,
+        lambda d: d.deployer_api.create_deployment.await_count,
         id="deployment-record",
     ),
     pytest.param(
@@ -376,6 +449,12 @@ DEPLOY_WRITES = [
             d.grants.grant_and_resolve.await_count + d.api.complete_users_grant_intent.await_count
         ),
         id="owner-grant",
+    ),
+    pytest.param(
+        DeployWrite.PRODUCT_ACCESS,
+        2,
+        lambda d: d.api.complete_users_grant_intent.await_count,
+        id="owner-grant-intent-completion",
     ),
     pytest.param(
         DeployWrite.PRODUCT_SETTINGS,
@@ -388,17 +467,16 @@ DEPLOY_WRITES = [
 
 
 def _assert_stopped_cleanly(d: Deploy, result: dict) -> None:
-    """A ends as `deploy_lock_lost`, recorded once and last.
+    """A's Run records one terminal outcome, `deploy_lock_lost`, and nothing else.
 
-    Last rather than only: a lifecycle action records its Run before it moves the
-    application's status, so losing the lock between the two leaves that record
-    behind `deploy_lock_lost`.
+    Every fenced write comes before a Run's terminal outcome, and the Run double
+    refuses to rewrite an outcome the way the API does, so a deploy that recorded
+    any other outcome first could not have reached this one.
     """
     assert result["status"] == "failed"
     assert result["reason"] == DeployOutcome.DEPLOY_LOCK_LOST.value
-    assert d.run_outcomes().count(DeployOutcome.DEPLOY_LOCK_LOST.value) == 1
-    assert d.run_writes()[-1]["status"] == RunStatus.FAILED.value
-    assert d.run_writes()[-1]["result"]["deploy_outcome"] == DeployOutcome.DEPLOY_LOCK_LOST.value
+    assert [write["status"] for write in d.run_writes()] == [RunStatus.FAILED.value]
+    assert d.run_outcomes() == [DeployOutcome.DEPLOY_LOCK_LOST.value]
 
 
 @pytest.mark.asyncio
@@ -431,20 +509,74 @@ async def test_no_deploy_write_is_made_after_the_lock_is_lost(
     assert await deploy.redis.get(LOCK_KEY) == OTHER_DEPLOY
 
 
+def _lose_lock_during_claim(d: Deploy, call: int) -> list[int]:
+    """Deploy A's lock is handed over while its `call`-th dispatch claim is in flight.
+
+    The claim is scoped to A's own Run, not to the project lock, so the API
+    still grants it: only a check after the claim returns can see the loss.
+    """
+    claim = d.deployer_api.claim_deploy_dispatch.side_effect
+    calls: list[int] = []
+
+    async def claim_while_losing_the_lock(run_id: str):
+        calls.append(len(calls) + 1)
+        if len(calls) == call:
+            await _expire_and_hand_over(DeployFence(d.redis, PROJECT_ID, "deploy-a:unused"))
+        return claim(run_id)
+
+    d.deployer_api.claim_deploy_dispatch.side_effect = claim_while_losing_the_lock
+    return calls
+
+
 @pytest.mark.asyncio
-async def test_a_rerun_is_a_dispatch_and_is_refused_without_the_lock(deploy, monkeypatch):
-    deploy.github.wait_for_workflow_completion.side_effect = RuntimeError("deploy job failed")
-    deploy.github.get_latest_workflow_run.return_value = {"id": 7}
-    loss = LockLoss(DeployWrite.WORKFLOW_DISPATCH, occurrence=2)
-    loss.install(monkeypatch)
+async def test_a_lock_lost_during_the_dispatch_claim_sends_no_dispatch(deploy):
+    calls = _lose_lock_during_claim(deploy, call=1)
 
     result = await deploy.run()
 
-    assert loss.fired
+    assert calls == [1]
+    deploy.github.trigger_workflow_dispatch.assert_not_awaited()
+    _assert_stopped_cleanly(deploy, result)
+    assert await deploy.redis.get(LOCK_KEY) == OTHER_DEPLOY
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_during_the_rerun_claim_sends_no_rerun(deploy):
+    deploy.github.wait_for_workflow_completion.side_effect = RuntimeError("deploy job failed")
+    deploy.github.get_latest_workflow_run.return_value = {"id": 7}
+    calls = _lose_lock_during_claim(deploy, call=2)
+
+    result = await deploy.run()
+
+    assert calls == [1, 2]
     deploy.github.trigger_workflow_dispatch.assert_awaited_once()
     deploy.github.rerun_failed_jobs.assert_not_awaited()
     _assert_stopped_cleanly(deploy, result)
     assert await deploy.redis.get(LOCK_KEY) == OTHER_DEPLOY
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_after_the_outcome_is_recorded_leaves_the_run_alone(deploy):
+    """The recorder never rewrites a terminal Run; it logs the loss instead."""
+    from shared.contracts.queues.deploy import DeployMessage
+    from src.consumers.deploy import _record_deploy_lock_lost
+    from src.deploy_fence import DeployFenceLost as Lost
+
+    deploy.run_record.write(
+        {
+            "status": RunStatus.COMPLETED.value,
+            "result": {"deploy_outcome": DeployOutcome.SUCCESS.value},
+        }
+    )
+
+    result = await _record_deploy_lock_lost(
+        DeployMessage.model_validate(deploy.message()),
+        deploy.stream,
+        Lost(PROJECT_ID, DeployWrite.RUN_STATE),
+    )
+
+    assert result["reason"] == "deploy_lock_lost_after_terminal_outcome"
+    assert deploy.run_outcomes() == [DeployOutcome.SUCCESS.value]
 
 
 @pytest.mark.asyncio
@@ -466,7 +598,7 @@ async def test_a_rerun_is_a_dispatch_and_is_refused_without_the_lock(deploy, mon
 async def test_no_lifecycle_write_is_made_after_the_lock_is_lost(
     deploy, monkeypatch, write, occurrence, performed
 ):
-    deploy.api.get_run.return_value = make_run(id=TASK_ID)
+    deploy.run_record.run_metadata = {}
     loss = LockLoss(write, occurrence)
     loss.install(monkeypatch)
 
@@ -547,7 +679,13 @@ async def test_no_temporary_access_operation_is_made_after_the_lock_is_lost(monk
     from src.consumers.deploy_result_handler import _handle_deploy_success
     from tests.unit.consumers.test_deploy_routing import _make_deploy_msg, _temporary_grant
 
-    grant = _temporary_grant()
+    grant = (
+        _temporary_grant()
+        if operation == "grant"
+        else _temporary_grant(
+            status=TemporaryAccessStatus.REVOKING, revoke_run_id="temporary-access-grant-1"
+        )
+    )
     fence = held_deploy_fence(project_id="proj-1", task_id=grant.grant_run_id)
     loss = LockLoss(DeployWrite.PRODUCT_ACCESS)
     loss.install(monkeypatch)
@@ -580,6 +718,9 @@ async def test_no_temporary_access_operation_is_made_after_the_lock_is_lost(monk
         )
 
     assert loss.fired
-    client.assert_not_called()
+    # The grant was re-read first; the remote grant or revoke was never made.
+    api.get_temporary_access_grant.assert_awaited_once_with(grant.id)
+    client.return_value.grant_and_resolve.assert_not_called()
+    client.return_value.revoke_and_resolve.assert_not_called()
     api.patch.assert_not_awaited()
     assert await fence.redis.get(fence.lock_key) == OTHER_DEPLOY

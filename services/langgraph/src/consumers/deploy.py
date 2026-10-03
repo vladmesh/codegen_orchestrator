@@ -58,6 +58,9 @@ logger = structlog.get_logger(__name__)
 
 _config: ConfigStore | None = None
 
+#: A Run in one of these has recorded its outcome; the API refuses to rewrite it.
+_TERMINAL_RUN_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
+
 
 def _deploy_lock_ttl() -> int:
     global _config  # noqa: PLW0603
@@ -333,6 +336,9 @@ async def _handle_lifecycle_action(
     with whichever application it picks for the project's primary repository, so a
     project deployed on two servers would get the same container stopped twice
     while the other one keeps running.
+
+    The application's new status is written before the Run's terminal outcome:
+    an outcome is final once recorded, so nothing of this action may follow it.
     """
     application = await api_client.get_application(msg.application_id)
     project_name = project_runtime_slug(project)
@@ -344,6 +350,19 @@ async def _handle_lifecycle_action(
         server_handle=application.server_handle,
         fence=fence,
     )
+
+    if lifecycle_result["status"] == "success":
+        target_status = (
+            ApplicationStatus.NOT_DEPLOYED
+            if msg.action == DeployAction.UNDEPLOY
+            else ApplicationStatus.STOPPED
+        )
+        await fence.ensure_held(DeployWrite.APPLICATION_STATE)
+        await api_client.patch(
+            f"applications/{msg.application_id}",
+            json={"status": target_status.value},
+        )
+
     run_status = (
         RunStatus.COMPLETED if lifecycle_result["status"] == "success" else RunStatus.FAILED
     )
@@ -359,21 +378,6 @@ async def _handle_lifecycle_action(
         run_patch["error_message"] = lifecycle_result["error"]
     await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(f"runs/{task_id}", json=run_patch)
-
-    # Update application status on success
-    if lifecycle_result["status"] == "success":
-        app_id = msg.application_id
-        target_status = (
-            ApplicationStatus.NOT_DEPLOYED
-            if msg.action == DeployAction.UNDEPLOY
-            else ApplicationStatus.STOPPED
-        )
-        await fence.ensure_held(DeployWrite.APPLICATION_STATE)
-        await api_client.patch(
-            f"applications/{app_id}",
-            json={"status": target_status.value},
-        )
-
     return lifecycle_result
 
 
@@ -1017,8 +1021,29 @@ async def _record_deploy_lock_lost(
     learns that the deploy stopped. Nothing of the project is touched — secrets,
     workflow, server, application, the other deploy's Run — and the lock itself is
     released by compare-and-delete, so the deploy now holding it keeps it.
+
+    A Run whose terminal outcome is already recorded is left as it is: that
+    outcome is final (the API refuses to rewrite it), and every fenced write of a
+    deploy comes before its terminal record, so a loss noticed afterwards can only
+    concern an effect that was already made. It is logged with a bounded reason.
     """
     error_msg = str(lost)
+    run = await api_client.get_run(msg.task_id)
+    if run.status in _TERMINAL_RUN_STATUSES:
+        logger.warning(
+            "deploy_job_lock_lost_after_terminal_outcome",
+            task_id=msg.task_id,
+            project_id=msg.project_id,
+            refused_write=lost.write.value,
+            run_status=run.status.value,
+        )
+        return live_work_unsettled(
+            {
+                "status": "failed",
+                "reason": "deploy_lock_lost_after_terminal_outcome",
+                "error": error_msg,
+            }
+        )
     logger.warning(
         "deploy_job_lock_lost",
         task_id=msg.task_id,

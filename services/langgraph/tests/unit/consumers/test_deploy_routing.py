@@ -323,6 +323,7 @@ class TestHandleDeploySuccess:
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
                 grant=_temporary_grant(),
                 operation="grant",
+                fence=held_deploy_fence(),
             )
             proof = await _apply_temporary_access_operation(
                 task_id="temporary-access-grant-1",
@@ -331,6 +332,7 @@ class TestHandleDeploySuccess:
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
                 grant=_temporary_grant(),
                 operation="grant",
+                fence=held_deploy_fence(),
             )
 
         assert mismatch == "temporary_access_target_mismatch"
@@ -385,6 +387,7 @@ class TestHandleDeploySuccess:
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
                 grant=attempted,
                 operation=operation,
+                fence=held_deploy_fence(),
             )
 
         assert refusal == "temporary_access_operation_superseded"
@@ -413,6 +416,7 @@ class TestHandleDeploySuccess:
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
                 grant=stale_grant,
                 operation="grant",
+                fence=held_deploy_fence(),
             )
 
         assert refusal == "temporary_access_operation_superseded"

@@ -9,11 +9,19 @@ deploy of the same project holds the lock.
 
 So the claim produces a `DeployFence`, and the fence is threaded explicitly to
 every place a deploy changes external or durable state for the project. Each of
-those writes calls `ensure_held` immediately before it is performed; it is the
-only check. A deploy whose fence is lost raises `DeployFenceLost`, performs no
-further write, and is recorded once as `DeployOutcome.DEPLOY_LOCK_LOST` on its
-own Run. Release is a compare-and-delete, so a deploy never deletes a lock that
-another holder now owns.
+those writes calls `ensure_held`, the only check, under two rules:
+
+1. No await between the check and the effect. `ensure_held` is the last awaited
+   operation before each effect call; an API claim, a read or a wait in between
+   gets its own check after it.
+2. A Run's terminal outcome is written last. Every fenced write of a deploy or a
+   lifecycle action completes before its Run is recorded terminal, because the
+   API refuses to rewrite a recorded outcome.
+
+A deploy whose fence is lost raises `DeployFenceLost`, performs no further write,
+and is recorded once as `DeployOutcome.DEPLOY_LOCK_LOST` on its own Run, unless
+that Run already holds a terminal outcome, which is left as it is. Release is a
+compare-and-delete, so a deploy never deletes a lock that another holder now owns.
 
 The check narrows the window to one Redis round trip; it cannot stop a write that
 is already in flight when the key expires, because GitHub, the API and the target
