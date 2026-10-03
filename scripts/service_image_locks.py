@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import json
+import re
 import tomllib
 
 from packaging.markers import default_environment
@@ -35,6 +36,16 @@ TOOLING = frozenset({"pip", "setuptools", "wheel"})
 
 LOCK = "requirements.lock"
 PYPROJECT = "pyproject.toml"
+
+# A direct reference pinned as exactly as ``==`` pins a release: a VCS URL at a full commit.
+# The lock records it by that URL, because the version is whatever the commit builds.
+_COMMIT_PIN = re.compile(r"git\+\S+@[0-9a-f]{40}")
+
+
+def is_commit_pin(pin: str) -> bool:
+    """Whether a lock pin is a VCS URL at a full commit rather than a release version."""
+    return _COMMIT_PIN.fullmatch(pin) is not None
+
 
 # Standard library only: it runs on the image's interpreter, before anything is known
 # about what that image has installed.
@@ -85,9 +96,10 @@ class Distribution:
 def parse_lock(text: str, environment: Mapping[str, str]) -> dict[str, str]:
     """``{canonical name: version}`` of every pin in a ``uv pip compile`` lock.
 
-    A pin whose marker does not hold in ``environment`` is not installed there, so it is
-    left out. A line that is not an exact ``name==version`` pin raises: a lock this
-    cannot read is a hole in the check, never a line to skip.
+    A ``name @ git+<url>@<commit>`` pin maps to its URL instead (``is_commit_pin``). A pin
+    whose marker does not hold in ``environment`` is not installed there, so it is left
+    out. A line that is neither an exact ``name==version`` pin nor a VCS pin at a full
+    commit raises: a lock this cannot read is a hole in the check, never a line to skip.
     """
     pins: dict[str, str] = {}
     for number, raw in enumerate(text.splitlines(), start=1):
@@ -99,14 +111,20 @@ def parse_lock(text: str, environment: Mapping[str, str]) -> dict[str, str]:
         except InvalidRequirement as error:
             raise ValueError(f"line {number} of the lock is not a requirement: {raw!r}") from error
         specifiers = list(requirement.specifier)
-        if len(specifiers) != 1 or specifiers[0].operator != "==":
+        if requirement.url is not None:
+            if not is_commit_pin(requirement.url):
+                raise ValueError(f"line {number} of the lock is not an exact pin: {raw!r}")
+            pin = requirement.url
+        elif len(specifiers) != 1 or specifiers[0].operator != "==":
             raise ValueError(f"line {number} of the lock is not an exact pin: {raw!r}")
+        else:
+            pin = specifiers[0].version
         if requirement.marker and not requirement.marker.evaluate(dict(environment)):
             continue
         name = canonicalize_name(requirement.name)
         if name in pins:
             raise ValueError(f"line {number} of the lock pins {name} a second time")
-        pins[name] = specifiers[0].version
+        pins[name] = pin
     return pins
 
 
@@ -147,7 +165,9 @@ def drift(
 ) -> list[str]:
     """Every difference between the image's installed set and its lock.
 
-    Only ``TOOLING`` and the service's own package are ignored on the installed side.
+    Only ``TOOLING`` and the service's own package are ignored on the installed side. A
+    commit pin is compared by presence: the image records the version the commit built,
+    not the commit, and the lock line already fixes the commit pip installed.
     """
     ignored = TOOLING | {canonicalize_name(own_package)}
     actual = {name: dist.version for name, dist in installed.items() if name not in ignored}
@@ -159,9 +179,25 @@ def drift(
             problems.append(f"{image}: {name} {version} is installed, but {LOCK} does not pin it")
         elif version is None:
             problems.append(f"{image}: {LOCK} pins {name} {locked}, but it is not installed")
+        elif is_commit_pin(locked):
+            continue
         elif Version(version) != Version(locked):
             problems.append(f"{image}: {name} is installed at {version}, but {LOCK} pins {locked}")
     return problems
+
+
+def _satisfies(requirement: Requirement, pin: str) -> bool:
+    """Whether one pin (a version, or a lock's commit pin) satisfies one requirement.
+
+    A commit pin satisfies a requirement of the same URL or one with no specifier, never a
+    version range it cannot be judged against. A version satisfies a URL requirement: that
+    is an installed distribution, which records what the commit built, not the commit.
+    """
+    if is_commit_pin(pin):
+        return requirement.url == pin if requirement.url else not requirement.specifier
+    if requirement.url:
+        return True
+    return requirement.specifier.contains(pin, prereleases=True)
 
 
 def unsatisfied(
@@ -193,7 +229,7 @@ def unsatisfied(
         if dist is None:
             problems.append(f"{image}: {via} requires {requirement}, which {LOCK} does not pin")
             return
-        if not requirement.specifier.contains(dist.version, prereleases=True):
+        if not _satisfies(requirement, dist.version):
             problems.append(
                 f"{image}: {via} requires {requirement}, but {LOCK} pins {name} {dist.version}"
             )

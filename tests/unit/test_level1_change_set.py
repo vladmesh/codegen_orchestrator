@@ -299,6 +299,22 @@ def test_the_kit_tooling_is_pinned_to_the_commit_the_fixture_resolves() -> None:
     assert f"codegen-product-kit.git@{source['rev']}" in fixture
 
 
+def test_the_langgraph_image_carries_the_same_kit_tooling_commit() -> None:
+    """The Architect parses the live package catalog with the pinned kit's own loader.
+
+    The langgraph image installs only its own lock, so it depends on the tooling directly;
+    a commit other than the root pin would plan against another loader and core version.
+    """
+    ours = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    source = ours["tool"]["uv"]["sources"]["codegen-kit-tooling"]
+    pinned = f"codegen-kit-tooling @ git+{source['git']}@{source['rev']}"
+    service = REPO_ROOT / "services" / "langgraph"
+    langgraph = tomllib.loads((service / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pinned in langgraph["project"]["dependencies"]
+    assert f"{pinned}\n" in (service / "requirements.lock").read_text(encoding="utf-8")
+
+
 def test_the_pinned_kit_passes_its_own_gate_before_the_change_set_touches_it(
     pristine_tree: Path,
 ) -> None:

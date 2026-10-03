@@ -36,6 +36,9 @@ scheduler/lifecycle paths after the relevant PR/image evidence exists.
 The Architect turns an admitted Story into dependency-aware Tasks after the project workspace is ready.
 It reads the project tree/spec context and writes planning output through the API. It does not own
 engineering execution or deployment.
+Which kit packages it may plan it reads at planning time from the kit's live package catalog
+(`services/langgraph/src/kit_catalog.py`), so a package release needs no orchestrator change; see
+[contracts/kit-template-and-qa.md](contracts/kit-template-and-qa.md).
 
 ## Engineering worker
 

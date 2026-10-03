@@ -175,6 +175,58 @@ def test_a_lock_line_that_is_not_an_exact_pin_refuses_the_lock(line):
         locks.parse_lock(f"# header\n{line}\n", ENVIRONMENT)
 
 
+_KIT_URL = "git+https://github.com/vladmesh/codegen-product-kit.git@" + "1" * 40
+_KIT_PIN = f"codegen-kit-tooling @ {_KIT_URL}\n    # via demo-service\n"
+
+
+def test_a_vcs_pin_at_a_full_commit_is_an_exact_pin():
+    """The kit tooling is pinned by commit: the lock records the URL, the image its version."""
+    pyproject = PYPROJECT.replace(
+        '"httpx>=0.27.0"', f'"httpx>=0.27.0", "codegen-kit-tooling @ {_KIT_URL}"'
+    )
+    lock = LOCK + _KIT_PIN
+
+    assert locks.parse_lock(lock, ENVIRONMENT)["codegen-kit-tooling"] == _KIT_URL
+    assert locks.check_lock_against_pyproject("demo", lock, pyproject, ENVIRONMENT) == []
+    assert (
+        locks.check_image("demo", lock, pyproject, _image(_dist("codegen-kit-tooling", "0.1.0")))
+        == []
+    )
+
+
+def test_a_vcs_pin_still_fails_when_missing_from_the_image():
+    problems = locks.check_image("demo", LOCK + _KIT_PIN, PYPROJECT, _image())
+
+    assert problems == [
+        f"demo: requirements.lock pins codegen-kit-tooling {_KIT_URL}, but it is not installed"
+    ]
+
+
+def test_a_lock_at_another_commit_than_the_pyproject_is_stale():
+    moved = _KIT_URL.replace("1" * 40, "2" * 40)
+    pyproject = PYPROJECT.replace(
+        '"httpx>=0.27.0"', f'"httpx>=0.27.0", "codegen-kit-tooling @ {moved}"'
+    )
+
+    assert locks.check_lock_against_pyproject("demo", LOCK + _KIT_PIN, pyproject, ENVIRONMENT) == [
+        f"demo: pyproject.toml requires codegen-kit-tooling @ {moved}, "
+        f"but requirements.lock pins codegen-kit-tooling {_KIT_URL}"
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git@main",
+        "codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git",
+        "codegen-kit-tooling @ https://example.invalid/codegen_kit_tooling-0.1.0.tar.gz",
+    ],
+)
+def test_a_direct_reference_not_at_a_full_commit_refuses_the_lock(line):
+    with pytest.raises(ValueError, match="line 2 of the lock is not an exact pin"):
+        locks.parse_lock(f"# header\n{line}\n", ENVIRONMENT)
+
+
 def test_the_probe_runs_on_a_bare_interpreter_and_describes_it():
     """Standard library only: it runs in images that may not carry packaging."""
     output = subprocess.run(

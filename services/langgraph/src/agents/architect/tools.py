@@ -24,10 +24,17 @@ criteria, which is what the engineering worker reads; `TaskCreate` has no field
 for it, so an argument here would name a decision nothing downstream stores or
 enforces. The prompt states the ladder and the package protocol under
 "Capability Shape".
+
+What a package task may install is checked, though: `create_task` refuses a
+`kit add` of a name outside the live kit catalog the run was briefed with
+(`kit_catalog_packages` in state, `None` when the catalog was unavailable) and
+any install from a wheel file or built artifact, so a plan installs only what
+`kit add` resolves from the catalog itself.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Annotated
 
 import httpx
@@ -52,6 +59,56 @@ _last_task_id: dict[str, str] = {}
 def reset_task_chain() -> None:
     """Reset auto-chaining state. Call before each architect invocation."""
     _last_task_id.clear()
+
+
+#: `kit add` and the token after it, wherever the command is written (`.venv/bin/kit add`).
+_KIT_ADD = re.compile(r"(?<![\w-])kit\s+add\b[ \t]*(?P<name>[^\s]*)")
+_NAME_EDGES = "`'\"*.,;:()[]<>"
+#: An install from something already built rather than resolved from the catalog.
+_ARTIFACT_INSTALL = re.compile(r"--wheel\b|[\w.+-]+\.whl\b", re.IGNORECASE)
+#: A kit package distribution installed past `kit add`, e.g. `uv add codegen-kit-reminders`.
+_DISTRIBUTION_INSTALL = re.compile(
+    r"\b(?:pip|uv)\b[^\n]*?\b(?:install|add)\b[^\n]*?\bcodegen[-_]kit[-_]", re.IGNORECASE
+)
+
+
+def package_install_refusal(text: str, catalog: list[str] | None) -> str | None:
+    """Why a task's text may not install the package it names, or `None` when it may.
+
+    A package is installed only as `kit add <name>` with `<name>` in the live catalog
+    the run was briefed with (`None`: the catalog was unavailable, so nothing is
+    installable), and never from a wheel file or a built artifact. Text that installs
+    nothing passes.
+    """
+    if _ARTIFACT_INSTALL.search(text):
+        return (
+            "a kit package is installed only as `kit add <catalog name>`, which resolves the "
+            "release from the kit catalog itself; the task must not install from a wheel "
+            "file or a built artifact (`--wheel`, `.whl`)"
+        )
+    if _DISTRIBUTION_INSTALL.search(text):
+        return (
+            "a kit package is installed only as `kit add <catalog name>`, not by installing "
+            "its distribution with pip or uv"
+        )
+    names = [match.group("name").strip(_NAME_EDGES) for match in _KIT_ADD.finditer(text)]
+    if not names:
+        return None
+    if catalog is None:
+        return (
+            "the kit package catalog was unavailable when this plan started, so no package "
+            "can be planned in this run: create the task without `kit add`, or return the "
+            "requirement it covers"
+        )
+    unknown = sorted({name for name in names if name not in catalog})
+    if unknown:
+        listed = ", ".join(sorted(catalog)) or "none"
+        return (
+            f"`kit add` names {', '.join(repr(name) for name in unknown)}, which the kit "
+            f"package catalog does not list (installable packages: {listed}); write "
+            "`kit add <name>` with a listed name, or plan the capability without a package"
+        )
+    return None
 
 
 @tool
@@ -136,6 +193,7 @@ async def create_task(
     story_id: Annotated[str, InjectedState("story_id")],
     project_id: Annotated[str, InjectedState("project_id")],
     planning_attempt_id: Annotated[str | None, InjectedState("planning_attempt_id")] = None,
+    kit_catalog_packages: Annotated[list[str] | None, InjectedState("kit_catalog_packages")] = None,
 ) -> dict:
     """Create a new task for a story.
 
@@ -143,12 +201,21 @@ async def create_task(
     one created for the same story. Just call create_task in the right order —
     dependencies are handled for you.
 
+    A task that installs a kit package names it as `kit add <name>` with a name
+    from the Kit package catalog in your instructions; any other install is
+    refused with the reason.
+
     Args:
         title: Short task title.
         description: What needs to be done.
         type: One of: create, feature, fix, refactor.
         acceptance_criteria: How to verify the task is done.
     """
+    refusal = package_install_refusal(f"{description}\n{acceptance_criteria}", kit_catalog_packages)
+    if refusal is not None:
+        logger.warning("architect_task_package_refused", title=title, detail=refusal)
+        return {"error": f"task {title!r} was refused: {refusal}"}
+
     blocked_by = _last_task_id.get(story_id)
 
     task_data = {

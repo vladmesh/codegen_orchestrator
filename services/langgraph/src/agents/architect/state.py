@@ -34,3 +34,7 @@ class ArchitectState(AgentState):
     #: because a key the product does not declare in its own manifest cannot be
     #: written into it at all.
     initial_settings: list[InitialSetting]
+    #: The installable package names of the live kit catalog this run was briefed
+    #: with, or `None` when the catalog was unavailable. `create_task` refuses a
+    #: `kit add` of any other name, so the plan installs only what it was shown.
+    kit_catalog_packages: list[str] | None

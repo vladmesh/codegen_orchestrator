@@ -47,6 +47,32 @@ def engineering_commit_without_env_contract(monkeypatch):
     return fetch
 
 
+#: Where the unit double says its catalog came from: the pinned kit tooling's own copy.
+BUNDLED_KIT_CATALOG_SOURCE = "codegen-kit-tooling:framework/package_catalog.yaml"
+
+
+@pytest.fixture(autouse=True)
+def kit_catalog_off_github(monkeypatch):
+    """Keep planning off GitHub: the Architect is briefed with the pinned kit's catalog.
+
+    The answer is the catalog the pinned kit tooling ships (`bundled_catalog`), filtered
+    by the real `installable`, so it lists what the live catalog listed at the pin.
+    Tests of the reader build their own `KitCatalogReader`; a test of an unavailable
+    catalog sets `read.return_value` on the reader this returns.
+    """
+    from framework.catalog import bundled_catalog
+
+    from src import kit_catalog
+    from src.consumers import architect
+
+    reader = MagicMock(spec=kit_catalog.KitCatalogReader)
+    reader.read = AsyncMock(
+        return_value=kit_catalog.installable(bundled_catalog(), BUNDLED_KIT_CATALOG_SOURCE)
+    )
+    monkeypatch.setattr(architect, "get_kit_catalog_reader", lambda: reader)
+    return reader
+
+
 @pytest.fixture(autouse=True)
 def paid_run_executor_for_legacy_unit_states(monkeypatch):
     """Keep pre-decision unit fixtures focused on their stated behavior."""

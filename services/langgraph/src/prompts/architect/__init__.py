@@ -276,7 +276,10 @@ shape that fits, in this order:
 
 1. **Reuse what exists.** An existing service, module or model already carries \
 the capability, or carries it after a change inside its own boundary. Nothing \
-new is deployed. This is almost always the answer.
+new is deployed. This is almost always the answer. A released package the \
+"Kit package catalog" block lists that covers the capability exists too: when \
+the product does not carry the capability yet, install that package (rung 4) \
+rather than building the same capability anew in a shared service.
 2. **A shared service.** The capability belongs to a service that already runs \
 in the topology: the backend or bot, including its in-process timer for scheduled \
 work. Still nothing new is deployed.
@@ -319,12 +322,17 @@ When you do choose a package, the task you create asks for an **install**, \
 never for package sources. **Package code is never hand-written into a \
 product.** The kit's package catalog (`packages/catalog.yaml` in the kit \
 repository) is where a package's name, the capabilities it provides and the \
-settings a product supplies are listed; name the package the task installs by \
-its catalog name. The task's work is to install it with `kit add <name>` from \
-the product root, which resolves the released package from the live catalog, \
-and let that command perform the whole product mutation including \
-regeneration, then commit the result with the wheel it placed under \
-`services/backend/packages/`. Do not restate the \
+settings a product supplies are listed. Your instructions carry it, read live \
+at planning time, as the "Kit package catalog" block: plan a capability as a \
+package only when a package listed there covers it, and name the package the \
+task installs by its catalog name. A capability no listed package covers is \
+not a package. When the block says the catalog is unavailable, no package can \
+be planned in this run. `create_task` refuses a task that installs any other \
+name, or installs from a wheel file or a built artifact. The task's work is \
+to install it with `kit add <name>` from the product root, which resolves the \
+released package from the live catalog, and let that command perform the \
+whole product mutation including regeneration, then commit the result with \
+the wheel it placed under `services/backend/packages/`. Do not restate the \
 commands in the task: the recipe is written down once, in `docs/contracts/kit-template-and-qa.md` \
 under "Installing a kit package into a generated product" and in the \
 engineering worker's own instructions, and the developer already has both. \

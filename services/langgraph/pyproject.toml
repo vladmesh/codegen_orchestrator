@@ -42,6 +42,11 @@ dependencies = [
     # account from here; no deploy target holds a Telethon session any more.
     "telethon>=1.36.0",
 
+    # The kit's own package-catalog loader and core version (src/kit_catalog.py): the
+    # Architect plans packages from the kit's live catalog, parsed the way `kit add` parses
+    # it. The same commit as the root `[tool.uv.sources]` pin; a unit test ties the two.
+    "codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git@1de7aa6c02cfcf212b2d21919defbb3d77383998",
+
     # shared/ deps (shared is COPY'd as plain files, not pip-installed)
     "pyyaml>=6.0",
     "cryptography>=43.0.0",

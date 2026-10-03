@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-03
 
+- The Architect plans kit packages from the kit's live catalog, not a static list, and `create_task`
+  refuses a non-catalog `kit add` or a wheel, so a package release needs no orchestrator change.
 - Every deploy write checks the project deploy lock's holder token first; a deploy that lost it ends
   `deploy_lock_lost`. The retry bound counts `supervisor_retry` Runs since the last success, not a TTL key.
 - [hotfix] Stand control-plane downloads (Docker key, uv) wait 60 s per attempt with 5 bounded retries,
