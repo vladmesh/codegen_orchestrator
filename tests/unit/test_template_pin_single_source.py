@@ -89,7 +89,7 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
 
 def test_production_pin_is_the_immutable_kit_release() -> None:
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 7, 0)
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 7, 1)
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -98,7 +98,7 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    corrected_commit = "1de7aa6c02cfcf212b2d21919defbb3d77383998"
+    corrected_commit = "56da5c83cb8d011823ce2cb70345415b223b93ab"
 
     assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
     assert answers["_src_path"] == template_pin.TEMPLATE_PIN.source
@@ -108,6 +108,7 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     assert "1d0c0fdd8b12bf1548ab3f97882e5edee7c55763" not in project
     assert "9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914" not in project
     assert "04e2d94826f0dd6b46be3d7345b46cdd677db7ed" not in project
+    assert "1de7aa6c02cfcf212b2d21919defbb3d77383998" not in project
 
 
 def test_pinned_fixture_syncs_both_locked_environments_before_generation() -> None:
@@ -222,3 +223,16 @@ def test_released_render_hands_the_identity_capability_to_the_bot() -> None:
         assert "../.env" in bot.get("env_file", []) or "USER_IDENTITY_CAPABILITY" in names, (
             compose_name
         )
+
+
+def test_released_render_keeps_package_runtimes_out_of_its_lifespan_unit_tests() -> None:
+    """A product with an installed package keeps a green unit leg without Redis.
+
+    The template's lifespan tests replace package startup and shutdown with recording
+    stand-ins, so the reminders Redis consumer never starts in the generated CI unit leg.
+    """
+    fixture = template_pin.TEMPLATE_PIN.fixture_path()
+    timers_test = (fixture / "services/backend/tests/unit/test_job_timers.py").read_text()
+
+    for name in ("startup_packages", "shutdown_packages", "start_timer_loop"):
+        assert f'monkeypatch.setattr(lifespan_module, "{name}", ' in timers_test

@@ -21,10 +21,10 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.7.0` tag, object
-`138e542b7ae187bb1037aafc3d55b1745fb5a152`, which dereferences to
-`1de7aa6c02cfcf212b2d21919defbb3d77383998`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.7.0` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.7.1` tag, object
+`b1c90af4d0daee59bd63146d7871d4c8bf63f24a`, which dereferences to
+`56da5c83cb8d011823ce2cb70345415b223b93ab`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.7.1` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`. The root `codegen-kit-tooling`
 dependency and its lock resolve the same commit.
 It represents the committed checkout: generated ignored `.env` and `TASK.md`
@@ -39,7 +39,9 @@ The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
 after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs, as since the
 kit's [0.6.3 release](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md).
 
-Kit core `2.1.0`, which this tag ships, adds two things a generated product now does:
+Kit core `2.1.0`, which this tag ships (introduced by `0.7.0`; `0.7.1` changes only the template's
+lifespan unit tests, so a product with an installed package passes its CI unit leg without Redis),
+adds two things a generated product now does:
 
 - **A core timer loop.** The backend fires the timers an installed package declares in its
   manifest, once per slot through the ordinary jobs path (`command_id`
@@ -65,7 +67,7 @@ verified QA user" below). `POST /jobs/fire` of `reminders.tick` with `X-Jobs-Cap
 
 This pin changes new-product scaffolding; it does not migrate deployed products.
 Existing products need a reviewed Copier update on a clean review branch:
-`copier update --defaults --trust --vcs-ref=0.7.0 --conflict=rej`. Preserve selected
+`copier update --defaults --trust --vcs-ref=0.7.1 --conflict=rej`. Preserve selected
 modules and owned application/spec/environment bytes, back up ignored real
 environment data through the product's restricted procedure, and compare its
 bytes locally without exposing credentials. Read back answers/source, tooling
@@ -79,7 +81,9 @@ merge and image publication. Copier keeps the product-owned
 `USER_IDENTITY_CAPABILITY` has to be added to the preserved `.env` files. No bulk updater or remote
 workflow patch exists. The immutable
 [release notes](https://github.com/vladmesh/codegen-product-kit/blob/1de7aa6c02cfcf212b2d21919defbb3d77383998/docs/releases/0.7.0.md)
-describe this boundary and the update steps. External action execution, remote authentication and
+describe this boundary and the update steps; the
+[0.7.1 notes](https://github.com/vladmesh/codegen-product-kit/blob/56da5c83cb8d011823ce2cb70345415b223b93ab/docs/releases/0.7.1.md)
+add the test fix a `0.7.0` product with an installed package takes. External action execution, remote authentication and
 production deployment are outside the nonconnecting validation boundary.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
