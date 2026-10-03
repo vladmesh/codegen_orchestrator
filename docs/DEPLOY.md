@@ -918,7 +918,10 @@ distributions and fails the `Required CI Gate` on:
 
 - **drift** — an installed distribution the lock does not pin, a pinned one that is missing, or one
   at another version, each named with the image, the package and both versions. Only `pip`,
-  `setuptools`, `wheel` and the service's own package are ignored;
+  `setuptools`, `wheel` and the service's own package are ignored. A lock line pinned to a VCS URL
+  at a full commit (langgraph's `codegen-kit-tooling`) is compared by provenance instead: the
+  installed distribution's PEP 610 `direct_url.json` must name the same repository URL and commit,
+  and missing provenance, another URL or another commit is drift;
 - **a stale lock** — a `pyproject.toml` requirement, followed through every installed distribution's
   own requirements and extras, that the installed (that is, locked) set does not satisfy.
 

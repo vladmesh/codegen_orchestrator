@@ -548,6 +548,13 @@ class TestCreateTaskInstallsOnlyCatalogPackages:
             "Install with `kit add reminders --wheel dist/reminders.whl`.",
             "Install with `kit add --wheel /tmp/build/out reminders`.",
             "Copy codegen_kit_reminders-0.4.0-py3-none-any.whl into the product and install it.",
+            # Spellings the pinned kit CLI accepts for its wheel option (argparse
+            # abbreviations and `=`); the guard parses them with that very parser.
+            'Run `kit add reminders --wh "$REMINDERS_WHEEL"`.',
+            "Run `kit add reminders --w /tmp/build/out`.",
+            "Run `kit add reminders --wheel=/tmp/build/out`.",
+            "Run `kit add reminders --whe=/tmp/build/out`.",
+            "Run kit add --wh /tmp/build/out reminders from the product root.",
         ],
     )
     async def test_a_wheel_or_built_artifact_is_refused(self, mock_api, description):
@@ -555,6 +562,33 @@ class TestCreateTaskInstallsOnlyCatalogPackages:
 
         assert "must not install from a wheel file or a built artifact" in result["error"]
         mock_api.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("description", "reason"),
+        [
+            ("Run `kit add 'reminders`.", "cannot be split into arguments"),
+            ("Run `kit add reminders --wheel`.", "is not a command the kit accepts"),
+            ("Run `kit add reminders --catalog x`.", "is not a command the kit accepts"),
+        ],
+    )
+    async def test_an_invocation_the_kit_would_not_accept_is_refused(
+        self, mock_api, description, reason
+    ):
+        result = await self._create(description)
+
+        assert reason in result["error"]
+        mock_api.create_task.assert_not_called()
+
+    def test_the_guard_parses_with_the_pinned_kit_cli(self):
+        """The wheel option is whatever the installed `kit` parser calls it."""
+        from framework.cli import _parser
+
+        from src.agents.architect.tools import kit_cli_parser
+
+        assert kit_cli_parser is _parser
+        parsed, _ = _parser().parse_known_args(["add", "reminders", "--wh", "x"])
+        assert parsed.wheel is not None
 
     @pytest.mark.asyncio
     async def test_installing_the_distribution_past_kit_add_is_refused(self, mock_api):

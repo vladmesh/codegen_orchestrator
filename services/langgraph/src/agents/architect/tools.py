@@ -34,9 +34,14 @@ any install from a wheel file or built artifact, so a plan installs only what
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import re
+import shlex
 from typing import Annotated
 
+from framework.cli import _parser as kit_cli_parser
 import httpx
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
@@ -61,39 +66,74 @@ def reset_task_chain() -> None:
     _last_task_id.clear()
 
 
-#: `kit add` and the token after it, wherever the command is written (`.venv/bin/kit add`).
-_KIT_ADD = re.compile(r"(?<![\w-])kit\s+add\b[ \t]*(?P<name>[^\s]*)")
-_NAME_EDGES = "`'\"*.,;:()[]<>"
-#: An install from something already built rather than resolved from the catalog.
-_ARTIFACT_INSTALL = re.compile(r"--wheel\b|[\w.+-]+\.whl\b", re.IGNORECASE)
+#: One `kit add` invocation, up to where a command written in prose ends: a closing
+#: backtick, a line end, a shell separator, a comma or parenthesis, or a full stop.
+_KIT_ADD = re.compile(r"(?<![\w-])kit\s+add\b(?P<arguments>(?:[^`\n;|&,().]|\.(?=\S))*)")
+#: A wheel file named anywhere, outside any `kit add` too.
+_WHEEL_FILE = re.compile(r"[\w.+-]+\.whl\b", re.IGNORECASE)
 #: A kit package distribution installed past `kit add`, e.g. `uv add codegen-kit-reminders`.
 _DISTRIBUTION_INSTALL = re.compile(
     r"\b(?:pip|uv)\b[^\n]*?\b(?:install|add)\b[^\n]*?\bcodegen[-_]kit[-_]", re.IGNORECASE
 )
+_ARTIFACT_REFUSAL = (
+    "a kit package is installed only as `kit add <catalog name>`, which resolves the "
+    "release from the kit catalog itself; the task must not install from a wheel "
+    "file or a built artifact (`--wheel`, `.whl`)"
+)
+
+
+def _kit_add_arguments(arguments: str) -> argparse.Namespace | str:
+    """One invocation as the pinned kit CLI parses it, or why it cannot be parsed.
+
+    The parser is the kit's own (`framework.cli._parser`), so the guard accepts exactly
+    the spellings the installed `kit` accepts, abbreviations such as `--wh` included.
+    """
+    try:
+        tokens = shlex.split(arguments)
+    except ValueError as error:
+        return f"`kit add{arguments}` cannot be split into arguments ({error})"
+    try:
+        with contextlib.redirect_stderr(io.StringIO()) as complaint:
+            parsed, _rest = kit_cli_parser().parse_known_args(["add", *tokens])
+    except SystemExit:
+        lines = complaint.getvalue().strip().splitlines()
+        reason = lines[-1] if lines else "invalid"
+        return f"`kit add{arguments}` is not a command the kit accepts ({reason})"
+    return parsed
 
 
 def package_install_refusal(text: str, catalog: list[str] | None) -> str | None:
     """Why a task's text may not install the package it names, or `None` when it may.
 
-    A package is installed only as `kit add <name>` with `<name>` in the live catalog
-    the run was briefed with (`None`: the catalog was unavailable, so nothing is
-    installable), and never from a wheel file or a built artifact. Text that installs
-    nothing passes.
+    A planning lint that keeps the task on the catalog route, not a security boundary.
+    Each `kit add` invocation is tokenised with `shlex` and parsed by the pinned kit's
+    own CLI parser: it is refused when it sets the wheel option (in any spelling the
+    parser accepts) or names a package outside the live catalog the run was briefed
+    with (`None`: the catalog was unavailable, so nothing is installable). A wheel file
+    named anywhere and a pip or uv install of a kit distribution are refused too. Text
+    that installs nothing passes. A command assembled from shell variables or aliases,
+    which the parser never sees, is out of its reach.
     """
-    if _ARTIFACT_INSTALL.search(text):
-        return (
-            "a kit package is installed only as `kit add <catalog name>`, which resolves the "
-            "release from the kit catalog itself; the task must not install from a wheel "
-            "file or a built artifact (`--wheel`, `.whl`)"
-        )
+    if _WHEEL_FILE.search(text):
+        return _ARTIFACT_REFUSAL
     if _DISTRIBUTION_INSTALL.search(text):
         return (
             "a kit package is installed only as `kit add <catalog name>`, not by installing "
             "its distribution with pip or uv"
         )
-    names = [match.group("name").strip(_NAME_EDGES) for match in _KIT_ADD.finditer(text)]
-    if not names:
+    invocations = [match.group("arguments") for match in _KIT_ADD.finditer(text)]
+    if not invocations:
         return None
+    names = []
+    for arguments in invocations:
+        parsed = _kit_add_arguments(arguments)
+        if isinstance(parsed, str):
+            return (
+                f"{parsed}; write the install as `kit add <catalog name>` in backticks, on its own"
+            )
+        if parsed.wheel is not None:
+            return _ARTIFACT_REFUSAL
+        names.append(parsed.name)
     if catalog is None:
         return (
             "the kit package catalog was unavailable when this plan started, so no package "

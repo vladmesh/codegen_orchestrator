@@ -175,23 +175,79 @@ def test_a_lock_line_that_is_not_an_exact_pin_refuses_the_lock(line):
         locks.parse_lock(f"# header\n{line}\n", ENVIRONMENT)
 
 
-_KIT_URL = "git+https://github.com/vladmesh/codegen-product-kit.git@" + "1" * 40
+_KIT_REPO = "https://github.com/vladmesh/codegen-product-kit.git"
+_KIT_COMMIT = "1" * 40
+_KIT_URL = f"git+{_KIT_REPO}@{_KIT_COMMIT}"
 _KIT_PIN = f"codegen-kit-tooling @ {_KIT_URL}\n    # via demo-service\n"
+_KIT_PYPROJECT = PYPROJECT.replace(
+    '"httpx>=0.27.0"', f'"httpx>=0.27.0", "codegen-kit-tooling @ {_KIT_URL}"'
+)
+
+
+def _vcs_install(url=_KIT_REPO, commit=_KIT_COMMIT, version="0.1.0"):
+    """The kit tooling as pip records a VCS install: PEP 610 `direct_url.json`."""
+    return {
+        **_dist("codegen-kit-tooling", version),
+        "direct_url": {
+            "url": url,
+            "vcs_info": {"vcs": "git", "commit_id": commit, "requested_revision": commit},
+        },
+    }
 
 
 def test_a_vcs_pin_at_a_full_commit_is_an_exact_pin():
-    """The kit tooling is pinned by commit: the lock records the URL, the image its version."""
-    pyproject = PYPROJECT.replace(
-        '"httpx>=0.27.0"', f'"httpx>=0.27.0", "codegen-kit-tooling @ {_KIT_URL}"'
-    )
+    """The lock records the URL at a commit; the image passes on matching provenance."""
     lock = LOCK + _KIT_PIN
 
     assert locks.parse_lock(lock, ENVIRONMENT)["codegen-kit-tooling"] == _KIT_URL
-    assert locks.check_lock_against_pyproject("demo", lock, pyproject, ENVIRONMENT) == []
-    assert (
-        locks.check_image("demo", lock, pyproject, _image(_dist("codegen-kit-tooling", "0.1.0")))
-        == []
-    )
+    assert locks.check_lock_against_pyproject("demo", lock, _KIT_PYPROJECT, ENVIRONMENT) == []
+    assert locks.check_image("demo", lock, _KIT_PYPROJECT, _image(_vcs_install())) == []
+
+
+@pytest.mark.parametrize(
+    ("installed", "drifted"),
+    [
+        pytest.param(
+            _dist("codegen-kit-tooling", "0.1.0"),
+            f"codegen-kit-tooling 0.1.0 is installed without VCS provenance, but "
+            f"requirements.lock pins {_KIT_URL}",
+            id="no-direct-url",
+        ),
+        pytest.param(
+            _vcs_install(commit="2" * 40),
+            f"codegen-kit-tooling is installed from git+{_KIT_REPO}@{'2' * 40}, but "
+            f"requirements.lock pins {_KIT_URL}",
+            id="another-commit",
+        ),
+        pytest.param(
+            _vcs_install(url="https://github.com/someone/fork.git"),
+            f"codegen-kit-tooling is installed from git+https://github.com/someone/fork.git@"
+            f"{_KIT_COMMIT}, but requirements.lock pins {_KIT_URL}",
+            id="another-url",
+        ),
+        pytest.param(
+            {
+                **_dist("codegen-kit-tooling", "999.0.0"),
+                "direct_url": {"url": "https://files.example/codegen_kit_tooling-999.0.0.whl"},
+            },
+            f"codegen-kit-tooling 999.0.0 is installed without VCS provenance, but "
+            f"requirements.lock pins {_KIT_URL}",
+            id="index-or-archive-release",
+        ),
+    ],
+)
+def test_a_commit_pin_installed_from_anywhere_else_is_drift(installed, drifted):
+    problems = locks.check_image("demo", LOCK + _KIT_PIN, _KIT_PYPROJECT, _image(installed))
+
+    assert f"demo: {drifted}" in problems
+    # The pyproject's URL requirement is not satisfied by that install either.
+    assert any("pyproject.toml requires codegen-kit-tooling @" in p for p in problems), problems
+
+
+def test_the_probe_reads_pep_610_provenance():
+    assert locks.vcs_source(_vcs_install()["direct_url"]) == _KIT_URL
+    assert locks.vcs_source({"url": "file:///tmp/x", "dir_info": {}}) is None
+    assert locks.vcs_source(None) is None
 
 
 def test_a_vcs_pin_still_fails_when_missing_from_the_image():
@@ -246,9 +302,16 @@ def test_the_probe_of_this_interpreter_reads_its_own_distributions():
     output = subprocess.run(
         [sys.executable, "-c", locks.PROBE], capture_output=True, text=True, check=True
     ).stdout
-    names = {entry["name"].lower() for entry in json.loads(output)["distributions"]}
+    distributions = json.loads(output)["distributions"]
+    names = {entry["name"].lower() for entry in distributions}
 
     assert "packaging" in names
+    # The kit tooling is a VCS install here too, and the probe carries its provenance.
+    (tooling,) = [entry for entry in distributions if entry["name"] == "codegen-kit-tooling"]
+    lock = (ROOT / "services" / "langgraph" / "requirements.lock").read_text()
+    assert locks.parse_lock(lock, ENVIRONMENT)["codegen-kit-tooling"] == locks.vcs_source(
+        tooling["direct_url"]
+    )
 
 
 # --- the tree ---------------------------------------------------------------

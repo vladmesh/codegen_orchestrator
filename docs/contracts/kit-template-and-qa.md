@@ -168,10 +168,14 @@ package's name, summary, capabilities, the settings it asks for and its required
 the rule that a capability is a package only when a listed package covers it. A failed read
 (transport, status, YAML or validation) never falls back to an older or hard-coded list: the block
 says the catalog is unavailable and that no package can be planned in that run. `create_task`
-enforces the same boundary on what the plan writes: a `kit add <name>` whose name the briefed
-catalog does not list, any `kit add` while it was unavailable, and any install from a wheel file
-or built artifact (`--wheel`, `.whl`) or of a kit distribution through pip or uv are refused with
-the reason, which the architect reads and repairs. So releasing a new package, or a new version of
+enforces the same boundary on what the plan writes. Each `kit add` invocation in a task is split
+with `shlex` and parsed by the pinned kit's own CLI parser (`framework.cli._parser`), so the check
+accepts exactly what the installed `kit` accepts: an invocation that sets the wheel option in any
+spelling that parser takes (`--wheel`, `--wh`, `--wheel=…`), names a package the briefed catalog
+does not list, cannot be parsed, or comes while the catalog was unavailable is refused, as is a
+`.whl` file named anywhere or a kit distribution installed through pip or uv. The architect reads
+the reason and repairs the task. It is a planning lint that keeps task text on the catalog route,
+not a security boundary: a command assembled from shell variables or aliases is beyond it. So releasing a new package, or a new version of
 one, needs no orchestrator change: it is plannable once the kit's catalog lists it.
 
 The orchestrator states this recipe to the engineering worker in
