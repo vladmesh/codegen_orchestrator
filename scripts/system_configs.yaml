@@ -233,17 +233,12 @@
 - key: deploy.max_deploy_retries
   value: 3
   category: deploy
-  description: "Max deploy failures before story is marked failed"
-
-- key: deploy.deploy_retry_ttl
-  value: 86400
-  category: deploy
-  description: "Redis TTL for deploy retry counter in seconds (24 hours)"
+  description: "Max deploy failures since the story's last successful deploy before it is marked failed"
 
 - key: deploy.deploy_lock_ttl
   value: 3600
   category: deploy
-  description: "TTL for deploy lock in seconds (1 hour)"
+  description: "TTL for the project deploy lock in seconds (1 hour); a deploy that outlives it stops at its next write (deploy_lock_lost)"
 
 # --- engineering ---
 - key: engineering.worker_slots

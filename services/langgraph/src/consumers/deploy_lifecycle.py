@@ -14,6 +14,7 @@ from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.deployment_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 
 from ..clients.api import api_client
+from ..deploy_fence import DeployFence, DeployFenceLost, DeployWrite
 from ..runtime_identity import SERVICE_BASE_DIR
 from ._live_work import live_work_settled, live_work_unsettled
 
@@ -27,6 +28,7 @@ async def process_lifecycle_action(
     project_id: str,
     project_name: str,
     server_handle: str,
+    fence: DeployFence,
 ) -> dict:
     """Execute a stop or undeploy action via SSH on the application's own server.
 
@@ -75,6 +77,7 @@ async def process_lifecycle_action(
             known_hosts=None,
             client_keys=[key],
         ) as conn:
+            await fence.ensure_held(DeployWrite.REMOTE_EXECUTION)
             result = await conn.run(cmd, check=False, input=remote_input)
 
             if result.exit_status != 0:
@@ -114,6 +117,8 @@ async def process_lifecycle_action(
                 }
             )
 
+    except DeployFenceLost:
+        raise
     except Exception as e:
         logger.error(
             "deploy_lifecycle_exception",

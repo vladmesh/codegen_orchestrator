@@ -32,6 +32,7 @@ from shared.redis import RedisStreamClient
 from ..clients.api import api_client
 from ..clients.product_settings import GeneratedServiceSettingsClient
 from ..clients.users_grant import GeneratedServiceGrantClient
+from ..deploy_fence import DeployFence, DeployWrite
 from ._events import publish_callback_event
 from ._live_work import live_work_settled, live_work_unsettled
 
@@ -41,7 +42,7 @@ _USERS_GRANT_CAPABILITY = "USERS_GRANT_CAPABILITY"
 _SETTINGS_WRITE_CAPABILITY = "SETTINGS_WRITE_CAPABILITY"  # noqa: S105
 
 
-async def _handle_smoke_failure(
+async def _handle_smoke_failure(  # noqa: PLR0913
     *,
     result: dict,
     smoke_result: dict,
@@ -53,6 +54,7 @@ async def _handle_smoke_failure(
     story_id: str,
     redis: RedisStreamClient,
     msg: DeployMessage,
+    fence: DeployFence,
 ) -> dict:
     """Handle deploy success with smoke test failure.
 
@@ -79,6 +81,7 @@ async def _handle_smoke_failure(
         error_details=smoke_details,
         deploy_fix_attempt=msg.deploy_fix_attempt,
     )
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{task_id}",
         json={
@@ -120,6 +123,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
     story_id: str,
     redis: RedisStreamClient,
     msg: DeployMessage,
+    fence: DeployFence,
     application_id: int | None = None,
     grant_intent: GrantIntent | None = None,
     temporary_access_grant: TemporaryAccessGrantDTO | None = None,
@@ -131,6 +135,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
     so dispatcher can hand off to QA.
     """
     if grant_intent is not None:
+        await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
         failure = await _apply_grant_intent(
             task_id=task_id,
             project_id=project_id,
@@ -150,9 +155,11 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 reason=failure,
                 application_id=application_id,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
+                fence=fence,
             )
 
     if temporary_access_grant is not None and temporary_access_operation is not None:
+        await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
         failure = await _apply_temporary_access_operation(
             task_id=task_id,
             project_id=project_id,
@@ -172,6 +179,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 reason=failure,
                 application_id=application_id,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
+                fence=fence,
             )
 
     if temporary_access_operation is not None:
@@ -197,6 +205,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
             story_id=story_id,
             deployed_url=result["deployed_url"],
             secret_values=result.get("secret_values", {}),
+            fence=fence,
         )
         failures = settings_seed_failure_kinds(settings_seed)
         if failures:
@@ -211,6 +220,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 application_id=application_id,
                 settings_seed=settings_seed,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
+                fence=fence,
             )
 
     logger.info(
@@ -228,6 +238,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
         settings_seed=settings_seed,
         deploy_fix_attempt=msg.deploy_fix_attempt,
     )
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{task_id}",
         json={
@@ -379,6 +390,7 @@ async def _seed_initial_settings(
     story_id: str,
     deployed_url: str,
     secret_values: dict,
+    fence: DeployFence,
 ) -> list[SettingSeedOutcome]:
     """Write the confirmed brief's typed settings into the deployed product.
 
@@ -434,6 +446,7 @@ async def _seed_initial_settings(
             for setting in settings
         ]
 
+    await fence.ensure_held(DeployWrite.PRODUCT_SETTINGS)
     proofs = await GeneratedServiceSettingsClient(deployed_url).seed_and_resolve(
         settings, capability=capability
     )
@@ -478,10 +491,12 @@ async def _handle_owner_access_failure(  # noqa: PLR0913
     reason: str,
     application_id: int | None,
     deploy_fix_attempt: int,
+    fence: DeployFence,
 ) -> dict:
     """Keep a grant/readback failure retryable without disclosing credentials."""
     error_msg = f"Deployed service did not verify generated access: {reason}"
     logger.warning("deploy_access_proof_failed", task_id=task_id, reason=reason)
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{task_id}",
         json={
@@ -525,6 +540,7 @@ async def _handle_settings_seed_failure(  # noqa: PLR0913
     application_id: int | None,
     settings_seed: list[SettingSeedOutcome],
     deploy_fix_attempt: int,
+    fence: DeployFence,
 ) -> dict:
     """The application is up and a confirmed setting did not arrive in it.
 
@@ -556,6 +572,7 @@ async def _handle_settings_seed_failure(  # noqa: PLR0913
         task_id=task_id,
         failures=[failure.value for failure in failures],
     )
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{task_id}",
         json={

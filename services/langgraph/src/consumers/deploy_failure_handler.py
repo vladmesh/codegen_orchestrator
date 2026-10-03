@@ -17,13 +17,14 @@ from shared.contracts.queues.deploy import DeployOutcome
 from shared.redis import RedisStreamClient
 
 from ..clients.api import api_client
+from ..deploy_fence import DeployFence, DeployWrite
 from ._events import publish_callback_event
 from ._live_work import live_work_unsettled
 
 logger = structlog.get_logger(__name__)
 
 
-async def _handle_deploy_failure(
+async def _handle_deploy_failure(  # noqa: PLR0913
     *,
     task_id: str,
     project_id: str,
@@ -32,6 +33,7 @@ async def _handle_deploy_failure(
     callback_stream: str,
     telegram_chat_id: str,
     redis: RedisStreamClient,
+    fence: DeployFence,
     deploy_outcome: DeployOutcome = DeployOutcome.RETRY,
     deploy_fix_attempt: int = 0,
     missing_user_secrets: list[MissingUserSecret] | None = None,
@@ -51,6 +53,7 @@ async def _handle_deploy_failure(
         deploy_fix_attempt=deploy_fix_attempt,
         missing_user_secrets=missing_user_secrets or [],
     )
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{task_id}",
         json={

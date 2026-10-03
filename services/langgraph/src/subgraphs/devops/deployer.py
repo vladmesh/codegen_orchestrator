@@ -21,6 +21,7 @@ from shared.contracts.queues.deploy import DeployOutcome
 from shared.diagnostics import redact_diagnostic
 
 from ...clients.api import api_client
+from ...deploy_fence import DeployFence, DeployFenceLost, DeployWrite
 from ...nodes.base import FunctionalNode
 from ...runtime_identity import project_spec_runtime_slug
 from .deploy_workflow import require_backend_workflow
@@ -107,6 +108,7 @@ async def _create_deployment_record(
     server_handle: str,
     port: int,
     deployment_info: dict,
+    deploy_fence: DeployFence,
     deployed_sha: str | None = None,
     diagnostic_secrets: Iterable[str] = (),
 ) -> int | None:
@@ -117,6 +119,7 @@ async def _create_deployment_record(
     Returns:
         application_id if successfully resolved, None otherwise.
     """
+    await deploy_fence.ensure_held(DeployWrite.DEPLOYMENT_RECORD)
     try:
         # Find existing Application (created during allocation)
         application_id = None
@@ -180,7 +183,7 @@ def _encode_deploy_payload(
     return dotenv_b64
 
 
-async def _write_deploy_secrets(
+async def _write_deploy_secrets(  # noqa: PLR0913
     github_client: GitHubAppClient,
     owner: str,
     repo: str,
@@ -190,6 +193,8 @@ async def _write_deploy_secrets(
     dotenv_b64: str,
     ssh_key: str,
     ssh_user: str,
+    *,
+    deploy_fence: DeployFence,
     diagnostic_secrets: Iterable[str] = (),
 ) -> bool:
     """Write deployment secrets to GitHub repository for deploy.yml workflow."""
@@ -212,6 +217,7 @@ async def _write_deploy_secrets(
         **registry_secrets,
     }
 
+    await deploy_fence.ensure_held(DeployWrite.GITHUB_SECRETS)
     try:
         count = await github_client.set_repository_secrets(owner, repo, secrets_map)
         logger.info(
@@ -245,6 +251,7 @@ class DeployerNode(FunctionalNode):
         owner: str,
         repo: str,
         dispatch_time: datetime,
+        deploy_fence: DeployFence,
         ref: str = "main",
         head_sha: str | None = None,
         deploy_run_id: str | None = None,
@@ -274,7 +281,7 @@ class DeployerNode(FunctionalNode):
 
             # A rerun restarts the same external effect, so it crosses the same
             # boundary and asks the same question first.
-            claim = await self._claim_dispatch(deploy_run_id)
+            claim = await self._claim_dispatch(deploy_run_id, deploy_fence)
             _require_live_lease(claim, datetime.now(UTC))
             await github.rerun_failed_jobs(owner, repo, run_id)
             await asyncio.sleep(3)
@@ -289,10 +296,10 @@ class DeployerNode(FunctionalNode):
             logger.info("deploy_rerun_passed", run_id=run_id)
             return run_info
 
-        except DeployDispatchWithdrawnError:
-            # The run was called off before the rerun was requested. Swallowing
-            # it here would report "rerun not possible" and let the caller retry
-            # an effect somebody already withdrew.
+        except (DeployDispatchWithdrawnError, DeployFenceLost):
+            # The run was called off, or lost its project's deploy lock, before
+            # the rerun was requested. Swallowing it here would report "rerun not
+            # possible" and let the caller retry an effect it may not make.
             raise
         except (RuntimeError, TimeoutError) as e:
             if type(e).__name__ in _CANCELLATION_ERRORS:
@@ -313,14 +320,21 @@ class DeployerNode(FunctionalNode):
         owner: str,
         repo: str,
         tag: str,
+        deploy_fence: DeployFence,
         diagnostic_secrets: Iterable[str] = (),
     ) -> Exception | None:
         """Drop the pin tag whatever the run did. A leftover tag is litter in the user's repo.
 
         Returns the failure instead of raising, so cleanup never masks the exception
         the run itself is already propagating. The caller turns a surviving tag into
-        a refused deploy.
+        a refused deploy, and a lost deploy lock into a lost deploy: the tag of a
+        commit is shared with any other deploy of that commit, so a deploy that no
+        longer holds the lock leaves it to the one that does.
         """
+        try:
+            await deploy_fence.ensure_held(DeployWrite.WORKFLOW_PIN_TAG)
+        except DeployFenceLost as lost:
+            return lost
         try:
             await asyncio.shield(github.delete_ref(owner, repo, f"tags/{tag}"))
         except Exception as e:
@@ -336,7 +350,12 @@ class DeployerNode(FunctionalNode):
         return None
 
     async def _fence_active_deploys(
-        self, github: GitHubAppClient, owner: str, repo: str, project_id: str
+        self,
+        github: GitHubAppClient,
+        owner: str,
+        repo: str,
+        project_id: str,
+        deploy_fence: DeployFence,
     ) -> list[int]:
         """Stop every deploy run that could still write the payload this one replaced.
 
@@ -353,6 +372,7 @@ class DeployerNode(FunctionalNode):
         the deployed service; this only shortens the wait. An unproven stop
         refuses the deploy rather than reporting a removal it cannot claim.
         """
+        await deploy_fence.ensure_held(DeployWrite.WORKFLOW_FENCE)
         try:
             fenced = await github.fence_workflow(owner, repo, DEPLOY_WORKFLOW)
         except Exception as e:
@@ -379,6 +399,7 @@ class DeployerNode(FunctionalNode):
         repo: str,
         deployed_commit_sha: str,
         run_id: str | None,
+        deploy_fence: DeployFence,
         diagnostic_secrets: Iterable[str] = (),
     ) -> tuple[dict, bool]:
         """Run deploy.yml pinned to the deployed commit. Returns (run_info, was_rerun).
@@ -399,11 +420,12 @@ class DeployerNode(FunctionalNode):
             # Inside the cleanup guard: an interrupted create can still have reached
             # GitHub, and a tag applied but not tracked is exactly the litter case.
             if pin_tag:
+                await deploy_fence.ensure_held(DeployWrite.WORKFLOW_PIN_TAG)
                 await github.create_or_reset_tag(owner, repo, pin_tag, deployed_commit_sha)
 
             # Last thing before the deploy leaves the system. After this the run
             # exists on GitHub Actions and can only be stopped there.
-            claim = await self._claim_dispatch(run_id)
+            claim = await self._claim_dispatch(run_id, deploy_fence)
 
             # Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
@@ -438,6 +460,7 @@ class DeployerNode(FunctionalNode):
                     owner,
                     repo,
                     dispatch_time,
+                    deploy_fence,
                     ref,
                     deployed_commit_sha or None,
                     run_id,
@@ -449,9 +472,11 @@ class DeployerNode(FunctionalNode):
         finally:
             if pin_tag:
                 cleanup_error = await self._remove_pin_tag(
-                    github, owner, repo, pin_tag, diagnostic_secrets
+                    github, owner, repo, pin_tag, deploy_fence, diagnostic_secrets
                 )
 
+        if isinstance(cleanup_error, DeployFenceLost):
+            raise cleanup_error
         if cleanup_error is not None:
             raise DeployPinTagLeakedError(
                 f"deploy pin tag {pin_tag} survived in {owner}/{repo}: {cleanup_error}"
@@ -498,10 +523,13 @@ class DeployerNode(FunctionalNode):
         run = await api_client.get(f"runs/{run_id}")
         return run.get("status") == "cancelled"
 
-    async def _claim_dispatch(self, run_id: str | None) -> DeployDispatchClaim | None:
+    async def _claim_dispatch(
+        self, run_id: str | None, deploy_fence: DeployFence
+    ) -> DeployDispatchClaim | None:
         """Take the dispatch boundary, or refuse to cross it.
 
-        Called immediately before every call that starts work on GitHub Actions.
+        Called immediately before every call that starts work on GitHub Actions,
+        so it is also where a dispatch or rerun checks the project deploy lock.
         A plain read of the run status cannot do this job: between reading it and
         dispatching, a revoke can cancel the run, see no Actions run to fence,
         clear the value and finish, and only then does this deploy write the
@@ -511,7 +539,9 @@ class DeployerNode(FunctionalNode):
         Raises:
             DeployDispatchWithdrawnError: the run was stopped first. Nothing was
                 dispatched and nothing needs stopping outside.
+            DeployFenceLost: another deploy holds the project's deploy lock now.
         """
+        await deploy_fence.ensure_held(DeployWrite.WORKFLOW_DISPATCH)
         if not run_id:
             return None
         claim = await api_client.claim_deploy_dispatch(run_id)
@@ -677,6 +707,10 @@ class DeployerNode(FunctionalNode):
                     "errors": [f"No SSH key for server {server_handle}"],
                 }
 
+            # Every write below checks this deploy's claim on the project deploy
+            # lock immediately before it is made; everything above only reads.
+            deploy_fence = state["deploy_fence"]
+
             # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
             dotenv_b64 = _encode_deploy_payload(
                 {**non_secret_values, **secret_values}, project_id, diagnostic_secrets
@@ -702,6 +736,7 @@ class DeployerNode(FunctionalNode):
                 dotenv_b64=dotenv_b64,
                 ssh_key=ssh_key,
                 ssh_user=server.ssh_user,
+                deploy_fence=deploy_fence,
                 diagnostic_secrets=diagnostic_secrets,
             )
 
@@ -731,7 +766,7 @@ class DeployerNode(FunctionalNode):
             # removal by reading the deployed service.
             if state.get("fence_active_deploys"):
                 try:
-                    await self._fence_active_deploys(github, owner, repo, project_id)
+                    await self._fence_active_deploys(github, owner, repo, project_id, deploy_fence)
                 except DeployRefusedError as e:
                     logger.error(
                         "deploy_fence_unproven",
@@ -755,7 +790,13 @@ class DeployerNode(FunctionalNode):
             # 3. Dispatch deploy.yml and wait for it, pinned to the deployed commit
             try:
                 run_info, rerun = await self._dispatch_and_wait(
-                    github, owner, repo, deployed_commit_sha, run_id, diagnostic_secrets
+                    github,
+                    owner,
+                    repo,
+                    deployed_commit_sha,
+                    run_id,
+                    deploy_fence,
+                    diagnostic_secrets,
                 )
             except DeployDispatchWithdrawnError as e:
                 # Stopped before anything left the system. Reported as cancelled,
@@ -801,6 +842,7 @@ class DeployerNode(FunctionalNode):
                 service_name=project_name,
                 server_handle=server_handle,
                 port=port,
+                deploy_fence=deploy_fence,
                 deployment_info={
                     "repo_full_name": f"{owner}/{repo}",
                     "branch": "main",
@@ -842,6 +884,9 @@ class DeployerNode(FunctionalNode):
                     AIMessage(content=f"Deployment successful{suffix}! URL: {deployed_url}")
                 ],
             }
+
+        except DeployFenceLost:
+            raise
 
         except (RuntimeError, TimeoutError) as e:
             return self._workflow_failure(e, project_id, run_id, diagnostic_secrets)

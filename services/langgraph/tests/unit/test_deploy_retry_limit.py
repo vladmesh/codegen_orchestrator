@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.contracts.queues.deploy import DeployOutcome
+from tests.unit.factories import held_deploy_fence
 
 
 @pytest.fixture
@@ -41,6 +42,7 @@ async def test_deploy_failure_stores_retry_outcome(mock_redis, mock_api):
         callback_stream="",
         telegram_chat_id="12345",
         redis=mock_redis,
+        fence=held_deploy_fence(),
     )
 
     assert result["status"] == "failed"
@@ -62,6 +64,7 @@ async def test_deploy_failure_stores_give_up_outcome(mock_redis, mock_api):
         callback_stream="",
         telegram_chat_id="12345",
         redis=mock_redis,
+        fence=held_deploy_fence(),
         deploy_outcome=DeployOutcome.GIVE_UP,
     )
 
@@ -83,6 +86,7 @@ async def test_deploy_failure_stores_deploy_fix_attempt(mock_redis, mock_api):
         callback_stream="",
         telegram_chat_id="12345",
         redis=mock_redis,
+        fence=held_deploy_fence(),
         deploy_fix_attempt=2,
     )
 
@@ -104,6 +108,7 @@ async def test_deploy_failure_does_not_transition_story(mock_redis, mock_api):
         callback_stream="",
         telegram_chat_id="12345",
         redis=mock_redis,
+        fence=held_deploy_fence(),
     )
 
     # No Redis counter ops (dispatcher handles retry tracking now)

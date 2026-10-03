@@ -315,7 +315,12 @@ This changes no DTO, stream, schema, key format or released-worker upgrade proto
    deployed in `deployment_result`, and the service-deployment record carries the
    same.
 4. The deploy consumer records the dispatch boundary before GitHub Actions is
-   no longer safely stoppable, then writes its typed terminal result.
+   no longer safely stoppable, then writes its typed terminal result. **Every
+   deploy write is fenced by the project deploy lock**: the claim's holder token
+   is the deploy's `DeployFence`, checked immediately before each write, and a
+   deploy that no longer holds it ends `DEPLOY_LOCK_LOST` without the write. The
+   supervisor's retry bound counts the story's `supervisor_retry` deploy Runs
+   since its last successful deploy; it is durable and keeps no Redis state.
 5. The supervisor reads that typed result, creates QA work only with resolved
    repository criteria, and routes the typed QA outcome.
 6. A terminal owner notification is persisted before it is published to PO, and

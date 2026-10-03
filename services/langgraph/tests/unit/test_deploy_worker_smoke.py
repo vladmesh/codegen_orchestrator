@@ -21,7 +21,13 @@ from shared.contracts.dto.users_grant import (
 )
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome, DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
-from tests.unit.factories import make_project, make_repository, make_run, make_run_start
+from tests.unit.factories import (
+    held_deploy_fence,
+    make_project,
+    make_repository,
+    make_run,
+    make_run_start,
+)
 
 
 def test_deploy_job_is_thin_orchestrator_without_complexity_suppression():
@@ -344,7 +350,8 @@ async def test_unproven_cancellation_propagates_not_masked_as_failure(
     # Never patched the run into a terminal failed/give-up state.
     assert not [c for c in mock_api.patch.call_args_list if "failed" in str(c)]
     # Deploy lock released via atomic owner-fenced compare-and-delete.
-    mock_redis.redis.eval.assert_awaited_once()
+    releases = [c for c in mock_redis.redis.eval.await_args_list if "redis.call('DEL'" in c.args[0]]
+    assert len(releases) == 1
     mock_redis.redis.delete.assert_not_awaited()
 
 
@@ -405,9 +412,14 @@ async def test_result_shaped_deploy_error_under_teardown_fences_cleanup_without_
         }
     )
     mock_redis.redis.exists = AsyncMock(return_value=True)  # live:work:cancelled is set
-    mock_redis.redis.eval = AsyncMock(
-        side_effect=[1, 1, -1]
-    )  # live-work acquisition, deploy-lock release, atomic refusal
+    live_work_answers = iter([1, -1])  # live-work acquisition, atomic refusal
+
+    async def evaluate(script, numkeys, *keys_and_args):
+        if keys_and_args[:1] == ("deploy:proj-1:lock",):
+            return 1  # the deploy lock is held throughout, and released at the end
+        return next(live_work_answers)
+
+    mock_redis.redis.eval = AsyncMock(side_effect=evaluate)
     mock_redis.redis.zrem = AsyncMock()
     mock_redis.ack = AsyncMock()
 
@@ -446,6 +458,7 @@ async def test_build_subgraph_input_includes_smoke_result():
         head_sha="a" * 40,
         deployed_commit_sha="e" * 40,
         fence_active_deploys=False,
+        deploy_fence=held_deploy_fence(),
     )
     assert "smoke_result" in result, "smoke_result must be initialized in subgraph input"
     assert result["smoke_result"] is None

@@ -16,7 +16,7 @@ dev = [
     "ruff>=0.16,<0.17",
     "httpx",
     "respx>=0.21.1",
-    "fakeredis>=2.34.1",
+    "fakeredis[lua]>=2.34.1",
     "copier>=9.17.1",
     # The pinned kit's own tooling, at exactly the commit the vendored render
     # resolves (`shared/tests/fixtures/<pin>/pyproject.toml`). It is what

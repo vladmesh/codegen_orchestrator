@@ -166,6 +166,8 @@ def api_client():
     )
     # The API grants the delivery attempt on whatever record it holds.
     client.claims = ClaimsFromWrites(client)
+    # A story's deploy history, newest first; empty unless a test says otherwise.
+    client.list_runs.return_value = []
     return client
 
 
@@ -183,6 +185,32 @@ def redis_client():
     client._redis.set = AsyncMock()
     client._redis.delete = AsyncMock()
     return client
+
+
+def _supervisor_retries(count: int) -> list:
+    """The story's deploy Runs as the API lists them, newest first.
+
+    `count` supervisor retries since the story's last successful deploy: that
+    number, not a Redis counter, is what the retry bound reads.
+    """
+    retries = [
+        _make_run(
+            id=f"deploy-retry-{attempt}",
+            status=RunStatus.FAILED,
+            run_metadata={"triggered_by": "supervisor_retry", "attempt": attempt},
+            result={"deploy_outcome": DeployOutcome.RETRY.value},
+        )
+        for attempt in range(count, 0, -1)
+    ]
+    return [
+        *retries,
+        _make_run(
+            id="deploy-original",
+            status=RunStatus.FAILED,
+            run_metadata={"triggered_by": "pr_poll"},
+            result={"deploy_outcome": DeployOutcome.RETRY.value},
+        ),
+    ]
 
 
 class TestSuperviseDeployingStories:
@@ -827,7 +855,7 @@ class TestSuperviseDeployingStories:
         )
         api_client.create_run_if_absent.return_value = {}
         # First retry
-        redis_client._redis.incr.return_value = 1
+        api_client.list_runs.return_value = _supervisor_retries(0)
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -877,7 +905,7 @@ class TestSuperviseDeployingStories:
 
         assert result["tested"] == 1
         assert result["retried"] == 0
-        redis_client._redis.incr.assert_not_awaited()
+        api_client.list_runs.assert_not_awaited()
         api_client.create_run.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1200,7 +1228,7 @@ class TestSuperviseDeployingStories:
             result={"deploy_outcome": DeployOutcome.CANCELLED.value},
         )
         api_client.create_run_if_absent.return_value = {}
-        redis_client._redis.incr.return_value = 1
+        api_client.list_runs.return_value = _supervisor_retries(0)
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -1232,7 +1260,7 @@ class TestSuperviseDeployingStories:
             result={"deploy_outcome": DeployOutcome.IMAGES_NOT_PUBLISHED.value},
         )
         api_client.create_run_if_absent.return_value = {}
-        redis_client._redis.incr.return_value = 1
+        api_client.list_runs.return_value = _supervisor_retries(0)
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -1258,7 +1286,7 @@ class TestSuperviseDeployingStories:
             run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40},
             result={"deploy_outcome": DeployOutcome.CANCELLED.value},
         )
-        redis_client._redis.incr.return_value = 3
+        api_client.list_runs.return_value = _supervisor_retries(2)
 
         with patch("src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_deploying_stories(api_client, redis_client)
@@ -1338,8 +1366,8 @@ class TestSuperviseDeployingStories:
             result={"deploy_outcome": DeployOutcome.RETRY.value},
         )
         api_client.fail_story.return_value = {}
-        # Max retries hit
-        redis_client._redis.incr.return_value = 3  # default max is 3
+        # Max retries hit: this failure would be attempt 3, and the default max is 3
+        api_client.list_runs.return_value = _supervisor_retries(2)
 
         with patch("src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_deploying_stories(api_client, redis_client)
@@ -2914,14 +2942,14 @@ class TestSettingsSeedFailureRouting:
             },
         )
         api_client.create_run_if_absent.return_value = {}
-        redis_client._redis.incr.return_value = 1
+        api_client.list_runs.return_value = _supervisor_retries(0)
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["retried"] == 1
         assert result["tested"] == 0
         # The same bound as any other failing deploy, and the same commit.
-        redis_client._redis.incr.assert_awaited_once_with("deploy:retries:story-1")
+        api_client.list_runs.assert_awaited_once_with(run_type="deploy", story_id="story-1")
         deploy_calls = [
             c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
         ]
@@ -2965,7 +2993,7 @@ class TestSettingsSeedFailureRouting:
             disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
         )
         api_client.create_run_if_absent.return_value = {}
-        redis_client._redis.incr.return_value = 1
+        api_client.list_runs.return_value = _supervisor_retries(0)
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -3011,13 +3039,13 @@ class TestSettingsSeedFailureRouting:
             disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
         )
         api_client.create_run_if_absent.return_value = {}
-        redis_client._redis.incr.return_value = 1
+        api_client.list_runs.return_value = _supervisor_retries(0)
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["tested"] == 0
         assert result["retried"] == 1
-        redis_client._redis.incr.assert_awaited_once_with("deploy:retries:story-1")
+        api_client.list_runs.assert_awaited_once_with(run_type="deploy", story_id="story-1")
 
     @pytest.mark.asyncio
     async def test_reconciliation_routes_an_undeclared_seed_to_manifest_repair(
@@ -3054,7 +3082,7 @@ class TestSettingsSeedFailureRouting:
         assert result["redispatched"] == 1
         assert result["retried"] == 0
         api_client.fail_story.assert_not_awaited()
-        redis_client._redis.incr.assert_not_awaited()
+        api_client.list_runs.assert_not_awaited()
         eng_calls = [
             call
             for call in redis_client.publish_message.call_args_list
@@ -3091,14 +3119,14 @@ class TestSettingsSeedFailureRouting:
             disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
         )
         api_client.create_run_if_absent.return_value = {}
-        redis_client._redis.incr.return_value = 1
+        api_client.list_runs.return_value = _supervisor_retries(0)
 
         with patch("src.tasks.supervisor.deploy._reconciled_success_result", return_value=None):
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["retried"] == 1
         api_client.fail_story.assert_not_awaited()
-        redis_client._redis.incr.assert_awaited_once_with("deploy:retries:story-1")
+        api_client.list_runs.assert_awaited_once_with(run_type="deploy", story_id="story-1")
 
     @pytest.mark.asyncio
     async def test_a_spent_bound_fails_the_story_instead_of_looping(self, api_client, redis_client):
@@ -3117,8 +3145,9 @@ class TestSettingsSeedFailureRouting:
                 "settings_seed": [_seeded(SettingsSeedFailureKind.READBACK_MISMATCH)],
             },
         )
-        # `deploy.max_deploy_retries` is 3 in the unit-test config store.
-        redis_client._redis.incr.return_value = 3
+        # `deploy.max_deploy_retries` is 3 in the unit-test config store, and
+        # this failure would be the third attempt.
+        api_client.list_runs.return_value = _supervisor_retries(2)
 
         with patch(
             "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
@@ -3171,7 +3200,7 @@ class TestSettingsSeedFailureRouting:
         api_client.fail_story.assert_awaited_once_with("story-1")
         notify.assert_awaited_once()
         assert failure.value in notify.await_args.args[2]
-        redis_client._redis.incr.assert_not_awaited()
+        api_client.list_runs.assert_not_awaited()
         deploy_calls = [
             c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
         ]
@@ -3205,7 +3234,7 @@ class TestSettingsSeedFailureRouting:
         assert result["failed"] == 0
         assert result["retried"] == 0
         api_client.fail_story.assert_not_awaited()
-        redis_client._redis.incr.assert_not_awaited()
+        api_client.list_runs.assert_not_awaited()
         eng_calls = [
             call
             for call in redis_client.publish_message.call_args_list
@@ -3317,7 +3346,7 @@ class TestSettingsSeedFailureRouting:
         assert result["redispatched"] == 0
         assert result["retried"] == 0
         api_client.start_paid_run.assert_not_awaited()
-        redis_client._redis.incr.assert_not_awaited()
+        api_client.list_runs.assert_not_awaited()
         api_client.fail_story.assert_awaited_once_with("story-1")
         notify.assert_awaited_once()
         assert "key_not_declared,value_rejected" in notify.await_args.args[2] or (
@@ -3353,13 +3382,13 @@ class TestSettingsSeedFailureRouting:
             },
         )
         api_client.create_run_if_absent.return_value = {}
-        redis_client._redis.incr.return_value = 1
+        api_client.list_runs.return_value = _supervisor_retries(0)
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["retried"] == 1
         api_client.fail_story.assert_not_awaited()
-        redis_client._redis.incr.assert_awaited_once_with("deploy:retries:story-1")
+        api_client.list_runs.assert_awaited_once_with(run_type="deploy", story_id="story-1")
 
 
 _UNVERIFIED = {
@@ -3591,3 +3620,155 @@ class TestAQACapabilityGapIsNeverQuarantined:
         assert [check.name for check in event.qa_verification.unverified_checks] == [
             _UNVERIFIED["name"]
         ]
+
+
+class TestDeployRetryBound:
+    """The deploy retry bound is read from the story's deploy Runs, not from Redis.
+
+    `deploy.max_deploy_retries` is 3 in the unit-test config store: a failing
+    deploy is retried twice, and the third failure fails the story.
+    """
+
+    @staticmethod
+    def _failed(outcome: DeployOutcome = DeployOutcome.RETRY, **metadata):
+        return _make_run(
+            id="deploy-latest",
+            status=RunStatus.FAILED,
+            run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40, **metadata},
+            result={"deploy_outcome": outcome.value},
+        )
+
+    @staticmethod
+    def _published_deploys(redis_client) -> list:
+        return [
+            c[0][1] for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_count_survives_any_amount_of_time(self, api_client, redis_client):
+        """Two retries spent two days ago still count, past the old 24 h TTL.
+
+        A story at `max_deploy_retries - 1` that fails again is stopped.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        long_ago = datetime.now(UTC) - timedelta(days=2)
+        latest = self._failed(triggered_by="supervisor_retry", attempt=2)
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = latest
+        api_client.list_runs.return_value = [
+            latest,
+            _make_run(
+                id="deploy-retry-1",
+                status=RunStatus.FAILED,
+                run_metadata={"triggered_by": "supervisor_retry", "attempt": 1},
+                result={"deploy_outcome": DeployOutcome.RETRY.value},
+                created_at=long_ago,
+            ),
+            _make_run(
+                id="deploy-original",
+                status=RunStatus.FAILED,
+                run_metadata={"triggered_by": "pr_poll"},
+                result={"deploy_outcome": DeployOutcome.RETRY.value},
+                created_at=long_ago,
+            ),
+        ]
+
+        with patch(
+            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        assert result["retried"] == 0
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        assert "deploy retries exhausted (3)" in notify.await_args.args[2]
+        assert self._published_deploys(redis_client) == []
+        # Nothing of the bound lives in Redis any more.
+        assert redis_client._redis.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_retry_names_the_attempt_the_runs_count(self, api_client, redis_client):
+        from src.tasks.deploy_dispatch import deploy_run_id
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        latest = self._failed(triggered_by="supervisor_retry", attempt=1)
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = latest
+        api_client.list_runs.return_value = [latest, *_supervisor_retries(0)]
+        api_client.create_run_if_absent.return_value = {}
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 1
+        run_data = api_client.create_run_if_absent.call_args[0][0]
+        assert run_data["id"] == deploy_run_id("deploy-retry", "deploy-latest", "2")
+        assert run_data["run_metadata"]["triggered_by"] == "supervisor_retry"
+        assert run_data["run_metadata"]["attempt"] == 2
+        assert len(self._published_deploys(redis_client)) == 1
+        api_client.fail_story.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_successful_deploy_starts_a_new_episode(self, api_client, redis_client):
+        """Two retries before a success do not count against the next failure."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        latest = self._failed(triggered_by="pr_poll")
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = latest
+        api_client.list_runs.return_value = [
+            latest,
+            _make_run(
+                id="deploy-succeeded",
+                status=RunStatus.COMPLETED,
+                run_metadata={"triggered_by": "supervisor_retry", "attempt": 2},
+                result={"deploy_outcome": DeployOutcome.SUCCESS.value},
+            ),
+            *_supervisor_retries(1),
+        ]
+        api_client.create_run_if_absent.return_value = {}
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 1
+        run_data = api_client.create_run_if_absent.call_args[0][0]
+        assert run_data["run_metadata"]["attempt"] == 1
+        api_client.fail_story.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("spent", "retried"), [(0, True), (2, False)])
+    async def test_a_lost_deploy_lock_is_redeployed_under_the_bound(
+        self, api_client, redis_client, spent, retried
+    ):
+        """A deploy that stopped because another deploy held the lock goes round again.
+
+        It spends a retry like any other failed attempt, so a story that keeps
+        losing its lock stops at the same bound.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        latest = self._failed(DeployOutcome.DEPLOY_LOCK_LOST)
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = latest
+        api_client.list_runs.return_value = _supervisor_retries(spent)
+        api_client.create_run_if_absent.return_value = {}
+
+        with patch("src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock):
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        if retried:
+            assert result["retried"] == 1
+            assert len(self._published_deploys(redis_client)) == 1
+            api_client.fail_story.assert_not_awaited()
+        else:
+            assert result["failed"] == 1
+            assert self._published_deploys(redis_client) == []
+            api_client.fail_story.assert_awaited_once_with("story-1")

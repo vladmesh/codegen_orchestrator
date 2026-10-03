@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from uuid import uuid4
 
 import structlog
 
@@ -41,6 +40,7 @@ from shared.redis import RedisStreamClient
 
 from ..allocations import AllocationError
 from ..clients.api import api_client
+from ..deploy_fence import DeployFence, DeployFenceLost, DeployWrite
 from ..runtime_identity import project_runtime_slug
 from ..subgraphs.devops import create_devops_subgraph
 from ._base import start_worker, validate_queued_message
@@ -57,18 +57,6 @@ from .deploy_result_handler import (
 logger = structlog.get_logger(__name__)
 
 _config: ConfigStore | None = None
-
-_COMPARE_AND_DELETE_DEPLOY_LOCK = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('DEL', KEYS[1])
-end
-return 0
-"""
-
-
-async def _release_deploy_lock(redis: RedisStreamClient, lock_key: str, lock_token: str) -> None:
-    """Release only the lock lease acquired by this deploy invocation."""
-    await redis.redis.eval(_COMPARE_AND_DELETE_DEPLOY_LOCK, 1, lock_key, lock_token)
 
 
 def _deploy_lock_ttl() -> int:
@@ -172,7 +160,7 @@ async def _access_target_allocations(access: DeployAccessContext, min_ram_mb: in
 
 
 async def _record_infrastructure_wait(
-    task_id: str, project_id: str, error: AllocationError
+    task_id: str, project_id: str, error: AllocationError, fence: DeployFence
 ) -> dict:
     """Record a deploy that could not be placed, without blaming the project.
 
@@ -198,6 +186,7 @@ async def _record_infrastructure_wait(
         required_ram_mb=error.required_ram_mb,
         min_disk_mb=error.min_disk_mb,
     )
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{task_id}",
         json={
@@ -239,6 +228,7 @@ def _build_subgraph_input(
     head_sha: str,
     deployed_commit_sha: str,
     fence_active_deploys: bool,
+    deploy_fence: DeployFence,
 ) -> dict:
     """Build DevOps subgraph input from deploy job data."""
     if not head_sha:
@@ -259,6 +249,7 @@ def _build_subgraph_input(
         "head_sha": head_sha,
         "deployed_commit_sha": deployed_commit_sha,
         "fence_active_deploys": fence_active_deploys,
+        "deploy_fence": deploy_fence,
         "messages": [],
         "environment_contract": None,
         "resolution_outcome": None,
@@ -334,6 +325,7 @@ async def _handle_lifecycle_action(
     task_id: str,
     project_id: str,
     project: ProjectDTO,
+    fence: DeployFence,
 ) -> dict:
     """Handle stop/undeploy lifecycle actions — SSH only, no DevOps subgraph.
 
@@ -350,6 +342,7 @@ async def _handle_lifecycle_action(
         project_id=project_id,
         project_name=project_name,
         server_handle=application.server_handle,
+        fence=fence,
     )
     run_status = (
         RunStatus.COMPLETED if lifecycle_result["status"] == "success" else RunStatus.FAILED
@@ -364,6 +357,7 @@ async def _handle_lifecycle_action(
     }
     if lifecycle_result.get("error"):
         run_patch["error_message"] = lifecycle_result["error"]
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(f"runs/{task_id}", json=run_patch)
 
     # Update application status on success
@@ -374,6 +368,7 @@ async def _handle_lifecycle_action(
             if msg.action == DeployAction.UNDEPLOY
             else ApplicationStatus.STOPPED
         )
+        await fence.ensure_held(DeployWrite.APPLICATION_STATE)
         await api_client.patch(
             f"applications/{app_id}",
             json={"status": target_status.value},
@@ -417,6 +412,7 @@ class DeployTerminal:
 async def _deploy_failure_terminal(
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
     error_msg: str,
     *,
     deploy_outcome: DeployOutcome = DeployOutcome.RETRY,
@@ -434,28 +430,29 @@ async def _deploy_failure_terminal(
         deploy_outcome=deploy_outcome,
         deploy_fix_attempt=msg.deploy_fix_attempt,
         missing_user_secrets=missing_user_secrets,
+        fence=fence,
     )
     return DeployTerminal(response)
 
 
 async def _claim_deploy_job(
     msg: DeployMessage,
-    redis: RedisStreamClient,
-    lock_token: str | None = None,
+    fence: DeployFence,
 ) -> DeployTerminal | None:
-    """Acquire the project deploy lock and atomically move the run to RUNNING."""
+    """Acquire the project deploy lock and atomically move the run to RUNNING.
+
+    A deploy that did not get the lock records its own Run as cancelled without
+    the fence: it never held the lock, and that record is the only thing it writes.
+    """
     task_id = msg.task_id
     project_id = msg.project_id
-    lock_key = f"deploy:{project_id}:lock"
-    lock_token = lock_token or f"{task_id}:{uuid4().hex}"
 
-    acquired = await redis.redis.set(lock_key, lock_token, nx=True, ex=_deploy_lock_ttl())
-    if not acquired:
+    if not await fence.acquire(_deploy_lock_ttl()):
         logger.info(
             "deploy_lock_not_acquired",
             task_id=task_id,
             project_id=project_id,
-            lock_key=lock_key,
+            lock_key=fence.lock_key,
         )
         await api_client.patch(
             f"runs/{task_id}",
@@ -474,6 +471,7 @@ async def _claim_deploy_job(
             live_work_unsettled({"status": "cancelled", "reason": "deploy_lock_held"})
         )
 
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     start = await api_client.start_run(task_id)
     if not start.started:
         logger.info(
@@ -491,6 +489,7 @@ async def _resolve_deploy_access(
     run: Any,
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
 ) -> DeployAccessContext | DeployTerminal:
     """Validate durable grant references before any deploy side effect is attempted."""
     grant_intent = None
@@ -504,6 +503,7 @@ async def _resolve_deploy_access(
             return await _deploy_failure_terminal(
                 msg,
                 redis,
+                fence,
                 "grant intent is malformed",
                 deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
             )
@@ -515,6 +515,7 @@ async def _resolve_deploy_access(
             return await _deploy_failure_terminal(
                 msg,
                 redis,
+                fence,
                 "grant intent target does not match deploy message",
                 deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
             )
@@ -534,6 +535,7 @@ async def _resolve_deploy_access(
             return await _deploy_failure_terminal(
                 msg,
                 redis,
+                fence,
                 "temporary access operation is malformed",
                 deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
             )
@@ -551,6 +553,7 @@ async def _resolve_deploy_access(
             return await _deploy_failure_terminal(
                 msg,
                 redis,
+                fence,
                 f"temporary access grant {stored_temporary_access_grant} could not be read",
                 deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
             )
@@ -562,6 +565,7 @@ async def _resolve_deploy_access(
             return await _deploy_failure_terminal(
                 msg,
                 redis,
+                fence,
                 "temporary access target does not match deploy message",
                 deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
             )
@@ -577,6 +581,7 @@ async def _load_deploy_base(
     run: Any,
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
 ) -> DeployBaseContext | DeployTerminal:
     """Validate message/project/access facts that precede resource preparation."""
     if msg.action not in LIFECYCLE_ACTIONS and not msg.head_sha:
@@ -590,6 +595,7 @@ async def _load_deploy_base(
         return await _deploy_failure_terminal(
             msg,
             redis,
+            fence,
             error_msg,
             deploy_outcome=DeployOutcome.HEAD_SHA_MISSING,
         )
@@ -602,6 +608,7 @@ async def _load_deploy_base(
     project: ProjectDTO | None = await api_client.get_project(msg.project_id, **tg_kwargs)
     if not project:
         error_msg = f"Project {msg.project_id} not found"
+        await fence.ensure_held(DeployWrite.RUN_STATE)
         await api_client.patch(
             f"runs/{msg.task_id}",
             json={
@@ -614,13 +621,13 @@ async def _load_deploy_base(
         )
         return DeployTerminal(live_work_unsettled({"status": "failed", "error": error_msg}))
 
-    access = await _resolve_deploy_access(run, msg, redis)
+    access = await _resolve_deploy_access(run, msg, redis, fence)
     if isinstance(access, DeployTerminal):
         return access
 
     if msg.action in LIFECYCLE_ACTIONS:
         return DeployTerminal(
-            await _handle_lifecycle_action(msg, msg.task_id, msg.project_id, project)
+            await _handle_lifecycle_action(msg, msg.task_id, msg.project_id, project, fence)
         )
 
     return DeployBaseContext(project=project, access=access)
@@ -630,23 +637,28 @@ async def _allocate_deploy_resources(
     base: DeployBaseContext,
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
 ) -> tuple[dict, dict[str, str]] | DeployTerminal:
     """Resolve placement and effective environment for a normal deploy."""
     operation = base.access.temporary_access_operation
     try:
         alloc_result = await _allocate_resources(msg.project_id, base.project, access=base.access)
     except AllocationError as error:
-        return DeployTerminal(await _record_infrastructure_wait(msg.task_id, msg.project_id, error))
+        return DeployTerminal(
+            await _record_infrastructure_wait(msg.task_id, msg.project_id, error, fence)
+        )
     except AccessTargetUnresolvedError as error:
         logger.warning("temporary_access_target_unresolved", task_id=msg.task_id, error=str(error))
         return await _deploy_failure_terminal(
             msg,
             redis,
+            fence,
             str(error),
             deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
         )
 
     if isinstance(alloc_result, str):
+        await fence.ensure_held(DeployWrite.RUN_STATE)
         await api_client.patch(
             f"runs/{msg.task_id}",
             json={
@@ -660,7 +672,7 @@ async def _allocate_deploy_resources(
         return DeployTerminal(live_work_unsettled({"status": "failed", "error": alloc_result}))
 
     if operation is not None and not alloc_result:
-        return await _access_operation_without_deployment(base, msg, redis)
+        return await _access_operation_without_deployment(base, msg, redis, fence)
 
     try:
         env_overrides = _effective_env_overrides(base.project, msg.env_overrides)
@@ -668,6 +680,7 @@ async def _allocate_deploy_resources(
         return await _deploy_failure_terminal(
             msg,
             redis,
+            fence,
             str(error),
             deploy_outcome=DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
         )
@@ -678,6 +691,7 @@ async def _access_operation_without_deployment(
     base: DeployBaseContext,
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
 ) -> DeployTerminal:
     """Settle a temporary-access operation whose target is no longer deployed.
 
@@ -701,9 +715,11 @@ async def _access_operation_without_deployment(
         return await _deploy_failure_terminal(
             msg,
             redis,
+            fence,
             f"application {grant.target_application_id} has no deployment to grant access to",
             deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
         )
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{msg.task_id}",
         json={
@@ -730,6 +746,7 @@ async def _maybe_skip_redundant_deploy(
     base: DeployBaseContext,
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
     allocated_resources: dict,
     env_overrides: dict[str, str],
 ) -> DeployTerminal | None:
@@ -757,6 +774,7 @@ async def _maybe_skip_redundant_deploy(
         head_sha=msg.head_sha,
         reason=reason.value,
     )
+    await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{msg.task_id}",
         json={
@@ -785,6 +803,7 @@ async def _precheck_deploy(
     base: DeployBaseContext,
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
     allocated_resources: dict,
 ) -> DeployTerminal | None:
     """Run the deploy pre-check, including the existing create→feature probe fallback."""
@@ -807,7 +826,7 @@ async def _precheck_deploy(
         return None
 
     logger.warning("deploy_precheck_failed", task_id=msg.task_id, error=precheck_error)
-    return await _deploy_failure_terminal(msg, redis, precheck_error)
+    return await _deploy_failure_terminal(msg, redis, fence, precheck_error)
 
 
 async def _prepare_deploy(
@@ -815,9 +834,10 @@ async def _prepare_deploy(
     msg: DeployMessage,
     job_data: dict,
     redis: RedisStreamClient,
+    fence: DeployFence,
 ) -> PreparedDeploy | DeployTerminal:
     """Turn validated project facts into one safe DevOps-subgraph invocation."""
-    resources = await _allocate_deploy_resources(base, msg, redis)
+    resources = await _allocate_deploy_resources(base, msg, redis, fence)
     if isinstance(resources, DeployTerminal):
         return resources
     allocated_resources, env_overrides = resources
@@ -826,13 +846,14 @@ async def _prepare_deploy(
         base,
         msg,
         redis,
+        fence,
         allocated_resources,
         env_overrides,
     )
     if redundant is not None:
         return redundant
 
-    precheck = await _precheck_deploy(base, msg, redis, allocated_resources)
+    precheck = await _precheck_deploy(base, msg, redis, fence, allocated_resources)
     if precheck is not None:
         return precheck
 
@@ -849,6 +870,7 @@ async def _prepare_deploy(
             head_sha=msg.head_sha,
             deployed_commit_sha=msg.deployed_commit_sha,
             fence_active_deploys=msg.fence_active_deploys,
+            deploy_fence=fence,
         ),
     )
 
@@ -858,11 +880,13 @@ async def _route_deploy_result(
     prepared: PreparedDeploy,
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
 ) -> dict:
     """Map one DevOps-subgraph result to the deploy worker's durable typed outcome."""
     deployment_result = result.get("deployment_result")
     if deployment_result is not None and deployment_result.get("status") == "cancelled":
         logger.info("deploy_job_cancelled_during_actions", task_id=msg.task_id)
+        await fence.ensure_held(DeployWrite.RUN_STATE)
         await api_client.patch(
             f"runs/{msg.task_id}",
             json={
@@ -891,6 +915,7 @@ async def _route_deploy_result(
                 story_id=msg.story_id,
                 redis=redis,
                 msg=msg,
+                fence=fence,
             )
         access = prepared.base.access
         return await _handle_deploy_success(
@@ -908,6 +933,7 @@ async def _route_deploy_result(
             grant_intent=access.grant_intent,
             temporary_access_grant=access.temporary_access_grant,
             temporary_access_operation=access.temporary_access_operation,
+            fence=fence,
         )
 
     if result.get("missing_user_secrets"):
@@ -926,6 +952,7 @@ async def _route_deploy_result(
             await _deploy_failure_terminal(
                 msg,
                 redis,
+                fence,
                 f"Missing secrets: {', '.join(missing_keys)}",
                 deploy_outcome=DeployOutcome.WAITING_FOR_USER_SECRET,
                 missing_user_secrets=missing,
@@ -939,6 +966,7 @@ async def _route_deploy_result(
             await _deploy_failure_terminal(
                 msg,
                 redis,
+                fence,
                 "; ".join(errors),
                 deploy_outcome=typed_outcome,
             )
@@ -950,6 +978,7 @@ async def _route_deploy_result(
         await _deploy_failure_terminal(
             msg,
             redis,
+            fence,
             "; ".join(errors),
             deploy_outcome=DeployOutcome.RETRY,
         )
@@ -960,6 +989,7 @@ async def _execute_prepared_deploy(
     prepared: PreparedDeploy,
     msg: DeployMessage,
     redis: RedisStreamClient,
+    fence: DeployFence,
 ) -> dict:
     """Invoke DevOps once and route its result through the closed result dispatcher."""
     result = await create_devops_subgraph().ainvoke(prepared.subgraph_input)
@@ -972,7 +1002,75 @@ async def _execute_prepared_deploy(
         deployed_url=result.get("deployed_url"),
         errors=result.get("errors"),
     )
-    return await _route_deploy_result(result, prepared, msg, redis)
+    return await _route_deploy_result(result, prepared, msg, redis, fence)
+
+
+async def _record_deploy_lock_lost(
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+    lost: DeployFenceLost,
+) -> dict:
+    """End a deploy that lost its project's deploy lock, without the refused write.
+
+    This deploy's own Run is the one record it still writes, deliberately outside
+    the fence: the Run belongs to this deploy alone, and it is how the supervisor
+    learns that the deploy stopped. Nothing of the project is touched — secrets,
+    workflow, server, application, the other deploy's Run — and the lock itself is
+    released by compare-and-delete, so the deploy now holding it keeps it.
+    """
+    error_msg = str(lost)
+    logger.warning(
+        "deploy_job_lock_lost",
+        task_id=msg.task_id,
+        project_id=msg.project_id,
+        refused_write=lost.write.value,
+    )
+    await api_client.patch(
+        f"runs/{msg.task_id}",
+        json={
+            "status": RunStatus.FAILED.value,
+            "error_message": error_msg,
+            "result": DeployRunResult(
+                deploy_outcome=DeployOutcome.DEPLOY_LOCK_LOST,
+                action=msg.action,
+                error_details=error_msg,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
+            ).model_dump(mode="json"),
+        },
+    )
+    await publish_callback_event(
+        redis,
+        msg.callback_stream,
+        "failed",
+        msg.task_id,
+        error_msg,
+        telegram_chat_id=msg.telegram_chat_id,
+        project_id=msg.project_id or "",
+    )
+    return live_work_unsettled(
+        {
+            "status": "failed",
+            "reason": DeployOutcome.DEPLOY_LOCK_LOST.value,
+            "error": error_msg,
+        }
+    )
+
+
+async def _record_deploy_exception(
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+    fence: DeployFence,
+    error: Exception,
+) -> dict:
+    """Record an unexpected exception as a failed deploy, or as a lost lock.
+
+    The failure record is a fenced Run write like any other, so a deploy that
+    lost its lock on the way here ends as `DEPLOY_LOCK_LOST` instead.
+    """
+    try:
+        return (await _deploy_failure_terminal(msg, redis, fence, str(error))).response
+    except DeployFenceLost as lost:
+        return await _record_deploy_lock_lost(msg, redis, lost)
 
 
 async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -993,10 +1091,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         logger.info("deploy_job_run_cancelled", task_id=task_id, project_id=project_id)
         return live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
 
-    lock_key = f"deploy:{project_id}:lock"
-    lock_token = f"{task_id}:{uuid4().hex}"
+    fence = DeployFence.for_job(redis.redis, project_id, task_id)
     try:
-        claimed = await _claim_deploy_job(msg, redis, lock_token)
+        claimed = await _claim_deploy_job(msg, fence)
         if claimed is not None:
             return claimed.response
 
@@ -1010,16 +1107,18 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             project_id=project_id or "",
         )
 
-        base = await _load_deploy_base(run, msg, redis)
+        base = await _load_deploy_base(run, msg, redis, fence)
         if isinstance(base, DeployTerminal):
             return base.response
 
-        prepared = await _prepare_deploy(base, msg, job_data, redis)
+        prepared = await _prepare_deploy(base, msg, job_data, redis, fence)
         if isinstance(prepared, DeployTerminal):
             return prepared.response
 
-        return await _execute_prepared_deploy(prepared, msg, redis)
+        return await _execute_prepared_deploy(prepared, msg, redis, fence)
 
+    except DeployFenceLost as lost:
+        return await _record_deploy_lock_lost(msg, redis, lost)
     except WorkflowCancellationUnprovenError:
         logger.error(
             "deploy_workflow_cancellation_unproven",
@@ -1044,9 +1143,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             error_type=type(error).__name__,
             exc_info=True,
         )
-        return (await _deploy_failure_terminal(msg, redis, str(error))).response
+        return await _record_deploy_exception(msg, redis, fence, error)
     finally:
-        await _release_deploy_lock(redis, lock_key, lock_token)
+        await fence.release()
 
 
 def main():

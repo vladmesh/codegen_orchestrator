@@ -70,6 +70,15 @@ def mock_devops_subgraph():
         yield graph
 
 
+def _releases(mock_redis) -> list:
+    """The compare-and-delete calls among the deploy's Redis scripts.
+
+    Every deploy write also evaluates the fence's hold check, so the release is
+    one script among several.
+    """
+    return [c for c in mock_redis.redis.eval.await_args_list if "redis.call('DEL'" in c.args[0]]
+
+
 def _job(*, task_id="deploy-lock-1", project_id="proj-1"):
     return {
         "task_id": task_id,
@@ -144,7 +153,7 @@ async def test_lock_released_on_success(
     await process_deploy_job(_job(), mock_redis)
 
     mock_redis.redis.delete.assert_not_called()
-    mock_redis.redis.eval.assert_awaited_once()
+    assert len(_releases(mock_redis)) == 1
     script, numkeys, lock_key, lock_token = mock_redis.redis.eval.await_args.args
     assert "redis.call('GET', KEYS[1]) == ARGV[1]" in script
     assert "redis.call('DEL', KEYS[1])" in script
@@ -171,7 +180,7 @@ async def test_lock_released_on_failure(
     result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
-    mock_redis.redis.eval.assert_awaited_once()
+    assert len(_releases(mock_redis)) == 1
     mock_redis.redis.delete.assert_not_called()
 
 
@@ -186,5 +195,5 @@ async def test_lock_released_on_exception(mock_redis, mock_api, mock_allocations
         result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
-    mock_redis.redis.eval.assert_awaited_once()
+    assert len(_releases(mock_redis)) == 1
     mock_redis.redis.delete.assert_not_called()

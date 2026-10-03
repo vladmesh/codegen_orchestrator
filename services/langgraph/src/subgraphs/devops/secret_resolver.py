@@ -25,6 +25,7 @@ from shared.contracts.queues.deploy import DeployOutcome
 from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
+from ...deploy_fence import DeployFence, DeployFenceLost, DeployWrite
 from ...nodes.base import FunctionalNode
 from ...runtime_identity import project_spec_runtime_slug
 from .state import DevOpsState
@@ -229,7 +230,11 @@ class SecretResolverNode(FunctionalNode):
 
         if resolved.generated:
             try:
-                await self._save_secrets_to_project(project_id, resolved.generated)
+                await self._save_secrets_to_project(
+                    project_id, resolved.generated, state["deploy_fence"]
+                )
+            except DeployFenceLost:
+                raise
             except Exception as error:
                 raise TypedSecretResolutionError(
                     DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
@@ -541,7 +546,9 @@ class SecretResolverNode(FunctionalNode):
         service = key_upper.removesuffix(IMAGE_KEY_SUFFIX).lower().replace("_", "-")
         return f"{registry_host}/{owner}/{repo}-{service}:{tag}"
 
-    async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
+    async def _save_secrets_to_project(
+        self, project_id: str, secrets: dict, deploy_fence: DeployFence
+    ) -> None:
         """Save newly generated secrets to project config for reuse on redeploy.
 
         Uses the atomic merge endpoint to avoid race conditions.
@@ -549,7 +556,9 @@ class SecretResolverNode(FunctionalNode):
         Args:
             project_id: Project ID
             secrets: Dict of secret_name -> secret_value to save
+            deploy_fence: this deploy's claim on the project deploy lock
         """
+        await deploy_fence.ensure_held(DeployWrite.SECRET_PERSISTENCE)
         await api_client.merge_secrets(project_id, secrets)
         logger.info(
             "secrets_saved_to_project",

@@ -499,15 +499,17 @@ pass as an ordinary schema error.
 - Reads deploy run outcome from DB
 - SUCCESS → story `testing`, create QA run, publish `QAMessage` to `qa:queue`
 - CODE_FIX / SMOKE_FAILURE → create a fix task and dispatch it to `engineering:queue`
-- RETRY / IMAGES_NOT_PUBLISHED / IMAGE_REGISTRY_UNREADABLE → redeploy with counter
-  (max 3 consecutive failures)
+- RETRY / CANCELLED / OWNER_ACCESS_PROOF_FAILED / IMAGES_NOT_PUBLISHED /
+  IMAGE_REGISTRY_UNREADABLE / DEPLOY_LOCK_LOST → redeploy the same commit under the retry bound:
+  `deploy.max_deploy_retries` (3) attempts, counted from the story's `supervisor_retry` deploy Runs
+  since its last successful deploy, so the count is durable and a success resets it
 - SETTINGS_SEED_FAILED → any convergent failure redeploys the same commit under
   that counter; only the exact `KEY_NOT_DECLARED` set dispatches bounded
   Engineering manifest repair, while other deterministic failures fail visibly;
   none are reconciled to SUCCESS by an applied owner grant
 - GIVE_UP → story `failed`, admin notified
 
-**Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.
+**Deploy deduplication and fencing**: Atomic Redis `SET NX EX` lock per project prevents duplicate deploys. Its holder token is the deploy's fence: every deploy write checks it immediately before it is made, and a deploy that lost the lock (it expired under a long deploy, or another deploy holds it) stops with `DEPLOY_LOCK_LOST` instead of writing beside the new holder. See `docs/ERROR_HANDLING.md`, "Deploy Deduplication and the Deploy Fence".
 
 **Lifecycle operations**: `stop` and `undeploy` actions (from Admin API, or from a PO teardown) are handled by `deploy_lifecycle` module — SSHes to server and runs `docker compose stop/down` directly, skipping the full DevOps subgraph. The message names its target application (`DeployMessage.application_id`) and the consumer acts on that one: a project can have applications on several servers, and allocation would answer with one of its own choosing.
 

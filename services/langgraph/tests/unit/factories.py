@@ -7,6 +7,8 @@ so test mocks return the same types as the real API client.
 from datetime import UTC, datetime
 import uuid
 
+import fakeredis
+
 from shared.contracts.dto.deploy_dispatch import DeployRunStart
 from shared.contracts.dto.product_brief import (
     ProductBriefAdmissionOutcome,
@@ -25,6 +27,7 @@ from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.user import UserDTO
 from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.server_admission import PROVISIONING_PHASE_COMPLETE, PROVISIONING_PHASE_LABEL
+from src.deploy_fence import DeployFence
 
 _NOW = datetime.now(UTC)
 _PROJECT_ID = uuid.uuid4()
@@ -223,3 +226,17 @@ def make_user(**overrides) -> UserDTO:
     }
     base.update(overrides)
     return UserDTO(**base)
+
+
+def held_deploy_fence(project_id: str = "proj-1", task_id: str = "deploy-1") -> DeployFence:
+    """A deploy's claim on its project lock, held, on an in-memory Redis with Lua.
+
+    Each fence gets its own server, so tests never share a lock. A test that
+    needs the lock to change hands writes the key through `fence.redis`.
+    """
+    server = fakeredis.FakeServer()
+    fence = DeployFence.for_job(
+        fakeredis.aioredis.FakeRedis(server=server, decode_responses=True), project_id, task_id
+    )
+    fakeredis.FakeRedis(server=server, decode_responses=True).set(fence.lock_key, fence.token)
+    return fence

@@ -327,9 +327,14 @@ Every publish carries `MAXLEN ~ 1000` and `scheduler-maintenance` additionally r
 ### Deploy Retry Limit
 Deploy worker writes a typed `DeployOutcome` to `run.result`. Environment-contract failures keep
 their specific outcome; unclassified subgraph and smoke failures produce `RETRY`. The supervisor
-(`supervise_deploying_stories()` in scheduler) reads the outcome and routes accordingly. After
-**3 consecutive RETRY outcomes**, the supervisor transitions the story to `failed`. This prevents
-the infinite deploy→fail→redispatch loop.
+(`supervise_deploying_stories()` in scheduler) reads the outcome and routes accordingly. A retryable
+outcome redeploys the same commit as a new deploy Run marked `run_metadata.triggered_by =
+"supervisor_retry"`. The bound (`deploy.max_deploy_retries`, 3) counts those Runs since the story's
+last successful deploy, read from the API by `_deploy_retry_attempt` — the only reader of the bound —
+so it survives any amount of time and any scheduler restart, and a success starts the next failure
+episode at attempt 1. The third failed attempt of an episode transitions the story to `failed`. This
+prevents the infinite deploy→fail→redispatch loop. There is no Redis retry counter and no
+`deploy.deploy_retry_ttl`: a TTL counter let a story slower than its TTL retry without end.
 
 ### Deploy→Engineering Feedback Loop
 The supervisor still accepts legacy `CODE_FIX` and `SMOKE_FAILURE` outcomes by creating a fix task
@@ -337,8 +342,8 @@ and dispatching it to `engineering:queue`. The current deploy worker does not in
 unknown failures use the bounded `RETRY` path. A future remediation agent may diagnose failed runs
 asynchronously and propose a tested code fix outside the deploy path.
 
-### Deploy Deduplication
-Atomic `SET NX` Redis lock per project prevents duplicate deploys. Replaces the non-atomic DB-based check that had a race window. Lock held for duration of deploy, released in `finally` block.
+### Deploy Deduplication and the Deploy Fence
+Atomic `SET NX EX` Redis lock per project (`deploy:<project_id>:lock`, TTL `deploy.deploy_lock_ttl`) prevents duplicate deploys. Its value is a token unique to the holder (`<task_id>:<uuid>`), and the claim is the deploy's `DeployFence` (`services/langgraph/src/deploy_fence.py`), threaded explicitly through the consumer, the DevOps subgraph state (`deploy_fence`) and the result handlers. Every deploy write calls `DeployFence.ensure_held(<DeployWrite>)` — a Lua GET-compare — immediately before it is made: secret persistence and GitHub secret writes, the pin tag, stopping older runs, workflow dispatch and rerun, the deployment record, the post-deploy product writes (owner grant, settings seed), remote execution, and the deploy's Run and application state. A deploy whose lock expired or was replaced raises `DeployFenceLost`, makes no further write, and records its own Run once as `DeployOutcome.DEPLOY_LOCK_LOST`; the supervisor redeploys the story under the retry bound. Release is a compare-and-delete in `finally`, so a deploy never deletes a lock another deploy now holds. The check narrows the window to one Redis round trip; it cannot stop a write already in flight when the key expires.
 
 ### Stale Worker Cleanup
 `_check_project_lock()` in the engineering consumer verifies `worker:status` in Redis. Workers in terminal states (`DEAD`/`FAILED`/`STOPPED`) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual intervention.

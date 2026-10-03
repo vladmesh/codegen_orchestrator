@@ -96,6 +96,8 @@ class TestDeployWorkerPassesTelegramId:
     async def test_get_project_receives_telegram_id(self, mock_redis, mock_deploy_api):
         """deploy_worker should pass telegram_chat_id as telegram_id to get_project."""
         mock_deploy_api.get_project.return_value = None
+        mock_redis.redis.set = AsyncMock(return_value=True)  # the deploy lock is free
+        mock_redis.redis.eval = AsyncMock(return_value=1)  # and stays held
 
         from src.consumers.deploy import process_deploy_job
 
