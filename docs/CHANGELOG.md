@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-03
 
+- The Git credential helper accepts native repeated array attributes while rejecting ambiguous
+  repository fields, so Git 2.55 can acquire credentials for checkout and publication.
 - Developer Git/gh acquire repository credentials on demand, so reused workers and long turns
   survive token expiry; pre-agent auth refusal parks as infrastructure without model spend.
 - Products scaffold from kit 0.7.1, whose template lifespan tests no longer start package runtimes, so a product

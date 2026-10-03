@@ -25,6 +25,55 @@ from src.manager import WorkerManager
 OLD_TOKEN = "synthetic-released-expired-token"  # noqa: S105 - harmless canary
 
 
+@pytest.mark.parametrize("attribute", ["capability", "wwwauth", "state", "future"])
+def test_native_helper_accepts_multivalued_attributes_and_reacquires(
+    attribute, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with WorkerCredentialFixture(tmp_path) as broker:
+        environment = {**os.environ, **broker.environment}
+        for token in ("synthetic-first", "synthetic-after-expiry"):
+            broker.token = token
+            result = subprocess.run(
+                [str(broker.helper), "get"],
+                input=(
+                    f"{attribute}[]=authtype\n{attribute}[]=state\n"
+                    "protocol=https\nhost=github.com\npath=org/repo.git\n\n"
+                ),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout == f"username=x-access-token\npassword={token}\n\n"
+            assert token not in result.stderr
+        assert broker.requests == [{"repository": "org/repo"}] * 2
+    assert not (tmp_path / ".git-credentials").exists()
+    assert not (tmp_path / ".config/codegen/git-credentials").exists()
+
+
+@pytest.mark.parametrize("attribute", ["protocol", "host", "path"])
+def test_native_helper_rejects_ambiguous_repository_before_mint(attribute, tmp_path):
+    with WorkerCredentialFixture(tmp_path) as broker:
+        result = subprocess.run(
+            [str(broker.helper), "get"],
+            input=(
+                "capability[]=authtype\ncapability[]=state\n"
+                "protocol=https\nhost=github.com\npath=org/repo.git\n"
+                f"{attribute}=other\n\n"
+            ),
+            env={**os.environ, **broker.environment},
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+        assert broker.requests == []
+        assert broker.token not in result.stderr
+
+
 class LocalDocker:
     def __init__(
         self, workspace, home, helper="/usr/local/bin/git-credential-codegen", environment=None

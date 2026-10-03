@@ -178,6 +178,8 @@ an approximately five-minute expiry margin. Git receives the token only in the
 native protocol response; gh receives it only in one command's auth environment.
 Neither argv nor logs carry it. Helper entrypoints use isolated Python and the
 root-owned shared runtime, so product modules cannot shadow their imports.
+Git's repeated array attributes are ignored; duplicate scalar repository fields
+still refuse before credential acquisition.
 Developer helper children inherit the existing broker identity; it was already
 readable to the agent through `/proc`, so server authorization remains the boundary.
 Worker-manager requires `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY_PATH` at startup;

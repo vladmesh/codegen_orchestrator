@@ -37,7 +37,13 @@ def git_credential(operation: str, source: TextIO, output: TextIO) -> int:
         if line == "\n":
             break
         key, sep, value = line.rstrip("\n").partition("=")
-        if not sep or key in fields:
+        if not sep:
+            raise ValueError("malformed credential input")
+        # Git sends repeated array attributes, including capability[] and
+        # wwwauth[]. Basic auth needs none of them; never retain their values.
+        if key.endswith("[]"):
+            continue
+        if key in fields:
             raise ValueError("malformed credential input")
         fields[key] = value
     if fields.get("protocol") != "https" or fields.get("host") != "github.com":
