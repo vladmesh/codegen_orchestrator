@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-03
 
+- Every deploy write checks the project deploy lock's holder token first; a deploy that lost it ends
+  `deploy_lock_lost`. The retry bound counts `supervisor_retry` Runs since the last success, not a TTL key.
 - [hotfix] Stand control-plane downloads (Docker key, uv) wait 60 s per attempt with 5 bounded retries,
   so one slow read no longer fails the after-merge stand bootstrap (run 37085191952).
 

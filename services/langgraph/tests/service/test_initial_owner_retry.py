@@ -34,10 +34,12 @@ from src.consumers.deploy import (
     _record_infrastructure_wait,
     _route_deploy_result,
 )
+from src.deploy_fence import DeployFence
 from tests.service.test_public_deploy import (  # noqa: F401
     BUILT,
     CANARY,
     HEAD,
+    held_deploy_lock,
     public_project as existing_public_project,
     public_project_context,
     story_row,
@@ -121,25 +123,30 @@ async def failed_source(api, stream, project, story, owner, route):
         assert await stream.redis.set(lock, "competing-deploy", nx=True, ex=60)
         try:
             with patch("src.consumers.deploy.api_client", api):
-                terminal = await _claim_deploy_job(message, stream)
+                terminal = await _claim_deploy_job(
+                    message, DeployFence.for_job(stream.redis, project, source)
+                )
             assert terminal is not None
             assert terminal.response["status"] == "cancelled"
         finally:
             await stream.redis.delete(lock)
     elif route == "infrastructure":
         with patch("src.consumers.deploy.api_client", api):
-            await _record_infrastructure_wait(
-                source,
-                project,
-                AllocationError(
-                    AllocationFailureReason.SERVER_NOT_PROVISIONED,
-                    required_ram_mb=768,
-                    min_disk_mb=1024,
-                ),
-            )
+            async with held_deploy_lock(stream, project, source) as fence:
+                await _record_infrastructure_wait(
+                    source,
+                    project,
+                    AllocationError(
+                        AllocationFailureReason.SERVER_NOT_PROVISIONED,
+                        required_ram_mb=768,
+                        min_disk_mb=1024,
+                    ),
+                    fence,
+                )
     else:
         with patch("src.consumers.deploy_failure_handler.api_client", api):
-            await _route_deploy_result(result, SimpleNamespace(), message, stream)
+            async with held_deploy_lock(stream, project, source) as fence:
+                await _route_deploy_result(result, SimpleNamespace(), message, stream, fence)
     # A persisted diagnostic canary must not be copied into exhaustion,
     # either owed audience, logs or the PO readback/tool response.
     return source, message
@@ -635,15 +642,17 @@ async def _complete_native_recovery(api, stream, prepared, real_redis):  # noqa:
         # The next epoch reaches the actual consumer and ordinary supervisor,
         # retaining the recovered Story state without a manual resume.
         with patch("src.consumers.deploy_failure_handler.api_client", api):
-            await _route_deploy_result(
-                {
-                    "resolution_outcome": DeployOutcome.RETRY,
-                    "errors": ["controlled second epoch failure"],
-                },
-                SimpleNamespace(),
-                message.model_copy(update={"task_id": fresh}),
-                stream,
-            )
+            async with held_deploy_lock(stream, project, fresh) as fence:
+                await _route_deploy_result(
+                    {
+                        "resolution_outcome": DeployOutcome.RETRY,
+                        "errors": ["controlled second epoch failure"],
+                    },
+                    SimpleNamespace(),
+                    message.model_copy(update={"task_id": fresh}),
+                    stream,
+                    fence,
+                )
         scheduler("retry", story)
         final = await api.get_users_grant_intent(project, intent["id"])
         assert final.attempts == 1 and len(final.retry_history) == 1

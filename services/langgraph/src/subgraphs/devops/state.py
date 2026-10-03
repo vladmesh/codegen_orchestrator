@@ -7,6 +7,8 @@ from typing_extensions import TypedDict
 
 from shared.contracts.queues.deploy import DeployOutcome
 
+from ...deploy_fence import DeployFence
+
 
 def _merge_errors(left: list[str], right: list[str]) -> list[str]:
     """Reducer that merges error lists without duplicates."""
@@ -52,6 +54,9 @@ class DevOpsState(TypedDict):
     deployed_commit_sha: str | None
     # Whether this deploy must be the last writer, see DeployMessage.fence_active_deploys
     fence_active_deploys: bool
+    # This deploy's claim on the project deploy lock. Every write the subgraph
+    # makes checks it immediately before it is performed, see src/deploy_fence.py.
+    deploy_fence: DeployFence
 
     # Output (returned to parent). Each entry is a serialized MissingUserSecret
     # ({"key", "description"}) so the scheduler can name secrets to the user.

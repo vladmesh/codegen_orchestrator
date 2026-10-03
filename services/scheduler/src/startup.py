@@ -23,7 +23,6 @@ PIPELINE_REQUIRED_KEYS = {
     "scheduler.ci_failure_log_excerpt_lines",
     "deploy.max_deploy_retries",
     "deploy.max_deploy_fix_attempts",
-    "deploy.deploy_retry_ttl",
     "supervisor.story_stuck_threshold_minutes",
     "supervisor.story_max_architect_retries",
     "supervisor.story_retry_ttl",

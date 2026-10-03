@@ -13,6 +13,7 @@ import pytest
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO, TemporaryAccessStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
+from tests.unit.deploy_fences import held_deploy_fence
 
 _HANDLER_PATCH = "src.consumers.deploy_result_handler"
 _FAILURE_PATCH = "src.consumers.deploy_failure_handler"
@@ -110,6 +111,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                fence=held_deploy_fence(),
                 msg=_make_deploy_msg(),
                 application_id=42,
             )
@@ -155,6 +157,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                fence=held_deploy_fence(),
                 msg=_make_deploy_msg(),
             )
 
@@ -197,6 +200,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                fence=held_deploy_fence(),
                 msg=_make_deploy_msg(),
                 application_id=42,
                 temporary_access_grant=grant,
@@ -243,6 +247,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                fence=held_deploy_fence(),
                 msg=_make_deploy_msg(),
                 application_id=42,
                 temporary_access_grant=grant,
@@ -286,6 +291,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                fence=held_deploy_fence(),
                 msg=_make_deploy_msg(),
                 application_id=42,
                 temporary_access_grant=_temporary_grant(),
@@ -317,6 +323,7 @@ class TestHandleDeploySuccess:
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
                 grant=_temporary_grant(),
                 operation="grant",
+                fence=held_deploy_fence(),
             )
             proof = await _apply_temporary_access_operation(
                 task_id="temporary-access-grant-1",
@@ -325,6 +332,7 @@ class TestHandleDeploySuccess:
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
                 grant=_temporary_grant(),
                 operation="grant",
+                fence=held_deploy_fence(),
             )
 
         assert mismatch == "temporary_access_target_mismatch"
@@ -379,6 +387,7 @@ class TestHandleDeploySuccess:
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
                 grant=attempted,
                 operation=operation,
+                fence=held_deploy_fence(),
             )
 
         assert refusal == "temporary_access_operation_superseded"
@@ -407,6 +416,7 @@ class TestHandleDeploySuccess:
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
                 grant=stale_grant,
                 operation="grant",
+                fence=held_deploy_fence(),
             )
 
         assert refusal == "temporary_access_operation_superseded"
@@ -440,6 +450,7 @@ class TestHandleSmokeFailure:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                fence=held_deploy_fence(),
                 msg=msg,
             )
 
@@ -501,6 +512,7 @@ class TestCapabilityOperationIsNotAProductDeploy:
                 # the target is running.
                 story_id="",
                 redis=AsyncMock(),
+                fence=held_deploy_fence(),
                 msg=_make_deploy_msg(story_id=""),
                 application_id=42,
                 temporary_access_grant=grant,
@@ -546,6 +558,7 @@ class TestCapabilityOperationIsNotAProductDeploy:
                 telegram_chat_id="123",
                 story_id="",
                 redis=AsyncMock(),
+                fence=held_deploy_fence(),
                 msg=_make_deploy_msg(story_id=""),
                 application_id=42,
                 temporary_access_grant=grant,
@@ -578,6 +591,7 @@ class TestCapabilityOperationIsNotAProductDeploy:
                 telegram_chat_id="123",
                 story_id="",
                 redis=AsyncMock(),
+                fence=held_deploy_fence(),
                 msg=_make_deploy_msg(story_id=""),
                 application_id=42,
             )

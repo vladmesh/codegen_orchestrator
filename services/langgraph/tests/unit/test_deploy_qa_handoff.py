@@ -19,6 +19,7 @@ def mock_redis():
     r = AsyncMock()
     r.redis = AsyncMock()
     r.redis.set = AsyncMock(return_value=True)  # lock acquired
+    r.redis.eval = AsyncMock(return_value=1)  # and stays held
     r.redis.delete = AsyncMock()
     r.publish_flat = AsyncMock()
     r.publish_message = AsyncMock()

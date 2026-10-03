@@ -212,6 +212,7 @@ def redis():
     client = AsyncMock()
     client.redis = AsyncMock()
     client.redis.set = AsyncMock(return_value=True)
+    client.redis.eval = AsyncMock(return_value=1)  # the deploy lock stays held
     client.redis.delete = AsyncMock()
     client.redis.exists = AsyncMock(return_value=False)
     return client

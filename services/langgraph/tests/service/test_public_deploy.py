@@ -25,6 +25,7 @@ from shared.queues import DEPLOY_QUEUE, PO_INPUT_QUEUE
 from shared.redis import RedisStreamClient
 from src.clients.api import LanggraphAPIClient
 from src.consumers.deploy import _route_deploy_result
+from src.deploy_fence import DeployFence
 from src.subgraphs.devops.deployer import DeployerNode
 from src.subgraphs.devops.graph import create_devops_subgraph
 from tests.service._public_deploy_transport import ContentGitHubFixture, released_workflow
@@ -35,6 +36,17 @@ FIX_HEAD = "b" * 40
 FIX_BUILT = "f" * 40
 UNKNOWN_KEY = "UNKNOWN_REQUIRED_SELF_ADDRESS"
 CANARY = "123456789:AA-public-deploy-secret-canary"
+
+
+@asynccontextmanager
+async def held_deploy_lock(stream, project_id, task_id):
+    """This deploy's claim on its project's deploy lock, held on the service Redis."""
+    fence = DeployFence.for_job(stream.redis, project_id, task_id)
+    assert await fence.acquire(60)
+    try:
+        yield fence
+    finally:
+        await fence.release()
 
 
 async def delete_public_project(api, project_id):
@@ -203,14 +215,19 @@ async def test_unknown_resolver_cause_survives_consumer_and_transactional_story_
         deployment.assert_not_awaited()
         # A diagnostic echo at the consumer boundary cannot become stored/user text.
         result["errors"].append(f"Authorization: Bearer {CANARY} " + "diagnostic " * 100)
-        outcome = await _route_deploy_result(
-            result,
-            SimpleNamespace(),
-            DeployMessage(
-                task_id=run_id, project_id=project_id, story_id=story_id, telegram_chat_id="123"
-            ),
-            stream,
-        )
+        async with held_deploy_lock(stream, project_id, run_id) as fence:
+            outcome = await _route_deploy_result(
+                result,
+                SimpleNamespace(),
+                DeployMessage(
+                    task_id=run_id,
+                    project_id=project_id,
+                    story_id=story_id,
+                    telegram_chat_id="123",
+                ),
+                stream,
+                fence,
+            )
         assert outcome["status"] == "failed"
     run = await api.get(f"runs/{run_id}")
     assert run["status"] == "failed"
@@ -491,7 +508,7 @@ def merged_updated_workflow(tmp_path):
     ("address", "expected_host"),
     [("2001:db8::42", "2001:db8::42"), ("::ffff:192.0.2.42", "::ffff:c000:22a")],
 )
-async def test_reviewed_updated_merge_recovers_exhausted_intent_and_finishes_smoke(
+async def test_reviewed_updated_merge_recovers_exhausted_intent_and_finishes_smoke(  # noqa: PLR0915
     public_project, real_redis, tmp_path, address, expected_host
 ):
     api, stream, project_id, story_id = public_project
@@ -538,17 +555,19 @@ async def test_reviewed_updated_merge_recovers_exhausted_intent_and_finishes_smo
         ):
             refused = await create_devops_subgraph().ainvoke(old_state)
             assert refused["resolution_outcome"] is DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED
-            await _route_deploy_result(
-                refused,
-                SimpleNamespace(),
-                DeployMessage(
-                    task_id=old_run_id,
-                    project_id=project_id,
-                    story_id=story_id,
-                    telegram_chat_id="123",
-                ),
-                stream,
-            )
+            async with held_deploy_lock(stream, project_id, old_run_id) as fence:
+                await _route_deploy_result(
+                    refused,
+                    SimpleNamespace(),
+                    DeployMessage(
+                        task_id=old_run_id,
+                        project_id=project_id,
+                        story_id=story_id,
+                        telegram_chat_id="123",
+                    ),
+                    stream,
+                    fence,
+                )
     finally:
         await old_github.close()
     terminal = await lifecycle(api, project_id, story_id)
@@ -602,6 +621,9 @@ async def test_reviewed_updated_merge_recovers_exhausted_intent_and_finishes_smo
         "errors": [],
         "messages": [],
     }
+    fence = DeployFence.for_job(stream.redis, project_id, run_id)
+    assert await fence.acquire(60)
+    state["deploy_fence"] = fence
     github = ContentGitHubFixture(built, source)
     github.set_repository_secrets.return_value = 9
     github.wait_for_workflow_completion = AsyncMock(
@@ -663,6 +685,7 @@ async def test_reviewed_updated_merge_recovers_exhausted_intent_and_finishes_smo
         assert await api.get(f"runs/{previous['execution_run_id']}") == previous_run
     finally:
         await github.close()
+        await fence.release()
 
 
 @pytest.mark.asyncio

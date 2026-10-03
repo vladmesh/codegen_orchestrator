@@ -41,6 +41,7 @@ def mock_redis():
     redis = AsyncMock()
     redis.redis = AsyncMock()
     redis.redis.set = AsyncMock(return_value=True)
+    redis.redis.eval = AsyncMock(return_value=1)  # the deploy lock stays held
     redis.redis.delete = AsyncMock()
     redis.publish_flat = AsyncMock()
     redis.publish_message = AsyncMock()

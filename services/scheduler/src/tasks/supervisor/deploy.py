@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -89,7 +90,10 @@ from .handoff import (
 )
 
 logger = structlog.get_logger(__name__)
-DEPLOY_RETRY_KEY_PREFIX = "deploy:retries:"
+
+#: `run_metadata.triggered_by` of every deploy Run the supervisor dispatches as a
+#: retry. Counting these Runs is what bounds a story's retries.
+SUPERVISOR_RETRY_TRIGGER = "supervisor_retry"
 
 #: Where a deploy that carried an infrastructure wait forward started waiting.
 #: Stored in `run_metadata` so the bound survives every re-dispatch.
@@ -158,10 +162,6 @@ def _max_deploy_fix_attempts() -> int:
     return startup.get_config().get_int("deploy.max_deploy_fix_attempts")
 
 
-def _deploy_retry_ttl() -> int:
-    return startup.get_config().get_int("deploy.deploy_retry_ttl")
-
-
 class DeploySupervisorAction(StrEnum):
     """One DEPLOYING story's aggregate effect for the supervisor tick."""
 
@@ -187,6 +187,7 @@ _RETRY_OUTCOMES = frozenset(
         DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
         DeployOutcome.IMAGES_NOT_PUBLISHED,
         DeployOutcome.IMAGE_REGISTRY_UNREADABLE,
+        DeployOutcome.DEPLOY_LOCK_LOST,
     }
 )
 _TERMINAL_FAILURE_OUTCOMES = frozenset(
@@ -245,10 +246,9 @@ async def supervise_deploying_stories(
     """
     stories = await api_client.get_stories_by_status(StoryStatus.DEPLOYING)
     counts = _empty_deploy_supervision_counts()
-    redis = redis_client._redis
 
     for story in stories:
-        action = await _supervise_deploying_story(api_client, redis_client, redis, story)
+        action = await _supervise_deploying_story(api_client, redis_client, story)
         if action is not DeploySupervisorAction.NONE:
             counts[action.value] += 1
 
@@ -287,7 +287,6 @@ async def supervise_application_deploy_handoffs(
 async def _supervise_deploying_story(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
-    redis,
     story,
 ) -> DeploySupervisorAction:
     """Resolve one DEPLOYING story to the single action this tick performed."""
@@ -340,7 +339,6 @@ async def _supervise_deploying_story(
     return await _route_deploy_outcome(
         api_client,
         redis_client,
-        redis,
         story_id,
         project_id,
         run,
@@ -352,7 +350,6 @@ async def _supervise_deploying_story(
 async def _route_deploy_outcome(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
-    redis,
     story_id: str,
     project_id: str,
     run,
@@ -384,13 +381,13 @@ async def _route_deploy_outcome(
     if outcome in _RETRY_OUTCOMES:
         _log_redeploy_reason(outcome, run, log)
         retry_action = await _handle_deploy_retry(
-            api_client, redis_client, redis, story_id, project_id, run, log
+            api_client, redis_client, story_id, project_id, run, log
         )
         return _retry_supervisor_action(retry_action)
 
     if outcome is DeployOutcome.SETTINGS_SEED_FAILED:
         retry_action = await _route_settings_seed_failure(
-            api_client, redis_client, redis, story_id, project_id, run, log
+            api_client, redis_client, story_id, project_id, run, log
         )
         return _retry_supervisor_action(retry_action)
 
@@ -438,6 +435,7 @@ def _log_redeploy_reason(
         DeployOutcome.IMAGE_REGISTRY_UNREADABLE: (
             "deploy_supervisor_redeploy_after_unreadable_registry"
         ),
+        DeployOutcome.DEPLOY_LOCK_LOST: "deploy_supervisor_redeploy_after_lock_lost",
     }.get(outcome)
     if event is not None:
         log.info(event, run_id=run.id)
@@ -892,7 +890,6 @@ def _undeclared_settings_manifest_repair_description(
 async def _handle_deploy_retry(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
-    redis,
     story_id: str,
     project_id: str,
     run,
@@ -929,12 +926,12 @@ async def _handle_deploy_retry(
                     failures=[failure.value for failure in run.result.settings_seed_failures],
                 )
                 return await _route_settings_seed_failure(
-                    api_client, redis_client, redis, story_id, project_id, run, log
+                    api_client, redis_client, story_id, project_id, run, log
                 )
             if success_result is None:
                 log.warning("deploy_supervisor_reconcile_refused", run_id=run.id)
                 return await _redispatch_deploy_under_bound(
-                    api_client, redis_client, redis, story_id, project_id, run, head_sha, log
+                    api_client, redis_client, story_id, project_id, run, head_sha, log
                 )
             reconciled = await _handle_deploy_success_story(
                 api_client, redis_client, story_id, project_id, run, success_result, log
@@ -955,14 +952,13 @@ async def _handle_deploy_retry(
         return DeployRetryAction.IN_FLIGHT
 
     return await _redispatch_deploy_under_bound(
-        api_client, redis_client, redis, story_id, project_id, run, head_sha, log
+        api_client, redis_client, story_id, project_id, run, head_sha, log
     )
 
 
-async def _route_settings_seed_failure(  # noqa: PLR0913
+async def _route_settings_seed_failure(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
-    redis,
     story_id: str,
     project_id: str,
     run,
@@ -1012,7 +1008,7 @@ async def _route_settings_seed_failure(  # noqa: PLR0913
 
     log.warning("deploy_supervisor_settings_seed_retry", run_id=run.id, failures=failures)
     return await _redispatch_deploy_under_bound(
-        api_client, redis_client, redis, story_id, project_id, run, head_sha, log
+        api_client, redis_client, story_id, project_id, run, head_sha, log
     )
 
 
@@ -1036,7 +1032,6 @@ def _reconciled_success_result(result: DeployRunResult) -> DeployRunResult | Non
 async def _redispatch_deploy_under_bound(  # noqa: PLR0913
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
-    redis,
     story_id: str,
     project_id: str,
     run,
@@ -1059,24 +1054,22 @@ async def _redispatch_deploy_under_bound(  # noqa: PLR0913
         )
         return DeployRetryAction.FAILED
 
-    retry_key = f"{DEPLOY_RETRY_KEY_PREFIX}{story_id}"
-    attempts = await redis.incr(retry_key)
-    await redis.expire(retry_key, _deploy_retry_ttl())
-
-    if attempts >= _max_deploy_retries():
+    retry = await _deploy_retry_attempt(api_client, story_id)
+    if retry.exhausted:
         log.warning(
             "deploy_max_retries_exceeded",
             story_id=story_id,
-            attempts=attempts,
-            max_retries=_max_deploy_retries(),
+            attempts=retry.attempt,
+            max_retries=retry.max_retries,
         )
         await api_client.fail_story(story_id)
-        await redis.delete(retry_key)
-        await _notify_admin_failure(run.id, project_id, f"deploy retries exhausted ({attempts})")
+        await _notify_admin_failure(
+            run.id, project_id, f"deploy retries exhausted ({retry.attempt})"
+        )
         return DeployRetryAction.FAILED
 
     # One logical retry owns one stable Run and one recoverable queue handoff.
-    new_run_id = deploy_run_id("deploy-retry", run.id, str(attempts))
+    new_run_id = deploy_run_id("deploy-retry", run.id, str(retry.attempt))
     retry_recipient = await resolve_project_recipient(
         api_client, project_id, event="deploy_retry", story_id=story_id
     )
@@ -1092,8 +1085,8 @@ async def _redispatch_deploy_under_bound(  # noqa: PLR0913
             head_sha=head_sha,
             deployed_commit_sha=deployed_commit_sha,
             run_metadata={
-                "triggered_by": "supervisor_retry",
-                "attempt": attempts,
+                "triggered_by": SUPERVISOR_RETRY_TRIGGER,
+                "attempt": retry.attempt,
                 "head_sha": head_sha,
                 "deployed_commit_sha": deployed_commit_sha,
             },
@@ -1102,10 +1095,55 @@ async def _redispatch_deploy_under_bound(  # noqa: PLR0913
     log.info(
         "deploy_supervisor_retry",
         new_run_id=new_run_id,
-        attempt=attempts,
-        max_retries=_max_deploy_retries(),
+        attempt=retry.attempt,
+        max_retries=retry.max_retries,
     )
     return DeployRetryAction.RETRIED
+
+
+@dataclass(frozen=True)
+class DeployRetryAttempt:
+    """The supervisor retry one more failed deploy of a story would be."""
+
+    attempt: int
+    max_retries: int
+
+    @property
+    def exhausted(self) -> bool:
+        return self.attempt >= self.max_retries
+
+
+async def _deploy_retry_attempt(
+    api_client: SchedulerAPIClient, story_id: str
+) -> DeployRetryAttempt:
+    """Count the story's supervisor retries since its last successful deploy.
+
+    The count comes from the deploy Runs themselves, newest first: every retry
+    the supervisor dispatches is a Run triggered by `SUPERVISOR_RETRY_TRIGGER`,
+    and a successful deploy of the story closes the failure episode. So the bound
+    holds however long a story takes and across scheduler restarts — a Redis
+    counter with a TTL let a story slower than the TTL retry without end — and a
+    story that succeeded after two retries starts its next episode at attempt 1.
+
+    This is the only reader of `deploy.max_deploy_retries`.
+    """
+    runs = await api_client.list_runs(run_type=RunType.DEPLOY.value, story_id=story_id)
+    spent = 0
+    for story_run in runs:
+        if _is_successful_deploy(story_run):
+            break
+        if (story_run.run_metadata or {}).get("triggered_by") == SUPERVISOR_RETRY_TRIGGER:
+            spent += 1
+    return DeployRetryAttempt(attempt=spent + 1, max_retries=_max_deploy_retries())
+
+
+def _is_successful_deploy(run) -> bool:
+    """Whether a deploy Run completed with a SUCCESS outcome."""
+    return (
+        run.status is RunStatus.COMPLETED
+        and run.result is not None
+        and run.result.deploy_outcome is DeployOutcome.SUCCESS
+    )
 
 
 async def _handle_deploy_give_up(

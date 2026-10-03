@@ -16,6 +16,7 @@ from src.consumers.deploy_lifecycle import process_lifecycle_action
 from src.consumers.deploy_precheck import _pre_check_server
 from src.subgraphs.devops.secret_resolver import SecretResolverNode
 from src.subgraphs.devops.smoke import SmokeTesterNode
+from tests.unit.deploy_fences import held_deploy_fence
 from tests.unit.factories import make_project
 
 RUNTIME_SLUG = "fancy-project-with-spaces-0000"
@@ -47,6 +48,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
         head_sha="a" * 40,
         deployed_commit_sha="e" * 40,
         fence_active_deploys=False,
+        deploy_fence=held_deploy_fence(project_id=str(project.id)),
     )
     project_spec = deploy_input["project_spec"]
 
@@ -98,6 +100,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             project_id=str(project.id),
             project_name=RUNTIME_SLUG,
             server_handle="srv-1",
+            fence=held_deploy_fence(project_id=str(project.id)),
         )
     assert result["status"] == "success"
     lifecycle_cmd = lifecycle_conn.run.await_args.args[0]
@@ -171,6 +174,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             project_id=str(project.id),
             project_name=unsafe_project,
             server_handle="srv-1",
+            fence=held_deploy_fence(project_id=str(project.id)),
         )
     unsafe_cmd = unsafe_conn.run.await_args.args[0]
     assert shlex.split(unsafe_cmd) == ["sh", "-s", "--", unsafe_project, "/opt/services"]

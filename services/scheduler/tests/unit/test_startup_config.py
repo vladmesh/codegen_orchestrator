@@ -51,7 +51,6 @@ def test_required_keys_cover_every_scheduler_task_config_value():
         "scheduler.ssl_check_timeout",
         "deploy.max_deploy_retries",
         "deploy.max_deploy_fix_attempts",
-        "deploy.deploy_retry_ttl",
         "supervisor.story_stuck_threshold_minutes",
         "supervisor.story_max_architect_retries",
         "supervisor.story_retry_ttl",

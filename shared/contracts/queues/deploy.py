@@ -80,6 +80,11 @@ class DeployOutcome(StrEnum):
     # GitHub. Nothing failed and nothing was deployed, so the story it belongs to
     # is redeployed rather than retried as a failure or left waiting.
     CANCELLED = "cancelled"
+    # This deploy stopped because it no longer held its project's deploy lock:
+    # the lock expired under a long deploy, or another deploy of the project now
+    # holds it. The write it was about to make was refused and not performed. The
+    # supervisor redeploys the story under the ordinary retry bound.
+    DEPLOY_LOCK_LOST = "deploy_lock_lost"
 
 
 class DeployMessage(BaseMessage):
