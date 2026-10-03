@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.contracts.queues.deploy import DeployOutcome
-from tests.unit.factories import held_deploy_fence
+from tests.unit.deploy_fences import held_deploy_fence
 
 
 @pytest.fixture

@@ -12,7 +12,7 @@ from shared.contracts.env_usage import load_env_contract_fragments
 from src.subgraphs.devops.env_contract_loader import load_environment_contract
 from src.subgraphs.devops.graph import resolve_secrets
 from src.subgraphs.devops.secret_resolver import SecretResolverNode, TypedSecretResolutionError
-from tests.unit.factories import held_deploy_fence
+from tests.unit.deploy_fences import held_deploy_fence
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 

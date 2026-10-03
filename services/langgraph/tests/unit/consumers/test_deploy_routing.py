@@ -13,7 +13,7 @@ import pytest
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO, TemporaryAccessStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
-from tests.unit.factories import held_deploy_fence
+from tests.unit.deploy_fences import held_deploy_fence
 
 _HANDLER_PATCH = "src.consumers.deploy_result_handler"
 _FAILURE_PATCH = "src.consumers.deploy_failure_handler"

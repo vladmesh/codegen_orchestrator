@@ -23,7 +23,7 @@ from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.settings_seed import SettingsSeedFailureKind
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
-from tests.unit.factories import held_deploy_fence
+from tests.unit.deploy_fences import held_deploy_fence
 
 _HANDLER_PATCH = "src.consumers.deploy_result_handler"
 _CAPABILITY = "settings-capability-value"

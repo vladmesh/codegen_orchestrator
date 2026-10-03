@@ -31,8 +31,8 @@ from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
 from src.clients.product_settings import SettingSeedProof
 from src.clients.users_grant import GrantProof
 from src.deploy_fence import DeployFence, DeployFenceLost, DeployWrite
+from tests.unit.deploy_fences import held_deploy_fence
 from tests.unit.factories import (
-    held_deploy_fence,
     make_product_brief,
     make_project,
     make_repository,

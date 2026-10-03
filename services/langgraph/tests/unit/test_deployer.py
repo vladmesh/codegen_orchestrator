@@ -19,7 +19,8 @@ from shared.contracts.dto.run import RunStatus
 from shared.contracts.queues.deploy import DeployOutcome
 from src.subgraphs.devops.deployer import DeployerNode
 from src.subgraphs.devops.image_gate import ImagesNotPublishedError
-from tests.unit.factories import held_deploy_fence, make_repository
+from tests.unit.deploy_fences import held_deploy_fence
+from tests.unit.factories import make_repository
 
 PINNED_SHA = "c" * 40
 BUILT_SHA = "b" * 40

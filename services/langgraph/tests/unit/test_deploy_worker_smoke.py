@@ -21,8 +21,8 @@ from shared.contracts.dto.users_grant import (
 )
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome, DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
+from tests.unit.deploy_fences import held_deploy_fence
 from tests.unit.factories import (
-    held_deploy_fence,
     make_project,
     make_repository,
     make_run,

@@ -16,7 +16,8 @@ from src.consumers.deploy_lifecycle import process_lifecycle_action
 from src.consumers.deploy_precheck import _pre_check_server
 from src.subgraphs.devops.secret_resolver import SecretResolverNode
 from src.subgraphs.devops.smoke import SmokeTesterNode
-from tests.unit.factories import held_deploy_fence, make_project
+from tests.unit.deploy_fences import held_deploy_fence
+from tests.unit.factories import make_project
 
 RUNTIME_SLUG = "fancy-project-with-spaces-0000"
 DISPLAY_TITLE = "Fancy_Project With Spaces"
