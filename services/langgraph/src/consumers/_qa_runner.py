@@ -101,6 +101,9 @@ QA_EXECUTOR_ATTEMPTS = 2
 HEALTH_CHECK_TIMEOUT = 30
 HEALTH_CHECK_ATTEMPTS = 5
 HEALTH_CHECK_RETRY_DELAY = 5
+#: How much of a health check's response body its retained detail keeps, after
+#: the run's secrets are scrubbed from it and its whitespace is collapsed.
+HEALTH_CHECK_BODY_MAX_CHARS = 500
 ACCESS_PROBE_TIMEOUT = 60
 CONTAINER_HEALTHY = "healthy"
 #: The product's own terminal dispatch state for a command whose event was
@@ -553,12 +556,25 @@ async def run_health_checks(
     *,
     deployed_url: str,
     checks: list[HealthCriterion],
+    caller_identity: QACallerIdentity | None = None,
+    redaction: QARunRedaction | None = None,
 ) -> QAResult:
     """Run GET criteria against the deployed URL. No SSH, no LLM.
 
     Each check is retried while the service is still coming up; a check that
     never answers with its expected status fails the run.
+
+    With a `caller_identity` — the run's verified QA user, resolved and proved
+    active by the consumer exactly as for an exploratory run — every GET carries
+    the kit core's three caller-identity headers, so a package route such as
+    `GET /reminders` is read as that user instead of answering 401. Without one
+    (a deployment with no caller-identity core) the checks are anonymous, as
+    before. Each check's detail keeps a bounded snippet of what the path
+    answered, scrubbed with the run's `redaction` before it is bounded, so the
+    retained evidence says what the route returned and never a capability.
     """
+    redaction = redaction if redaction is not None else QARunRedaction()
+    headers = caller_identity.headers() if caller_identity is not None else None
     results = []
     transport_failures: list[tuple[str, httpx.TransportError]] = []
     # "returns 200" means the path itself answers 200. Following redirects would
@@ -566,7 +582,9 @@ async def run_health_checks(
     # could never pass and one naming 200 would pass on a redirected path.
     async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=False) as client:
         for check in checks:
-            result, transport_error = await _run_health_check(client, deployed_url, check)
+            result, transport_error = await _run_health_check(
+                client, deployed_url, check, headers=headers, redaction=redaction
+            )
             results.append(result)
             if transport_error:
                 transport_failures.append((check.path, transport_error))
@@ -618,10 +636,19 @@ async def check_deployed_url_reachable(deployed_url: str) -> QABlocker | None:
     return None
 
 
+def _body_snippet(text: str, redaction: QARunRedaction) -> str:
+    """`; body: <snippet>` for a response that said something, scrubbed then bounded."""
+    snippet = " ".join(redaction.text(text).split())[:HEALTH_CHECK_BODY_MAX_CHARS]
+    return f"; body: {snippet}" if snippet else ""
+
+
 async def _run_health_check(
     client: httpx.AsyncClient,
     deployed_url: str,
     check: HealthCriterion,
+    *,
+    headers: Mapping[str, str] | None,
+    redaction: QARunRedaction,
 ) -> tuple[dict, httpx.TransportError | None]:
     """GET one path, retrying until it answers as expected or attempts run out."""
     name = f"GET {check.path} returns {check.expected_status}"
@@ -631,14 +658,19 @@ async def _run_health_check(
         if attempt:
             await asyncio.sleep(HEALTH_CHECK_RETRY_DELAY)
         try:
-            response = await client.get(f"{deployed_url.rstrip('/')}{check.path}")
+            response = await client.get(f"{deployed_url.rstrip('/')}{check.path}", headers=headers)
         except httpx.TransportError as e:
-            detail = f"request failed: {e}"
+            detail = redaction.text(f"request failed: {e}")
             transport_error = e
             continue
+        body = _body_snippet(response.text, redaction)
         if response.status_code == check.expected_status:
-            return {"name": name, "pass": True, "detail": f"got {response.status_code}"}, None
-        detail = f"got {response.status_code}, expected {check.expected_status}"
+            return {
+                "name": name,
+                "pass": True,
+                "detail": f"got {response.status_code}{body}",
+            }, None
+        detail = f"got {response.status_code}, expected {check.expected_status}{body}"
         transport_error = None
     logger.warning("qa_health_check_failed", path=check.path, detail=detail)
     return {"name": name, "pass": False, "detail": detail}, transport_error

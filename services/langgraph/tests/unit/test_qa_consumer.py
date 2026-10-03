@@ -1887,3 +1887,160 @@ class TestOneQACallerIdentityPerRun:
         assert f"verified user `{case['reads_as']}`" in facts
         assert IDENTITY_CAPABILITY not in facts
         assert recorded == [{"user_ref": case["reads_as"], "active": True}]
+
+
+def _package_product(*, body: str = "[]") -> list[httpx.Request]:
+    """A deployed product whose package route answers only a verified caller.
+
+    `GET /health` answers anyone. `GET /reminders` is 401 without the kit core's
+    three caller-identity headers and `body` with them, as kit core 2.1 serves it.
+    """
+    reads: list[httpx.Request] = []
+
+    def health(request: httpx.Request) -> httpx.Response:
+        reads.append(request)
+        return httpx.Response(200, json={"status": "ok"})
+
+    def reminders(request: httpx.Request) -> httpx.Response:
+        reads.append(request)
+        verified = (
+            request.headers.get("X-Identity-Capability") == IDENTITY_CAPABILITY
+            and request.headers.get("X-User-Channel") == "qa"
+            and request.headers.get("X-User-External-Id") == "central-qa"
+        )
+        if not verified:
+            return httpx.Response(401, json={"detail": "caller identity required"})
+        return httpx.Response(200, text=body, headers={"Content-Type": "application/json"})
+
+    respx.get("https://weather.example.com/health").mock(side_effect=health)
+    respx.get("https://weather.example.com/reminders").mock(side_effect=reminders)
+    return reads
+
+
+class TestHealthOnlyChecksReadAsTheSameQAIdentity:
+    """The health-only leg holds the identity and redaction the exploratory leg holds.
+
+    One row per case of the rule, each a whole consumer run against the real
+    `run_health_checks`: the deployment's stored capabilities decide whether the
+    checks carry the verified QA identity, a grant that is not proved blocks the
+    run, and what each check retains of the response is scrubbed and bounded.
+    The health-only leg talks to no bot, so even a bot product's run reads as the
+    platform QA identity here.
+    """
+
+    CRITERIA = "- GET /health returns 200\n- GET /reminders returns 200"
+    CASES = {
+        "no-identity-capability-reads-anonymously-as-before": {
+            "secrets": {"USERS_GRANT_CAPABILITY": GRANT_CAPABILITY},
+            "core": {},
+            "status": "qa_failed",
+            "reminders_detail": (
+                'got 401, expected 200; body: {"detail":"caller identity required"}'
+            ),
+            "identity_headers": False,
+            "recorded": [],
+        },
+        "an-identity-capability-reads-as-the-platform-qa-identity": {
+            "secrets": BOTH_CAPABILITIES,
+            "core": {},
+            "status": "passed",
+            "reminders_detail": "got 200; body: []",
+            "identity_headers": True,
+            "recorded": [{"user_ref": "qa:central-qa", "active": True}],
+        },
+        "a-grant-that-is-not-proved-blocks-before-any-check": {
+            "secrets": BOTH_CAPABILITIES,
+            "core": {"access_status": "inactive"},
+            "status": "qa_blocked",
+            "reminders_detail": None,
+            "identity_headers": None,
+            "recorded": [],
+        },
+    }
+
+    @respx.mock
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", list(CASES.values()), ids=list(CASES))
+    async def test_the_identity_the_health_checks_read_as(
+        self, mock_api_client, mock_redis, qa_message_data, case
+    ):
+        qa_message_data["acceptance_criteria"] = self.CRITERIA
+        # A bot product: the health-only leg still never reads as its Telegram account.
+        qa_message_data["bot_username"] = "weather_bot"
+        _with_secrets(mock_api_client, **case["secrets"])
+        grants = _users_core(**case["core"])
+        reads = _package_product()
+
+        with (
+            patch("src.consumers._qa_runner.HEALTH_CHECK_RETRY_DELAY", 0),
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as agent,
+        ):
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        agent.assert_not_called()
+        assert result["status"] == case["status"]
+        patched = [call.kwargs["json"] for call in mock_api_client.patch.call_args_list]
+        recorded = [
+            one["run_metadata"]["qa_caller_identity"]
+            for one in patched
+            if "qa_caller_identity" in one.get("run_metadata", {})
+        ]
+        assert recorded == case["recorded"]
+        assert IDENTITY_CAPABILITY not in str(patched)
+        assert GRANT_CAPABILITY not in str(patched)
+        if case["reminders_detail"] is None:
+            blocker = patched[-1]["result"]["blocker"]
+            assert blocker["category"] == QABlockerCategory.QA_ACCESS_GRANT_FAILED.value
+            assert blocker["received"].startswith("inactive:")
+            assert reads == [], "a run whose identity is unproved reads nothing anonymously"
+            return
+
+        # Granted once, for the platform QA identity, or not at all.
+        assert [json.loads(grant.content) for grant in grants] == [
+            {"channel": "qa", "external_id": "central-qa"} for _ in case["recorded"]
+        ]
+        for read in reads:
+            headers = [
+                read.headers.get_list(name)
+                for name in ("X-Identity-Capability", "X-User-Channel", "X-User-External-Id")
+            ]
+            if case["identity_headers"]:
+                assert headers == [[IDENTITY_CAPABILITY], ["qa"], ["central-qa"]]
+            else:
+                assert headers == [[], [], []]
+        report = patched[-1]["result"]["report"]
+        assert f"- GET /reminders returns 200: {case['reminders_detail']}" in report
+        assert '- GET /health returns 200: got 200; body: {"status":"ok"}' in report
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_the_retained_body_is_scrubbed_before_it_is_bounded(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """A product that reflects a capability back has it scrubbed out of the evidence."""
+        from src.consumers._qa_redaction import REDACTED
+        from src.consumers._qa_runner import HEALTH_CHECK_BODY_MAX_CHARS
+
+        qa_message_data["acceptance_criteria"] = self.CRITERIA
+        _with_secrets(mock_api_client, **BOTH_CAPABILITIES)
+        _users_core()
+        reflected = json.dumps(
+            [{"note": f"you sent {IDENTITY_CAPABILITY} and {GRANT_CAPABILITY}"}] + [{"x": 1}] * 400
+        )
+        _package_product(body=reflected)
+
+        with patch("src.consumers._qa_runner.HEALTH_CHECK_RETRY_DELAY", 0):
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        run = mock_api_client.patch.call_args_list[-1].kwargs["json"]
+        line = next(
+            one
+            for one in run["result"]["report"].splitlines()
+            if one.startswith("- GET /reminders returns 200:")
+        )
+        assert IDENTITY_CAPABILITY not in str(run)
+        assert GRANT_CAPABILITY not in str(run)
+        assert REDACTED in line
+        snippet = line.split("; body: ", 1)[1]
+        assert len(snippet) == HEALTH_CHECK_BODY_MAX_CHARS

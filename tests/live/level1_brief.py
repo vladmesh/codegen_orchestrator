@@ -26,7 +26,11 @@ The *extension* story — the project's second story — has its own brief here 
 well, and it comes in two documents: the revision the user is first shown and
 the corrected one that supersedes it. The released PO tool makes a correction a
 new revision rather than an edit, and it keys a presentation on a fingerprint of
-the document, so the two have to differ or the correction opens nothing.
+the document, so the two have to differ or the correction opens nothing. The
+extension brief also asks for one-time reminders, which the extension story
+installs as the kit catalog package `reminders`, and it confirms that package's
+own setting `reminders.reminder_owner_ref` as the identity central QA reads the
+deployment as, so the reminder the setting seeds is the one QA and the suite see.
 """
 
 from __future__ import annotations
@@ -37,9 +41,18 @@ import re
 from level1_change_set import (
     LEVEL1_COMMAND,
     LEVEL1_EXTENSION_ENDPOINT_PATH,
+    LEVEL1_EXTENSION_PACKAGE_ROUTE,
+    LEVEL1_EXTENSION_PACKAGE_SETTING_KEY,
     LEVEL1_EXTENSION_SETTING_KEY,
     LEVEL1_SETTING_KEY,
 )
+
+from services.langgraph.src.agents.qa.caller_identity import (
+    QA_PLATFORM_USER_REF,
+    TELEGRAM_CHANNEL,
+    canonical_user_ref,
+)
+from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 
 #: The language the level-1 user confirms their brief in. Deliberately not the
 #: harness's own language: the completion message is composed in the *brief's*
@@ -50,8 +63,28 @@ LEVEL1_BRIEF_LANGUAGE = "ru"
 #: The two must-requirements, one per engineering task of the level-1 story.
 LEVEL1_COMMAND_REQUIREMENT = "level1_command"
 LEVEL1_SETTING_REQUIREMENT = "level1_setting"
-#: The one must-requirement of the extension story's brief, and its one task.
+#: The must-requirements of the extension story's brief, both covered by its one task.
 LEVEL1_EXTENSION_REQUIREMENT = "level1_extension"
+LEVEL1_REMINDERS_REQUIREMENT = "level1_reminders"
+
+#: Whom the reminders package's seeded first reminder belongs to on the scripted
+#: path. Central QA's health-only leg talks to no bot, so it reads the deployment
+#: as the platform QA identity — the runtime's own constant — and the seeded
+#: reminder is the one its `GET /reminders` lists.
+LEVEL1_REMINDERS_OWNER_REF = QA_PLATFORM_USER_REF
+
+
+def level1_reminders_owner_ref(*, executor_qa: bool) -> str:
+    """The identity central QA reads this run's bot product as, so the seeded owner.
+
+    The scripted run's deterministic QA reads as the platform QA identity. A run
+    judged by a real executor tests the bot, so its QA reads as the QA Telegram
+    account it proved and the bot admitted (`consumers.qa._establish_caller_identity`).
+    """
+    if not executor_qa:
+        return LEVEL1_REMINDERS_OWNER_REF
+    return canonical_user_ref(TELEGRAM_CHANNEL, str(QA_TEST_TELEGRAM_ID))
+
 
 #: The only link a bot product's completion message may carry.
 BOT_LINK_PREFIX = "https://t.me/"
@@ -80,6 +113,9 @@ class Level1Brief:
     story_title: str
     story_description: str
     language: str = LEVEL1_BRIEF_LANGUAGE
+    #: Further confirmed product settings, each ``{key, value, description}``,
+    #: after the one this brief is keyed on.
+    further_settings: tuple[dict[str, str], ...] = ()
 
     @property
     def requirement_ids(self) -> list[str]:
@@ -102,9 +138,23 @@ class Level1Brief:
                     "scope": "product",
                     "value": self.settings_value,
                     "description": self.settings_description,
-                }
+                },
+                *(
+                    {
+                        "key": setting["key"],
+                        "scope": "product",
+                        "value": setting["value"],
+                        "description": setting["description"],
+                    }
+                    for setting in self.further_settings
+                ),
             ],
         }
+
+    @property
+    def settings_keys(self) -> list[str]:
+        """Every product setting this brief confirms, in the order it presents them."""
+        return [self.settings_key, *(setting["key"] for setting in self.further_settings)]
 
 
 def level1_settings_value(marker: str) -> str:
@@ -187,7 +237,11 @@ def level1_extension_settings_value(extension_marker: str) -> str:
 
 
 def build_level1_extension_brief(
-    marker: str, extension_marker: str, *, draft: bool = False
+    marker: str,
+    extension_marker: str,
+    *,
+    draft: bool = False,
+    reminders_owner_ref: str = LEVEL1_REMINDERS_OWNER_REF,
 ) -> Level1Brief:
     """The extension story's product contract — the second brief of one project.
 
@@ -203,13 +257,17 @@ def build_level1_extension_brief(
     """
     summary = (
         "Расширение того же бота: продукт дополнительно отдаёт маркер расширения, "
-        "а сам маркер задаётся отдельной настройкой продукта."
+        "а сам маркер задаётся отдельной настройкой продукта; ещё продукт хранит "
+        "разовые напоминания пользователя."
     )
     limitations: tuple[str, ...] = (
         "Маркер расширения не заменяет маркер первой истории: продукт отдаёт оба.",
     )
     if draft:
-        summary = "Расширение того же бота: продукт дополнительно отдаёт маркер расширения."
+        summary = (
+            "Расширение того же бота: продукт дополнительно отдаёт маркер расширения "
+            "и хранит разовые напоминания."
+        )
         limitations = ()
     return Level1Brief(
         marker=extension_marker,
@@ -228,12 +286,28 @@ def build_level1_extension_brief(
                     "и чтобы он тоже лежал в настройках."
                 ),
             },
+            {
+                "id": LEVEL1_REMINDERS_REQUIREMENT,
+                "text": (
+                    "Продукт хранит разовые напоминания пользователя и показывает их "
+                    f"по адресу {LEVEL1_EXTENSION_PACKAGE_ROUTE}; наступившее напоминание "
+                    "отправляется само, без чьего-либо запроса."
+                ),
+                "user_wording": (
+                    "Хочу ставить себе разовые напоминания и видеть, какие уже сработали."
+                ),
+            },
         ),
         usage_examples=(
             {
                 "requirement_id": LEVEL1_EXTENSION_REQUIREMENT,
                 "user_sends": "вопрос, какой маркер расширения сейчас настроен",
                 "product_answers": "значение, подтверждённое в настройке расширения",
+            },
+            {
+                "requirement_id": LEVEL1_REMINDERS_REQUIREMENT,
+                "user_sends": "просьбу показать мои напоминания",
+                "product_answers": "список моих напоминаний и состояние каждого",
             },
         ),
         limitations=limitations,
@@ -243,11 +317,22 @@ def build_level1_extension_brief(
             "Маркер расширения продукта, который продукт отдаёт по адресу "
             f"{LEVEL1_EXTENSION_ENDPOINT_PATH}."
         ),
-        story_title="Расширение уровня 1: второй маркер продукта",
+        story_title="Расширение уровня 1: второй маркер продукта и напоминания",
         story_description=(
             f"Продукт отдаёт маркер расширения по адресу {LEVEL1_EXTENSION_ENDPOINT_PATH}, "
             f"а маркер берётся из настройки продукта {LEVEL1_EXTENSION_SETTING_KEY}. "
-            f"Маркер первой истории {marker} продолжает работать."
+            f"Маркер первой истории {marker} продолжает работать. "
+            "Разовые напоминания продукт получает из каталога пакетов kit."
+        ),
+        further_settings=(
+            {
+                "key": LEVEL1_EXTENSION_PACKAGE_SETTING_KEY,
+                "value": reminders_owner_ref,
+                "description": (
+                    "Чьё первое напоминание продукт создаёт при развёртывании: "
+                    "пользователь, от имени которого продукт проверяет QA."
+                ),
+            },
         ),
     )
 

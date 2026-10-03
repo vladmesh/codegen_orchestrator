@@ -21,6 +21,8 @@ from level1_brief import (
     LEVEL1_BRIEF_LANGUAGE,
     LEVEL1_COMMAND_REQUIREMENT,
     LEVEL1_EXTENSION_REQUIREMENT,
+    LEVEL1_REMINDERS_OWNER_REF,
+    LEVEL1_REMINDERS_REQUIREMENT,
     LEVEL1_SETTING_REQUIREMENT,
     bot_completion_message_mismatches,
     build_level1_brief,
@@ -31,6 +33,8 @@ from level1_change_set import (
     LEVEL1_COMMAND,
     LEVEL1_ENDPOINT_PATH,
     LEVEL1_EXTENSION_ENDPOINT_PATH,
+    LEVEL1_EXTENSION_PACKAGE_ROUTE,
+    LEVEL1_EXTENSION_PACKAGE_SETTING_KEY,
     LEVEL1_EXTENSION_SETTING_KEY,
     LEVEL1_SETTING_KEY,
     SCRIPTED_DEVELOPER,
@@ -713,10 +717,12 @@ def test_the_extension_brief_is_a_document_the_released_write_shape_accepts():
     """The second brief parses as a proposed revision too, so no tool refuses it.
 
     Same check as the first brief's, asked of the document the *correction*
-    confirms: one user-facing requirement, one usage example for it, its
-    limitations, and the one product-scoped setting the extension change set
-    declares. A revision the write boundary would refuse is a run that spends
-    its first story and then stops.
+    confirms: two user-facing requirements — the extension marker and the
+    one-time reminders the kit catalog package brings — a usage example for each,
+    its limitations, the product-scoped setting the extension change set declares,
+    and the reminders package's own setting, confirmed as the identity central QA
+    reads the deployment as. A revision the write boundary would refuse is a run
+    that spends its first story and then stops.
     """
     content = _proposed_content(build_level1_extension_brief(MARKER, EXTENSION_MARKER))
 
@@ -726,12 +732,34 @@ def test_the_extension_brief_is_a_document_the_released_write_shape_accepts():
     user_facing = {
         requirement.id for requirement in content.must_requirements if requirement.user_facing
     }
-    assert user_facing == {LEVEL1_EXTENSION_REQUIREMENT}
+    assert user_facing == {LEVEL1_EXTENSION_REQUIREMENT, LEVEL1_REMINDERS_REQUIREMENT}
     assert user_facing <= exemplified
-    assert [(setting.key, setting.scope.value) for setting in content.initial_settings] == [
-        (LEVEL1_EXTENSION_SETTING_KEY, "product")
+    assert [
+        (setting.key, setting.scope.value, setting.value) for setting in content.initial_settings
+    ] == [
+        (LEVEL1_EXTENSION_SETTING_KEY, "product", f"{EXTENSION_MARKER}-confirmed"),
+        (LEVEL1_EXTENSION_PACKAGE_SETTING_KEY, "product", "qa:central-qa"),
     ]
-    assert content.initial_settings[0].description
+    assert all(setting.description for setting in content.initial_settings)
+    reminders = next(
+        one for one in content.must_requirements if one.id == LEVEL1_REMINDERS_REQUIREMENT
+    )
+    assert LEVEL1_EXTENSION_PACKAGE_ROUTE in reminders.text
+
+
+def test_the_seeded_reminder_belongs_to_the_identity_health_only_qa_reads_as():
+    """The owner is the runtime's own constant, so QA and the suite list the reminder."""
+    brief = build_level1_extension_brief(MARKER, EXTENSION_MARKER)
+
+    assert LEVEL1_REMINDERS_OWNER_REF == "qa:central-qa"
+    assert brief.settings_keys == [
+        LEVEL1_EXTENSION_SETTING_KEY,
+        LEVEL1_EXTENSION_PACKAGE_SETTING_KEY,
+    ]
+    assert {
+        setting["key"]: setting["value"]
+        for setting in brief.present_arguments("p")["initial_settings"]
+    }[LEVEL1_EXTENSION_PACKAGE_SETTING_KEY] == LEVEL1_REMINDERS_OWNER_REF
 
 
 def test_the_correction_presents_a_different_document_than_the_revision_it_corrects():
@@ -812,8 +840,9 @@ async def test_the_extension_plan_is_one_task_admitted_through_the_same_gate():
     """The second story's plan crosses the coverage gate the first story's did.
 
     Same function, same routes, same order — a plan of one task instead of two.
-    The task is created unadmitted under this run's attempt, its one requirement
-    is disposed of, and the single admission step is what releases it.
+    The task is created unadmitted under this run's attempt, both of the brief's
+    requirements are disposed of to it, and the single admission step is what
+    releases it.
     """
     calls: list[tuple[str, str]] = []
     ctx = _extension_admission_context()
@@ -838,8 +867,10 @@ async def test_the_extension_plan_is_one_task_admitted_through_the_same_gate():
     assert [task["dispatch_admitted"] for task in ctx["level1_plan_before_admission"]] == [False]
     assert [task["dispatch_admitted"] for task in ctx["level1_plan_after_admission"]] == [True]
     assert [row["requirement_id"] for row in ctx["level1_coverage"]] == [
-        LEVEL1_EXTENSION_REQUIREMENT
+        LEVEL1_EXTENSION_REQUIREMENT,
+        LEVEL1_REMINDERS_REQUIREMENT,
     ]
+    assert {row["task_id"] for row in ctx["level1_coverage"]} == set(ctx["task_ids"])
     # The gate was crossed, not stepped around: the tasks were read before the
     # admission and the admission is what made them dispatchable.
     assert ("POST", "/api/product-briefs/brief-abc/admit") in calls

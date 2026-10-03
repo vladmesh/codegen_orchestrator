@@ -52,7 +52,11 @@ change set at the end of this module, keyed on its own marker, whose edits are
 anchored on the first story's text rather than repeating it. Its one task adds a
 second endpoint (``GET /level1/extension``) and a second product-scoped setting,
 so the deployment can be asked whether the second story reached it and whether
-the first story's work is still there beside it.
+the first story's work is still there beside it. The same task installs the kit
+catalog package ``reminders`` with the kit's own command (``@@ kit-add
+reminders``): the scripted runner runs ``kit add`` after ``make setup``, so the
+package is resolved from the kit's *live* catalog on the stand, and the deployed
+product then migrates its schema before it serves a request.
 """
 
 from __future__ import annotations
@@ -80,6 +84,19 @@ LEVEL1_EXTENSION_SETTING_KEY = "level1_extension_marker"
 LEVEL1_ENDPOINT_PATH = "/level1/marker"
 #: The backend endpoint the extension story's change set adds.
 LEVEL1_EXTENSION_ENDPOINT_PATH = "/level1/extension"
+#: The kit catalog package the extension story installs, with ``kit add``.
+LEVEL1_EXTENSION_PACKAGE = "reminders"
+#: The route the package mounts. It answers only a verified caller, and only
+#: once the package's schema is migrated.
+LEVEL1_EXTENSION_PACKAGE_ROUTE = "/reminders"
+#: The package's own product setting; the confirmed brief seeds it, the
+#: package declares it, so the change set never does.
+LEVEL1_EXTENSION_PACKAGE_SETTING_KEY = f"{LEVEL1_EXTENSION_PACKAGE}.reminder_owner_ref"
+#: The job the core timer fires for the package, every 60 seconds.
+LEVEL1_EXTENSION_PACKAGE_JOB = f"{LEVEL1_EXTENSION_PACKAGE}.tick"
+#: The health-only line central QA decides the package route by. Anonymous it is
+#: 401; it is 200 only with the verified QA identity and the migrated schema.
+LEVEL1_EXTENSION_PACKAGE_CRITERION = f"- GET {LEVEL1_EXTENSION_PACKAGE_ROUTE} returns 200"
 #: The Telegram command the bot change set adds. Telegram allows only
 #: ``[a-z0-9_]{1,32}`` in a command name, so the marker travels in the
 #: description beside it rather than in the name.
@@ -124,17 +141,35 @@ BOT_MAIN = "services/tg_bot/src/main.py"
 BOT_EXISTING_COMMANDS = (("start", "start the bot"), ("command", "publish a command event"))
 
 
+#: The one directive that names a kit catalog package instead of a path.
+KIT_ADD = "kit-add"
+
+
 class ChangeSetAnchorMissing(RuntimeError):
     """A file of the pinned kit no longer holds the text this edit is anchored on."""
 
 
 @dataclass(frozen=True)
 class Operation:
-    """One ``@@ <op> <path>`` directive and the content that follows it."""
+    """One ``@@ <op> <path>`` directive and the content that follows it.
+
+    For ``kit-add`` the target is a catalog package name rather than a path, and
+    there is no content.
+    """
 
     op: str
     path: str
     content: str
+
+
+def kit_add(package: str) -> Operation:
+    """Install a kit catalog package after ``make setup`` (``@@ kit-add <name>``)."""
+    return Operation(KIT_ADD, package, "")
+
+
+def _written_paths(operations: list[Operation]) -> list[str]:
+    """The workspace paths a change set writes; a package install writes none of its own."""
+    return [operation.path for operation in operations if operation.op != KIT_ADD]
 
 
 def level1_command_description(marker: str) -> str:
@@ -241,6 +276,17 @@ def level1_extension_qa_criteria(marker: str, extension_marker: str) -> str:
         f"{_level1_backend_qa_criteria(marker)}\n"
         f"{extension_acceptance_criteria(marker, extension_marker)}"
     )
+
+
+def level1_extension_health_criteria() -> str:
+    """The repository checklist the scripted run's extension story writes for QA.
+
+    Health-only on purpose, so central QA decides it over HTTP with no executor:
+    the seeded health check, then the package route. The route answers 200 only
+    when the request carries the verified QA identity and the package's schema
+    is migrated, so a pass says the catalog install reached the deployment.
+    """
+    return f"{BASELINE_ACCEPTANCE_CRITERIA}\n{LEVEL1_EXTENSION_PACKAGE_CRITERION}"
 
 
 def _kit_rules(*, routers_module: str) -> str:
@@ -354,10 +400,27 @@ def extension_contract(marker: str, extension_marker: str) -> str:
             default=extension_marker,
         )
         + f" Declare it beside `{LEVEL1_SETTING_KEY}`, not over it.\n"
-        "- Leave the first story's work in place: "
+        + _package_install_contract()
+        + "- Leave the first story's work in place: "
         f"`GET {LEVEL1_ENDPOINT_PATH}`, the `{LEVEL1_SETTING_KEY}` setting and the "
         f"/{LEVEL1_COMMAND} bot command keep answering exactly as they do now.\n\n"
         + _kit_rules(routers_module=BACKEND_EXTENSION_MODULE)
+    )
+
+
+def _package_install_contract() -> str:
+    """The catalog install the extension task delivers, in words a model can follow."""
+    return (
+        f"- Install the kit catalog package `{LEVEL1_EXTENSION_PACKAGE}` with the kit's own "
+        f"command: after `make setup`, run `.venv/bin/kit add {LEVEL1_EXTENSION_PACKAGE}` from "
+        "the product root. It resolves the package from the kit's live catalog, adds it to the "
+        "backend's dependencies and to `packages` in "
+        f"`{BACKEND_MANIFEST}`, and regenerates the product contract; commit everything it "
+        "changes. Do not write the package's routes, tables, jobs or migrations by hand: the "
+        f"package brings `{LEVEL1_EXTENSION_PACKAGE_ROUTE}`, its own schema and migration, and "
+        f"the `{LEVEL1_EXTENSION_PACKAGE_JOB}` job the kit core's timer fires. Its setting "
+        f"`{LEVEL1_EXTENSION_PACKAGE_SETTING_KEY}` is the package's own and the deploy writes "
+        f"the confirmed value, so do not declare it in `{BACKEND_MANIFEST}`.\n"
     )
 
 
@@ -583,6 +646,7 @@ def bot_operations(marker: str) -> list[Operation]:
 def render_change_set(operations: list[Operation]) -> str:
     """The single fenced block the scripted runner reads out of ``TASK.md``."""
     lines = [f"```{CHANGE_SET_FENCE}", CHANGE_SET_SENTINEL]
+    # A `kit-add` renders as its directive alone: its content is always empty.
     for operation in operations:
         lines.append(f"@@ {operation.op} {operation.path}")
         lines.extend(operation.content.splitlines())
@@ -601,7 +665,7 @@ class Level1ChangeSets:
     @property
     def paths(self) -> list[str]:
         """Every workspace path the story's change sets touch."""
-        return [operation.path for operation in (*self.backend, *self.bot)]
+        return _written_paths([*self.backend, *self.bot])
 
     def backend_task_description(self, *, agent_type: str) -> str:
         return _task_description(
@@ -704,7 +768,9 @@ def extension_acceptance_criteria(marker: str, extension_marker: str) -> str:
         "still carries the first story's work.\n"
         f'- That JSON carries "{LEVEL1_EXTENSION_SETTING_KEY}" among the keys of '
         '"declared_settings", so the product setting the corrected brief seeded is registered '
-        "on the running deployment."
+        "on the running deployment.\n"
+        f"- The deployed product carries the kit catalog package `{LEVEL1_EXTENSION_PACKAGE}`: "
+        f"GET {LEVEL1_EXTENSION_PACKAGE_ROUTE}, read as a verified user, answers HTTP 200."
     )
 
 
@@ -783,7 +849,11 @@ def _backend_router_with_extension() -> str:
 
 
 def extension_operations(marker: str, extension_marker: str) -> list[Operation]:
-    """The extension story's one task: a second endpoint and the setting behind it."""
+    """The extension story's one task: a second endpoint, its setting, and a catalog package.
+
+    The package install comes last in the block, but the runner runs it after
+    ``make setup`` whatever its position: the file writes are applied first.
+    """
     return [
         Operation(
             "replace", BACKEND_MANIFEST, _backend_manifest_with_extension(marker, extension_marker)
@@ -794,6 +864,7 @@ def extension_operations(marker: str, extension_marker: str) -> list[Operation]:
             _backend_extension_endpoint(marker, extension_marker),
         ),
         Operation("replace", BACKEND_ROUTER, _backend_router_with_extension()),
+        kit_add(LEVEL1_EXTENSION_PACKAGE),
     ]
 
 
@@ -807,12 +878,18 @@ class Level1ExtensionChangeSet:
 
     @property
     def paths(self) -> list[str]:
-        """Every workspace path the extension change set touches."""
-        return [operation.path for operation in self.operations]
+        """Every workspace path the extension change set writes itself."""
+        return _written_paths(self.operations)
+
+    @property
+    def packages(self) -> list[str]:
+        """The kit catalog packages the extension change set installs."""
+        return [operation.path for operation in self.operations if operation.op == KIT_ADD]
 
     def task_description(self, *, agent_type: str) -> str:
         return _task_description(
-            "Add the level-1 extension endpoint and register its product setting.",
+            "Add the level-1 extension endpoint, register its product setting and install the "
+            f"kit's {LEVEL1_EXTENSION_PACKAGE} package.",
             extension_contract(self.marker, self.extension_marker),
             self.operations,
             agent_type=agent_type,

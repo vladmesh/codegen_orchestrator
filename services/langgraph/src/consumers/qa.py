@@ -454,21 +454,44 @@ async def _stored_secrets(project_id: str) -> dict:
     return decrypt_dict(stored) if stored else {}
 
 
-async def _resolve_caller_identity(
-    msg: QAMessage, stored: dict
-) -> tuple[QACallerIdentity | None, QABlocker | None]:
-    """Choose and prove the one user this run reads package routes as.
+async def _run_secrets(project_id: str) -> tuple[dict, QARunRedaction]:
+    """The project's stored secrets, and the run's one redaction set built from them.
 
-    Called after the bot preflight, so a run that tests a bot reaches here only
-    with the QA Telegram account proved for this run and admitted by the bot:
-    that account is the identity, and what the executor creates through the bot
-    is what it reads back. Any other run reads as the platform's QA identity.
+    Both QA legs start here — the exploratory run and the health-only checks — so
+    every capability a run may hold is read once and enters the same
+    `QARunRedaction` the moment it is read.
     """
-    return await resolve_qa_caller_identity(
+    stored = await _stored_secrets(project_id)
+    return stored, QARunRedaction.from_stored(stored)
+
+
+async def _establish_caller_identity(
+    msg: QAMessage, stored: dict, *, telegram_account_id: int | None
+) -> tuple[QACallerIdentity | None, QABlocker | None]:
+    """Choose and prove the one user this run reads package routes as, and record it.
+
+    The one construction of a run's QA identity, for both legs.
+    `telegram_account_id` is the QA Telegram account this run proved and the bot
+    admitted — passed only by the exploratory leg of a run testing a bot, after
+    its bot preflight, so what the executor creates through the bot is what it
+    reads back. Every other run, the health-only leg included (it talks to no
+    bot), reads as the platform's QA identity. A deployment without the
+    caller-identity core gets no identity and is unchanged; a grant that is not
+    proved is the typed `QA_ACCESS_GRANT_FAILED` blocker.
+    """
+    caller_identity, blocker = await resolve_qa_caller_identity(
         deployed_url=msg.deployed_url,
         secrets=stored,
-        telegram_account_id=QA_TEST_TELEGRAM_ID if msg.bot_username else None,
+        telegram_account_id=telegram_account_id,
     )
+    if blocker:
+        return None, blocker
+    if (identity := caller_identity_record(caller_identity)) is not None and msg.run_id:
+        await api_client.patch(
+            f"runs/{msg.run_id}",
+            json={"run_metadata": {QA_CALLER_IDENTITY_KEY: identity}},
+        )
+    return caller_identity, None
 
 
 async def _resolve_jobs_capability(
@@ -584,8 +607,7 @@ async def _run_exploratory_qa(
     # comes from here, and so does the one set the run keeps them out of
     # everything with: each call result before the executor sees it, and
     # everything the run retains.
-    stored = await _stored_secrets(msg.project_id)
-    redaction = QARunRedaction.from_stored(stored)
+    stored, redaction = await _run_secrets(msg.project_id)
     jobs = await _resolve_jobs_capability(
         project_id=msg.project_id,
         deployed_url=msg.deployed_url,
@@ -618,14 +640,11 @@ async def _run_exploratory_qa(
 
     # The user package routes are read as, proved active before any executor
     # exists. A deployment without the caller-identity core is unchanged.
-    caller_identity, identity_blocker = await _resolve_caller_identity(msg, stored)
+    caller_identity, identity_blocker = await _establish_caller_identity(
+        msg, stored, telegram_account_id=QA_TEST_TELEGRAM_ID if msg.bot_username else None
+    )
     if identity_blocker:
         return None, identity_blocker
-    if (identity := caller_identity_record(caller_identity)) is not None and msg.run_id:
-        await api_client.patch(
-            f"runs/{msg.run_id}",
-            json={"run_metadata": {QA_CALLER_IDENTITY_KEY: identity}},
-        )
     established_facts.extend(caller_identity_facts(caller_identity))
 
     # The seeds are due to a run that tests a Telegram bot, which is exactly
@@ -825,9 +844,22 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         if health_checks is not None:
             logger.info("qa_health_only_criteria", story_id=story_id, checks=len(health_checks))
+            # The same identity and redaction an exploratory run has: a package
+            # route among the checks is read as the verified QA user, and what the
+            # checks retain is scrubbed of every capability the run holds.
+            stored, redaction = await _run_secrets(msg.project_id)
+            caller_identity, identity_blocker = await _establish_caller_identity(
+                msg, stored, telegram_account_id=None
+            )
+            if identity_blocker:
+                return await _handle_qa_blocked(
+                    run_id=run_id, blocker=identity_blocker, attempts=attempts
+                )
             qa_result = await run_health_checks(
                 deployed_url=msg.deployed_url,
                 checks=health_checks,
+                caller_identity=caller_identity,
+                redaction=redaction,
             )
         else:
             qa_result, exploratory_blocker = await _run_exploratory_qa(

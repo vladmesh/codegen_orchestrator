@@ -26,6 +26,7 @@ is the version sentinel ``codegen-change-set v1``::
     # Product
     @@ append .env.example
     PING_ENABLED=true
+    @@ kit-add reminders
     ```
 
 Rules:
@@ -35,10 +36,18 @@ Rules:
   with a trailing newline, and a directive with no content lines means empty content.
 * ``create`` writes a new file (parent directories are created) and refuses an existing
   path; ``replace`` overwrites an existing file; ``append`` appends to an existing file.
-* Operations are applied in the order written.
+* ``kit-add`` names a kit catalog package instead of a path, and takes no content:
+  ``@@ kit-add <name>``. It is not a file write. After ``make setup`` the script runs
+  ``.venv/bin/kit add <name>`` from the product root, once per directive in the order
+  written, so the kit resolves the package from its live catalog (the kit's default
+  source; the script passes no catalog option) and installs it with its own tooling.
+  The name must be a package identifier (``[a-z][a-z0-9_]*``, at most 64 characters),
+  which also keeps it from reading as an option of ``kit add``.
+* File operations are applied in the order written.
 * Anything else is a ``MalformedChangeSet``: an unterminated fence, an empty block, a
-  missing or unsupported version sentinel, an unknown op, a directive without a path, or
-  content before the first directive.
+  missing or unsupported version sentinel, an unknown op, a directive without a path, a
+  ``kit-add`` without a valid package name or with content, or content before the first
+  directive.
 * A path that escapes the workspace — absolute, ``~``-rooted, or containing a ``..``
   component — is refused with ``PathEscapesWorkspace``. The whole block is parsed and
   every path validated *before* the first write, so a refused change set writes nothing.
@@ -89,18 +98,20 @@ separate process, built from a string — receives the same lines as data.
 Failure reporting
 -----------------
 
-Every step is named (``change_set``, ``branch``, ``setup``, ``hooks_path``, ``exclude``,
-``stage``, ``commit``, ``push``, ``sha``). The first failure stops the run and is POSTed
-to the result endpoint as ``success: false`` with the step name, its exit code and its
+Every step is named (``change_set``, ``branch``, ``setup``, ``kit-add``, ``hooks_path``,
+``exclude``, ``stage``, ``commit``, ``push``, ``sha``). The first failure stops the run and
+is POSTed to the result endpoint as ``success: false`` with the step name, its exit code and its
 stderr, credential-redacted and truncated to the last 4000 characters, and the script
-exits with that code. A ``make setup`` or hook failure is a failure of the run, never a
-skip.
+exits with that code. A ``make setup``, ``kit add`` or hook failure is a failure of the
+run, never a skip.
 
 Timeouts
 --------
 
 ``make setup`` gets 1800 s because it builds several uv virtualenvs from scratch, runs the
-framework code generation and then ruff over the whole tree; the hook-running ``git
+framework code generation and then ruff over the whole tree; ``kit add`` gets 900 s because
+it fetches the package's released tag, builds its wheel, syncs the backend environment and
+regenerates the product contract; the hook-running ``git
 commit`` and ``git push`` get 600 s each because the product's ``.githooks`` run the same
 lint and spec checks on every commit. Plain metadata git calls keep 60 s.
 """
@@ -123,7 +134,11 @@ CHANGE_SET_MARKER = "codegen-change-set"
 CHANGE_SET_SENTINEL = "codegen-change-set v1"
 EXCLUDE_HEADER = __EXCLUDE_HEADER__
 DIRECTIVE = "@@ "
-OPERATIONS = ("create", "replace", "append")
+FILE_OPERATIONS = ("create", "replace", "append")
+KIT_ADD = "kit-add"
+OPERATIONS = FILE_OPERATIONS + (KIT_ADD,)
+PACKAGE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+KIT_COMMAND = ".venv/bin/kit"
 RESULT_URL = "http://127.0.0.1:9090/result"
 
 # Injected by the orchestrator, never part of the product repository. Compiled in
@@ -135,6 +150,7 @@ WORKER_INTERNAL_FILES = __WORKER_INTERNAL_FILES__
 HOOKLESS_GIT = ("git", "-c", "core.hooksPath=/dev/null")
 
 SETUP_TIMEOUT_SECONDS = 1800
+KIT_ADD_TIMEOUT_SECONDS = 900
 HOOK_TIMEOUT_SECONDS = 600
 GIT_TIMEOUT_SECONDS = 60
 MAX_STDERR_CHARS = 4000
@@ -195,6 +211,15 @@ def validate_path(path):
     return candidate
 
 
+def validate_package_name(name):
+    candidate = name.strip()
+    if PACKAGE_NAME.fullmatch(candidate) is None:
+        raise MalformedChangeSet(
+            "kit-add needs a package identifier, got %r" % candidate
+        )
+    return candidate
+
+
 def candidate_blocks(lines):
     """Every fenced block whose opening line is exactly the change-set marker."""
     blocks = []
@@ -225,17 +250,23 @@ def parse_directives(body):
             op = parts[0]
             if op not in OPERATIONS:
                 raise MalformedChangeSet("unknown change-set operation: " + op)
-            path = validate_path(parts[1] if len(parts) > 1 else "")
-            operations.append((op, path, []))
+            argument = parts[1] if len(parts) > 1 else ""
+            if op == KIT_ADD:
+                target = validate_package_name(argument)
+            else:
+                target = validate_path(argument)
+            operations.append((op, target, []))
         elif operations:
+            if operations[-1][0] == KIT_ADD and line.strip():
+                raise MalformedChangeSet("kit-add takes no content: " + operations[-1][1])
             operations[-1][2].append(line)
         elif line.strip():
             raise MalformedChangeSet("change-set content before the first directive")
     if not operations:
         raise MalformedChangeSet("change-set block holds no operations")
     return [
-        (op, path, "\n".join(content) + "\n" if content else "")
-        for op, path, content in operations
+        (op, target, "" if op == KIT_ADD else "\n".join(content) + "\n" if content else "")
+        for op, target, content in operations
     ]
 
 
@@ -257,7 +288,10 @@ def parse_change_set(text):
 
 
 def apply_change_set(operations, workspace):
+    """Write the file operations. ``kit-add`` is not a write; it runs after setup."""
     for op, path, content in operations:
+        if op == KIT_ADD:
+            continue
         target = os.path.join(workspace, path)
         if op == "create":
             if os.path.exists(target):
@@ -362,6 +396,18 @@ def run_scripted(operations, workspace):
         raise StepFailed("change_set", 1, str(error), type(error).__name__)
     branch = current_branch(workspace)
     step("setup", ("make", "setup"), SETUP_TIMEOUT_SECONDS, workspace, "SetupFailed")
+    # After setup, because setup is what installs the kit's own command into the
+    # product's virtualenv; before staging, because what `kit add` changes (the
+    # backend's dependencies, its manifest, the regenerated contract) is the commit.
+    for op, name, _ in operations:
+        if op == KIT_ADD:
+            step(
+                "kit-add",
+                (KIT_COMMAND, "add", name),
+                KIT_ADD_TIMEOUT_SECONDS,
+                workspace,
+                "KitAddFailed",
+            )
     hooks = step(
         "hooks_path",
         ("git", "config", "--local", "--get", "core.hooksPath"),
