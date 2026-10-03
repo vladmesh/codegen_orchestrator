@@ -115,6 +115,8 @@ class TestWorkerWrapperComponent:
             "--sandbox",
             "danger-full-access",
         )
-        assert "TASK.md" in mock_exec.call_args.args[4]
-        assert "not part of the command" not in mock_exec.call_args.args[4]
+        assert mock_exec.call_args.args[4] == "-c"
+        assert "WORKER_BROKER_TOKEN" in mock_exec.call_args.args[5]
+        assert "TASK.md" in mock_exec.call_args.args[6]
+        assert "not part of the command" not in mock_exec.call_args.args[6]
         assert wrapper._agent_stdout_tail is None

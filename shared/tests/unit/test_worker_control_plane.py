@@ -8,6 +8,7 @@ from shared.contracts.queues.worker import WorkerConfig
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import (
     DOCKER_DAEMON_OPERATIONS,
+    GITHUB_CREDENTIAL_OPERATIONS,
     TURN_PROTOCOL_OPERATIONS,
     WORKER_TYPE_CONTROL_PLANE_ALLOWLIST,
     WorkerControlPlaneOperation,
@@ -28,11 +29,14 @@ def test_every_worker_type_has_a_decision():
 def test_every_operation_is_classified():
     """A new control-plane operation must be placed, not left implicitly allowed.
 
-    Adding one to the enum without saying whether it touches the management
-    host's Docker daemon fails here, which is the point: the QA allowlist is
-    derived from that classification.
+    Turn protocol, management-host Docker access and repository credential
+    issuance are disjoint authority categories. QA receives only the first.
     """
-    assert TURN_PROTOCOL_OPERATIONS | DOCKER_DAEMON_OPERATIONS == set(WorkerControlPlaneOperation)
+    assert (
+        TURN_PROTOCOL_OPERATIONS | DOCKER_DAEMON_OPERATIONS | GITHUB_CREDENTIAL_OPERATIONS
+        == set(WorkerControlPlaneOperation)
+    )
+    assert not (TURN_PROTOCOL_OPERATIONS | DOCKER_DAEMON_OPERATIONS) & GITHUB_CREDENTIAL_OPERATIONS
     assert not TURN_PROTOCOL_OPERATIONS & DOCKER_DAEMON_OPERATIONS
 
 
@@ -40,7 +44,8 @@ def test_a_qa_worker_gets_the_turn_protocol_and_nothing_that_reaches_the_daemon(
     allowed = WORKER_TYPE_CONTROL_PLANE_ALLOWLIST[WorkerType.QA]
     assert allowed == TURN_PROTOCOL_OPERATIONS
     assert not allowed & DOCKER_DAEMON_OPERATIONS
-    for operation in DOCKER_DAEMON_OPERATIONS:
+    assert not allowed & GITHUB_CREDENTIAL_OPERATIONS
+    for operation in DOCKER_DAEMON_OPERATIONS | GITHUB_CREDENTIAL_OPERATIONS:
         assert (
             control_plane_denial(WorkerType.QA.value, operation)
             == f"a qa worker may not call {operation.value}"

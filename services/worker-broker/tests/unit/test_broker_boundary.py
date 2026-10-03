@@ -6,7 +6,10 @@ import httpx
 import pytest
 
 from shared.contracts.vocab import WorkerType
-from shared.contracts.worker_control_plane import WorkerControlPlaneOperation
+from shared.contracts.worker_control_plane import (
+    GitHubCredentialRequest,
+    WorkerControlPlaneOperation,
+)
 from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 from src import main
 from src.auth import credential_key, verify_token
@@ -25,6 +28,73 @@ def test_worker_credential_is_worker_scoped_and_constant_time_verifiable():
     assert credential_key("one") != credential_key("two")
     assert verify_token(token, stored)
     assert not verify_token("b" * 43, stored)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_type", [WorkerType.QA, WorkerType.DEVELOPER])
+async def test_credential_route_denies_before_forwarding(worker_type, monkeypatch):
+    from unittest.mock import MagicMock
+
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    token = "x" * 43
+    await main.register_worker(
+        main.Registration(
+            worker_id="owned",
+            token=token,
+            worker_type=worker_type,
+            input_stream="in",
+            output_stream="out",
+        ),
+        main.settings.WORKER_BROKER_INTERNAL_TOKEN,
+    )
+    forwarding = MagicMock(side_effect=AssertionError("forwarded denial"))
+    monkeypatch.setattr(main.httpx, "AsyncClient", forwarding)
+    with pytest.raises(main.HTTPException) as denial:
+        await main.github_credential(
+            "owned",
+            GitHubCredentialRequest(repository="org/repo"),
+            token if worker_type is WorkerType.QA else "wrong",
+        )
+    assert denial.value.status_code == 403
+    forwarding.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_credential_proxy_forwards_the_same_identity_and_typed_request(monkeypatch):
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    token = "x" * 43
+    await main.register_worker(
+        main.Registration(
+            worker_id="owned",
+            token=token,
+            worker_type=WorkerType.DEVELOPER,
+            input_stream="in",
+            output_stream="out",
+        ),
+        main.settings.WORKER_BROKER_INTERNAL_TOKEN,
+    )
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(200, json={"token": "synthetic-current"})
+
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = await main.github_credential(
+        "owned", GitHubCredentialRequest(repository="org/repo"), token
+    )
+    assert json.loads(response.body)["token"] == "synthetic-current"  # noqa: S105
+    assert response.headers["cache-control"] == "no-store"
+    assert calls[0].url.path == "/api/worker/owned/github/credential"
+    assert calls[0].headers["X-Worker-Broker-Token"] == token
+    assert json.loads(calls[0].content) == {"repository": "org/repo"}
 
 
 @pytest.mark.asyncio

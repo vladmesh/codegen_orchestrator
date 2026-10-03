@@ -358,7 +358,6 @@ class TestSendTaskToWorker:
 
         result = await request_spawn(
             repo="org/repo",
-            github_token="ghs_test",  # noqa: S106
             task_content="complete the work",
             ownership=_OWNERSHIP,
         )
@@ -398,7 +397,6 @@ class TestSendTaskToWorker:
         with pytest.raises(KeyboardInterrupt):
             await request_spawn(
                 repo="org/repo",
-                github_token="ghs_test",  # noqa: S106
                 task_content="complete the work",
                 ownership=_OWNERSHIP,
             )
@@ -698,7 +696,6 @@ class TestSpawnResultWorkerId:
 
         result = await request_spawn(
             repo="org/myrepo",
-            github_token="ghs_test",  # noqa: S106
             task_content="build it",
             timeout_seconds=5,
             ownership=WorkerOwnership(

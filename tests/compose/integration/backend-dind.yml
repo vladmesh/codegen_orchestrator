@@ -92,6 +92,8 @@ services:
     user: root  # Required for Docker daemon access and workspace chown (matches production)
     environment:
       - ENVIRONMENT=test
+      - GITHUB_APP_ID=12345
+      - GITHUB_APP_PRIVATE_KEY_PATH=/dev/null
       - REDIS_URL=redis://172.31.0.10:6379/0
       - API_BASE_URL=http://api:8000
       - DOCKER_HOST=tcp://docker:2375
@@ -255,6 +257,7 @@ services:
         "tests/integration/backend/test_task_injection.py",
         "tests/integration/backend/test_worker_wrapper_runtime.py",
         "tests/integration/backend/test_worker_execution.py",
+        "tests/integration/backend/test_codex_shell_credentials.py",
         "tests/integration/backend/test_worker_ownership_labels.py",
         "tests/integration/backend/test_run_ownership_propagation.py",
         "tests/integration/backend/test_run_evidence_by_label.py",

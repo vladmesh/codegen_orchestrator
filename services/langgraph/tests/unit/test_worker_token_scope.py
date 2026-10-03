@@ -1,9 +1,4 @@
-"""A coding worker is handed a repository-scoped GitHub token, never an installation-wide one.
-
-The worker is an ephemeral container with unrestricted egress: a prompt-injected
-agent holding an installation-wide token reaches every repository the GitHub App
-installation covers.
-"""
+"""Worker creation names a repository; command helpers request auth on demand."""
 
 from __future__ import annotations
 
@@ -46,7 +41,7 @@ def _state() -> dict:
 @patch("src.nodes.developer.api_client")
 @patch("src.nodes.developer.GitHubAppClient")
 @patch("src.nodes.developer.request_spawn")
-async def test_worker_receives_repo_scoped_token(mock_spawn, mock_github_cls, mock_api):
+async def test_worker_creation_carries_no_github_token(mock_spawn, mock_github_cls, mock_api):
     from src.clients.worker_spawner import SpawnResult
     from src.nodes.developer import DeveloperNode
 
@@ -68,6 +63,6 @@ async def test_worker_receives_repo_scoped_token(mock_spawn, mock_github_cls, mo
 
     await DeveloperNode().run(_state())
 
-    github.get_repo_scoped_token.assert_awaited_once_with("org", "test-repo")
+    github.get_repo_scoped_token.assert_not_awaited()
     github.get_token.assert_not_awaited()
-    assert mock_spawn.await_args.kwargs["github_token"] == "ghs_scoped"  # noqa: S105
+    assert "github_token" not in mock_spawn.await_args.kwargs

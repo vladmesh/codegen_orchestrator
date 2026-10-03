@@ -2,6 +2,17 @@ from dataclasses import dataclass
 
 from .base import AgentRunner
 
+# CLI overrides replace the mounted profile's policy without carrying values in
+# argv. Only process settings and the developer's existing broker identity reach
+# shell tools; model/App/GitHub credentials remain outside that environment.
+DEVELOPER_SHELL_POLICY = (
+    'shell_environment_policy={inherit="all",ignore_default_excludes=true,'
+    "exclude=[],set={},experimental_use_profile=false,include_only=["
+    '"HOME","LANG","LC_ALL","LC_CTYPE","PATH","PYTHONPATH",'
+    '"PYTHONNOUSERSITE","TERM","TMPDIR","TZ",'
+    '"WORKER_BROKER_URL","WORKER_BROKER_TOKEN","WORKER_ID"]}'
+)
+
 
 @dataclass
 class CodexRunner(AgentRunner):
@@ -35,4 +46,6 @@ class CodexRunner(AgentRunner):
         # developer workers retain the usual repository check.
         if self.allow_non_git_workspace:
             command.append("--skip-git-repo-check")
+        else:
+            command.extend(["-c", DEVELOPER_SHELL_POLICY])
         return [*command, prompt]

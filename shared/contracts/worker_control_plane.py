@@ -19,6 +19,8 @@ the worker — never a field the caller supplies about itself.
 
 from enum import StrEnum
 
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
+
 from shared.contracts.vocab import WorkerType
 
 
@@ -37,6 +39,21 @@ class WorkerControlPlaneOperation(StrEnum):
     SESSION_WRITE = "session.write"
     SESSION_CLEAR = "session.clear"
     INFRA_COMPOSE = "infra.compose"
+    GITHUB_CREDENTIAL = "github.credential"
+
+
+class GitHubCredentialRequest(BaseModel):
+    """Repository is a check against ownership, never a minting selector."""
+
+    model_config = ConfigDict(extra="forbid")
+    repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+class GitHubCredentialResponse(BaseModel):
+    """Transient credential; SecretStr keeps repr and diagnostics opaque."""
+
+    model_config = ConfigDict(extra="forbid")
+    token: SecretStr = Field(min_length=1)
 
 
 # The protocol of a turn: take work, report progress, keep the CLI's session
@@ -59,6 +76,13 @@ TURN_PROTOCOL_OPERATIONS: frozenset[WorkerControlPlaneOperation] = frozenset(
 # project of its own, so for it these are pure escalation.
 DOCKER_DAEMON_OPERATIONS: frozenset[WorkerControlPlaneOperation] = frozenset(
     {WorkerControlPlaneOperation.INFRA_COMPOSE}
+)
+
+# Platform-issued repository auth is authority beyond the turn protocol, but
+# does not reach Docker. Keeping it separate makes every new operation's
+# authority explicit without adding it to QA's allowlist.
+GITHUB_CREDENTIAL_OPERATIONS: frozenset[WorkerControlPlaneOperation] = frozenset(
+    {WorkerControlPlaneOperation.GITHUB_CREDENTIAL}
 )
 
 WORKER_TYPE_CONTROL_PLANE_ALLOWLIST: dict[WorkerType, frozenset[WorkerControlPlaneOperation]] = {

@@ -242,8 +242,9 @@ class GitHubAppClientBase:
         # 1. Check cache
         if cache_key in self._token_cache:
             token, expires_at = self._token_cache[cache_key]
-            # Buffer of 60 seconds
-            if datetime.now(UTC) < expires_at - timedelta(seconds=60):
+            # Leave five minutes for the operation using a repository credential.
+            margin = 300 if repo is not None else 60
+            if datetime.now(UTC) < expires_at - timedelta(seconds=margin):
                 return token
 
         # 2. Generate new token

@@ -16,6 +16,8 @@ import structlog
 from shared.contracts.queues.worker_result import parse_worker_result
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import (
+    GitHubCredentialRequest,
+    GitHubCredentialResponse,
     WorkerControlPlaneOperation,
     control_plane_denial,
 )
@@ -296,4 +298,36 @@ async def compose(
         body = {"error": "worker-manager returned invalid JSON"}
     return Response(
         content=json.dumps(body), status_code=response.status_code, media_type="application/json"
+    )
+
+
+@app.post("/v1/workers/{worker_id}/github/credential")
+async def github_credential(
+    worker_id: str,
+    request: GitHubCredentialRequest,
+    x_worker_broker_token: str | None = Header(default=None),
+):
+    await _worker(
+        app.state.redis,
+        worker_id,
+        x_worker_broker_token,
+        WorkerControlPlaneOperation.GITHUB_CREDENTIAL,
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{settings.WORKER_MANAGER_URL}/api/worker/{worker_id}/github/credential",
+                json=request.model_dump(mode="json"),
+                headers={"X-Worker-Broker-Token": x_worker_broker_token or ""},
+            )
+        response.raise_for_status()
+        credential = GitHubCredentialResponse.model_validate(response.json())
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(exc.response.status_code, "repository credential refused") from None
+    except Exception:  # noqa: BLE001 - payload-free transport refusal
+        raise HTTPException(503, "repository credential unavailable") from None
+    return Response(
+        content=json.dumps({"token": credential.token.get_secret_value()}),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
     )

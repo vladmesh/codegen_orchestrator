@@ -708,10 +708,9 @@ WORKSPACE_BASE_PATH = "/tmp/codegen/workspaces"  # noqa: S108
 
 
 def _scaffolded_repository_env(repo_id: str) -> dict[str, str]:
-    """One test-only identity for the origin and repository-scoped native credential."""
+    """One test-only repository identity for the sanitized origin."""
     return {
         "REPO_NAME": f"backend-dind/{repo_id}",
-        "GITHUB_TOKEN": f"synthetic-backend-dind-{repo_id}",
     }
 
 
@@ -721,7 +720,7 @@ def scaffolded_worker_config(
     """Build a valid developer request without changing its other test inputs.
 
     Invalid repository input belongs in an explicit WorkerConfig, outside this
-    success-path producer. Synthetic credentials only exercise local Git setup;
+    success-path producer. These fixtures only exercise local Git setup;
     these repositories do not exist on GitHub and must never be fetched.
     """
     repository_env = _scaffolded_repository_env(repo_id)

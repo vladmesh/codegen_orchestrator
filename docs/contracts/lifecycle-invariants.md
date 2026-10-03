@@ -339,6 +339,20 @@ last metadata name is retained rather than silently losing the worker from run
 evidence. Cleanup selects only the owning run's labels, verifies removal, is
 idempotent, and refuses an unscoped or neighbour-owned resource.
 
+Developer workers store no GitHub token in Docker environment, Git configuration,
+remote URLs or credential files. Native Git get requests credentials through the
+authenticated broker operation; store/erase persist nothing. `useHttpPath` binds
+the request to the platform-owned repository. gh receives auth only for one child
+command, and its persistent auth subcommands are unavailable. No turn token is cached.
+
+Before every developer turn, including reuse, the wrapper runs `git ls-remote origin`
+through this helper. Failure submits typed pre-agent infrastructure evidence before
+workspace preparation or any runner/model call. The Run and Story follow the existing
+infrastructure parking path. Publication still uses non-force push and exact SHA
+readback. Existing containers must be drained and recreated before activation;
+preserve unpublished work and ownership as specified in [the credential upgrade
+procedure](../SECRETS.md#worker-credential-upgrade-procedure).
+
 ## Paid-run acceptance evidence
 
 `tests/live/run_evidence.py` and `scripts/stand_acceptance.py` are canonical for

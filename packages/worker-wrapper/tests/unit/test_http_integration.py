@@ -373,3 +373,9 @@ class TestWatchdog:
         output_calls = publish_calls
         assert len(output_calls) == 1
         assert output_calls[0][0][1].commit_sha == "http-sha"
+
+
+@pytest.fixture(autouse=True)
+def successful_repository_auth(monkeypatch):
+    """These protocol units supply a ready repository; auth has separate native tests."""
+    monkeypatch.setattr(WorkerWrapper, "_git_auth_preflight", lambda self: True)

@@ -431,7 +431,14 @@ class WorkerManager:
             publish_ready: mark the worker RUNNING after the container starts. QA
                 workers defer this until their injected turn materials are ready.
         """
-        env_vars = env_vars or {}
+        rejected_secret_values = tuple(
+            (env_vars or {}).get(key, "") for key in ("GITHUB_TOKEN", "GH_TOKEN")
+        )
+        env_vars = {
+            key: value
+            for key, value in (env_vars or {}).items()
+            if key not in {"GITHUB_TOKEN", "GH_TOKEN"}
+        }
         network_name = network_name or settings.WORKER_NETWORK
         container_config = container_config or WorkerContainerConfig(
             worker_id=worker_id,
@@ -525,7 +532,7 @@ class WorkerManager:
         except Exception as e:
             message = redact_diagnostic(
                 e,
-                secrets=(env_vars.get("GITHUB_TOKEN", ""), env_vars.get("GH_TOKEN", "")),
+                secrets=rejected_secret_values,
             )
             logger.error("worker_creation_failed", worker_id=worker_id, error=message)
             await self.redis.hset(
@@ -1012,25 +1019,16 @@ class WorkerManager:
         env_vars: dict[str, str],
         branch: str | None,
     ) -> None:
-        """Refresh repository credentials and checkout before injecting turn files."""
-        # Git setup: workspace is pre-scaffolded, just refresh git token
+        """Install on-demand auth and checkout before injecting turn files."""
         repo_name = env_vars.get("REPO_NAME")
-        github_token = env_vars.get("GITHUB_TOKEN")
-
-        if repo_id and not (repo_name and github_token):
-            raise RuntimeError("Repository credentials are required before workspace preparation")
-
-        if repo_name and github_token:
-            logger.info(
-                "refreshing_git_token",
-                worker_id=worker_id,
-                repo_id=repo_id,
+        if repo_id and not repo_name:
+            raise RuntimeError("Repository identity is required before workspace preparation")
+        if repo_name:
+            configured = await git_ops.configure_git_credentials(
+                self.docker, container_id, repo_name, worker_id
             )
-            refreshed = await git_ops.refresh_git_token(
-                self.docker, container_id, repo_name, github_token, worker_id
-            )
-            if not refreshed:
-                raise RuntimeError("Git credential refresh or workspace sanitization failed")
+            if not configured:
+                raise RuntimeError("Git credential setup or workspace sanitization failed")
 
         if branch:
             # A checkout that returns False established neither the branch nor
@@ -1042,7 +1040,6 @@ class WorkerManager:
                 container_id,
                 branch,
                 worker_id,
-                secret_values=(github_token,) if github_token else (),
             )
             if not checkout:
                 raise RuntimeError(
@@ -1237,14 +1234,12 @@ class WorkerManager:
             "WORKER_API_URL",
             "WORKER_MANAGER_URL",
             "SECRETS_ENCRYPTION_KEY",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
         ):
             container_env.pop(forbidden, None)
         if factory_api_key is not None:
             container_env["FACTORY_API_KEY"] = factory_api_key
-
-        github_token = env_vars.get("GITHUB_TOKEN")
-        if github_token:
-            container_env["GH_TOKEN"] = github_token
 
         return container_env
 

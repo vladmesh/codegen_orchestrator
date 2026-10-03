@@ -24,6 +24,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
+from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 
 __all__ = [
     "WorkerResultStatus",
@@ -120,6 +121,7 @@ class WorkerFailedResult(_WorkerResultBase):
     stop_reason: WorkerStopReason | None = None
     #: The limit that was in force, as the wrapper actually enforced it.
     agent_limit_seconds: int | None = None
+    execution: EngineeringExecutionEvidence | None = None
 
 
 class WorkerBlockedResult(_WorkerResultBase):

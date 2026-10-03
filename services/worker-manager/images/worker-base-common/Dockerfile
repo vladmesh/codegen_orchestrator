@@ -70,6 +70,11 @@ COPY shared/log_config /app/shared/log_config
 COPY shared/diagnostics.py /app/shared/diagnostics.py
 ENV PYTHONPATH=/app
 
+# Command helpers run independently of product PYTHONPATH/user-site modules.
+# Isolated Python needs the explicit, root-owned shared runtime path.
+RUN sed -i '1c\#!/usr/local/bin/python -I' /usr/local/bin/git-credential-codegen /usr/local/bin/gh && \
+    sed -i '2iimport sys; sys.path.insert(0, "/app")' /usr/local/bin/git-credential-codegen /usr/local/bin/gh
+
 # Create non-root user
 RUN useradd -m -s /bin/bash worker
 

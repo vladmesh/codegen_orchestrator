@@ -29,6 +29,10 @@ FROM test-deps AS test
 # Copy shared as plain files (deps are in the service pyproject.toml)
 COPY shared /app/shared
 COPY packages/worker-wrapper/src/worker_wrapper /app/worker_wrapper
+COPY packages/worker-wrapper /tmp/worker-wrapper
+RUN pip install --no-deps /tmp/worker-wrapper && \
+    sed -i '1c\#!/usr/local/bin/python -I' /usr/local/bin/git-credential-codegen /usr/local/bin/gh && \
+    sed -i '2iimport sys; sys.path.insert(0, "/app")' /usr/local/bin/git-credential-codegen /usr/local/bin/gh
 
 # Copy source code
 COPY services/worker-manager/src ./src

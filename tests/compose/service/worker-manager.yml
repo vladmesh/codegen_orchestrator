@@ -15,6 +15,8 @@ services:
       - INTERNAL_API_KEY=test-internal-api-key
       - API_BASE_URL=http://api:8000
       - ENVIRONMENT=test
+      - GITHUB_APP_ID=12345
+      - GITHUB_APP_PRIVATE_KEY_PATH=/dev/null
       - 'WORKER_DOCKER_LABELS={"com.codegen.environment": "test"}'
       - WORKER_IMAGE_PREFIX=worker-test
       - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
@@ -90,6 +92,8 @@ services:
     environment:
       - WORKER_MANAGER_URL=http://worker-manager:8000
       - TEST_WORKER_IMAGE=codegen-orchestrator/worker-manager:test
+      - GITHUB_APP_ID=12345
+      - GITHUB_APP_PRIVATE_KEY_PATH=/dev/null
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token

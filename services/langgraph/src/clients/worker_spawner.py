@@ -221,9 +221,8 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         transcript_path=result.transcript_path,
         transcript_truncated=result.transcript_truncated,
         turn_result_consumed=True,
-        execution=EngineeringExecutionEvidence(
-            execution_phase=EngineeringExecutionPhase.AGENT_STARTED
-        ),
+        execution=result.execution
+        or EngineeringExecutionEvidence(execution_phase=EngineeringExecutionPhase.AGENT_STARTED),
     )
 
 
@@ -788,7 +787,6 @@ async def _handle_spawn_interruption(
 
 async def request_spawn(
     repo: str,
-    github_token: str,
     task_content: str,
     task_title: str = "AI generated changes",
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
@@ -852,7 +850,6 @@ async def request_spawn(
                 allowed_commands=["*"],
                 capabilities=[WorkerCapability.GIT, WorkerCapability.GITHUB_CLI],
                 env_vars={
-                    "GITHUB_TOKEN": github_token,
                     "REPO_NAME": repo,
                 },
                 ownership=ownership,

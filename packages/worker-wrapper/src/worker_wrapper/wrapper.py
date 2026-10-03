@@ -12,6 +12,11 @@ from typing import Any
 import structlog
 
 from shared.constants import WorkerWorkspace
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+    EngineeringInfrastructureRefusal,
+)
 from shared.contracts.queues.worker_result import (
     WorkerCompletedResult,
     WorkerFailedResult,
@@ -144,9 +149,6 @@ AGENT_SUBPROCESS_ENV_ALLOWLIST = frozenset(
         "CODEX_HOME",
         # Factory authentication.
         "FACTORY_API_KEY",
-        # Repository-scoped GitHub credentials.
-        "GITHUB_TOKEN",
-        "GH_TOKEN",
         # The QA executor's capability endpoint and its run-scoped token. This
         # is the whole address space a QA agent has: an endpoint that dies with
         # the run and a token that means nothing after it. Neither is a
@@ -195,6 +197,12 @@ def build_agent_subprocess_env(
         else AGENT_SUBPROCESS_ENV_ALLOWLIST
     )
     agent_env = {name: source[name] for name in names if name in source}
+    if not qa_executor:
+        # This existing identity is readable by the agent through /proc already.
+        # Native command helpers use it; server-side ownership is the boundary.
+        for name in ("WORKER_BROKER_URL", "WORKER_BROKER_TOKEN", "WORKER_ID"):
+            if name in source:
+                agent_env[name] = source[name]
     if qa_executor:
         agent_env["PATH"] = os.pathsep.join(
             [WORKSPACE_DIR, *(part for part in agent_env.get("PATH", "").split(os.pathsep) if part)]
@@ -349,6 +357,19 @@ class WorkerWrapper:
 
         if context_update:
             await self.broker.update_status(context_update)
+
+        if not self.is_qa_executor and not await asyncio.to_thread(self._git_auth_preflight):
+            await self.broker.submit_output(
+                msg_id,
+                WorkerFailedResult(
+                    error="Repository authentication pre-flight refused before agent launch",
+                    execution=EngineeringExecutionEvidence(
+                        execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+                        infrastructure_refusal=EngineeringInfrastructureRefusal.REPOSITORY_AUTH_UNAVAILABLE,
+                    ),
+                ),
+            )
+            return
 
         # 1. Pre-turn setup
         await self._prepare_workspace(data)
@@ -1005,6 +1026,18 @@ class WorkerWrapper:
             agent_env[COMPOSE_COMMAND_ENV] = self._compose_proxy_path
         return agent_env
 
+    def _git_auth_preflight(self) -> bool:
+        try:
+            result = subprocess.run(
+                ["/usr/bin/git", "ls-remote", "origin"],
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                timeout=30,
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
     async def _git_pull(self):
         """Pull latest changes before next agent turn.
 
@@ -1458,6 +1491,11 @@ class WorkerWrapper:
         have been received via HTTP — caller checks _result_event).
         """
         logger.warning("attempting_auto_resume", worker_id=self.config.worker_id)
+        if not await asyncio.to_thread(self._git_auth_preflight):
+            # The first agent already ran, so preserve agent_started evidence.
+            # Refusing the additional launch must not claim a free pre-agent turn.
+            logger.warning("auto_resume_repository_auth_refused", worker_id=self.config.worker_id)
+            return False
         session_id = await self.broker.get_session()
 
         if not session_id:
