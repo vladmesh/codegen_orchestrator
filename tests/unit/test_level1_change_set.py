@@ -766,3 +766,95 @@ def test_a_template_other_than_the_pin_is_refused_for_the_extension(change_sets)
         module.build_level1_extension_change_set(
             MARKER, EXTENSION_MARKER, ("gh:vladmesh/other-kit", "9.9.9")
         )
+
+
+# ── The extension story's catalog install ────────────────────────────────
+#
+# The extension change set ends with `@@ kit-add reminders`: the scripted runner
+# runs the product's own `kit add` after `make setup`, so the package comes from
+# the kit's live catalog on the stand. What is checkable offline is that the
+# directive is one the runner reads, that the name is one the pinned kit's
+# command line and catalog accept for the pinned core, and that the files the
+# change set writes leave the install to the kit.
+
+
+def test_the_scripted_extension_task_installs_reminders_after_its_file_writes(
+    extension_change_set, runner_script
+):
+    module, extension = extension_change_set
+    operations = runner_script["parse_change_set"](extension.task_description(agent_type="noop"))
+
+    assert operations[-1] == ("kit-add", module.LEVEL1_EXTENSION_PACKAGE, "")
+    assert [op for op, _, _ in operations[:-1]] == ["replace", "create", "replace"]
+    assert extension.packages == [module.LEVEL1_EXTENSION_PACKAGE]
+    # The install writes no path of the change set's own: the paths are the files.
+    assert module.LEVEL1_EXTENSION_PACKAGE not in extension.paths
+    assert extension.paths == [path for op, path, _ in operations if op != "kit-add"]
+
+
+def test_the_package_is_one_the_pinned_kit_installs_for_its_core():
+    """The kit's own CLI parses the command, and its catalog resolves the name.
+
+    The bundled catalog is the pinned tooling's copy of the live one; the stand
+    reads the live catalog, which can only have more releases.
+    """
+    from framework.catalog import bundled_catalog
+    from framework.cli import _parser
+    from framework.spec.package_resolution import CORE_VERSION
+
+    module = _load("level1_change_set", LIVE_DIR / "level1_change_set.py")
+    arguments = _parser().parse_args(["add", module.LEVEL1_EXTENSION_PACKAGE])
+
+    assert (arguments.command, arguments.name, arguments.wheel) == (
+        "add",
+        module.LEVEL1_EXTENSION_PACKAGE,
+        None,
+    )
+    package = bundled_catalog().get(module.LEVEL1_EXTENSION_PACKAGE)
+    assert package.select(CORE_VERSION).tag.startswith(
+        f"packages/{module.LEVEL1_EXTENSION_PACKAGE}/v"
+    )
+    assert module.LEVEL1_EXTENSION_PACKAGE_SETTING_KEY == (
+        f"{module.LEVEL1_EXTENSION_PACKAGE}.{package.settings[0].name}"
+    )
+
+
+def test_the_pinned_render_is_a_product_kit_add_can_install_into(extension_tree: Path):
+    """The fixture carries the kit command `make setup` installs and a backend manifest.
+
+    `kit add` refuses a product without a backend; it appends the package to the
+    manifest's `packages` itself, so the change set leaves that list as the kit
+    rendered it and declares none of the package's settings.
+    """
+    project = tomllib.loads((TEMPLATE_PIN.fixture_path() / "pyproject.toml").read_text())
+    assert any(
+        dependency.startswith("codegen-kit-tooling @ ")
+        for dependency in project["project"]["dependencies"]
+    )
+    manifest = yaml.safe_load((extension_tree / "services/backend/manifest.yaml").read_text())
+    assert manifest["packages"] == []
+    assert "reminder_owner_ref" not in json.dumps(manifest["settings_schema"])
+
+
+def test_both_developers_are_told_to_install_the_package_with_the_kit(
+    change_sets, extension_change_set
+):
+    module, _ = change_sets
+    for developer in ("noop", "claude"):
+        text = _descriptions(change_sets, extension_change_set, developer)["extension"]
+        assert f"`.venv/bin/kit add {module.LEVEL1_EXTENSION_PACKAGE}`" in text, developer
+        assert module.LEVEL1_EXTENSION_PACKAGE_ROUTE in text, developer
+        assert f"`{module.LEVEL1_EXTENSION_PACKAGE_SETTING_KEY}`" in text, developer
+
+
+def test_the_extension_criteria_carry_the_package_route(extension_change_set):
+    module, extension = extension_change_set
+
+    assert f"GET {module.LEVEL1_EXTENSION_PACKAGE_ROUTE}" in extension.acceptance_criteria()
+    health = module.level1_extension_health_criteria()
+    assert [
+        (check.path, check.expected_status) for check in parse_health_only_criteria(health)
+    ] == [
+        ("/health", 200),
+        (module.LEVEL1_EXTENSION_PACKAGE_ROUTE, 200),
+    ]

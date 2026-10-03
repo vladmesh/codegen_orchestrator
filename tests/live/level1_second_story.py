@@ -40,6 +40,20 @@ The properties, and the production evidence each one is here for:
 * **`ci_run_mismatches`** — the project's own `ci.yml` is what publishes the
   images the deploy pulls, and it runs for the *merge* commit, not the pull
   request head.
+
+And three about what the second story *installs* (sprint:1477, DoD5/DoD6): the
+extension story adds the kit catalog package `reminders` with `kit add`, onto the
+product the first story deployed.
+
+* **`package_install_mismatches`** — the deployment itself records the package
+  as active at the version the kit's live catalog resolves for the pinned core,
+  read from the deployment's generated artifacts with central QA's own parsers.
+* **`package_route_qa_mismatches`** — central QA's health-only leg passed
+  `GET /reminders` as its verified QA identity. Anonymous, that route is 401; it
+  is 200 only for a verified caller once the package's schema is migrated.
+* **`reminder_emission_mismatches`** — the reminder the package's setting seeded
+  reached `emitted` within a bounded wait, while QA only read and the suite fired
+  nothing: the kit core's own timer did it.
 """
 
 from __future__ import annotations
@@ -584,3 +598,170 @@ def ci_run_mismatches(ci_runs: object, *, merge_commit_sha: str) -> list[str]:
             f"a {CI_WORKFLOW} run for {merge_commit_sha} is recorded but never started: {matching}"
         ]
     return []
+
+
+# ── The kit catalog package the second story installs ────────────────────
+
+
+def package_install_mismatches(
+    facts: dict | None,
+    *,
+    error: str | None,
+    package: str,
+    catalog_version: str | None,
+    catalog_error: str | None = None,
+) -> list[str]:
+    """Why the deployment does not record `package` active at the catalog's version.
+
+    `facts` is what `package_route.package_route_facts` read off the deployment's
+    generated artifacts — the active-package contract and the job registry — and
+    `error` its reason when it read nothing usable. `catalog_version` is the
+    version the kit's live catalog resolves for the pinned core, the same
+    resolution `kit add` makes; without it "at the catalog version" cannot be
+    claimed, so its absence is a reason too.
+    """
+    reasons: list[str] = []
+    if catalog_version is None:
+        reasons.append(
+            f"the kit catalog's version of {package!r} was not read: "
+            f"{catalog_error or 'no reason recorded'}"
+        )
+    if error is not None:
+        return [*reasons, error]
+    if not isinstance(facts, dict):
+        return [*reasons, "the deployment's package facts were never recorded"]
+    if facts.get("package") != package:
+        reasons.append(f"the deployment records package {facts.get('package')!r}, not {package!r}")
+    if catalog_version is not None and facts.get("version") != catalog_version:
+        reasons.append(
+            f"the deployment records {package!r} at version {facts.get('version')!r}, not the "
+            f"catalog's {catalog_version!r}"
+        )
+    return reasons
+
+
+def package_route_qa_record(run: dict | None, *, route: str) -> dict:
+    """What central QA's terminal Run says about its read of `route`.
+
+    Read off the Run the QA consumer wrote: its outcome, the identity it read
+    the deployment as (`run_metadata.qa_caller_identity`, which never carries a
+    capability), the names of the checks it passed and failed, and the retained
+    line of its report for this route, which carries the bounded, scrubbed
+    snippet of what the route answered.
+    """
+    run = run if isinstance(run, dict) else {}
+    result = run.get("result") or {}
+    check = f"GET {route} returns 200"
+    report = result.get("report") or ""
+    return {
+        "qa_run_id": run.get("id"),
+        "qa_outcome": result.get("qa_outcome"),
+        "caller_identity": (run.get("run_metadata") or {}).get("qa_caller_identity"),
+        "check": check,
+        "passed_checks": list(result.get("passed_checks") or []),
+        "failed_checks": [
+            one.get("name") if isinstance(one, dict) else one
+            for one in result.get("failed_checks") or []
+        ],
+        "report_line": next(
+            (line for line in report.splitlines() if line.startswith(f"- {check}:")), None
+        ),
+    }
+
+
+def package_route_qa_mismatches(
+    record: dict | None, *, user_ref: str, health_only: bool = True
+) -> list[str]:
+    """Why central QA did not pass the package route as the verified QA identity.
+
+    Three facts have to agree: QA passed, its check of the route is among the
+    passed ones and the route answered 200, and the Run names `user_ref` as the
+    active identity it read as. Every check QA ran is a GET as well, so this QA
+    fired no job and changed nothing on the product.
+
+    A run judged by a real executor (`health_only=False`, `mega-live`) names its
+    own checks, so only the outcome and the identity are required of it.
+    """
+    if not isinstance(record, dict):
+        return ["no central QA Run was recorded for the package route"]
+    reasons: list[str] = []
+    check = record.get("check")
+    if record.get("qa_outcome") != "passed":
+        reasons.append(
+            f"central QA Run {record.get('qa_run_id')} ended {record.get('qa_outcome')!r}"
+        )
+    identity = record.get("caller_identity")
+    if identity != {"user_ref": user_ref, "active": True}:
+        reasons.append(
+            f"central QA read the deployment as {identity!r}, not the active identity {user_ref!r}"
+        )
+    if not health_only:
+        return reasons
+    if check not in (record.get("passed_checks") or []):
+        reasons.append(
+            f"central QA did not pass {check!r}: passed {record.get('passed_checks')}, "
+            f"failed {record.get('failed_checks')}"
+        )
+    line = record.get("report_line")
+    if not isinstance(line, str) or not line.startswith(f"- {check}: got 200"):
+        reasons.append(f"central QA's retained answer of {check!r} is not a 200: {line!r}")
+    checks = [*(record.get("passed_checks") or []), *(record.get("failed_checks") or [])]
+    not_reads = [name for name in checks if not str(name).startswith("GET ")]
+    if not_reads:
+        reasons.append(f"central QA ran checks that are not GET reads: {not_reads}")
+    return reasons
+
+
+def reminder_reads(body: str) -> list[dict]:
+    """The reminders one `GET /reminders` answer lists, with only what is judged.
+
+    Raises `ValueError` for a body that is not the package's list of reminders.
+    """
+    payload = json.loads(body)
+    if not isinstance(payload, list):
+        raise ValueError(f"GET /reminders answered {type(payload).__name__}, not a list")
+    return [
+        {
+            "id": one.get("id"),
+            "user_ref": one.get("user_ref"),
+            "state": one.get("state"),
+            "remind_at": one.get("remind_at"),
+            "emitted_at": one.get("emitted_at"),
+        }
+        for one in payload
+        if isinstance(one, dict)
+    ]
+
+
+def reminder_emission_mismatches(
+    reads: list[dict], *, owner_ref: str, state: str, bound_seconds: float
+) -> list[str]:
+    """Why the seeded reminder was not seen reaching `state` within the bound.
+
+    `reads` are the suite's reads of `GET /reminders` as `owner_ref`, oldest
+    first, each `{elapsed_seconds, status_code, reminders}` or `{elapsed_seconds,
+    error}`. Only the last read decides, and it has to be a 200 listing a
+    reminder of `owner_ref` in `state`, read within `bound_seconds` of the start
+    of the wait. Nothing fires the package's job on this path — QA only reads,
+    and the suite never calls `/jobs/fire` — so the state is the core timer's.
+    """
+    if not reads:
+        return ["the deployment's reminders were never read"]
+    last = reads[-1]
+    reasons: list[str] = []
+    elapsed = last.get("elapsed_seconds")
+    if not isinstance(elapsed, int | float) or elapsed > bound_seconds:
+        reasons.append(f"the last read came {elapsed!r} s into the wait, past {bound_seconds} s")
+    if last.get("error"):
+        return [*reasons, f"the last read of the reminders failed: {last['error']}"]
+    if last.get("status_code") != 200:
+        return [*reasons, f"the last read of the reminders answered {last.get('status_code')!r}"]
+    owned = [one for one in last.get("reminders") or [] if one.get("user_ref") == owner_ref]
+    if not owned:
+        reasons.append(f"no reminder of {owner_ref!r} is listed: {last.get('reminders')}")
+    elif not any(one.get("state") == state for one in owned):
+        reasons.append(
+            f"no reminder of {owner_ref!r} reached {state!r} after {elapsed!r} s: "
+            f"{[one.get('state') for one in owned]}"
+        )
+    return reasons

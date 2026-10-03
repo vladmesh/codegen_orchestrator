@@ -4020,6 +4020,13 @@ def second_story(ctx: dict) -> dict:
         "product_probe": captured(
             "level1_extension_endpoint_probe", "level1_extension_endpoint_probe_error"
         ),
+        # The kit catalog package the story installed: what the deployment
+        # records, what the live catalog resolves, how central QA read its route
+        # and what the bounded reads of the seeded reminder answered.
+        "package_install": captured("level1_package_install", "level1_package_install_error"),
+        "package_catalog": captured("level1_package_catalog", "level1_package_catalog_error"),
+        "package_route_qa": captured("level1_package_route_qa"),
+        "reminder_reads": captured("level1_reminder_reads"),
         "qa": captured("qa_result"),
         "story_terminal": captured("story_terminal", "story_terminal_error"),
         "owner_notification": captured("owner_notification", "owner_notification_error"),

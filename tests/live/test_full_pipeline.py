@@ -41,6 +41,8 @@ from level1_brief import (
 )
 from level1_change_set import (
     LEVEL1_EXTENSION_ENDPOINT_PATH,
+    LEVEL1_EXTENSION_PACKAGE,
+    LEVEL1_EXTENSION_PACKAGE_SETTING_KEY,
     LEVEL1_EXTENSION_SETTING_KEY,
     LEVEL1_SETTING_KEY,
 )
@@ -53,7 +55,10 @@ from level1_second_story import (
     ci_run_mismatches,
     deploy_path_mismatches,
     engineering_run_mismatches,
+    package_install_mismatches,
+    package_route_qa_mismatches,
     product_hook_mismatches,
+    reminder_emission_mismatches,
     workspace_reuse_mismatches,
 )
 from level1_stage_notices import stage_notice_mismatches
@@ -69,6 +74,8 @@ from pipeline_helpers import (
     EXPECTED_ENV_CONTRACT_FRAGMENTS,
     LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
     LEVEL1_PROMO_CREDITS_MICROUSD,
+    LEVEL1_REMINDER_EMISSION_BOUND_SECONDS,
+    LEVEL1_REMINDER_STATE,
     SCRIPTED_AGENT_TYPE,
     SECOND_STORY_CHECKOUT_BOUND_SECONDS,
     TEST_TELEGRAM_ID,
@@ -104,6 +111,7 @@ from pipeline_helpers import (
     record_level1_developer_path,
     record_level1_extension_product_evidence,
     record_level1_merge_artifact,
+    record_level1_package_route_qa,
     record_level1_product_evidence,
     record_manager_checkout_script,
     record_pre_teardown_proofs,
@@ -132,6 +140,7 @@ from pipeline_helpers import (
     wait_deploy_outcome,
     wait_deploy_run,
     wait_engineering,
+    wait_level1_reminder_emitted,
     wait_linear_noop_engineering,
     wait_owner_completion_notification,
     wait_scaffold,
@@ -574,9 +583,14 @@ async def _level1_extension_story(  # noqa: PLR0915 - lifecycle evidence is reco
             on_poll=lambda: evidence_pass(ctx),
         )
         await record_qa_settlement_evidence(api_internal, ctx)
+        record_level1_package_route_qa(ctx)
         if ctx.get("qa_result", {}).get("qa_outcome") != "passed":
             dump_debug(ctx, f"{debug_prefix}-extension-qa")
             raise Level1PhaseFailed("extension_qa", f"QA ended {ctx.get('qa_result')}")
+        # QA made its identity active in the product, so the seeded reminder can
+        # now be read as its owner. Bounded, and judged by the tests: no job is
+        # fired here, so only the kit core's timer can have emitted it.
+        await wait_level1_reminder_emitted(ctx)
 
         if await wait_story_completed(api_internal, ctx) is None:
             dump_debug(ctx, f"{debug_prefix}-extension-story-completed")
@@ -1656,14 +1670,18 @@ class TestFullPipeline:
         assert probe["marker"] == pipeline["level1_extension_marker"], probe
         assert probe["base_marker"] == pipeline["level1_marker"], probe
         assert probe["settings_declaring_marker"] == [LEVEL1_EXTENSION_SETTING_KEY], probe
+        # Both settings the corrected brief confirmed: the extension's own key,
+        # and the reminders package's owner, which the package declares — so its
+        # write landing at all says the package is installed and migrated.
         assert extension["level1_settings_seed"] == [
             {
-                "key": LEVEL1_EXTENSION_SETTING_KEY,
+                "key": key,
                 "scope": "product",
                 "subject_id": None,
                 "written": True,
                 "failure": None,
             }
+            for key in (LEVEL1_EXTENSION_SETTING_KEY, LEVEL1_EXTENSION_PACKAGE_SETTING_KEY)
         ]
         assert extension.get("settings_seed_brief_log_error") is None, extension.get(
             "settings_seed_brief_log_error"
@@ -1673,7 +1691,7 @@ class TestFullPipeline:
             "task_id": extension["deploy_run_id"],
             "brief_id": extension["brief_id"],
             "route": "story",
-            "settings_count": 1,
+            "settings_count": 2,
         }
         assert extension["level1_settings_readback"] == {
             "contract_version": 1,
@@ -1682,6 +1700,57 @@ class TestFullPipeline:
             "subject_id": None,
             "value": level1_extension_settings_value(pipeline["level1_extension_marker"]),
         }
+
+    async def test_the_second_story_installed_the_catalog_package_onto_the_deployment(
+        self, pipeline
+    ):
+        """DoD5/DoD6 (a): the deployed product records `reminders` active at the catalog's version.
+
+        Read off the deployment's own generated artifacts with central QA's
+        parsers, and compared with the version the kit's live catalog resolves
+        for the pinned core — the resolution `kit add` itself made.
+        """
+        extension = _extension(pipeline)
+        catalog = extension.get("level1_package_catalog") or {}
+        reasons = package_install_mismatches(
+            extension.get("level1_package_install"),
+            error=extension.get("level1_package_install_error"),
+            package=LEVEL1_EXTENSION_PACKAGE,
+            catalog_version=catalog.get("version"),
+            catalog_error=extension.get("level1_package_catalog_error"),
+        )
+        assert reasons == [], "\n".join(reasons)
+
+    async def test_central_qa_read_the_package_route_as_its_qa_identity(self, pipeline):
+        """DoD6 (b): health-only QA passed `GET /reminders` as the verified QA user.
+
+        Anonymous, the route is 401; it is 200 only for a verified caller once the
+        package's schema is migrated, so the pass says both happened before QA.
+        Live, a real executor names its own checks, so its Run is held to the
+        outcome and to the identity the seeded reminder belongs to.
+        """
+        extension = _extension(pipeline)
+        reasons = package_route_qa_mismatches(
+            extension.get("level1_package_route_qa"),
+            user_ref=pipeline["level1_reminders_owner_ref"],
+            health_only=not _live(pipeline),
+        )
+        assert reasons == [], "\n".join(reasons)
+
+    async def test_the_core_timer_emitted_the_seeded_reminder(self, pipeline):
+        """DoD6 (c): the seeded reminder reached `emitted` with no `/jobs/fire` from anyone.
+
+        QA's checks are GET reads (asserted beside the route check above) and the
+        suite fires nothing, so the state the bounded wait read is the timer's.
+        """
+        extension = _extension(pipeline)
+        reasons = reminder_emission_mismatches(
+            extension.get("level1_reminder_reads") or [],
+            owner_ref=pipeline["level1_reminders_owner_ref"],
+            state=LEVEL1_REMINDER_STATE,
+            bound_seconds=LEVEL1_REMINDER_EMISSION_BOUND_SECONDS,
+        )
+        assert reasons == [], "\n".join(reasons)
 
     async def test_the_owner_was_told_the_first_storys_stages(self, pipeline):
         """issue:b28d93: every in-work stage announced once on entry, never after the end."""

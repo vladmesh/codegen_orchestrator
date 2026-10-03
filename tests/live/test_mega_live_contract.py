@@ -240,17 +240,22 @@ async def test_a_live_run_asks_its_developer_and_its_qa_for_the_location_behavio
     assert location not in ctx["level1_extension_plan"]["task_criteria"]
     assert location not in ctx["level1_extension_plan"]["qa_criteria"]
     assert "filters.LOCATION" not in ctx["level1_extension_plan"]["task_description"]
+    # The executor tests the bot as the QA Telegram account, so the reminders
+    # package's seeded reminder belongs to that account on this path.
+    assert ctx["level1_reminders_owner_ref"] == "telegram:8202532144"
     # The brief does not have to carry it: the bot task already covers
     # `level1_command`, so the coverage admission holds without a new requirement.
     assert ctx["level1_brief"].requirement_ids == ["level1_command", "level1_setting"]
 
 
-#: What main rendered for `mega-noop` before the live-only location behaviour
-#: existed: the brief (both stories' documents), every task description with its
-#: change-set block replaced by a placeholder, and every task's criteria, for the
-#: markers below. The change-set blocks themselves are pinned by
-#: `tests/unit/test_level1_change_set.py` against the kit render.
-NOOP_RENDERING_DIGEST = "621e93be004fdfe9ae9353b731d6633bc517108176eb0f8117512e743eb57eca"
+#: What main renders for `mega-noop`: the brief (both stories' documents), every
+#: task description with its change-set block replaced by a placeholder, and
+#: every task's criteria, for the markers below. The change-set blocks themselves
+#: are pinned by `tests/unit/test_level1_change_set.py` against the kit render.
+#: Re-pinned by codegen-orchestrator-1486, which added the reminders catalog
+#: install to the extension story's brief, contract and criteria on purpose; the
+#: live-only location behaviour is still absent from it.
+NOOP_RENDERING_DIGEST = "ff4b40f9b7321e0f61b9f2a8fd59157b4f5140fcbd60996197a66ef92b5f3f6f"
 
 
 def _noop_rendering(marker: str, extension_marker: str) -> dict:
@@ -311,9 +316,18 @@ async def test_no_mega_noop_artifact_mentions_the_location_behaviour(tmp_path, m
     ctx, _ = await _create_level1_project(monkeypatch, tmp_path)
 
     assert ctx["agent_type"] == "noop"
-    # Deterministic QA: no repository checklist is written for either story.
+    # Deterministic QA: the first story writes no repository checklist, and the
+    # extension story writes a health-only one that adds the package route, so
+    # QA still decides it over HTTP without an executor.
     assert ctx["level1_qa_criteria"] is None
-    assert ctx["level1_extension_plan"]["qa_criteria"] is None
+    extension_criteria = ctx["level1_extension_plan"]["qa_criteria"]
+    assert extension_criteria == level1_change_set.level1_extension_health_criteria()
+    assert [
+        (check.path, check.expected_status)
+        for check in parse_health_only_criteria(extension_criteria)
+    ] == [("/health", 200), ("/reminders", 200)]
+    # Health-only QA reads as the platform QA identity, so the seeded reminder is its.
+    assert ctx["level1_reminders_owner_ref"] == "qa:central-qa"
     rendered = json.dumps(
         {
             "brief": ctx["level1_brief"].present_arguments(ctx["project_id"]),

@@ -450,7 +450,7 @@ commit SHA with the tag it was resolved from as a `# vX` comment; the CI contrac
 Paid E2E tests are not part of required PR CI. Run the canonical named suites through the
 `stand-e2e` workflow or `make stand-run SUITE=<suite>` against the isolated stand. `mega-noop`
 exercises the full pipeline without a model call; `mega-live` runs the very same lifecycle — the
-same class and its 39 tests — with one selected real developer and one selected real QA executor;
+same class and its 42 tests — with one selected real developer and one selected real QA executor;
 `mega-brief` proves the confirmed Product Brief through Architect, engineering, deploy and QA with
 one selected pair. Its productive work stops at 50 minutes, then its fixture gets a separate
 10-minute evidence-and-cleanup grace. `mega-brief-package` is the same path on a brief whose
@@ -525,8 +525,8 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 |------|----------------|-------|----------|----------------|
 | Scaffold | `test-live-smoke` | ~3 | ~30s | API CRUD, scaffold phase, stream routing |
 | Engineering | `test-live-engineering` | ~3 | ~3.5 min | Worker spawn, task dispatch, engineering flow |
-| Full (level 1) | `test-live-mega-noop` | 39 | ~20 min of suite time observed (2026-09-20), 155 min cap | Two stories on one project: confirmed Product Brief, scripted engineering, deploy, deterministic QA, undeploy |
-| Full (level 2) | `test-live-mega-live` | 39 | no baseline measurement yet, 265 min cap | Both stories prove provider-reported developer and QA spend on the ledger, with settled owner reservations (stand runner only) |
+| Full (level 1) | `test-live-mega-noop` | 42 | ~20 min of suite time observed (2026-09-20), 155 min cap | Two stories on one project: confirmed Product Brief, scripted engineering, deploy, deterministic QA, undeploy; the second story installs the kit catalog package `reminders` with `kit add` |
+| Full (level 2) | `test-live-mega-live` | 42 | no baseline measurement yet, 265 min cap | Both stories prove provider-reported developer and QA spend on the ledger, with settled owner reservations (stand runner only) |
 
 **Key properties**:
 - Module-scoped async fixtures share one pipeline run across tests per tier

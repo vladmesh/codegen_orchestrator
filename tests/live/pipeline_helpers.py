@@ -31,24 +31,36 @@ from brief_telemetry import (
 )
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import db_teardown
+
+# The kit's own catalog resolution, the one `kit add` makes: the live catalog at
+# the kit's default source and ref, and the version it selects for the core the
+# orchestrator pins. The second story's package is judged against this.
+from framework.package_source import DEFAULT_CATALOG_REF, DEFAULT_CATALOG_SOURCE, read_catalog
+from framework.spec.package_resolution import CORE_VERSION
 import httpx
 from level1_brief import (
     LEVEL1_COMMAND_REQUIREMENT,
     LEVEL1_EXTENSION_REQUIREMENT,
+    LEVEL1_REMINDERS_REQUIREMENT,
     LEVEL1_SETTING_REQUIREMENT,
     Level1Brief,
     bot_completion_message_mismatches,
     build_level1_brief,
     build_level1_extension_brief,
+    level1_reminders_owner_ref,
 )
 from level1_change_set import (
     LEVEL1_COMMAND,
     LEVEL1_ENDPOINT_PATH,
     LEVEL1_EXTENSION_ENDPOINT_PATH,
+    LEVEL1_EXTENSION_PACKAGE,
+    LEVEL1_EXTENSION_PACKAGE_JOB,
+    LEVEL1_EXTENSION_PACKAGE_ROUTE,
     SCRIPTED_DEVELOPER,
     build_level1_change_sets,
     build_level1_extension_change_set,
     level1_command_description,
+    level1_extension_health_criteria,
     level1_extension_qa_criteria,
     level1_qa_criteria,
 )
@@ -57,6 +69,9 @@ from level1_second_story import (
     checkout_records,
     deploy_path_record,
     manager_log_coverage,
+    package_route_qa_record,
+    reminder_emission_mismatches,
+    reminder_reads,
     workspace_assignments,
 )
 from level1_stage_notices import extend_stage_spans
@@ -537,6 +552,24 @@ def record_package_route(ctx: dict) -> str | None:
     package route was taken, which is the same rule central QA applies to these
     artifacts.
     """
+    facts, error = read_deployment_package(
+        ctx, package=BRIEF_PACKAGE_NAME, behaviour=BRIEF_PACKAGE_JOB_NAME
+    )
+    if error is not None:
+        return error
+    ctx["brief_package_route"] = facts
+    return None
+
+
+def read_deployment_package(
+    ctx: dict, *, package: str, behaviour: str
+) -> tuple[dict | None, str | None]:
+    """The deployment's own record of `package`: its facts, or why there are none.
+
+    One read for every suite that asks: the package-contract probe of the
+    deployment's backend container, parsed with central QA's own parsers by
+    `package_route.package_route_facts`.
+    """
     try:
         result = docker_exec_python_module(
             "langgraph",
@@ -545,22 +578,16 @@ def record_package_route(ctx: dict) -> str | None:
             timeout=PACKAGE_CONTRACT_PROBE_TIMEOUT,
         )
     except (subprocess.SubprocessError, OSError) as error:
-        return unreadable_package_route(
+        return None, unreadable_package_route(
             f"the probe of the deployment did not run: {type(error).__name__}: "
             f"{redacted_dump_text(str(error))[:300]}"
         )
     if result.returncode != 0:
-        return unreadable_package_route(
+        return None, unreadable_package_route(
             f"the probe of the deployment exited {result.returncode}: "
             f"{redacted_dump_text(result.stderr).strip()[:300]}"
         )
-    facts, error = package_route_facts(
-        result.stdout, package=BRIEF_PACKAGE_NAME, behaviour=BRIEF_PACKAGE_JOB_NAME
-    )
-    if error is not None:
-        return error
-    ctx["brief_package_route"] = facts
-    return None
+    return package_route_facts(result.stdout, package=package, behaviour=behaviour)
 
 
 def _package_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | None:
@@ -1458,13 +1485,23 @@ async def create_level1_bot_project(
     # story runs, and `second_story_scope` is what makes it this run's current
     # story.
     ctx["level1_extension_marker"] = extension_marker
+    # Whom the reminders package's seeded reminder belongs to: the identity
+    # central QA reads this run's product as, so QA and the suite both list it.
+    ctx["level1_reminders_owner_ref"] = level1_reminders_owner_ref(
+        executor_qa=qa_executor is not None
+    )
     ctx["level1_extension_plan"] = {
         "task_title": LEVEL1_EXTENSION_TASK_TITLE,
         "task_description": extension_change_set.task_description(agent_type=agent_type),
         "task_criteria": extension_change_set.acceptance_criteria(),
         "change_set_paths": extension_change_set.paths,
+        # A model's story is judged by a real executor against the accumulated
+        # checklist; the scripted story writes the health-only checklist that
+        # adds the package route, which central QA decides as its QA identity.
         "qa_criteria": (
-            level1_extension_qa_criteria(marker, extension_marker) if qa_executor else None
+            level1_extension_qa_criteria(marker, extension_marker)
+            if qa_executor
+            else level1_extension_health_criteria()
         ),
     }
 
@@ -2456,7 +2493,10 @@ async def create_level1_extension_brief(api: httpx.AsyncClient, ctx: dict) -> di
     """
     brief: Level1Brief = ctx["level1_brief"]
     draft = build_level1_extension_brief(
-        ctx["level1_marker"], ctx["level1_extension_marker"], draft=True
+        ctx["level1_marker"],
+        ctx["level1_extension_marker"],
+        draft=True,
+        reminders_owner_ref=ctx["level1_reminders_owner_ref"],
     )
     config = po_tool_config(ctx)
     async with po_tool_boundary(api_url=API_URL) as po:
@@ -2647,12 +2687,14 @@ async def verify_level1_plan_is_this_runs_alone(
 
 @dataclass(frozen=True)
 class PlannedLevel1Task:
-    """One task of a level-1 plan, and the must-requirement it covers."""
+    """One task of a level-1 plan, and the must-requirement(s) it covers."""
 
     requirement_id: str
     title: str
     description: str
     acceptance_criteria: str
+    #: Further must-requirements the same task delivers.
+    also_covers: tuple[str, ...] = ()
 
 
 async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
@@ -2685,6 +2727,8 @@ async def admit_level1_extension_plan(api: httpx.AsyncClient, ctx: dict) -> dict
     planning is admitted deterministically through the architect's own coverage
     route with no architect model call — and that is only worth asserting if it
     is the same route, not a second implementation of it that could diverge.
+    The one task covers both of the brief's requirements: its change set adds
+    the extension endpoint and installs the reminders package.
     """
     return await _plan_and_admit_level1(
         api,
@@ -2695,6 +2739,7 @@ async def admit_level1_extension_plan(api: httpx.AsyncClient, ctx: dict) -> dict
                 title=ctx["task_title"],
                 description=ctx["task_description"],
                 acceptance_criteria=ctx["task_criteria"],
+                also_covers=(LEVEL1_REMINDERS_REQUIREMENT,),
             )
         ],
     )
@@ -2772,7 +2817,8 @@ async def _plan_and_admit_level1(
             blocked_by_task_id=task_ids[-1] if task_ids else None,
         )
         task_ids.append(task_id)
-        covers[task.requirement_id] = task_id
+        for requirement_id in (task.requirement_id, *task.also_covers):
+            covers[requirement_id] = task_id
     ctx["task_id"] = ctx["first_task_id"] = task_ids[0]
     if len(task_ids) > 1:
         ctx["second_task_id"] = task_ids[1]
@@ -2870,8 +2916,10 @@ async def _write_level1_qa_criteria(api: httpx.AsyncClient, ctx: dict) -> None:
     onto the QA message), and the Architect writes them through
     `update_repository` — `PATCH /api/repositories/{id}` — while it plans. The
     harness plans this story in the Architect's place, so it writes them here,
-    through that same update, before the plan is admitted. The scripted run has
-    none to write: its deterministic QA judges the seeded health check.
+    through that same update, before the plan is admitted. The scripted run's
+    first story has none to write: its deterministic QA judges the seeded health
+    check. Its extension story writes the health-only checklist that adds
+    `GET /reminders returns 200`, which deterministic QA decides too.
 
     The repository's answer is read back and must be the text written, so a
     criteria update the API dropped is this phase's failure rather than a QA
@@ -5936,6 +5984,12 @@ SECOND_STORY_SCOPED_KEYS = frozenset(
         "level1_command_menu_probe_error",
         "level1_extension_endpoint_probe",
         "level1_extension_endpoint_probe_error",
+        "level1_package_catalog",
+        "level1_package_catalog_error",
+        "level1_package_install",
+        "level1_package_install_error",
+        "level1_package_route_qa",
+        "level1_reminder_reads",
         "level1_settings_seed",
         "level1_settings_readback",
         "settings_seed_brief_log",
@@ -6007,7 +6061,9 @@ def begin_level1_extension_story(ctx: dict) -> None:
     """
     plan = ctx["level1_extension_plan"]
     ctx["level1_brief"] = build_level1_extension_brief(
-        ctx["level1_marker"], ctx["level1_extension_marker"]
+        ctx["level1_marker"],
+        ctx["level1_extension_marker"],
+        reminders_owner_ref=ctx["level1_reminders_owner_ref"],
     )
     ctx["task_title"] = plan["task_title"]
     ctx["task_description"] = plan["task_description"]
@@ -6262,7 +6318,7 @@ async def probe_level1_extension_endpoint(ctx: dict) -> dict:
 
 
 async def record_level1_extension_product_evidence(ctx: dict) -> None:
-    """Read the extension story's product fact while the deployment is running."""
+    """Read the extension story's product facts while the deployment is running."""
     try:
         ctx["level1_extension_endpoint_probe"] = await probe_level1_extension_endpoint(ctx)
     except (httpx.HTTPError, ValueError) as error:
@@ -6270,6 +6326,179 @@ async def record_level1_extension_product_evidence(ctx: dict) -> None:
             f"level1_extension_endpoint_probe could not be read: {type(error).__name__}: "
             f"{redacted_dump_text(str(error))[:300]}"
         )
+    record_level1_package_install(ctx)
+
+
+def catalog_package_version(package: str) -> dict:
+    """What `kit add <package>` resolves from the kit's live catalog, read the same way.
+
+    The kit tooling's own `read_catalog` at its default source and ref — the
+    ones the scripted developer's `kit add` used, since it names neither — and
+    the version that catalog selects for the kit core the orchestrator pins.
+    """
+    version = (
+        read_catalog(DEFAULT_CATALOG_SOURCE, DEFAULT_CATALOG_REF).get(package).select(CORE_VERSION)
+    )
+    return {
+        "package": package,
+        "version": version.version,
+        "tag": version.tag,
+        "core_version": CORE_VERSION,
+        "source": DEFAULT_CATALOG_SOURCE,
+        "ref": DEFAULT_CATALOG_REF,
+    }
+
+
+def record_level1_package_install(ctx: dict) -> None:
+    """The second story's package, as the deployment records it and the catalog states it.
+
+    Evidence collection, so every failure is a stated reason rather than a raise:
+    `level1_second_story.package_install_mismatches` judges what is recorded.
+    """
+    try:
+        ctx["level1_package_catalog"] = catalog_package_version(LEVEL1_EXTENSION_PACKAGE)
+    except Exception as error:  # noqa: BLE001 - an unreadable catalog is a stated reason
+        ctx["level1_package_catalog_error"] = (
+            f"the kit catalog could not be read: {type(error).__name__}: "
+            f"{redacted_dump_text(str(error))[:300]}"
+        )
+    facts, error = read_deployment_package(
+        ctx, package=LEVEL1_EXTENSION_PACKAGE, behaviour=LEVEL1_EXTENSION_PACKAGE_JOB
+    )
+    if error is not None:
+        ctx["level1_package_install_error"] = error
+        return
+    ctx["level1_package_install"] = facts
+
+
+def record_level1_package_route_qa(ctx: dict) -> None:
+    """What central QA's terminal Run says about the package route, redacted."""
+    ctx["level1_package_route_qa"] = redacted_payload(
+        package_route_qa_record(ctx.get("qa_run"), route=LEVEL1_EXTENSION_PACKAGE_ROUTE)
+    )
+
+
+#: How long the suite waits for the seeded reminder to be emitted, and how often
+#: it looks. The kit core's timer fires the package's job every 60 seconds, so
+#: three minutes is three ticks.
+LEVEL1_REMINDER_EMISSION_BOUND_SECONDS = 180
+LEVEL1_REMINDER_POLL_SECONDS = 15
+LEVEL1_REMINDER_STATE = "emitted"
+#: The reads are bounded before they are kept: one reminder is a few hundred bytes.
+LEVEL1_REMINDERS_READ_MAX_CHARS = 4_000
+LEVEL1_REMINDERS_READ_MARKER = "LEVEL1_REMINDERS_READ:"
+#: Read inside the langgraph container, where the project's secrets already
+#: live: the deployment's `USER_IDENTITY_CAPABILITY` is read the way central QA
+#: reads it (`consumers.qa._stored_secrets`), presented only as the kit core's
+#: caller-identity header of one GET, and every stored capability is scrubbed
+#: from the answer with the QA run's own `QARunRedaction` before it is printed.
+#: The identity is the seeded owner, the one central QA read this product as
+#: and made active in it. No job is fired: the only request is the GET.
+LEVEL1_REMINDERS_READ_PROBE = """
+import asyncio
+import json
+
+import httpx
+
+from src.agents.qa.caller_identity import QACallerIdentity
+from src.consumers._qa_redaction import USER_IDENTITY_CAPABILITY, QARunRedaction
+from src.consumers.qa import _stored_secrets
+
+
+async def read():
+    stored = await _stored_secrets(PROJECT_ID)
+    redaction = QARunRedaction.from_stored(stored)
+    capability = stored.get(USER_IDENTITY_CAPABILITY)
+    if not isinstance(capability, str) or not capability:
+        return {"error": "the deployment holds no " + USER_IDENTITY_CAPABILITY}
+    identity = QACallerIdentity(CHANNEL, EXTERNAL_ID, capability)
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+        response = await client.get(URL, headers=identity.headers())
+    return {
+        "user_ref": identity.user_ref,
+        "status_code": response.status_code,
+        "body": redaction.text(response.text)[:MAX_CHARS],
+    }
+
+
+print(MARKER + json.dumps(asyncio.run(read())))
+"""
+
+
+def parse_level1_reminders_read(stdout: str) -> dict:
+    """One read's answer: `{status_code, reminders}` or `{error}`, never the body raw."""
+    payload = parse_probe_payload(stdout, LEVEL1_REMINDERS_READ_MARKER, subject="reminders read")
+    if payload.get("error"):
+        return {"error": redacted_dump_text(str(payload["error"]))[:300]}
+    observation = {"user_ref": payload.get("user_ref"), "status_code": payload.get("status_code")}
+    body = redacted_dump_text(str(payload.get("body") or ""))
+    if observation["status_code"] != 200:
+        return {**observation, "body": body[:300]}
+    try:
+        return {**observation, "reminders": reminder_reads(body)}
+    except ValueError as error:
+        return {**observation, "error": f"{error}: {body[:300]}"}
+
+
+def read_level1_reminders(ctx: dict) -> dict:
+    """Read the deployment's `GET /reminders` once, as the reminder's seeded owner."""
+    channel, external_id = ctx["level1_reminders_owner_ref"].split(":", 1)
+    script = (
+        f"PROJECT_ID = {str(ctx['project_id'])!r}\n"
+        f"CHANNEL = {channel!r}\n"
+        f"EXTERNAL_ID = {external_id!r}\n"
+        f"URL = {ctx['deployed_url'].rstrip('/') + LEVEL1_EXTENSION_PACKAGE_ROUTE!r}\n"
+        f"MAX_CHARS = {LEVEL1_REMINDERS_READ_MAX_CHARS}\n"
+        f"MARKER = {LEVEL1_REMINDERS_READ_MARKER!r}\n"
+        f"{LEVEL1_REMINDERS_READ_PROBE}"
+    )
+    try:
+        result = docker_exec("langgraph", script, timeout=60)
+    except Exception as error:  # noqa: BLE001 - an unreadable answer is a stated reason
+        return {"error": f"the reminders read did not run: {type(error).__name__}"}
+    if result.returncode != 0:
+        return {
+            "error": f"the reminders read exited {result.returncode}: "
+            f"{redacted_dump_text(result.stderr or result.stdout)[-300:]}"
+        }
+    try:
+        return parse_level1_reminders_read(result.stdout)
+    except (RuntimeError, ValueError) as error:
+        return {"error": f"the reminders read printed no answer: {type(error).__name__}"}
+
+
+async def wait_level1_reminder_emitted(
+    ctx: dict,
+    *,
+    read: Callable[[dict], dict] = read_level1_reminders,
+    bound_seconds: float = LEVEL1_REMINDER_EMISSION_BOUND_SECONDS,
+    poll_interval: float = LEVEL1_REMINDER_POLL_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> list[dict]:
+    """Read the reminders until the seeded one is emitted, or the bound has passed.
+
+    Called once central QA has passed, so the QA identity is active in the
+    product. Nothing here fires a job: the reminder the confirmed setting seeded
+    is past due, and only the kit core's own timer can move it to `emitted`.
+    Every read is kept, so the evidence shows the states it passed through.
+    """
+    reads: list[dict] = []
+    started = clock()
+    while True:
+        observation = read(ctx)
+        reads.append({"elapsed_seconds": round(clock() - started, 1), **observation})
+        ctx["level1_reminder_reads"] = reads
+        if not reminder_emission_mismatches(
+            reads,
+            owner_ref=ctx["level1_reminders_owner_ref"],
+            state=LEVEL1_REMINDER_STATE,
+            bound_seconds=bound_seconds,
+        ):
+            return reads
+        if clock() - started + poll_interval > bound_seconds:
+            return reads
+        await sleep(poll_interval)
 
 
 #: The task statuses an engineering failure really lands on, and why both.
@@ -6306,7 +6535,7 @@ def record_engineering_failure_steps(ctx: dict) -> dict[str, dict[str, str | Non
         if status not in ENGINEERING_FAILURE_STATUSES:
             continue
         reason = (diagnostic.get("failure_metadata") or {}).get("reason") or ""
-        match = re.search(r"\bstep=([A-Za-z0-9_]+)", reason)
+        match = re.search(r"\bstep=([A-Za-z0-9_-]+)", reason)
         steps[task_id] = {
             "status": str(getattr(status, "value", status)),
             "step": match.group(1) if match else None,

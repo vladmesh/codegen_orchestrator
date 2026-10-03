@@ -192,6 +192,119 @@ class TestChangeSetParse:
             namespace["parse_change_set"](change_set(f"@@ create {path}\nbody\n"))
 
 
+class TestKitAddDirective:
+    """`@@ kit-add <name>`: a catalog package installed by the kit's own command."""
+
+    def test_parses_a_kit_add_beside_file_operations(self):
+        namespace = load_script()
+
+        operations = namespace["parse_change_set"](
+            change_set("@@ create pkg/new.py\nbody\n@@ kit-add reminders\n")
+        )
+
+        assert operations == [
+            ("create", "pkg/new.py", "body\n"),
+            ("kit-add", "reminders", ""),
+        ]
+
+    @pytest.mark.parametrize(
+        "name",
+        ["", "Reminders", "--wheel=/tmp/x.whl", "-r", "reminders extra", "../reminders", "1st"],
+        ids=["missing", "uppercase", "option", "short-option", "two-words", "path", "digit"],
+    )
+    def test_a_name_that_is_not_a_package_identifier_is_refused(self, name):
+        namespace = load_script()
+
+        with pytest.raises(namespace["MalformedChangeSet"]) as raised:
+            namespace["parse_change_set"](change_set(f"@@ kit-add {name}\n"))
+
+        assert "package identifier" in str(raised.value)
+
+    def test_kit_add_takes_no_content(self):
+        namespace = load_script()
+
+        with pytest.raises(namespace["MalformedChangeSet"]) as raised:
+            namespace["parse_change_set"](change_set("@@ kit-add reminders\nstray\n"))
+
+        assert "kit-add takes no content" in str(raised.value)
+
+    def test_an_invalid_name_is_refused_before_any_write(self, tmp_path, monkeypatch):
+        namespace = load_script()
+        (tmp_path / "TASK.md").write_text(
+            change_set("@@ create pkg/ok.py\nbody\n@@ kit-add --wheel=/tmp/evil.whl\n")
+        )
+
+        exit_code, calls, payloads = run_main(namespace, monkeypatch, tmp_path)
+
+        assert exit_code == 1
+        assert payloads[0]["step"] == "change_set"
+        assert payloads[0]["error_class"] == "MalformedChangeSet"
+        assert not (tmp_path / "pkg").exists()
+        assert calls == []
+
+    def test_apply_writes_the_files_and_leaves_the_install_to_the_run(self, tmp_path):
+        namespace = load_script()
+
+        namespace["apply_change_set"](
+            [("create", "pkg/new.py", "body\n"), ("kit-add", "reminders", "")], str(tmp_path)
+        )
+
+        assert (tmp_path / "pkg/new.py").read_text() == "body\n"
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["pkg"]
+
+    def _task(self, tmp_path):
+        (tmp_path / "TASK.md").write_text(
+            change_set("@@ create pkg/new.py\nbody\n@@ kit-add reminders\n@@ kit-add notes\n")
+        )
+
+    def test_kit_add_runs_after_setup_and_before_staging(self, tmp_path, monkeypatch):
+        namespace = load_script()
+        self._task(tmp_path)
+
+        exit_code, calls, payloads = run_main(namespace, monkeypatch, tmp_path)
+
+        assert exit_code == 0, payloads
+        setup = calls.index(("make", "setup"))
+        reminders = calls.index((".venv/bin/kit", "add", "reminders"))
+        notes = calls.index((".venv/bin/kit", "add", "notes"))
+        stage = calls.index(("git", "add", "-A"))
+        assert setup < reminders < notes < stage
+        # The live catalog is the kit's default: the runner names no source or ref.
+        installs = [call for call in calls if call[0] == ".venv/bin/kit"]
+        assert installs == [
+            (".venv/bin/kit", "add", "reminders"),
+            (".venv/bin/kit", "add", "notes"),
+        ]
+        assert payloads[0]["success"] is True
+
+    def test_a_failed_kit_add_names_its_step_and_stops_the_run(self, tmp_path, monkeypatch):
+        namespace = load_script()
+        self._task(tmp_path)
+        failures = {".venv/bin/kit add reminders": (1, "kit: package not in catalog\n")}
+
+        exit_code, calls, payloads = run_main(namespace, monkeypatch, tmp_path, failures)
+
+        assert exit_code == 1
+        payload = payloads[0]
+        assert payload["success"] is False
+        assert payload["step"] == "kit-add"
+        assert payload["error_class"] == "KitAddFailed"
+        assert payload["reason"] == "noop runner step kit-add failed"
+        assert "not in catalog" in payload["stderr"]
+        assert (".venv/bin/kit", "add", "notes") not in calls
+        assert ("git", "add", "-A") not in calls
+        assert not any(call[:2] == ("git", "commit") for call in calls)
+
+    def test_a_change_set_without_kit_add_runs_no_kit_command(self, tmp_path, monkeypatch):
+        namespace = load_script()
+        (tmp_path / "TASK.md").write_text(change_set("@@ create pkg/new.py\nbody\n"))
+
+        exit_code, calls, _ = run_main(namespace, monkeypatch, tmp_path)
+
+        assert exit_code == 0
+        assert not any(call[0] == ".venv/bin/kit" for call in calls)
+
+
 class TestChangeSetApply:
     def test_applies_every_operation_kind(self, tmp_path):
         namespace = load_script()

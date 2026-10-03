@@ -186,6 +186,17 @@ an empty `ACTIVE_PACKAGES`, installs `reminders` through `kit add reminders --ca
 tag>`, and asserts the generated contract then records the package's name, version `0.4.0` and
 manifest digest, and that the wheel was placed under `services/backend/packages/`.
 
+The model-free lifecycle runs the same recipe on a product that is already deployed. In
+`mega-noop` the project's second story installs `reminders` into the product the first story
+deployed: its change set ends with the scripted runner's one non-file directive, `@@ kit-add
+<name>` (`packages/worker-wrapper/src/worker_wrapper/runners/noop.py`), which runs
+`.venv/bin/kit add <name>` from the product root after `make setup` and before staging, as the named
+step `kit-add`, with no catalog option, so the stand installs from the live catalog. The name must
+be a package identifier and is checked with the whole change set before any file is written. The
+kit's backend `start.sh` runs core and package migrations before the server starts, so the deploy
+migrates the package schema before any request; `tests/live/README.md` ("The second story installs
+a catalog package") lists what the suite then asserts.
+
 ## Central QA of a product that carries a kit package
 
 Central QA establishes a deployment's packages from the deployment itself, before an executor
@@ -273,6 +284,22 @@ an inactive user — blocks the run as `qa_access_grant_failed` before an execut
 bounded failure kind as the reason; QA never falls back to anonymous reads. The run's metadata
 records `qa_caller_identity` (`user_ref` and `active`), and the run's facts tell the executor which
 `user_ref` its reads act as and that no request names a `user_ref` itself.
+
+**Health-only QA holds the same identity.** Criteria that are all plain GET expectations
+(`parse_health_only_criteria`) are decided by `run_health_checks` with no executor, and that leg is
+built from the same two pieces as the exploratory one, in `consumers/qa.py`: `_run_secrets` reads
+the project's stored secrets once and builds the run's `QARunRedaction` from them, and
+`_establish_caller_identity` resolves the identity through `resolve_qa_caller_identity`, records
+`qa_caller_identity` on the Run, and returns the same typed `qa_access_grant_failed` blocker for a
+grant that is not proved. The health-only leg talks to no bot, so it always reads as the platform
+QA identity `qa:central-qa`, even for a bot product. With an identity, every health GET carries the
+three caller-identity headers, so `- GET /reminders returns 200` passes only for a verified caller
+on a migrated schema (anonymous, it is 401); a deployment with no stored
+`USER_IDENTITY_CAPABILITY` gets anonymous GETs exactly as before. Each check's detail — kept in the
+Run's report and failed checks — ends with `; body: <snippet>` of what the path answered: the body
+is scrubbed with the run's `QARunRedaction` first, its whitespace collapsed, and then cut to
+`HEALTH_CHECK_BODY_MAX_CHARS` (500), so the evidence says what a route returned and never a
+capability.
 
 Only the runtime-side `http_get` of the deployed URL carries the identity: it sends exactly one
 `X-Identity-Capability` (the stored `USER_IDENTITY_CAPABILITY`), one `X-User-Channel` and one

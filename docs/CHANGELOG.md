@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-03
 
+- mega-noop's second story installs `reminders` with a new `@@ kit-add` directive; health-only QA
+  reads as the verified QA identity, so the suite proves the install, `/reminders` and the timer's emit.
 - The Architect plans kit packages from the kit's live catalog, not a static list, and `create_task`
   refuses a non-catalog `kit add` or a wheel, so a package release needs no orchestrator change.
 - Every deploy write checks the project deploy lock's holder token first; a deploy that lost it ends

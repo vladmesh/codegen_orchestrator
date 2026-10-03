@@ -6133,6 +6133,29 @@ def test_a_failed_engineering_task_names_the_runner_step_it_died_on():
     assert recorded["task-2"]["status"] == TaskStatus.WAITING_HUMAN_REVIEW.value
 
 
+def test_a_failed_kit_add_is_named_whole():
+    """The scripted runner's package install step is `kit-add`, hyphen included."""
+    reason = _gave_up_reason(
+        reason="noop runner step kit-add failed",
+        step="kit-add",
+        error_class="KitAddFailed",
+        exit_code=1,
+    )
+    ctx: dict = {}
+    _diagnostics_for(
+        ctx,
+        {
+            "id": "task-1",
+            "status": TaskStatus.WAITING_HUMAN_REVIEW,
+            "failure_metadata": {"reason": f"Worker gave up: {reason}"},
+        },
+    )
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {
+        "task-1": {"status": "waiting_human_review", "step": "kit-add"}
+    }
+
+
 def test_a_technical_engineering_failure_is_recorded_even_with_no_metadata():
     """`handle_engineering_failure` writes `FAILED` and no `failure_metadata`.
 
@@ -6502,7 +6525,7 @@ def test_no_live_test_skips_but_for_a_named_environment_precondition():
     )
 
 
-def test_the_level1_class_collects_its_39_tests():
+def test_the_level1_class_collects_its_42_tests():
     """`mega-noop` and `mega-live` are one class; neither mode grows or loses a test."""
     env = {**os.environ, "INTERNAL_API_KEY": "collection-only"}
     result = subprocess.run(
@@ -6522,7 +6545,7 @@ def test_the_level1_class_collects_its_39_tests():
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "39 tests collected" in result.stdout, result.stdout
+    assert "42 tests collected" in result.stdout, result.stdout
 
 
 # ── A recording the tests read may not happen at teardown ────────────────
