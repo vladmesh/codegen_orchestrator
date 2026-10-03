@@ -131,7 +131,7 @@ class TestCreateWorkerWithRepoId:
     @pytest.mark.asyncio
     # Fixture path; no host temporary file is created.
     @pytest.mark.parametrize("repo_id", ["/tmp/outside", "../outside", "repo-123/nested"])  # noqa: S108
-    @patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock)
+    @patch("src.manager.git_ops.configure_git_credentials", new_callable=AsyncMock)
     @patch("src.manager.workspace_mod.prepare_worker_paths")
     async def test_rejects_unsafe_repo_id_before_worker_setup(
         self, mock_prepare_paths, mock_refresh, repo_id, mock_redis, mock_docker, tmp_path
@@ -162,7 +162,9 @@ class TestCreateWorkerWithRepoId:
         mock_refresh.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True)
+    @patch(
+        "src.manager.git_ops.configure_git_credentials", new_callable=AsyncMock, return_value=True
+    )
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
     async def test_repo_id_mounts_scaffolded_workspace(
@@ -227,7 +229,9 @@ class TestCreateWorkerWithRepoId:
             )
 
     @pytest.mark.asyncio
-    @patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True)
+    @patch(
+        "src.manager.git_ops.configure_git_credentials", new_callable=AsyncMock, return_value=True
+    )
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
     async def test_repo_id_stored_in_redis_meta(

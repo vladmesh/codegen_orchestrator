@@ -57,7 +57,7 @@ class TestWorkerExecution:
                 agent_type=AgentType.CLAUDE,
                 instructions="You are a test assistant.",
                 allowed_commands=["project.get"],
-                capabilities=[WorkerCapability.GIT],
+                capabilities=[WorkerCapability.GIT, WorkerCapability.GITHUB_CLI],
                 ownership=_ownership(),
             ),
         )
@@ -88,38 +88,57 @@ class TestWorkerExecution:
         # configuration usable after the agent's environment filter removes tokens.
         exit_code, output = container.exec_run("cat /workspace/.git/config")
         assert exit_code == 0
-        assert command.config.env_vars["GITHUB_TOKEN"].encode() not in output
+        container.reload()
+        assert not any(
+            item.startswith(("GITHUB_TOKEN=", "GH_TOKEN="))
+            for item in container.attrs["Config"]["Env"]
+        )
         assert f"https://github.com/{command.config.env_vars['REPO_NAME']}.git".encode() in output
 
         probe = """import os
 from pathlib import Path
-import stat
 import subprocess
-
 home = Path(os.environ["HOME"])
-credential = home / ".config/codegen/git-credentials"
-assert stat.S_IMODE(credential.stat().st_mode) == 0o600
-assert stat.S_IMODE((home / ".gitconfig").stat().st_mode) == 0o600
-assert stat.S_IMODE(credential.parent.stat().st_mode) == 0o700
-env = {"HOME": str(home), "PATH": os.environ["PATH"], "GIT_TERMINAL_PROMPT": "0"}
-repo = os.environ["REPO_NAME"]
-query = f"protocol=https\\nhost=github.com\\npath={repo}.git\\n\\n"
-result = subprocess.run(["git", "credential", "fill"], input=query, text=True,
-                        capture_output=True, env=env, check=True)
-assert "username=x-access-token" in result.stdout
-assert f"password={os.environ['GITHUB_TOKEN']}\\n" in result.stdout
-wrong_query = "protocol=https\\nhost=github.com\\npath=other/repository.git\\n\\n"
-wrong = subprocess.run(["git", "credential", "fill"], input=wrong_query, text=True,
-                       capture_output=True, env=env)
-assert wrong.returncode != 0
-assert os.environ["GITHUB_TOKEN"] not in wrong.stdout
+for path in (
+    home / ".config/codegen/git-credentials", home / ".git-credentials",
+    home / ".config/gh/hosts.yml",
+):
+    assert not path.exists(), str(path)
+config = (home / ".gitconfig").read_text()
+assert "/usr/local/bin/git-credential-codegen" in config
+assert "useHttpPath = true" in config
+assert "store --file" not in config
+for operation in ("store", "erase"):
+    result = subprocess.run(
+        ["/usr/local/bin/git-credential-codegen", operation],
+        input="password=synthetic-sentinel\\n\\n",
+        text=True, capture_output=True, check=True,
+    )
+    assert not result.stdout and not result.stderr
+assert not (home / ".git-credentials").exists()
+# The synthetic repository has no platform ownership record. The actual shipped
+# helper must refuse it through the broker, with a payload-free diagnostic.
+query = f"protocol=https\\nhost=github.com\\npath={os.environ['REPO_NAME']}.git\\n\\n"
+result = subprocess.run(
+    ["/usr/local/bin/git-credential-codegen", "get"], input=query,
+    text=True, capture_output=True, timeout=35,
+)
+assert result.returncode != 0 and not result.stdout
+assert result.stderr == "repository credential unavailable\\n"
+for entrypoint in ("gh", "/usr/bin/gh"):
+    version = subprocess.run([entrypoint, "--version"], capture_output=True, check=True)
+    assert b"gh version" in version.stdout
+    refused = subprocess.run([entrypoint, "api", "user"], capture_output=True, timeout=35)
+    assert refused.returncode != 0 and not refused.stdout
+    assert refused.stderr == b"repository credential unavailable\\n"
+assert not (home / ".config/gh/hosts.yml").exists()
 """
         exit_code, output = container.exec_run(["python3", "-c", probe])
         assert exit_code == 0, f"Native repository credential setup failed: {output.decode()}"
 
     @pytest.mark.parametrize(
         "env_vars",
-        [{}, {"REPO_NAME": "invalid/repository"}, {"GITHUB_TOKEN": "synthetic-invalid"}],
+        [{}, {"GITHUB_TOKEN": "synthetic-invalid"}],
     )
     async def test_missing_repository_credentials_refused_before_injection(
         self, redis_client, scaffolded_workspace, env_vars
@@ -150,7 +169,7 @@ assert os.environ["GITHUB_TOKEN"] not in wrong.stdout
                 redis_client, REDIS_STREAM_DEV_RESPONSES, request_id=request_id
             )
         failure = await redis_client.hgetall(worker_creation_failure_key(worker_id))
-        assert "Repository credentials are required" in failure["error"]
+        assert "Repository identity is required" in failure["error"]
         assert (
             await redis_client.hget(f"worker:status:{worker_id}", "status") != WorkerStatus.RUNNING
         )

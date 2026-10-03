@@ -32,14 +32,13 @@ def test_scaffolded_repository_matches_worker_credentials(tmp_path, monkeypatch)
     assert config.repo_id == repo_id
     assert origin == f"https://github.com/{config.env_vars['REPO_NAME']}.git"
     assert repo_id in config.env_vars["REPO_NAME"]
-    assert repo_id in config.env_vars["GITHUB_TOKEN"]
+    assert "GITHUB_TOKEN" not in config.env_vars and "GH_TOKEN" not in config.env_vars
     assert config.env_vars["FIXTURE_ASSERTION"] == "preserved"
     assert extra_env == {"FIXTURE_ASSERTION": "preserved"}
-    assert config.env_vars["GITHUB_TOKEN"] not in (workspace / ".git/config").read_text()
     assert subprocess.check_output(["git", "-C", str(workspace), "rev-parse", "HEAD"])
 
 
-@pytest.mark.parametrize("key", ["REPO_NAME", "GITHUB_TOKEN"])
+@pytest.mark.parametrize("key", ["REPO_NAME"])
 def test_scaffolded_config_refuses_to_normalize_invalid_credentials(key):
     with pytest.raises(ValueError, match="Use WorkerConfig directly for invalid repository input"):
         backend.scaffolded_worker_config("repository", env_vars={key: ""})

@@ -369,6 +369,7 @@ async def test_auto_resume_evidence_replaces_the_first_runs(tmp_path):
         ),
         patch("worker_wrapper.wrapper.os.killpg", side_effect=ProcessLookupError),
     ):
+        wrapper._git_auth_preflight = MagicMock(return_value=True)
         assert await wrapper._attempt_auto_resume({"request_id": "req-1"}) is True
 
     assert wrapper._effort_metrics == {"claude_evidence": _fixture_evidence()}

@@ -154,8 +154,12 @@ wrapper's `shared` package; Claude authentication and session settings
 (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
 `CLAUDE_CONFIG_DIR`) plus the container runtime settings
 `DISABLE_AUTOUPDATER` and `DISABLE_TELEMETRY`; Codex authentication and session
-settings (`CODEX_API_KEY`, `CODEX_HOME`); `FACTORY_API_KEY`; and the
-repository-scoped `GITHUB_TOKEN` and `GH_TOKEN` credentials. The cosmetic
+settings (`CODEX_API_KEY`, `CODEX_HOME`); and `FACTORY_API_KEY`. Developer helper
+children also inherit `WORKER_ID` and the existing broker URL/token so native Git
+and gh can acquire repository auth per command. Broker and manager authorize that
+identity against server-owned metadata; QA keeps only its turn authority.
+Neither `GITHUB_TOKEN` nor `GH_TOKEN` is passed to the agent or stored in Docker env.
+The cosmetic
 interpreter settings `PYTHONUNBUFFERED` and `PYTHONDONTWRITEBYTECODE` remain
 wrapper-only. The agent uses `localhost:9090` for result reporting and Compose
 operations, so the child `env=` mapping does not pass wrapper

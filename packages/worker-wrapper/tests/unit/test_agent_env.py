@@ -94,12 +94,12 @@ class TestAgentSubprocessEnv:
         "DISABLE_AUTOUPDATER": "1",
         "DISABLE_TELEMETRY": "1",
         "FACTORY_API_KEY": "factory-key",
-        "GITHUB_TOKEN": "github-token",
-        "GH_TOKEN": "github-token",
         "PYTHONNOUSERSITE": "1",
     }
 
     _BLOCKED_WRAPPER_SETTINGS = {
+        "GITHUB_TOKEN": "github-token",
+        "GH_TOKEN": "github-token",
         "WORKER_MANAGER_URL": "http://worker-manager:8000",
         "WORKER_API_URL": "http://api:8000",
         "WORKER_REDIS_URL": "redis://redis:6379",
@@ -306,3 +306,9 @@ async def test_a_codex_host_session_worker_creates_the_lock_before_leasing_work(
     await wrapper.run()
 
     assert observed == [True]
+
+
+@pytest.fixture(autouse=True)
+def successful_repository_auth(monkeypatch):
+    """Environment tests supply a ready repository before each CLI launch."""
+    monkeypatch.setattr(WorkerWrapper, "_git_auth_preflight", lambda self: True)

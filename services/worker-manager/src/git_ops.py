@@ -1,4 +1,4 @@
-"""Git operations for worker containers (clone, branch, token refresh).
+"""Git operations for worker containers (checkout and on-demand credentials).
 
 Every git command here is the *manager's* infrastructure git, not the developer
 agent's. The developer workspace is reused between the stories of one project,
@@ -115,61 +115,60 @@ printf 'CODEGEN_CHECKOUT_HEAD=%s\\n' "$LOCAL_HEAD"
 """
 
 
-# Container-private storage, never a bind mount or a workspace auth artifact.
-GIT_CREDENTIAL_PATH = "/home/worker/.config/codegen/git-credentials"
-
-
-def build_token_refresh_script(repo: str) -> str:
-    """Upgrade the released origin and atomically refresh a private credential.
-
-    Docker passes the token in its native exec environment. No token or encoding
-    of it is part of this script, Git argv or persisted workspace configuration.
-    """
+def build_credential_setup_script(repo: str) -> str:
+    """Remove released auth artifacts and install the native on-demand helper."""
     writer = r"""import os
 from pathlib import Path
-import shlex
 import subprocess
-import tempfile
-from urllib.parse import quote
-path = Path(os.environ["CODEGEN_GIT_CREDENTIAL_PATH"])
-path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-path.parent.chmod(0o700)
-fd, temporary = tempfile.mkstemp(dir=path.parent)
-try:
-    with os.fdopen(fd, "w") as stream:
-        token = quote(os.environ["GITHUB_TOKEN"], safe="")
-        repo = os.environ["CODEGEN_GIT_REPO"]
-        stream.write(f"https://x-access-token:{token}@github.com/{repo}.git\n")
-    os.replace(temporary, path)
-finally:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
-
-# HOME survives the wrapper's agent environment filter. Configure native Git
-# once for both manager and agent processes, preserving unrelated global keys.
-config = Path(os.environ["HOME"]) / ".gitconfig"
-fd, temporary = tempfile.mkstemp(dir=config.parent)
-try:
-    with os.fdopen(fd, "wb") as stream:
-        if config.exists():
-            stream.write(config.read_bytes())
-    command = ["git", "-c", "core.hooksPath=/dev/null", "config", "--file", temporary]
-    scope = "credential.https://github.com"
-    subprocess.run([*command, "--replace-all", scope + ".helper", ""], check=True)
-    subprocess.run(
-        [*command, "--add", scope + ".helper", "store --file=" + shlex.quote(str(path))],
-        check=True,
+from urllib.parse import urlsplit, urlunsplit
+home = Path(os.environ["HOME"])
+for path in (
+    home / ".config/codegen/git-credentials", home / ".git-credentials",
+    home / ".config/gh/hosts.yml",
+):
+    path.unlink(missing_ok=True)
+# Remove local overrides which could bypass the platform helper and all HTTP
+# auth headers. Preserve product hooks, refs, worktree and unrelated settings.
+for scope in ("--local", "--global"):
+    command = ["git", "-c", "core.hooksPath=/dev/null", "config", scope]
+    keys = subprocess.run(
+        [*command, "--name-only", "--get-regexp", r"^(credential\.|http\..*extraheader$)"],
+        capture_output=True, text=True,
     )
-    subprocess.run([*command, "--replace-all", scope + ".useHttpPath", "true"], check=True)
-    os.replace(temporary, config)
-finally:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
+    if keys.returncode not in (0, 1):
+        raise RuntimeError("cannot read Git configuration")
+    for key in set(keys.stdout.splitlines()):
+        if (
+            scope == "--local" or key.startswith("credential.https://github.com")
+            or key.startswith("credential.helper") or key.startswith("http.")
+        ):
+            subprocess.run([*command, "--unset-all", key], check=True)
+    urls = subprocess.run(
+        [*command, "--get-regexp", r"^remote\..*\.(url|pushurl)$"],
+        capture_output=True, text=True,
+    )
+    if urls.returncode not in (0, 1):
+        raise RuntimeError("cannot read remote configuration")
+    for line in urls.stdout.splitlines():
+        key, value = line.split(" ", 1)
+        url = urlsplit(value)
+        if url.hostname == "github.com" and (url.username or url.password):
+            clean = urlunsplit(("https", "github.com", url.path, "", ""))
+            subprocess.run([*command, "--replace-all", key, clean], check=True)
+command = ["git", "-c", "core.hooksPath=/dev/null", "config", "--global"]
+subprocess.run([*command, "--replace-all", "credential.https://github.com.helper", ""], check=True)
+subprocess.run([
+    *command, "--add", "credential.https://github.com.helper",
+    "/usr/local/bin/git-credential-codegen",
+], check=True)
+subprocess.run([
+    *command, "--replace-all", "credential.https://github.com.useHttpPath", "true",
+], check=True)
 """
     clean_url = shlex.quote(f"https://github.com/{repo}.git")
     return (
-        f"set -e\ncd /workspace\n{GIT} remote set-url origin {clean_url}\n"
-        f"python3 -I -c {shlex.quote(writer)}"
+        f"set -e\ncd /workspace\npython3 -I -c {shlex.quote(writer)}\n"
+        f"{GIT} remote set-url origin {clean_url}\n"
     )
 
 
@@ -318,32 +317,20 @@ async def checkout_branch(
     return CheckoutResult(ok=False, detail=detail)
 
 
-async def refresh_git_token(
-    docker: DockerClientWrapper, container_id: str, repo: str, token: str, worker_id: str
+async def configure_git_credentials(
+    docker: DockerClientWrapper, container_id: str, repo: str, worker_id: str
 ) -> bool:
-    """Sanitize origin and supply credentials for the container's Git lifetime."""
-    environment = {
-        "GITHUB_TOKEN": token,
-        "CODEGEN_GIT_REPO": repo,
-        "CODEGEN_GIT_CREDENTIAL_PATH": GIT_CREDENTIAL_PATH,
-    }
+    """Sanitize the checkout without injecting or storing a GitHub token."""
     try:
-        exit_code, output = await docker.exec_in_container(
+        exit_code, _ = await docker.exec_in_container(
             container_id,
-            ["bash", "-c", build_token_refresh_script(repo)],
+            ["bash", "-c", build_credential_setup_script(repo)],
             timeout=30,
-            environment=environment,
         )
-    except Exception as exc:  # noqa: BLE001 - fail preparation without leaking SDK output
-        logger.error(
-            "git_token_refresh_failed",
-            worker_id=worker_id,
-            error=_tail(str(exc), (token,)),
-            error_type=type(exc).__name__,
-        )
+    except Exception:  # noqa: BLE001 - released config can contain unknown secrets
+        logger.error("git_credential_setup_failed", worker_id=worker_id)
         return False
     if exit_code != 0:
-        logger.error("git_token_refresh_failed", worker_id=worker_id, error=_tail(output, (token,)))
+        logger.error("git_credential_setup_failed", worker_id=worker_id)
         return False
-    logger.info("git_token_refreshed", worker_id=worker_id, repo=repo)
     return True

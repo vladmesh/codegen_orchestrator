@@ -1389,6 +1389,31 @@ async def test_scoped_cache_is_per_repository(client, mock_jwt):
 
         with patch.object(client, "get_installation_id", return_value=installation_id):
             assert await client.get_repo_scoped_token("my-org", "repo-a") == "ghs_repo_a"  # noqa: S105
+
             assert await client.get_repo_scoped_token("my-org", "repo-b") == "ghs_repo_b"  # noqa: S105
             # Both stay cached independently.
             assert await client.get_repo_scoped_token("my-org", "repo-a") == "ghs_repo_a"  # noqa: S105
+
+
+@pytest.mark.asyncio
+async def test_scoped_cache_refreshes_inside_five_minutes(client, mock_jwt):
+    client._token_cache[(4545, "repo-a")] = (
+        "synthetic-expiring",
+        datetime.now(UTC) + timedelta(minutes=4),
+    )
+    with respx.mock(base_url="https://api.github.com") as router:
+        route = router.post("/app/installations/4545/access_tokens").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "token": "synthetic-current",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                },
+            )
+        )
+        with patch.object(client, "get_installation_id", return_value=4545):
+            assert await client.get_repo_scoped_token("my-org", "repo-a") == "synthetic-current"
+            assert await client.get_repo_scoped_token("my-org", "repo-a") == "synthetic-current"
+        assert route.call_count == 1

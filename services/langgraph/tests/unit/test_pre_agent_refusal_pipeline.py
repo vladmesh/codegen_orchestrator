@@ -7,7 +7,7 @@ import importlib.util
 from pathlib import Path
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
@@ -21,7 +21,7 @@ from shared.contracts.dto.engineering_execution import (
 )
 from shared.contracts.dto.task import TaskDTO
 from shared.contracts.vocab import AgentType
-from src.clients.worker_spawner import _wait_until_ready
+from src.clients.worker_spawner import _wait_until_ready, spawn_result_from_output
 from src.nodes.developer import DeveloperNode
 from tests.unit.factories import make_project, make_repository
 
@@ -41,7 +41,8 @@ def _load_service_package(name: str, source: Path):
 
 
 @pytest.mark.asyncio
-async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypatch):
+@pytest.mark.parametrize("source", ["creation", "reused_auth"])
+async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypatch, source):  # noqa: PLR0915
     """The production evidence shape parks at the retry bound without spending a retry."""
     root = Path(__file__).resolve().parents[4]
     monkeypatch.setenv("WORKER_BROKER_INTERNAL_TOKEN", "test-broker-token")
@@ -69,6 +70,34 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
     spawner_redis.hgetall.return_value = status_fields
     spawner_redis.get.return_value = "project checkout is held"
     spawn_result = await _wait_until_ready(spawner_redis, "worker-1", "request-1", timeout=1)
+    reason = EngineeringInfrastructureRefusal.PROJECT_LOCKED
+    if source == "reused_auth":
+        from worker_wrapper.config import WorkerWrapperConfig
+        from worker_wrapper.wrapper import WorkerWrapper
+
+        broker = AsyncMock()
+        wrapper = WorkerWrapper(
+            WorkerWrapperConfig(
+                worker_id="worker-1",
+                broker_url="http://broker",
+                broker_token="x" * 43,
+                agent_type="noop",
+            ),
+            broker_client=broker,
+        )
+        wrapper._git_auth_preflight = MagicMock(return_value=False)
+        wrapper.execute_agent = AsyncMock()
+        wrapper._prepare_workspace = AsyncMock()
+        for lease in ("first-refusal", "reused-refusal"):
+            await wrapper._run_turn(lease, {"request_id": "request-1"})
+        wrapper.execute_agent.assert_not_awaited()
+        wrapper._prepare_workspace.assert_not_awaited()
+        result = broker.submit_output.await_args.args[1]
+        assert result.cost_usd is None and result.claude_evidence is None
+        spawn_result = spawn_result_from_output(
+            result.model_dump(mode="json"), "request-1", "worker-1"
+        )
+        reason = EngineeringInfrastructureRefusal.REPOSITORY_AUTH_UNAVAILABLE
     assert spawn_result is not None
     assert spawn_result.execution is not None
     assert spawn_result.execution.execution_phase is EngineeringExecutionPhase.PRE_AGENT_REFUSED
@@ -159,7 +188,7 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
         story_id="story-1",
         task_id="task-1",
         attempt_id="eng-1",
-        refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+        refusal=reason,
         task_status="waiting_human_review",
         story_status="waiting_human_review",
         current_iteration=3,

@@ -293,7 +293,7 @@ class TestWorkspaceByRepoId:
                 return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
             ),
             patch(
-                "src.manager.git_ops.refresh_git_token",
+                "src.manager.git_ops.configure_git_credentials",
                 new_callable=AsyncMock,
                 return_value=True,
             ) as mock_refresh,

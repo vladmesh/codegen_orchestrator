@@ -209,6 +209,22 @@ and a finite broker TTL. Authentication to the wrapper is not authorization:
 the broker and manager each enforce the recorded worker type. QA workers have
 the constrained QA turn capability; they cannot obtain Compose control.
 
+Developer Git and gh authenticate through `github.credential`: the wrapper helper
+posts `GitHubCredentialRequest` to `/v1/workers/{worker_id}/github/credential`.
+The broker forwards to worker-manager's `/api/worker/{worker_id}/github/credential`;
+both authenticate the existing worker credential and authorize the recorded type.
+Manager validates `WorkerOwnership` and resolves its stored `repo_id` through the
+Repository API. The supplied repository is only an equality check against that
+owned record, never a minting selector. QA, absent/removed ownership and mismatches
+refuse before minting. `GitHubCredentialResponse` contains a transient SecretStr,
+explicitly serialized only at this no-store response boundary. App keys, minting
+and repository-scoped caching with a five-minute margin remain on the platform.
+
+`WorkerFailedResult.execution` carries wrapper-owned pre-agent auth refusal as
+`pre_agent_refused/repository_auth_unavailable`. The worker client preserves it
+through the developer result and terminal Run so the existing supervisor parks
+the Story as infrastructure, without spending a generic engineering retry.
+
 ## Consumer patterns
 
 <a id="consumer-patterns"></a>

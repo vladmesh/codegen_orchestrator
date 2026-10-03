@@ -19,6 +19,7 @@ services:
       - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
       - ${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}:${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}
       - ${HOST_CODEX_HOME}:/host-codex:ro
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
 
   # The heads' claude LLM channel runs on the stand's Claude token, the one
   # worker-manager hands Claude workers. The rendered .env keeps it under its stand

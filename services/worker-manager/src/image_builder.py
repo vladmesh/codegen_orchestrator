@@ -58,7 +58,8 @@ CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
         'https://cli.github.com/packages stable main" | tee '
         "/etc/apt/sources.list.d/github-cli.list > /dev/null && \\",
         "    apt-get update && apt-get install -y --no-install-recommends gh && \\",
-        "    rm -rf /var/lib/apt/lists/*",
+        "    mkdir -p /usr/lib/codegen && mv /usr/bin/gh /usr/lib/codegen/gh && \\",
+        "    ln -s /usr/local/bin/gh /usr/bin/gh && rm -rf /var/lib/apt/lists/*",
     ],
     # The QA executor's sandbox: a Telethon client for the QA Telegram account,
     # and python-socks so Telethon can reach Telegram through the run's

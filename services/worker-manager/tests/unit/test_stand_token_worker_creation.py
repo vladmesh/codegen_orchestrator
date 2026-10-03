@@ -72,7 +72,7 @@ def valid_stand_claude_token(monkeypatch):
 
 
 @pytest.mark.asyncio
-@patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True)
+@patch("src.manager.git_ops.configure_git_credentials", new_callable=AsyncMock, return_value=True)
 @patch("src.manager.workspace_mod")
 @patch("src.manager.ImageBuilder")
 async def test_stand_token_claude_worker_reaches_container_creation(

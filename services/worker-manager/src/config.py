@@ -8,6 +8,8 @@ class WorkerManagerSettings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     REDIS_URL: str = Field(min_length=1)
     API_BASE_URL: str = Field(min_length=1)
+    GITHUB_APP_ID: str = Field(min_length=1)
+    GITHUB_APP_PRIVATE_KEY_PATH: str = Field(min_length=1)
 
     # Worker config
     WORKER_IMAGE_PREFIX: str = "worker"

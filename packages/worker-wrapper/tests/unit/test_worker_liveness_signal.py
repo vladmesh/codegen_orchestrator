@@ -216,6 +216,7 @@ class TestTheLimitKeepsTheWork:
                 "worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec
             ) as create,
         ):
+            wrapper._git_auth_preflight = MagicMock(return_value=True)
             resumed = asyncio.create_task(wrapper._attempt_auto_resume({"request_id": "resume-1"}))
             await asyncio.sleep(0)
             wrapper._result_event.set()

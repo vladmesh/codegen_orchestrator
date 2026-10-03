@@ -100,7 +100,6 @@ async def test_request_spawn_includes_ownership_in_command(
     # so let's use a simpler approach: just verify the xadd payload
     await request_spawn(
         repo="org/repo",
-        github_token="ghs_test",  # noqa: S106
         task_content="build it",
         ownership=WorkerOwnership(
             story_id="story-1", project_id="proj-456", run_id="live-456", attempt_id="eng-789"
@@ -136,7 +135,6 @@ async def test_request_spawn_cannot_be_called_without_ownership():
     with pytest.raises(TypeError):
         await request_spawn(
             repo="org/repo",
-            github_token="ghs_test",  # noqa: S106
             task_content="build it",
             timeout_seconds=5,
         )

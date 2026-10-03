@@ -146,7 +146,11 @@ async def test_instruction_injection_failure_aborts_worker_creation():
             "src.manager.workspace_mod.get_scaffolded_workspace",
             return_value=(Path("/data/ws/repo-1"), True),
         ),
-        patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True),
+        patch(
+            "src.manager.git_ops.configure_git_credentials",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
     ):
         mock_settings.ENVIRONMENT = "production"
         mock_settings.DOCKER_NETWORK = ""

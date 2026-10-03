@@ -466,3 +466,9 @@ class TestTaskArchiving:
             wrapper._archive_task({"task_id": "task-1"}, report=None)
 
         assert gitignore.read_bytes() == before
+
+
+@pytest.fixture(autouse=True)
+def successful_repository_auth(monkeypatch):
+    """These protocol units supply a ready repository; auth has separate native tests."""
+    monkeypatch.setattr(WorkerWrapper, "_git_auth_preflight", lambda self: True)

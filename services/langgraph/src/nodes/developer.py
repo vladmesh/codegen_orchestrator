@@ -202,11 +202,7 @@ class DeveloperNode(FunctionalNode):
         if not repo_id:
             repo_id = state.get("repo_id")
 
-        # Get a GitHub App token scoped to this project's repository only. The
-        # worker is an ephemeral coding-agent container with unrestricted egress,
-        # so an installation-wide token would hand it every tenant's repository.
         github_client = GitHubAppClient()
-        access_token = await github_client.get_repo_scoped_token(owner, repo_name)
 
         branch = state.get("branch")
         pre_attempt_head = await self._pre_attempt_head(
@@ -239,7 +235,6 @@ class DeveloperNode(FunctionalNode):
         # Spawn or reuse worker
         spawn_kwargs = {
             "repo": repo_full_name,
-            "github_token": access_token,
             "task_content": task_message,
             "task_title": task_title,
             "timeout_seconds": Timeouts.WORKER_SPAWN,

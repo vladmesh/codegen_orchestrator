@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from redis.asyncio import Redis
 import structlog
 
+from shared.clients.github import GitHubAppClient
+from shared.clients.internal_api import InternalAPIClient
 from shared.redis import RedisStreamClient
 
 from .compose_runner import ComposeRunner
@@ -14,6 +16,7 @@ from .engineering_attempts import EngineeringAttemptInventory
 from .events import DockerEventsListener
 from .manager import WorkerManager
 from .routers.compose import router as compose_router
+from .routers.credentials import router as credentials_router
 from .routers.introspect import router as introspect_router
 from .routers.workspaces import router as workspaces_router
 
@@ -53,6 +56,8 @@ async def lifespan(app: FastAPI):
     app.state.docker = worker_manager.docker
     app.state.redis = redis
     app.state.worker_manager = worker_manager
+    app.state.github = GitHubAppClient()
+    app.state.credential_api = InternalAPIClient(settings.API_BASE_URL, timeout=10)
     app.state.engineering_attempts = EngineeringAttemptInventory(settings.API_BASE_URL)
     app.state.scaffolded_workspace_path = settings.SCAFFOLDED_WORKSPACE_PATH
 
@@ -131,11 +136,13 @@ async def lifespan(app: FastAPI):
 
     await redis.close()
     await app.state.engineering_attempts.close()
+    await app.state.credential_api.close()
     logger.info("shutdown_complete")
 
 
 app = FastAPI(title="Worker Manager", lifespan=lifespan)
 app.include_router(compose_router)
+app.include_router(credentials_router)
 app.include_router(introspect_router)
 app.include_router(workspaces_router)
 

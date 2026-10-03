@@ -23,6 +23,7 @@ class EngineeringInfrastructureRefusal(StrEnum):
     PROJECT_LOCKED = "project_locked"
     WORKER_PROFILE_UNAVAILABLE = "worker_profile_unavailable"
     WORKER_CREATION_FAILED = "worker_creation_failed"
+    REPOSITORY_AUTH_UNAVAILABLE = "repository_auth_unavailable"
     #: Ensure-workspace failed for an ACTIVE project and recorded `scaffold_error`.
     #: Admission parks it; its proof is the committed `workspace_ensure` audit, and
     #: the operator's retry also clears `scaffold_error` so ensure runs again.

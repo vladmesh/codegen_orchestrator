@@ -20,6 +20,8 @@ requires-python = ">=3.12"
 
 [project.scripts]
 worker-wrapper = "worker_wrapper.main:run_main"
+git-credential-codegen = "worker_wrapper.credentials:git_main"
+gh = "worker_wrapper.credentials:gh_main"
 
 
 [build-system]

@@ -233,9 +233,15 @@ async def test_a_developer_worker_carries_the_ownership_the_request_named(_works
             base_image="worker-base:latest",
             ownership=OWNERSHIP,
             repo_id="repo-1",
-            env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "test-token"},
+            env_vars={
+                "REPO_NAME": "org/repo",
+                "GITHUB_TOKEN": "test-token",
+                "GH_TOKEN": "sentinel",
+            },
         )
 
+    environment = docker.run_container.await_args.kwargs["environment"]
+    assert "GITHUB_TOKEN" not in environment and "GH_TOKEN" not in environment
     labels = docker.run_container.await_args.kwargs["labels"]
     assert labels[WorkerLabel.PROJECT.value] == "proj-alpha"
     assert labels[WorkerLabel.RUN.value] == "live-alpha"

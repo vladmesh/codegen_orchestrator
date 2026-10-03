@@ -710,9 +710,17 @@ resolved for the push into DinD by digest (`WORKER_BASE_IMAGE_SOURCE=candidates`
 commits exactly those digests (docs/DEPLOY.md, "Worker base images are a release chain"). A local
 `make test-integration-backend-dind` builds the chain from the tree inside DinD, as before.
 `python -m tests.integration.backend` invokes that same complete Compose target for a reusable
-worker-local check receipt. Scaffolded developer fixtures share a clean origin and repository-scoped
-synthetic token; native credential probes stay local and never authenticate against GitHub. DinD
-mounts `/tmp` before its workspace/transcript child volumes so its entrypoint cannot hide them.
+worker-local check receipt. Scaffolded developer fixtures carry a clean origin and no GitHub token.
+`test_worker_execution.py` inspects the shipped container's environment, helper-only
+Git config and token-file absence, exercises store/erase and verifies fail-closed
+credential acquisition for an unowned synthetic repository. The capability image
+routes both PATH `gh` and `/usr/bin/gh` through the shipped transient-auth helper.
+Offline native tests use a bare Git HTTP fixture and controlled broker, invalidate
+tokens between reused turns and between start/publication, then verify the exact
+remote SHA. They exercise the wrapper's pre-agent refusal and the existing Run/Story
+infrastructure parking seam without Docker or paid model calls. DinD mounts `/tmp`
+before its workspace/transcript child volumes so its entrypoint cannot hide them.
+Container assertions are CI evidence only when that candidate's job executes.
 Worker-path coverage is available through `make test-live-engineering`
 (`tests/live/test_pipeline_engineering.py`). Use `make test-live-mega-noop` for the deterministic
 scaffold, engineering, deploy and QA path, or a named `make stand-run SUITE=...` for model-backed

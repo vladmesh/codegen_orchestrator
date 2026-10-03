@@ -330,3 +330,9 @@ class TestTheQaAgentChildProcessCanReachItsBackend:
             )
 
         assert "--skip-git-repo-check" in captured["cmd"]
+
+
+@pytest.fixture(autouse=True)
+def successful_repository_auth(monkeypatch):
+    """These protocol units supply a ready repository; auth has separate native tests."""
+    monkeypatch.setattr(WorkerWrapper, "_git_auth_preflight", lambda self: True)

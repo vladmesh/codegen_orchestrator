@@ -54,6 +54,7 @@ REQUIRED_RUNTIME_MOUNTS = {
     "scheduler-maintenance": {GITHUB_APP_KEY},
     "scaffolder": {GITHUB_APP_KEY, "/data/workspaces", "/root/.cache/uv"},
     "worker-manager": {
+        GITHUB_APP_KEY,
         "/var/run/docker.sock",
         "/data/workspaces",
         "/data/worker-transcripts",

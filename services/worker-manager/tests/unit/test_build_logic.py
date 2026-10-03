@@ -296,7 +296,7 @@ class TestWorkerManagerCreateWithCapabilities:
             True,
         )
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-        manager._refresh_git_token = AsyncMock(return_value=True)
+        manager._configure_git_credentials = AsyncMock(return_value=True)
 
         result = await manager.create_worker_with_capabilities(
             worker_id="test-worker-1",
