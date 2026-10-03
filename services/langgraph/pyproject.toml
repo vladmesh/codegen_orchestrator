@@ -58,3 +58,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+# `codegen-kit-tooling` is a direct reference to the pinned kit commit; hatchling refuses
+# one in `project.dependencies` unless it is allowed explicitly.
+[tool.hatch.metadata]
+allow-direct-references = true
