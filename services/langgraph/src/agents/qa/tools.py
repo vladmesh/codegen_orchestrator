@@ -620,19 +620,23 @@ def build_qa_callables(
             present only when the deployment has a caller-identity core and
             the runtime proved the identity active. `http_get` sends it as
             headers, and no executor ever sees its capability.
-        redaction: the run's capability values (`consumers/_qa_redaction`). Every
-            call's result is scrubbed of them before the executor receives it,
-            and the workspace scrubs them out of everything it retains. The
-            values the identity and the jobs capability hold are always in it.
+        redaction: the run's one set of secrets (`consumers/_qa_redaction`),
+            the workspace's own when none is given. Every call's result is
+            scrubbed of it before the executor receives it, and the workspace
+            scrubs it out of everything it retains. The values the identity
+            and the jobs capability hold are added to it here.
         http_transport: override for `http_get`'s transport, for tests.
     """
     capabilities = session.capabilities
-    redaction = (redaction or QARunRedaction()).including(
+    # One set for the run: the workspace's, unless the runner hands over the
+    # set it shares with the endpoint — then the workspace holds that one too.
+    redaction = redaction or workspace.redaction
+    workspace.redaction = redaction
+    # Any secret a call presents enters the set here, where the calls are built.
+    redaction.add(
         caller_identity.capability if caller_identity is not None else None,
         jobs.capability if jobs is not None else None,
     )
-    # The retention boundary: the workspace scrubs everything it keeps.
-    workspace.redact_with(redaction)
 
     def record(tool: str, request: str, response: str) -> None:
         workspace.record(tool, request, response)

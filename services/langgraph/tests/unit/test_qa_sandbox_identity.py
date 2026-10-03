@@ -34,14 +34,13 @@ from shared.qa_probe_cli import QA_PROBE_SCRIPT, TELEGRAM_IDENTITY_CALL
 from src.agents.qa.capability_service import QACapabilityService
 from src.agents.qa.tools import build_qa_callables
 from src.clients.qa_worker import QAExecutorUnavailable, run_qa_executor
+from src.consumers._qa_redaction import TELEGRAM_CREDENTIAL, QARunRedaction
 from src.consumers._qa_runner import QARuntimeConfig, preflight_bot_access
 from src.consumers._qa_target import QACapabilities, QATarget, QATargetSession
 from src.consumers._qa_telegram_identity import (
-    REDACTED,
     handed_over_secrets,
     identity_record,
     prove_sandbox_telegram_identity,
-    redact,
 )
 from src.consumers._qa_workspace import qa_workspace
 
@@ -350,8 +349,11 @@ class TestWhatTheSandboxSaysBackIsScrubbed:
         secrets = handed_over_secrets(proven)
         said = f"cat identity: {{'session': '{SESSION}', 'api_hash': '{API_HASH}'}}"
 
-        assert redact(said, secrets) == (
-            f"cat identity: {{'session': '{REDACTED}', 'api_hash': '{REDACTED}'}}"
+        redaction = QARunRedaction(secrets, label=TELEGRAM_CREDENTIAL)
+
+        assert redaction.text(said) == (
+            f"cat identity: {{'session': '{TELEGRAM_CREDENTIAL}', "
+            f"'api_hash': '{TELEGRAM_CREDENTIAL}'}}"
         )
 
 

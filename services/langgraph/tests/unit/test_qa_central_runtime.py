@@ -286,6 +286,11 @@ class ExecutorHarness:
         self._token = token
         self.tools = _ToolLookup(self)
 
+    @property
+    def token(self) -> str:
+        """The run token, which the executor holds as `QA_CAPABILITY_TOKEN`."""
+        return self._token
+
     async def call(self, name: str, **args):
         return await self.call_with(name, args)
 
@@ -645,6 +650,47 @@ class TestCleanTargetPassesExploratoryQA:
         assert session not in result.report
         assert session not in result.summary
         assert "[redacted: QA Telegram credential]" in result.report
+
+    async def test_the_endpoint_token_in_a_recorded_probe_is_never_kept(self, central_run):
+        """The executor holds `QA_CAPABILITY_TOKEN`, and a probe it records can print it.
+
+        The real runner composition, with no redaction handed in: the token joins
+        the run's one set where the endpoint mints it, so the probe evidence, the
+        report and the result never carry it.
+        """
+        held: list[str] = []
+
+        async def behaviour(graph):
+            token = graph.token
+            held.append(token)
+            await graph.call_with(
+                "record_probe",
+                {
+                    "platform": "http",
+                    "name": "health",
+                    "source": f"curl -H 'Authorization: Bearer {token}' http://backend/health",
+                    "arguments": [token, f"--token={token}"],
+                    "stdout": f"QA_CAPABILITY_TOKEN={token}",
+                    "stderr": token,
+                    "exit_status": 0,
+                    "duration_ms": 3,
+                },
+            )
+            await graph.tools["write_qa_report"].ainvoke(
+                {"markdown": f"# QA\nQA_CAPABILITY_TOKEN={token}"}
+            )
+            return PASSING_JSON.replace('"summary": "OK"', f'"summary": "used {token}"')
+
+        result, _, _, _ = await central_run(behaviour=behaviour)
+
+        [token] = held
+        assert result.passed is True
+        [probe] = result.probe_runs
+        for text in (probe.source, *probe.arguments, probe.stdout, probe.stderr):
+            assert token not in text
+        assert "[redacted: QA capability endpoint token]" in probe.stdout
+        # Everything the run hands back to be persisted.
+        assert token not in repr(result)
 
     async def test_a_capability_in_the_executors_own_words_is_redacted_before_it_is_kept(
         self, central_run

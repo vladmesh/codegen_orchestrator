@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 import json
@@ -72,7 +72,7 @@ from ..agents.qa.tools import (
 )
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
 from ..prompts.qa import build_qa_instructions, build_qa_prompt
-from ._qa_redaction import QARunRedaction
+from ._qa_redaction import TELEGRAM_CREDENTIAL, QARunRedaction
 from ._qa_target import (
     CONTAINER_PROBE_ATTEMPTS,
     CONTAINER_PROBE_RETRY_DELAY,
@@ -90,7 +90,7 @@ from ._qa_target import (
     new_grant_marker,
     qa_target_grant,
 )
-from ._qa_telegram_identity import QATelegramIdentityRefusal, handed_over_secrets, redact
+from ._qa_telegram_identity import QATelegramIdentityRefusal, handed_over_secrets
 from ._qa_workspace import QAWorkspace, qa_workspace
 
 logger = structlog.get_logger(__name__)
@@ -1495,11 +1495,12 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     caller_identity: QACallerIdentity | None = None,
     redaction: QARunRedaction | None = None,
 ) -> QAResult:
-    """Run the one assigned executor over this run's capability endpoint."""
-    redaction = (redaction or QARunRedaction()).including(
-        caller_identity.capability if caller_identity is not None else None,
-        jobs.capability if jobs is not None else None,
-    )
+    """Run the one assigned executor over this run's capability endpoint.
+
+    `redaction` is the run's one set of secrets. The calls, the workspace, the
+    endpoint and the transcript handling below all read that same object.
+    """
+    redaction = redaction if redaction is not None else workspace.redaction
     calls = build_qa_callables(
         session=session,
         workspace=workspace,
@@ -1513,25 +1514,19 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         caller_identity=caller_identity,
         redaction=redaction,
     )
-    telegram_secrets = handed_over_secrets(runtime)
-
-    def scrub(text: str | None, _secrets: tuple[str, ...] = ()) -> str | None:
-        """What the executor says, without the credential or a capability in it."""
-        return redaction.text(redact(text, telegram_secrets) or "") if text else text
-
-    # The sandbox may print the credential it holds, or a capability a product
-    # reflected; the report and the verdict it submits are scrubbed on the way
-    # in, before either is kept.
+    # The sandbox may print the credential or the token it holds, or a
+    # capability a product reflected; the report and the verdict it submits are
+    # scrubbed on the way in, before either is kept.
     store_report = calls["write_qa_report"]
 
     def write_qa_report(markdown: str) -> str:
-        return store_report(scrub(markdown))
+        return store_report(redaction.text(markdown))
 
     calls["write_qa_report"] = write_qa_report
     service = QACapabilityService(
         calls=calls,
         capabilities=session.capabilities.describe(),
-        submit_verdict=lambda raw: workspace.submit_verdict(scrub(raw)),
+        submit_verdict=lambda raw: workspace.submit_verdict(redaction.text(raw)),
         advertised_host=runtime.capability_host,
         # Only an identity this run proved is served to the sandbox.
         telegram_identity=runtime.telethon_env if runtime.telegram_identity_proven else None,
@@ -1540,8 +1535,8 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             if runtime.telegram_identity_refusal
             else None
         ),
-        probe_secrets=(*telegram_secrets, *redaction.secrets),
-        redact_text=scrub,
+        # The endpoint adds the run token it mints to this same set.
+        redaction=redaction,
     )
     prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
     if prepared_criteria.adjustments:
@@ -1564,7 +1559,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             timeout=timeout,
             attempts=attempts,
             probe_library=probe_library,
-            scrub=scrub,
+            redaction=redaction,
         )
         if executor_run is not None:
             return settle_unverified_checks(
@@ -1624,7 +1619,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
     timeout: int,
     attempts: QAExecutorAttempts,
     probe_library: Sequence[QAProbeLibraryFile] = (),
-    scrub: Callable[[str | None], str | None] = lambda text: text,
+    redaction: QARunRedaction | None = None,
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
     """Retry only transient subscription-executor failures.
 
@@ -1642,6 +1637,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
     )
     last: QAExecutorUnavailable | None = None
     said = attempts
+    scrub = (redaction or QARunRedaction()).text
     for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
         try:
             run = await run_qa_executor(
@@ -1744,16 +1740,19 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
 ) -> QAResult:
     """Run QA with cleanup residue reported as a blocker on every exit path.
 
-    `redaction` is the run's capability set. The workspace retains nothing
-    unscrubbed of it, and the result leaves here scrubbed of it on every path.
+    `redaction` is the run's one set of secrets. The Telegram credentials the
+    runtime hands the sandbox join it here, where the runtime enters the run.
+    The workspace retains nothing unscrubbed of it, and the result leaves here
+    scrubbed of it on every path.
     """
-    redaction = redaction or QARunRedaction()
+    redaction = redaction if redaction is not None else QARunRedaction()
+    redaction.add(*handed_over_secrets(runtime), label=TELEGRAM_CREDENTIAL)
     grant = QAGrantOutcome(marker=new_grant_marker())
     attempts = attempts or QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
     workspace: QAWorkspace | None = None
     try:
         with qa_workspace() as workspace:
-            workspace.redact_with(redaction)
+            workspace.redaction = redaction
             async with qa_target_grant(
                 target=target,
                 fleet_ssh_key=fleet_ssh_key,

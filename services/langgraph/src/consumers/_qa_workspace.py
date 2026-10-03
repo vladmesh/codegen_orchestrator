@@ -116,15 +116,12 @@ class QAWorkspace:
     #: order. Written by the runtime, so what a run looked at is the runner's
     #: fact and not an executor's account of itself.
     observations: list[ProductObservation] = field(default_factory=list)
-    #: The run's capability values. Everything this workspace retains — trace,
-    #: observations, Telegram and probe evidence, report and verdict — is
-    #: scrubbed of them first, before any bound is applied.
+    #: The run's one set of secrets, shared with the runner, the calls and the
+    #: endpoint. Everything this workspace retains — trace, observations,
+    #: Telegram and probe evidence, report and verdict — is scrubbed of it
+    #: first, before any bound is applied.
     redaction: QARunRedaction = field(default_factory=QARunRedaction)
     _trace: list[dict] = field(default_factory=list)
-
-    def redact_with(self, redaction: QARunRedaction) -> None:
-        """Extend what this workspace keeps out of everything it retains."""
-        self.redaction = self.redaction.including(*redaction.secrets)
 
     @property
     def report_path(self) -> Path:
