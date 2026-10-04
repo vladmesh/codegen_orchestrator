@@ -24,6 +24,71 @@ from src.config import BrokerSettings
 
 
 @pytest.mark.asyncio
+async def test_accepted_output_receipt_has_a_bounded_replay_window():
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    token = "r" * 43
+    await main.register_worker(
+        main.Registration(
+            worker_id="receipt-worker",
+            token=token,
+            worker_type=WorkerType.QA,
+            input_stream="receipt-input",
+            output_stream="receipt-output",
+        ),
+        main.settings.WORKER_BROKER_INTERNAL_TOKEN,
+    )
+    submission = main.Submission(lease_id="1-0", result={"status": "failed", "error": "fixture"})
+    assert await main.submit_output("receipt-worker", submission, token) == {"ok": True}
+    key = "worker:output-receipt:receipt-worker:1-0"
+    assert 86300 < await redis.ttl(key) <= 86400
+    # Leave only one transport timeout in the supported window before replay.
+    await redis.expire(key, 180)
+    assert await main.submit_output("receipt-worker", submission, token) == {"ok": True}
+    assert 0 < await redis.ttl(key) <= 180
+    with pytest.raises(main.HTTPException) as changed:
+        await main.submit_output(
+            "receipt-worker",
+            main.Submission(lease_id="1-0", result={"status": "failed", "error": "changed"}),
+            token,
+        )
+    assert changed.value.status_code == 409
+    assert await redis.xlen("receipt-output") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_id", ["one", "one[*?]"])
+async def test_unregister_removes_only_owned_receipts_including_legacy_leases(worker_id):
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    owned = [f"worker:output-receipt:{worker_id}:{index}-0" for index in range(205)]
+    for index, key in enumerate(owned):
+        await redis.set(key, "signature", ex=86400 if index else None)
+    retained = [
+        "worker:output-receipt:one-other:1-0",
+        "worker:output-receipt:one*:1-0",
+        "worker:output-receipt:two:1-0",
+        publication_pending_key("attempt-one"),
+        "worker:evidence:removed:run-one",
+    ]
+    for key in retained:
+        await redis.set(key, "retained")
+    credentials = credential_key(worker_id)
+    session = f"worker:session:{worker_id}"
+    active = active_turn_key(worker_id)
+    await redis.hset(credentials, mapping={"token_digest": "fixture"})
+    await redis.set(session, "session")
+    await redis.hset(active, mapping={"lease_id": "1-0"})
+    with pytest.raises(main.HTTPException):
+        await main.unregister_worker(worker_id, "wrong-token")
+    assert await redis.exists(*owned) == len(owned)
+    await main.unregister_worker(worker_id, main.settings.WORKER_BROKER_INTERNAL_TOKEN)
+    assert await redis.exists(*owned) == 0
+    assert await redis.exists(*retained) == len(retained)
+    assert await redis.exists(credentials, session, active) == 0
+
+
+@pytest.mark.asyncio
 async def test_refusal_park_failure_keeps_output_and_input_then_lost_reply_replays(monkeypatch):
     redis = FakeAsyncRedis(decode_responses=True)
     main.app.state.redis = redis
@@ -96,7 +161,18 @@ async def test_refusal_park_failure_keeps_output_and_input_then_lost_reply_repla
     assert await redis.xlen(registration.output_stream) == 0
     parked = True
     assert await main.submit_output(worker_id, submission, token) == {"ok": True}
+    receipt = f"worker:output-receipt:{worker_id}:{lease['lease_id']}"
+    assert 0 < await redis.ttl(receipt) <= 86400
+    await redis.expire(receipt, 180)
     assert await main.submit_output(worker_id, submission, token) == {"ok": True}
+    assert 0 < await redis.ttl(receipt) <= 180
+    with pytest.raises(main.HTTPException) as changed:
+        await main.submit_output(
+            worker_id,
+            submission.model_copy(update={"result": {**submission.result, "total_tokens": 21}}),
+            token,
+        )
+    assert changed.value.status_code == 409
     assert len(park_calls) == 2
     assert await redis.xlen(registration.output_stream) == 1
     assert await redis.get(publication_pending_key("eng-publication")) is None

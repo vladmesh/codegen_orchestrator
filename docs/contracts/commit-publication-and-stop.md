@@ -77,6 +77,14 @@ settlement consumes this exact output, including provider facts, before generic
 failure handling. Stop reconciliation does the same after owned removal proof.
 Broker output, input ACK and immutable body receipt are atomic; same-body replay
 after a lost HTTP response creates no duplicate output. A changed body refuses.
+Every new `worker:output-receipt:<worker>:<lease>` receives native Redis expiry
+in that same Lua acceptance: the fixed replay horizon is 86,400 seconds (24 hours)
+from acceptance, covering resubmission well beyond the wrapper's 180-second HTTP
+timeout. Replay does not extend expiry. This transport window is independent of
+agent turn duration; resubmission after expiry or credential revocation is outside
+the supported replay window. Owned teardown collects receipts earlier, including
+legacy receipts without expiry. It never collects publication-pending markers:
+their existing durable settlement owner must consume them.
 Developer teardown preserves its checkout; GC inspects a clean object snapshot,
 preserves unpublished local commits and fails closed on unknown UID ownership,
 indirection, unsupported layout, corruption or a source race. No privileged Git
