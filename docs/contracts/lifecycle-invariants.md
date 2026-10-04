@@ -358,6 +358,25 @@ procedure](../SECRETS.md#worker-credential-upgrade-procedure).
 `tests/live/run_evidence.py` and `scripts/stand_acceptance.py` are canonical for
 the acceptance artifact a `stand-e2e` run publishes.
 
+The workflow resolves its suite through `scripts.stand_run.resolve_suite` before
+credential-dependent steps. A no-model suite, including `mega-noop`, restores,
+installs and persists no model profile and performs no authenticated model
+probe. Exact image release, CLI version and numeric image identity checks remain
+mandatory. Runtime preflight receives the same suite and skips only unused model
+session checks; service, GitHub App, SSH, registry and provider requirements remain.
+
+Paid suites authenticate before provisioning and persist refreshes before any
+machine is created and after runtime use. Their handoff scans initial and rotated
+profile tokens and attests that scan; cleanup requires that attestation. No-model
+handoffs require no profile attestation, scan all supplied protected values, and
+still fail admission if any required non-session secret is absent.
+
+The selected-suite SSH invocation records workflow/run/revision/suite/host identity
+and its actual exit status on the runner. Collection copies that log and the public
+machine manifest before remote transfers, records transfer failures, and keeps
+available runner evidence. Missing runtime reports still make acceptance incomplete;
+an SSH refusal says nothing about a provider deletion actor or account cause.
+
 **A paid run's artifact always carries the three captures.** Per worker the run
 created: the transcript body (`transcript.content`), the agent's final report
 (`agent_report`, the `worker_report` task events of this run's engineering

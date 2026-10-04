@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """Check the stand can run a live pipeline before one is started.
 
-A mega run costs ten minutes and a worker's subscription quota. Every condition
-below is one that would otherwise be discovered halfway through it: an expired
-Claude session, a Codex profile the worker-manager refuses, a full disk. Failing
-here costs seconds and says what to fix.
+Infrastructure checks apply to every suite. The canonical stand runner resolver
+decides whether model sessions are needed: mega-noop needs none, while paid
+suites validate the retained Claude token and refreshable Codex profile. The
+stand runner passes its selected suite; an unqualified standalone check retains
+the full session checks.
 
-The subscriptions are the reason this exists. A stand idles between runs, and an
-idle session is exactly the one that goes stale — its tokens refresh when they
-are used, and nothing uses them.
-
-    ./scripts/stand_preflight.py
+    python -m scripts.stand_preflight --suite mega-noop
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -153,7 +151,13 @@ def check_docker() -> tuple[str, bool, str]:
     return _ok("docker")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    from scripts.stand_run import resolve_suite
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", help="named suite or pytest target; absent checks all sessions")
+    args = parser.parse_args(argv)
+    needs_model = args.suite is None or resolve_suite(args.suite)[1].llm
     results = [
         check_contour(),
         check_docker(),
@@ -163,7 +167,7 @@ def main() -> int:
             os.environ.get("INTERNAL_API_KEY"),
         ),
     ]
-    if os.environ.get("LIVE_CONTOUR") == "stand":
+    if needs_model and os.environ.get("LIVE_CONTOUR") == "stand":
         results.extend(
             [
                 check_stand_token_credentials(),
@@ -172,7 +176,7 @@ def main() -> int:
                 check_codex_session(os.environ.get("HOST_CODEX_HOME")),
             ]
         )
-    else:
+    elif needs_model:
         results.extend(
             [
                 check_claude_session(os.environ.get("HOST_CLAUDE_DIR")),

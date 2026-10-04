@@ -458,6 +458,23 @@ capability is a one-time reminder, so the Architect plans a kit package, the wor
 with the kit recipe, and central QA judges the package behaviour on the route its criterion
 names; it gets 65 productive minutes and a 15-minute grace.
 
+Suite classification also governs workflow setup and runtime preflight.
+`mega-noop` skips model authentication, profile restore/install/writeback and
+model-session validation, including with inherited `qa=codex`, `worker=claude`
+and LLM executor flags. Exact release, native CLI/version/UID/GID and infrastructure
+checks still run. Explicit paid suites retain authentication before provisioning,
+refresh persistence, required QA sessions and profile-backed redaction admission.
+
+`services/worker-manager/tests/unit/test_noop_stand_workflow.py` executes the real
+workflow scripts/conditions against synthetic Docker, SSH, SCP and secret-write
+commands, with real profile files, outputs, validators and artifact admission.
+It covers named/custom selection, absent noop sessions, paid refusals and refresh
+writes, inherited agent flags, and unreachable-host runner evidence. The suite's
+SSH exit and known identities survive collection failure; missing pytest/runtime
+evidence remains incomplete. These offline units spend nothing and establish no
+provider deletion cause or live profile usability. Runtime verification belongs
+to the dispatcher exact-SHA CI and its configured after-merge stand run.
+
 **Every live test has its own bound.** Every test under `tests/live` runs under a `pytest-timeout`
 bound with method `signal`, so a hung test fails as a pytest timeout naming the test, with a
 traceback, and its fixture's cleanup still runs. The bounds come from `shared/stand_deadlines.py`.

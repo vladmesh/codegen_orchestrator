@@ -71,6 +71,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     environment: stand
+    outputs:
+      suite: ${{ steps.suite.outputs.value }}
+      llm: ${{ steps.suite.outputs.llm }}
     # 360m covers 45m provisioning and the longest runner path, mega-live's
     # 281m (scripts/stand_run.py). Lifecycle cleanup has its own 30m job.
     timeout-minutes: 360
@@ -135,7 +138,15 @@ jobs:
           else
             suite="${{ inputs.suite }}"
           fi
-          echo "value=${suite}" >> "$GITHUB_OUTPUT"
+          python3 - "${suite}" <<'PY'
+          import os
+          import sys
+          from scripts.stand_run import resolve_suite
+
+          name, suite = resolve_suite(sys.argv[1])
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"value={name}\nllm={str(suite.llm).lower()}\n")
+          PY
           # Whether this suite's QA executor opens the QA Telegram session: the
           # session is then proven before any spend and must reach qa-worker.
           qa_telethon="$(python3 -m scripts.stand_telethon_preflight needs-session --suite "${suite}")"
@@ -153,6 +164,7 @@ jobs:
 
       - name: Validate pre-create credentials
         env:
+          SUITE: ${{ steps.suite.outputs.value }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT }}
           TELETHON_API_ID: ${{ secrets.TELETHON_API_ID }}
@@ -161,7 +173,7 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          python3 -m scripts.stand_credentials
+          python3 -m scripts.stand_credentials --suite "${SUITE}"
 
       # A suite whose QA executor judges the Telegram-bot product proves the QA
       # session here, on the runner, with the stand's own secrets: it authorizes,
@@ -236,10 +248,48 @@ jobs:
           fi
           exit "${release_status}"
 
+      # Identity and CLI checks use no session or model, including for noop.
+      - name: Verify exact worker image CLI and identity
+        id: worker-image-identity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          image = "worker-base-codex:latest"
+          try:
+              version = subprocess.run(
+                  ["docker", "run", "--rm", "--entrypoint", "codex", image, "--version"],
+                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL, timeout=30, check=False,
+              )
+              if version.returncode or version.stdout != b"codex-cli 0.144.6\n":
+                  raise SystemExit("codex_cli_mismatch: the published image lacks the pinned CLI")
+              identity = subprocess.run(
+                  ["docker", "run", "--rm", "--entrypoint", "id", image, "-u"],
+                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, check=False,
+              )
+              group = subprocess.run(
+                  ["docker", "run", "--rm", "--entrypoint", "id", image, "-g"],
+                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, check=False,
+              )
+              worker_uid = identity.stdout.decode().strip()
+              worker_gid = group.stdout.decode().strip()
+              if identity.returncode or group.returncode or not worker_uid.isdecimal() or not worker_gid.isdecimal():
+                  raise SystemExit("worker_image_identity_invalid: cannot determine numeric UID/GID")
+              with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+                  output.write(f"worker_uid={worker_uid}\nworker_gid={worker_gid}\n")
+          except (OSError, subprocess.TimeoutExpired):
+              raise SystemExit("worker_image_check_unavailable: the exact image could not be checked") from None
+          PY
+
       # A ChatGPT session is a complete credential profile, not an access token.
       # Keep it in a 0700 runner directory and validate only its structure here;
       # neither its bytes nor an individual token cross a log or queue boundary.
       - name: Restore refreshable Codex auth profile
+        if: ${{ steps.suite.outputs.llm == 'true' }}
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
         run: |
@@ -284,6 +334,10 @@ jobs:
       # refresh becomes the profile later sent to the stand host and persisted.
       - name: Authenticate Codex against exact worker image
         id: codex-auth-preflight
+        if: ${{ steps.suite.outputs.llm == 'true' }}
+        env:
+          CODEX_WORKER_UID: ${{ steps.worker-image-identity.outputs.worker_uid }}
+          CODEX_WORKER_GID: ${{ steps.worker-image-identity.outputs.worker_gid }}
         run: |
           set -euo pipefail
           if python3 - <<'PY'
@@ -293,45 +347,14 @@ jobs:
           from pathlib import Path
 
           image = "worker-base-codex:latest"
-          expected_version = b"codex-cli 0.144.6\n"
           profile = Path(os.environ["RUNNER_TEMP"]) / "stand-codex-profile"
           if not (profile / "auth.json").is_file() or not (profile / "config.toml").is_file():
               raise SystemExit(1)
-          common = ["docker", "run", "--rm", "--entrypoint", "codex", image]
-          try:
-              version = subprocess.run(
-                  [*common, "--version"],
-                  stdin=subprocess.DEVNULL,
-                  stdout=subprocess.PIPE,
-                  stderr=subprocess.DEVNULL,
-                  timeout=30,
-                  check=False,
-              )
-          except (OSError, subprocess.TimeoutExpired):
+          worker_uid = os.environ["CODEX_WORKER_UID"]
+          worker_gid = os.environ["CODEX_WORKER_GID"]
+          if not worker_uid.isdecimal() or not worker_gid.isdecimal():
               raise SystemExit(2)
-          if version.returncode != 0 or version.stdout != expected_version:
-              raise SystemExit(3)
           try:
-              identity = subprocess.run(
-                  ["docker", "run", "--rm", "--entrypoint", "id", image, "-u"],
-                  stdout=subprocess.PIPE,
-                  stderr=subprocess.DEVNULL,
-                  timeout=30,
-                  check=False,
-              )
-              group = subprocess.run(
-                  ["docker", "run", "--rm", "--entrypoint", "id", image, "-g"],
-                  stdout=subprocess.PIPE,
-                  stderr=subprocess.DEVNULL,
-                  timeout=30,
-                  check=False,
-              )
-              worker_uid = identity.stdout.decode().strip()
-              worker_gid = group.stdout.decode().strip()
-              if identity.returncode or group.returncode or not worker_uid.isdecimal() or not worker_gid.isdecimal():
-                  raise SystemExit(2)
-              with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-                  output.write(f"worker_uid={worker_uid}\nworker_gid={worker_gid}\n")
               subprocess.run(
                   ["sudo", "chown", "-R", f"{worker_uid}:{worker_gid}", str(profile)],
                   stdout=subprocess.DEVNULL,
@@ -393,9 +416,6 @@ jobs:
             2)
               echo "codex_auth_unavailable: the pinned worker image could not complete its authentication check; retry after the external service recovers." >&2
               ;;
-            3)
-              echo "codex_cli_mismatch: the published worker image does not contain the pinned Codex CLI version; republish the exact worker-image release." >&2
-              ;;
             *)
               echo "codex_auth_preflight_failed: the pinned worker image could not start its value-free authentication check." >&2
               ;;
@@ -406,7 +426,7 @@ jobs:
       # rotated either session token, and a later infrastructure failure must
       # not leave the next run seeded from the old value.
       - name: Persist preflight-refreshed Codex auth profile
-        if: success()
+        if: ${{ success() && steps.suite.outputs.llm == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}
         run: |
@@ -622,6 +642,7 @@ jobs:
           TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
           TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
           QA_TELETHON: ${{ steps.suite.outputs.qa_telethon }}
+          SUITE_LLM: ${{ steps.suite.outputs.llm }}
         run: |
           set -euo pipefail
           umask 077
@@ -648,13 +669,21 @@ jobs:
           # qa-worker of docker-compose.stand.yml reads. Required when the suite
           # opens the session (mega-live); allowed empty otherwise (mega-noop).
           telethon = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
-          missing = [name for name in (*names, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
+          model_session = ("STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT")
+          required = names if os.environ["SUITE_LLM"] == "true" else tuple(name for name in names if name not in model_session)
+          missing = [name for name in (*required, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
           if missing:
               raise SystemExit("missing required stand configuration: " + ", ".join(missing))
+          if os.environ["SUITE_LLM"] == "false":
+              for name in model_session:
+                  os.environ[name] = ""
           if os.environ["QA_TELETHON"] == "true":
               missing = [name for name in telethon if not os.environ.get(name)]
               if missing:
                   raise SystemExit("missing required qa-worker configuration: " + ", ".join(missing))
+          else:
+              for name in telethon:
+                  os.environ[name] = ""
           Path(".stand.env").write_text("\n".join(f"{name}={os.environ[name]}" for name in names) + "\n")
           Path(".stand-qa-worker.env").write_text(
               "\n".join(f"{name}={os.environ[name]}" for name in telethon) + "\n"
@@ -684,8 +713,9 @@ jobs:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
           RUNTIME_UID: ${{ steps.identity.outputs.runtime_uid }}
           RUNTIME_GID: ${{ steps.identity.outputs.runtime_gid }}
-          CODEX_WORKER_UID: ${{ steps.codex-auth-preflight.outputs.worker_uid }}
-          CODEX_WORKER_GID: ${{ steps.codex-auth-preflight.outputs.worker_gid }}
+          CODEX_WORKER_UID: ${{ steps.worker-image-identity.outputs.worker_uid }}
+          CODEX_WORKER_GID: ${{ steps.worker-image-identity.outputs.worker_gid }}
+          SUITE_LLM: ${{ steps.suite.outputs.llm }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
@@ -700,16 +730,18 @@ jobs:
           # as root and simply never did.
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             "install -d -m 0700 -o ${RUNTIME_UID} -g ${RUNTIME_GID} /opt/secrets"
-          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
-            "install -d -m 0700 -o ${CODEX_WORKER_UID} -g ${CODEX_WORKER_GID} /opt/secrets/stand-codex"
-          scp -p -i "${key_path}" ${SSH_OPTS} \
-            "${RUNNER_TEMP}/stand-codex-profile/auth.json" \
-            "${RUNNER_TEMP}/stand-codex-profile/config.toml" \
-            root@"${PROD_HOST}":/opt/secrets/stand-codex/
-          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
-            "chown ${CODEX_WORKER_UID}:${CODEX_WORKER_GID} /opt/secrets/stand-codex /opt/secrets/stand-codex/auth.json /opt/secrets/stand-codex/config.toml \
-             && chmod 0600 /opt/secrets/stand-codex/auth.json /opt/secrets/stand-codex/config.toml"
-          touch "${RUNNER_TEMP}/stand-codex-remote-profile-installed"
+          if [ "${SUITE_LLM}" = "true" ]; then
+            ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+              "install -d -m 0700 -o ${CODEX_WORKER_UID} -g ${CODEX_WORKER_GID} /opt/secrets/stand-codex"
+            scp -p -i "${key_path}" ${SSH_OPTS} \
+              "${RUNNER_TEMP}/stand-codex-profile/auth.json" \
+              "${RUNNER_TEMP}/stand-codex-profile/config.toml" \
+              root@"${PROD_HOST}":/opt/secrets/stand-codex/
+            ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+              "chown ${CODEX_WORKER_UID}:${CODEX_WORKER_GID} /opt/secrets/stand-codex /opt/secrets/stand-codex/auth.json /opt/secrets/stand-codex/config.toml \
+               && chmod 0600 /opt/secrets/stand-codex/auth.json /opt/secrets/stand-codex/config.toml"
+            touch "${RUNNER_TEMP}/stand-codex-remote-profile-installed"
+          fi
           scp -i "${key_path}" ${SSH_OPTS} .stand-github-app.pem \
             root@"${PROD_HOST}":/opt/secrets/github_app.pem
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
@@ -960,8 +992,19 @@ jobs:
           # so through the release override bring-up generated, which it is named
           # here, with --no-build --pull never, and refuses the run without it.
           remote_command=$(printf 'cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join %q uv 600 < /dev/null && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && export UV_FROZEN=1 && export STAND_SERVICE_RELEASE_COMPOSE=%q && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${STAND_BACKGROUND_DIR}" "${STAND_SERVICE_RELEASE_COMPOSE}" "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
+          invocation_log="${RUNNER_TEMP}/remote-invocation.log"
+          printf 'workflow=%s run=%s attempt=%s sha=%s run_tag=%s suite=%s host=%s qa=%s worker=%s\n' \
+            "${GITHUB_WORKFLOW}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${GITHUB_SHA}" \
+            "${STAND_RUN_TAG}" "${SUITE}" "${PROD_HOST}" "${QA}" "${WORKER}" > "${invocation_log}"
+          set +e
           printf '%s\n' "${bot_token}" | ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
-            2>&1 | tee "${RUNNER_TEMP}/remote-invocation.log"
+            2>&1 | tee -a "${invocation_log}"
+          invocation_status=("${PIPESTATUS[@]}")
+          set -e
+          printf 'selected-suite ssh exit=%s relay exit=%s\n' "${invocation_status[1]}" "${invocation_status[2]}" >> "${invocation_log}"
+          test "${invocation_status[1]}" -eq 0 || exit "${invocation_status[1]}"
+          test "${invocation_status[0]}" -eq 0 || exit "${invocation_status[0]}"
+          exit "${invocation_status[2]}"
 
       # The run's bring-up on the record: the span from Bootstrap start to all
       # services healthy (the sprint target is 5 minutes), and each background job's
@@ -998,7 +1041,7 @@ jobs:
       # If the host never became reachable, the authenticated runner preflight
       # profile is still a safe current value to persist.
       - name: Persist refreshed Codex auth profile
-        if: ${{ always() && steps.codex-auth-preflight.outcome == 'success' }}
+        if: ${{ always() && steps.suite.outputs.llm == 'true' && steps.codex-auth-preflight.outcome == 'success' }}
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
           GH_TOKEN: ${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}
@@ -1073,7 +1116,7 @@ jobs:
           if [ -n "${PROD_HOST}" ]; then
             # Provisioning diagnostics live outside `latest`: pytest owns that
             # symlink and never creates it when target setup fails first.
-            ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+            if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
               set -euo pipefail
               files=()
               if [ -d /root/e2e-runs/provisioning ]; then
@@ -1087,7 +1130,14 @@ jobs:
               else
                 tar -cf - -- "${files[@]}"
               fi
-            ' | tar -C "${run_dir}" -xf -
+            ' | tar -C "${run_dir}" -xf -; then
+              :
+            else
+              transfer_status=("${PIPESTATUS[@]}")
+              printf 'provisioning evidence transfer failed: ssh exit=%s archive exit=%s (suite step outcome: %s)\n' \
+                "${transfer_status[0]}" "${transfer_status[1]}" "${SUITE_OUTCOME}" \
+                >> "${run_dir}/remote-invocation.log"
+            fi
 
             if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
               if [ -d /root/e2e-runs/latest ]; then exit 0; else exit 1; fi
@@ -1210,6 +1260,8 @@ jobs:
         id: handoff-admission
         if: always()
         env:
+          SUITE: ${{ steps.suite.outputs.value }}
+          SUITE_LLM: ${{ steps.suite.outputs.llm }}
           BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -1242,20 +1294,24 @@ jobs:
             echo 'redaction canary was not detected' >&2
             exit 2
           fi
-          profile_args=(
-            --protected-profile "${RUNNER_TEMP}/stand-codex-initial-auth.json"
-            --protected-profile "${RUNNER_TEMP}/stand-codex-profile/auth.json"
-          )
-          if [ -f "${RUNNER_TEMP}/stand-codex-refreshed-auth-valid" ]; then
-            profile_args+=(--protected-profile "${RUNNER_TEMP}/stand-codex-refreshed-auth.json")
+          profile_args=()
+          if [ "${SUITE_LLM}" = "true" ]; then
+            profile_args=(
+              --protected-profile "${RUNNER_TEMP}/stand-codex-initial-auth.json"
+              --protected-profile "${RUNNER_TEMP}/stand-codex-profile/auth.json"
+              --profile-attestation "${RUNNER_TEMP}/stand-e2e-handoff/profile-redaction-attestation.json"
+            )
+            if [ -f "${RUNNER_TEMP}/stand-codex-refreshed-auth-valid" ]; then
+              profile_args+=(--protected-profile "${RUNNER_TEMP}/stand-codex-refreshed-auth.json")
+            fi
           fi
           python3 -m scripts.stand_acceptance admit \
             --artifact "${RUNNER_TEMP}/stand-e2e-handoff" \
             --status "${RUNNER_TEMP}/stand-e2e-handoff-admission.json" \
             --summary "${GITHUB_STEP_SUMMARY}" \
+            --suite "${SUITE}" \
             --protected-env \
-            "${profile_args[@]}" \
-            --profile-attestation "${RUNNER_TEMP}/stand-e2e-handoff/profile-redaction-attestation.json"
+            "${profile_args[@]}"
 
       - name: Upload cleanup handoff
         if: ${{ always() && steps.handoff-admission.outcome == 'success' }}
@@ -1350,6 +1406,8 @@ jobs:
         id: final-admission
         if: always()
         env:
+          SUITE: ${{ needs.e2e.outputs.suite }}
+          SUITE_LLM: ${{ needs.e2e.outputs.llm }}
           BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -1382,12 +1440,17 @@ jobs:
             echo 'redaction canary was not detected' >&2
             exit 2
           fi
+          profile_args=()
+          if [ "${SUITE_LLM}" = "true" ]; then
+            profile_args=(--require-profile-attestation "${RUNNER_TEMP}/stand-e2e-handoff/profile-redaction-attestation.json")
+          fi
           python3 -m scripts.stand_acceptance admit \
             --artifact "${RUNNER_TEMP}/stand-acceptance" \
             --status "${RUNNER_TEMP}/stand-acceptance-admission.json" \
             --summary "${GITHUB_STEP_SUMMARY}" \
+            --suite "${SUITE}" \
             --protected-env \
-            --require-profile-attestation "${RUNNER_TEMP}/stand-e2e-handoff/profile-redaction-attestation.json"
+            "${profile_args[@]}"
 
       - name: Upload acceptance artifact
         if: ${{ always() && steps.final-admission.outcome == 'success' }}

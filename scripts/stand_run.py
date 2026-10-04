@@ -55,14 +55,10 @@ import subprocess
 import sys
 from threading import Thread
 import time
+from typing import TYPE_CHECKING
 import urllib.request
 from xml.etree import ElementTree
 
-import yaml
-
-from scripts import clean_live_tests
-from shared.contracts.worker_evidence import secret_env_values
-from shared.diagnostics import redact_diagnostic
 from shared.live_contour import CONTOURS
 from shared.stand_deadlines import (
     CUSTOM_TARGET_TIMEOUT_SECONDS,
@@ -73,6 +69,9 @@ from shared.stand_deadlines import (
     MEGA_BRIEF_PRODUCTIVE_SECONDS,
     NOOP_SUITE_TIMEOUT_SECONDS,
 )
+
+if TYPE_CHECKING:
+    import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 COMPOSE_FILES = ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml")
@@ -433,6 +432,8 @@ def sweep_environment(env: dict[str, str]) -> dict[str, str]:
     API the suites never used — and the deployed `.env` names the container
     network's `http://api:8000`, which the host cannot reach.
     """
+    from scripts import clean_live_tests
+
     return {
         **os.environ,
         **env,
@@ -448,6 +449,8 @@ def sweep_requirements_refusal(env: dict[str, str], log) -> str | None:
     will be given: run 35945831487 passed 39 tests in 20 minutes and was then red
     because the sweep had no `API_BASE_URL`.
     """
+    from scripts import clean_live_tests
+
     missing = clean_live_tests.missing_sweep_requirements(sweep_environment(env), STAND_CONTOUR)
     if missing:
         log(f"refused: the post-suite sweep cannot run without {', '.join(missing)}")
@@ -510,6 +513,8 @@ def _compose(env: dict[str, str], *args: str, capture: bool = False) -> subproce
 
 def _mapping_entry(node: yaml.Node, key: str) -> yaml.Node | None:
     """The value node under `key`, or None when this is not a mapping with it."""
+    import yaml
+
     if not isinstance(node, yaml.MappingNode):
         return None
     for name, value in node.value:
@@ -520,6 +525,8 @@ def _mapping_entry(node: yaml.Node, key: str) -> yaml.Node | None:
 
 def _environment_names(environment: yaml.Node | None) -> set[str]:
     """The variable names one compose `environment:` block declares, in either form."""
+    import yaml
+
     if isinstance(environment, yaml.MappingNode):
         return {name.value for name, _ in environment.value if isinstance(name, yaml.ScalarNode)}
     if isinstance(environment, yaml.SequenceNode):
@@ -547,6 +554,8 @@ def qa_executor_services(root: Path = REPO) -> tuple[str, ...]:
     YAML merge — is refused rather than walked past, because a service silently
     missed here is exactly the defect this function exists to end.
     """
+    import yaml
+
     services: set[str] = set()
     for name in COMPOSE_FILES:
         path = root / name
@@ -729,6 +738,9 @@ def run_pytest(
     termination_grace_seconds: int = PROCESS_GROUP_TERMINATION_GRACE_SECONDS,
     log=print,
 ) -> PytestOutcome:
+    from shared.contracts.worker_evidence import secret_env_values
+    from shared.diagnostics import redact_diagnostic
+
     run_env = {
         **os.environ,
         **env,
@@ -802,7 +814,7 @@ def preflight(env: dict[str, str], log) -> bool:
             # As a module, not a path: running `python scripts/x.py` puts `scripts/`
             # on sys.path instead of the repository root, and the script cannot then
             # import `shared`. That has refused a run twice.
-            [sys.executable, "-m", "scripts.stand_preflight"],  # noqa: S607
+            [sys.executable, "-m", "scripts.stand_preflight", "--suite", env["STAND_SUITE"]],  # noqa: S607
             cwd=REPO,
             env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
             capture_output=True,
@@ -873,6 +885,7 @@ def main() -> int:
         return sweep_only(env)
 
     canonical_suite_name, suite = resolve_suite(args.suite)
+    env["STAND_SUITE"] = canonical_suite_name
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = RUN_ROOT / f"{canonical_suite_name.replace('/', '_')}-{stamp}"

@@ -765,12 +765,25 @@ def scan_artifact(artifact: Path, *, canaries: tuple[str, ...] = ()) -> list[str
 
 def protected_values_from_environment(
     environ: dict[str, str] | os._Environ[str],
+    *,
+    suite: str | None = None,
 ) -> tuple[str, ...]:
     """Return the complete protected-value set or name its unsafe deficiency."""
-    missing = tuple(name for name in sorted(PROTECTED_STAND_SECRET_NAMES) if not environ.get(name))
+    from scripts.stand_run import resolve_suite
+
+    required = PROTECTED_STAND_SECRET_NAMES
+    if suite is not None and not resolve_suite(suite)[1].llm:
+        required = required - {
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+            "TELETHON_API_HASH",
+            "TELETHON_SESSION",
+        }
+    missing = tuple(name for name in sorted(required) if not environ.get(name))
     if missing:
         raise ProtectedEnvironmentError(missing)
-    return tuple(environ[name] for name in sorted(PROTECTED_STAND_SECRET_NAMES))
+    return tuple(
+        environ[name] for name in sorted(PROTECTED_STAND_SECRET_NAMES) if environ.get(name)
+    )
 
 
 def protected_values_from_profiles(profiles: tuple[Path, ...]) -> tuple[str, ...]:
@@ -896,6 +909,7 @@ def main() -> int:
     admit = sub.add_parser("admit")
     admit.add_argument("--artifact", required=True, type=Path)
     admit.add_argument("--status", required=True, type=Path)
+    admit.add_argument("--suite", help="resolved suite whose unused sessions may be absent")
     admit.add_argument(
         "--summary",
         type=Path,
@@ -954,7 +968,20 @@ def main() -> int:
         if not args.protected_env:
             parser.error("admit requires --protected-env")
         try:
-            protected_values = protected_values_from_environment(os.environ)
+            if args.suite == "":
+                raise ValueError("resolved suite is missing")
+            if args.profile_attestation and not args.protected_profile:
+                raise ValueError("profile attestation requires protected profile needles")
+            if args.suite is not None:
+                from scripts.stand_run import resolve_suite
+
+                if (
+                    resolve_suite(args.suite)[1].llm
+                    and not args.protected_profile
+                    and not args.require_profile_attestation
+                ):
+                    raise ValueError("paid suite requires profile-backed redaction")
+            protected_values = protected_values_from_environment(os.environ, suite=args.suite)
             if args.protected_profile:
                 protected_values += protected_values_from_profiles(tuple(args.protected_profile))
         except (ProtectedEnvironmentError, ValueError) as exc:

@@ -539,6 +539,7 @@ def test_codex_auth_preflight_uses_the_verified_pinned_worker_before_machine_cre
     release = _steps()["Validate exact worker image release"]
     restore = _steps()["Restore refreshable Codex auth profile"]
     auth = _steps()["Authenticate Codex against exact worker image"]
+    identity = _steps()["Verify exact worker image CLI and identity"]
     preflight_persist = _steps()["Persist preflight-refreshed Codex auth profile"]
     persist = _steps()["Persist refreshed Codex auth profile"]
 
@@ -551,13 +552,13 @@ def test_codex_auth_preflight_uses_the_verified_pinned_worker_before_machine_cre
     assert "refresh_token" in restore["run"]
     assert "CODEX_AUTH_JSON" not in auth.get("env", {})
     assert "worker-base-codex:latest" in auth["run"]
-    assert '"--entrypoint", "codex"' in auth["run"]
+    assert '"--entrypoint", "codex"' in identity["run"]
     assert "--mount" in auth["run"]
     assert "auth.json" in auth["run"]
     assert "codex exec" in auth["run"]
-    assert '"--entrypoint", "id", image, "-u"' in auth["run"]
-    assert '"--entrypoint", "id", image, "-g"' in auth["run"]
-    assert 'output.write(f"worker_uid={worker_uid}' in auth["run"]
+    assert '"--entrypoint", "id", image, "-u"' in identity["run"]
+    assert '"--entrypoint", "id", image, "-g"' in identity["run"]
+    assert 'output.write(f"worker_uid={worker_uid}' in identity["run"]
     assert '"sudo", "chown", "-R"' in auth["run"]
     assert "finally:" in auth["run"]
     assert "os.getuid()" in auth["run"]
@@ -566,14 +567,19 @@ def test_codex_auth_preflight_uses_the_verified_pinned_worker_before_machine_cre
     assert "codex_auth_not_confirmed" in auth["run"]
     assert "codex_auth_rejected" not in auth["run"]
     assert "codex_auth_unavailable" in auth["run"]
-    assert "codex_cli_mismatch" in auth["run"]
+    assert "codex_cli_mismatch" in identity["run"]
     assert "--rm" in auth["run"]
-    assert 'output.write(f"worker_uid={worker_uid}\\nworker_gid={worker_gid}\\n")' in auth["run"]
+    assert (
+        'output.write(f"worker_uid={worker_uid}\\nworker_gid={worker_gid}\\n")' in identity["run"]
+    )
     assert "GITHUB_STEP_SUMMARY" not in auth["run"]
     assert "tee " not in auth["run"]
-    assert preflight_persist["if"] == "success()"
+    assert preflight_persist["if"] == "${{ success() && steps.suite.outputs.llm == 'true' }}"
     assert "gh secret set CODEX_AUTH_JSON --env stand" in preflight_persist["run"]
-    assert persist["if"] == "${{ always() && steps.codex-auth-preflight.outcome == 'success' }}"
+    assert persist["if"] == (
+        "${{ always() && steps.suite.outputs.llm == 'true' && "
+        "steps.codex-auth-preflight.outcome == 'success' }}"
+    )
     assert persist["env"]["GH_TOKEN"] == "${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}"  # noqa: S105
     assert "gh secret set CODEX_AUTH_JSON --env stand" in persist["run"]
     assert 'remote_auth="${RUNNER_TEMP}/stand-codex-refreshed-auth.json"' in persist["run"]
@@ -618,11 +624,11 @@ def test_stand_profile_is_owned_by_the_exact_worker_image_identity():
 
     assert (
         bootstrap["env"]["CODEX_WORKER_UID"]
-        == "${{ steps.codex-auth-preflight.outputs.worker_uid }}"
+        == "${{ steps.worker-image-identity.outputs.worker_uid }}"
     )
     assert (
         bootstrap["env"]["CODEX_WORKER_GID"]
-        == "${{ steps.codex-auth-preflight.outputs.worker_gid }}"
+        == "${{ steps.worker-image-identity.outputs.worker_gid }}"
     )
     assert "install -d -m 0700 -o ${CODEX_WORKER_UID} -g ${CODEX_WORKER_GID}" in bootstrap["run"]
     assert (
@@ -706,7 +712,7 @@ def test_remote_runner_is_provisioned_and_only_runs_after_target_provisioning():
     assert "uv --version" in steps["Bootstrap dynamic orchestrator"]["run"]
     assert run["if"] == "success()"
     assert "remote-invocation.log" in run["run"]
-    assert 'tee "${RUNNER_TEMP}/remote-invocation.log"' in run["run"]
+    assert 'tee -a "${invocation_log}"' in run["run"]
     assert "2>&1 | tee" in run["run"]
     assert ">/dev/null 2>&1" not in run["run"]
 
@@ -1046,7 +1052,7 @@ def test_each_admission_receives_the_complete_protected_value_environment_and_re
     ]
 
     for step in (e2e_admission, final_admission):
-        assert set(step["env"]) == PROTECTED_STAND_SECRET_NAMES
+        assert set(step["env"]) == PROTECTED_STAND_SECRET_NAMES | {"SUITE", "SUITE_LLM"}
         assert '--summary "${GITHUB_STEP_SUMMARY}"' in step["run"]
     assert "--secrets-stdin" not in WORKFLOW.read_text()
 
@@ -1302,6 +1308,9 @@ def _run_step_against_fake_ssh(tmp: Path, step: str, extra_env: dict[str, str]) 
         "SSH_OPTS": "-o BatchMode=yes",
         "PROD_HOST": "192.0.2.10",
         "GITHUB_SHA": STAND_SHA,
+        "GITHUB_WORKFLOW": "stand-e2e",
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
         "FAKE_SSH_COMMANDS": str(commands),
         "FAKE_SSH_STDIN": str(tmp / "ssh-stdin"),
         **_job_env(),
@@ -1478,6 +1487,7 @@ def _bring_up_remote(tmp: Path, background: Path) -> str:
             "RUNTIME_GID": "1001",
             "CODEX_WORKER_UID": "1002",
             "CODEX_WORKER_GID": "1002",
+            "SUITE_LLM": "true",
         },
     )
     main = [command for command in commands if "stand_background.sh join" in command]
@@ -1827,7 +1837,7 @@ def _validated_but_dropped(steps: dict[str, dict]) -> set[str]:
     return {
         name
         for name, source in validated.items()
-        if source not in carried and name not in NOT_NEEDED_ON_STAND
+        if source not in carried and name not in NOT_NEEDED_ON_STAND and name != "SUITE"
     }
 
 
@@ -1851,9 +1861,9 @@ def test_every_validated_credential_is_rendered_for_the_stand_or_named_as_not_ne
         ),
     }
     validated = steps["Validate pre-create credentials"]["env"]
-    assert set(valid) == set(validated)
+    assert set(valid) == set(validated) - {"SUITE"}
     assert validate_precreate_credentials(valid, now=now) == []
-    for name in validated:
+    for name in valid:
         assert validate_precreate_credentials({**valid, name: ""}, now=now), name
     assert set(NOT_NEEDED_ON_STAND) <= set(validated)
 

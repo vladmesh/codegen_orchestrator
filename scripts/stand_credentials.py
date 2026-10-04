@@ -9,6 +9,7 @@ step in :mod:`scripts.stand_lifecycle`.
 
 from __future__ import annotations
 
+import argparse
 import base64
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -46,17 +47,24 @@ def _ssh_private_key_looks_usable(value: str | None) -> bool:
 
 
 def validate_precreate_credentials(
-    environment: Mapping[str, str], *, now: datetime | None = None
+    environment: Mapping[str, str], *, now: datetime | None = None, suite: str | None = None
 ) -> list[CredentialFailure]:
     """Return every independent local refusal in workflow display order."""
     now = now or datetime.now(UTC)
-    failures = validate_stand_token_credentials(
-        environment,
-        shape=CredentialShape.PRECREATE_RUNNER,
-        now=now,
+    from scripts.stand_run import resolve_suite
+
+    needs_model = suite is None or resolve_suite(suite)[1].llm
+    failures = (
+        validate_stand_token_credentials(
+            environment,
+            shape=CredentialShape.PRECREATE_RUNNER,
+            now=now,
+        )
+        if needs_model
+        else []
     )
     missing_telethon = [name for name in TELETHON_ENV_VARS if not environment.get(name, "").strip()]
-    if missing_telethon:
+    if needs_model and missing_telethon:
         failures.append(
             CredentialFailure(
                 "Telethon session", f"is unavailable: missing {', '.join(missing_telethon)}"
@@ -70,7 +78,12 @@ def validate_precreate_credentials(
 
 
 def main() -> int:
-    failures = validate_precreate_credentials(os.environ)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--suite", help="named suite or pytest target; absent requires all credentials"
+    )
+    args = parser.parse_args()
+    failures = validate_precreate_credentials(os.environ, suite=args.suite)
     for failure in failures:
         print(f"FAIL {failure.name}: {failure.detail}")
     if failures:
