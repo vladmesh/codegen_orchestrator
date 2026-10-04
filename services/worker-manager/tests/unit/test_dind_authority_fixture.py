@@ -1,5 +1,6 @@
 """Offline checks of the test producer; real authority is exercised only in CI."""
 
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -189,3 +190,100 @@ def test_dind_attempt_has_no_competing_consumer_and_backend_keeps_real_integrati
     assert "test_langgraph_integration.py" in " ".join(
         backend["integration-test-runner"]["command"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrupt", [None, "terminal", "start", "worker", "readback", "attempt"])
+async def test_fixture_turn_prepares_owned_run_before_native_publication(corrupt):
+    from tests.integration.backend.worker_authority import publish_worker_fixture_turn
+
+    owner = WorkerOwnership(
+        project_id="project", story_id="story", run_id="initiating", attempt_id="attempt"
+    )
+    run = {
+        "id": "foreign" if corrupt == "attempt" else "attempt",
+        "project_id": "project",
+        "story_id": "story",
+        "task_id": "task",
+        "type": "engineering",
+        "status": "failed" if corrupt == "terminal" else "queued",
+        "run_metadata": {"worker_id": "foreign"} if corrupt == "worker" else {},
+    }
+    calls = []
+
+    def handle(request):
+        calls.append((request.method, request.url.path))
+        path = request.url.path
+        if path.endswith("/start"):
+            started = corrupt != "start"
+            run["status"] = "running" if started else "cancelled"
+            return httpx.Response(
+                200, json={"run_id": "attempt", "started": started, "run_status": run["status"]}
+            )
+        if request.method == "PATCH":
+            body = json.loads(request.content)
+            assert body == {
+                "run_metadata": {"worker_id": "worker", "initiating_run_id": "initiating"}
+            }
+            run["run_metadata"] = body["run_metadata"]
+            if corrupt == "readback":
+                run["run_metadata"]["worker_id"] = "foreign"
+            return httpx.Response(200, json=run)
+        if path.endswith("/publish-worker-turn"):
+            assert json.loads(request.content) == {
+                "worker_id": "worker",
+                "turn": {
+                    "request_id": "request",
+                    "attempt_id": "attempt",
+                    "turn_deadline_seconds": 60,
+                    "prompt": "No model",
+                },
+            }
+            return httpx.Response(200, json={"stream_id": "123-0"})
+        rows = {
+            "/api/runs/attempt": run,
+            "/api/projects/project": {"id": "project", "initiating_run_id": "initiating"},
+            "/api/stories/story": {"id": "story", "project_id": "project"},
+            "/api/tasks/task": {"id": "task", "project_id": "project", "story_id": "story"},
+            "/api/runs/attempt/engineering-disposition": {
+                "disposition": "eligible",
+                "project_id": "project",
+                "story_id": "story",
+                "attempt_id": "attempt",
+                "initiating_run_id": "initiating",
+            },
+        }
+        return httpx.Response(200, json=rows[path])
+
+    async with httpx.AsyncClient(
+        base_url="http://fixture", transport=httpx.MockTransport(handle)
+    ) as api:
+        if corrupt:
+            with pytest.raises(AssertionError):
+                await publish_worker_fixture_turn(
+                    api,
+                    owner,
+                    "worker",
+                    request_id="request",
+                    prompt="No model",
+                    turn_deadline_seconds=60,
+                )
+        else:
+            turn, stream_id = await publish_worker_fixture_turn(
+                api,
+                owner,
+                "worker",
+                request_id="request",
+                prompt="No model",
+                turn_deadline_seconds=60,
+            )
+            assert stream_id == "123-0" and turn.request_id == "request"
+            assert calls[0] == ("GET", "/api/runs/attempt")
+            assert calls[1:3] == [
+                ("POST", "/api/runs/attempt/start"),
+                ("PATCH", "/api/runs/attempt"),
+            ]
+            assert calls[-1] == ("POST", "/api/runs/attempt/publish-worker-turn")
+    if corrupt:
+        assert not any(path.endswith("publish-worker-turn") for _, path in calls)
+    assert not any("work-admission" in path or "engineering:queue" in path for _, path in calls)

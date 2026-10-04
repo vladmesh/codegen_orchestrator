@@ -801,12 +801,36 @@ scenario retains native spawn admission/publication, validates the stored
 same persisted identity before and after real manager/container creation.
 
 DinD leaves `engineering:queue` to that fixture's handoff and launches no
-engineering consumer. The API owns the admitted, queued Run's disposition; the
+engineering consumer. The API owns the admitted Run's disposition; the
 fixture retains its current Project/Task until assertions finish, with no
 terminal writer racing the manager's required authority check. No Run is reset
 or stop fence relaxed. The ordinary `backend.yml` still launches the real
 engineering consumer for `test_langgraph_integration.py` and its native terminal
 outcomes at unavailable external/resource boundaries.
+
+The no-model Factory execution scenario calls `publish_worker_fixture_turn`
+after real worker readiness and installation of its `droid` launch sentinel.
+The producer uses the existing internal API client to start that admitted Run
+through `/runs/{id}/start`, patch typed `AttemptTurnMetadata` through `RunUpdate`,
+and read back running status, persisted worker/initiating identity and eligible
+disposition. It constructs `WorkerTurnInput` with request, actual attempt,
+positive deadline and prompt, then sends `EngineeringTurnPublication` through
+`/runs/{id}/publish-worker-turn`. It creates no additional Run or queue consumer.
+The API's locked publication fence and atomic request receipt own Redis XADD;
+broker `lease_input` validates the DTO and asks manager/API authority before
+wrapper `_run_turn` reaches repository preflight. The synthetic repository must
+produce `pre_agent_refused/repository_auth_unavailable` before any runner starts.
+Assertions require exactly one matching input, broker-owned output request id,
+typed refusal, output acceptance receipt, delivered input ACK and cleared active
+lease, plus the absent launch sentinel. Generic container death cannot pass.
+
+Direct input-producer audit of all 13 modules selected by `backend-dind.yml`
+found only the execution scenario's raw `task_data` XADD. It is removed; the
+shared fixture producer above is its sole replacement and has that real consumer.
+Other direct XADDs publish typed manager lifecycle commands, not worker inputs.
+Offline producer/broker tests cover construction, readback and malformed identity;
+API service tests cover running/worker/attempt ownership and request deduplication.
+Those service tests and all 42 shipped-image DinD scenarios require dispatcher CI.
 
 All 13 selected DinD modules remain: runtime imports and project artifact cleanup
 need no engineering consumer; readiness, mounts, injection, execution, Codex,
