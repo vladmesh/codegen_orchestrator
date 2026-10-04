@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Deploy cleans only scoped worker/service releases, retaining rollback and container-used images;
+  foreign worker descendants and unowned dangling images stay on the shared daemon.
 - DinD publishes its no-model Factory turn through native typed attempt authority
   and proves broker output acceptance/ACK, so repository refusal reaches the shipped wrapper.
 - DinD proves standalone attempt identity and isolates native queue attribution

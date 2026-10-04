@@ -121,27 +121,37 @@ def test_a_cleanup_that_succeeds_says_so_and_warns_nothing(runner: Runner):
 
     assert result.returncode == 0, result.stderr
     assert runner.warnings(result) == []
-    assert runner.called() == ["cleanup_worker_images.py", "service_release.py", "docker"]
+    assert runner.called() == ["cleanup_worker_images.py", "service_release.py"]
+    assert runner.calls.read_text().splitlines() == [
+        "cleanup_worker_images.py --release-record deployed-worker-images.json "
+        "--previous-release-record previous-deployed-worker-images.json",
+        "service_release.py cleanup --current-record deployed-service-images.json "
+        "--previous-record previous-deployed-service-images.json",
+    ]
     assert "every command succeeded" in runner.summary.read_text()
 
 
+@pytest.mark.parametrize("worker_exit,service_exit", [(1, 0), (0, 2), (1, 2)])
 def test_a_failed_cleanup_is_a_warning_naming_the_script_and_code_and_the_step_succeeds(
-    runner: Runner,
+    runner: Runner, worker_exit: int, service_exit: int
 ):
-    result = runner.run(FAKE_WORKER_EXIT="1", FAKE_SERVICE_EXIT="2", FAKE_DOCKER_EXIT="1")
+    result = runner.run(FAKE_WORKER_EXIT=str(worker_exit), FAKE_SERVICE_EXIT=str(service_exit))
 
     assert result.returncode == 0, result.stderr
     # Every command still ran after the one before it failed.
-    assert runner.called() == ["cleanup_worker_images.py", "service_release.py", "docker"]
+    assert runner.called() == ["cleanup_worker_images.py", "service_release.py"]
     warnings = runner.warnings(result)
-    assert len(warnings) == 3, result.stdout
-    for failure in (
-        "scripts/cleanup_worker_images.py exit=1",
-        "scripts/service_release.py cleanup exit=2",
-        "docker image prune exit=1",
+    assert len(warnings) == bool(worker_exit) + bool(service_exit), result.stdout
+    for command, code in (
+        ("scripts/cleanup_worker_images.py", worker_exit),
+        ("scripts/service_release.py cleanup", service_exit),
     ):
-        assert any(failure in warning for warning in warnings), failure
-        assert f"- {failure}" in runner.summary.read_text()
+        failure = f"{command} exit={code}"
+        if code:
+            assert any(failure in warning for warning in warnings), failure
+            assert f"- {failure}" in runner.summary.read_text()
+        else:
+            assert command not in runner.summary.read_text()
 
 
 def test_an_unreachable_host_is_a_warning_and_the_step_succeeds(runner: Runner):
@@ -162,15 +172,35 @@ def test_nothing_the_cleanup_step_does_fails_the_job():
     assert step["timeout-minutes"] <= 10
 
 
-def test_cleanup_prunes_dangling_images_after_both_release_cleanups():
+def test_cleanup_runs_worker_then_service_release_cleanup():
     script = _cleanup_script()
 
     worker_cleanup = script.index("python3 scripts/cleanup_worker_images.py")
     service_cleanup = script.index("python3 scripts/service_release.py cleanup")
-    dangling_image_prune = script.index("docker image prune -f")
-
-    assert worker_cleanup < service_cleanup < dangling_image_prune
+    assert worker_cleanup < service_cleanup
 
 
-def test_cleanup_prunes_no_build_cache_because_the_host_builds_nothing():
-    assert "builder prune" not in _cleanup_script()
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/deploy.yml",
+        "infra/scripts/deploy-ssh.sh",
+        "scripts/cleanup_worker_images.py",
+        "scripts/service_release.py",
+        "infra/scripts/pull-worker-images.sh",
+        "infra/scripts/pull-service-images.sh",
+        "infra/scripts/retag-worker-images.sh",
+        "infra/scripts/worker-images.sh",
+        "infra/scripts/service-images.sh",
+        "infra/scripts/release-chain.sh",
+        "infra/scripts/backup-db.sh",
+        "scripts/wait_release.py",
+        "scripts/release_switch.py",
+        "scripts/rotate_worker_image_records.py",
+    ],
+)
+def test_deploy_call_path_contains_no_daemon_pruning(path: str):
+    # Includes sourced release helpers and the staged backup helper; the standalone
+    # danger_prod_reset.py is not invoked by deploy and intentionally is not in this guard.
+    source = (REPO_ROOT / path).read_text().replace("\\\n", " ")
+    assert not re.search(r"\b(?:image|system|builder|buildx|volume|network)\s+prune\b", source)
