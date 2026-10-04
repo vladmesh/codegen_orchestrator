@@ -218,6 +218,8 @@ class Suite:
     """One named way to run the pipeline end to end."""
 
     target: str
+    #: Select the real developer/QA executor environment. A raw target may make
+    #: other model calls; requires_model_sessions owns its session prerequisites.
     llm: bool
     #: Every (qa, worker) pair this suite runs. Empty means one run with whatever
     #: the caller asked for — or the defaults, for suites that use no agents.
@@ -298,6 +300,19 @@ def resolve_suite(requested_name: str) -> tuple[str, Suite]:
     if suite is not None:
         return canonical_name, suite
     return requested_name, Suite(target=requested_name, llm=False)
+
+
+def requires_model_sessions(requested_name: str | None) -> bool:
+    """Only a registered no-model suite may bypass session prerequisites.
+
+    Suite.llm selects the developer/QA executor environment. A raw pytest target
+    may call models independently, so unknown and absent selections retain all
+    session checks without changing their executor environment.
+    """
+    if requested_name is None:
+        return True
+    name, suite = resolve_suite(requested_name)
+    return name not in SUITES or suite.llm
 
 
 def read_env_file(path: Path) -> dict[str, str]:

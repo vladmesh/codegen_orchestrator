@@ -73,7 +73,7 @@ jobs:
     environment: stand
     outputs:
       suite: ${{ steps.suite.outputs.value }}
-      llm: ${{ steps.suite.outputs.llm }}
+      model_sessions: ${{ steps.suite.outputs.model_sessions }}
     # 360m covers 45m provisioning and the longest runner path, mega-live's
     # 281m (scripts/stand_run.py). Lifecycle cleanup has its own 30m job.
     timeout-minutes: 360
@@ -141,11 +141,12 @@ jobs:
           python3 - "${suite}" <<'PY'
           import os
           import sys
-          from scripts.stand_run import resolve_suite
+          from scripts.stand_run import requires_model_sessions, resolve_suite
 
-          name, suite = resolve_suite(sys.argv[1])
+          name, _ = resolve_suite(sys.argv[1])
+          model_sessions = requires_model_sessions(name)
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"value={name}\nllm={str(suite.llm).lower()}\n")
+              output.write(f"value={name}\nmodel_sessions={str(model_sessions).lower()}\n")
           PY
           # Whether this suite's QA executor opens the QA Telegram session: the
           # session is then proven before any spend and must reach qa-worker.
@@ -289,7 +290,7 @@ jobs:
       # Keep it in a 0700 runner directory and validate only its structure here;
       # neither its bytes nor an individual token cross a log or queue boundary.
       - name: Restore refreshable Codex auth profile
-        if: ${{ steps.suite.outputs.llm == 'true' }}
+        if: ${{ steps.suite.outputs.model_sessions == 'true' }}
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
         run: |
@@ -334,7 +335,7 @@ jobs:
       # refresh becomes the profile later sent to the stand host and persisted.
       - name: Authenticate Codex against exact worker image
         id: codex-auth-preflight
-        if: ${{ steps.suite.outputs.llm == 'true' }}
+        if: ${{ steps.suite.outputs.model_sessions == 'true' }}
         env:
           CODEX_WORKER_UID: ${{ steps.worker-image-identity.outputs.worker_uid }}
           CODEX_WORKER_GID: ${{ steps.worker-image-identity.outputs.worker_gid }}
@@ -426,7 +427,7 @@ jobs:
       # rotated either session token, and a later infrastructure failure must
       # not leave the next run seeded from the old value.
       - name: Persist preflight-refreshed Codex auth profile
-        if: ${{ success() && steps.suite.outputs.llm == 'true' }}
+        if: ${{ success() && steps.suite.outputs.model_sessions == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}
         run: |
@@ -642,7 +643,7 @@ jobs:
           TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
           TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
           QA_TELETHON: ${{ steps.suite.outputs.qa_telethon }}
-          SUITE_LLM: ${{ steps.suite.outputs.llm }}
+          MODEL_SESSIONS: ${{ steps.suite.outputs.model_sessions }}
         run: |
           set -euo pipefail
           umask 077
@@ -670,11 +671,11 @@ jobs:
           # opens the session (mega-live); allowed empty otherwise (mega-noop).
           telethon = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
           model_session = ("STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT")
-          required = names if os.environ["SUITE_LLM"] == "true" else tuple(name for name in names if name not in model_session)
+          required = names if os.environ["MODEL_SESSIONS"] == "true" else tuple(name for name in names if name not in model_session)
           missing = [name for name in (*required, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
           if missing:
               raise SystemExit("missing required stand configuration: " + ", ".join(missing))
-          if os.environ["SUITE_LLM"] == "false":
+          if os.environ["MODEL_SESSIONS"] == "false":
               for name in model_session:
                   os.environ[name] = ""
           if os.environ["QA_TELETHON"] == "true":
@@ -715,7 +716,7 @@ jobs:
           RUNTIME_GID: ${{ steps.identity.outputs.runtime_gid }}
           CODEX_WORKER_UID: ${{ steps.worker-image-identity.outputs.worker_uid }}
           CODEX_WORKER_GID: ${{ steps.worker-image-identity.outputs.worker_gid }}
-          SUITE_LLM: ${{ steps.suite.outputs.llm }}
+          MODEL_SESSIONS: ${{ steps.suite.outputs.model_sessions }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
@@ -730,7 +731,7 @@ jobs:
           # as root and simply never did.
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             "install -d -m 0700 -o ${RUNTIME_UID} -g ${RUNTIME_GID} /opt/secrets"
-          if [ "${SUITE_LLM}" = "true" ]; then
+          if [ "${MODEL_SESSIONS}" = "true" ]; then
             ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
               "install -d -m 0700 -o ${CODEX_WORKER_UID} -g ${CODEX_WORKER_GID} /opt/secrets/stand-codex"
             scp -p -i "${key_path}" ${SSH_OPTS} \
@@ -1041,7 +1042,7 @@ jobs:
       # If the host never became reachable, the authenticated runner preflight
       # profile is still a safe current value to persist.
       - name: Persist refreshed Codex auth profile
-        if: ${{ always() && steps.suite.outputs.llm == 'true' && steps.codex-auth-preflight.outcome == 'success' }}
+        if: ${{ always() && steps.suite.outputs.model_sessions == 'true' && steps.codex-auth-preflight.outcome == 'success' }}
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
           GH_TOKEN: ${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}
@@ -1261,7 +1262,7 @@ jobs:
         if: always()
         env:
           SUITE: ${{ steps.suite.outputs.value }}
-          SUITE_LLM: ${{ steps.suite.outputs.llm }}
+          MODEL_SESSIONS: ${{ steps.suite.outputs.model_sessions }}
           BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -1295,7 +1296,7 @@ jobs:
             exit 2
           fi
           profile_args=()
-          if [ "${SUITE_LLM}" = "true" ]; then
+          if [ "${MODEL_SESSIONS}" = "true" ]; then
             profile_args=(
               --protected-profile "${RUNNER_TEMP}/stand-codex-initial-auth.json"
               --protected-profile "${RUNNER_TEMP}/stand-codex-profile/auth.json"
@@ -1407,7 +1408,7 @@ jobs:
         if: always()
         env:
           SUITE: ${{ needs.e2e.outputs.suite }}
-          SUITE_LLM: ${{ needs.e2e.outputs.llm }}
+          MODEL_SESSIONS: ${{ needs.e2e.outputs.model_sessions }}
           BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -1441,7 +1442,7 @@ jobs:
             exit 2
           fi
           profile_args=()
-          if [ "${SUITE_LLM}" = "true" ]; then
+          if [ "${MODEL_SESSIONS}" = "true" ]; then
             profile_args=(--require-profile-attestation "${RUNNER_TEMP}/stand-e2e-handoff/profile-redaction-attestation.json")
           fi
           python3 -m scripts.stand_acceptance admit \

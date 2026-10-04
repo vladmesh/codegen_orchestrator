@@ -574,10 +574,13 @@ def test_codex_auth_preflight_uses_the_verified_pinned_worker_before_machine_cre
     )
     assert "GITHUB_STEP_SUMMARY" not in auth["run"]
     assert "tee " not in auth["run"]
-    assert preflight_persist["if"] == "${{ success() && steps.suite.outputs.llm == 'true' }}"
+    assert (
+        preflight_persist["if"]
+        == "${{ success() && steps.suite.outputs.model_sessions == 'true' }}"
+    )
     assert "gh secret set CODEX_AUTH_JSON --env stand" in preflight_persist["run"]
     assert persist["if"] == (
-        "${{ always() && steps.suite.outputs.llm == 'true' && "
+        "${{ always() && steps.suite.outputs.model_sessions == 'true' && "
         "steps.codex-auth-preflight.outcome == 'success' }}"
     )
     assert persist["env"]["GH_TOKEN"] == "${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}"  # noqa: S105
@@ -1052,7 +1055,7 @@ def test_each_admission_receives_the_complete_protected_value_environment_and_re
     ]
 
     for step in (e2e_admission, final_admission):
-        assert set(step["env"]) == PROTECTED_STAND_SECRET_NAMES | {"SUITE", "SUITE_LLM"}
+        assert set(step["env"]) == PROTECTED_STAND_SECRET_NAMES | {"SUITE", "MODEL_SESSIONS"}
         assert '--summary "${GITHUB_STEP_SUMMARY}"' in step["run"]
     assert "--secrets-stdin" not in WORKFLOW.read_text()
 
@@ -1487,7 +1490,7 @@ def _bring_up_remote(tmp: Path, background: Path) -> str:
             "RUNTIME_GID": "1001",
             "CODEX_WORKER_UID": "1002",
             "CODEX_WORKER_GID": "1002",
-            "SUITE_LLM": "true",
+            "MODEL_SESSIONS": "true",
         },
     )
     main = [command for command in commands if "stand_background.sh join" in command]

@@ -769,10 +769,10 @@ def protected_values_from_environment(
     suite: str | None = None,
 ) -> tuple[str, ...]:
     """Return the complete protected-value set or name its unsafe deficiency."""
-    from scripts.stand_run import resolve_suite
+    from scripts.stand_run import requires_model_sessions
 
     required = PROTECTED_STAND_SECRET_NAMES
-    if suite is not None and not resolve_suite(suite)[1].llm:
+    if not requires_model_sessions(suite):
         required = required - {
             "STAND_CLAUDE_CODE_OAUTH_TOKEN",
             "TELETHON_API_HASH",
@@ -972,15 +972,14 @@ def main() -> int:
                 raise ValueError("resolved suite is missing")
             if args.profile_attestation and not args.protected_profile:
                 raise ValueError("profile attestation requires protected profile needles")
-            if args.suite is not None:
-                from scripts.stand_run import resolve_suite
+            from scripts.stand_run import requires_model_sessions
 
-                if (
-                    resolve_suite(args.suite)[1].llm
-                    and not args.protected_profile
-                    and not args.require_profile_attestation
-                ):
-                    raise ValueError("paid suite requires profile-backed redaction")
+            if (
+                requires_model_sessions(args.suite)
+                and not args.protected_profile
+                and not args.require_profile_attestation
+            ):
+                raise ValueError("session-required selection requires profile-backed redaction")
             protected_values = protected_values_from_environment(os.environ, suite=args.suite)
             if args.protected_profile:
                 protected_values += protected_values_from_profiles(tuple(args.protected_profile))

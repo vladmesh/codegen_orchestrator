@@ -359,13 +359,21 @@ procedure](../SECRETS.md#worker-credential-upgrade-procedure).
 the acceptance artifact a `stand-e2e` run publishes.
 
 The workflow resolves its suite through `scripts.stand_run.resolve_suite` before
-credential-dependent steps. A no-model suite, including `mega-noop`, restores,
+credential-dependent steps. `requires_model_sessions` beside that resolver allows
+session bypass only for a resolved name registered in `SUITES` with `llm=False`.
+Aliases resolve first; raw/unknown targets and absent selections require sessions.
+`Suite.llm` still selects the developer/QA executor environment, which raw targets
+retain unchanged even when they make other model calls. Standalone credential and
+runtime preflight commands retain full session checks when no suite is specified;
+admission then requires profile protection, and an explicit empty suite is refused.
+
+A registered no-model suite, including `mega-noop`, restores,
 installs and persists no model profile and performs no authenticated model
 probe. Exact image release, CLI version and numeric image identity checks remain
 mandatory. Runtime preflight receives the same suite and skips only unused model
 session checks; service, GitHub App, SSH, registry and provider requirements remain.
 
-Paid suites authenticate before provisioning and persist refreshes before any
+Paid suites and raw targets authenticate before provisioning and persist refreshes before any
 machine is created and after runtime use. Their handoff scans initial and rotated
 profile tokens and attests that scan; cleanup requires that attestation. No-model
 handoffs require no profile attestation, scan all supplied protected values, and

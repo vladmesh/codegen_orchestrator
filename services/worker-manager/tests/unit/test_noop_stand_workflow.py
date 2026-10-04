@@ -13,6 +13,7 @@ from scripts import stand_acceptance, stand_preflight, stand_run
 
 ROOT = Path(__file__).resolve().parents[4]
 WORKFLOW = ROOT / ".github/workflows/stand-e2e.yml"
+RAW_TARGETS = ("tests/live/test_llm_channel_failover.py", "tests/live/test_unknown_target.py")
 
 
 def steps():
@@ -82,7 +83,7 @@ def execute_step(name, tmp_path, commands, llm, **env):
     step = steps()[name]
     if not enabled(step, llm):
         return None
-    return run(step["run"], tmp_path, **{**commands, "SUITE_LLM": llm, **env})
+    return run(step["run"], tmp_path, **{**commands, "MODEL_SESSIONS": llm, **env})
 
 
 def logged(commands):
@@ -90,21 +91,167 @@ def logged(commands):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
+def workflow_selection(tmp_path, requested, target=""):
+    output = tmp_path / "selection-output"
+    script = (
+        steps()["Resolve the suite"]["run"]
+        .replace("${{ inputs.suite }}", requested)
+        .replace("${{ inputs.target }}", target)
+    )
+    result = run(script, tmp_path, GITHUB_OUTPUT=str(output), TEMPLATE_SOURCE="", TEMPLATE_REF="")
+    assert result.returncode == 0, result.stderr
+    return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+
+def cleanup_selection(selection):
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    outputs = {
+        name: selection[expression.removeprefix("${{ steps.suite.outputs.").removesuffix(" }}")]
+        for name, expression in workflow["jobs"]["e2e"]["outputs"].items()
+    }
+    final = next(
+        s for s in workflow["jobs"]["cleanup"]["steps"] if s["name"] == "Admit final artifact"
+    )
+    return {
+        name: outputs.get(
+            final["env"][name].removeprefix("${{ needs.e2e.outputs.").removesuffix(" }}"), ""
+        )
+        for name in ("SUITE", "MODEL_SESSIONS")
+    }
+
+
+@pytest.mark.parametrize("target", RAW_TARGETS)
+def test_raw_custom_targets_restore_authenticate_and_persist_before_provisioning(
+    tmp_path, commands, target
+):
+    selection = workflow_selection(tmp_path, "custom", target)
+    assert selection["model_sessions"] == "true"
+    assert not stand_run.resolve_suite(target)[1].llm
+    assert (
+        stand_run.suite_environment(stand_run.resolve_suite(target)[1], qa="codex", worker="claude")
+        == {}
+    )
+    for name in (
+        "Restore refreshable Codex auth profile",
+        "Verify exact worker image CLI and identity",
+        "Authenticate Codex against exact worker image",
+        "Persist preflight-refreshed Codex auth profile",
+    ):
+        result = execute_step(
+            name,
+            tmp_path,
+            commands,
+            selection["model_sessions"],
+            CODEX_AUTH_JSON=json.dumps(
+                {
+                    "tokens": {
+                        "access_token": "synthetic-access",
+                        "refresh_token": "synthetic-refresh",
+                    }
+                }
+            ),
+            CODEX_WORKER_UID="1000",
+            CODEX_WORKER_GID="1000",
+            GH_TOKEN="synthetic-write-token",  # noqa: S106 - synthetic external command
+            GITHUB_REPOSITORY="example/repo",
+        )
+        assert result is not None
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "stand-codex-profile/auth.json").is_file()
+    assert any("exec" in call for call in logged(commands))
+    assert any(call[:3] == ["gh", "secret", "set"] for call in logged(commands))
+    renderer = steps()["Render protected dynamic configuration"]
+    configuration = dict.fromkeys(renderer["env"], "synthetic-value")
+    configuration.update(
+        MODEL_SESSIONS=selection["model_sessions"],
+        QA_TELETHON=selection["qa_telethon"],
+        STAND_CLAUDE_CODE_OAUTH_TOKEN="synthetic-retained-claude-session",  # noqa: S106
+    )
+    result = run(renderer["run"], tmp_path, **configuration)
+    assert result.returncode == 0, result.stderr
+    assert (
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN=synthetic-retained-claude-session\n"
+        in (tmp_path / ".stand.env").read_text()
+    )
+    (tmp_path / "stand-bootstrap-started").write_text("0\n")
+    result = execute_step(
+        "Bring up dynamic orchestrator and wait for API",
+        tmp_path,
+        commands,
+        selection["model_sessions"],
+        PROD_HOST="192.0.2.1",
+        RUNTIME_UID="1000",
+        RUNTIME_GID="1000",
+        CODEX_WORKER_UID="1000",
+        CODEX_WORKER_GID="1000",
+        SSH_OPTS="",
+        STAND_BACKGROUND_DIR=str(tmp_path / "background"),
+        STAND_SERVICE_RELEASE_COMPOSE="release.yml",
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "stand-codex-remote-profile-installed").exists()
+    assert any(str(tmp_path / "stand-codex-profile/auth.json") in call for call in logged(commands))
+
+
+@pytest.mark.parametrize("target", RAW_TARGETS)
+def test_raw_custom_precreate_credentials_refuse_before_provider_boundary(
+    tmp_path, commands, target
+):
+    # Route only the actual provider module to a synthetic executable. All credential
+    # validators, shell order and file boundaries are still the shipped workflow.
+    import shlex
+
+    wrapper = tmp_path / "bin/python3"
+    provider = tmp_path / "bin/provider-boundary"
+    provider.symlink_to(tmp_path / "bin/command")
+    wrapper.write_text(
+        '#!/bin/bash\nif [ "${2-}" = scripts.stand_lifecycle ]; then\n'
+        f'  exec {shlex.quote(sys.executable)} {shlex.quote(str(provider))} "$@"\n'
+        f'fi\nexec {shlex.quote(sys.executable)} "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    script = "\n".join(
+        steps()[name]["run"]
+        for name in (
+            "Validate pre-create credentials",
+            "Preflight ephemeral machines",
+            "Create ephemeral machines",
+        )
+    )
+    key = "-----BEGIN PRIVATE KEY-----\nZmFrZQ==\n-----END PRIVATE KEY-----"
+    result = run(
+        script,
+        tmp_path,
+        **commands,
+        SUITE=target,
+        SSH_PRIVATE_KEY=key,
+        STAND_RUN_TAG="gha-synthetic",
+    )
+    assert result.returncode != 0
+    assert "Claude token" in result.stdout
+    assert "Telethon session" in result.stdout
+    assert not any(call[0] == "provider-boundary" for call in logged(commands))
+
+
 @pytest.mark.parametrize(
-    ("suite", "target"),
+    ("suite", "target", "expected_sessions"),
     [
-        ("mega-noop", ""),
-        ("mega-live", ""),
-        ("mega-brief", ""),
-        ("mega-brief-package", ""),
-        ("mega", ""),
-        ("custom", "tests/live/test_api_crud.py"),
-        ("custom", "mega-live"),
-        ("custom", "mega-brief"),
-        ("custom", "mega-brief-package"),
+        ("mega-noop", "", "false"),
+        ("mega-live", "", "true"),
+        ("mega-brief", "", "true"),
+        ("mega-brief-package", "", "true"),
+        ("mega", "", "false"),
+        ("custom", "tests/live/test_api_crud.py", "true"),
+        ("custom", "mega-live", "true"),
+        ("custom", "mega-brief", "true"),
+        ("custom", "mega-brief-package", "true"),
+        ("custom", "mega-noop", "false"),
+        ("custom", "mega", "false"),
     ],
 )
-def test_resolved_workflow_uses_runner_model_classification(tmp_path, suite, target):
+def test_resolved_workflow_uses_canonical_session_requirement(
+    tmp_path, suite, target, expected_sessions
+):
     from scripts.stand_run import resolve_suite
 
     output = tmp_path / "output"
@@ -117,15 +264,13 @@ def test_resolved_workflow_uses_runner_model_classification(tmp_path, suite, tar
     assert result.returncode == 0, result.stderr
     resolved = dict(line.split("=", 1) for line in output.read_text().splitlines())
     assert resolved["value"] == resolve_suite(target if suite == "custom" else suite)[0]
-    assert (
-        resolved["llm"] == str(resolve_suite(target if suite == "custom" else suite)[1].llm).lower()
-    )
+    assert resolved["model_sessions"] == expected_sessions
 
 
 def enabled(step, llm):
     condition = step.get("if", "success()")
     condition = condition.removeprefix("${{ ").removesuffix(" }}")
-    condition = condition.replace("steps.suite.outputs.llm", repr(llm))
+    condition = condition.replace("steps.suite.outputs.model_sessions", repr(llm))
     condition = condition.replace(
         "steps.codex-auth-preflight.outcome", repr("success" if llm == "true" else "skipped")
     )
@@ -315,7 +460,8 @@ def test_unreachable_suite_preserves_identity_failure_and_runner_evidence(tmp_pa
     assert "required_run_output_missing:junit.xml" in report["incompleteness"]
 
 
-def test_noop_handoff_and_final_admission_without_profile_attestation(tmp_path, commands):
+@pytest.mark.parametrize("suite", ["mega-noop", "mega"])
+def test_noop_handoff_and_final_admission_without_profile_attestation(tmp_path, commands, suite):
     protected = {
         name: f"synthetic-{name.lower()}-value"
         for name in stand_acceptance.PROTECTED_STAND_SECRET_NAMES
@@ -327,7 +473,7 @@ def test_noop_handoff_and_final_admission_without_profile_attestation(tmp_path, 
     (handoff / "run").mkdir()
     (handoff / "run/remote-invocation.log").write_text("synthetic transfer refusal exit=255\n")
     result = execute_step(
-        "Admit cleanup handoff", tmp_path, commands, "false", SUITE="mega-noop", **protected
+        "Admit cleanup handoff", tmp_path, commands, "false", SUITE=suite, **protected
     )
     assert result.returncode == 0, result.stderr + result.stdout
 
@@ -340,21 +486,27 @@ def test_noop_handoff_and_final_admission_without_profile_attestation(tmp_path, 
         s for s in workflow["jobs"]["cleanup"]["steps"] if s["name"] == "Admit final artifact"
     )["run"]
     result = run(
-        script, tmp_path, **{**commands, **protected, "SUITE_LLM": "false", "SUITE": "mega-noop"}
+        script,
+        tmp_path,
+        **{**commands, **protected, **cleanup_selection(workflow_selection(tmp_path, suite))},
     )
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_paid_admission_refuses_skipped_profile_redaction(tmp_path):
+@pytest.mark.parametrize("suite", ["mega-live", *RAW_TARGETS, None, ""])
+def test_paid_admission_refuses_skipped_profile_redaction(tmp_path, suite):
     artifact = tmp_path / "artifact"
     artifact.mkdir()
     env = {
         name: f"synthetic-{name.lower()}-value"
         for name in stand_acceptance.PROTECTED_STAND_SECRET_NAMES
     }
+    import shlex
+
+    selection = "" if suite is None else " --suite " + shlex.quote(suite)
     result = run(
         "python3 -m scripts.stand_acceptance admit --artifact artifact "
-        "--status status.json --protected-env --suite mega-live",
+        "--status status.json --protected-env" + selection,
         tmp_path,
         **env,
     )
@@ -379,14 +531,17 @@ def test_profile_attestation_requires_profile_needles(tmp_path):
     assert not (tmp_path / "marker.json").exists()
 
 
-def test_paid_runtime_preflight_missing_sessions_refuses_value_free(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("suite", ["mega-live", *RAW_TARGETS, None, ""])
+def test_paid_runtime_preflight_missing_sessions_refuses_value_free(
+    monkeypatch, tmp_path, capsys, suite
+):
     monkeypatch.setenv("LIVE_CONTOUR", "stand")
     monkeypatch.setenv("HOST_CODEX_HOME", str(tmp_path / "absent-profile"))
     for name in ("STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"):
         monkeypatch.delenv(name, raising=False)
     for name in ("check_contour", "check_docker", "check_disk", "check_deploy_target"):
         monkeypatch.setattr(stand_preflight, name, lambda *args: ("synthetic", True, ""))
-    assert stand_preflight.main(["--suite", "mega-live"]) == 1
+    assert stand_preflight.main([] if suite is None else ["--suite", suite]) == 1
     output = capsys.readouterr().out
     assert "Claude token: is missing" in output
     assert "FAIL codex session" in output
@@ -444,7 +599,7 @@ def test_noop_renderer_requires_service_credentials_but_no_model_sessions(tmp_pa
         "TELETHON_SESSION",
     ):
         env.pop(name)
-    env.update(SUITE_LLM="false", QA_TELETHON="false")
+    env.update(MODEL_SESSIONS="false", QA_TELETHON="false")
     result = run(step["run"], tmp_path, **env)
     assert result.returncode == 0, result.stderr
     assert "STAND_CLAUDE_CODE_OAUTH_TOKEN=\n" in (tmp_path / ".stand.env").read_text()
@@ -477,7 +632,8 @@ def test_paid_restore_missing_session_refuses_without_secret_values(tmp_path, co
     assert not (tmp_path / "stand-codex-profile/auth.json").exists()
 
 
-def test_paid_handoff_profile_needles_and_final_attestation_are_required(tmp_path, commands):
+@pytest.mark.parametrize("suite", ["mega-live", *RAW_TARGETS])
+def test_paid_handoff_profile_needles_and_final_attestation_are_required(tmp_path, commands, suite):
     protected = {
         name: f"synthetic-{name.lower()}-value"
         for name in stand_acceptance.PROTECTED_STAND_SECRET_NAMES
@@ -500,14 +656,14 @@ def test_paid_handoff_profile_needles_and_final_attestation_are_required(tmp_pat
     artifact = handoff / "run/remote-invocation.log"
     artifact.write_text("synthetic-access-needle")
     result = execute_step(
-        "Admit cleanup handoff", tmp_path, commands, "true", SUITE="mega-live", **protected
+        "Admit cleanup handoff", tmp_path, commands, "true", SUITE=suite, **protected
     )
     assert result.returncode == 2
     marker = handoff / "profile-redaction-attestation.json"
     assert not marker.exists()
     artifact.write_text("synthetic value-free ssh failure")
     result = execute_step(
-        "Admit cleanup handoff", tmp_path, commands, "true", SUITE="mega-live", **protected
+        "Admit cleanup handoff", tmp_path, commands, "true", SUITE=suite, **protected
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(marker.read_text()) == {"marker": stand_acceptance.PROFILE_ATTESTATION_MARKER}
@@ -519,7 +675,8 @@ def test_paid_handoff_profile_needles_and_final_attestation_are_required(tmp_pat
         for s in yaml.safe_load(WORKFLOW.read_text())["jobs"]["cleanup"]["steps"]
         if s["name"] == "Admit final artifact"
     )["run"]
-    env = {**commands, **protected, "SUITE_LLM": "true", "SUITE": "mega-live"}
+    selection = workflow_selection(tmp_path, "custom", suite)
+    env = {**commands, **protected, **cleanup_selection(selection)}
     result = run(script, tmp_path, **env)
     assert result.returncode == 0, result.stdout + result.stderr
     marker.unlink()

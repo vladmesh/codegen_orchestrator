@@ -51,9 +51,9 @@ def validate_precreate_credentials(
 ) -> list[CredentialFailure]:
     """Return every independent local refusal in workflow display order."""
     now = now or datetime.now(UTC)
-    from scripts.stand_run import resolve_suite
+    from scripts.stand_run import requires_model_sessions
 
-    needs_model = suite is None or resolve_suite(suite)[1].llm
+    needs_model = requires_model_sessions(suite)
     failures = (
         validate_stand_token_credentials(
             environment,

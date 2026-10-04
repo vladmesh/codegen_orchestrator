@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Check the stand can run a live pipeline before one is started.
 
-Infrastructure checks apply to every suite. The canonical stand runner resolver
+Infrastructure checks apply to every suite. The canonical session predicate
 decides whether model sessions are needed: mega-noop needs none, while paid
-suites validate the retained Claude token and refreshable Codex profile. The
+suites and raw targets validate the retained Claude token and refreshable Codex profile. The
 stand runner passes its selected suite; an unqualified standalone check retains
 the full session checks.
 
@@ -152,12 +152,12 @@ def check_docker() -> tuple[str, bool, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from scripts.stand_run import resolve_suite
+    from scripts.stand_run import requires_model_sessions
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", help="named suite or pytest target; absent checks all sessions")
     args = parser.parse_args(argv)
-    needs_model = args.suite is None or resolve_suite(args.suite)[1].llm
+    needs_model = requires_model_sessions(args.suite)
     results = [
         check_contour(),
         check_docker(),
