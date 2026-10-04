@@ -30,6 +30,7 @@ class PRConflictRepairCommand(BaseModel):
     pr_number: int = Field(gt=0)
     cycle_started_at: datetime
     expected_head_sha: str | None = Field(default=None, pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    stop_id: str | None = Field(default=None, min_length=1)
 
 
 class PRConflictRepairEvidence(PRConflictRepairCommand):

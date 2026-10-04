@@ -1,9 +1,9 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput, QAAccountingFact
@@ -90,6 +90,31 @@ class RunUpdate(BaseModel):
         if value is None:
             raise ValueError("status may be omitted but must not be null")
         return value
+
+
+EMPTY_RESULT_TERMINAL_KEY = "empty_result_terminal"
+
+
+class EmptyEngineeringTerminal(RunUpdate):
+    """Exact pending taskless outcome, retained before committing its stop."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal[RunStatus.FAILED]
+    result: EngineeringRunResult
+    error_message: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _empty_failed_outcome(self):
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run_result import EngineeringFailureReason
+
+        if (
+            self.result.engineering_status is not EngineeringStatus.FAILED
+            or self.result.failure_reason is not EngineeringFailureReason.NO_NEW_COMMIT
+        ):
+            raise ValueError("pending empty terminal requires a failed no_new_commit outcome")
+        return self
 
 
 class RunDTO(TimestampedDTO):

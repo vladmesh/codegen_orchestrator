@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Install system dependencies + Docker CLI + Compose plugin
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+    curl git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-26.1.4.tgz \

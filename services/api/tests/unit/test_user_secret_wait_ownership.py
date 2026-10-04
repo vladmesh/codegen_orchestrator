@@ -42,6 +42,7 @@ def _story(status: str) -> MagicMock:
     story = MagicMock()
     story.id = STORY_ID
     story.project_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    story.engineering_stop = None
     story.status = status
     story.waiting_on = "none"
     return story

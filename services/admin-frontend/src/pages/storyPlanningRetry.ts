@@ -25,6 +25,8 @@ export function planningRetryTarget(story: Story): PlanningRetryTarget | null {
   }
 }
 
-export function requestPlanningRetry(api: StoryApi, storyId: string) {
-  return api.post<Story>(`/stories/${storyId}/retry-planning`, { actor: 'admin' })
+export function requestPlanningRetry(api: StoryApi, storyId: string, stopId?: string) {
+  return api.post<Story>(`/stories/${storyId}/retry-planning`, {
+    actor: 'admin', ...(stopId ? { stop_id: stopId } : {}),
+  })
 }

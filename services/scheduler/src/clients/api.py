@@ -84,6 +84,17 @@ def _monitoring_guard(monitoring_generation: str | None) -> dict:
 
 
 class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
+    async def get_pending_engineering_stops(self) -> list[StoryDTO]:
+        response = await self.request("GET", "engineering-stops/pending")
+        return [StoryDTO.model_validate(row) for row in response.json()]
+
+    async def get_story_recovered_commit(self, story_id: str):
+        from shared.contracts.dto.commit_publication import CommitRecoveryRead
+
+        response = await self.request("GET", f"stories/{story_id}/recovered-commit")
+        payload = response.json()
+        return None if payload is None else CommitRecoveryRead.model_validate(payload)
+
     """HTTP client for scheduler-required API endpoints."""
 
     def __init__(self) -> None:

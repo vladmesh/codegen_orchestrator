@@ -455,9 +455,6 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(  # no
         assert story.status_code == httpx.codes.CREATED, story.text
         story_id = story.json()["id"]
         assert (await client.post(f"/api/stories/{story_id}/start")).status_code == httpx.codes.OK
-        assert (
-            await client.post(f"/api/stories/{story_id}/human-review")
-        ).status_code == httpx.codes.OK
         receipt = await client.post(
             "/api/runs/",
             json={
@@ -501,6 +498,9 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(  # no
             json={"status": "failed", "result": blocker},
         )
         assert terminal.status_code == httpx.codes.OK, terminal.text
+        assert (
+            await client.post(f"/api/stories/{story_id}/human-review")
+        ).status_code == httpx.codes.OK
         assert (
             await client.patch(f"/api/stories/{story_id}", json={"quarantine_reason": blocker})
         ).status_code == httpx.codes.OK

@@ -15,6 +15,7 @@ export interface InfrastructureRetryTarget {
   attemptId: string
   refusal: string
   detail: string
+  stopId?: string
 }
 
 type ApiPost = {
@@ -56,6 +57,8 @@ export function infrastructureRetryTarget(
     attemptId: evidence.attempt_id,
     refusal: evidence.refusal,
     detail: evidence.detail,
+    ...(typeof story.engineering_stop?.id === 'string' && !story.engineering_stop.released_at
+      ? { stopId: story.engineering_stop.id } : {}),
   }
 }
 
@@ -69,5 +72,6 @@ export async function requestInfrastructureRetry(
     attempt_id: target.attemptId,
     refusal: target.refusal,
     actor: 'admin',
+    ...(target.stopId ? { stop_id: target.stopId } : {}),
   })
 }

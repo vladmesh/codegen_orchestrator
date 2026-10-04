@@ -24,7 +24,6 @@ orchestrator no longer touches — the product's `Makefile`, its `AGENTS.md`, it
 them is an ordinary product change that commits and publishes like any other.
 """
 
-from collections.abc import Iterable
 import os
 from pathlib import Path
 import subprocess
@@ -33,20 +32,9 @@ import structlog
 
 from shared.constants import WorkerWorkspace
 from shared.contracts.vocab import AgentType
+from shared.injected_paths import INJECTED_PATHS, offending_paths as offending_paths
 
 logger = structlog.get_logger(__name__)
-
-#: Workspace-relative paths the orchestrator writes into a product checkout.
-#: A trailing slash marks a directory: everything under it is injected too.
-INJECTED_PATHS: tuple[str, ...] = (
-    WorkerWorkspace.CLAUDE_INSTRUCTIONS,
-    WorkerWorkspace.AGENT_INSTRUCTIONS,
-    WorkerWorkspace.TASK,
-    WorkerWorkspace.REPORT,
-    WorkerWorkspace.PROGRESS,
-    WorkerWorkspace.VENV_SENTINEL,
-    f"{WorkerWorkspace.STORY_DIR}/",
-)
 
 #: The same set as gitignore patterns, anchored to the checkout root so a
 #: product file that happens to share a name deeper in the tree stays visible.
@@ -66,22 +54,6 @@ def instruction_filename(agent_type: AgentType) -> str:
     if agent_type == AgentType.CLAUDE:
         return WorkerWorkspace.CLAUDE_INSTRUCTIONS
     return WorkerWorkspace.AGENT_INSTRUCTIONS
-
-
-def offending_paths(paths: Iterable[str]) -> list[str]:
-    """The injected paths among `paths`, sorted, without duplicates."""
-    offenders = set()
-    for raw in paths:
-        candidate = raw.strip()
-        if not candidate:
-            continue
-        for injected in INJECTED_PATHS:
-            if injected.endswith("/"):
-                if candidate == injected.rstrip("/") or candidate.startswith(injected):
-                    offenders.add(candidate)
-            elif candidate == injected:
-                offenders.add(candidate)
-    return sorted(offenders)
 
 
 def git_exclude_path(workspace: str) -> str:

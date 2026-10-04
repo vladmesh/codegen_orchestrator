@@ -104,6 +104,13 @@ def _vet_config_write(config: dict, project: Project | None) -> dict:
     raw bot token can't ride in under another key.
     """
     stored = _stored_secrets_blob(project)
+    from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
+
+    retained = (project.config or {}).get(COMMIT_PUBLICATION_KEY) if project is not None else None
+    if COMMIT_PUBLICATION_KEY in config and config[COMMIT_PUBLICATION_KEY] != retained:
+        raise HTTPException(422, "commit_publication is server-owned")
+    if retained is not None:
+        config = {**config, COMMIT_PUBLICATION_KEY: retained}
     incoming = config.get("secrets")
     if incoming is not None and incoming != stored:
         raise HTTPException(status_code=422, detail=_SECRETS_WRITE_DETAIL)

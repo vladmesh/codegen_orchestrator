@@ -76,6 +76,9 @@ async def ensure_empty_story_stop(
     """
     if await _committed(api, story_id, failure):
         return
+    story = await api.get_story(story_id)
+    if story.status is StoryStatus.WAITING_HUMAN_REVIEW:
+        raise RuntimeError("The Story is already stopped by another cause or notification episode")
     try:
         await api.stop_story(story_id, "human-review", failure, actor=actor)
     except Exception:

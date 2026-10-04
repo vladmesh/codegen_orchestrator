@@ -73,7 +73,10 @@ SERVICE_IMAGES = (
 
 # `src.main` imports this consumer only after a PO message arrives. It remains a
 # shipped LangGraph entry module and so must be checked with the eager consumers.
-EXTRA_IMPORT_MODULES = {"langgraph": ("src.consumers.po",)}
+EXTRA_IMPORT_MODULES = {
+    "langgraph": ("src.consumers.po",),
+    "worker-manager": ("src.routers.commit_recovery", "shared.git_snapshot"),
+}
 
 # Executables a service runs by name, so each must be on its image's PATH. Importing the
 # modules cannot see a missing one: it surfaces only when the first job shells out.
@@ -299,6 +302,8 @@ def check_service_image(service: ServiceImage, modules: tuple[str, ...]) -> tupl
         ]
     )
     executables = REQUIRED_EXECUTABLES.get(service.name, ())
+    if service.name == "worker-manager":
+        run(["docker", "run", "--rm", "--entrypoint", "/usr/bin/git", service.tag, "--version"])
     if executables:
         run(
             [

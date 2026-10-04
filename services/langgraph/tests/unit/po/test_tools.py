@@ -1868,6 +1868,7 @@ class TestDirtyQuarantineRecovery:
                 "pr_number": 3,
                 "created_at": "2026-09-29T00:00:00Z",
                 "reopened_at": None,
+                "engineering_stop": {"id": "stop-current"},
                 "quarantine_reason": {
                     "reason": "github_app_merge_refused",
                     "mergeable_state": "dirty",
@@ -1893,6 +1894,7 @@ class TestDirtyQuarantineRecovery:
         assert path == "stories/story-abc/repair-pr-conflicts"
         command = PRConflictRepairCommand.model_validate(kwargs["json"])
         assert command.pr_number == 3 and command.expected_head_sha is None
+        assert command.stop_id == "stop-current"
         assert kwargs["headers"]["X-Telegram-ID"] == "user-42"
         mock_stream_client.publish_message.assert_not_called()
 

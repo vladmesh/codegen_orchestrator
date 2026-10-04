@@ -21,6 +21,7 @@ services:
       QA_EXECUTOR_AGENT_TYPE: ${QA_EXECUTOR_AGENT_TYPE:-codex}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: api
+      WORKER_MANAGER_URL: http://worker-manager:8000
     depends_on:
       db:
         condition: service_healthy

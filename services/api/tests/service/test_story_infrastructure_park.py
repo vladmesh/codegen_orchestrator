@@ -765,12 +765,25 @@ async def test_admission_fences_a_parked_story_and_a_parked_task_without_an_atte
     )
     assert evidence_task.status_code == 201, evidence_task.text
 
-    for fenced_id in (sibling.json()["id"], evidence_task.json()["id"]):
+    # Story stop precedence applies to the sibling. The standalone Task has
+    # only infrastructure evidence, so its native refusal remains distinct.
+    parked_state = await _state(async_client, story_id, task_id)
+    notice = await _notice(async_client, story_id)
+    for fenced_id, reason in (
+        (sibling.json()["id"], EngineeringDispatchRefusal.ENGINEERING_STOPPED),
+        (evidence_task.json()["id"], EngineeringDispatchRefusal.INFRASTRUCTURE_PARKED),
+    ):
+        before = (await async_client.get(f"/api/tasks/{fenced_id}")).json()
         decision = await async_client.post(ADMISSION_URL, json={"task_id": fenced_id})
         assert decision.status_code == 200, decision.text
-        assert decision.json()["reason"] == EngineeringDispatchRefusal.INFRASTRUCTURE_PARKED
+        assert decision.json()["reason"] == reason
         assert decision.json()["run_id"] is None
         assert await _task_audits(db_session, fenced_id) == []
+        after = (await async_client.get(f"/api/tasks/{fenced_id}")).json()
+        for field in ("status", "current_iteration", "failure_metadata"):
+            assert after[field] == before[field]
+        assert await _state(async_client, story_id, task_id) == parked_state
+        assert await _notice(async_client, story_id) == notice
 
 
 # --- a failed ensure-workspace is parked by admission, proved by its own audit -------
@@ -886,7 +899,10 @@ async def test_a_story_already_with_a_human_is_refused_without_a_workspace_park(
 
     decision = (await async_client.post(ADMISSION_URL, json={"task_id": task_id})).json()
 
-    assert (decision["reason"], decision["infrastructure_park"]) == (WORKSPACE_REFUSAL, None)
+    assert (decision["reason"], decision["infrastructure_park"]) == (
+        EngineeringDispatchRefusal.ENGINEERING_STOPPED,
+        None,
+    )
     assert await _state(async_client, story_id, task_id) == (
         "todo",
         None,

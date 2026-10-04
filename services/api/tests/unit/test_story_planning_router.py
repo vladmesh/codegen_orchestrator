@@ -259,6 +259,30 @@ async def test_retry_planning_writes_the_due_record_and_publishes_nothing(redis)
 
 
 @pytest.mark.asyncio
+async def test_explicit_planning_retry_names_and_releases_the_current_stop(redis):
+    from shared.contracts.dto.commit_publication import EngineeringStop
+
+    story = await _parked_story()
+    stop = EngineeringStop(
+        id="stop-planning", actor="internal_service", stopped_at=datetime.now(UTC)
+    )
+    story.engineering_stop = stop.model_dump(mode="json")
+    session = _session(story)
+    session.add = MagicMock()
+    refused = await _post(f"/api/stories/{story.id}/retry-planning", {"stop_id": "stop-older"})
+    assert refused.status_code == HTTPStatus.CONFLICT
+    assert story.engineering_stop == stop.model_dump(mode="json")
+    selected = await _post(f"/api/stories/{story.id}/retry-planning", {"stop_id": stop.id})
+    assert selected.status_code == HTTPStatus.OK, selected.text
+    assert selected.json()["status"] == "in_progress"
+    assert (
+        EngineeringStop.model_validate(story.engineering_stop).release_actor == "internal_service"
+    )
+    assert session.add.call_args.args[0].outcome == "released"
+    redis.publish_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "story",
     [

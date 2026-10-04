@@ -2115,6 +2115,7 @@ class TestCompleteStories:
 
         api_client.get_stories_by_status.return_value = [_story(id="story-1", project_id=PROJ_ID)]
         api_client.get_tasks_by_story.return_value = []
+        api_client.get_story_recovered_commit.return_value = None
 
         await complete_stories(api_client, redis_client)
 

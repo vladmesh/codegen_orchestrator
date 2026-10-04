@@ -145,7 +145,8 @@ async def test_released_dirty_quarantine_recovers_without_new_cycle(
             }
         },
     )
-    await async_client.post(f"/api/stories/{sid}/human-review")
+    stopped = await async_client.post(f"/api/stories/{sid}/human-review")
+    command["stop_id"] = stopped.json()["engineering_stop"]["id"]
     command.pop("expected_head_sha")
     repaired = await async_client.post(f"/api/stories/{sid}/repair-pr-conflicts", json=command)
     assert repaired.status_code == 200, repaired.text

@@ -11,12 +11,15 @@ from typing import Any
 
 import structlog
 
+from shared.commit_publication import publish_commit
 from shared.constants import WorkerWorkspace
+from shared.contracts.dto.commit_publication import CommitPublication, PublicationFailure
 from shared.contracts.dto.engineering_execution import (
     EngineeringExecutionEvidence,
     EngineeringExecutionPhase,
     EngineeringInfrastructureRefusal,
 )
+from shared.contracts.dto.engineering_failure import EngineeringFailureReason
 from shared.contracts.queues.worker_result import (
     WorkerCompletedResult,
     WorkerFailedResult,
@@ -528,7 +531,7 @@ class WorkerWrapper:
             await self.broker.submit_output(
                 lease_id,
                 self._refused_completed_result(
-                    result, "Worker completed without the configured story branch."
+                    result, CommitPublication(failure=PublicationFailure.BRANCH_MISSING)
                 ),
             )
             return
@@ -549,22 +552,41 @@ class WorkerWrapper:
         )
         await self.broker.submit_output(
             lease_id,
-            self._refused_completed_result(result, push_error),
+            self._refused_completed_result(result, push_error).model_copy(
+                update={
+                    "publication": push_error.model_copy(
+                        update={
+                            "worker_id": self.config.worker_id,
+                            "attempt_id": data.get("attempt_id"),
+                        }
+                    )
+                }
+            ),
         )
 
     @staticmethod
-    def _refused_completed_result(result: WorkerCompletedResult, error: str) -> WorkerFailedResult:
+    def _refused_completed_result(
+        result: WorkerCompletedResult, error: CommitPublication
+    ) -> WorkerFailedResult:
         """Refuse completion without discarding its best diagnostic report."""
         metadata = result.model_dump(
             mode="python", exclude={"status", "commit_sha", "content"}, exclude_none=True
         )
         if result.content and "worker_report" not in metadata:
             metadata["worker_report"] = result.content
-        return WorkerFailedResult(error=error, **metadata)
+        return WorkerFailedResult(
+            error=f"Commit publication refused: {error.failure.value}",
+            failure_reason=EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED,
+            publication=error,
+            execution=EngineeringExecutionEvidence(
+                execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+            ),
+            **metadata,
+        )
 
     def _pushed_completed_result(
         self, result: WorkerCompletedResult, branch: object
-    ) -> tuple[WorkerCompletedResult | None, str | None]:
+    ) -> tuple[WorkerCompletedResult | None, CommitPublication | None]:
         """Push and read back a completed developer commit before publishing it.
 
         The published SHA is normalized to the full local ``HEAD`` SHA.  A
@@ -574,106 +596,12 @@ class WorkerWrapper:
         update is a failed worker result, not an overwrite.
         """
         if not isinstance(branch, str) or not branch:
-            return None, "Worker completed without the configured story branch."
+            return None, CommitPublication(failure=PublicationFailure.BRANCH_MISSING)
 
-        local_branch = self._get_git_branch()
-        if local_branch != branch:
-            return None, f"Worker checkout is on {local_branch or 'no branch'}, expected {branch}."
-
-        try:
-            reported = subprocess.run(
-                [
-                    "/usr/bin/git",
-                    "rev-parse",
-                    "--verify",
-                    "--end-of-options",
-                    f"{result.commit_sha}^{{commit}}",
-                ],
-                cwd=WORKSPACE_DIR,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            head = subprocess.run(
-                ["/usr/bin/git", "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
-                cwd=WORKSPACE_DIR,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None, f"Worker commit {result.commit_sha} could not be verified in its checkout."
-
-        reported_sha = reported.stdout.strip()
-        head_sha = head.stdout.strip()
-        if reported.returncode != 0 or head.returncode != 0 or reported_sha != head_sha:
-            return None, (
-                f"Worker reported commit {result.commit_sha} does not match its local HEAD."
-            )
-
-        carried, inspect_error = self._injected_paths_in_commit(head_sha)
-        if inspect_error is not None:
-            return None, inspect_error
-        if carried:
-            logger.error(
-                "worker_commit_carries_injected_paths",
-                worker_id=self.config.worker_id,
-                commit_sha=head_sha,
-                paths=carried,
-            )
-            return None, (
-                f"Worker commit {head_sha} was not published: it carries orchestrator-injected "
-                f"paths that belong to no product: {', '.join(carried)}."
-            )
-
-        try:
-            pushed = subprocess.run(
-                [
-                    "/usr/bin/git",
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "push",
-                    "origin",
-                    f"HEAD:refs/heads/{branch}",
-                ],
-                cwd=WORKSPACE_DIR,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None, f"Worker commit {head_sha} could not be pushed to origin/{branch}."
-        if pushed.returncode != 0:
-            return None, f"Worker commit {head_sha} could not be pushed to origin/{branch}."
-
-        try:
-            remote = subprocess.run(
-                [
-                    "/usr/bin/git",
-                    "ls-remote",
-                    "--exit-code",
-                    "--heads",
-                    "origin",
-                    f"refs/heads/{branch}",
-                ],
-                cwd=WORKSPACE_DIR,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None, f"Worker commit {head_sha} could not be verified on origin/{branch}."
-        remote_sha = remote.stdout.split(maxsplit=1)[0] if remote.stdout.strip() else ""
-        if remote.returncode != 0 or remote_sha != head_sha:
-            return None, f"Worker commit {head_sha} could not be verified on origin/{branch}."
-
-        logger.info(
-            "worker_commit_pushed_and_verified",
-            worker_id=self.config.worker_id,
-            branch=branch,
-            commit_sha=head_sha,
-        )
-        return result.model_copy(update={"commit_sha": head_sha}), None
+        receipt = publish_commit(Path(WORKSPACE_DIR), branch, result.commit_sha)
+        if receipt.published:
+            return result.model_copy(update={"commit_sha": receipt.commit_sha}), None
+        return None, receipt
 
     def _injected_paths_in_commit(self, commit_sha: str) -> tuple[list[str], str | None]:
         """The orchestrator-injected paths the checkout's HEAD commit changes.

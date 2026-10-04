@@ -20,6 +20,7 @@ from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.observability import _extract_claude_evidence
 from worker_wrapper.wrapper import WorkerWrapper
 
+from shared.contracts.dto.commit_publication import PublicationFailure
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.queues.worker_result import (
     WorkerCompletedResult,
@@ -260,7 +261,9 @@ async def test_a_deliberately_smuggled_commit_is_refused_not_published(tmp_path,
     attempts = json.loads((tmp_path / "attempts.json").read_text())
     assert attempts["plumbing_push"] == 0
     assert isinstance(published, WorkerFailedResult)
-    assert "could not be pushed" in published.error
+    assert published.publication.failure == PublicationFailure.PUSH_REFUSED
+    assert published.publication.commit_sha == git(workspace, "rev-parse", "HEAD")
+    assert published.publication.remote_sha == attempts["orphan"]
     assert git(origin, "rev-parse", BRANCH) == attempts["orphan"]
     assert git(workspace, "rev-parse", "HEAD") != attempts["orphan"]
     assert _no_fence_left(workspace)

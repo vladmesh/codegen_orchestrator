@@ -75,8 +75,14 @@ from shared.models import (
 )
 from shared.models.story import Story
 
+from ..attempt_disposition import release_engineering_stop
 from ..database import get_async_session
-from ..dependencies import _optional_bearer_scheme, is_internal_service, require_internal_or_admin
+from ..dependencies import (
+    _optional_bearer_scheme,
+    get_internal_or_admin_actor,
+    is_internal_service,
+    require_internal_or_admin,
+)
 from ..infrastructure_park import (
     SCAFFOLD_ERROR_KEY,
     WORKSPACE_ENSURE_AUDIT_SUBJECT,
@@ -196,6 +202,10 @@ async def repair_pr_conflicts(
         _repair_conflict("The project has no primary repository.")
     head_sha, default, default_sha = await _observe_dirty_pr(story, repository, command)
     identity = "internal_service" if actor is None else f"user:{actor.id}"
+    if released_park or unspent:
+        release_engineering_stop(
+            story, command.stop_id, identity, db, expected_cause=story.quarantine_reason
+        )
     if task is None:
         control = await db.get(SystemConfig, "llm.task_default_max_iterations")
         if control is None or type(control.value) is not int or control.value <= 0:
@@ -565,7 +575,7 @@ async def retry_infrastructure_attempt(
     story_id: str,
     command: EngineeringInfrastructureRetryCommand,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(require_internal_or_admin),
+    actor: str = Depends(get_internal_or_admin_actor),
 ) -> EngineeringInfrastructureRetryRead:
     """Reset exactly one typed pre-agent refusal and restart its story atomically."""
     # Keep the repository's lock ladder: Task before Story before Run.
@@ -631,6 +641,9 @@ async def retry_infrastructure_attempt(
         "attempt_id": command.attempt_id,
         "refusal": command.refusal.value,
     }
+    release_engineering_stop(
+        story, command.stop_id, actor, db, expected_cause=story.quarantine_reason
+    )
     task.status = TaskStatus.BACKLOG.value
     await create_status_event(
         task,

@@ -32,6 +32,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.commit_publication import AttemptDisposition
 from shared.contracts.dto.engineering_dispatch import (
     ENGINEERING_DISPATCH_REFUSAL_KEY,
     PAID_WORK_REFUSALS,
@@ -69,6 +70,7 @@ from shared.contracts.dto.work_admission import (
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
 
+from .attempt_disposition import locked_disposition
 from .infrastructure_park import (
     PARKABLE_TASK_HOPS,
     SCAFFOLD_ERROR_KEY,
@@ -398,6 +400,14 @@ async def _take_story_roster(
         # rewritten blocker edge: refuse, and let the next tick peek again.
         return set(), EngineeringDispatchRefusal.STORY_ROSTER_CHANGED
     story = await _get_story_for_update(task.story_id, db)
+    if story.status in {
+        StoryStatus.WAITING_HUMAN_REVIEW.value,
+        StoryStatus.FAILED.value,
+        StoryStatus.ARCHIVED.value,
+        StoryStatus.COMPLETED.value,
+    } or (story.engineering_stop is not None and story.engineering_stop.get("released_at") is None):
+        return set(), EngineeringDispatchRefusal.ENGINEERING_STOPPED
+
     if ENGINEERING_INFRASTRUCTURE_KEY in (story.quarantine_reason or {}):
         # A story parked by an infrastructure refusal takes no engineering
         # message until the operator's retry clears that exact park.
@@ -757,10 +767,7 @@ async def admit_engineering_dispatch(
     # finished, and the release is a property of the whole plan rather than of
     # this one task.
     row_refusal = _dispatch_task_refusal(task, overrides)
-    if row_refusal is not None:
-        return _refused(row_refusal, overrides)
-
-    if task.blocked_by_task_id:
+    if row_refusal is None and task.blocked_by_task_id:
         blocker = locked.get(task.blocked_by_task_id)
         # The locked row names a blocker the peek did not: the edge was rewritten
         # between the two reads. Taking it now would lock out of order, so this
@@ -769,12 +776,16 @@ async def admit_engineering_dispatch(
         if not blocker_resolved and not overrides.clears(
             EngineeringDispatchRefusal.BLOCKER_UNRESOLVED
         ):
-            return _refused(EngineeringDispatchRefusal.BLOCKER_UNRESOLVED, overrides)
+            row_refusal = EngineeringDispatchRefusal.BLOCKER_UNRESOLVED
 
-    if task.project_id == INTERNAL_PROJECT_ID and not overrides.clears(
-        EngineeringDispatchRefusal.INTERNAL_PROJECT
+    if (
+        row_refusal is None
+        and task.project_id == INTERNAL_PROJECT_ID
+        and not overrides.clears(EngineeringDispatchRefusal.INTERNAL_PROJECT)
     ):
-        return _refused(EngineeringDispatchRefusal.INTERNAL_PROJECT, overrides)
+        row_refusal = EngineeringDispatchRefusal.INTERNAL_PROJECT
+    if row_refusal is not None:
+        return _refused(row_refusal, overrides)
 
     # --- rung 2: the story -------------------------------------------------
     sibling_ids, roster_refusal = await _take_story_roster(task, peeked_story_id, locked, db)
@@ -807,6 +818,17 @@ async def admit_engineering_dispatch(
 
     # --- rung 4: the attempt rows the last two conditions read --------------
     runs = await _lock_engineering_runs(sorted(locked), db)
+    from .routers._story_helpers import _get_story_for_update
+
+    current_story = await _get_story_for_update(task.story_id, db) if task.story_id else None
+    authority = await locked_disposition(current_story, task, runs, db)
+    if authority is not AttemptDisposition.ELIGIBLE:
+        return _refused(
+            EngineeringDispatchRefusal.ENGINEERING_STOPPED
+            if authority is AttemptDisposition.STOPPED
+            else EngineeringDispatchRefusal.COMMIT_PUBLICATION_REQUIRED,
+            overrides,
+        )
 
     story, story_refusal = await _conflict_dispatch_story(task, overrides, db)
 

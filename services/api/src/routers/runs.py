@@ -34,6 +34,7 @@ from shared.contracts.dto.owner_notification import (
 from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Project, Run, User
 
 from ..database import get_async_session
@@ -229,10 +230,20 @@ def _refuse_reserved_metadata(metadata: dict) -> None:
     the routing story transition writes and no run schema accepts. Metadata
     never proves it; the key is refused so nothing can look as if it did.
     """
-    if QA_ROUTED_KEY in metadata:
+    from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
+
+    reserved = next(
+        (
+            key
+            for key in (QA_ROUTED_KEY, COMMIT_PUBLICATION_KEY, "publication_worker_result")
+            if key in metadata
+        ),
+        None,
+    )
+    if reserved is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "reserved_run_metadata", "key": QA_ROUTED_KEY},
+            detail={"code": "reserved_run_metadata", "key": reserved},
         )
 
 
@@ -267,6 +278,19 @@ async def create_run(
             detail="Paid coding-agent runs must use the paid-run start command",
         )
     _refuse_reserved_metadata(run.run_metadata)
+    if run.type == RunType.DEPLOY:
+        from ..attempt_disposition import lock_story_attempts
+
+        if run.story_id:
+            story, _, project, _ = await lock_story_attempts(run.story_id, db)
+            if project.id != run.project_id or _launch_fenced(story, project):
+                raise HTTPException(409, {"code": "engineering_attempt_fenced"})
+        elif run.project_id:
+            project = await db.scalar(
+                select(Project).where(Project.id == run.project_id).with_for_update()
+            )
+            if _launch_fenced(None, project):
+                raise HTTPException(409, {"code": "engineering_attempt_fenced"})
     run_data = run.model_dump()
     if run.project_id is not None:
         project = await db.get(Project, run.project_id)
@@ -577,6 +601,109 @@ def _has_recorded_outcome(run: Run) -> bool:
     )
 
 
+async def _lock_terminal_context(run_id, db):
+    # Discover identities only, then descend the engineering lock ladder.
+    from ..attempt_disposition import lock_story_attempts
+
+    edges = (
+        await db.execute(
+            select(Run.type, Run.story_id, Run.task_id, Run.project_id).where(Run.id == run_id)
+        )
+    ).one_or_none()
+    story = None
+    task = None
+    if edges is not None and edges.type == RunType.ENGINEERING.value:
+        if edges.story_id:
+            story, roster, _, _ = await lock_story_attempts(edges.story_id, db)
+            task = next((t for t in roster if t.id == edges.task_id), None)
+        elif edges.task_id:
+            from ._task_helpers import get_task_for_update
+
+            task = await get_task_for_update(edges.task_id, db)
+    if edges is not None and edges.type == RunType.ENGINEERING.value and not edges.story_id:
+        await db.scalar(select(Project).where(Project.id == edges.project_id).with_for_update())
+    return await _lock_run(run_id, db), story, task
+
+
+async def _park_terminal_publication(story, task, run, db):
+    if run.type == RunType.ENGINEERING.value and run.result is not None:
+        from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
+
+        from ..publication_park import park_publication
+
+        engineering_result = EngineeringRunResult.model_validate(run.result)
+        if (
+            engineering_result.failure_reason
+            is EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED
+        ):
+            from shared.models.commit_recovery import CommitRecovery
+
+            claim = await db.get(CommitRecovery, run.id)
+            if claim is not None and claim.handed_off_at is not None:
+                return
+            if engineering_result.publication is None:
+                raise HTTPException(422, "Publication refusal requires typed evidence")
+            await park_publication(story, task, run, engineering_result.publication, db)
+
+
+def _require_retained_empty_outcome(run, update_data, engineering_attempt):
+    """A teardown or stale terminal writer cannot replace a known paid output."""
+    from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+    pending = (run.run_metadata or {}).get(EMPTY_RESULT_TERMINAL_KEY)
+    if pending is None:
+        return
+    retained = EmptyEngineeringTerminal.model_validate(pending)
+    fields = {"status", "result", "error_message", "engineering_attempt"} | (
+        retained.model_fields_set & {"agent_profile", "transcript_path", "transcript_truncated"}
+    )
+    for field in fields:
+        if field == "status" and update_data.get("status") not in _TERMINAL_RUN_STATUSES:
+            continue
+        incoming = engineering_attempt if field == "engineering_attempt" else update_data.get(field)
+        expected = getattr(retained, field)
+        if field == "result" and incoming is not None:
+            try:
+                incoming = EngineeringRunResult.model_validate(incoming)
+            except ValidationError as exc:
+                raise HTTPException(
+                    409, "A retained empty outcome requires its typed result"
+                ) from exc
+        terminal = update_data.get("status") in _TERMINAL_RUN_STATUSES
+        supplied = field in update_data or (field == "engineering_attempt" and incoming is not None)
+        if (supplied or terminal) and incoming != expected:
+            raise HTTPException(409, "A retained empty outcome must use its own terminal writer")
+        if field == "result" and supplied:
+            update_data[field] = retained.result.model_dump(mode="json")
+
+
+def _validate_empty_retention(run, metadata_update, update_data):
+    from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+    pending = (run.run_metadata or {}).get(EMPTY_RESULT_TERMINAL_KEY)
+    if metadata_update is None and pending is not None:
+        raise HTTPException(409, "A retained empty terminal outcome cannot be cleared")
+    if not isinstance(metadata_update, dict) or EMPTY_RESULT_TERMINAL_KEY not in metadata_update:
+        return
+    if run.type != RunType.ENGINEERING.value or run.task_id is not None:
+        raise HTTPException(422, "Empty-result retention is owned by taskless engineering")
+    try:
+        retained = EmptyEngineeringTerminal.model_validate(
+            metadata_update[EMPTY_RESULT_TERMINAL_KEY]
+        )
+    except ValidationError as exc:
+        raise HTTPException(422, "Invalid retained empty terminal outcome") from exc
+    if pending is not None and retained != EmptyEngineeringTerminal.model_validate(pending):
+        raise HTTPException(409, "A retained empty terminal outcome is immutable")
+    try:
+        incoming = EngineeringRunResult.model_validate(update_data.get("result"))
+    except ValidationError as exc:
+        raise HTTPException(422, "Empty-result retention requires its typed Run result") from exc
+    if incoming != retained.result:
+        raise HTTPException(422, "Empty-result retention must include its exact typed Run result")
+    update_data["result"] = retained.result.model_dump(mode="json")
+
+
 @router.patch("/{run_id}", response_model=RunRead)
 async def update_run(
     run_id: str,
@@ -596,7 +723,7 @@ async def update_run(
     writers take turns, so the second one sees the first one's answer and is
     refused by the same rules that exist to refuse it.
     """
-    run = await _lock_run(run_id, db)
+    run, story, task = await _lock_terminal_context(run_id, db)
 
     # Only services acting for themselves, and admins, can update runs
     actor = await resolve_actor(
@@ -632,6 +759,7 @@ async def update_run(
     qa_accounting = run_update.qa_accounting
     update_data.pop("engineering_attempt", None)
     update_data.pop("qa_accounting", None)
+    _require_retained_empty_outcome(run, update_data, engineering_attempt)
     if engineering_attempt is not None and run.type != RunType.ENGINEERING.value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -696,6 +824,13 @@ async def update_run(
     if "run_metadata" in update_data:
         metadata_update = update_data["run_metadata"]
         existing_metadata = run.run_metadata or {}
+        _validate_empty_retention(run, metadata_update, update_data)
+        if metadata_update is None and any(
+            key in existing_metadata for key in ("commit_publication", "publication_worker_result")
+        ):
+            raise HTTPException(
+                409, "Publication evidence cannot be cleared by a generic Run patch"
+            )
         if EXECUTOR_DECISION_METADATA_KEY in existing_metadata and (
             not isinstance(metadata_update, dict)
             or (
@@ -720,6 +855,8 @@ async def update_run(
             run.run_metadata = {**(run.run_metadata or {}), **value}
         else:
             setattr(run, field, value)
+
+    await _park_terminal_publication(story, task, run, db)
 
     # This is deliberately the only ledger writer, under the terminal Run lock.
     await _settle_terminal_accounting(run, engineering_attempt, qa_accounting, db)
@@ -768,6 +905,41 @@ def _lease_expires_at(run: Run) -> datetime | None:
     return datetime.fromisoformat(stamp) if stamp else None
 
 
+def _launch_fenced(story, project):
+    from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY, EngineeringStop
+    from shared.contracts.dto.story import StoryStatus
+
+    if story is not None:
+        if story.status in {
+            StoryStatus.WAITING_HUMAN_REVIEW.value,
+            StoryStatus.FAILED.value,
+            StoryStatus.ARCHIVED.value,
+        }:
+            return True
+        if story.engineering_stop is not None:
+            if EngineeringStop.model_validate(story.engineering_stop).released_at is None:
+                return True
+    return project is not None and COMMIT_PUBLICATION_KEY in (project.config or {})
+
+
+async def _lock_launch_context(run_id, db):
+    from ..attempt_disposition import lock_story_attempts
+
+    edges = (
+        await db.execute(select(Run.type, Run.story_id, Run.project_id).where(Run.id == run_id))
+    ).one_or_none()
+    story = project = None
+    if edges is not None and edges.type in {RunType.ENGINEERING.value, RunType.DEPLOY.value}:
+        if edges.story_id:
+            story, _, project, _ = await lock_story_attempts(edges.story_id, db)
+        elif edges.project_id:
+            project = await db.scalar(
+                select(Project).where(Project.id == edges.project_id).with_for_update()
+            )
+    run = await _lock_run(run_id, db)
+    return run, _launch_fenced(story, project)
+
+
 @router.post("/{run_id}/start", response_model=DeployRunStart)
 async def start_run(
     run_id: str,
@@ -786,8 +958,8 @@ async def start_run(
     Starting a run that is already running is the same answer, so a worker
     retrying after a lost response is not refused its own start.
     """
-    run = await _lock_run(run_id, db)
-    if run.status in _TERMINAL_RUN_STATUSES:
+    run, fenced = await _lock_launch_context(run_id, db)
+    if fenced or run.status in _TERMINAL_RUN_STATUSES:
         await db.commit()
         logger.info("run_start_refused", run_id=run_id, run_status=run.status)
         return DeployRunStart(run_id=run_id, started=False, run_status=RunStatus(run.status))
@@ -817,8 +989,8 @@ async def claim_run_dispatch(
     is what lets reconciliation take a silent claim back rather than wait for a
     process that is gone.
     """
-    run = await _lock_run(run_id, db)
-    if run.status in _TERMINAL_RUN_STATUSES:
+    run, fenced = await _lock_launch_context(run_id, db)
+    if fenced or run.status in _TERMINAL_RUN_STATUSES:
         await db.commit()
         logger.info("run_dispatch_claim_refused", run_id=run_id, run_status=run.status)
         return DeployDispatchClaim(

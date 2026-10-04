@@ -9,6 +9,7 @@ from http import HTTPStatus
 import httpx
 import structlog
 
+from shared.contracts.dto.commit_publication import CommitPublication
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_execution import (
     EngineeringExecutionEvidence,
@@ -269,11 +270,24 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
     turn_result_consumed: bool = False,
     story_id: str | None = None,
     failure_reason: EngineeringFailureReason | None = None,
+    publication: CommitPublication | None = None,
+    worker_report: str | None = None,
     uncomputable_derived_keys: list[str] | None = None,
     project_id: str = "",
     telegram_chat_id: str = "",
 ) -> dict:
     """Mark a run as failed and optionally update planning task."""
+    if publication is None:
+        from shared.commit_publication import pending_publication
+
+        pending = await pending_publication(redis.redis, task_id)
+        if pending is not None:
+            publication = pending.publication
+            failure_reason = pending.failure_reason
+            execution = pending.execution
+            worker_observability = pending.model_dump(mode="json")
+            error_msg = pending.error
+            worker_report = pending.worker_report
     try:
         await prepare_terminal_settlement(
             task_id,
@@ -291,24 +305,59 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
         error_msg = bounded_diagnostic(error_msg)
         # A planned task keeps its existing failed-iteration retry policy. A
         # taskless repair must stop durably before its queue entry can be ACKed.
-        if story_id and not planning_task_id:
-            await _park_story_without_new_commit(story_id, task_id, error_msg)
     terminal = {
         "status": RunStatus.FAILED.value,
         "error_message": error_msg,
         "result": EngineeringRunResult(
             engineering_status=EngineeringStatus.FAILED,
             failure_reason=failure_reason,
+            publication=publication,
+            worker_report=worker_report,
             uncomputable_derived_keys=uncomputable_derived_keys,
             execution=execution,
         ).model_dump(mode="json"),
         **_observability_patch(worker_observability),
         **_attempt_execution_patch(stop_reason, agent_limit_seconds, execution),
     }
-    if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT:
+    if (
+        failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
+        and story_id
+        and not planning_task_id
+    ):
+        from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+        retained = EmptyEngineeringTerminal.model_validate(terminal).model_dump(
+            mode="json", exclude_unset=True
+        )
+        # Retain the strict outcome on its owned, still-live Run. Stop teardown
+        # cannot replace known execution facts, and a reclaimed queue entry can
+        # finish this same terminal write without running the engineering graph.
+        try:
+            await api_client.patch(
+                f"runs/{task_id}",
+                json={
+                    "result": terminal["result"],
+                    "error_message": error_msg,
+                    "run_metadata": {
+                        **terminal.get("run_metadata", {}),
+                        EMPTY_RESULT_TERMINAL_KEY: retained,
+                    },
+                },
+            )
+        except Exception:
+            raise EmptyResultSettlementError(
+                f"empty result for run {task_id} is not retained"
+            ) from None
+        await _park_story_without_new_commit(story_id, task_id, error_msg)
+    if failure_reason in {
+        EngineeringFailureReason.NO_NEW_COMMIT,
+        EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED,
+    }:
         await _write_empty_terminal(task_id, terminal)
     else:
         await api_client.patch(f"runs/{task_id}", json=terminal)
+    if failure_reason is EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED:
+        return {"status": "publication_required"}
     if (
         planning_task_id
         and planning_task_id.startswith("pr-conflict-")
@@ -347,6 +396,19 @@ async def _write_empty_terminal(task_id: str, terminal: dict) -> None:
         try:
             await api_client.patch(f"runs/{task_id}", json=terminal)
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code == HTTPStatus.CONFLICT
+                and terminal["result"]["failure_reason"]
+                == EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED
+            ):
+                current = await api_client.get_run(task_id)
+                saved = current.result.publication if current.result is not None else None
+                expected = CommitPublication.model_validate(terminal["result"]["publication"])
+                if current.status == RunStatus.FAILED and saved == expected:
+                    # Broker park already used the terminal/accounting owner.
+                    # Keep that original paid outcome and its exact output.
+                    return
             if (
                 isinstance(exc, httpx.HTTPStatusError)
                 and exc.response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR

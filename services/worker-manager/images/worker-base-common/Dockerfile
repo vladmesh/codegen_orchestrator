@@ -68,6 +68,8 @@ COPY shared/contracts /app/shared/contracts
 COPY shared/constants.py /app/shared/constants.py
 COPY shared/log_config /app/shared/log_config
 COPY shared/diagnostics.py /app/shared/diagnostics.py
+COPY shared/commit_publication.py /app/shared/commit_publication.py
+COPY shared/injected_paths.py /app/shared/injected_paths.py
 ENV PYTHONPATH=/app
 
 # Command helpers run independently of product PYTHONPATH/user-site modules.

@@ -742,6 +742,32 @@ class WorkerManager:
                 return worker_id
         return None
 
+    async def _require_engineering_authority(self, ownership):
+        authority_api = InternalAPIClient(settings.API_BASE_URL, timeout=15)
+        try:
+            response = await authority_api.request(
+                "POST",
+                f"runs/{ownership.attempt_id}/engineering-disposition",
+                json={},
+            )
+        finally:
+            await authority_api.close()
+        from shared.contracts.dto.commit_publication import (
+            AttemptDisposition,
+            AttemptDispositionRead,
+        )
+
+        decision = AttemptDispositionRead.model_validate(response.json())
+        if (
+            decision.disposition is not AttemptDisposition.ELIGIBLE
+            or decision.project_id != ownership.project_id
+            or decision.story_id != ownership.story_id
+            or decision.initiating_run_id != ownership.run_id
+        ):
+            raise RuntimeError(
+                "Engineering attempt ownership/disposition refused before worker creation"
+            )
+
     # This command boundary mirrors spawn options; helpers below own each lifecycle phase.
     async def create_worker_with_capabilities(  # noqa: PLR0913, PLR0917
         self,
@@ -793,16 +819,17 @@ class WorkerManager:
         is_qa_worker = worker_type == QA_WORKER_TYPE
         project_id = ownership.project_id
         env_vars = env_vars or {}
-        workspace_path = None
+        workspace_path = held_project_id = None
         # These checks can refuse a request before it owns metadata, a workspace
         # fence, or a cleanup command. A terminal status still tells the early-
         # ACKed caller to stop polling without manufacturing teardown state.
-        held_project_id: str | None = None
         # The step this creation is in. It is the only thing that says *where* a
         # failure happened once the command has been ACKed, and an exception
         # whose message is empty carries nothing else.
         step = "validate_request"
         try:
+            if not is_qa_worker:
+                await self._require_engineering_authority(ownership)
             network_name, allow_host_network, factory_api_key = (
                 self._validate_worker_creation_request(
                     agent_type=agent_type,
@@ -864,13 +891,12 @@ class WorkerManager:
                 f"worker:status:{worker_id}", mapping={"status": WorkerStatus.BUILDING}
             )
 
-        prefix = prefix or settings.WORKER_IMAGE_PREFIX
         try:
             step = "build_image"
             image_tag = await self.ensure_or_build_image(
                 capabilities=capabilities,
                 base_image=base_image,
-                prefix=prefix,
+                prefix=prefix or settings.WORKER_IMAGE_PREFIX,
                 agent_type=agent_type,
             )
 

@@ -23,8 +23,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from shared.contracts.dto.commit_publication import CommitPublication
 from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+from shared.contracts.dto.engineering_failure import EngineeringFailureReason
 
 __all__ = [
     "WorkerResultStatus",
@@ -122,6 +124,17 @@ class WorkerFailedResult(_WorkerResultBase):
     #: The limit that was in force, as the wrapper actually enforced it.
     agent_limit_seconds: int | None = None
     execution: EngineeringExecutionEvidence | None = None
+    failure_reason: EngineeringFailureReason | None = None
+    publication: CommitPublication | None = None
+
+    @model_validator(mode="after")
+    def publication_is_failure(self):
+        named = self.failure_reason is EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED
+        if named != (self.publication is not None):
+            raise ValueError("publication evidence and refusal classification must travel together")
+        if self.publication is not None and self.publication.published:
+            raise ValueError("failed worker cannot carry a successful publication")
+        return self
 
 
 class WorkerBlockedResult(_WorkerResultBase):

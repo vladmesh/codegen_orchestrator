@@ -69,7 +69,7 @@ def to_read(task: Task, last_event: str | None = None) -> TaskRead:
 async def _load_task(task_id: str, db: AsyncSession, *, for_update: bool) -> Task:
     query = select(Task).where(Task.id == task_id)
     if for_update:
-        query = query.with_for_update()
+        query = query.with_for_update().execution_options(populate_existing=True)
     result = await db.execute(query)
     task = result.scalar_one_or_none()
     if not task:

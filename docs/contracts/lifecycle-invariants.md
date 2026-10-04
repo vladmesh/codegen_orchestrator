@@ -4,6 +4,11 @@ Canonical runtime invariants for Run persistence, engineering results, deploy ha
 
 Back to the [contracts index](../CONTRACTS.md).
 
+The [publication and engineering-stop contract](commit-publication-and-stop.md)
+defines durable park/terminal settlement before broker ACK, owned retryable stop,
+checkout preservation and explicit agent-free handoff. Recovery facts never
+rewrite the original paid Run or ledger, and only the named stop can be released.
+
 ## Run vocabulary and persisted schema
 
 `RunType` and `RunStatus` in `shared/contracts/dto/run.py` own the Run vocabulary.

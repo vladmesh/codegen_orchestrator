@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
 
+from shared.contracts.dto.commit_publication import CommitPublication, PublicationFailure
 from shared.contracts.queues.worker_result import WorkerCompletedResult, WorkerResultStatus
 
 
@@ -86,10 +87,13 @@ class TestCompletedResultPush:
             patch(
                 "subprocess.run",
                 side_effect=[
+                    git_result(),  # native ref format
+                    git_result(stdout=f"{branch}\n"),  # native checkout branch
                     git_result(stdout=f"{full_sha}\n"),  # resolve reported SHA
                     git_result(stdout=f"{full_sha}\n"),  # local HEAD
                     git_result(stdout=f"{full_sha} {'0' * 40}\n"),  # HEAD's parents
                     git_result(stdout="services/backend/src/app.py\n"),  # the commit's paths
+                    git_result(returncode=2),  # before push: ref absent
                     git_result(),  # push
                     git_result(stdout=f"{full_sha}\trefs/heads/{branch}\n"),  # remote ref
                 ],
@@ -101,14 +105,14 @@ class TestCompletedResultPush:
 
         assert error is None
         assert result == WorkerCompletedResult(commit_sha=full_sha, content="Done")
-        assert run.call_args_list[0].args[0][3] == "--end-of-options"
-        assert run.call_args_list[4].args[0] == [
+        assert "--end-of-options" in run.call_args_list[2].args[0]
+        assert run.call_args_list[7].args[0] == [
             "/usr/bin/git",
             "-c",
             "core.hooksPath=/dev/null",
             "push",
             "origin",
-            f"HEAD:refs/heads/{branch}",
+            f"{full_sha}:refs/heads/{branch}",
         ]
 
     def test_refuses_success_when_push_is_rejected(self, wrapper):
@@ -128,11 +132,15 @@ class TestCompletedResultPush:
             patch(
                 "subprocess.run",
                 side_effect=[
+                    git_result(),  # native ref format
+                    git_result(stdout=f"{branch}\n"),  # native checkout branch
                     git_result(stdout=f"{full_sha}\n"),
                     git_result(stdout=f"{full_sha}\n"),
                     git_result(stdout=f"{full_sha} {'0' * 40}\n"),
                     git_result(stdout="services/backend/src/app.py\n"),
+                    git_result(returncode=2),
                     git_result(returncode=1, stderr="rejected"),
+                    git_result(returncode=2),
                 ],
             ),
         ):
@@ -141,7 +149,9 @@ class TestCompletedResultPush:
             )
 
         assert result is None
-        assert error == f"Worker commit {full_sha} could not be pushed to origin/{branch}."
+        assert error.failure is PublicationFailure.PUSH_REFUSED
+        assert error.commit_sha == full_sha
+        assert "rejected" in error.stderr
 
     @pytest.mark.asyncio
     async def test_publishes_failure_when_commit_push_cannot_be_verified(self, wrapper):
@@ -152,13 +162,20 @@ class TestCompletedResultPush:
         with patch.object(
             wrapper,
             "_pushed_completed_result",
-            return_value=(None, "Worker commit could not be verified on origin/story/story-789."),
+            return_value=(
+                None,
+                CommitPublication(
+                    failure=PublicationFailure.READBACK_MISMATCH,
+                    stderr="Worker commit could not be verified on origin/story/story-789.",
+                ),
+            ),
         ):
             await wrapper._submit_checked_result("lease-1", {"branch": "story/story-789"}, result)
 
         submitted = wrapper.broker.submit_output.await_args.args[1]
         assert submitted.status == WorkerResultStatus.FAILED
-        assert submitted.error == "Worker commit could not be verified on origin/story/story-789."
+        assert submitted.publication.failure is PublicationFailure.READBACK_MISMATCH
+        assert "origin/story/story-789" in submitted.publication.stderr
         assert submitted.worker_report == "Done"
 
     @pytest.mark.asyncio
@@ -176,7 +193,7 @@ class TestCompletedResultPush:
         with patch.object(
             wrapper,
             "_pushed_completed_result",
-            return_value=(None, "Worker reported commit bad-claim does not match its local HEAD."),
+            return_value=(None, CommitPublication(failure=PublicationFailure.HEAD_CHANGED)),
         ):
             await wrapper._submit_checked_result(
                 "lease-34160792874", {"branch": "story/story-1"}, result
@@ -197,15 +214,24 @@ class TestCompletedResultPush:
 
         with (
             patch.object(wrapper, "_get_git_branch", return_value=branch),
-            patch("subprocess.run", side_effect=[reported, head]) as run,
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    MagicMock(returncode=0),
+                    MagicMock(returncode=0, stdout=branch),
+                    reported,
+                    head,
+                ],
+            ) as run,
         ):
             result, error = wrapper._pushed_completed_result(
                 WorkerCompletedResult(commit_sha=claimed_sha, content="diagnosis"), branch
             )
 
         assert result is None
-        assert error == f"Worker reported commit {claimed_sha} does not match its local HEAD."
-        assert run.call_count == 2
+        assert error.failure is PublicationFailure.HEAD_CHANGED
+        assert error.commit_sha == claimed_sha
+        assert not any("push" in call.args[0] for call in run.call_args_list)
 
     def test_wrong_checkout_branch_stops_before_commit_resolution(self, wrapper):
         """No commit or remote operation runs when the checkout is on another branch."""
@@ -213,15 +239,22 @@ class TestCompletedResultPush:
 
         with (
             patch.object(wrapper, "_get_git_branch", return_value="story/other"),
-            patch("subprocess.run") as run,
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    MagicMock(returncode=0),
+                    MagicMock(returncode=0, stdout="story/other"),
+                ],
+            ) as run,
         ):
             result, error = wrapper._pushed_completed_result(
                 WorkerCompletedResult(commit_sha="5" * 40, content="Done"), expected
             )
 
         assert result is None
-        assert error == "Worker checkout is on story/other, expected story/story-1."
-        run.assert_not_called()
+        assert error.failure is PublicationFailure.WRONG_BRANCH
+        assert error.commit_sha is None
+        assert not any("rev-parse" in call.args[0] for call in run.call_args_list)
 
     def test_remote_readback_mismatch_refuses_completion_after_non_force_push(self, wrapper):
         """A successful push is not completion until the configured ref reads back exactly."""
@@ -237,10 +270,13 @@ class TestCompletedResultPush:
             patch(
                 "subprocess.run",
                 side_effect=[
+                    git_result(),  # native ref format
+                    git_result(stdout=f"{branch}\n"),  # native checkout branch
                     git_result(stdout=f"{head_sha}\n"),
                     git_result(stdout=f"{head_sha}\n"),
                     git_result(stdout=f"{head_sha} {'0' * 40}\n"),
                     git_result(stdout="services/backend/src/app.py\n"),
+                    git_result(returncode=2),
                     git_result(),
                     git_result(stdout=f"{other_sha}\trefs/heads/{branch}\n"),
                 ],
@@ -251,8 +287,10 @@ class TestCompletedResultPush:
             )
 
         assert result is None
-        assert error == f"Worker commit {head_sha} could not be verified on origin/{branch}."
-        assert run.call_args_list[4].args[0][3:5] == ["push", "origin"]
+        assert error.failure is PublicationFailure.READBACK_MISMATCH
+        assert error.commit_sha == head_sha
+        assert error.remote_sha == other_sha
+        assert any("push" in call.args[0] for call in run.call_args_list)
         assert not any("--force" in call.args[0] for call in run.call_args_list)
 
     @pytest.mark.asyncio
@@ -266,5 +304,5 @@ class TestCompletedResultPush:
 
         submitted = wrapper.broker.submit_output.await_args.args[1]
         assert submitted.status == WorkerResultStatus.FAILED
-        assert submitted.error == "Worker completed without the configured story branch."
+        assert submitted.publication.failure is PublicationFailure.BRANCH_MISSING
         assert submitted.worker_report == "Done"

@@ -54,12 +54,16 @@ async def _parked(
     return story_id, task_id, evidence
 
 
-def _command(task_id: str, *, refusal: str = "project_locked") -> dict:
+async def _command(
+    async_client, story_id: str, task_id: str, *, refusal: str = "project_locked"
+) -> dict:
+    story = (await async_client.get(f"/api/stories/{story_id}")).json()
     return {
         "task_id": task_id,
         "attempt_id": "eng-refused-1",
         "refusal": refusal,
         "actor": "admin",
+        "stop_id": (story.get("engineering_stop") or {}).get("id"),
     }
 
 
@@ -70,7 +74,8 @@ async def test_retry_infrastructure_attempt_is_atomic_and_preserves_iteration(
     story_id, task_id, _ = await _parked(async_client)
 
     response = await async_client.post(
-        f"/api/stories/{story_id}/retry-infrastructure-attempt", json=_command(task_id)
+        f"/api/stories/{story_id}/retry-infrastructure-attempt",
+        json=await _command(async_client, story_id, task_id),
     )
 
     assert response.status_code == 200, response.text
@@ -93,12 +98,30 @@ async def test_retry_rejects_stale_reason_without_partial_change(
 
     response = await async_client.post(
         f"/api/stories/{story_id}/retry-infrastructure-attempt",
-        json=_command(task_id, refusal="worker_profile_unavailable"),
+        json=await _command(async_client, story_id, task_id, refusal="worker_profile_unavailable"),
     )
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "stale_infrastructure_reason"
     assert (await async_client.get(f"/api/tasks/{task_id}")).json()["failure_metadata"] == evidence
+
+
+@pytest.mark.asyncio
+async def test_infrastructure_recovery_cannot_release_an_unselected_operator_stop(
+    async_client: AsyncClient, _tasks_project
+) -> None:
+    story_id, task_id, evidence = await _parked(async_client)
+    before = (await async_client.get(f"/api/stories/{story_id}")).json()
+    command = await _command(async_client, story_id, task_id)
+    command["stop_id"] = "older-or-absent-stop"
+    refused = await async_client.post(
+        f"/api/stories/{story_id}/retry-infrastructure-attempt", json=command
+    )
+    assert refused.status_code == 409
+    after = (await async_client.get(f"/api/stories/{story_id}")).json()
+    assert after["engineering_stop"] == before["engineering_stop"]
+    task = (await async_client.get(f"/api/tasks/{task_id}")).json()
+    assert task["status"] == "waiting_human_review" and task["failure_metadata"] == evidence
 
 
 @pytest.mark.asyncio
@@ -108,7 +131,8 @@ async def test_retry_rejects_non_infrastructure_human_review(
     story_id, task_id, _ = await _parked(async_client, infrastructure=False)
 
     response = await async_client.post(
-        f"/api/stories/{story_id}/retry-infrastructure-attempt", json=_command(task_id)
+        f"/api/stories/{story_id}/retry-infrastructure-attempt",
+        json=await _command(async_client, story_id, task_id),
     )
 
     assert response.status_code == 409
@@ -121,12 +145,13 @@ async def test_retry_rejects_a_task_that_left_the_parked_status(
 ) -> None:
     story_id, task_id, evidence = await _parked(async_client)
     moved = await async_client.post(
-        f"/api/tasks/{task_id}/transition?to_status=backlog", json={"actor": "test"}
+        f"/api/tasks/{task_id}/transition?to_status=cancelled", json={"actor": "test"}
     )
     assert moved.status_code == 200, moved.text
 
     response = await async_client.post(
-        f"/api/stories/{story_id}/retry-infrastructure-attempt", json=_command(task_id)
+        f"/api/stories/{story_id}/retry-infrastructure-attempt",
+        json=await _command(async_client, story_id, task_id),
     )
 
     assert response.status_code == 409
@@ -139,8 +164,8 @@ async def test_repeated_retry_is_a_typed_noop(async_client: AsyncClient, _tasks_
     story_id, task_id, _ = await _parked(async_client)
     path = f"/api/stories/{story_id}/retry-infrastructure-attempt"
 
-    first = await async_client.post(path, json=_command(task_id))
-    repeated = await async_client.post(path, json=_command(task_id))
+    first = await async_client.post(path, json=await _command(async_client, story_id, task_id))
+    repeated = await async_client.post(path, json=await _command(async_client, story_id, task_id))
 
     assert first.json()["outcome"] == "retried"
     assert repeated.status_code == 200
@@ -155,8 +180,8 @@ async def test_concurrent_retry_creates_one_fresh_attempt_state(
     path = f"/api/stories/{story_id}/retry-infrastructure-attempt"
 
     responses = await asyncio.gather(
-        async_client.post(path, json=_command(task_id)),
-        async_client.post(path, json=_command(task_id)),
+        async_client.post(path, json=await _command(async_client, story_id, task_id)),
+        async_client.post(path, json=await _command(async_client, story_id, task_id)),
     )
 
     assert sorted(response.json()["outcome"] for response in responses) == [
@@ -184,7 +209,8 @@ async def test_next_dispatch_tick_creates_exactly_one_fresh_attempt(
     story_id, task_id, _ = await _parked(async_client)
 
     recovered = await async_client.post(
-        f"/api/stories/{story_id}/retry-infrastructure-attempt", json=_command(task_id)
+        f"/api/stories/{story_id}/retry-infrastructure-attempt",
+        json=await _command(async_client, story_id, task_id),
     )
     dispatched = await async_client.post(
         "/api/work-admission/engineering-dispatches", json={"task_id": task_id}

@@ -30,6 +30,7 @@ from shared.contracts.dto.story_planning import dispatch_owed_record
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
+from shared.models import WorkAdmissionAudit
 from shared.models.application import Application
 from shared.models.product_brief import ProductBrief
 from shared.models.repository import Repository
@@ -42,6 +43,7 @@ from ..database import get_async_session
 from ..dependencies import (
     _optional_bearer_scheme,
     get_accept_result_actor,
+    get_internal_or_admin_actor,
     get_redis_client,
     is_internal_service,
     require_internal_or_admin,
@@ -337,9 +339,15 @@ async def update_story(
             raise HTTPException(
                 status_code=403, detail="merged deploy observations require the internal producer"
             )
-    story = await _get_story_for_update(story_id, db)
-
     update_data = body.model_dump(exclude_unset=True)
+    if "quarantine_reason" in update_data:
+        from ..attempt_disposition import lock_story_attempts
+        from ..publication_park import guard_quarantine_patch
+
+        story, _, _, runs = await lock_story_attempts(story_id, db)
+        await guard_quarantine_patch(story, update_data["quarantine_reason"], runs, db)
+    else:
+        story = await _get_story_for_update(story_id, db)
     for field, value in update_data.items():
         setattr(story, field, value)
 
@@ -602,8 +610,24 @@ async def _complete_story(
     qa_run_id: str | None = None,
 ) -> StoryRead:
     """The one completion transaction used by ordinary and accepted-result routes."""
+    if acceptance is not None:
+        from shared.contracts.dto.commit_publication import EngineeringStop
+
+        from ..attempt_disposition import release_engineering_stop
+
+        stop = (
+            EngineeringStop.model_validate(story.engineering_stop)
+            if story.engineering_stop
+            else None
+        )
+        release_engineering_stop(
+            story,
+            None if stop is None else stop.id,
+            acceptance.actor,
+            db,
+            expected_cause=acceptance.overridden_quarantine_reason,
+        )
     await _owe_completed_story_notification(story, db, acceptance=acceptance, qa_run_id=qa_run_id)
-    _do_transition(story, StoryStatus.COMPLETED)
     if acceptance is not None:
         story.operator_acceptance = acceptance.model_dump(mode="json")
         # The completed story no longer represents a live QA quarantine.
@@ -632,6 +656,7 @@ async def _complete_story(
         ):
             # Only the ordinary green QA verdict retires a recheck quarantine.
             story.quarantine_reason = None
+    _do_transition(story, StoryStatus.COMPLETED)
     await db.commit()
     await db.refresh(story)
     return StoryRead.model_validate(story, from_attributes=True)
@@ -785,16 +810,71 @@ async def human_review_story(
     story_id: str,
     body: StoryStopTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
+    actor: str = Depends(get_internal_or_admin_actor),
 ) -> StoryRead:
     """Move a blocked active story to the visible human-review queue."""
     body = body or StoryStopTransition()
-    story = await _get_story_for_update(story_id, db)
+    from shared.contracts.dto.commit_publication import EngineeringStop
+
+    from ..attempt_disposition import lock_story_attempts
+
+    story, tasks, _, runs = await lock_story_attempts(story_id, db)
+    from ..publication_park import guard_publication_failure
+
+    await guard_publication_failure(body.failure, runs, db)
+    record_failure = body.failure is not None
+    if (
+        story.engineering_stop is not None
+        and story.engineering_stop.get("released_at") is None
+        and body.failure is not None
+    ):
+        reason = story.quarantine_reason or {}
+        expected = body.failure.model_dump(mode="json")
+        if any(
+            reason.get(key) != expected[key] for key in ("code", "source", "detail")
+        ) or reason.get("commit_publication") != expected.get("commit_publication"):
+            raise HTTPException(409, "A different committed stop already owns this Story")
+        record_failure = False
+    # A repeated request re-drives one committed stop rather than issuing a
+    # newer identity that would invalidate the operator's in-progress recovery.
+    if story.engineering_stop is None or story.engineering_stop.get("released_at") is not None:
+        stop = EngineeringStop(id=secrets.token_hex(16), actor=actor, stopped_at=datetime.now(UTC))
+        story.engineering_stop = stop.model_dump(mode="json")
+        db.add(
+            WorkAdmissionAudit(
+                subject="engineering_stop",
+                outcome="stopped",
+                actor=actor,
+                reference_id=story.id,
+                after_value=story.engineering_stop,
+            )
+        )
+    for run in runs:
+        if run.status in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
+            run.run_metadata = {
+                **(run.run_metadata or {}),
+                "worker_stop_requested_at": story.engineering_stop["stopped_at"],
+            }
+
     await _record_qa_routing(story, body.qa_run_id, StoryStatus.WAITING_HUMAN_REVIEW, db)
-    _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
-    if body.failure is not None:
+    if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+    if record_failure:
         _record_story_failure(story, body.failure, StoryStatus.WAITING_HUMAN_REVIEW)
     await db.commit()
     await db.refresh(story)
+    # The stop is already committed. Delivery failure leaves its retryable
+    # intent for the existing supervisor rather than undoing the stop.
+    from ..dependencies import get_redis_client
+    from .commit_recovery import reconcile_stop
+
+    try:
+        await reconcile_stop(story.id, db, get_redis_client())
+    except Exception:
+        await db.rollback()
+        logger.warning("engineering_stop_teardown_pending", story_id=story_id)
+        await db.refresh(story)
+
     logger.info(
         "story_waiting_human_review",
         story_id=story.id,
@@ -987,6 +1067,21 @@ async def recheck_story_qa(
         rechecked_quarantine_reason=snapshot,
     )
     story.operator_recheck = audit.model_dump(mode="json")
+    from shared.contracts.dto.commit_publication import EngineeringStop
+
+    from ..attempt_disposition import release_engineering_stop
+
+    stop = (
+        EngineeringStop.model_validate(story.engineering_stop) if story.engineering_stop else None
+    )
+    release_engineering_stop(
+        story,
+        None if stop is None else stop.id,
+        audit.actor,
+        db,
+        expected_cause=audit.rechecked_quarantine_reason,
+    )
+
     _do_transition(story, StoryStatus.DEPLOYING)
     await db.commit()
     await db.refresh(story)
@@ -1029,7 +1124,14 @@ async def fail_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryStopTransition()
-    story = await _get_story_for_update(story_id, db)
+    if body.failure is not None and body.failure.commit_publication is not None:
+        from ..attempt_disposition import lock_story_attempts
+        from ..publication_park import guard_publication_failure
+
+        story, _, _, runs = await lock_story_attempts(story_id, db)
+        await guard_publication_failure(body.failure, runs, db)
+    else:
+        story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.FAILED)
     if body.failure is not None:

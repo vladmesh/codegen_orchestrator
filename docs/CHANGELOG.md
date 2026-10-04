@@ -5,6 +5,18 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Recovery validates copied objects in a clean manager repository before minting;
+  verified handoff retires its publication holds so later operator actions remain usable.
+- Empty-result retention compares and persists the typed outcome, so omitted optional
+  fields cannot block honest settlement or replay while changed facts still refuse.
+- Native actions share cause-aware stop release; retained empty outcomes require
+  exact accounting at settlement, while standalone infrastructure parks keep their own refusal reason.
+- Explicit recovery selects its stop; empty-result reclaim retains paid facts,
+  and API launch coverage includes image-only variants so stop fencing preserves authorized actions.
+- Test API containers explicitly configure worker-manager connectivity, so service
+  and integration CI can start the publication recovery API without a production default.
+- Unpublished worker commits park for explicit agent-free recovery; committed
+  engineering stops fence retries, worker turns and late deploy claims, preserving paid outcomes.
 - Health QA's product HTTP fixture matches the root path explicitly, so its
   reachability response cannot shadow caller identity proof and health reads in CI.
 - Health QA service fixtures use canonical diagnostic reasons, and the LangGraph

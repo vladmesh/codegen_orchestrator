@@ -845,6 +845,16 @@ async def supervise_stuck_tasks(
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
     """Reconcile active leases, Docker endings and a finite turn deadline."""
+    for stopped_story in await api_client.get_pending_engineering_stops():
+        if stopped_story.engineering_stop is not None:
+            try:
+                await api_client.request(
+                    "POST", f"stories/{stopped_story.id}/reconcile-engineering-stop", json={}
+                )
+            except Exception:
+                logger.exception(
+                    "engineering_stop_reconciliation_pending", story_id=stopped_story.id
+                )
     tasks = await api_client.get_tasks_by_status(TaskStatus.IN_DEV)
     timed_out = 0
     working = 0
@@ -879,7 +889,7 @@ async def supervise_stuck_tasks(
         if state in {WorkerAttemptState.IDLE, WorkerAttemptState.UNKNOWN}:
             continue
         if state is WorkerAttemptState.REMOVED:
-            await _fail_removed_attempt(api_client, task, run)
+            await _fail_removed_attempt(api_client, task, run, redis_client)
             timed_out += 1
             continue
         # No worker was ever recorded for this attempt, so there is no
@@ -887,7 +897,7 @@ async def supervise_stuck_tasks(
         # terminal evidence; continuing to publish an empty stop intent would
         # otherwise leave the run open forever.
         if state is WorkerAttemptState.TIMED_OUT and worker_id is None:
-            await _fail_removed_attempt(api_client, task, run)
+            await _fail_removed_attempt(api_client, task, run, redis_client)
             timed_out += 1
             continue
         await request_stuck_attempt_stop(api_client, redis_client, task, run, state, worker_id, now)

@@ -77,6 +77,7 @@ FRONTEND_CONTRACT_MANIFEST: tuple[
     ),
     (("TasksPage.tsx", "get", "Task[]", None), TaskRead, None),
     (("TaskDetailPage.tsx", "get", "Task", None), TaskRead, None),
+    (("TaskDetailPage.tsx", "get", "Story", None), StoryRead, None),
     (("TaskDetailPage.tsx", "get", "TaskEvent[]", None), TaskEventRead, None),
     (("TaskDetailPage.tsx", "post", "Task", "TaskTransition"), TaskRead, TaskTransition),
     (("TaskDetailPage.tsx", "post", "Task", "TaskResume"), TaskRead, TaskResume),

@@ -1,5 +1,7 @@
 from collections.abc import AsyncGenerator
 import os
+
+os.environ.setdefault("WORKER_MANAGER_URL", "http://worker-manager:8000")
 import sys
 
 # Ensure /app is in path so 'src' can be imported

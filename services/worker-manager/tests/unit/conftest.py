@@ -41,3 +41,6 @@ def mock_worker_broker_registration(monkeypatch):
     """Worker-manager units exercise launch policy, not a live broker HTTP service."""
     monkeypatch.setattr("src.manager.WorkerManager._register_broker_worker", AsyncMock())
     monkeypatch.setattr("src.manager.WorkerManager._unregister_broker_worker", AsyncMock())
+    # Container-policy units have an eligible external API attempt. Dedicated
+    # authority tests replace this boundary; service tests keep the real API.
+    monkeypatch.setattr("src.manager.WorkerManager._require_engineering_authority", AsyncMock())

@@ -4,6 +4,11 @@ Canonical accounting, admission, budget, and executor-selection rules for engine
 
 Back to the [contracts index](../CONTRACTS.md).
 
+Committed Story stops and preserved unpublished commits precede ordinary bounded
+paid retry, including taskless deploy fixes and conflict repairs. They cannot be
+overridden by an actor string or automatic admission repair. See the canonical
+[publication/stop authority and recovery contract](commit-publication-and-stop.md).
+
 ## Engineering attempt ledger
 
 Canonical model: `shared/contracts/dto/engineering_attempt.py`.

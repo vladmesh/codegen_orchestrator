@@ -15,8 +15,10 @@ from .consumer import WorkerCommandConsumer
 from .engineering_attempts import EngineeringAttemptInventory
 from .events import DockerEventsListener
 from .manager import WorkerManager
+from .routers.commit_recovery import router as commit_recovery_router
 from .routers.compose import router as compose_router
 from .routers.credentials import router as credentials_router
+from .routers.engineering_authority import router as engineering_authority_router
 from .routers.introspect import router as introspect_router
 from .routers.workspaces import router as workspaces_router
 
@@ -141,6 +143,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Worker Manager", lifespan=lifespan)
+app.include_router(engineering_authority_router)
+app.include_router(commit_recovery_router)
 app.include_router(compose_router)
 app.include_router(credentials_router)
 app.include_router(introspect_router)

@@ -9,6 +9,15 @@ from shared.queues import worker_input_stream, worker_output_stream
 from shared.redis.client import DEFAULT_STREAM_MAXLEN
 
 
+async def _publish_engineering_turn(redis_client, worker_id, turn):
+    from .api import api_client
+
+    await api_client.post(
+        f"runs/{turn.attempt_id}/publish-worker-turn",
+        json={"worker_id": worker_id, "turn": turn.model_dump(mode="json", exclude_none=True)},
+    )
+
+
 async def ensure_worker_output_group(
     redis_client: redis.Redis,
     worker_id: str,
@@ -32,6 +41,9 @@ async def publish_worker_turn(
     turn: WorkerTurnInput,
 ) -> None:
     """Serialize one validated turn onto the worker's input stream."""
+    if turn.attempt_id is not None:
+        await _publish_engineering_turn(redis_client, worker_id, turn)
+        return
     await redis_client.xadd(
         worker_input_stream(worker_id),
         {"data": turn.model_dump_json(exclude_none=True)},

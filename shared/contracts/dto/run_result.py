@@ -15,8 +15,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from shared.contracts.dto.commit_publication import CommitPublication
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+from shared.contracts.dto.engineering_failure import (
+    EngineeringFailureReason as EngineeringFailureReason,
+)
 from shared.contracts.dto.qa_verification import QAUnverifiedCheck, QAVerificationFacts
 from shared.contracts.dto.settings_seed import (
     SETTINGS_SEED_CONVERGENT_FAILURES,
@@ -43,22 +47,6 @@ class AllocationFailureReason(StrEnum):
     # `shared/server_admission.py::ADMISSION_FAILURE_REASON`, the one reason every
     # admission refusal carries.
     SERVER_NOT_PROVISIONED = "server_not_provisioned"
-
-
-class EngineeringFailureReason(StrEnum):
-    """Stable classifications for an engineering run that produced nothing usable."""
-
-    # The worker reported success, but its commit adds no file change over the
-    # story branch head the attempt started from (`pre_attempt_head_sha` on the
-    # attempt): it is that head, a commit behind it — the branch base, an
-    # already-deployed commit, an earlier task's commit — or commits that net out
-    # to nothing. Nothing was produced, so the run is failed with its own name
-    # instead of being accepted as a success nobody did.
-    NO_NEW_COMMIT = "no_new_commit"
-    # The commit's environment contract declares a required production `derived`
-    # key the platform cannot compute, so any deploy of it would fail in the
-    # secret resolver. The keys travel in `uncomputable_derived_keys`.
-    UNCOMPUTABLE_DERIVED_KEY = "uncomputable_derived_key"
 
 
 class DeploySkipReason(StrEnum):
@@ -101,12 +89,25 @@ class EngineeringRunResult(BaseModel):
     #: The required derived keys an `uncomputable_derived_key` failure names, and
     #: only then; the next attempt at the task is told each of them.
     uncomputable_derived_keys: list[str] | None = None
+    publication: CommitPublication | None = None
+    worker_report: str | None = None
     commit_sha: str | None = None
     selected_modules: list[str] | None = None
     test_results: dict | None = None
     allocation_failure_reason: AllocationFailureReason | None = None
     allocation_required_ram_mb: int | None = None
     allocation_min_disk_mb: int | None = None
+
+    @model_validator(mode="after")
+    def _publication_names_failed_attempt(self) -> EngineeringRunResult:
+        named = self.failure_reason is EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED
+        if named != (self.publication is not None):
+            raise ValueError("publication evidence and refusal classification must travel together")
+        if named and (
+            self.publication.published or self.engineering_status is not EngineeringStatus.FAILED
+        ):
+            raise ValueError("publication refusal requires a failed engineering outcome")
+        return self
 
     @model_validator(mode="after")
     def _keys_name_an_uncomputable_derived_key_failure(self) -> EngineeringRunResult:

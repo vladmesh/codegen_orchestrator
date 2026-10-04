@@ -145,6 +145,15 @@ async def _park_story_without_commits(
     log.warning("story_parked_without_commits", branch=branch)
 
 
+async def _has_recovered_taskless_commit(api_client, story_id):
+    recovery = await api_client.get_story_recovered_commit(story_id)
+    if recovery is None:
+        return False
+    if recovery.receipt is None or not recovery.receipt.published:
+        raise ValueError("Recovered Story requires exact publication proof")
+    return True
+
+
 async def complete_stories(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -182,10 +191,14 @@ async def complete_stories(
 
             tasks = await api_client.get_tasks_by_story(story_id)
 
-            # Skip if no tasks (architect may not have run yet)
+            # Ordinary no-roster Stories still await their architect. An
+            # explicit recovered taskless commit already proves engineering;
+            # use this same PR/CI/deploy owner rather than creating a Task or
+            # another engineering Run to manufacture discovery.
             if not tasks:
-                logger.debug("complete_stories_skip_no_tasks", story_id=story_id)
-                continue
+                if not await _has_recovered_taskless_commit(api_client, story_id):
+                    logger.debug("complete_stories_skip_no_tasks", story_id=story_id)
+                    continue
 
             task_statuses = [t.status for t in tasks]
             # A cancelled task is not outstanding work, so it cannot be waited on.
@@ -194,7 +207,7 @@ async def complete_stories(
             # boundary exists — the corpse of a superseded plan, which the takeover
             # cancels because nothing will ever release it.
             live_statuses = [s for s in task_statuses if s != TaskStatus.CANCELLED]
-            if not live_statuses:
+            if tasks and not live_statuses:
                 # Every task cancelled is not a finished story: there is nothing on
                 # the branch to open a PR for. Somebody has to decide what happens
                 # to this story, so it stays in progress rather than completing.

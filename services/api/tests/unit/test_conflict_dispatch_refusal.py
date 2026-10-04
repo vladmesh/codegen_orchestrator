@@ -149,7 +149,7 @@ async def test_no_run_refusal_stops_the_story_and_leaves_the_task_unspent(
     snapshot = story.quarantine_reason, story.owner_notification, len(events), len(writes)
     assert (
         await admission.admit_engineering_dispatch(EngineeringDispatchCommand(task_id=task.id), db)
-    ).reason.value == "task_not_dispatchable"
+    ).reason.value == "engineering_stopped"
     assert (story.quarantine_reason, story.owner_notification, len(events), len(writes)) == snapshot
     assert not runs
     db.commit.assert_not_awaited()
@@ -309,7 +309,7 @@ async def test_task_resets_cannot_dispatch_past_the_stopped_story(refusal):
     result = await admission.admit_engineering_dispatch(
         EngineeringDispatchCommand(task_id=task.id), db
     )
-    assert result.reason.value == "task_not_dispatchable"
+    assert result.reason.value == "engineering_stopped"
     admission.start_paid_run.assert_not_awaited()
     assert len(writes) == 1
 

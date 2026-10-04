@@ -113,6 +113,7 @@ class EngineeringInfrastructureRetryCommand(BaseModel):
     attempt_id: str = Field(min_length=1)
     refusal: EngineeringInfrastructureRefusal
     actor: str = Field(default="admin", min_length=1)
+    stop_id: str | None = Field(default=None, min_length=1)
 
 
 class EngineeringInfrastructureRetryOutcome(StrEnum):

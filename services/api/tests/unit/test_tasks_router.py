@@ -88,6 +88,7 @@ def _mock_session(scalar_one_or_none=None, scalars_all=None):
         mock_result.scalars = MagicMock(return_value=mock_scalars)
 
     session.execute = AsyncMock(return_value=mock_result)
+    session.scalar = AsyncMock(return_value=None)  # standalone Task scenarios
     session.add = MagicMock()
     session.commit = AsyncMock()
 

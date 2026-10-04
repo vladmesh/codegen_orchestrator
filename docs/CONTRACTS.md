@@ -33,6 +33,7 @@ Feature-specific invariants live in focused guides. Read this index first, then 
 | Engineering attempts, work admission, and budgets | [Work admission and engineering attempts](contracts/work-admission.md) |
 | Product Brief coverage and dispatch | [Product Brief contract](contracts/product-brief.md) |
 | Project/repository and Story/Task/Run REST surfaces | [REST story, task, run, and policy surfaces](contracts/story-task-run-surfaces.md) |
+| Engineering publication refusal, stop and recovery | [Commit publication and engineering stop](contracts/commit-publication-and-stop.md) |
 | Generated-product template/package installation and QA | [Generated product kit and QA contracts](contracts/kit-template-and-qa.md) |
 | Runtime lifecycle/security invariants | [Lifecycle and security invariants](contracts/lifecycle-invariants.md) |
 | Managed target reconciliation/readiness | [Managed target readiness](contracts/managed-target-readiness.md) |
@@ -399,15 +400,18 @@ replacement lock fails closed and the refusal names both known identities.
 Worker GC likewise requires a terminal worker status plus a container proven
 non-live or absent; a failed Docker inventory is not absence.
 
-For a developer `WorkerCompletedResult`, worker-wrapper is the sole publication
-boundary. It first resolves the reported commit, including an unambiguous
+For a developer `WorkerCompletedResult`, worker-wrapper owns ordinary completion
+publication through the native publisher shared with explicit recovery. It resolves
+the reported commit, including an unambiguous
 abbreviation, and requires it to equal local `HEAD`; it then non-force pushes
 that exact `HEAD` to the configured story branch and reads the remote branch ref
 back. Only an exact readback publishes `completed`. A wrong checkout branch,
 commit mismatch, push failure, or readback mismatch publishes `failed` instead,
 and retains the agent's final `content` as `worker_report` when no fuller report
-already occupies that diagnostic surface. Credentials and Git stderr never enter
-the result.
+already occupies that diagnostic surface. Credentials never enter the result;
+bounded redacted Git stderr and exact verified identity accompany the typed refusal.
+The broker parks and settles it before ACK. See
+[publication, stop and recovery](contracts/commit-publication-and-stop.md).
 
 ## Lifecycle and security invariants
 

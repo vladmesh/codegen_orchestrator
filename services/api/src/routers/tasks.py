@@ -289,6 +289,16 @@ async def update_task(
     # unadmitted it may not leave the one it was planned into.
     task = await take_task_for_plan_fenced_update(task_id=task_id, update_data=update_data, db=db)
 
+    from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
+
+    saved = (task.failure_metadata or {}).get(COMMIT_PUBLICATION_KEY)
+    incoming = update_data.get("failure_metadata")
+    if "failure_metadata" in update_data and (
+        (saved is not None and (incoming or {}).get(COMMIT_PUBLICATION_KEY) != saved)
+        or (saved is None and COMMIT_PUBLICATION_KEY in (incoming or {}))
+    ):
+        raise HTTPException(422, {"code": "reserved_task_failure_metadata"})
+
     for field, value in update_data.items():
         setattr(task, field, value)
 

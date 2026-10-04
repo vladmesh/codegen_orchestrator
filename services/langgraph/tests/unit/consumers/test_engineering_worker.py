@@ -1129,15 +1129,23 @@ class TestNoNewCommitFailure:
             failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
         )
 
-        run_patch = mock_api.patch.await_args_list[0].kwargs["json"]
+        from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+        pending_patch = mock_api.patch.await_args_list[0].kwargs["json"]
+        assert "status" not in pending_patch
+        retained = EmptyEngineeringTerminal.model_validate(
+            pending_patch["run_metadata"][EMPTY_RESULT_TERMINAL_KEY]
+        )
+        run_patch = mock_api.patch.await_args_list[1].kwargs["json"]
         assert run_patch["status"] == "failed"
         assert run_patch["result"]["failure_reason"] == "no_new_commit"
+        assert retained.model_dump(mode="json", exclude_unset=True) == run_patch
         mock_api.stop_story.assert_awaited_once()
         assert mock_api.stop_story.await_args.args[:2] == ("story-1", "human-review")
         reason = mock_api.stop_story.await_args.args[2]
         assert reason.code.value == "no_new_commit"
         assert "eng-deploy-fix-deploy-poll-1" in reason.detail
-        assert len(mock_api.patch.await_args_list) == 1
+        assert len(mock_api.patch.await_args_list) == 2
         mock_api.transition_story.assert_not_awaited()
         # Nothing was deployed for a run that produced nothing.
         mock_redis.publish_message.assert_not_awaited()

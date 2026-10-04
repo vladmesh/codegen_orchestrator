@@ -141,6 +141,7 @@ async def root():
     }
 
 
+app.include_router(routers.commit_recovery.router, prefix="/api")
 app.include_router(routers.health.router)
 # Queue introspection reads message bodies off the streams, so it belongs behind
 # the same gate as the rest of the API rather than beside /health.

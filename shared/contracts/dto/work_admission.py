@@ -23,6 +23,8 @@ class WorkAdmissionOutcome(StrEnum):
 class WorkAdmissionReason(StrEnum):
     """Stable audit reasons for a non-admitted decision."""
 
+    ENGINEERING_STOPPED = "engineering_stopped"
+    COMMIT_PUBLICATION_REQUIRED = "commit_publication_required"
     EMERGENCY_STOP = "emergency_stop"
     PROJECT_LIMIT = "project_limit"
     PAID_WORK_LIMIT = "paid_work_limit"

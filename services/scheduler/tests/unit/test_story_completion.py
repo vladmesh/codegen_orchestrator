@@ -228,6 +228,48 @@ def _completing_github(story_id: str, *, node_id: str = "PR_kwDOnode") -> AsyncM
 
 
 @pytest.mark.asyncio
+async def test_recovered_taskless_commit_uses_the_normal_pr_owner(api_client, redis_client):
+    from shared.contracts.dto.commit_publication import CommitPublication, CommitRecoveryRead
+
+    api_client.get_tasks_by_story.return_value = []
+    api_client.get_stories_by_status.side_effect = lambda status: (
+        [_story()] if status == StoryStatus.IN_PROGRESS else []
+    )
+    api_client.get_story_recovered_commit.return_value = CommitRecoveryRead(
+        attempt_id="eng-preserved",
+        story_id="story-1",
+        commit_sha=_STORY_HEAD_SHA,
+        actor="internal_service",
+        stop_id=None,
+        claimed_at=_NOW,
+        handed_off_at=_NOW,
+        identity={
+            "worker_id": "preserved-worker",
+            "attempt_id": "eng-preserved",
+            "story_id": "story-1",
+            "project_id": _PROJ_ID,
+            "initiating_run_id": "init-fixture",
+            "repository_id": "repo-1",
+            "repository_url": _repo().git_url,
+            "branch": "story/story-1",
+            "baseline": "b" * 40,
+            "cycle": None,
+            "iteration": None,
+        },
+        receipt=CommitPublication(
+            published=True, commit_sha=_STORY_HEAD_SHA, remote_sha=_STORY_HEAD_SHA
+        ),
+    )
+    github = _completing_github("story-1")
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)):
+        assert await complete_stories(api_client, redis_client) == 1
+    github.create_pull_request.assert_awaited_once()
+    api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
+    api_client.start_paid_run.assert_not_called()
+    redis_client.publish_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_no_story_to_complete_opens_no_github_client(api_client, redis_client):
     api_client.get_stories_by_status.return_value = []
 

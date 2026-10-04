@@ -1,6 +1,9 @@
 """Tests for worker ownership passthrough from consumer to manager."""
 
+import os
 from pathlib import Path
+import subprocess
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakeredis import aioredis
@@ -556,62 +559,83 @@ class TestWorkspaceGC:
     def mock_docker(self):
         return _make_docker_mock()
 
-    @pytest.mark.asyncio
-    async def test_workspace_gc_removes_old_workspaces(self, mock_docker):
-        """Workspaces older than max_age_hours and not active should be removed."""
-        import time
+    @pytest.fixture
+    def published_workspace(self, tmp_path, monkeypatch):
+        root = tmp_path / "workspaces"
+        root.mkdir()
+        workspace = root / "repo-abc"
+        workspace.mkdir()
+        remote = tmp_path / "origin.git"
 
+        def git(*args, cwd=workspace):
+            return subprocess.run(  # noqa: S603 - fixed native Git fixture, no network
+                ["/usr/bin/git", *args], cwd=cwd, check=True, capture_output=True, text=True
+            ).stdout.strip()
+
+        git("init", "--bare", str(remote))
+        git("init", "-b", "story/fixture")
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        (workspace / "app.py").write_text("APP = 1\n")
+        git("add", "app.py")
+        git("commit", "-m", "Published fixture")
+        git("remote", "add", "origin", str(remote))
+        git("push", "-u", "origin", "story/fixture")
+        monkeypatch.setattr(settings, "SCAFFOLDED_WORKSPACE_PATH", str(root))
+        old_mtime = time.time() - 48 * 3600
+        os.utime(workspace, (old_mtime, old_mtime))
+        return workspace, git
+
+    @pytest.mark.asyncio
+    async def test_workspace_gc_removes_old_workspaces(self, mock_docker, published_workspace):
+        """Old inactive checkouts whose commits are published can be removed."""
+        workspace, _ = published_workspace
         redis = aioredis.FakeRedis(decode_responses=True)
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
-
-        old_mtime = time.time() - (36 * 3600)  # 36 hours ago (> 35h default)
-
-        mock_stat = MagicMock()
-        mock_stat.st_mtime = old_mtime
-
-        with (
-            patch("src.garbage_collector.os.listdir", return_value=["old-proj"]),
-            patch("src.garbage_collector.Path") as mock_path_cls,
-            patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
-            patch("src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock),
-        ):
-            mock_ws_dir = MagicMock()
-            mock_ws_dir.stat.return_value = mock_stat
-            mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
-
+        with patch("src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock):
             await manager.garbage_collect_workspaces()
-
-        assert mock_rm.call_count == 1
+        assert not workspace.exists()
 
     @pytest.mark.asyncio
-    async def test_workspace_gc_notifies_api_on_delete(self, mock_docker):
+    async def test_workspace_gc_notifies_api_on_delete(self, mock_docker, published_workspace):
         """GC calls _notify_workspace_deleted for each removed workspace."""
-        import time
-
+        workspace, _ = published_workspace
         redis = aioredis.FakeRedis(decode_responses=True)
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
-
-        old_mtime = time.time() - (48 * 3600)
-
-        mock_stat = MagicMock()
-        mock_stat.st_mtime = old_mtime
-
-        with (
-            patch("src.garbage_collector.os.listdir", return_value=["repo-abc"]),
-            patch("src.garbage_collector.Path") as mock_path_cls,
-            patch("src.garbage_collector.workspace_mod.remove_workspace"),
-            patch(
-                "src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock
-            ) as mock_notify,
-        ):
-            mock_ws_dir = MagicMock()
-            mock_ws_dir.stat.return_value = mock_stat
-            mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
-
+        with patch(
+            "src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock
+        ) as mock_notify:
             await manager.garbage_collect_workspaces()
+        assert not workspace.exists()
+        mock_notify.assert_awaited_once_with("repo-abc")
 
-        assert mock_notify.call_count == 1
-        mock_notify.assert_any_call("repo-abc")
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("publication", ["unpublished", "inspection_unavailable"])
+    async def test_workspace_gc_keeps_unproved_work(
+        self, mock_docker, published_workspace, publication
+    ):
+        workspace, git = published_workspace
+        if publication == "unpublished":
+            (workspace / "app.py").write_text("APP = 2\n")
+            git("add", "app.py")
+            git("commit", "-m", "Preserved commit")
+            sha = git("rev-parse", "HEAD")
+        else:
+            # An unreadable Git object must not become permission to collect it.
+            (workspace / ".git" / "HEAD").write_text("ref: refs/heads/missing\n")
+        old_mtime = time.time() - 48 * 3600
+        os.utime(workspace, (old_mtime, old_mtime))
+        manager = WorkerManager(
+            redis=aioredis.FakeRedis(decode_responses=True), docker_client=mock_docker
+        )
+        with patch(
+            "src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock
+        ) as notify:
+            await manager.garbage_collect_workspaces()
+        assert workspace.exists()
+        notify.assert_not_awaited()
+        if publication == "unpublished":
+            assert git("rev-parse", "HEAD") == sha
 
     @pytest.mark.asyncio
     async def test_workspace_gc_preserves_active_workspaces(self, mock_docker):
