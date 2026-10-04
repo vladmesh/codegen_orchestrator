@@ -424,23 +424,12 @@ async def resume_task(
     if task.id.startswith("pr-conflict-"):
         await _validate_conflict_resume(task, story, runs, db)
 
-    if story is not None and story.engineering_stop is not None:
-        from datetime import UTC, datetime
+    if story is not None:
+        from ..attempt_disposition import release_engineering_stop
 
-        from shared.contracts.dto.commit_publication import EngineeringStop
-
-        stop = EngineeringStop.model_validate(story.engineering_stop)
-        if stop.released_at is None:
-            if body.stop_id != stop.id:
-                _refuse_resume(
-                    "engineering_stopped", "Paid resume must name the exact current operator stop."
-                )
-            story.engineering_stop = stop.model_copy(
-                update={
-                    "released_at": datetime.now(UTC),
-                    "release_actor": verified_actor,
-                }
-            ).model_dump(mode="json")
+        release_engineering_stop(
+            story, body.stop_id, verified_actor, db, expected_cause=story.quarantine_reason
+        )
     body = body.model_copy(update={"actor": verified_actor})
     iteration = _fresh_iteration(task, [run for run in runs if run.task_id == task.id])
     audit = {

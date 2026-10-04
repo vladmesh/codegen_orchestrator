@@ -604,20 +604,26 @@ async def _complete_story(
     qa_run_id: str | None = None,
 ) -> StoryRead:
     """The one completion transaction used by ordinary and accepted-result routes."""
+    if acceptance is not None:
+        from shared.contracts.dto.commit_publication import EngineeringStop
+
+        from ..attempt_disposition import release_engineering_stop
+
+        stop = (
+            EngineeringStop.model_validate(story.engineering_stop)
+            if story.engineering_stop
+            else None
+        )
+        release_engineering_stop(
+            story,
+            None if stop is None else stop.id,
+            acceptance.actor,
+            db,
+            expected_cause=acceptance.overridden_quarantine_reason,
+        )
     await _owe_completed_story_notification(story, db, acceptance=acceptance, qa_run_id=qa_run_id)
     if acceptance is not None:
         story.operator_acceptance = acceptance.model_dump(mode="json")
-        if story.engineering_stop is not None:
-            from shared.contracts.dto.commit_publication import EngineeringStop
-
-            stop = EngineeringStop.model_validate(story.engineering_stop)
-            story.engineering_stop = stop.model_copy(
-                update={
-                    "released_at": datetime.now(UTC),
-                    "release_actor": acceptance.actor,
-                }
-            ).model_dump(mode="json")
-
         # The completed story no longer represents a live QA quarantine.
         story.quarantine_reason = None
     elif story.quarantine_reason is not None:
@@ -1052,16 +1058,20 @@ async def recheck_story_qa(
         rechecked_quarantine_reason=snapshot,
     )
     story.operator_recheck = audit.model_dump(mode="json")
-    if story.engineering_stop is not None:
-        from shared.contracts.dto.commit_publication import EngineeringStop
+    from shared.contracts.dto.commit_publication import EngineeringStop
 
-        stop = EngineeringStop.model_validate(story.engineering_stop)
-        story.engineering_stop = stop.model_copy(
-            update={
-                "released_at": datetime.now(UTC),
-                "release_actor": audit.actor,
-            }
-        ).model_dump(mode="json")
+    from ..attempt_disposition import release_engineering_stop
+
+    stop = (
+        EngineeringStop.model_validate(story.engineering_stop) if story.engineering_stop else None
+    )
+    release_engineering_stop(
+        story,
+        None if stop is None else stop.id,
+        audit.actor,
+        db,
+        expected_cause=audit.rechecked_quarantine_reason,
+    )
 
     _do_transition(story, StoryStatus.DEPLOYING)
     await db.commit()

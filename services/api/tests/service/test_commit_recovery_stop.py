@@ -356,6 +356,79 @@ async def test_publication_refusal_parks_atomically_and_preserves_paid_outcome(
 
 
 @pytest.mark.asyncio
+async def test_retained_taskless_outcome_settles_exact_accounting_after_stop(
+    attempt, async_client, db_session
+):
+    from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+    project, story, _, old, _ = attempt
+    run = Run(
+        id=f"empty-{old.id}",
+        type="engineering",
+        status="running",
+        project_id=project.id,
+        story_id=story.id,
+        run_metadata={"initiating_run_id": project.initiating_run_id},
+    )
+    db_session.add(run)
+    await db_session.commit()
+    terminal = EmptyEngineeringTerminal.model_validate(
+        {
+            "status": "failed",
+            "error_message": "Worker produced no new commit",
+            "result": {
+                "engineering_status": "failed",
+                "failure_reason": "no_new_commit",
+                "worker_report": "Controlled paid output",
+            },
+            "engineering_attempt": {
+                "provider": "openai",
+                "model": "fixture",
+                "input_tokens": 17,
+                "output_tokens": 3,
+                "total_tokens": 20,
+            },
+            "transcript_path": f"/transcripts/{run.id}.jsonl",
+        }
+    ).model_dump(mode="json", exclude_unset=True)
+    retained = await async_client.patch(
+        f"/api/runs/{run.id}",
+        json={
+            "result": terminal["result"],
+            "error_message": terminal["error_message"],
+            "run_metadata": {EMPTY_RESULT_TERMINAL_KEY: terminal},
+        },
+    )
+    assert retained.status_code == 200, retained.text
+    stop_id = await stop(async_client, story)
+    before = (await async_client.get(f"/api/runs/{run.id}")).json()
+    assert before["status"] == "running" and before["result"] == terminal["result"]
+    for stale in (
+        {"result": None},
+        {"error_message": None},
+        {"transcript_path": None},
+        {"status": "failed"},
+        {**terminal, "engineering_attempt": None},
+    ):
+        refused = await async_client.patch(f"/api/runs/{run.id}", json=stale)
+        assert refused.status_code == 409, refused.text
+        assert (await async_client.get(f"/api/runs/{run.id}")).json() == before
+    for _ in range(2):
+        settled = await async_client.patch(f"/api/runs/{run.id}", json=terminal)
+        assert settled.status_code == 200, settled.text
+    await db_session.refresh(story)
+    assert story.engineering_stop["id"] == stop_id
+    assert story.engineering_stop["released_at"] is None
+    ledger = (
+        await db_session.scalars(
+            select(EngineeringAttemptLedger).where(EngineeringAttemptLedger.run_id == run.id)
+        )
+    ).one()
+    assert ledger.provider == "openai" and ledger.total_tokens == 20
+    assert settled.json()["transcript_path"] == terminal["transcript_path"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("taskless", [False, True])
 async def test_explicit_legacy_adoption_concurrent_replay_keeps_terminal_ledger(
     attempt, async_client, db_session, monkeypatch, taskless

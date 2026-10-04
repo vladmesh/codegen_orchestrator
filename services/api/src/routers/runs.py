@@ -653,14 +653,19 @@ def _require_retained_empty_outcome(run, update_data, engineering_attempt):
     if pending is None:
         return
     retained = EmptyEngineeringTerminal.model_validate(pending)
-    for field in ("status", "result", "error_message", "engineering_attempt"):
+    fields = {"status", "result", "error_message", "engineering_attempt"} | (
+        retained.model_fields_set & {"agent_profile", "transcript_path", "transcript_truncated"}
+    )
+    for field in fields:
         if field == "status" and update_data.get("status") not in _TERMINAL_RUN_STATUSES:
             continue
         incoming = engineering_attempt if field == "engineering_attempt" else update_data.get(field)
         expected = getattr(retained, field)
         if field == "result":
             expected = expected.model_dump(mode="json")
-        if incoming is not None and incoming != expected:
+        terminal = update_data.get("status") in _TERMINAL_RUN_STATUSES
+        supplied = field in update_data or (field == "engineering_attempt" and incoming is not None)
+        if (supplied or terminal) and incoming != expected:
             raise HTTPException(409, "A retained empty outcome must use its own terminal writer")
 
 

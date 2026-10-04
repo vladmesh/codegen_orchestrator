@@ -51,7 +51,6 @@ from ._story_helpers import (
     _do_transition,
     _get_story_for_update,
     _record_story_failure,
-    _release_engineering_stop,
 )
 
 logger = structlog.get_logger()
@@ -185,7 +184,9 @@ async def retry_story_planning(
         max_retries=await _config_int(db, PLANNING_MAX_RETRIES_CONFIG_KEY),
         now=datetime.now(UTC),
     )
-    _release_engineering_stop(story, body.stop_id, actor, db)
+    from ..attempt_disposition import release_engineering_stop
+
+    release_engineering_stop(story, body.stop_id, actor, db, expected_cause=story.quarantine_reason)
     story.quarantine_reason = None
     story.planning = planning.model_dump(mode="json")
     _do_transition(story, StoryStatus.IN_PROGRESS)

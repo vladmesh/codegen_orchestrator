@@ -4,12 +4,15 @@ The only precedence is stop, unpublished commit, ordinary eligibility. Callers
 must descend Task roster -> Story -> Project -> Run before authorizing work.
 """
 
+from datetime import UTC, datetime
+
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from shared.contracts.dto.commit_publication import (
     COMMIT_PUBLICATION_KEY,
     AttemptDisposition,
+    CommitPublication,
     EngineeringStop,
 )
 from shared.contracts.dto.run import (
@@ -20,7 +23,47 @@ from shared.contracts.dto.run import (
 )
 from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
-from shared.models import Project, Run, Story, Task
+from shared.models import Project, Run, Story, Task, WorkAdmissionAudit
+
+
+def release_engineering_stop(
+    story, stop_id, actor, db, *, expected_cause, publication_attempt_id=None
+):
+    """Release the native action's validated episode under its existing locks.
+
+    Authentication and cause/ownership/budget proofs belong to the action. This
+    owner checks their locked snapshot and selected stop before any transition.
+    Only proven publication handoff can release an unpublished attempt's hold.
+    """
+    if story.quarantine_reason != expected_cause:
+        raise HTTPException(409, {"code": "stale_stop_cause"})
+    publication = (story.quarantine_reason or {}).get(COMMIT_PUBLICATION_KEY)
+    if publication is not None:
+        held = CommitPublication.model_validate(publication)
+        if publication_attempt_id is None or held.attempt_id != publication_attempt_id:
+            raise HTTPException(409, {"code": "commit_publication_required"})
+    stop = (
+        EngineeringStop.model_validate(story.engineering_stop) if story.engineering_stop else None
+    )
+    if stop_id is not None and (stop is None or stop.id != stop_id):
+        raise HTTPException(409, {"code": "engineering_stopped", "stop_id": stop_id})
+    if stop is None or stop.released_at is not None:
+        return
+    if stop_id != stop.id:
+        raise HTTPException(409, {"code": "engineering_stopped", "stop_id": stop.id})
+    story.engineering_stop = stop.model_copy(
+        update={"released_at": datetime.now(UTC), "release_actor": actor}
+    ).model_dump(mode="json")
+    db.add(
+        WorkAdmissionAudit(
+            subject="engineering_stop",
+            outcome="released",
+            actor=actor,
+            reference_id=story.id,
+            before_value=stop.model_dump(mode="json"),
+            after_value=story.engineering_stop,
+        )
+    )
 
 
 def disposition(story, task, runs, recovered_attempts=frozenset()):

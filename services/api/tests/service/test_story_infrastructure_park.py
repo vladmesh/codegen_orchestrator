@@ -765,10 +765,15 @@ async def test_admission_fences_a_parked_story_and_a_parked_task_without_an_atte
     )
     assert evidence_task.status_code == 201, evidence_task.text
 
-    for fenced_id in (sibling.json()["id"], evidence_task.json()["id"]):
+    # Story stop precedence applies to the sibling. The standalone Task has
+    # only infrastructure evidence, so its native refusal remains distinct.
+    for fenced_id, reason in (
+        (sibling.json()["id"], EngineeringDispatchRefusal.ENGINEERING_STOPPED),
+        (evidence_task.json()["id"], EngineeringDispatchRefusal.INFRASTRUCTURE_PARKED),
+    ):
         decision = await async_client.post(ADMISSION_URL, json={"task_id": fenced_id})
         assert decision.status_code == 200, decision.text
-        assert decision.json()["reason"] == EngineeringDispatchRefusal.ENGINEERING_STOPPED
+        assert decision.json()["reason"] == reason
         assert decision.json()["run_id"] is None
         assert await _task_audits(db_session, fenced_id) == []
 

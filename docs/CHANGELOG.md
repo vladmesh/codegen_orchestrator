@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Native actions share cause-aware stop release; retained empty outcomes require
+  exact accounting at settlement, while standalone infrastructure parks keep their own refusal reason.
 - Explicit recovery selects its stop; empty-result reclaim retains paid facts,
   and API launch coverage includes image-only variants so stop fencing preserves authorized actions.
 - Test API containers explicitly configure worker-manager connectivity, so service

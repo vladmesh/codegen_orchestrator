@@ -13,7 +13,8 @@ from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
 from shared.contracts.dto.story import StoryAcceptance, StoryStatus
 from shared.models import Story
-from src.routers._story_helpers import _land_on, _release_engineering_stop
+from src.attempt_disposition import release_engineering_stop
+from src.routers._story_helpers import _land_on
 from src.routers.commit_recovery import _finish_stopped_run
 from src.routers.stories import _complete_story
 
@@ -61,6 +62,7 @@ async def test_explicit_acceptance_releases_its_stop_before_the_completion_trans
         accepted_at=now,
     )
     db = AsyncMock()
+    db.add = MagicMock()
     with patch("src.routers.stories._owe_completed_story_notification", AsyncMock()):
         result = await _complete_story(story, db, acceptance=acceptance)
     assert result.status.value == "completed"
@@ -74,15 +76,17 @@ def test_native_recovery_requires_the_exact_stop_and_uses_authenticated_actor():
     stop = EngineeringStop(
         id="stop-current", actor="internal_service", stopped_at=datetime.now(UTC)
     )
-    story = SimpleNamespace(id="story-stopped", engineering_stop=stop.model_dump(mode="json"))
+    story = SimpleNamespace(
+        id="story-stopped", engineering_stop=stop.model_dump(mode="json"), quarantine_reason=None
+    )
     db = MagicMock()
     for selected in (None, "stop-older"):
         with pytest.raises(HTTPException) as refused:
-            _release_engineering_stop(story, selected, "admin:42", db)
+            release_engineering_stop(story, selected, "admin:42", db, expected_cause=None)
         assert refused.value.status_code == 409
         assert story.engineering_stop == stop.model_dump(mode="json")
         db.add.assert_not_called()
-    _release_engineering_stop(story, stop.id, "admin:42", db)
+    release_engineering_stop(story, stop.id, "admin:42", db, expected_cause=None)
     _land_on(story, StoryStatus.IN_PROGRESS)
     assert story.status == "in_progress" and story.waiting_on == "none"
     audit = db.add.call_args.args[0]
@@ -100,6 +104,7 @@ def test_a_stale_terminal_writer_cannot_replace_retained_execution_facts():
             "error_message": "No new commit",
             "result": {"engineering_status": "failed", "failure_reason": "no_new_commit"},
             "engineering_attempt": {"provider": "openai", "input_tokens": 17},
+            "transcript_path": "/transcripts/eng-empty.jsonl",
         }
     )
     run = SimpleNamespace(
@@ -111,6 +116,11 @@ def test_a_stale_terminal_writer_cannot_replace_retained_execution_facts():
         {"status": "cancelled"},
         {"status": "failed", "result": {"engineering_status": "failed"}},
         {"error_message": "Worker disappeared"},
+        {"result": None},
+        {"error_message": None},
+        {"transcript_path": None},
+        {"transcript_path": "/transcripts/unrelated.jsonl"},
+        {"status": "failed", "result": retained.result.model_dump(mode="json")},
     ):
         with pytest.raises(HTTPException) as refused:
             _require_retained_empty_outcome(run, replacement, None)
@@ -119,6 +129,64 @@ def test_a_stale_terminal_writer_cannot_replace_retained_execution_facts():
         _validate_empty_retention(run, None, {})
     terminal = retained.model_dump(mode="json")
     _require_retained_empty_outcome(run, terminal, retained.engineering_attempt)
+
+
+def test_release_authority_preserves_a_changed_cause_or_unpublished_attempt():
+    from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
+    from src.attempt_disposition import release_engineering_stop
+
+    stop = EngineeringStop(
+        id="stop-current", actor="internal_service", stopped_at=datetime.now(UTC)
+    )
+    cause = {"code": "planning_failed", "detail": "Current episode"}
+    story = SimpleNamespace(
+        id="story-stopped", engineering_stop=stop.model_dump(mode="json"), quarantine_reason=cause
+    )
+    db = MagicMock()
+    with pytest.raises(HTTPException):
+        release_engineering_stop(story, stop.id, "admin:42", db, expected_cause={"code": "old"})
+    publication = {"failure": "push_refused", "attempt_id": "eng-preserved"}
+    story.quarantine_reason = {**cause, COMMIT_PUBLICATION_KEY: publication}
+    for attempt in (None, "eng-other"):
+        with pytest.raises(HTTPException):
+            release_engineering_stop(
+                story,
+                stop.id,
+                "admin:42",
+                db,
+                expected_cause=story.quarantine_reason,
+                publication_attempt_id=attempt,
+            )
+    assert story.engineering_stop == stop.model_dump(mode="json")
+    db.add.assert_not_called()
+    release_engineering_stop(
+        story,
+        stop.id,
+        "admin:42",
+        db,
+        expected_cause=story.quarantine_reason,
+        publication_attempt_id="eng-preserved",
+    )
+    assert EngineeringStop.model_validate(story.engineering_stop).release_actor == "admin:42"
+
+
+@pytest.mark.parametrize("released", [False, True])
+def test_release_cannot_silently_accept_a_stale_stop_identity(released):
+    from src.attempt_disposition import release_engineering_stop
+
+    now = datetime.now(UTC)
+    stop = EngineeringStop(
+        id="stop-current",
+        actor="internal_service",
+        stopped_at=now,
+        released_at=now if released else None,
+        release_actor="admin:42" if released else None,
+    )
+    story = SimpleNamespace(
+        id="story-stopped", engineering_stop=stop.model_dump(mode="json"), quarantine_reason=None
+    )
+    with pytest.raises(HTTPException):
+        release_engineering_stop(story, "stop-old", "admin:43", MagicMock(), expected_cause=None)
 
 
 @pytest.mark.asyncio

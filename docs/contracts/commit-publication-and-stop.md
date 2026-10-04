@@ -23,6 +23,23 @@ actor in the same transaction as its transition. Automatic conflict callers
 select no stop and cannot release one. PO reopen and the admin infrastructure
 buttons carry the stop they displayed; a replaced stop refuses. Acceptance and
 QA recheck release their reviewed stop before their native transition.
+`attempt_disposition.release_engineering_stop` is their shared release owner,
+including paid Task resume and verified publication handoff. It compares the
+validated cause snapshot and exact stop, retains a different publication hold,
+and audits release before the guarded native transition in the same transaction.
+Stale stop IDs refuse even when the current stop was already released.
+Story stop precedence returns `engineering_stopped`; a standalone Task carrying
+only infrastructure evidence retains `infrastructure_parked`, without a Run.
+
+| Explicit release consumer | Native proof before release | Preserved facts |
+|---|---|---|
+| `repair_pr_conflicts` | Current project/PR/cycle, dirty GitHub head, eligible unspent or released refusal episode, exact selected stop | Repair admission, bound, spent attempts and prior notices |
+| `retry_infrastructure_attempt` | Equal typed Story/Task park, named attempt/refusal, owned pre-agent Run or admission refusal, legal reset | Current iteration; free refusal accounting and retry audit |
+| `retry_story_planning` | Typed planning failure, native bounded retry record, selected stop | Planning attempt history |
+| `resume_task` | Parked Task, no publication/infrastructure hold or live sibling, current conflict admission where applicable, selected stop | Paid history; explicit fresh iteration and new bound audit |
+| `accept_story_result` / `_complete_story` | Authenticated administrator, reviewed current reason, reachable recorded QA target | Acceptance snapshot; completed owner notice |
+| `recheck_story_qa` | Authenticated administrator, current QA episode, owned application and exact deploy receipts | Recheck snapshot; original verdict and native deploy handoff |
+| `recover_commit` / `_handoff_recovery` | Locked current attempt/cycle/iteration and checkout identity, exact published receipt, matching project hold and stop | Original failed Run/ledger; one claim and native completion |
 
 Discovery reads only identities. Writers take ascending Task roster, Story,
 Project, ascending engineering Runs, then the recovery claim. Roster growth
@@ -70,6 +87,8 @@ transcript references. Retention fences launch even before the stop commits;
 teardown cannot replace it with unknown cancellation. The API validates and
 preserves it, and queue reclaim finishes only that terminal write and its stop,
 without executing the graph. Terminal Run/ledger immutability still applies.
+Null replacements refuse, and terminal settlement requires the exact retained
+result, error, accounting and supplied transcript/profile facts together.
 An unrelated stop or notification episode is never rewritten into an empty
 result stop; identical stop retries preserve their original cause and notices.
 

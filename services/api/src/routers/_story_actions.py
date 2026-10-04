@@ -75,6 +75,7 @@ from shared.models import (
 )
 from shared.models.story import Story
 
+from ..attempt_disposition import release_engineering_stop
 from ..database import get_async_session
 from ..dependencies import (
     _optional_bearer_scheme,
@@ -97,7 +98,6 @@ from ._story_helpers import (
     _get_story_for_update,
     _land_on,
     _record_story_failure,
-    _release_engineering_stop,
     _validate_transition,
     work_cycle_task_count,
 )
@@ -203,7 +203,9 @@ async def repair_pr_conflicts(
     head_sha, default, default_sha = await _observe_dirty_pr(story, repository, command)
     identity = "internal_service" if actor is None else f"user:{actor.id}"
     if released_park or unspent:
-        _release_engineering_stop(story, command.stop_id, identity, db)
+        release_engineering_stop(
+            story, command.stop_id, identity, db, expected_cause=story.quarantine_reason
+        )
     if task is None:
         control = await db.get(SystemConfig, "llm.task_default_max_iterations")
         if control is None or type(control.value) is not int or control.value <= 0:
@@ -639,7 +641,9 @@ async def retry_infrastructure_attempt(
         "attempt_id": command.attempt_id,
         "refusal": command.refusal.value,
     }
-    _release_engineering_stop(story, command.stop_id, actor, db)
+    release_engineering_stop(
+        story, command.stop_id, actor, db, expected_cause=story.quarantine_reason
+    )
     task.status = TaskStatus.BACKLOG.value
     await create_status_event(
         task,

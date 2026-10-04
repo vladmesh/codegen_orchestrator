@@ -606,7 +606,7 @@ async def recover_commit(
         refuse("stale_attempt", "This attempt already owns another recovery claim")
     if claim is not None and claim.handed_off_at is not None:
         return CommitRecoveryRead.model_validate(claim)
-    identity, stop = await _require_recovery_context(story, task, project, run, command, db)
+    identity, _ = await _require_recovery_context(story, task, project, run, command, db)
     if claim is None:
         claim = CommitRecovery(
             attempt_id=run.id,
@@ -643,11 +643,27 @@ async def recover_commit(
             db.expire_all()
             return await recover_commit(story_id, command, db, actor)
         return CommitRecoveryRead.model_validate(claim)
-    return await _handoff_recovery(story, task, project, run, claim, stop, actor, db)
+    return await _handoff_recovery(story, task, project, run, claim, actor, db)
 
 
-async def _handoff_recovery(story, task, project, run, claim, stop, actor, db):
+async def _handoff_recovery(story, task, project, run, claim, actor, db):
     # Reuse the native completion owner. Failed Run/accounting are untouched.
+    from ..attempt_disposition import release_engineering_stop
+
+    config = dict(project.config or {})
+    project_hold = config.get(COMMIT_PUBLICATION_KEY)
+    if project_hold is not None:
+        held = CommitPublication.model_validate(project_hold)
+        if held.attempt_id != run.id:
+            refuse("stale_attempt", "A different preserved attempt owns this checkout")
+    release_engineering_stop(
+        story,
+        claim.stop_id,
+        actor,
+        db,
+        expected_cause=story.quarantine_reason,
+        publication_attempt_id=run.id,
+    )
     if task is not None:
         from ._task_actions import apply_task_completion
         from ._task_helpers import create_status_event, validate_transition
@@ -678,19 +694,7 @@ async def _handoff_recovery(story, task, project, run, claim, stop, actor, db):
         metadata = dict(task.failure_metadata or {})
         metadata.pop(COMMIT_PUBLICATION_KEY, None)
         task.failure_metadata = metadata or None
-    if stop is not None and stop.released_at is None:
-        story.engineering_stop = stop.model_copy(
-            update={
-                "released_at": datetime.now(UTC),
-                "release_actor": actor,
-            }
-        ).model_dump(mode="json")
-    config = dict(project.config or {})
-    project_hold = config.get(COMMIT_PUBLICATION_KEY)
     if project_hold is not None:
-        held = CommitPublication.model_validate(project_hold)
-        if held.attempt_id != run.id:
-            refuse("stale_attempt", "A different preserved attempt owns this checkout")
         config.pop(COMMIT_PUBLICATION_KEY)
         project.config = config
     _do_transition(story, StoryStatus.IN_PROGRESS)
