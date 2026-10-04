@@ -219,6 +219,12 @@ completed result.
 
 ### Shared DTO foundations
 
+Internal/admin publication and stop actions are defined in
+[Commit publication and engineering stop](commit-publication-and-stop.md).
+`StoryRead.engineering_stop` is server-owned; recovery request identity is only
+Story, attempt, exact SHA, deliberate adoption and the current stop. Run/Task/Project
+generic patches cannot forge or clear the preserved-publication keys.
+
 `shared/contracts/dto/base.py` supplies common API DTO foundations. The API also
 has local schemas for analytics, brainstorming, API keys, ports, promo
 codes, system configuration, and LK interactions. Their canonical definitions

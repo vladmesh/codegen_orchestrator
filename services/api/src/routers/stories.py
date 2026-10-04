@@ -30,6 +30,7 @@ from shared.contracts.dto.story_planning import dispatch_owed_record
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
+from shared.models import WorkAdmissionAudit
 from shared.models.application import Application
 from shared.models.product_brief import ProductBrief
 from shared.models.repository import Repository
@@ -42,6 +43,7 @@ from ..database import get_async_session
 from ..dependencies import (
     _optional_bearer_scheme,
     get_accept_result_actor,
+    get_internal_or_admin_actor,
     get_redis_client,
     is_internal_service,
     require_internal_or_admin,
@@ -606,6 +608,17 @@ async def _complete_story(
     _do_transition(story, StoryStatus.COMPLETED)
     if acceptance is not None:
         story.operator_acceptance = acceptance.model_dump(mode="json")
+        if story.engineering_stop is not None:
+            from shared.contracts.dto.commit_publication import EngineeringStop
+
+            stop = EngineeringStop.model_validate(story.engineering_stop)
+            story.engineering_stop = stop.model_copy(
+                update={
+                    "released_at": datetime.now(UTC),
+                    "release_actor": acceptance.actor,
+                }
+            ).model_dump(mode="json")
+
         # The completed story no longer represents a live QA quarantine.
         story.quarantine_reason = None
     elif story.quarantine_reason is not None:
@@ -785,16 +798,55 @@ async def human_review_story(
     story_id: str,
     body: StoryStopTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
+    actor: str = Depends(get_internal_or_admin_actor),
 ) -> StoryRead:
     """Move a blocked active story to the visible human-review queue."""
     body = body or StoryStopTransition()
-    story = await _get_story_for_update(story_id, db)
+    from shared.contracts.dto.commit_publication import EngineeringStop
+
+    from ..attempt_disposition import lock_story_attempts
+
+    story, tasks, _, runs = await lock_story_attempts(story_id, db)
+    # A repeated request re-drives one committed stop rather than issuing a
+    # newer identity that would invalidate the operator's in-progress recovery.
+    if story.engineering_stop is None or story.engineering_stop.get("released_at") is not None:
+        stop = EngineeringStop(id=secrets.token_hex(16), actor=actor, stopped_at=datetime.now(UTC))
+        story.engineering_stop = stop.model_dump(mode="json")
+        db.add(
+            WorkAdmissionAudit(
+                subject="engineering_stop",
+                outcome="stopped",
+                actor=actor,
+                reference_id=story.id,
+                after_value=story.engineering_stop,
+            )
+        )
+    for run in runs:
+        if run.status in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
+            run.run_metadata = {
+                **(run.run_metadata or {}),
+                "worker_stop_requested_at": story.engineering_stop["stopped_at"],
+            }
+
     await _record_qa_routing(story, body.qa_run_id, StoryStatus.WAITING_HUMAN_REVIEW, db)
-    _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+    if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
     if body.failure is not None:
         _record_story_failure(story, body.failure, StoryStatus.WAITING_HUMAN_REVIEW)
     await db.commit()
     await db.refresh(story)
+    # The stop is already committed. Delivery failure leaves its retryable
+    # intent for the existing supervisor rather than undoing the stop.
+    from ..dependencies import get_redis_client
+    from .commit_recovery import reconcile_stop
+
+    try:
+        await reconcile_stop(story.id, db, get_redis_client())
+    except Exception:
+        await db.rollback()
+        logger.warning("engineering_stop_teardown_pending", story_id=story_id)
+        await db.refresh(story)
+
     logger.info(
         "story_waiting_human_review",
         story_id=story.id,
@@ -987,6 +1039,17 @@ async def recheck_story_qa(
         rechecked_quarantine_reason=snapshot,
     )
     story.operator_recheck = audit.model_dump(mode="json")
+    if story.engineering_stop is not None:
+        from shared.contracts.dto.commit_publication import EngineeringStop
+
+        stop = EngineeringStop.model_validate(story.engineering_stop)
+        story.engineering_stop = stop.model_copy(
+            update={
+                "released_at": datetime.now(UTC),
+                "release_actor": audit.actor,
+            }
+        ).model_dump(mode="json")
+
     _do_transition(story, StoryStatus.DEPLOYING)
     await db.commit()
     await db.refresh(story)

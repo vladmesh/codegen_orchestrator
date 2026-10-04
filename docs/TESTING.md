@@ -1,5 +1,17 @@
 # Test Infrastructure
 
+Publication/stop proofs: API `test_commit_recovery_stop.py` runs against actual
+PostgreSQL/Redis in the existing required service CI job. It checks stopped
+three-attempt retry/taskless admission, owned in-flight teardown, fenced native
+command/prompt/deploy claims, stop races, atomic publication settlement, recovery
+concurrency/replay and unchanged original ledger. These service tests are not
+authorized control-host local runs for card 1505. Candidate CI must execute them.
+API native Git units, manager recovery/credential units and controlled broker
+units cover exact-SHA replay, changed HEAD, foreign origin, injected paths,
+non-force/readback/timeout refusal, redacted stderr, fresh scoped token acquisition
+and failed park before ACK. Taskless recovery enters the existing scheduler PR
+owner without a coding turn. See the [operator runbook](runbooks/preserved-commit-recovery.md).
+
 Initial-owner retry regressions are selected by the existing required API and
 LangGraph service jobs. API `test_initial_owner_retry.py` uses real PostgreSQL
 and Redis without a healthy deployment: configured exhaustion, concurrent owner

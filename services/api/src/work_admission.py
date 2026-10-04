@@ -337,6 +337,64 @@ def _health_only_qa_handoff(command: PaidRunStartCommand) -> bool:
     )
 
 
+async def _engineering_start_refusal(command, db):
+    if command.type is RunType.ENGINEERING and command.story_id is not None:
+        from shared.contracts.dto.commit_publication import AttemptDisposition
+
+        from .attempt_disposition import lock_story_attempts, locked_disposition
+
+        story, tasks, project, attempts = await lock_story_attempts(command.story_id, db)
+        if story.project_id != command.project_id:
+            raise RuntimeError("Engineering Story belongs to another Project")
+        authority = await locked_disposition(story, None, attempts, db)
+        if authority is not AttemptDisposition.ELIGIBLE:
+            return PaidRunStartRead(
+                admission=await _audit(
+                    db,
+                    "paid_work",
+                    WorkAdmissionRead(
+                        outcome=WorkAdmissionOutcome.DENIED,
+                        reason=WorkAdmissionReason.ENGINEERING_STOPPED
+                        if authority is AttemptDisposition.STOPPED
+                        else WorkAdmissionReason.COMMIT_PUBLICATION_REQUIRED,
+                        message="Engineering is fenced; an explicit authorized action is required.",
+                    ),
+                    user_id=project.owner_id,
+                    reference_id=command.id,
+                    command_payload=command.model_dump(mode="json"),
+                )
+            )
+    if command.type is RunType.ENGINEERING:
+        from shared.contracts.dto.commit_publication import (
+            COMMIT_PUBLICATION_KEY,
+            CommitPublication,
+        )
+
+        project = await db.scalar(
+            select(Project).where(Project.id == command.project_id).with_for_update()
+        )
+        if project is None:
+            raise RuntimeError("Engineering admission has no owned Project")
+        if COMMIT_PUBLICATION_KEY in (project.config or {}):
+            CommitPublication.model_validate(project.config[COMMIT_PUBLICATION_KEY])
+            return PaidRunStartRead(
+                admission=await _audit(
+                    db,
+                    "paid_work",
+                    WorkAdmissionRead(
+                        outcome=WorkAdmissionOutcome.DENIED,
+                        reason=WorkAdmissionReason.COMMIT_PUBLICATION_REQUIRED,
+                        message="The owned checkout retains an unpublished commit; "
+                        "use explicit recovery.",
+                    ),
+                    user_id=project.owner_id,
+                    reference_id=command.id,
+                    command_payload=command.model_dump(mode="json"),
+                )
+            )
+    return None
+
+
 async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> PaidRunStartRead:
     """Atomically decide and create one queued engineering or QA run.
 
@@ -348,6 +406,9 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     # here, before any audit or Run row exists.
     if QA_ROUTED_KEY in command.run_metadata:
         raise PaidRunReservedMetadata(QA_ROUTED_KEY)
+    refusal = await _engineering_start_refusal(command, db)
+    if refusal is not None:
+        return refusal
     payload = command.model_dump(mode="json")
     replay = await _replay_paid_start(command, payload, db)
     if replay is not None:

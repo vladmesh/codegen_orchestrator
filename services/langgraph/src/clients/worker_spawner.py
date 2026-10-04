@@ -13,10 +13,12 @@ import uuid
 from pydantic import ValidationError
 import redis.asyncio as redis
 
+from shared.contracts.dto.commit_publication import CommitPublication
 from shared.contracts.dto.engineering_execution import (
     EngineeringExecutionEvidence,
     EngineeringExecutionPhase,
 )
+from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.dto.worker import (
     WORKER_TERMINAL_STATUSES,
     WorkerStatus,
@@ -90,6 +92,8 @@ class SpawnResult:
     agent_limit_seconds: int | None = None
     turn_result_consumed: bool = False
     execution: EngineeringExecutionEvidence | None = None
+    publication: CommitPublication | None = None
+    failure_reason: EngineeringFailureReason | None = None
     pre_attempt_head_sha: str | None = None
 
 
@@ -207,6 +211,8 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         exit_code=1,
         output="",
         error_message=result.error,
+        failure_reason=result.failure_reason,
+        publication=result.publication,
         stop_reason=result.stop_reason,
         agent_limit_seconds=result.agent_limit_seconds,
         worker_id=worker_id,
@@ -785,6 +791,15 @@ async def _handle_spawn_interruption(
     return SpawnResult(request_id, False, -1, str(error))
 
 
+async def _publish_create_command(redis_client, command):
+    from .api import api_client
+
+    await api_client.post(
+        f"runs/{command.config.ownership.attempt_id}/publish-worker-command",
+        json=command.model_dump(mode="json"),
+    )
+
+
 async def request_spawn(
     repo: str,
     task_content: str,
@@ -859,7 +874,7 @@ async def request_spawn(
             context={"source": "langgraph", "repo": repo, "project_id": ownership.project_id},
         )
 
-        await redis_client.xadd(WORKER_COMMANDS, {"data": create_cmd.model_dump_json()})
+        await _publish_create_command(redis_client, create_cmd)
         logger.info("worker_spawn_requested", request_id=request_id, repo=repo)
 
         # 3. Wait for early ACK (worker_id) — should be near-instant

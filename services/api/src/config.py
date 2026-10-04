@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # Required
     database_url: str = database_url_field(required=True)
     redis_url: str = redis_url_field(required=True)
+    worker_manager_url: str = Field(min_length=1)
 
     # LK (user dashboard) JWT auth — required, no default. An empty string would
     # sign every dashboard token with a known key, so reject it outright.

@@ -9,6 +9,7 @@ from .application import Application
 from .application_health_history import ApplicationHealthHistory
 from .base import Base
 from .brainstorm import Brainstorm
+from .commit_recovery import CommitRecovery
 from .deployment import Deployment
 from .engineering_attempt_ledger import EngineeringAttemptLedger
 from .engineering_budget_policy import EngineeringBudgetPolicy
@@ -34,6 +35,7 @@ from .verification_gap import VerificationGap
 from .work_admission_audit import WorkAdmissionAudit
 
 __all__ = [
+    "CommitRecovery",
     "AgentConfig",
     "AnalyticsDaily",
     "AnalyticsHourly",

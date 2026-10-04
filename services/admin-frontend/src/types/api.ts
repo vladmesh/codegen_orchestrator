@@ -37,6 +37,7 @@ export interface Story {
   blocked_by_story_id?: string | null
   created_by: string
   user_report?: string | null
+  engineering_stop?: Record<string, unknown> | null;
   quarantine_reason?: Record<string, unknown> | null
   generated_product_timeline?: Record<string, unknown> | null
   operator_acceptance?: StoryAcceptance | null
@@ -52,11 +53,27 @@ export interface Story {
 
 export interface StoryFailure {
   reason?: 'story_failure'
-  code: 'scaffold_failed' | 'scaffold_timeout' | 'planning_failed' | 'no_new_commit' | 'environment_resolution_failed' | 'pr_conflict_repair_exhausted' | 'initial_owner_deployment_exhausted' | 'engineering_budget_denied' | 'engineering_dispatch_refused'
+  code: 'worker_commit_not_published' | 'scaffold_failed' | 'scaffold_timeout' | 'planning_failed' | 'no_new_commit' | 'environment_resolution_failed' | 'pr_conflict_repair_exhausted' | 'initial_owner_deployment_exhausted' | 'engineering_budget_denied' | 'engineering_dispatch_refused'
   source: string
   detail: string
   observed_at?: string
+  commit_publication?: CommitPublication | null
 }
+
+export interface CommitPublication {
+  published?: boolean
+  commit_sha?: string | null
+  branch?: string | null
+  worker_id?: string | null
+  attempt_id?: string | null
+  repository_id?: string | null
+  repository_url?: string | null
+  remote_sha?: string | null
+  failure?: PublicationFailure | null
+  stderr?: string
+}
+
+export type PublicationFailure = 'branch_missing' | 'wrong_branch' | 'wrong_repository' | 'object_missing' | 'head_changed' | 'inspection_failed' | 'injected_paths' | 'no_new_commit' | 'push_refused' | 'readback_mismatch' | 'timeout' | 'ownership_missing' | 'stale_attempt' | 'credential_unavailable'
 
 export interface StoryPlanning {
   channels?: string[]
@@ -184,6 +201,7 @@ export interface TaskResume {
   guidance: string
   actor?: string
   retries?: number
+  stop_id?: string | null
 }
 
 export interface SpawnWorkerRequest {

@@ -94,6 +94,8 @@ class EngineeringDispatchRefusal(StrEnum):
 
     #: The locked row is no longer in todo — somebody moved it while this tick
     #: was reading the candidate list.
+    ENGINEERING_STOPPED = "engineering_stopped"
+    COMMIT_PUBLICATION_REQUIRED = "commit_publication_required"
     TASK_NOT_DISPATCHABLE = "task_not_dispatchable"
     #: The task was planned against a Product Brief whose coverage has not been
     #: admitted yet. A `todo` status is not dispatch authority for brief-backed
@@ -144,6 +146,10 @@ class EngineeringDispatchRefusal(StrEnum):
 #: `WorkAdmissionReason` minus `PROJECT_LIMIT`, which belongs to project creation
 #: and can never be returned by a paid-run start.
 PAID_WORK_REFUSALS: dict[WorkAdmissionReason, EngineeringDispatchRefusal] = {
+    WorkAdmissionReason.ENGINEERING_STOPPED: EngineeringDispatchRefusal.ENGINEERING_STOPPED,
+    WorkAdmissionReason.COMMIT_PUBLICATION_REQUIRED: (
+        EngineeringDispatchRefusal.COMMIT_PUBLICATION_REQUIRED
+    ),
     WorkAdmissionReason.EMERGENCY_STOP: EngineeringDispatchRefusal.EMERGENCY_STOP,
     WorkAdmissionReason.PAID_WORK_LIMIT: EngineeringDispatchRefusal.PAID_WORK_LIMIT,
     WorkAdmissionReason.ENGINEERING_BUDGET_DENIED: (

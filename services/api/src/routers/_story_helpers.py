@@ -40,7 +40,7 @@ _TERMINAL_RUN_STATUSES = frozenset(
 async def _load_story(story_id: str, db: AsyncSession, *, for_update: bool) -> Story:
     query = select(Story).where(Story.id == story_id)
     if for_update:
-        query = query.with_for_update()
+        query = query.with_for_update().execution_options(populate_existing=True)
     result = await db.execute(query)
     story = result.scalar_one_or_none()
     if not story:
@@ -99,6 +99,16 @@ def _land_on(story: Story, to_status: StoryStatus) -> None:
     one locked row inside the caller's transaction and can never disagree.  There
     is no poller-visible path to them: ``StoryUpdate`` refuses all three.
     """
+    from shared.contracts.dto.commit_publication import EngineeringStop
+
+    if story.engineering_stop is not None:
+        stop = EngineeringStop.model_validate(story.engineering_stop)
+        if stop.released_at is None and to_status not in {
+            StoryStatus.WAITING_HUMAN_REVIEW,
+            StoryStatus.FAILED,
+            StoryStatus.ARCHIVED,
+        }:
+            raise HTTPException(409, {"code": "engineering_stopped", "stop_id": stop.id})
     story.status = to_status.value
     story.waiting_on = WAITING_ON_BY_STATUS[to_status].value
     story.status_entered_at = datetime.now(UTC)
@@ -138,6 +148,13 @@ def _record_story_failure(story: Story, failure: StoryFailure, to_status: StoryS
     sees a failed story without its cause, and the owner-notification sweep
     delivers the notice even when the caller dies right after the commit.
     """
+    from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY, CommitPublication
+
+    saved = (story.quarantine_reason or {}).get(COMMIT_PUBLICATION_KEY)
+    if saved is not None and failure.commit_publication is None:
+        failure = failure.model_copy(
+            update={"commit_publication": CommitPublication.model_validate(saved)}
+        )
     story.quarantine_reason = failure.model_dump(mode="json")
     project_id = str(story.project_id)
     story.owner_notification = preserve_po_settlement(

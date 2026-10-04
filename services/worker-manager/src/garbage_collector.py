@@ -344,6 +344,11 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
             except OSError:
                 continue
             if age_hours > max_age_hours:
+                from shared.workspace_preservation import has_preserved_work
+
+                if has_preserved_work(ws_dir):
+                    logger.info("workspace_gc_preserved_git_work", repo_id=entry)
+                    continue
                 workspace_mod.remove_workspace(base_path, entry)
                 await _notify_workspace_deleted(entry)
                 logger.info(

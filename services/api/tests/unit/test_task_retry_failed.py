@@ -25,6 +25,11 @@ class _Session:
     async def commit(self) -> None:
         self.committed = True
 
+    async def scalar(self, query):
+        from shared.models.story import Story
+
+        return Story(id="story-1", status="in_progress", engineering_stop=None)
+
     async def refresh(self, _row: object) -> None:
         return None
 

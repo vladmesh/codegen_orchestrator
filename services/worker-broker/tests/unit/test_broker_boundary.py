@@ -5,6 +5,13 @@ from fakeredis import FakeAsyncRedis
 import httpx
 import pytest
 
+from shared.contracts.dto.commit_publication import (
+    CommitPublication,
+    PublicationFailure,
+    publication_pending_key,
+)
+from shared.contracts.dto.run_result import EngineeringFailureReason
+from shared.contracts.queues.worker_result import WorkerFailedResult
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import (
     GitHubCredentialRequest,
@@ -14,6 +21,134 @@ from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 from src import main
 from src.auth import credential_key, verify_token
 from src.config import BrokerSettings
+
+
+@pytest.mark.asyncio
+async def test_refusal_park_failure_keeps_output_and_input_then_lost_reply_replays(monkeypatch):
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    worker_id, token = "publication-worker", "p" * 43
+    registration = main.Registration(
+        worker_id=worker_id,
+        token=token,
+        worker_type=WorkerType.DEVELOPER,
+        input_stream="publication-input",
+        output_stream="publication-output",
+    )
+    await main.register_worker(registration, main.settings.WORKER_BROKER_INTERNAL_TOKEN)
+    await redis.xadd(
+        registration.input_stream,
+        {
+            "data": json.dumps(
+                {
+                    "request_id": "publication-request",
+                    "attempt_id": "eng-publication",
+                    "turn_deadline_seconds": 60,
+                    "prompt": "change the fixture",
+                }
+            )
+        },
+    )
+    parked = False
+    park_calls = []
+
+    def upstream(request):
+        if request.url.path.endswith("authorize"):
+            return httpx.Response(200, json={"disposition": "eligible"})
+        park_calls.append(request)
+        if not parked:
+            return httpx.Response(503)
+        return httpx.Response(200, json=json.loads(request.content)["publication"])
+
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kwargs: client_class(
+            transport=httpx.MockTransport(upstream),
+            **kwargs,
+        ),
+    )
+    lease = await main.lease_input(worker_id, token)
+    output = WorkerFailedResult(
+        error="Non-force push refused",
+        worker_report="The preserved change is ready",
+        input_tokens=12,
+        output_tokens=8,
+        total_tokens=20,
+        failure_reason=EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED,
+        publication=CommitPublication(
+            failure=PublicationFailure.PUSH_REFUSED,
+            commit_sha="b" * 40,
+            branch="story/fixture",
+            stderr="remote rejected update",
+        ),
+    )
+    submission = main.Submission(lease_id=lease["lease_id"], result=output.model_dump(mode="json"))
+    with pytest.raises(httpx.HTTPStatusError):
+        await main.submit_output(worker_id, submission, token)
+    saved = json.loads(await redis.get(publication_pending_key("eng-publication")))
+    assert saved["worker_report"] == output.worker_report and saved["total_tokens"] == 20
+    assert saved["publication"]["attempt_id"] == "eng-publication"
+    assert (await redis.xpending(registration.input_stream, registration.consumer_group))[
+        "pending"
+    ] == 1
+    assert await redis.xlen(registration.output_stream) == 0
+    parked = True
+    assert await main.submit_output(worker_id, submission, token) == {"ok": True}
+    assert await main.submit_output(worker_id, submission, token) == {"ok": True}
+    assert len(park_calls) == 2
+    assert await redis.xlen(registration.output_stream) == 1
+    assert await redis.get(publication_pending_key("eng-publication")) is None
+    assert (await redis.xpending(registration.input_stream, registration.consumer_group))[
+        "pending"
+    ] == 0
+
+
+@pytest.mark.asyncio
+async def test_stopped_queued_turn_never_creates_an_active_lease(monkeypatch):
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    token = "s" * 43
+    await main.register_worker(
+        main.Registration(
+            worker_id="stopped",
+            token=token,
+            worker_type=WorkerType.DEVELOPER,
+            input_stream="stopped-input",
+            output_stream="stopped-output",
+        ),
+        main.settings.WORKER_BROKER_INTERNAL_TOKEN,
+    )
+    await redis.xadd(
+        "stopped-input",
+        {
+            "data": json.dumps(
+                {
+                    "request_id": "stopped-request",
+                    "attempt_id": "eng-stopped",
+                    "turn_deadline_seconds": 60,
+                    "prompt": "must not reach the executor",
+                }
+            )
+        },
+    )
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kwargs: client_class(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"disposition": "stopped"})
+            ),
+            **kwargs,
+        ),
+    )
+    with pytest.raises(main.HTTPException) as denied:
+        await main.lease_input("stopped", token)
+    assert denied.value.status_code == 409
+    assert await redis.hgetall(active_turn_key("stopped")) == {}
+    assert await redis.xlen("stopped-output") == 0
 
 
 def test_broker_internal_token_cannot_be_empty():
@@ -242,7 +377,19 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
         },
     )
 
-    lease = await main.lease_input(worker_id, worker_token)
+    real_async_client = httpx.AsyncClient
+    with monkeypatch.context() as authority:
+        authority.setattr(
+            main.httpx,
+            "AsyncClient",
+            lambda **kwargs: real_async_client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json={"disposition": "eligible"})
+                ),
+                **kwargs,
+            ),
+        )
+        lease = await main.lease_input(worker_id, worker_token)
     active = WorkerActiveTurn.from_redis_fields(await redis.hgetall(active_turn_key(worker_id)))
     assert active is not None
     assert active.attempt_id == "eng-attempt-1"

@@ -24,8 +24,9 @@ from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis.client import RedisStreamClient
 
+from ..attempt_disposition import require_automatic_task
 from ..database import get_async_session
-from ..dependencies import get_redis_client, require_internal_or_admin
+from ..dependencies import get_internal_or_admin_actor, get_redis_client, require_internal_or_admin
 from ..engineering_dispatch_admission import admit_engineering_dispatch
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
@@ -116,6 +117,7 @@ async def start_task(
 
     # Allow start from backlog (auto-promote to todo first) or from todo
     _refuse_unfenced_conflict_start(task)
+    await require_automatic_task(task, db)
     if task.status == TaskStatus.BACKLOG:
         await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, {}, db)
         task.status = TaskStatus.TODO
@@ -132,15 +134,7 @@ async def start_task(
     return to_read(task)
 
 
-@action_router.post("/{task_id}/complete", response_model=TaskRead)
-async def complete_task(
-    task_id: str,
-    body: TaskTransition | None = None,
-    db: AsyncSession = Depends(get_async_session),
-) -> TaskRead:
-    body = body or TaskTransition()
-    task = await get_task_for_update(task_id, db)
-
+async def apply_task_completion(task, actor, details, db):
     path = _COMPLETE_PATH.get(task.status)
     if path is None:
         raise HTTPException(
@@ -158,7 +152,20 @@ async def complete_task(
     for next_status in path:
         old_status = task.status
         task.status = next_status
-        await create_status_event(task, old_status, next_status, body.actor, body.details, db)
+        await create_status_event(task, old_status, next_status, actor, details, db)
+
+
+@action_router.post("/{task_id}/complete", response_model=TaskRead)
+async def complete_task(
+    task_id: str,
+    body: TaskTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> TaskRead:
+    body = body or TaskTransition()
+    task = await get_task_for_update(task_id, db)
+    await require_automatic_task(task, db)
+
+    await apply_task_completion(task, body.actor, body.details, db)
 
     await db.commit()
     await db.refresh(task)
@@ -207,6 +214,7 @@ async def retry_failed_task(
     """
     body = body or TaskTransition(actor="supervisor")
     task = await get_task_for_update(task_id, db)
+    await require_automatic_task(task, db)
     if task.status != TaskStatus.FAILED.value:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -260,6 +268,7 @@ async def reopen_task(
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
     _refuse_client_resume_audit(task, body)
+    await require_automatic_task(task, db)
 
     validate_transition(task.status, TaskStatus.BACKLOG)
 
@@ -308,6 +317,7 @@ async def resume_task(
     body: TaskResume,
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
+    verified_actor: str = Depends(get_internal_or_admin_actor),
 ) -> TaskRead:
     """Give a task parked in waiting_human_review one fresh engineering attempt.
 
@@ -331,6 +341,14 @@ async def resume_task(
     # Ladder: Task, then Story, then Run — the order admission and every other
     # task/story writer take them.
     task = await get_task_for_update(task_id, db)
+    from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
+
+    if COMMIT_PUBLICATION_KEY in (task.failure_metadata or {}):
+        _refuse_resume(
+            "commit_publication_required",
+            "Use explicit commit recovery; paid resume cannot replace preserved work.",
+        )
+
     if task.status != TaskStatus.WAITING_HUMAN_REVIEW.value:
         # 422 like every other hop this router cannot perform from a status.
         raise HTTPException(
@@ -406,6 +424,24 @@ async def resume_task(
     if task.id.startswith("pr-conflict-"):
         await _validate_conflict_resume(task, story, runs, db)
 
+    if story is not None and story.engineering_stop is not None:
+        from datetime import UTC, datetime
+
+        from shared.contracts.dto.commit_publication import EngineeringStop
+
+        stop = EngineeringStop.model_validate(story.engineering_stop)
+        if stop.released_at is None:
+            if body.stop_id != stop.id:
+                _refuse_resume(
+                    "engineering_stopped", "Paid resume must name the exact current operator stop."
+                )
+            story.engineering_stop = stop.model_copy(
+                update={
+                    "released_at": datetime.now(UTC),
+                    "release_actor": verified_actor,
+                }
+            ).model_dump(mode="json")
+    body = body.model_copy(update={"actor": verified_actor})
     iteration = _fresh_iteration(task, [run for run in runs if run.task_id == task.id])
     audit = {
         "action": RESUME_ACTION,
@@ -550,6 +586,16 @@ async def transition_task(
 
     if to_status == TaskStatus.IN_DEV:
         _refuse_unfenced_conflict_start(task)
+    if to_status in {
+        TaskStatus.BACKLOG,
+        TaskStatus.TODO,
+        TaskStatus.IN_DEV,
+        TaskStatus.IN_CI,
+        TaskStatus.TESTING,
+        TaskStatus.DONE,
+    }:
+        await require_automatic_task(task, db)
+
     validate_transition(task.status, to_status)
 
     old_status = task.status

@@ -149,8 +149,47 @@ async def replay_terminal_attempt(api_client: Any, task_id: str, run: Any, actor
         await api_client.transition_task(task_id, status, actor)
 
 
-async def fail_removed_attempt(api_client: Any, task: Any, run: Any) -> None:
+async def fail_removed_attempt(api_client: Any, task: Any, run: Any, redis_client) -> None:
     """Close a still-live attempt only after confirmed worker removal."""
+    from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
+
+    if COMMIT_PUBLICATION_KEY in run.run_metadata:
+        # The broker's committed park is the outcome owner; redelivery settles
+        # its provider facts instead of timeout erasing the preserved SHA.
+        return
+    from shared.commit_publication import pending_publication
+
+    pending = await pending_publication(redis_client.redis, run.id)
+    if pending is not None:
+        await api_client.update_run(
+            run.id,
+            {
+                "status": RunStatus.FAILED.value,
+                "error_message": pending.error,
+                "result": EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    failure_reason=pending.failure_reason,
+                    publication=pending.publication,
+                    worker_report=pending.worker_report,
+                    execution=pending.execution,
+                ).model_dump(mode="json"),
+                "engineering_attempt": {
+                    "claude_evidence": pending.claude_evidence.model_dump(mode="json")
+                }
+                if pending.claude_evidence
+                else (
+                    {"factory_evidence": pending.factory_evidence.model_dump(mode="json")}
+                    if pending.factory_evidence
+                    else {
+                        "input_tokens": pending.input_tokens,
+                        "output_tokens": pending.output_tokens,
+                        "total_tokens": pending.total_tokens,
+                        "cost_source": "unknown",
+                    }
+                ),
+            },
+        )
+        return
     await api_client.update_run(
         run.id,
         {

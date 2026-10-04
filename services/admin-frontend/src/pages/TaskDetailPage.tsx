@@ -6,7 +6,7 @@ import { Card } from '@/components/ui/Card'
 import { ConfirmButton } from '@/components/ui/ConfirmButton'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
-import type { SpawnWorkerRequest, SpawnWorkerResponse, Task, TaskEvent, TaskResume, TaskTransition } from '@/types/api'
+import type { SpawnWorkerRequest, SpawnWorkerResponse, Story, Task, TaskEvent, TaskResume, TaskTransition } from '@/types/api'
 
 export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -138,11 +138,15 @@ function TaskActions({ task, onSuccess }: { task: Task; onSuccess: () => void })
   })
 
   const resumeMutation = useMutation({
-    mutationFn: () =>
-      api.post<Task, TaskResume>(`/tasks/${task.id}/resume`, {
+    mutationFn: async () => {
+      const story = task.story_id ? await api.get<Story>(`/stories/${task.story_id}`) : null
+      const stop = story?.engineering_stop
+      return api.post<Task, TaskResume>(`/tasks/${task.id}/resume`, {
         actor: 'admin',
         guidance,
-      }),
+        stop_id: stop && !stop.released_at && typeof stop.id === 'string' ? stop.id : null,
+      })
+    },
     onSuccess: () => {
       setShowResume(false)
       setGuidance('')

@@ -13,6 +13,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
+from shared.contracts.dto.commit_publication import CommitPublication
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 from shared.contracts.dto.executor_decision import ExecutorDecision
@@ -103,6 +104,7 @@ class EngineeringState(TypedDict):
     # logs — currently a DONE-looking result that changed nothing over the head
     # the attempt started from. It travels to the consumer, which records it on
     # the Run; a task's attempt then retries, a taskless one parks the story.
+    publication: CommitPublication | None
     failure_reason: EngineeringFailureReason | None
 
     # Why the worker's turn ended without a result, and the limit it was

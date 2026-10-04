@@ -78,6 +78,7 @@ class TaskResume(BaseModel):
     a failure of the new attempt is retried that many times before it parks again.
     """
 
+    stop_id: str | None = None
     guidance: str
     actor: str = "admin"
     retries: int = Field(default=RESUME_RETRY_ALLOWANCE, ge=0, le=10)

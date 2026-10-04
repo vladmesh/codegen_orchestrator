@@ -252,6 +252,8 @@ async def _handle_failed_result(
         turn_result_consumed=result.get("turn_result_consumed", False),
         story_id=msg.story_id,
         failure_reason=result.get("failure_reason"),
+        publication=result.get("publication"),
+        worker_report=result.get("worker_report"),
         project_id=msg.project_id or "",
         telegram_chat_id=msg.telegram_chat_id,
     )
@@ -265,6 +267,13 @@ async def _handle_failed_result(
             project_id=msg.project_id or "",
         )
     return outcome
+
+
+async def _engineering_attempt_authority(task_id):
+    from shared.contracts.dto.commit_publication import AttemptDispositionRead
+
+    response = await api_client.post(f"runs/{task_id}/engineering-disposition", json={})
+    return AttemptDispositionRead.model_validate(response).disposition
 
 
 async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -296,6 +305,11 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         action=action,
     )
 
+    authority = await _engineering_attempt_authority(task_id)
+    if authority != "eligible":
+        # Known outcomes remain owned by their first terminal writer. A stale
+        # queue entry cannot start the graph or write an ordinary failure over it.
+        return {"status": "fenced", "disposition": authority}
     try:
         await api_client.patch(
             f"runs/{task_id}",

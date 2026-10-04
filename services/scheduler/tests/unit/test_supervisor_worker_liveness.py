@@ -39,6 +39,7 @@ def _redis(*, active: WorkerActiveTurn | None = None, status: str | None = "RUNN
 
     client.redis.hgetall.side_effect = hgetall
     client.redis.hget.side_effect = hget
+    client.redis.get.return_value = None
     client.publish = AsyncMock()
     return client
 

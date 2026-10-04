@@ -70,6 +70,7 @@ class StoryRead(TimestampedDTO):
     blocked_by_story_id: str | None = None
     created_by: str
     user_report: str | None = None
+    engineering_stop: dict[str, Any] | None = None
     quarantine_reason: dict[str, Any] | None = None
     generated_product_timeline: dict[str, Any] | None = None
     operator_acceptance: StoryAcceptance | None = None

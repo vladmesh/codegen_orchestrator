@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Unpublished worker commits park for explicit agent-free recovery; committed
+  engineering stops fence retries, worker turns and late deploy claims, preserving paid outcomes.
 - Health QA's product HTTP fixture matches the root path explicitly, so its
   reachability response cannot shadow caller identity proof and health reads in CI.
 - Health QA service fixtures use canonical diagnostic reasons, and the LangGraph

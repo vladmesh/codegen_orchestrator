@@ -23,6 +23,7 @@ from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
 
 from scripts.template_pin import TEMPLATE_PIN
 from shared.constants import WorkerWorkspace
+from shared.contracts.dto.commit_publication import CommitPublication, PublicationFailure
 from shared.contracts.queues.worker_result import (
     WorkerCompletedResult,
     WorkerResultStatus,
@@ -244,9 +245,9 @@ class TestThePublishGuard:
         )
 
         assert result is None
-        assert WorkerWorkspace.PROGRESS in error
-        assert ".story/old_tasks/task-1.md" in error
-        assert "services/backend/probe.py" not in error
+        assert WorkerWorkspace.PROGRESS in error.stderr
+        assert ".story/old_tasks/task-1.md" in error.stderr
+        assert "services/backend/probe.py" not in error.stderr
         readback = subprocess.run(  # noqa: S603
             ["git", "rev-parse", "--verify", "story/story-1"],
             cwd=str(published),
@@ -263,11 +264,18 @@ class TestThePublishGuard:
             WorkerCompletedResult(
                 commit_sha="a" * 40, content="summary", worker_report="# Report\n\nwhat happened"
             ),
-            "Worker commit a carries orchestrator-injected paths: PROGRESS.md.",
+            CommitPublication(
+                commit_sha="a" * 40,
+                branch="story/story-1",
+                failure=PublicationFailure.INJECTED_PATHS,
+                stderr="PROGRESS.md",
+            ),
         )
 
         assert refused.status == WorkerResultStatus.FAILED
         assert refused.worker_report == "# Report\n\nwhat happened"
+        assert refused.publication.failure == PublicationFailure.INJECTED_PATHS
+        assert refused.publication.commit_sha == "a" * 40
 
     def test_a_root_commit_is_inspected_too(self, product, tmp_path, monkeypatch):
         """A first commit has no parent; its whole tree is what it adds."""

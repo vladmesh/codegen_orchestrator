@@ -8,6 +8,7 @@ from . import (
     api_keys,
     applications,
     brainstorms,
+    commit_recovery,
     debug,
     engineering_budget_policies,
     engineering_consumer,
@@ -31,6 +32,7 @@ from . import (
 )
 
 __all__ = [
+    "commit_recovery",
     "agent_configs",
     "admin_overview",
     "allocations",

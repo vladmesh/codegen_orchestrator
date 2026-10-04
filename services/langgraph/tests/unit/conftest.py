@@ -24,6 +24,43 @@ os.environ.setdefault("API_BASE_URL", "http://api:8000")
 
 
 @pytest.fixture(autouse=True)
+def isolated_attempt_authority(monkeypatch):
+    """Existing units have eligible API authority and no pending Redis output.
+
+    Stop/park tests override these network boundaries with their required facts;
+    actual SQL/Redis fence proofs execute in the API service suite in CI.
+    """
+    from shared import commit_publication
+    from src.consumers import engineering
+
+    monkeypatch.setattr(
+        engineering, "_engineering_attempt_authority", AsyncMock(return_value="eligible")
+    )
+    monkeypatch.setattr(commit_publication, "pending_publication", AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
+def isolated_worker_publication_transport(monkeypatch):
+    """Simulate the eligible API's native stream write in client envelope units."""
+    from shared.queues import WORKER_COMMANDS, worker_input_stream
+    from src.clients import worker_spawner, worker_turns
+
+    async def create(redis, command):
+        await redis.xadd(WORKER_COMMANDS, {"data": command.model_dump_json()})
+
+    async def turn(redis, worker_id, turn):
+        await redis.xadd(
+            worker_input_stream(worker_id),
+            {"data": turn.model_dump_json(exclude_none=True)},
+            maxlen=1000,
+            approximate=True,
+        )
+
+    monkeypatch.setattr(worker_spawner, "_publish_create_command", create)
+    monkeypatch.setattr(worker_turns, "_publish_engineering_turn", turn)
+
+
+@pytest.fixture(autouse=True)
 def mock_deploy_config_store(monkeypatch):
     """Keep deploy-consumer unit tests independent of the system-config API."""
     from src.consumers import deploy

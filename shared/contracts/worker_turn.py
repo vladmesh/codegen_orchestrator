@@ -89,6 +89,12 @@ class WorkerActiveTurn(BaseModel):
         return cls.model_validate(fields)
 
 
+class EngineeringTurnPublication(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    worker_id: str = Field(min_length=1)
+    turn: WorkerTurnInput
+
+
 class PreparedCheckoutBaseline(BaseModel):
     """Native checkout evidence, fenced to the worker's creator attempt."""
 

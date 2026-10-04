@@ -13,6 +13,7 @@ from pydantic import ValidationError
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.commit_publication import CommitPublication, PublicationFailure
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_attempt import FactoryResultEvidence
 from shared.contracts.dto.project import ProjectStatus
@@ -271,6 +272,21 @@ class DeveloperNode(FunctionalNode):
                 "messages": [AIMessage(content=unpushed)],
                 "engineering_status": EngineeringStatus.FAILED,
                 "errors": state.get("errors", []) + [unpushed],
+                "failure_reason": EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED,
+                "publication": CommitPublication(
+                    failure=PublicationFailure.READBACK_MISMATCH,
+                    # The defensive reader has no native local object proof.
+                    branch=branch,
+                    worker_id=worker_result.worker_id,
+                    attempt_id=ownership.attempt_id,
+                    stderr=unpushed,
+                ),
+                "worker_report": worker_result.worker_report,
+                "turn_result_consumed": worker_result.turn_result_consumed,
+                "worker_observability": self._worker_observability(
+                    worker_result, state.get("project_spec") or {}, agent_type
+                ),
+                "execution": worker_result.execution,
             }
 
         no_new_commit = await self._no_new_commit_error(
@@ -546,6 +562,8 @@ class DeveloperNode(FunctionalNode):
             # Why the turn stopped, when the worker said why. It travels to the
             # attempt's run_metadata so a failed run is readable as "ran out of
             # its limit" rather than as an unexplained failure.
+            "publication": worker_result.publication,
+            "failure_reason": worker_result.failure_reason,
             "stop_reason": worker_result.stop_reason,
             "agent_limit_seconds": worker_result.agent_limit_seconds,
             "worker_observability": DeveloperNode._worker_observability(

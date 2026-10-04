@@ -23,6 +23,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from shared.contracts.dto.commit_publication import CommitPublication
 from shared.diagnostics import redact_diagnostic
 
 #: The project config key the scaffolder records a failed scaffold/ensure under.
@@ -49,6 +50,7 @@ class StoryFailureCode(StrEnum):
 
     #: The scaffolder recorded ``projects.config.scaffold_error``: the project
     #: repository could not be created, so no work on it can start.
+    WORKER_COMMIT_NOT_PUBLISHED = "worker_commit_not_published"
     SCAFFOLD_FAILED = "scaffold_failed"
     #: The architect waited for the scaffold for its whole window and the project
     #: never left ``draft``, with no recorded error to explain it.
@@ -83,6 +85,9 @@ class StoryFailure(BaseModel):
     #: The cause, as the failing service saw it. Redacted and bounded here.
     detail: str
     observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    commit_publication: CommitPublication | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("detail", mode="before")
     @classmethod
@@ -91,6 +96,9 @@ class StoryFailure(BaseModel):
 
 
 _OWNER_WORDS: dict[StoryFailureCode, str] = {
+    StoryFailureCode.WORKER_COMMIT_NOT_PUBLISHED: (
+        "Engineering stopped: its local commit was not published."
+    ),
     StoryFailureCode.INITIAL_OWNER_DEPLOYMENT_EXHAUSTED: (
         "Initial deployment stopped: its bounded deployment attempts are exhausted. "
         "Deployment credentials are provisioned by the platform."

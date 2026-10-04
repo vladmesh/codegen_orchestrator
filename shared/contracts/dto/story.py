@@ -226,6 +226,7 @@ class StoryDTO(TimestampedDTO):
     blocked_by_story_id: str | None = None
     created_by: str
     user_report: str | None = None
+    engineering_stop: dict[str, Any] | None = None
     quarantine_reason: dict[str, Any] | None = None
     # App-authenticated observations of the generated repository's PR and CI.
     # This remains readable after the generated-product organization is gone.
@@ -263,7 +264,12 @@ class StoryCreate(BaseModel):
 #: Story fields a transition owns.  Sending one to ``PATCH /stories/{id}`` is a
 #: caller bug, not a no-op, so it is refused instead of dropped by
 #: ``extra="ignore"``.
-TRANSITION_OWNED_STORY_FIELDS: tuple[str, ...] = ("status", "waiting_on", "status_entered_at")
+TRANSITION_OWNED_STORY_FIELDS: tuple[str, ...] = (
+    "status",
+    "waiting_on",
+    "status_entered_at",
+    "engineering_stop",
+)
 
 
 class StoryUpdate(BaseModel):

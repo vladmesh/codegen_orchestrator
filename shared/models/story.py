@@ -44,6 +44,7 @@ class Story(Base):
     )
     created_by: Mapped[str] = mapped_column(String(50), default="system")
     user_report: Mapped[str | None] = mapped_column(Text, nullable=True)
+    engineering_stop: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # QA evidence kept with the story while a human decides whether to retry or fix it.
     quarantine_reason: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Generated-repository PR/CI observations collected through the GitHub App.
