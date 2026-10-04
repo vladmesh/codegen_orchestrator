@@ -6,6 +6,8 @@ import sys
 sys.path.append("/app")
 
 from datetime import UTC, datetime, timedelta
+import importlib.util
+from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -156,6 +158,48 @@ async def _known_executor_diagnostic_snapshot(redis_client: Redis):
         ex=300,
     )
     yield
+
+
+@pytest.fixture
+async def unavailable_executor_snapshot(redis_client, _known_executor_diagnostic_snapshot):
+    """Absent host sessions, observed through the same Redis boundary as admission."""
+    now = datetime.now(UTC)
+    expiry = now + timedelta(minutes=5)
+    snapshot = ExecutorDiagnosticSnapshot(
+        schema_version="v2",
+        version="health-qa-no-model-sessions",
+        observed_at=now,
+        expires_at=expiry,
+        diagnostics=[
+            ExecutorDiagnostic(
+                executor=executor,
+                enabled=True,
+                auth_mode=ExecutorAuthMode.HOST_SESSION,
+                availability=ExecutorAvailability.UNAVAILABLE,
+                observed_at=now,
+                expires_at=expiry,
+                active_lease_count=0,
+                reason_code="profile_logged_out",
+                reason="Host session is absent.",
+                profile=host_profile_for_reason("profile_logged_out"),
+            )
+            for executor in (AgentType.CLAUDE, AgentType.CODEX)
+        ],
+    )
+    await redis_client.set(EXECUTOR_DIAGNOSTICS_REDIS_KEY, snapshot.model_dump_json(), ex=300)
+    return snapshot
+
+
+@pytest.fixture
+def base_work_admission():
+    """CI exports the exact pre-hotfix module, not a replica of its admission logic."""
+    path = Path(__file__).with_name("_qa_admission_base.py")
+    assert path.is_file(), "CI must export work_admission.py from base 474876566bf0"
+    spec = importlib.util.spec_from_file_location("src._qa_admission_base", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture(scope="session", autouse=True)

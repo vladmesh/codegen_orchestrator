@@ -63,3 +63,6 @@ docs/e2e_results/
 
 # The deploy host's pending release set (.github/workflows/deploy.yml, RELEASE_PENDING)
 .release-pending/
+
+# Historical admission source exported by the API CI regression fixture
+services/api/tests/service/_qa_admission_base.py
