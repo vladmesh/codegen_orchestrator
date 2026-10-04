@@ -21,6 +21,25 @@ These secrets are required for the platform itself to function.
 *   **Access**: loaded through the service settings/configuration boundary (Pydantic settings where applicable), not by ad-hoc `os.getenv` calls in business logic.
 *   **Repo**: local development may use `.env`; deployed values come from the runtime/deployment secret store and are never committed.
 
+Stand model sessions follow `scripts.stand_run.requires_model_sessions`: only a
+registered no-model suite after alias resolution may bypass them. Raw targets,
+including `tests/live/test_llm_channel_failover.py`, and absent selections retain
+full session/profile protection. `Suite.llm` continues to select the developer/QA
+executor environment independently; it does not classify a raw target's other calls.
+`mega-noop` requires no `CODEX_AUTH_JSON`, Claude OAuth token/expiry or QA Telethon
+session. It restores and installs no profile, performs no model authentication
+request and writes no rotated session. The stand's empty profile mount directory
+is not an authenticated session. Required service and infrastructure secrets remain
+fail-closed, including PO/Architect service API credentials and the GitHub App key.
+
+Explicit paid suites retain refreshable Codex profile validation, exact-image
+authentication before provisioning, durable preflight refresh writes and protected
+remote refresh retrieval/writeback. Tokens travel only through protected files or
+stdin, never argv or logs. Handoff admission scans profile token generations before
+writing its value-free redaction attestation; cleanup requires that attestation for
+paid suites. No-model admission scans every supplied protected value even when its
+unused session is optional, and never fabricates a profile-backed attestation.
+
 `WORKER_BROKER_INTERNAL_TOKEN` is an L1 credential shared only by
 `worker-manager` and `worker-broker`. It authenticates worker registration and
 must be non-empty before either service starts. Coding workers receive only a

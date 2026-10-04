@@ -3,6 +3,13 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-04
+
+- Raw stand targets retain model sessions and profile protection unless they resolve
+  to a registered no-model suite, so paid custom probes fail closed before provisioning.
+- Stand noop skips model sessions and authentication throughout setup and preflight;
+  paid suites retain refresh/redaction checks, and SSH failures preserve runner evidence.
+
 ## 2026-10-03
 
 - Repository auth parks offer the existing admin retry; gh permits auth-valued arguments,

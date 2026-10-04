@@ -458,6 +458,33 @@ capability is a one-time reminder, so the Architect plans a kit package, the wor
 with the kit recipe, and central QA judges the package behaviour on the route its criterion
 names; it gets 65 productive minutes and a 15-minute grace.
 
+`scripts.stand_run.requires_model_sessions` governs workflow setup and runtime
+preflight: only a registered no-model suite, after alias resolution, may bypass
+sessions. Raw/unknown pytest targets and standalone commands without a suite retain
+session validation and profile protection. This is separate from `Suite.llm`, which
+selects the developer/QA environment and remains unchanged for raw targets.
+`mega-noop` skips model authentication, profile restore/install/writeback and
+model-session validation, including with inherited `qa=codex`, `worker=claude`
+and LLM executor flags. Exact release, native CLI/version/UID/GID and infrastructure
+checks still run. Explicit paid suites retain authentication before provisioning,
+refresh persistence, required QA sessions and profile-backed redaction admission.
+
+`services/worker-manager/tests/unit/test_noop_stand_workflow.py` executes the real
+workflow scripts/conditions against synthetic Docker, SSH, SCP and secret-write
+commands, with real profile files, outputs, validators and artifact admission.
+It covers named/custom selection, absent noop sessions, paid refusals and refresh
+writes, inherited agent flags, and unreachable-host runner evidence. The suite's
+SSH exit and known identities survive collection failure; missing pytest/runtime
+evidence remains incomplete. These offline units spend nothing and establish no
+provider deletion cause or live profile usability. Runtime verification belongs
+to the dispatcher exact-SHA CI and its configured after-merge stand run.
+
+Raw-target regressions execute the workflow for the documented
+`tests/live/test_llm_channel_failover.py` and another unknown target, preserving
+their executor environment while selecting auth, profile install/refresh and
+redaction/attestation. Missing sessions refuse before a synthetic provider boundary;
+cleanup consumes the declared job outputs and refuses missing profile attestation.
+
 **Every live test has its own bound.** Every test under `tests/live` runs under a `pytest-timeout`
 bound with method `signal`, so a hung test fails as a pytest timeout naming the test, with a
 traceback, and its fixture's cleanup still runs. The bounds come from `shared/stand_deadlines.py`.

@@ -96,7 +96,7 @@ def test_stand_contour_uses_claude_token_and_codex_profile_validation(monkeypatc
         lambda profile: checked.append(f"codex:{profile}") or ("codex", True, ""),
     )
 
-    assert stand_preflight.main() == 0
+    assert stand_preflight.main([]) == 0
     assert checked == ["token", "codex:/opt/secrets/stand-codex"]
 
 
@@ -124,5 +124,5 @@ def test_non_stand_contour_retains_the_host_session_checks(monkeypatch):
         lambda *_: checked.append("codex") or ("codex", True, ""),
     )
 
-    assert stand_preflight.main() == 0
+    assert stand_preflight.main([]) == 0
     assert checked == ["claude", "codex"]
