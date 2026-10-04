@@ -52,6 +52,14 @@ CLEAN_ENV=(
     DEFAULT_AGENT_TYPE="claude"
     DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test"
 )
+# On the Ummanu control host `docker` is a guard shim that needs these launcher
+# bindings to reach the native backend; the read-only `docker compose config` tests
+# fail without them. Only these three, only when set: CI and production have none.
+for name in UMMANU_DOCKER_PYTHON UMMANU_DOCKER_SOURCE UMMANU_DOCKER_BACKEND; do
+    if [ -n "${!name+x}" ]; then
+        CLEAN_ENV+=("$name=${!name}")
+    fi
+done
 
 # Every unit test is bounded, so a hang fails in minutes with the test's node id,
 # its pending asyncio tasks and every thread's stack (scripts/unit_test_timeout.py)

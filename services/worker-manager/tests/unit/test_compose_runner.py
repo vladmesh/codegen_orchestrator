@@ -29,7 +29,13 @@ def _real_docker_available() -> bool:
     executable = shutil.which("docker")
     if executable is None:
         return False
-    return subprocess.run([executable, "info"], capture_output=True, check=False).returncode == 0
+    if subprocess.run([executable, "info"], capture_output=True, check=False).returncode != 0:
+        return False
+    # The real-daemon test builds images. A reachable daemon is not enough: the Ummanu
+    # control host's docker guard serves `info` but refuses builds, which `build --help`
+    # shows without building anything.
+    probe = [executable, "build", "--help"]
+    return subprocess.run(probe, capture_output=True, check=False).returncode == 0
 
 
 @pytest.fixture
@@ -455,6 +461,44 @@ class TestComposeRunner:
         assert "POSTGRES_PASSWORD" not in env
         assert env["PATH"] == "/usr/bin:/bin"
         assert env["HOST_UID"] == "1000"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [["ps"], ["up", "-d"]])
+    async def test_docker_guard_bindings_pass_through_only_when_set(
+        self, workspace, monkeypatch, args
+    ):
+        """On the Ummanu control host `docker` is a guard shim needing three launcher
+        bindings; they reach Compose when set, while the guard's relaxing policy and
+        every other variable stay scrubbed."""
+        bindings = {
+            "UMMANU_DOCKER_PYTHON": "/opt/ummanu/bin/python3",
+            "UMMANU_DOCKER_SOURCE": "/opt/ummanu/src",
+            "UMMANU_DOCKER_BACKEND": "/usr/bin/docker",
+        }
+        runner = ComposeRunner(str(workspace))
+        for name in bindings:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("UMMANU_DOCKER_LOCAL_RUN_POLICY", "relaxed")
+        monkeypatch.setenv("UMMANU_ROLE", "worker")
+        monkeypatch.setenv("SECRETS_ENCRYPTION_KEY", "orchestrator-platform-key")
+
+        with patch("subprocess.run", return_value=_safe_compose_result()) as mock_run:
+            await runner.run("worker-123", args)
+        unset_envs = [call.kwargs["env"] for call in mock_run.call_args_list]
+
+        for name, value in bindings.items():
+            monkeypatch.setenv(name, value)
+        with patch("subprocess.run", return_value=_safe_compose_result()) as mock_run:
+            await runner.run("worker-123", args)
+        set_envs = [call.kwargs["env"] for call in mock_run.call_args_list]
+
+        assert unset_envs and set_envs
+        for env in unset_envs:
+            assert not {name for name in env if name.startswith("UMMANU_")}
+            assert "SECRETS_ENCRYPTION_KEY" not in env
+        for env in set_envs:
+            assert {name: env[name] for name in env if name.startswith("UMMANU_")} == bindings
+            assert "SECRETS_ENCRYPTION_KEY" not in env
 
     @pytest.mark.asyncio
     async def test_project_dot_env_still_reaches_compose(self, workspace, monkeypatch):

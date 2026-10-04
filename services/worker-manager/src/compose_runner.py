@@ -58,6 +58,13 @@ _INHERITED_ENV_VARS = (
     "DOCKER_TLS_VERIFY",
     "DOCKER_BUILDKIT",
     "COMPOSE_DOCKER_CLI_BUILD",
+    # The Ummanu docker-guard launcher bindings: on its control host `docker` is a shim
+    # that cannot reach the native backend without them. Production and CI set none, the
+    # guard refuses a backend that resolves to its own shim, and whoever controls this
+    # environment controls PATH anyway. The guard's relaxing policy is never inherited.
+    "UMMANU_DOCKER_PYTHON",
+    "UMMANU_DOCKER_SOURCE",
+    "UMMANU_DOCKER_BACKEND",
 )
 
 
