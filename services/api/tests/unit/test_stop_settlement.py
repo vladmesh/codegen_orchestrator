@@ -131,6 +131,77 @@ def test_a_stale_terminal_writer_cannot_replace_retained_execution_facts():
     _require_retained_empty_outcome(run, terminal, retained.engineering_attempt)
 
 
+@pytest.mark.parametrize("expanded", [False, True])
+def test_empty_retention_and_terminal_write_compare_typed_results(expanded):
+    from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+    from src.routers.runs import _require_retained_empty_outcome, _validate_empty_retention
+
+    retained = EmptyEngineeringTerminal.model_validate(
+        {
+            "status": "failed",
+            "error_message": "No new commit",
+            "result": {
+                "engineering_status": "failed",
+                "failure_reason": "no_new_commit",
+                "worker_report": "Known executed output",
+            },
+            "engineering_attempt": {"provider": "openai", "input_tokens": 17},
+        }
+    )
+    compact = retained.model_dump(mode="json", exclude_unset=True)
+    canonical = retained.result.model_dump(mode="json")
+    result = canonical if expanded else compact["result"]
+    run = SimpleNamespace(type="engineering", task_id=None, run_metadata={})
+    metadata = {EMPTY_RESULT_TERMINAL_KEY: compact}
+    update = {"result": result}
+    _validate_empty_retention(run, metadata, update)
+    assert update["result"] == canonical
+    run.run_metadata = metadata
+    terminal = {**compact, "result": result}
+    _require_retained_empty_outcome(run, terminal, retained.engineering_attempt)
+    assert terminal["result"] == canonical
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        None,
+        {},
+        {"engineering_status": "failed"},
+        {"engineering_status": "failed", "failure_reason": "no_new_commit", "unknown": True},
+        {
+            "engineering_status": "failed",
+            "failure_reason": "no_new_commit",
+            "worker_report": "Other",
+        },
+    ],
+)
+def test_result_normalization_cannot_discard_changed_or_invalid_facts(replacement):
+    from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+    from src.routers.runs import _require_retained_empty_outcome, _validate_empty_retention
+
+    retained = EmptyEngineeringTerminal.model_validate(
+        {
+            "status": "failed",
+            "error_message": "No new commit",
+            "result": {
+                "engineering_status": "failed",
+                "failure_reason": "no_new_commit",
+                "worker_report": "Known output",
+            },
+        }
+    ).model_dump(mode="json", exclude_unset=True)
+    run = SimpleNamespace(type="engineering", task_id=None, run_metadata={})
+    metadata = {EMPTY_RESULT_TERMINAL_KEY: retained}
+    with pytest.raises(HTTPException) as refused:
+        _validate_empty_retention(run, metadata, {"result": replacement})
+    assert refused.value.status_code == 422
+    run.run_metadata = metadata
+    with pytest.raises(HTTPException) as refused:
+        _require_retained_empty_outcome(run, {"result": replacement}, None)
+    assert refused.value.status_code == 409
+
+
 def test_release_authority_preserves_a_changed_cause_or_unpublished_attempt():
     from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
     from src.attempt_disposition import release_engineering_stop

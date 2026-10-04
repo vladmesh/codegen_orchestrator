@@ -34,6 +34,7 @@ from shared.contracts.dto.owner_notification import (
 from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Project, Run, User
 
 from ..database import get_async_session
@@ -661,17 +662,22 @@ def _require_retained_empty_outcome(run, update_data, engineering_attempt):
             continue
         incoming = engineering_attempt if field == "engineering_attempt" else update_data.get(field)
         expected = getattr(retained, field)
-        if field == "result":
-            expected = expected.model_dump(mode="json")
+        if field == "result" and incoming is not None:
+            try:
+                incoming = EngineeringRunResult.model_validate(incoming)
+            except ValidationError as exc:
+                raise HTTPException(
+                    409, "A retained empty outcome requires its typed result"
+                ) from exc
         terminal = update_data.get("status") in _TERMINAL_RUN_STATUSES
         supplied = field in update_data or (field == "engineering_attempt" and incoming is not None)
         if (supplied or terminal) and incoming != expected:
             raise HTTPException(409, "A retained empty outcome must use its own terminal writer")
+        if field == "result" and supplied:
+            update_data[field] = retained.result.model_dump(mode="json")
 
 
 def _validate_empty_retention(run, metadata_update, update_data):
-    from pydantic import ValidationError
-
     from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
 
     pending = (run.run_metadata or {}).get(EMPTY_RESULT_TERMINAL_KEY)
@@ -689,8 +695,13 @@ def _validate_empty_retention(run, metadata_update, update_data):
         raise HTTPException(422, "Invalid retained empty terminal outcome") from exc
     if pending is not None and retained != EmptyEngineeringTerminal.model_validate(pending):
         raise HTTPException(409, "A retained empty terminal outcome is immutable")
-    if update_data.get("result") != retained.result.model_dump(mode="json"):
+    try:
+        incoming = EngineeringRunResult.model_validate(update_data.get("result"))
+    except ValidationError as exc:
+        raise HTTPException(422, "Empty-result retention requires its typed Run result") from exc
+    if incoming != retained.result:
         raise HTTPException(422, "Empty-result retention must include its exact typed Run result")
+    update_data["result"] = retained.result.model_dump(mode="json")
 
 
 @router.patch("/{run_id}", response_model=RunRead)

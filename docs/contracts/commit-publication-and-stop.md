@@ -89,6 +89,10 @@ preserves it, and queue reclaim finishes only that terminal write and its stop,
 without executing the graph. Terminal Run/ledger immutability still applies.
 Null replacements refuse, and terminal settlement requires the exact retained
 result, error, accounting and supplied transcript/profile facts together.
+Result equality is typed: omitted unset optional fields and explicit nulls for
+those fields serialize the same outcome. The owner persists its canonical result
+before terminal immutability checks; changed facts, malformed shapes and cleared
+results still refuse, including on replay.
 An unrelated stop or notification episode is never rewritten into an empty
 result stop; identical stop retries preserve their original cause and notices.
 

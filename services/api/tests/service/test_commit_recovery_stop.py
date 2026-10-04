@@ -402,7 +402,10 @@ async def test_retained_taskless_outcome_settles_exact_accounting_after_stop(
     assert retained.status_code == 200, retained.text
     stop_id = await stop(async_client, story)
     before = (await async_client.get(f"/api/runs/{run.id}")).json()
-    assert before["status"] == "running" and before["result"] == terminal["result"]
+    assert before["status"] == "running"
+    assert before["result"] == EngineeringRunResult.model_validate(terminal["result"]).model_dump(
+        mode="json"
+    )
     for stale in (
         {"result": None},
         {"error_message": None},
@@ -413,8 +416,14 @@ async def test_retained_taskless_outcome_settles_exact_accounting_after_stop(
         refused = await async_client.patch(f"/api/runs/{run.id}", json=stale)
         assert refused.status_code == 409, refused.text
         assert (await async_client.get(f"/api/runs/{run.id}")).json() == before
-    for _ in range(2):
-        settled = await async_client.patch(f"/api/runs/{run.id}", json=terminal)
+    # Compact and expanded JSON carry the same typed outcome. Both replays
+    # preserve the canonical persisted answer and its one ledger fact.
+    for payload in (
+        terminal,
+        {**terminal, "result": before["result"]},
+        terminal,
+    ):
+        settled = await async_client.patch(f"/api/runs/{run.id}", json=payload)
         assert settled.status_code == 200, settled.text
     await db_session.refresh(story)
     assert story.engineering_stop["id"] == stop_id
