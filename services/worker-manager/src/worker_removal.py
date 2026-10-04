@@ -22,6 +22,7 @@ from shared.contracts.worker_evidence import (
 from shared.diagnostics import redact_diagnostic
 from shared.queues import STORY_WORKERS_KEY
 from shared.redis import decode_redis_fields
+from shared.worker_output_receipts import delete_worker_output_receipts
 
 from . import garbage_collector as gc, qa_egress, workspace as workspace_mod
 from .compose_runner import ComposeRunner
@@ -474,6 +475,7 @@ class WorkerRemoval:
             f"worker:active-turn:{worker_id}",
             f"worker:{worker_id}:input",
             f"worker:{worker_id}:output",
+            *([] if keep_meta else [f"worker:meta:{worker_id}"]),
         ]
         if keep_meta:
             logger.warning(
@@ -484,6 +486,5 @@ class WorkerRemoval:
                     "no removal record could be stored, so the worker keeps its last durable name"
                 ),
             )
-        else:
-            keys_to_delete.append(f"worker:meta:{worker_id}")
         await self.redis.delete(*keys_to_delete)
+        await delete_worker_output_receipts(self.redis, worker_id)

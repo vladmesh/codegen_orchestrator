@@ -333,6 +333,26 @@ a live but unowned container must not appear healthy.
 
 ## Worker ownership, teardown, and removal evidence
 
+Broker unregister revokes credentials/session/active-turn state and incrementally
+collects only `worker:output-receipt:<worker>:*`. Canonical manager teardown also
+collects those receipts after confirmed container removal, even if broker
+unregistration is unavailable. Redis `SCAN` uses a count hint of 100; each `DEL`
+contains at most 100 receipt keys. Worker IDs are literal key components, escaped
+for matching. Multiple leases and legacy no-TTL receipts belong to the same owner.
+A failed container removal retains the receipts and existing settlement evidence.
+Removal evidence, publication-pending markers and durable recovery facts retain
+their existing owners and are excluded from receipt collection.
+
+After final-main deployment, operators read back `worker:output-receipt:*` with
+incremental `SCAN` and read each key's `TTL`, recording key names and TTLs only,
+never values, bodies or credentials. New accepted receipts must report a positive
+TTL no greater than 86,400 seconds (a disappeared key reports -2). Record any -1
+keys as pre-existing unbounded receipts with their worker/lease identities. These
+require explicit safe operator treatment after ownership and outstanding replay
+needs are checked; deployment adds no migration or global deletion. For an owned
+worker's normal teardown, scan its literal receipt prefix before and after and
+verify no receipts remain, while retained publication/removal evidence survives.
+
 `queues/worker.py`, `shared/contracts/worker_evidence.py`, and
 `shared/contracts/worker_control_plane.py` are canonical.
 

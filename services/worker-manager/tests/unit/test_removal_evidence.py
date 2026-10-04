@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fakeredis import aioredis
 import pytest
 
+from shared.contracts.dto.commit_publication import publication_pending_key
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.worker_evidence import (
     REMOVAL_LOG_TAIL_MAX_CHARS,
@@ -171,6 +172,57 @@ async def test_the_record_outlives_the_metadata_the_deletion_erases():
     assert await stored_record(redis) is not None
     ttl = await redis.ttl(removed_worker_evidence_key(OWNERSHIP.run_id))
     assert 0 < ttl <= settings.WORKER_REMOVAL_EVIDENCE_TTL_SECONDS
+
+
+async def test_owned_teardown_collects_receipts_even_without_broker_cleanup():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    await owned_worker(redis)
+    owned = [f"worker:output-receipt:{WORKER_ID}:{index}-0" for index in range(205)]
+    for index, key in enumerate(owned):
+        await redis.set(key, "signature", ex=86400 if index else None)
+    retained = [
+        f"worker:output-receipt:{WORKER_ID}-other:1-0",
+        "worker:output-receipt:foreign:1-0",
+        publication_pending_key(OWNERSHIP.attempt_id),
+        "engineering:turn-receipt:retained",
+    ]
+    for key in retained:
+        await redis.set(key, "retained")
+    original_delete = redis.delete
+    batches = []
+
+    async def bounded_delete(*keys):
+        batches.append(keys)
+        return await original_delete(*keys)
+
+    redis.delete = bounded_delete
+    manager = removal(redis, docker_double([]))
+    await manager.delete_worker(WORKER_ID)
+
+    manager._unregister_broker_worker.assert_awaited_once_with(WORKER_ID)
+    assert await redis.exists(*owned) == 0
+    assert await redis.exists(*retained) == len(retained)
+    assert await stored_record(redis) is not None
+    assert all(len(batch) <= 100 for batch in batches)
+
+
+async def test_failed_container_removal_keeps_receipts_and_settlement_evidence():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    await owned_worker(redis)
+    receipt = f"worker:output-receipt:{WORKER_ID}:1-0"
+    pending = publication_pending_key(OWNERSHIP.attempt_id)
+    await redis.set(receipt, "signature")
+    await redis.set(pending, "retained")
+    docker = docker_double([])
+    docker.remove_container.side_effect = RuntimeError("removal refused")
+    manager = removal(redis, docker)
+
+    await manager.delete_worker(WORKER_ID)
+
+    assert await redis.exists(receipt, pending, f"worker:meta:{WORKER_ID}") == 3
+    assert await stored_record(redis) is None
+    manager._unregister_broker_worker.assert_not_awaited()
+    manager._release_workspace_lock.assert_not_awaited()
 
 
 async def test_one_runs_record_never_collects_another_runs_worker():

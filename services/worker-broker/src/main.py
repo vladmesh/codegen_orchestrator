@@ -23,6 +23,7 @@ from shared.contracts.worker_control_plane import (
     control_plane_denial,
 )
 from shared.contracts.worker_turn import WorkerActiveTurn, WorkerTurnInput, active_turn_key
+from shared.worker_output_receipts import OUTPUT_RECEIPT_TTL_SECONDS, delete_worker_output_receipts
 
 from .auth import credential_key, token_digest, verify_token
 from .config import settings
@@ -43,7 +44,7 @@ redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[3], '*', unpack(args))
 redis.call('XACK', KEYS[3], ARGV[4], ARGV[5])
 if redis.call('HGET', KEYS[4], 'lease_id') == ARGV[5] then redis.call('DEL', KEYS[4]) end
 if KEYS[5] ~= '' then redis.call('DEL', KEYS[5]) end
-redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[6])
 return ARGV[1]
 """
 
@@ -178,6 +179,7 @@ async def unregister_worker(
     await app.state.redis.delete(
         credential_key(worker_id), f"worker:session:{worker_id}", active_turn_key(worker_id)
     )
+    await delete_worker_output_receipts(app.state.redis, worker_id)
     return {"ok": True}
 
 
@@ -300,6 +302,7 @@ async def submit_output(
         settings.WORKER_BROKER_STREAM_MAXLEN,
         metadata["consumer_group"],
         submission.lease_id,
+        OUTPUT_RECEIPT_TTL_SECONDS,
     )
     return {"ok": True}
 

@@ -56,6 +56,15 @@ responses do not prove live backend freshness or production recovery.
 
 ## Test Layers
 
+Worker output receipt regressions in the broker unit suite prove bounded TTL,
+lost-reply replay without another publication/output, changed-body refusal and
+isolated legacy-lease cleanup. Manager units prove receipt cleanup after removal
+and preservation after a failed container removal. The existing worker-manager
+service CI leg runs `test_output_receipt_lifecycle.py` against the real broker and
+Redis Lua acceptance, reads native TTL/ACK/output counts, and exercises both
+unregister and canonical manager teardown with an actual container. That service
+evidence requires exact-SHA CI; unit doubles alone do not attest native expiry.
+
 Run vocabulary and schema reconciliation are covered by the required API service
 suite against the PostgreSQL database created by `alembic upgrade head`.
 `test_schema_metadata.py` compares that schema with ORM metadata; migration and

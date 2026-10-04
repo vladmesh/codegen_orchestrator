@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Worker output receipts expire after a 24-hour replay window and owned teardown
+  collects every lease, including legacy receipts, to bound retention without duplicate delivery.
 - Deploy cleans only scoped worker/service releases, retaining rollback and container-used images;
   foreign worker descendants and unowned dangling images stay on the shared daemon.
 - DinD publishes its no-model Factory turn through native typed attempt authority
