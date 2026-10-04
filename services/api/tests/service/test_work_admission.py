@@ -9,6 +9,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.executor_decision import ExecutorDecision
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
+from shared.contracts.dto.work_admission import PaidRunStartCommand
+from shared.contracts.queues.qa import QAMessage
 from shared.models import (
     EngineeringAttemptLedger,
     EngineeringBudgetReservation,
@@ -23,6 +27,225 @@ async def _set_config(db_session: AsyncSession, key: str, value: int | bool) -> 
     assert config is not None
     config.value = value
     await db_session.commit()
+
+
+async def _health_qa_command(client: AsyncClient) -> tuple[PaidRunStartCommand, int]:
+    telegram = uuid.uuid4().int % 1_000_000_000
+    user = await client.post(
+        "/api/users/", json={"telegram_id": telegram, "username": f"health-qa-{telegram}"}
+    )
+    assert user.status_code == HTTPStatus.CREATED, user.text
+    project = await client.post(
+        "/api/projects/",
+        headers={"X-Telegram-ID": str(telegram)},
+        json={
+            "title": "Health QA without model sessions",
+            "initiating_run_id": f"init-{uuid.uuid4().hex}",
+            "status": "active",
+            "config": {},
+        },
+    )
+    assert project.status_code == HTTPStatus.CREATED, project.text
+    story = await client.post(
+        "/api/stories/", json={"project_id": project.json()["id"], "title": "Health admission"}
+    )
+    assert story.status_code == HTTPStatus.CREATED, story.text
+    run_id = f"qa-health-{uuid.uuid4().hex}"
+    message = QAMessage(
+        project_id=project.json()["id"],
+        story_id=story.json()["id"],
+        initiating_run_id=project.json()["initiating_run_id"],
+        run_id=run_id,
+        application_id=1,
+        deployed_url="http://product.test:8000",
+        acceptance_criteria="- GET /health returns 200\n- GET /reminders returns 200",
+    )
+    return (
+        PaidRunStartCommand(
+            id=run_id,
+            type="qa",
+            project_id=project.json()["id"],
+            story_id=story.json()["id"],
+            run_metadata={
+                QA_HANDOFF_KEY: QAHandoffPlan(qa_message=message).model_dump(mode="json")
+            },
+        ),
+        user.json()["id"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_health_only_qa_admission_persists_without_model_sessions(
+    async_client, db_session, unavailable_executor_snapshot, base_work_admission, monkeypatch
+):
+    """The actual base HTTP handler refuses; candidate admits with DB/budget/audit intact."""
+    from src.routers import work_admission
+
+    command, owner = await _health_qa_command(async_client)
+    policy = await async_client.put(
+        f"/api/engineering-budget-policies/{owner}",
+        json={"limit_microusd": 120, "attempt_reservation_microusd": 60, "state": "enabled"},
+    )
+    assert policy.status_code == HTTPStatus.CREATED, policy.text
+    count_query = (
+        select(func.count())
+        .select_from(Run)
+        .where(Run.type.in_(("engineering", "qa")), Run.status.in_(("queued", "running")))
+    )
+    before_count = await db_session.scalar(count_query)
+    payload = command.model_dump(mode="json")
+
+    # Swap only the historical implementation, retaining the actual HTTP route,
+    # transaction, Redis diagnostic reader, PostgreSQL and budget admission.
+    with monkeypatch.context() as baseline:
+        baseline.setattr(work_admission, "start_paid_run", base_work_admission.start_paid_run)
+        red = await async_client.post("/api/work-admission/paid-runs", json=payload)
+    assert red.status_code == HTTPStatus.OK, red.text
+    assert red.json()["admission"]["reason"] == "executor_unavailable"
+    assert red.json()["executor_diagnostic"]["reason_code"] == "profile_logged_out"
+    assert await db_session.get(Run, command.id) is None
+    assert await db_session.scalar(count_query) == before_count
+    assert (
+        await db_session.scalar(
+            select(EngineeringBudgetReservation).where(
+                EngineeringBudgetReservation.attempt_id == command.id
+            )
+        )
+        is None
+    )
+
+    green = await async_client.post("/api/work-admission/paid-runs", json=payload)
+    assert green.status_code == HTTPStatus.OK, green.text
+    assert green.json()["admission"]["outcome"] == "admitted"
+    run = await db_session.get(Run, command.id)
+    assert run is not None and run.status == "queued" and run.result is None
+    assert str(run.project_id) == str(command.project_id) and run.story_id == command.story_id
+    assert run.run_metadata[QA_HANDOFF_KEY] == payload["run_metadata"][QA_HANDOFF_KEY]
+    assert (
+        ExecutorDecision.from_run_metadata(run.run_metadata).model_dump(mode="json")
+        == (green.json()["executor_decision"])
+    )
+    assert await db_session.scalar(count_query) == before_count + 1
+    audits = (
+        await db_session.scalars(
+            select(WorkAdmissionAudit).where(WorkAdmissionAudit.reference_id == command.id)
+        )
+    ).all()
+    assert len(audits) == 2
+    assert {(audit.outcome, audit.reason) for audit in audits} == {
+        ("denied", "executor_unavailable"),
+        ("admitted", None),
+    }
+    assert all(audit.user_id == owner and audit.command_payload == payload for audit in audits)
+    reservation = await db_session.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == command.id
+        )
+    )
+    assert reservation.user_id == owner and reservation.state == "active"
+    assert reservation.reservation_microusd == reservation.active_held_microusd == 60
+    assert not (
+        await db_session.scalars(
+            select(EngineeringAttemptLedger).where(EngineeringAttemptLedger.run_id == command.id)
+        )
+    ).all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ["engineering", "exploratory", "blank", "absent", "malformed", "run", "project", "story"],
+)
+async def test_non_health_or_foreign_qa_handoffs_keep_real_executor_protection(
+    async_client, db_session, unavailable_executor_snapshot, case
+):
+    command, _ = await _health_qa_command(async_client)
+    payload = command.model_dump(mode="json")
+    message = payload["run_metadata"][QA_HANDOFF_KEY]["qa_message"]
+    if case == "engineering":
+        payload["type"] = "engineering"
+    elif case == "exploratory":
+        message["acceptance_criteria"] += "\n- The bot replies to /start"
+    elif case == "blank":
+        message["acceptance_criteria"] = " "
+    elif case == "absent":
+        payload["run_metadata"] = {}
+    elif case == "malformed":
+        del message["application_id"]
+    else:
+        message[f"{case}_id"] = str(uuid.uuid4())
+    refused = await async_client.post("/api/work-admission/paid-runs", json=payload)
+    assert refused.status_code == HTTPStatus.OK, refused.text
+    assert refused.json()["admission"]["reason"] == "executor_unavailable"
+    assert await db_session.get(Run, command.id) is None
+    audit = await db_session.scalar(
+        select(WorkAdmissionAudit).where(WorkAdmissionAudit.reference_id == command.id)
+    )
+    assert audit.reason == "executor_unavailable" and audit.command_payload == payload
+    assert (
+        await db_session.scalar(
+            select(EngineeringBudgetReservation).where(
+                EngineeringBudgetReservation.attempt_id == command.id
+            )
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("control", ["budget", "concurrency", "stop"])
+async def test_health_only_qa_retains_real_admission_limits(
+    async_client, db_session, unavailable_executor_snapshot, control
+):
+    command, owner = await _health_qa_command(async_client)
+    key = {
+        "concurrency": "work_admission.max_concurrent_paid_runs",
+        "stop": "work_admission.emergency_stop",
+    }
+    previous = None
+    if control == "budget":
+        policy = await async_client.put(
+            f"/api/engineering-budget-policies/{owner}",
+            json={"limit_microusd": 0, "attempt_reservation_microusd": 60, "state": "enabled"},
+        )
+        assert policy.status_code == HTTPStatus.CREATED, policy.text
+    else:
+        config = await db_session.get(SystemConfig, key[control])
+        previous = config.value
+        await _set_config(db_session, key[control], True if control == "stop" else 0)
+    try:
+        refused = await async_client.post(
+            "/api/work-admission/paid-runs", json=command.model_dump(mode="json")
+        )
+        assert refused.status_code == HTTPStatus.OK, refused.text
+        assert (
+            refused.json()["admission"]["reason"]
+            == {
+                "budget": "engineering_budget_denied",
+                "concurrency": "paid_work_limit",
+                "stop": "emergency_stop",
+            }[control]
+        )
+        assert await db_session.get(Run, command.id) is None
+        audit = await db_session.scalar(
+            select(WorkAdmissionAudit).where(WorkAdmissionAudit.reference_id == command.id)
+        )
+        assert audit.reason == refused.json()["admission"]["reason"]
+        assert refused.json()["admission"]["outcome"] == (
+            "deferred" if control == "concurrency" else "denied"
+        )
+        reservation = await db_session.scalar(
+            select(EngineeringBudgetReservation).where(
+                EngineeringBudgetReservation.attempt_id == command.id
+            )
+        )
+        if control == "budget":
+            assert reservation.outcome == "denied" and reservation.active_held_microusd == 0
+        else:
+            assert reservation is None
+    finally:
+        if control != "budget":
+            await _set_config(db_session, key[control], previous)
 
 
 @pytest.mark.asyncio

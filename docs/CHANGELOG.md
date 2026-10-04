@@ -5,6 +5,14 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Health QA's product HTTP fixture matches the root path explicitly, so its
+  reachability response cannot shadow caller identity proof and health reads in CI.
+- Health QA service fixtures use canonical diagnostic reasons, and the LangGraph
+  test image includes its HTTP mock dependency, so required CI reaches the boundary tests.
+- CI exercises health-only QA admission and persisted terminal routing without model
+  sessions, including unhealthy and refused endpoints, to close the hotfix's boundary evidence gap.
+- Health-only QA handoffs skip unused model diagnostics at admission, so a stand
+  without model profiles can finish deterministic QA instead of quarantining the story.
 - Raw stand targets retain model sessions and profile protection unless they resolve
   to a registered no-model suite, so paid custom probes fail closed before provisioning.
 - Stand noop skips model sessions and authentication throughout setup and preflight;

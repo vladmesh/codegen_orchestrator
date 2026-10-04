@@ -389,6 +389,16 @@ jobs:
         id: pull-images
         run: bash scripts/ci-infra.sh pull-images --step pull-images tests/compose/service/${{ matrix.service }}.yml
 
+      - name: Export the pre-hotfix QA admission regression source
+        if: matrix.service == 'api'
+        timeout-minutes: 1
+        run: |
+          base=474876566bf0281e2173d04c6aa7113c262a908c
+          if ! git cat-file -e "$base:services/api/src/work_admission.py"; then
+            git fetch --no-tags --depth=1 origin "$base"
+          fi
+          git show "$base:services/api/src/work_admission.py" > services/api/tests/service/_qa_admission_base.py
+
       - name: Run service tests
         id: service-tests
         run: bash scripts/ci-infra.sh bound --step service-tests --timeout 15m -- make test-service SERVICE=${{ matrix.service }}

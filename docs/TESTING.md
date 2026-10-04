@@ -61,6 +61,35 @@ values are refused before persistence and that omitted status leaves it intact.
 
 ## Running Tests
 
+Health-only QA admission regressions run in the required API and LangGraph service
+legs. API `test_work_admission.py` posts through the real ASGI route with PostgreSQL
+and a Redis snapshot reporting absent host sessions. CI exports the exact
+`work_admission.py` from `474876566bf0281e2173d04c6aa7113c262a908c` into the
+untracked `_qa_admission_base.py` fixture: the same command first gets the historical
+`executor_unavailable` refusal, then candidate admission with its persisted Run,
+audit, decision and budget hold. Exploratory, invalid and foreign plans and count,
+stop and budget refusals retain their real boundaries. A manual service checkout
+must export that same source before running this file; missing source fails closed.
+The historical handler swap executes the original module, not a mock of admission.
+Unit regressions execute both service fixtures up to diagnostic publication and
+validate their unavailable snapshots without connecting to a service. The LangGraph
+test image installs `respx` for controlled external product HTTP responses.
+The product HTTP fixture is also exercised by unit tests through the native
+grant client, caller identity resolver and health runner. Its reachability route
+matches `/` explicitly so it cannot shadow `/users/access` or `/health`.
+
+LangGraph `test_health_qa_admission.py` uses the existing `control-api`, PostgreSQL
+and Redis fixtures. The scheduler subprocess reads and publishes the stored plan;
+the actual QA consumer runs health checks, decrypts stored synthetic capabilities,
+proves its caller identity and writes terminal results/accounting through the API.
+Controlled product HTTP 200, 503 and refused reads yield passed, failed and blocked
+Runs; native scheduler routing records completion, fix evidence or quarantine and
+the server-owned routing stamp. Released holds, no cost ledger, secret redaction
+and no executor/worker-command start are asserted. Only external product HTTP,
+the paid executor edge and administrator Telegram delivery are controlled.
+These cases are CI evidence only when executed. They prove no live deployment,
+provider availability, model authentication or final stand acceptance.
+
 Dirty-PR regressions use real local bare Git remotes, PostgreSQL row locks and
 Redis dispatch/notice readback. API service tests cover concurrent admission,
 rollback and response-loss retry, head/cycle/owner fences and terminal repair
