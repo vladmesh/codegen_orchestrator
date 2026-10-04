@@ -25,6 +25,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorAvailability,
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
+    safe_executor_diagnostic_reason,
 )
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.work_admission import PaidRunStartCommand
@@ -86,7 +87,7 @@ async def health_qa(real_redis):
                 expires_at=now + timedelta(minutes=5),
                 active_lease_count=0,
                 reason_code="profile_logged_out",
-                reason="Host session is absent.",
+                reason=safe_executor_diagnostic_reason("profile_logged_out"),
                 profile=host_profile_for_reason("profile_logged_out"),
             )
             for executor in (AgentType.CLAUDE, AgentType.CODEX)

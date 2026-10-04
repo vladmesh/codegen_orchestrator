@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Health QA service fixtures use canonical diagnostic reasons, and the LangGraph
+  test image includes its HTTP mock dependency, so required CI reaches the boundary tests.
 - CI exercises health-only QA admission and persisted terminal routing without model
   sessions, including unhealthy and refused endpoints, to close the hotfix's boundary evidence gap.
 - Health-only QA handoffs skip unused model diagnostics at admission, so a stand

@@ -20,7 +20,7 @@ COPY services/langgraph/requirements.lock ./
 # Install runtime + test dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.lock && \
-    pip install pytest pytest-asyncio pytest-cov
+    pip install pytest pytest-asyncio pytest-cov 'respx>=0.21.1'
 
 # === Test Stage ===
 FROM test-deps AS test

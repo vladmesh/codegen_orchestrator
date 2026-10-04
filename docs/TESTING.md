@@ -71,6 +71,9 @@ audit, decision and budget hold. Exploratory, invalid and foreign plans and coun
 stop and budget refusals retain their real boundaries. A manual service checkout
 must export that same source before running this file; missing source fails closed.
 The historical handler swap executes the original module, not a mock of admission.
+Unit regressions execute both service fixtures up to diagnostic publication and
+validate their unavailable snapshots without connecting to a service. The LangGraph
+test image installs `respx` for controlled external product HTTP responses.
 
 LangGraph `test_health_qa_admission.py` uses the existing `control-api`, PostgreSQL
 and Redis fixtures. The scheduler subprocess reads and publishes the stored plan;

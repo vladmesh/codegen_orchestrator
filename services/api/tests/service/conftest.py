@@ -20,6 +20,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorAvailability,
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
+    safe_executor_diagnostic_reason,
 )
 from shared.contracts.vocab import AgentType
 from shared.tests.executor_diagnostic_cases import host_profile_for_reason
@@ -180,7 +181,7 @@ async def unavailable_executor_snapshot(redis_client, _known_executor_diagnostic
                 expires_at=expiry,
                 active_lease_count=0,
                 reason_code="profile_logged_out",
-                reason="Host session is absent.",
+                reason=safe_executor_diagnostic_reason("profile_logged_out"),
                 profile=host_profile_for_reason("profile_logged_out"),
             )
             for executor in (AgentType.CLAUDE, AgentType.CODEX)
