@@ -47,6 +47,27 @@ CAPABILITIES = {
 }
 
 
+def product_routes(transport, response):
+    """The external product edge shared by service and fixture unit checks."""
+
+    def product_read(request):
+        assert request.headers["X-Identity-Capability"] == CAPABILITIES["USER_IDENTITY_CAPABILITY"]
+        assert request.headers["X-User-Channel"] == "qa"
+        assert request.headers["X-User-External-Id"] == "central-qa"
+        if response == "refused":
+            raise httpx.ConnectError("controlled product refusal", request=request)
+        return httpx.Response(response, text=" ".join(CAPABILITIES.values()))
+
+    # A bare origin matches every path in respx and would shadow access/health.
+    transport.get(f"{PRODUCT}/").respond(200)
+    grant = transport.post(f"{PRODUCT}/users/grant").respond(200)
+    transport.get(f"{PRODUCT}/users/access").respond(
+        200, json={"channel": "qa", "external_id": "central-qa", "status": "active"}
+    )
+    read = transport.get(f"{PRODUCT}/health").mock(side_effect=product_read)
+    return grant, read
+
+
 def scheduler(mode, run_id):
     result = subprocess.run(
         [sys.executable, "-P", str(Path(__file__).with_name("_health_qa_scheduler.py"))],
@@ -210,14 +231,6 @@ async def test_admitted_health_qa_persists_and_routes_without_a_model(
     run_id, plan, message = await admit_and_publish(health_qa, real_redis)
     commands_before = await real_redis.xlen(WORKER_COMMANDS)
 
-    def product_read(request):
-        assert request.headers["X-Identity-Capability"] == CAPABILITIES["USER_IDENTITY_CAPABILITY"]
-        assert request.headers["X-User-Channel"] == "qa"
-        assert request.headers["X-User-External-Id"] == "central-qa"
-        if response == "refused":
-            raise httpx.ConnectError("controlled product refusal", request=request)
-        return httpx.Response(response, text=" ".join(CAPABILITIES.values()))
-
     with (
         respx.mock(assert_all_called=True) as transport,
         patch("src.consumers.qa.api_client", api),
@@ -231,12 +244,7 @@ async def test_admitted_health_qa_persists_and_routes_without_a_model(
         ) as executor,
     ):
         transport.route(host="control-api").pass_through()
-        transport.get(PRODUCT).respond(200)
-        grant = transport.post(f"{PRODUCT}/users/grant").respond(200)
-        transport.get(f"{PRODUCT}/users/access").respond(
-            200, json={"channel": "qa", "external_id": "central-qa", "status": "active"}
-        )
-        read = transport.get(f"{PRODUCT}/health").mock(side_effect=product_read)
+        grant, read = product_routes(transport, response)
         await process_qa_job(message, stream)
         paid.assert_not_awaited()
         executor.assert_not_awaited()

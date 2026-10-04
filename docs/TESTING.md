@@ -74,6 +74,9 @@ The historical handler swap executes the original module, not a mock of admissio
 Unit regressions execute both service fixtures up to diagnostic publication and
 validate their unavailable snapshots without connecting to a service. The LangGraph
 test image installs `respx` for controlled external product HTTP responses.
+The product HTTP fixture is also exercised by unit tests through the native
+grant client, caller identity resolver and health runner. Its reachability route
+matches `/` explicitly so it cannot shadow `/users/access` or `/health`.
 
 LangGraph `test_health_qa_admission.py` uses the existing `control-api`, PostgreSQL
 and Redis fixtures. The scheduler subprocess reads and publishes the stored plan;

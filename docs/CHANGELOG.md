@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Health QA's product HTTP fixture matches the root path explicitly, so its
+  reachability response cannot shadow caller identity proof and health reads in CI.
 - Health QA service fixtures use canonical diagnostic reasons, and the LangGraph
   test image includes its HTTP mock dependency, so required CI reaches the boundary tests.
 - CI exercises health-only QA admission and persisted terminal routing without model
