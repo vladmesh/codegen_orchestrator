@@ -188,23 +188,6 @@ def _worker_images(
             raise RuntimeError(f"Docker returned an unusable image inspection for {image_id}")
         raw_images.append(raw[0])
 
-    worker_ids = {
-        str(raw["Id"])
-        for raw in raw_images
-        if any(
-            _worker_image_name(reference, repositories)
-            for reference in (raw.get("RepoTags") or []) + (raw.get("RepoDigests") or [])
-        )
-    }
-    while True:
-        derived_ids = {
-            str(raw["Id"])
-            for raw in raw_images
-            if raw.get("Parent") in worker_ids and isinstance(raw.get("Id"), str)
-        }
-        if derived_ids <= worker_ids:
-            break
-        worker_ids |= derived_ids
     images: list[Image] = []
     for raw in raw_images:
         image_id = raw.get("Id")
@@ -212,11 +195,15 @@ def _worker_images(
         source_hash = labels.get(WORKER_SOURCE_HASH_LABEL) if isinstance(labels, dict) else None
         references = tuple((raw.get("RepoTags") or []) + (raw.get("RepoDigests") or []))
         parent_id = raw.get("Parent")
+        # Every candidate, including a descendant, must have its own project names.
+        # Parent and an inherited label cannot establish ownership of foreign or
+        # unidentified images. Parent is used only to order selected removals.
         if (
             isinstance(image_id, str)
             and isinstance(source_hash, str)
             and source_hash
-            and image_id in worker_ids
+            and references
+            and all(_worker_image_name(reference, repositories) for reference in references)
         ):
             images.append(
                 Image(

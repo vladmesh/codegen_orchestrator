@@ -363,13 +363,98 @@ def _cleanup(tmp_path, daemon: FakeDockerDaemon) -> list[str]:
     )
 
 
+@pytest.mark.parametrize(
+    "foreign_names",
+    [
+        ("other-project/app:old",),
+        ("ghcr.io/other-project/app@sha256:old",),
+        ("worker:mixed", "other-project/app:old"),
+    ],
+    ids=["foreign-tag", "foreign-digest", "mixed-ownership"],
+)
+def test_live_cleanup_keeps_foreign_descendants_with_inherited_labels(
+    tmp_path, capsys, foreign_names
+):
+    daemon = _daemon()
+    label = {"org.codegen.worker_source_hash": "stale"}
+    daemon.add("owned-child", "worker:child", parent="stale", labels=label)
+    daemon.add(
+        "owned-grandchild",
+        f"{REGISTRY}/worker-base-codex@sha256:child",
+        parent="owned-child",
+        labels=label,
+    )
+    daemon.add("foreign-child", *foreign_names, parent="stale", labels=label)
+    daemon.add(
+        "foreign-nested",
+        "other-project/nested:old",
+        "ghcr.io/other-project/nested@sha256:old",
+        parent="foreign-child",
+        labels=label,
+    )
+    daemon.add(
+        "foreign-below-owned", "other-project/app:leaf", parent="owned-grandchild", labels=label
+    )
+    foreign_images = {
+        image_id: tuple(daemon.images[image_id].names)
+        for image_id in ("foreign-child", "foreign-nested", "foreign-below-owned")
+    }
+
+    assert _cleanup(tmp_path, daemon) == []
+
+    assert set(daemon.images) == {"current", "previous", *foreign_images}
+    for image_id, names in foreign_images.items():
+        assert tuple(daemon.images[image_id].names) == names
+        assert image_id not in daemon.removals
+        assert not set(names).intersection(daemon.removals)
+    assert daemon.removals == [
+        "owned-grandchild",
+        "owned-child",
+        "stale",
+        "worker-base-common:stale",
+        f"{REGISTRY}/worker-base-common@sha256:stale",
+    ]
+    output = capsys.readouterr().out
+    assert "REMOVED owned-grandchild source_hash=stale" in output
+    assert "REMOVED owned-child source_hash=stale" in output
+    assert "foreign-" not in output
+
+
+@pytest.mark.parametrize("base_refused", [False, True])
+def test_live_cleanup_keeps_unidentified_dangling_descendants(tmp_path, capsys, base_refused):
+    daemon = _daemon()
+    label = {"org.codegen.worker_source_hash": "stale"}
+    daemon.add("unidentified-child", parent="stale", labels=label)
+    daemon.add("unidentified-nested", parent="unidentified-child", labels=label)
+    if base_refused:
+        daemon.failures["stale"] = (
+            "Error response from daemon: conflict: image has dependent child images\n"
+        )
+
+    assert _cleanup(tmp_path, daemon) == []
+
+    retained = {"current", "previous", "unidentified-child", "unidentified-nested"}
+    if base_refused:
+        retained.add("stale")
+        assert daemon.removals == ["stale"]
+        assert "KEEP stale reason=docker_refused source_hash=stale" in capsys.readouterr().out
+    else:
+        assert daemon.removals == [
+            "stale",
+            "worker-base-common:stale",
+            f"{REGISTRY}/worker-base-common@sha256:stale",
+        ]
+    assert set(daemon.images) == retained
+
+
 def test_live_cleanup_selects_only_project_workers_and_keeps_used_images(tmp_path, capsys):
     daemon = _daemon()
     for image_id in ("running", "stopped"):
         _stale(daemon, image_id, f"worker:{image_id}")
         daemon.containers[f"{image_id}-container"] = image_id
     daemon.add(
-        "stale-derived-dangling",
+        "stale-derived-owned",
+        "worker:stale-derived",
         parent="stale",
         labels={"org.codegen.worker_source_hash": "stale"},
     )
@@ -382,13 +467,13 @@ def test_live_cleanup_selects_only_project_workers_and_keeps_used_images(tmp_pat
         ("unrelated-worker-digest", ("ghcr.io/other-project/worker-base-common@sha256:old",)),
     ):
         daemon.add(image_id, *names, labels={"org.codegen.worker_source_hash": "stale"})
-    retained = set(daemon.images) - {"stale", "stale-derived-dangling"}
+    retained = set(daemon.images) - {"stale", "stale-derived-owned"}
 
     assert _cleanup(tmp_path, daemon) == []
 
     assert set(daemon.images) == retained
     assert daemon.removals == [
-        "stale-derived-dangling",
+        "stale-derived-owned",
         "stale",
         "worker-base-common:stale",
         f"{REGISTRY}/worker-base-common@sha256:stale",
@@ -401,7 +486,7 @@ def test_live_cleanup_selects_only_project_workers_and_keeps_used_images(tmp_pat
         ("stopped", "running_container"),
     ):
         assert f"KEEP {image_id} reason={reason}" in output
-    assert "REMOVED stale-derived-dangling source_hash=stale" in output
+    assert "REMOVED stale-derived-owned source_hash=stale" in output
     assert "REMOVED stale source_hash=stale" in output
 
 
