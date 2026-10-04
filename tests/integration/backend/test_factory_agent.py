@@ -1,5 +1,4 @@
 import uuid
-from uuid import uuid4
 
 import pytest
 from tenacity import retry, stop_after_delay, wait_fixed
@@ -7,28 +6,17 @@ from tenacity import retry, stop_after_delay, wait_fixed
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
-    WorkerOwnership,
 )
 
-from .conftest import scaffolded_worker_config
+from .conftest import scaffolded_worker_config, wait_for_worker_ready
 
 TEST_TIMEOUT = 60
 
 
-def _ownership() -> WorkerOwnership:
-    """A distinct owner per worker; these tests are not about who.
-
-    Distinct on purpose: two workers of one project serialize on that project's
-    workspace lock, so every worker here is made for its own project and run.
-    """
-    token = uuid4().hex[:8]
-    return WorkerOwnership(
-        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
-    )
-
-
 @pytest.mark.integration
-async def test_factory_cli_installed(redis_client, docker_client, scaffolded_workspace):
+async def test_factory_cli_installed(
+    redis_client, docker_client, scaffolded_workspace, worker_authority
+):
     """Factory worker must have factory CLI installed."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-factory-{request_id[:8]}"
@@ -41,7 +29,7 @@ async def test_factory_cli_installed(redis_client, docker_client, scaffolded_wor
         instructions="Test",
         allowed_commands=["*"],
         capabilities=[],
-        ownership=_ownership(),
+        ownership=await worker_authority(),
         auth_mode="api_key",
         api_key="sk-test-factory-key",
     )
@@ -49,17 +37,14 @@ async def test_factory_cli_installed(redis_client, docker_client, scaffolded_wor
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
     await redis_client.xadd("worker:commands", {"data": cmd.model_dump_json()})
 
-    @retry(stop=stop_after_delay(TEST_TIMEOUT), wait=wait_fixed(1))
-    async def wait_for_container():
-        try:
-            container = docker_client.containers.get(f"worker-{worker_id}")
-            if container.status != "running":
-                raise Exception("Container not running")
-            return container
-        except Exception:
-            raise Exception("Container not found") from None
-
-    container = await wait_for_container()
+    container = await wait_for_worker_ready(
+        redis_client,
+        docker_client,
+        request_id=request_id,
+        worker_id=worker_id,
+        create_timeout=TEST_TIMEOUT,
+        readiness_timeout=TEST_TIMEOUT,
+    )
 
     # Check factory CLI
     exit_code, output = container.exec_run("which droid")

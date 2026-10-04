@@ -2,7 +2,6 @@ import asyncio
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
-import contextlib
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
@@ -31,9 +30,12 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
 )
 from shared.contracts.vocab import AgentType
+from shared.contracts.worker_evidence import RemovedWorkerEvidence, removed_worker_evidence_key
 from shared.queues import WORKER_MANAGER_GROUP
 from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from shared.tests.ssh_key_fixtures import fleet_private_key
+
+from .worker_authority import seed_worker_authority
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
@@ -175,6 +177,18 @@ def _container_lifecycle_diagnostics(container, worker_id: str) -> str:
     )
 
 
+def removed_worker_lifecycle_diagnostics(evidence, worker_id, ownership) -> str:
+    """A removal receipt is useful only with this worker's actually captured facts."""
+    assert evidence.worker_id == worker_id
+    assert evidence.ownership == ownership
+    for fact in (evidence.state, evidence.exit_code, evidence.log_tail):
+        assert fact.was_read, fact.missed_reason
+    return (
+        f"worker={worker_id} status={evidence.state.value['status']} "
+        f"exit_code={evidence.exit_code.value} log_tail={evidence.log_tail.value!r}"
+    )
+
+
 def _get_container_without_fixture_retry(docker_client, container_name: str):
     """Use the fixture's direct Docker lookup when a failure must stay bounded."""
     try:
@@ -294,10 +308,11 @@ async def wait_for_worker_exit(
     *,
     request_id: str,
     worker_id: str,
+    ownership,
     create_timeout: int = 240,
     exit_timeout: int = 30,
 ):
-    """Wait for a deliberately invalid test worker to reach its terminal exit."""
+    """Observe the actual exit, including native capture after automatic teardown."""
     try:
         response = await wait_for_create_response(
             redis_client,
@@ -322,17 +337,19 @@ async def wait_for_worker_exit(
         f"Worker creation was not accepted for {worker_id}: {response.error}"
     )
 
-    try:
-        container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
-    except NotFound as exc:
-        raise AssertionError(f"Worker {worker_id} was removed before it could exit") from exc
-
     deadline = time.monotonic() + exit_timeout
     while time.monotonic() < deadline:
         try:
+            container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
             container.reload()
-        except NotFound as exc:
-            raise AssertionError(f"Worker {worker_id} was removed before it could exit") from exc
+        except NotFound:
+            raw = await redis_client.hget(removed_worker_evidence_key(ownership.run_id), worker_id)
+            if raw is not None:
+                evidence = RemovedWorkerEvidence.model_validate_json(raw)
+                removed_worker_lifecycle_diagnostics(evidence, worker_id, ownership)
+                return evidence
+            await asyncio.sleep(0.25)
+            continue
         if container.status == "exited":
             return container
         if container.status in _TERMINAL_CONTAINER_STATES:
@@ -342,10 +359,7 @@ async def wait_for_worker_exit(
             )
         await asyncio.sleep(0.25)
 
-    raise AssertionError(
-        f"Worker {worker_id} did not exit within {exit_timeout}s after creation: "
-        f"{_container_lifecycle_diagnostics(container, worker_id)}"
-    )
+    raise AssertionError(f"Worker {worker_id} has no captured exit within {exit_timeout}s")
 
 
 async def delete_test_worker(
@@ -592,8 +606,8 @@ async def seed_project(api_client):
 
     # Cleanup: DELETE cascades to tasks + allocations
     for pid in created_ids:
-        with contextlib.suppress(Exception):
-            await api_client.delete(f"/api/projects/{pid}")
+        response = await api_client.delete(f"/api/projects/{pid}")
+        assert response.status_code in {204, 404}, response.text
 
 
 @pytest.fixture
@@ -649,59 +663,95 @@ async def seed_server(api_client):
     yield _create
 
 
-@pytest.fixture(autouse=True)
-def cleanup_worker_containers():
-    """Remove any leftover worker containers before and after each test."""
-    if os.getenv("BUILD_WORKER_BASE_IMAGES") != "true":
-        yield
-        return
-
-    client = docker.DockerClient(base_url=DOCKER_HOST)
-
-    def remove_workers():
-        with contextlib.suppress(Exception):
-            containers = client.containers.list(all=True)
-            for container in containers:
-                if container.name.startswith("worker-"):
-                    with contextlib.suppress(Exception):
-                        container.remove(force=True)
-
-    # Cleanup before test
-    remove_workers()
-
-    yield
-
-    # Cleanup after test
-    remove_workers()
-    client.close()
+@pytest.fixture
+def test_worker_owners():
+    return []
 
 
-@pytest.fixture(autouse=True)
-async def cleanup_redis_streams(redis_client):
-    """Clean up Redis response streams BEFORE and after each test.
+@pytest.fixture
+async def worker_authority(
+    api_client, seed_project, seed_task, test_worker_owners, worker_resource_cleanup
+):
+    """One persisted authority producer for all no-model real worker fixtures."""
 
-    Note: We do NOT delete worker:commands because worker-manager uses consumer groups.
-    Deleting the stream would break the consumer group and worker-manager would stop working.
+    async def create():
+        return await seed_worker_authority(api_client, seed_project, seed_task, test_worker_owners)
+
+    yield create
+
+
+@pytest.fixture
+async def worker_resource_cleanup(
+    redis_client, test_worker_owners, seed_project, scaffolded_workspace
+):
+    """Remove only workers commanded by this test, after evidence assertions.
+
+    Preserve shared streams and their consumer groups. Native deletion owns
+    container/checkout locks and capture; this fixture only clears its records.
+    No Docker access is needed in the ordinary backend integration shard.
     """
-    # Only clean response/output streams, NOT worker:commands (has consumer group)
-    streams_to_clean = [
-        "worker:responses:developer",
-        "worker:developer:input",
-        "worker:developer:output",
-    ]
-
-    async def cleanup():
-        for stream in streams_to_clean:
-            with contextlib.suppress(Exception):
-                await redis_client.delete(stream)
-
-    # Cleanup BEFORE test (important to avoid reading stale messages)
-    await cleanup()
-
     yield
+    if os.getenv("BUILD_WORKER_BASE_IMAGES") != "true" or not test_worker_owners:
+        return
+    await cleanup_owned_worker_resources(redis_client, test_worker_owners)
 
-    # Cleanup after test
-    await cleanup()
+
+async def cleanup_owned_worker_resources(redis_client, test_worker_owners):
+    """Native worker deletion followed by removal of only these test owners' records."""
+    from shared.contracts.dto.worker import worker_creation_failure_key
+    from shared.contracts.queues.worker import CreateWorkerCommand, WorkerLabel
+    from shared.contracts.worker_evidence import removed_worker_evidence_key
+
+    commands = []
+    owned_runs = {owner.run_id for owner in test_worker_owners}
+    for _entry_id, fields in await redis_client.xrange(REDIS_STREAM_COMMANDS):
+        payload = json.loads(fields["data"])
+        if payload.get("command") == "create":
+            command = CreateWorkerCommand.model_validate(payload)
+            if command.config.ownership.run_id in owned_runs:
+                commands.append(command)
+    client = docker.DockerClient(base_url=DOCKER_HOST)
+    client._test_direct_container_get = client.containers.get
+    try:
+        for command in commands:
+            owner = command.config.ownership
+            # Worker names are explicit in these fixtures, including refusals.
+            worker_id = command.config.name
+            if worker_id:
+                await delete_test_worker(redis_client, client, worker_id)
+                keys = [key async for key in redis_client.scan_iter(match=f"worker:*:{worker_id}")]
+                keys += [
+                    f"worker:{worker_id}:input",
+                    f"worker:{worker_id}:output",
+                    worker_creation_failure_key(worker_id),
+                ]
+                await redis_client.delete(*keys)
+            # Sidecars/networks may survive a deliberately interrupted cleanup.
+            labels = {"label": f"{WorkerLabel.RUN.value}={owner.run_id}"}
+            for container in client.containers.list(all=True, filters=labels):
+                container.remove(force=True)
+            for network in client.networks.list(filters=labels):
+                network.remove()
+            await redis_client.delete(removed_worker_evidence_key(owner.run_id))
+            for pattern in (
+                f"workspace:{owner.project_id}:*",
+                f"engineering:*:{owner.attempt_id}:*",
+            ):
+                keys = [key async for key in redis_client.scan_iter(match=pattern)]
+                if keys:
+                    await redis_client.delete(*keys)
+        request_ids = {command.request_id for command in commands}
+        worker_ids = {command.config.name for command in commands}
+        for stream in (REDIS_STREAM_COMMANDS, REDIS_STREAM_DEV_RESPONSES):
+            for entry_id, fields in await redis_client.xrange(stream):
+                payload = json.loads(fields["data"])
+                if (
+                    payload.get("request_id") in request_ids
+                    or payload.get("worker_id") in worker_ids
+                ):
+                    await redis_client.xdel(stream, entry_id)
+    finally:
+        client.close()
 
 
 WORKSPACE_BASE_PATH = "/tmp/codegen/workspaces"  # noqa: S108

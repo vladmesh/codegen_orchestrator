@@ -789,6 +789,28 @@ remote SHA. They exercise the wrapper's pre-agent refusal and the existing Run/S
 infrastructure parking seam without Docker or paid model calls. DinD mounts `/tmp`
 before its workspace/transcript child volumes so its entrypoint cannot hide them.
 Container assertions are CI evidence only when that candidate's job executes.
+Real developer workers use the shared `worker_authority` fixture. It creates an
+active Project with a distinct initiating run, starts a Story, creates its TODO
+Task and admits an engineering Run through the native admission endpoint. Four
+persisted API reads and `engineering-disposition` must match before the worker
+command is enqueued. Admission alone publishes no engineering message or model
+turn. The queue-propagation scenario retains its native spawn route and uses the
+same persisted readback proof; its consumer has no external credentials.
+
+The producer serves Claude/Factory readiness, dev mounts/deletion, task injection,
+worker execution, shipped Codex shell probes, labels, removal evidence and SDK/CLI
+run cleanup. Invalid repository fixtures retain valid authority and deliberately
+omit repository identity. Missing, foreign, stale and stopped authority probes
+refuse before container/material creation. Synthetic repository credential refusal
+and local CLI stubs keep task execution free of model calls. Startup exits are
+asserted from Docker or the native removal receipt, requiring captured state,
+exit code and logs. Cleanup runs after assertions, selects only test-owned run
+labels and stream entries, and preserves neighbours and shared consumer groups.
+API and workspace fixture teardown follows worker cleanup. The original 38 DinD
+scenarios remain required; four authority refusal cases extend that suite to 42.
+Offline producer tests do not establish real API/Docker or image readiness; a
+skipped premerge DinD job leaves merged-main validation outstanding.
+
 `test_codex_shell_credentials.py` verifies the shipped Codex version against its
 image pin, then uses native app-server `command/exec` to run a shell through the
 developer runner's actual environment policy. A loopback broker rotates synthetic

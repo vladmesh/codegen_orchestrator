@@ -16,7 +16,6 @@ from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
     DeleteWorkerCommand,
-    WorkerOwnership,
 )
 
 from .conftest import WORKSPACE_BASE_PATH, scaffolded_worker_config, wait_for_create_response
@@ -29,22 +28,12 @@ REDIS_STREAM_COMMANDS = "worker:commands"
 REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
 
 
-def _ownership() -> WorkerOwnership:
-    """A distinct owner per worker; these tests are not about who.
-
-    Distinct on purpose: two workers of one project serialize on that project's
-    workspace lock, so every worker here is made for its own project and run.
-    """
-    token = uuid4().hex[:8]
-    return WorkerOwnership(
-        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestDevEnvIntegration:
-    async def test_workspace_bind_mount(self, redis_client, docker_client, scaffolded_workspace):
+    async def test_workspace_bind_mount(
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
+    ):
         """Create worker -> touch file in /workspace -> verify via docker exec."""
         req_id = f"dev-env-{uuid4().hex[:6]}"
         worker_name = f"test-ws-mount-{req_id}"
@@ -59,7 +48,7 @@ class TestDevEnvIntegration:
                 instructions="Test workspace",
                 allowed_commands=[],
                 capabilities=[],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
@@ -88,7 +77,7 @@ class TestDevEnvIntegration:
         assert exit_code == 0, f"Transcript not found: {output.decode()}"
 
     async def test_compose_rejects_absolute_volumes(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """POST compose with absolute volume mounts should return 400."""
         req_id = f"dev-env-{uuid4().hex[:6]}"
@@ -104,7 +93,7 @@ class TestDevEnvIntegration:
                 instructions="Test compose",
                 allowed_commands=[],
                 capabilities=[],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
@@ -149,7 +138,7 @@ class TestDevEnvIntegration:
         assert "absolute" in response.json()["detail"].lower()
 
     async def test_delete_cleans_everything(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """Create worker -> delete -> verify container gone."""
         req_id = f"dev-env-{uuid4().hex[:6]}"
@@ -165,7 +154,7 @@ class TestDevEnvIntegration:
                 instructions="Test delete",
                 allowed_commands=[],
                 capabilities=[],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})

@@ -7,7 +7,6 @@ from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
     WorkerCapability,
-    WorkerOwnership,
 )
 
 from .conftest import (
@@ -26,22 +25,12 @@ async def cleanup_worker(redis_client, worker_id: str | None):
     await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
 
 
-def _ownership() -> WorkerOwnership:
-    """A distinct owner per worker; these tests are not about who.
-
-    Distinct on purpose: two workers of one project serialize on that project's
-    workspace lock, so every worker here is made for its own project and run.
-    """
-    token = uuid4().hex[:8]
-    return WorkerOwnership(
-        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestTaskInjection:
-    async def test_task_injection_location(self, redis_client, docker_client, scaffolded_workspace):
+    async def test_task_injection_location(
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
+    ):
         """
         Verify that TASK.md is injected into /workspace/TASK.md.
         """
@@ -59,7 +48,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -83,7 +72,9 @@ class TestTaskInjection:
         finally:
             await cleanup_worker(redis_client, worker_id)
 
-    async def test_env_hints_in_task_md(self, redis_client, docker_client, scaffolded_workspace):
+    async def test_env_hints_in_task_md(
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
+    ):
         """Verify that env_hints content appears in TASK.md inside the worker."""
         # Build task content inline — the formatting logic is tested in langgraph unit tests.
         # Here we only verify that the worker receives and mounts the content correctly.
@@ -110,7 +101,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})

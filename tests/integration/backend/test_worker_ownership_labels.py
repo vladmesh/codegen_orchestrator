@@ -118,21 +118,14 @@ def _by_labels(docker_client, **labels):
     )
 
 
-def _fresh_ownership() -> WorkerOwnership:
-    token = uuid4().hex[:8]
-    return WorkerOwnership(
-        project_id=f"proj-{token}", run_id=f"live-{token}", attempt_id=f"eng-{token}"
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestOwnershipSurvivesTheWorker:
     async def test_a_dead_unsampled_worker_is_still_attributable(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """Dead, forgotten by Redis — and the container still says whose it was."""
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, container_id = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -157,11 +150,11 @@ class TestOwnershipSurvivesTheWorker:
         assert container.attrs["State"]["Status"] == "exited"
 
     async def test_a_query_scoped_to_one_run_never_selects_a_neighbouring_run(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """Two runs, and neither one answers the other's question."""
-        first = _fresh_ownership()
-        second = _fresh_ownership()
+        first = await worker_authority()
+        second = await worker_authority()
 
         _, first_container = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, first
@@ -181,7 +174,7 @@ class TestOwnershipSurvivesTheWorker:
         ] == [first_container]
 
     async def test_a_run_scoped_query_selects_nothing_else_on_the_daemon(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """Every other container on this daemon answers to no run.
 
@@ -196,8 +189,8 @@ class TestOwnershipSurvivesTheWorker:
         make the crowd it claims not to sweep up, or it is asking a question
         about an empty daemon.
         """
-        ownership = _fresh_ownership()
-        neighbour = _fresh_ownership()
+        ownership = await worker_authority()
+        neighbour = await worker_authority()
 
         _, container_id = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership

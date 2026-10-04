@@ -22,7 +22,6 @@ does create is held by
 is that the label query finds such a network on a real daemon and removes it.
 """
 
-import contextlib
 import importlib.util
 from pathlib import Path
 import sys
@@ -34,7 +33,7 @@ from shared.contracts.worker_evidence import removed_worker_evidence_key
 
 from .conftest import REDIS_URL
 from .test_run_evidence_by_label import _delete_through_worker_manager, _run_evidence
-from .test_worker_ownership_labels import _by_labels, _dead_owned_worker, _fresh_ownership
+from .test_worker_ownership_labels import _by_labels, _dead_owned_worker
 
 LIVE_TESTS = Path(__file__).resolve().parents[2] / "live"
 
@@ -98,33 +97,15 @@ def _names(resources) -> list[str]:
     return sorted(resource.name for resource in resources)
 
 
-@pytest.fixture(autouse=True)
-def remove_sidecars_and_networks(docker_client):
-    """This module's own leftovers, for the paths where a test failed early.
-
-    The suite's shared cleanup removes `worker-*` containers and nothing else,
-    which is right for it — the sidecars and dev networks below exist only here.
-    """
-    yield
-    for container in docker_client.containers.list(all=True):
-        if container.name.startswith("qa-egress-"):
-            with contextlib.suppress(Exception):
-                container.remove(force=True)
-    for network in docker_client.networks.list():
-        if network.name.startswith("dev_proj_"):
-            with contextlib.suppress(Exception):
-                network.remove()
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestCleanupFollowsTheRunLabel:
     async def test_a_run_is_removed_whole_from_its_label_alone(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """Container, sidecar and network — none of them recorded anywhere."""
         run_cleanup = _run_cleanup()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -145,12 +126,12 @@ class TestCleanupFollowsTheRunLabel:
         assert ops.list_networks(ownership.run_id) == []
 
     async def test_a_neighbouring_run_alive_at_the_same_time_is_untouched(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """Both runs on one daemon, and only one of them is cleaned."""
         run_cleanup = _run_cleanup()
-        ownership = _fresh_ownership()
-        neighbour = _fresh_ownership()
+        ownership = await worker_authority()
+        neighbour = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -185,11 +166,11 @@ class TestCleanupFollowsTheRunLabel:
         assert _by_labels(docker_client, **{WorkerLabel.RUN.value: neighbour.run_id}) == []
 
     async def test_cleaning_a_run_twice_leaves_what_cleaning_it_once_left(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """Idempotent on a real daemon: the second pass is a no-op, not an error."""
         run_cleanup = _run_cleanup()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -206,7 +187,7 @@ class TestCleanupFollowsTheRunLabel:
         assert second.errors == []
 
     async def test_a_retained_worker_name_waits_for_the_runs_evidence(
-        self, redis_client, docker_client, scaffolded_workspace, tmp_path
+        self, redis_client, docker_client, scaffolded_workspace, tmp_path, worker_authority
     ):
         """The one Redis key cleanup may not sweep as unexplained residue.
 
@@ -219,7 +200,7 @@ class TestCleanupFollowsTheRunLabel:
         """
         run_cleanup = _run_cleanup()
         run_evidence = _run_evidence()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -260,7 +241,7 @@ class TestCleanupFollowsTheRunLabel:
         assert await redis_client.hgetall(f"worker:meta:{worker_id}") == {}
 
     async def test_a_worker_removed_through_the_real_delete_leaves_nothing_to_clean(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """The ordinary path already cleans itself; cleanup after it is a no-op.
 
@@ -270,7 +251,7 @@ class TestCleanupFollowsTheRunLabel:
         afterwards.
         """
         run_cleanup = _run_cleanup()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership

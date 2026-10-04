@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- DinD worker fixtures persist and read back eligible attempt authority; scoped
+  cleanup retains startup evidence so real worker gates reach their intended boundaries.
 - Recovery validates copied objects in a clean manager repository before minting;
   verified handoff retires its publication holds so later operator actions remain usable.
 - Empty-result retention compares and persists the typed outcome, so omitted optional
