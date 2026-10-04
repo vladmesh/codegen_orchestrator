@@ -39,6 +39,7 @@ from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 
 from .test_worker_ownership_labels import _by_labels, _dead_owned_worker
+from .worker_authority import assert_persisted_worker_authority
 
 ENGINEERING_QUEUE = "engineering:queue"
 
@@ -60,9 +61,9 @@ def _ownership_manifest(run_id: str):
 async def _published_engineering_message(redis_client, *, run_row_id: str) -> EngineeringMessage:
     """The message the API really published, read back off the queue.
 
-    The engineering consumer in this stack reads the same stream through its
-    group; entries stay in the stream either way, so this reads the bytes that
-    were published rather than anything this test constructed.
+    This DinD stack leaves engineering:queue to the fixture's handoff. The real
+    consumer runs in backend.yml; consuming this synthetic repository here could
+    settle the same attempt before worker-manager's required authority check.
     """
     for _, fields in await redis_client.xrange(ENGINEERING_QUEUE):
         data = fields.get("data")
@@ -78,7 +79,15 @@ async def _published_engineering_message(redis_client, *, run_row_id: str) -> En
 @pytest.mark.asyncio
 class TestTheInitiatingRunReachesTheContainer:
     async def test_a_worker_is_attributable_by_the_run_id_its_run_was_born_with(
-        self, api_client, redis_client, docker_client, seed_project, seed_task, scaffolded_workspace
+        self,
+        api_client,
+        redis_client,
+        docker_client,
+        seed_project,
+        seed_task,
+        scaffolded_workspace,
+        test_worker_owners,
+        worker_resource_cleanup,
     ):
         """Query Docker by exactly `manifest.run_id` and find the run's worker."""
         manifest = _ownership_manifest(f"live-{uuid4().hex[:12]}")
@@ -114,6 +123,8 @@ class TestTheInitiatingRunReachesTheContainer:
         # The production constructor — the only place a developer worker's
         # ownership is derived — applied to that message.
         ownership = WorkerOwnership.for_engineering(msg)
+        test_worker_owners.append(ownership)
+        await assert_persisted_worker_authority(api_client, ownership, task["id"])
         assert ownership == WorkerOwnership(
             project_id=project["id"], run_id=manifest.run_id, attempt_id=run_row_id
         )
@@ -121,6 +132,9 @@ class TestTheInitiatingRunReachesTheContainer:
         worker_id, container_id = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
         )
+        # No competing consumer can terminalize the published attempt. Its
+        # native authority survives manager creation and this unsampled exit.
+        await assert_persisted_worker_authority(api_client, ownership, task["id"])
 
         # Dead, forgotten by Redis — and the run that started all this can still
         # find it, by the id it had before the project existed.

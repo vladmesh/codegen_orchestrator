@@ -40,7 +40,7 @@ from shared.contracts.queues.worker import WorkerLabel
 
 from .conftest import REDIS_URL
 from .test_run_scoped_cleanup import _dev_network, _names, _run_cleanup, _sidecar
-from .test_worker_ownership_labels import _dead_owned_worker, _fresh_ownership
+from .test_worker_ownership_labels import _dead_owned_worker
 
 # The tree as the runner container mounts it; `_DockerCli` runs `docker` there.
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -60,14 +60,14 @@ def _ops(run_cleanup, docker_client):
     )
 
 
-def _plain_container(docker_client, worker_id: str, labels: dict[str, str]):
+def _plain_container(docker_client, worker_id: str, labels: dict[str, str], plain_containers):
     """A container carrying exactly the given labels, on the run's own image.
 
     Built from an existing worker's image because this suite must not pull
     anything, and what matters about it here is its labels.
     """
     image = docker_client.containers.get(f"worker-{worker_id}").image.id
-    return docker_client.containers.run(
+    container = docker_client.containers.run(
         image,
         entrypoint=["sleep"],
         command=["300"],
@@ -75,32 +75,29 @@ def _plain_container(docker_client, worker_id: str, labels: dict[str, str]):
         detach=True,
         labels=labels,
     )
+    plain_containers.append(container)
+    return container
 
 
-@pytest.fixture(autouse=True)
-def remove_this_modules_resources(docker_client):
-    """This module's own leftovers, for the paths where a test failed early."""
-    yield
-    for container in docker_client.containers.list(all=True):
-        if container.name.startswith((FIXTURE_PREFIX, "qa-egress-")):
-            with contextlib.suppress(Exception):
-                container.remove(force=True)
-    for network in docker_client.networks.list():
-        if network.name.startswith("dev_proj_"):
-            with contextlib.suppress(Exception):
-                network.remove()
+@pytest.fixture
+def plain_containers():
+    containers = []
+    yield containers
+    for container in containers:
+        with contextlib.suppress(Exception):
+            container.remove(force=True)
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestTheCliListingsRenderAndParse:
     async def test_a_run_container_is_listed_with_its_name_and_labels(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority, plain_containers
     ):
         """`docker ps` renders one name and each asked-for label, and parses back whole."""
         run_cleanup = _run_cleanup()
-        ownership = _fresh_ownership()
-        neighbour = _fresh_ownership()
+        ownership = await worker_authority()
+        neighbour = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -109,7 +106,9 @@ class TestTheCliListingsRenderAndParse:
             redis_client, docker_client, scaffolded_workspace, neighbour
         )
         # Something on the daemon that answers to no run at all.
-        unowned = _plain_container(docker_client, worker_id, labels={})
+        unowned = _plain_container(
+            docker_client, worker_id, labels={}, plain_containers=plain_containers
+        )
 
         listed = _ops(run_cleanup, docker_client).list_containers(ownership.run_id)
 
@@ -125,7 +124,7 @@ class TestTheCliListingsRenderAndParse:
         assert f"worker-{neighbour_worker}" not in [resource.name for resource in listed]
 
     async def test_an_absent_label_is_rendered_as_an_empty_field(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority, plain_containers
     ):
         """The one rendering a fixture cannot settle: a label the container has not got.
 
@@ -134,14 +133,17 @@ class TestTheCliListingsRenderAndParse:
         placeholder in place of an absent label would make it a worker id.
         """
         run_cleanup = _run_cleanup()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
         )
         # The run label, and deliberately none of the others.
         partial = _plain_container(
-            docker_client, worker_id, labels={WorkerLabel.RUN.value: ownership.run_id}
+            docker_client,
+            worker_id,
+            labels={WorkerLabel.RUN.value: ownership.run_id},
+            plain_containers=plain_containers,
         )
 
         listed = _ops(run_cleanup, docker_client).list_containers(ownership.run_id)
@@ -152,12 +154,12 @@ class TestTheCliListingsRenderAndParse:
         )
 
     async def test_the_network_listing_parses_dockers_label_pairs(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """`{{.Labels}}` really is the `k=v,k=v` rendering `_labels_from_pairs` splits."""
         run_cleanup = _run_cleanup()
-        ownership = _fresh_ownership()
-        neighbour = _fresh_ownership()
+        ownership = await worker_authority()
+        neighbour = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -185,7 +187,7 @@ class TestTheCliListingsRenderAndParse:
 @pytest.mark.asyncio
 class TestCleanupThroughTheCli:
     async def test_a_run_is_removed_whole_while_a_neighbour_is_untouched(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """The whole run-scoped scenario, over the adapter a crash recovery uses.
 
@@ -194,8 +196,8 @@ class TestCleanupThroughTheCli:
         still whole afterwards and can then be cleaned by its own label.
         """
         run_cleanup = _run_cleanup()
-        ownership = _fresh_ownership()
-        neighbour = _fresh_ownership()
+        ownership = await worker_authority()
+        neighbour = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership

@@ -1,5 +1,4 @@
 import uuid
-from uuid import uuid4
 
 import pytest
 
@@ -7,13 +6,14 @@ from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
     WorkerCapability,
-    WorkerOwnership,
 )
+from shared.contracts.worker_evidence import RemovedWorkerEvidence
 
 from .conftest import (
     assert_worker_is_running,
     delete_test_worker,
     exec_in_running_worker,
+    removed_worker_lifecycle_diagnostics,
     scaffolded_worker_config,
     wait_for_worker_exit,
     wait_for_worker_ready,
@@ -24,20 +24,10 @@ CREATE_TIMEOUT = 240  # seconds, includes a cold worker image build inside DinD
 READINESS_TIMEOUT = 30  # seconds, once worker-manager has completed creation
 
 
-def _ownership() -> WorkerOwnership:
-    """A distinct owner per worker; these tests are not about who.
-
-    Distinct on purpose: two workers of one project serialize on that project's
-    workspace lock, so every worker here is made for its own project and run.
-    """
-    token = uuid4().hex[:8]
-    return WorkerOwnership(
-        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
-    )
-
-
 @pytest.mark.integration
-async def test_claude_cli_installed(redis_client, docker_client, scaffolded_workspace):
+async def test_claude_cli_installed(
+    redis_client, docker_client, scaffolded_workspace, worker_authority
+):
     """Claude worker must have claude CLI installed."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-{request_id[:8]}"
@@ -51,7 +41,7 @@ async def test_claude_cli_installed(redis_client, docker_client, scaffolded_work
         instructions="Test instructions",
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT, WorkerCapability.CURL],
-        ownership=_ownership(),
+        ownership=await worker_authority(),
         # This test verifies the binary, not host-session persistence. The DinD fixture has no
         # real subscription session, so keep the wrapper alive with its isolated test key.
         auth_mode="api_key",
@@ -81,7 +71,9 @@ async def test_claude_cli_installed(redis_client, docker_client, scaffolded_work
 
 
 @pytest.mark.integration
-async def test_claude_session_mounted(redis_client, docker_client, scaffolded_workspace):
+async def test_claude_session_mounted(
+    redis_client, docker_client, scaffolded_workspace, worker_authority
+):
     """Check if host session directory is mounted."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-mount-{request_id[:8]}"
@@ -94,7 +86,7 @@ async def test_claude_session_mounted(redis_client, docker_client, scaffolded_wo
         instructions="Test",
         allowed_commands=["*"],
         capabilities=[],
-        ownership=_ownership(),
+        ownership=await worker_authority(),
         auth_mode="host_session",
         host_claude_dir="/host-claude",
     )
@@ -127,7 +119,9 @@ async def test_claude_session_mounted(redis_client, docker_client, scaffolded_wo
 
 
 @pytest.mark.integration
-async def test_claude_instructions_injected(redis_client, docker_client, scaffolded_workspace):
+async def test_claude_instructions_injected(
+    redis_client, docker_client, scaffolded_workspace, worker_authority
+):
     """Check if CLAUDE.md is injected."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-instr-{request_id[:8]}"
@@ -141,7 +135,7 @@ async def test_claude_instructions_injected(redis_client, docker_client, scaffol
         instructions=instructions,
         allowed_commands=["*"],
         capabilities=[],
-        ownership=_ownership(),
+        ownership=await worker_authority(),
         # CLAUDE.md injection does not exercise persisted Claude authentication.
         # The DinD fixture intentionally has no real user session, so selecting
         # host_session here makes the wrapper reject its own required mount and
@@ -172,7 +166,7 @@ async def test_claude_instructions_injected(redis_client, docker_client, scaffol
 
 @pytest.mark.integration
 async def test_stopped_instruction_worker_reports_startup_evidence(
-    redis_client, docker_client, scaffolded_workspace
+    redis_client, docker_client, scaffolded_workspace, worker_authority
 ):
     """The prior dead-container path reports its exit rather than a Docker 409."""
     request_id = str(uuid.uuid4())
@@ -185,7 +179,7 @@ async def test_stopped_instruction_worker_reports_startup_evidence(
         instructions="This worker must not reach a Claude turn.",
         allowed_commands=["*"],
         capabilities=[],
-        ownership=_ownership(),
+        ownership=await worker_authority(),
         auth_mode="host_session",
         # The test-owned source stays root-owned, so the non-root worker wrapper
         # must reject it at startup after worker-manager injects instructions.
@@ -199,20 +193,23 @@ async def test_stopped_instruction_worker_reports_startup_evidence(
     )
 
     try:
-        container = await wait_for_worker_exit(
+        observation = await wait_for_worker_exit(
             redis_client,
             docker_client,
             request_id=request_id,
             worker_id=worker_id,
+            ownership=config.ownership,
             create_timeout=CREATE_TIMEOUT,
             exit_timeout=READINESS_TIMEOUT,
         )
-        assert container.attrs["State"]["ExitCode"] == 1
-
-        with pytest.raises(AssertionError) as exc:
-            assert_worker_is_running(container, worker_id)
-
-        failure = str(exc.value)
+        if isinstance(observation, RemovedWorkerEvidence):
+            assert observation.exit_code.value == 1
+            failure = removed_worker_lifecycle_diagnostics(observation, worker_id, config.ownership)
+        else:
+            assert observation.attrs["State"]["ExitCode"] == 1
+            with pytest.raises(AssertionError) as exc:
+                assert_worker_is_running(observation, worker_id)
+            failure = str(exc.value)
         assert "status=exited" in failure
         assert "exit_code=1" in failure
         assert "not writable" in failure

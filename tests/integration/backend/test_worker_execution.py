@@ -2,8 +2,14 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+from docker.errors import NotFound
 import pytest
 
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+    EngineeringInfrastructureRefusal,
+)
 from shared.contracts.dto.worker import WorkerStatus, worker_creation_failure_key
 from shared.contracts.queues.worker import (
     AgentType,
@@ -11,9 +17,8 @@ from shared.contracts.queues.worker import (
     WorkerCapability,
     WorkerChannels,
     WorkerConfig,
-    WorkerOwnership,
 )
-from shared.contracts.queues.worker_result import WorkerResultStatus
+from shared.contracts.queues.worker_result import WorkerResultStatus, parse_worker_result
 
 from .conftest import (
     REDIS_STREAM_COMMANDS,
@@ -25,24 +30,75 @@ from .conftest import (
 )
 
 
-def _ownership() -> WorkerOwnership:
-    """A distinct owner per worker; these tests are not about who.
-
-    Distinct on purpose: two workers of one project serialize on that project's
-    workspace lock, so every worker here is made for its own project and run.
-    """
-    token = uuid4().hex[:8]
-    return WorkerOwnership(
-        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestWorkerExecution:
+    @pytest.mark.parametrize("invalid", ["missing", "foreign", "stale", "stopped"])
+    async def test_invalid_attempt_refused_before_container_or_materials(
+        self,
+        api_client,
+        redis_client,
+        docker_client,
+        scaffolded_workspace,
+        worker_authority,
+        test_worker_owners,
+        invalid,
+    ):
+        owner = await worker_authority()
+        if invalid == "missing":
+            owner = owner.model_copy(update={"attempt_id": f"absent-{uuid4().hex}"})
+        elif invalid == "foreign":
+            neighbour = await worker_authority()
+            owner = owner.model_copy(update={"project_id": neighbour.project_id})
+        elif invalid == "stale":
+            owner = owner.model_copy(update={"run_id": f"stale-{uuid4().hex}"})
+        else:
+            response = await api_client.post(f"/api/stories/{owner.story_id}/fail", json={})
+            response.raise_for_status()
+        test_worker_owners.append(owner)  # Explicit negative identity remains test-owned cleanup.
+        before = await api_client.get("/api/runs/", params={"project_id": owner.project_id})
+        before.raise_for_status()
+        worker_id = f"authority-refused-{uuid4().hex[:12]}"
+        request_id = f"authority-{uuid4().hex[:12]}"
+        command = CreateWorkerCommand(
+            request_id=request_id,
+            config=scaffolded_worker_config(
+                scaffolded_workspace,
+                name=worker_id,
+                worker_type="developer",
+                agent_type=AgentType.CLAUDE,
+                instructions="Must remain uninjected.",
+                task_content="No model turn.",
+                allowed_commands=[],
+                capabilities=[],
+                ownership=owner,
+                auth_mode="api_key",
+                api_key="sk-ant-test-claude-key",
+            ),
+        )
+        await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
+        with pytest.raises(RuntimeError):
+            await wait_for_create_response(redis_client, REDIS_STREAM_DEV_RESPONSES, request_id)
+        failure = await redis_client.hgetall(f"worker:status:{worker_id}")
+        error = await redis_client.get(f"worker:error:{worker_id}")
+        assert (
+            "engineering-disposition" in error
+            if invalid == "missing"
+            else ("ownership/disposition refused" in error)
+        )
+        assert failure["execution_phase"] == EngineeringExecutionPhase.PRE_AGENT_REFUSED
+        with pytest.raises(NotFound):
+            docker_client._test_direct_container_get(f"worker-{worker_id}")
+        workspace = Path(WORKSPACE_BASE_PATH, scaffolded_workspace)
+        for path in ("TASK.md", "CLAUDE.md", ".git-credentials", ".config/gh/hosts.yml"):
+            assert not (workspace / path).exists()
+        after = await api_client.get("/api/runs/", params={"project_id": owner.project_id})
+        after.raise_for_status()
+        assert after.json() == before.json()  # Worker refusal admits no additional Run or spend.
+
     @pytest.mark.asyncio
     async def test_create_claude_worker_with_git_capability(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """
         Scenario D.1: Create Claude worker with GIT capability.
@@ -58,7 +114,7 @@ class TestWorkerExecution:
                 instructions="You are a test assistant.",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT, WorkerCapability.GITHUB_CLI],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -141,7 +197,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
         [{}, {"GITHUB_TOKEN": "synthetic-invalid"}],
     )
     async def test_missing_repository_credentials_refused_before_injection(
-        self, redis_client, scaffolded_workspace, env_vars
+        self, redis_client, scaffolded_workspace, env_vars, worker_authority
     ):
         worker_id = f"missing-credentials-{uuid4().hex[:8]}"
         request_id = f"refused-{uuid4().hex[:8]}"
@@ -156,7 +212,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
                 task_content="Must not reach an agent.",
                 allowed_commands=[],
                 capabilities=[],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
                 repo_id=scaffolded_workspace,
                 env_vars=env_vars,
                 auth_mode="api_key",
@@ -179,7 +235,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
 
     @pytest.mark.asyncio
     async def test_create_factory_worker_with_curl_capability(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """
         Scenario D.2: Create Factory worker with CURL capability.
@@ -195,7 +251,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
                 instructions="You are a Factory assistant.",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -223,7 +279,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
 
     @pytest.mark.asyncio
     async def test_different_agent_types_produce_different_images(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """
         Scenario B: Image caching respects agent_type.
@@ -240,7 +296,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd1.model_dump_json()})
@@ -263,7 +319,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd2.model_dump_json()})
@@ -295,11 +351,11 @@ assert not (home / ".config/gh/hosts.yml").exists()
 
     @pytest.mark.asyncio
     async def test_worker_executes_task_with_mocked_claude(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """
-        Scenario: Worker receives task via Redis input stream and writes result to output.
-        Actually verifies connectivity. Since we don't mock LLM yet, we expect execution attempt.
+        A no-model task reaches the shipped wrapper and its repository refusal.
+        A local CLI stub also prevents spend if a preflight regression launches it.
         """
         req_id = f"exec-test-{uuid4().hex[:6]}"
 
@@ -314,7 +370,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
                 instructions="Echo test agent",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
-                ownership=_ownership(),
+                ownership=await worker_authority(),
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -325,6 +381,18 @@ assert not (home / ".config/gh/hosts.yml").exists()
         )
         assert result.success, f"Worker creation failed: {result.error}"
         worker_id = result.worker_id
+        container = docker_client.containers.get(f"worker-{worker_id}")
+        stub = "#!/bin/sh\ntouch /workspace/cli-started\nexit 1\n"
+        exit_code, output = container.exec_run(
+            [
+                "python3",
+                "-c",
+                "from pathlib import Path; "
+                f"p=Path('/usr/local/bin/droid'); p.write_text({stub!r}); p.chmod(0o755)",
+            ],
+            user="root",
+        )
+        assert exit_code == 0, output.decode()
 
         # 3. Verify Streams logic (via internal knowledge of channels)
         input_stream = WorkerChannels.INPUT_PATTERN.value.format(worker_id=worker_id)
@@ -342,3 +410,8 @@ assert not (home / ".config/gh/hosts.yml").exists()
         output_msg = await wait_for_stream_message(redis_client, output_stream, timeout=60)
         output_data = json.loads(output_msg["data"])
         assert output_data["status"] in {s.value for s in WorkerResultStatus}
+        assert parse_worker_result(output_data).execution == EngineeringExecutionEvidence(
+            execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+            infrastructure_refusal=EngineeringInfrastructureRefusal.REPOSITORY_AUTH_UNAVAILABLE,
+        )
+        assert not Path(WORKSPACE_BASE_PATH, scaffolded_workspace, "cli-started").exists()

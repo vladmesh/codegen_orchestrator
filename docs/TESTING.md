@@ -789,6 +789,53 @@ remote SHA. They exercise the wrapper's pre-agent refusal and the existing Run/S
 infrastructure parking seam without Docker or paid model calls. DinD mounts `/tmp`
 before its workspace/transcript child volumes so its entrypoint cannot hide them.
 Container assertions are CI evidence only when that candidate's job executes.
+Real developer workers use the shared `worker_authority` fixture. It creates an
+active Project with a distinct initiating run, starts a Story, creates its TODO
+Task and admits an engineering Run through the native admission endpoint. Four
+persisted API reads and `engineering-disposition` must match before the worker
+command is enqueued. Standalone ownership reads Project, Task and Run, omits the
+Story lookup and requires both Task and Run to have `story_id=None`. Admission
+alone publishes no engineering message or model turn. The queue-propagation
+scenario retains native spawn admission/publication, validates the stored
+`EngineeringMessage`, derives `WorkerOwnership.for_engineering` and proves that
+same persisted identity before and after real manager/container creation.
+
+DinD leaves `engineering:queue` to that fixture's handoff and launches no
+engineering consumer. The API owns the admitted, queued Run's disposition; the
+fixture retains its current Project/Task until assertions finish, with no
+terminal writer racing the manager's required authority check. No Run is reset
+or stop fence relaxed. The ordinary `backend.yml` still launches the real
+engineering consumer for `test_langgraph_integration.py` and its native terminal
+outcomes at unavailable external/resource boundaries.
+
+All 13 selected DinD modules remain: runtime imports and project artifact cleanup
+need no engineering consumer; readiness, mounts, injection, execution, Codex,
+labels, evidence and SDK/CLI cleanup command the manager directly. Propagation
+alone reads a native engineering publication before issuing that same command.
+Worker-manager consumes those lifecycle commands; worker-broker serves worker
+turns. LangGraph forwards progress without settling Runs; its provisioner and
+the Architect consumer retain their separate, idle queue roles. No selected
+scenario asks either to execute an engineering attempt.
+
+The producer serves Claude/Factory readiness, dev mounts/deletion, task injection,
+worker execution, shipped Codex shell probes, labels, removal evidence and SDK/CLI
+run cleanup. Invalid repository fixtures retain valid authority and deliberately
+omit repository identity. Missing, foreign, stale and stopped authority probes
+refuse before container/material creation. Synthetic repository credential refusal
+and local CLI stubs keep task execution free of model calls. Startup exits are
+asserted from Docker or the native removal receipt, requiring captured state,
+exit code and logs. Cleanup runs after assertions, selects only test-owned run
+labels and stream entries, and preserves neighbours and shared consumer groups.
+Propagation registers the published owner before readback, so worker cleanup
+selects its real Project/initiating Run/attempt labels too. Subsequent asserted
+Project deletion removes its API records and native project-scoped queue entries,
+including the engineering publication, without deleting neighbour entries or
+shared groups. API and workspace fixture teardown follows worker cleanup. The
+original 38 DinD scenarios remain required; four authority refusal cases extend
+that suite to 42.
+Offline producer tests do not establish real API/Docker or image readiness; a
+skipped premerge DinD job leaves merged-main validation outstanding.
+
 `test_codex_shell_credentials.py` verifies the shipped Codex version against its
 image pin, then uses native app-server `command/exec` to run a shell through the
 developer runner's actual environment policy. A loopback broker rotates synthetic
@@ -802,7 +849,7 @@ E2E. The default `make test-live` intentionally excludes pipeline tests and does
 creation.
 
 The Docker-in-Docker suite spins up the full stack:
-- **Services**: api, langgraph, engineering-worker, worker-manager
+- **Services**: api, langgraph, architect, worker-manager, worker-broker
 - **Infra**: PostgreSQL (tmpfs), Redis, Docker-in-Docker
 - **Test runner**: pytest container on the same network
 

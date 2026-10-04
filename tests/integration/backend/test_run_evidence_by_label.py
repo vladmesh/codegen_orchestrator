@@ -47,7 +47,6 @@ from .conftest import REDIS_STREAM_COMMANDS, REDIS_STREAM_DEV_RESPONSES, REDIS_U
 from .test_worker_ownership_labels import (
     _by_labels,
     _dead_owned_worker,
-    _fresh_ownership,
     _owned_worker,
 )
 
@@ -138,11 +137,11 @@ def _artifact_for(run_evidence, docker_client, ownership, tmp_path, **collector_
 @pytest.mark.asyncio
 class TestEvidenceFollowsTheRunLabel:
     async def test_a_worker_killed_and_forgotten_is_still_fully_attributed(
-        self, redis_client, docker_client, scaffolded_workspace, tmp_path
+        self, redis_client, docker_client, scaffolded_workspace, tmp_path, worker_authority
     ):
         """Dead, deleted from Redis — and its exit is still in the artifact."""
         run_evidence = _run_evidence()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, container_id = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -182,7 +181,7 @@ class TestEvidenceFollowsTheRunLabel:
                 assert level["value"] is None
 
     async def test_a_worker_deleted_before_anything_looked_still_carries_its_exit(
-        self, redis_client, docker_client, scaffolded_workspace, tmp_path
+        self, redis_client, docker_client, scaffolded_workspace, tmp_path, worker_authority
     ):
         """The sequence a harness can never win, decided at the vanishing point.
 
@@ -194,7 +193,7 @@ class TestEvidenceFollowsTheRunLabel:
         the container, because that is where the capture belongs.
         """
         run_evidence = _run_evidence()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, container_id = await _owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -236,11 +235,11 @@ class TestEvidenceFollowsTheRunLabel:
         assert await redis_client.hexists(removed_worker_evidence_key(ownership.run_id), worker_id)
 
     async def test_a_removed_container_the_run_owned_is_a_stated_missed_capture(
-        self, redis_client, docker_client, scaffolded_workspace, tmp_path
+        self, redis_client, docker_client, scaffolded_workspace, tmp_path, worker_authority
     ):
         """The label's one blind spot, and the artifact says so out loud."""
         run_evidence = _run_evidence()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, container_id = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -267,7 +266,7 @@ class TestEvidenceFollowsTheRunLabel:
             assert "never listed its container" in worker[field]["reason"]
 
     async def test_a_worker_whose_removal_record_failed_still_reaches_its_artifact(
-        self, redis_client, docker_client, scaffolded_workspace, tmp_path
+        self, redis_client, docker_client, scaffolded_workspace, tmp_path, worker_authority
     ):
         """The last durable name is kept when the durable record cannot be written.
 
@@ -282,7 +281,7 @@ class TestEvidenceFollowsTheRunLabel:
         worker-manager itself declined to delete.
         """
         run_evidence = _run_evidence()
-        ownership = _fresh_ownership()
+        ownership = await worker_authority()
 
         worker_id, _ = await _owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
@@ -326,12 +325,12 @@ class TestEvidenceFollowsTheRunLabel:
         await redis_client.delete(f"worker:meta:{worker_id}")
 
     async def test_one_runs_artifact_never_carries_another_runs_worker(
-        self, redis_client, docker_client, scaffolded_workspace, tmp_path
+        self, redis_client, docker_client, scaffolded_workspace, tmp_path, worker_authority
     ):
         """Four combinations share one daemon; each answers for itself alone."""
         run_evidence = _run_evidence()
-        ownership = _fresh_ownership()
-        neighbour = _fresh_ownership()
+        ownership = await worker_authority()
+        neighbour = await worker_authority()
 
         worker_id, _ = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership

@@ -14,7 +14,6 @@ from .conftest import (
     scaffolded_worker_config,
     wait_for_create_response,
 )
-from .test_worker_execution import _ownership
 
 PROBE = r'''
 import json, os, select, shlex, subprocess, tempfile, time
@@ -148,7 +147,7 @@ finally:
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_shipped_codex_shell_retains_scoped_broker_identity(
-    redis_client, docker_client, scaffolded_workspace
+    redis_client, docker_client, scaffolded_workspace, worker_authority
 ):
     request_id = f"codex-policy-{uuid4().hex[:8]}"
     command = CreateWorkerCommand(
@@ -163,7 +162,7 @@ async def test_shipped_codex_shell_retains_scoped_broker_identity(
             instructions="No model turn is requested.",
             allowed_commands=[],
             capabilities=[WorkerCapability.GIT],
-            ownership=_ownership(),
+            ownership=await worker_authority(),
         ),
     )
     await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
