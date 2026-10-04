@@ -46,6 +46,15 @@ CONTROL_PLANE_PLAYBOOK = (
     / "services/infra-service/ansible/playbooks/provision_stand_control_plane.yml"
 )
 
+#: On the Ummanu control host `docker` is a guard shim that needs these launcher
+#: bindings; a PATH-only environment would refuse the real `docker compose config`.
+DOCKER_GUARD_BINDINGS = ("UMMANU_DOCKER_PYTHON", "UMMANU_DOCKER_SOURCE", "UMMANU_DOCKER_BACKEND")
+
+
+def _docker_guard_bindings() -> dict[str, str]:
+    """The guard bindings that are set; none in CI, where `docker` is the real CLI."""
+    return {name: os.environ[name] for name in DOCKER_GUARD_BINDINGS if name in os.environ}
+
 
 def _workflow() -> dict:
     loaded = yaml.safe_load(WORKFLOW.read_text())
@@ -1969,7 +1978,7 @@ def test_actual_stand_renderer_provisions_required_policy_for_clean_compose(tmp_
     configured = subprocess.run(  # noqa: S603
         [*command, "config", "--quiet"],
         cwd=tmp_path,
-        env={"PATH": os.environ["PATH"]},
+        env={"PATH": os.environ["PATH"], **_docker_guard_bindings()},
         capture_output=True,
         text=True,
         check=False,

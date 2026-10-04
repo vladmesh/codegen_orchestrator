@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- The unit runner, compose runner and stand render test pass only the three Ummanu docker-guard
+  bindings when set, so read-only `docker compose config` tests pass on the control host.
 - Worker output receipts expire after a 24-hour replay window and owned teardown
   collects every lease, including legacy receipts, to bound retention without duplicate delivery.
 - Deploy cleans only scoped worker/service releases, retaining rollback and container-used images;
