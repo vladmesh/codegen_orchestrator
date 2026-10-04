@@ -62,6 +62,7 @@ services:
     environment:
       - DEFAULT_AGENT_TYPE=claude
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - WORKER_MANAGER_URL=http://worker-manager:8000
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
       - SEED_SYSTEM_CONFIGS_ON_START=true
@@ -91,6 +92,7 @@ services:
     environment:
       - DEFAULT_AGENT_TYPE=claude
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - WORKER_MANAGER_URL=http://worker-manager:8000
       - REDIS_URL=redis://redis:6379/0
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret-for-service-tests

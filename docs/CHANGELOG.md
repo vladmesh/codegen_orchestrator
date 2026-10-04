@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Test API containers explicitly configure worker-manager connectivity, so service
+  and integration CI can start the publication recovery API without a production default.
 - Unpublished worker commits park for explicit agent-free recovery; committed
   engineering stops fence retries, worker turns and late deploy claims, preserving paid outcomes.
 - Health QA's product HTTP fixture matches the root path explicitly, so its

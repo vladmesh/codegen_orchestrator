@@ -35,6 +35,7 @@ services:
       - ENVIRONMENT=test
       - SEED_SYSTEM_CONFIGS_ON_START=true
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - WORKER_MANAGER_URL=http://worker-manager:8000
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
       - SECRETS_ENCRYPTION_KEY=GkH0NqyqjG599M0K9fVwU34b_2i1-m_i_M80-82d2X0=
