@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import subprocess
 
+import pytest
+
 from scripts.cleanup_worker_images import (
     Image,
     cleanup_worker_images,
@@ -323,8 +325,11 @@ REGISTRY = "ghcr.io/vladmesh/codegen-orchestrator"
 def _records(tmp_path) -> tuple:
     current = tmp_path / "current.json"
     previous = tmp_path / "previous.json"
-    current.write_text(json.dumps(_record("current", "current")))
-    previous.write_text(json.dumps(_record("previous", "previous")))
+    for path, generation in ((current, "current"), (previous, "previous")):
+        record = _record(generation, generation)
+        for image in record["images"].values():
+            image["reference"] = f"{REGISTRY}/{image['reference']}"
+        path.write_text(json.dumps(record))
     return current, previous
 
 
@@ -355,6 +360,79 @@ def _cleanup(tmp_path, daemon: FakeDockerDaemon) -> list[str]:
     current, previous = _records(tmp_path)
     return cleanup_worker_images(
         release_record=current, previous_release_record=previous, dry_run=False, run_docker=daemon
+    )
+
+
+def test_live_cleanup_selects_only_project_workers_and_keeps_used_images(tmp_path, capsys):
+    daemon = _daemon()
+    for image_id in ("running", "stopped"):
+        _stale(daemon, image_id, f"worker:{image_id}")
+        daemon.containers[f"{image_id}-container"] = image_id
+    daemon.add(
+        "stale-derived-dangling",
+        parent="stale",
+        labels={"org.codegen.worker_source_hash": "stale"},
+    )
+    daemon.add("unrelated-tagged", "other-project/api:old")
+    daemon.add("unrelated-dangling")
+    for image_id, names in (
+        ("unrelated-labelled-tagged", ("other-project/api:labelled",)),
+        ("unrelated-labelled-dangling", ()),
+        ("unrelated-worker", ("ghcr.io/other-project/worker-base-common:old",)),
+        ("unrelated-worker-digest", ("ghcr.io/other-project/worker-base-common@sha256:old",)),
+    ):
+        daemon.add(image_id, *names, labels={"org.codegen.worker_source_hash": "stale"})
+    retained = set(daemon.images) - {"stale", "stale-derived-dangling"}
+
+    assert _cleanup(tmp_path, daemon) == []
+
+    assert set(daemon.images) == retained
+    assert daemon.removals == [
+        "stale-derived-dangling",
+        "stale",
+        "worker-base-common:stale",
+        f"{REGISTRY}/worker-base-common@sha256:stale",
+    ]
+    output = capsys.readouterr().out
+    for image_id, reason in (
+        ("current", "current_generation"),
+        ("previous", "previous_generation"),
+        ("running", "running_container"),
+        ("stopped", "running_container"),
+    ):
+        assert f"KEEP {image_id} reason={reason}" in output
+    assert "REMOVED stale-derived-dangling source_hash=stale" in output
+    assert "REMOVED stale source_hash=stale" in output
+
+
+@pytest.mark.parametrize("missing", ["current", "previous"])
+@pytest.mark.parametrize("contents", [None, b"not json", b"\xff"])
+def test_live_cleanup_without_readable_records_sends_no_removals(
+    tmp_path, capsys, missing, contents
+):
+    current, previous = _records(tmp_path)
+    record = current if missing == "current" else previous
+    if contents is None:
+        record.unlink()
+    else:
+        record.write_bytes(contents)
+    daemon = _daemon()
+    original_images = set(daemon.images)
+
+    assert (
+        cleanup_worker_images(
+            release_record=current,
+            previous_release_record=previous,
+            dry_run=False,
+            run_docker=daemon,
+        )
+        == []
+    )
+
+    assert set(daemon.images) == original_images
+    assert daemon.removals == []
+    assert f"KEEP worker-images reason={missing}_release_record_missing_or_unreadable" in (
+        capsys.readouterr().out
     )
 
 

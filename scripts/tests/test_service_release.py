@@ -320,6 +320,74 @@ def _cleanup(tmp_path: Path, daemon: FakeDockerDaemon, dry_run: bool = False) ->
     )
 
 
+def test_cleanup_selects_only_project_services_and_keeps_used_images(tmp_path, capsys):
+    daemon = _daemon()
+    daemon.add("id-previous", _record(PREVIOUS_SHA, "p")["images"]["api"]["reference"])
+    daemon.add("id-host-build", "codegen-orchestrator/langgraph:local")
+    for image_id in ("id-running", "id-stopped"):
+        daemon.add(image_id, f"codegen-orchestrator/api:{image_id}")
+        daemon.containers[f"{image_id}-container"] = image_id
+    daemon.add("unrelated-tagged", "other-project/api:old")
+    daemon.add("unrelated-dangling")
+    for image_id, names in (
+        ("unrelated-labelled-tagged", ("ghcr.io/other-project/api@sha256:old",)),
+        ("unrelated-labelled-dangling", ()),
+    ):
+        daemon.add(image_id, *names, labels={"org.codegen.worker_source_hash": "stale"})
+    retained = set(daemon.images) - {"id-stale", "id-host-build"}
+
+    assert _cleanup(tmp_path, daemon) == []
+
+    assert set(daemon.images) == retained
+    assert daemon.removals == [
+        "id-host-build",
+        "id-stale",
+        f"codegen-orchestrator/api:{STALE_SHA}",
+        _record(STALE_SHA, "s")["images"]["api"]["reference"],
+    ]
+    output = capsys.readouterr().out
+    for image_id, reason in (
+        ("id-current", "deployed_release"),
+        ("id-previous", "deployed_release"),
+        ("id-running", "container"),
+        ("id-stopped", "container"),
+    ):
+        assert f"KEEP {image_id} reason={reason}" in output
+    assert "REMOVED id-stale" in output
+    assert "REMOVED id-host-build" in output
+
+
+@pytest.mark.parametrize("missing", ["current", "previous"])
+@pytest.mark.parametrize("contents", [None, b"not json", b"\xff"])
+def test_live_cleanup_without_readable_records_sends_no_removals(
+    tmp_path, capsys, missing, contents
+):
+    current, previous = _write_records(tmp_path)
+    record = current if missing == "current" else previous
+    if contents is None:
+        record.unlink()
+    else:
+        record.write_bytes(contents)
+    daemon = _daemon()
+    original_images = set(daemon.images)
+
+    assert (
+        cleanup_service_images(
+            current_record=current,
+            previous_record=previous,
+            dry_run=False,
+            run_docker=daemon,
+        )
+        == []
+    )
+
+    assert set(daemon.images) == original_images
+    assert daemon.removals == []
+    assert f"KEEP service-images reason={missing}_release_record_missing_or_unreadable" in (
+        capsys.readouterr().out
+    )
+
+
 def test_cleanup_removes_a_stale_image_by_its_id_and_untags_it_only_when_docker_must(
     tmp_path, capsys
 ):

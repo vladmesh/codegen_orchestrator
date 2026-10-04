@@ -727,8 +727,8 @@ jobs:
       # After the deploy is live and bounded, so it never holds the critical path.
       # It keeps the current and the previous release of both chains — the previous
       # one is what a rollback redeploys without a pull — and removes only images of
-      # neither that no container uses. Service release images carry a local
-      # codegen-orchestrator/<image>:<sha> name, so the dangling prune cannot take them.
+      # neither that no container uses. Selection is project-scoped; unowned or
+      # unidentified dangling images stay on this shared daemon.
       # The deploy's outcome is the Switch (and the reconcile); cleanup is best-effort:
       # each command runs whatever the one before it did, a non-zero exit is reported
       # as a warning annotation and a summary line naming the command and its code, and
@@ -755,9 +755,6 @@ jobs:
             --current-record deployed-service-images.json \
             --previous-record previous-deployed-service-images.json \
             || echo "cleanup-failed scripts/service_release.py cleanup exit=$?"
-          # Rebuilt worker images can leave their replaced images dangling on the
-          # classic image store. Docker keeps images named by containers.
-          docker image prune -f || echo "cleanup-failed docker image prune exit=$?"
           exit 0
           REMOTE
           then remote_status=0; else remote_status=$?; fi

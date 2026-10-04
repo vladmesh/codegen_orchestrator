@@ -1134,8 +1134,11 @@ outside `infra/` and `secrets/`, and
 cleanup` keeps every service image of the current and the previous record and any image a container
 uses, and removes the rest of the chain's images — older releases and the `:local` images earlier
 host builds left. A missing or unreadable record removes nothing. `scripts/cleanup_worker_images.py`
-keeps the current and previous worker generations the same way, and a dangling-image prune follows;
-there is no build cache to prune any more.
+keeps the current and previous worker generations and all container-used images. Worker selection
+uses the records' repositories, bare local worker names and their descendants carrying the source-hash
+label; a foreign repository's matching basename/label does not authorize removal. Both commands
+select only this project's images. Unowned or unidentified dangling images remain on the shared
+daemon; deployment performs no daemon-wide pruning of images, build cache, volumes or networks.
 
 Both cleanups remove what they decided by **image ID**, each image on its own, among the images on
 the host at that moment. Docker refuses an ID that several repositories name, so such an image is
@@ -1146,7 +1149,7 @@ skipped. An image docker refuses because a container uses it is kept (`KEEP ... 
 any other failure is a `FAIL <id>` line, the rest are still removed, and the script exits non-zero.
 
 **Cleanup is best-effort and never fails the deploy.** The step runs through `deploy-ssh.sh` with one
-attempt; on the host each command (worker cleanup, service cleanup, prune) runs whatever the one before
+attempt; on the host each command (worker cleanup, service cleanup) runs whatever the one before
 it did. Each non-zero exit — and an SSH session that could not run at all — becomes a GitHub warning
 annotation (`Cleanup failed`) and a line under "Cleanup warnings" in the run summary, naming the
 command and its exit code; the log above it has the per-image lines. The step still exits 0, and it is

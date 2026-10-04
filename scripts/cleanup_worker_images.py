@@ -154,13 +154,24 @@ def _run_docker(command: list[str]) -> str:
     return subprocess.run([docker, *command], check=True, capture_output=True, text=True).stdout
 
 
-def _worker_image_name(reference: str) -> str | None:
-    repository = reference.split("@", 1)[0].rsplit(":", 1)[0]
-    name = repository.rsplit("/", 1)[-1]
-    return name if name in WORKER_BASE_IMAGE_NAMES or name == "worker" else None
+def _worker_image_name(reference: str, repositories: frozenset[str]) -> str | None:
+    repository = reference.partition("@")[0]
+    if "@" not in reference:
+        repository = repository.rsplit(":", 1)[0]
+    # The source-hash label is also carried by services and may be inherited by
+    # another project. A matching basename in a foreign registry is not ownership.
+    if (
+        repository in repositories
+        or repository in WORKER_BASE_IMAGE_NAMES
+        or repository == "worker"
+    ):
+        return repository.rsplit("/", 1)[-1]
+    return None
 
 
-def _worker_images(run_docker: Callable[[list[str]], str]) -> list[Image]:
+def _worker_images(
+    run_docker: Callable[[list[str]], str], repositories: frozenset[str]
+) -> list[Image]:
     image_ids = sorted(
         {item for item in run_docker(["image", "ls", "-q", "--no-trunc"]).splitlines() if item}
     )
@@ -181,7 +192,7 @@ def _worker_images(run_docker: Callable[[list[str]], str]) -> list[Image]:
         str(raw["Id"])
         for raw in raw_images
         if any(
-            _worker_image_name(reference)
+            _worker_image_name(reference, repositories)
             for reference in (raw.get("RepoTags") or []) + (raw.get("RepoDigests") or [])
         )
     }
@@ -304,11 +315,19 @@ def cleanup_worker_images(
     Each image is removed by its ID and on its own, so one that is gone, in use or failing
     does not stop the others. Returns the IDs of the images that failed to be removed.
     """
-    images = _worker_images(run_docker)
+    current_record = _load_record(release_record)
+    previous_record = _load_record(previous_release_record)
+    repositories = frozenset(
+        reference.partition("@")[0]
+        for record in (current_record, previous_record)
+        if (details := _record_details(record)) is not None
+        for reference in details[1]
+    )
+    images = _worker_images(run_docker, repositories)
     running_image_ids = _container_image_ids(run_docker)
     plan = plan_cleanup(
-        current_record=_load_record(release_record),
-        previous_record=_load_record(previous_release_record),
+        current_record=current_record,
+        previous_record=previous_record,
         images=images,
         running_image_ids=running_image_ids,
     )

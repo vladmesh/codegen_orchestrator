@@ -19,8 +19,8 @@
 #      names by digest and requires each to carry this tree's non-empty source hash.
 #   3. Only once every image is verified does it write anything: the record of the verified
 #      release at DIGEST_FILE, and a local name for every image,
-#      codegen-orchestrator/<image>:<sha>, so a dangling-image prune can never take a
-#      release away from a rollback.
+#      codegen-orchestrator/<image>:<sha>, for scoped release cleanup. Cleanup keeps
+#      current/previous releases for rollback and leaves unowned dangling images.
 #
 # Nothing here is live host state. The deploy points DIGEST_FILE into its pending set;
 # its Switch step alone rotates the live record into the previous one and promotes this
