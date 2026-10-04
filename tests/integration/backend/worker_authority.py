@@ -68,18 +68,21 @@ async def assert_persisted_worker_authority(api, owner, task_id):
     rows = []
     for path in (
         f"projects/{owner.project_id}",
-        f"stories/{owner.story_id}",
         f"tasks/{task_id}",
         f"runs/{owner.attempt_id}",
     ):
         response = await api.get(f"/api/{path}")
         response.raise_for_status()
         rows.append(response.json())
-    persisted_project, persisted_story, persisted_task, run = rows
+    persisted_project, persisted_task, run = rows
     assert persisted_project["id"] == owner.project_id
     assert persisted_project["initiating_run_id"] == owner.run_id
-    assert persisted_story["id"] == owner.story_id
-    assert persisted_story["project_id"] == owner.project_id
+    if owner.story_id is not None:
+        response = await api.get(f"/api/stories/{owner.story_id}")
+        response.raise_for_status()
+        persisted_story = response.json()
+        assert persisted_story["id"] == owner.story_id
+        assert persisted_story["project_id"] == owner.project_id
     assert persisted_task["id"] == task_id
     assert persisted_task["project_id"] == owner.project_id
     assert persisted_task["story_id"] == owner.story_id

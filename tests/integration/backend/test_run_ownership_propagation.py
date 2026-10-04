@@ -61,9 +61,9 @@ def _ownership_manifest(run_id: str):
 async def _published_engineering_message(redis_client, *, run_row_id: str) -> EngineeringMessage:
     """The message the API really published, read back off the queue.
 
-    The engineering consumer in this stack reads the same stream through its
-    group; entries stay in the stream either way, so this reads the bytes that
-    were published rather than anything this test constructed.
+    This DinD stack leaves engineering:queue to the fixture's handoff. The real
+    consumer runs in backend.yml; consuming this synthetic repository here could
+    settle the same attempt before worker-manager's required authority check.
     """
     for _, fields in await redis_client.xrange(ENGINEERING_QUEUE):
         data = fields.get("data")
@@ -132,6 +132,9 @@ class TestTheInitiatingRunReachesTheContainer:
         worker_id, container_id = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
         )
+        # No competing consumer can terminalize the published attempt. Its
+        # native authority survives manager creation and this unsampled exit.
+        await assert_persisted_worker_authority(api_client, ownership, task["id"])
 
         # Dead, forgotten by Redis — and the run that started all this can still
         # find it, by the id it had before the project existed.

@@ -37,26 +37,10 @@ services:
     networks:
       - backend-test
 
-  engineering-worker:
-    # Built once, by the langgraph service of this file; never pulled.
-    image: codegen-orchestrator/langgraph:test
-    pull_policy: never
-    command: ["python", "-m", "src.consumers.engineering"]
-    environment:
-      - DEFAULT_AGENT_TYPE=claude
-      - REDIS_URL=redis://redis:6379/0
-      - API_BASE_URL=http://api:8000
-      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
-      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
-      # GitHub/registry env vars intentionally absent — tests verify
-      # the flow fails at the external boundary
-    depends_on:
-      redis:
-        condition: service_healthy
-      api:
-        condition: service_healthy
-    networks:
-      - backend-test
+  # Engineering queue entries are read back by the attribution fixture, which
+  # hands the admitted attempt to worker-manager itself. No engineering consumer
+  # runs here: it would fail the synthetic repository and settle that same Run
+  # before creation. Real consumer integration lives in backend.yml.
 
   architect:
     # Built once, by the langgraph service of this file; never pulled.
@@ -269,8 +253,6 @@ services:
       ]
     depends_on:
       langgraph:
-        condition: service_started
-      engineering-worker:
         condition: service_started
       worker-manager:
         condition: service_started
