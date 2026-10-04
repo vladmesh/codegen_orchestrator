@@ -291,20 +291,15 @@ async def test_spawn_worker_decides_on_the_locked_row_not_a_pre_read_one(
 
 
 @pytest.mark.asyncio
-async def test_a_caller_that_materialises_the_task_first_decides_on_a_stale_row(
+async def test_admission_refreshes_a_task_materialised_before_its_lock(
     async_client: AsyncClient,
     db_session: AsyncSession,
     db_engine: AsyncEngine,
 ):
-    """Why the corollary exists, executed rather than asserted.
+    """The locking reader refreshes even an existing identity-map object.
 
-    This is the counterfactual for the test above: the same admission call, the
-    same concurrent write, the one difference being that the caller loaded the
-    Task as an entity first. SQLAlchemy's identity map then hands the locking read
-    that already-materialised object without refreshing its attributes, so the
-    blocker condition sees the value the plain read saw and admits. The row lock
-    is taken either way — it is the pre-read that loses the write, which is why
-    no route may hold a subject entity before calling admission.
+    Column-only discovery remains the lock-ladder rule. Explicit refresh also
+    protects native continuation writers whose session already held the row.
     """
     from shared.contracts.dto.engineering_dispatch import EngineeringDispatchCommand
     from src.engineering_dispatch_admission import admit_engineering_dispatch
@@ -329,15 +324,13 @@ async def test_a_caller_that_materialises_the_task_first_decides_on_a_stale_row(
         )
         await caller.rollback()
 
-    # The committed row names an unresolved blocker; the decision did not see it.
+    # Both the committed row and the locked decision see the concurrent blocker.
     assert (
         await db_session.scalar(select(Task.blocked_by_task_id).where(Task.id == task_id))
         == blocker_id
     )
-    assert decision.outcome is EngineeringDispatchOutcome.ADMITTED, (
-        "SQLAlchemy no longer serves a stale identity-mapped row; the corollary "
-        "in engineering_dispatch_admission.py can be revisited"
-    )
+    assert decision.outcome is EngineeringDispatchOutcome.REFUSED
+    assert decision.reason is EngineeringDispatchRefusal.BLOCKER_UNRESOLVED
 
 
 # --- Invariant A: every condition row is held for the length of the decision -

@@ -114,7 +114,7 @@ quota_exhausted, missing_credential or binary_missing, or the chain cannot run),
 same transaction makes the `human-review` stop with the `StoryFailure` and both owed notices (a
 `reopened` or `created` story passes through `in_progress`). A failure reported for a story outside
 `created`/`in_progress`/`reopened` is a 409 and writes nothing. `POST /api/stories/{id}/retry-planning`
-(internal or admin, optional `AdminAction`) is valid only for `waiting_human_review` with a
+(internal or admin, optional `StoryPlanningRetryRequest`) is valid only for `waiting_human_review` with a
 `planning_failed` stop, else 422: one transaction clears the stop, lands on `in_progress` and writes
 `retrying` due now with `failed_attempts` 0, and nothing is published. The scheduler supervisor
 (`supervise_stuck_stories`, one sequential loop in `scheduler-pipeline`) is the one publisher of an
@@ -151,6 +151,12 @@ todo`, clears only that matching park, and restarts the story at `in_progress`
 without changing the iteration. A matching completed audit returns the typed
 `already_retried` no-op; stale evidence, a changed status, a non-infrastructure
 park, or a mismatched Run returns a typed 409 and commits nothing.
+
+Planning and infrastructure retry additionally select `stop_id` when an
+unreleased `engineering_stop` exists. The native authenticated action releases
+only that selected stop, audits its credential-derived actor, and performs the
+existing transition in one transaction. A stale or missing selection returns
+409; the admin buttons carry the stop shown with their reviewed target.
 
 **`waiting_on` belongs to the transition, not to the caller.** `stories.waiting_on`
 is a non-nullable typed `StoryWaitingOn` column (migration `c3f7a91d2b48`)

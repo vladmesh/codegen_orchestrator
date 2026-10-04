@@ -348,7 +348,7 @@ async def exercise_budget_refusal(api, redis, sid, project, repair, original_id,
     refused = await api.post(
         "work-admission/engineering-dispatches", json={"task_id": repair["id"]}
     )
-    assert refused["reason"] == "task_not_dispatchable"
+    assert refused["reason"] == "engineering_stopped"
     # The owner's ordinary repair request through the PO is admissible again:
     # the attempt is unspent, so the same Task resumes in its iteration and bound.
     from src.agents.po import tools_stories

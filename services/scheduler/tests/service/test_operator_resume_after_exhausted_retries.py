@@ -147,7 +147,11 @@ async def test_resume_after_exhausted_retries_starts_one_fresh_attempt(  # noqa:
     resumed = await api_client.request(
         "POST",
         f"tasks/{task_id}/resume",
-        json={"guidance": "Worker creation is fixed; try again.", "actor": "admin"},
+        json={
+            "guidance": "Worker creation is fixed; try again.",
+            "actor": "admin",
+            "stop_id": ((await api_client.get_story(story_id)).engineering_stop or {}).get("id"),
+        },
     )
     assert resumed.is_success, resumed.text
     assert (await api_client.get_story(story_id)).status is StoryStatus.IN_PROGRESS

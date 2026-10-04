@@ -143,6 +143,10 @@ async def test_stop_inflight_fences_native_turn_command_and_late_deploy(
         config=WorkerConfig(
             name="late-fixture",
             worker_type="developer",
+            agent_type="claude",
+            instructions="Controlled stale command fixture",
+            allowed_commands=["engineering.start"],
+            capabilities=["git"],
             repo_id=repo.id,
             branch=f"story/{story.id}",
             ownership=WorkerOwnership(

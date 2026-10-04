@@ -16,6 +16,14 @@ reclaim, worker creation, broker leases and worker turns reach this authority.
 Final deploy start/dispatch claims also fence stopped Stories and held checkouts.
 Client actor strings and queue payload identities grant no authority.
 
+Explicit conflict, infrastructure and planning recovery commands can name `stop_id`.
+Under the native action's existing ownership, cycle/attempt, quarantine and
+budget proofs, the API releases exactly that stop and audits the authenticated
+actor in the same transaction as its transition. Automatic conflict callers
+select no stop and cannot release one. PO reopen and the admin infrastructure
+buttons carry the stop they displayed; a replaced stop refuses. Acceptance and
+QA recheck release their reviewed stop before their native transition.
+
 Discovery reads only identities. Writers take ascending Task roster, Story,
 Project, ascending engineering Runs, then the recovery claim. Roster growth
 refuses the operation for a fresh discovery. Task-only hops take their Task then
@@ -54,6 +62,16 @@ Broker output, input ACK and immutable body receipt are atomic; same-body replay
 after a lost HTTP response creates no duplicate output. A changed body refuses.
 Developer teardown preserves its checkout; GC preserves local untracked commits
 and fails closed when native Git cannot establish their absence.
+
+Taskless `no_new_commit` settlement retains an `EmptyEngineeringTerminal`
+payload in the owned live Run's `empty_result_terminal` metadata before stopping.
+It contains the exact failed result, error, execution/provider ledger input and
+transcript references. Retention fences launch even before the stop commits;
+teardown cannot replace it with unknown cancellation. The API validates and
+preserves it, and queue reclaim finishes only that terminal write and its stop,
+without executing the graph. Terminal Run/ledger immutability still applies.
+An unrelated stop or notification episode is never rewritten into an empty
+result stop; identical stop retries preserve their original cause and notices.
 
 ## API actions
 
@@ -96,6 +114,11 @@ a live workspace lease, obtains `get_repo_scoped_token` for that repository at
 each execution and passes transient native Git configuration via environment.
 Released headers/helpers are overridden; tokens appear in neither argv nor
 files/logs. `WORKER_MANAGER_URL` is required API connectivity configuration.
+The base Compose file supplies the native manager endpoint; production and
+stand inherit it. Independent service/integration API containers, including
+image-only `api-factory`, explicitly supply their synthetic topology endpoint.
+Unit fixtures and service-image import checks declare theirs independently;
+absence still fails startup. `.env.example` documents standalone connectivity.
 
 Verified handoff uses the native audited Task completion owner, releases only
 the named stop, clears this attempt's checkout hold and returns Story to

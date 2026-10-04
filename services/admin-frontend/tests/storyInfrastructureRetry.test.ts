@@ -113,3 +113,20 @@ test('one click invokes the composite endpoint with exact evidence', async () =>
     },
   }])
 })
+
+test('an explicit infrastructure retry names the stop selected on the Story', async () => {
+  const target = infrastructureRetryTarget({
+    ...story, engineering_stop: { id: 'stop-selected', released_at: null },
+  }, [task])!
+  const calls: unknown[] = []
+  await requestInfrastructureRetry({
+    post: async <T>(_path: string, body: unknown): Promise<T> => {
+      calls.push(body)
+      return {} as T
+    },
+  }, story.id, target)
+  assert.deepEqual(calls, [{
+    task_id: 'task-1', attempt_id: 'eng-1', refusal: 'project_locked', actor: 'admin',
+    stop_id: 'stop-selected',
+  }])
+})

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY
 from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import SpawnResult
@@ -76,7 +77,10 @@ async def test_stop_refusal_leaves_the_run_nonterminal_for_reclaim():
                 story_id="story-1",
                 failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
             )
-    api.patch.assert_not_awaited()
+    # The strict outcome is durable, but no terminal status was written.
+    assert all("status" not in call.kwargs["json"] for call in api.patch.await_args_list)
+    retained = api.patch.await_args.kwargs["json"]["run_metadata"][EMPTY_RESULT_TERMINAL_KEY]
+    assert retained["result"]["failure_reason"] == "no_new_commit"
 
 
 @pytest.mark.asyncio
@@ -96,7 +100,9 @@ async def test_stop_does_not_depend_on_reason_patch_or_redis_publication():
         )
     assert outcome["status"] == "failed"
     api.stop_story.assert_awaited_once()
-    assert [call.args[0] for call in api.patch.await_args_list] == ["runs/eng-1"]
+    assert [call.args[0] for call in api.patch.await_args_list] == ["runs/eng-1", "runs/eng-1"]
+    assert "status" not in api.patch.await_args_list[0].kwargs["json"]
+    assert api.patch.await_args_list[1].kwargs["json"]["status"] == "failed"
     api.transition_story.assert_not_awaited()
     redis.publish_flat.assert_not_awaited()
 
@@ -119,3 +125,73 @@ async def test_empty_outcome_survives_a_required_worker_settlement_failure():
                 failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
             )
     api.patch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fenced_queue_reclaim_finishes_the_exact_retained_outcome_without_the_graph(
+    monkeypatch,
+):
+    from shared.contracts.dto.run import EmptyEngineeringTerminal
+    from src.consumers import engineering
+
+    terminal = EmptyEngineeringTerminal.model_validate(
+        {
+            "status": "failed",
+            "error_message": "No new commit",
+            "result": {"engineering_status": "failed", "failure_reason": "no_new_commit"},
+            "engineering_attempt": {"provider": "openai", "model": "fixture", "input_tokens": 17},
+            "transcript_path": "/fixture/retained.jsonl",
+        }
+    ).model_dump(mode="json", exclude_unset=True)
+    api = AsyncMock()
+    api.get_run.return_value = SimpleNamespace(
+        status="running",
+        story_id="story-1",
+        run_metadata={EMPTY_RESULT_TERMINAL_KEY: terminal},
+    )
+    monkeypatch.setattr(
+        engineering, "_engineering_attempt_authority", AsyncMock(return_value="stopped")
+    )
+    with (
+        patch.object(engineering, "api_client", api),
+        patch("src.consumers.engineering_result_handler.api_client", api),
+        patch(
+            "src.consumers.engineering_result_handler._park_story_without_new_commit", AsyncMock()
+        ) as stop,
+        patch("src.subgraphs.engineering.create_engineering_subgraph") as graph,
+    ):
+        result = await engineering.process_engineering_job(
+            {
+                "task_id": "eng-retained",
+                "project_id": str(make_project().id),
+                "initiating_run_id": "init-fixture",
+                "story_id": "story-1",
+                "action": "fix",
+                "description": "Settled output",
+                "telegram_chat_id": "",
+                "skip_deploy": False,
+            },
+            AsyncMock(),
+        )
+    assert result["status"] == "failed"
+    graph.assert_not_called()
+    stop.assert_awaited_once_with("story-1", "eng-retained", "No new commit")
+    api.patch.assert_awaited_once_with("runs/eng-retained", json=terminal)
+
+
+@pytest.mark.asyncio
+async def test_failed_retention_delivery_never_falls_through_to_generic_failure():
+    api = AsyncMock()
+    api.patch.side_effect = ConnectionError("Retention delivery unavailable")
+    with patch("src.consumers.engineering_result_handler.api_client", api):
+        with pytest.raises(EmptyResultSettlementError, match="not retained"):
+            await fail_job(
+                "eng-empty",
+                "No new commit",
+                redis=AsyncMock(),
+                turn_result_consumed=True,
+                story_id="story-1",
+                failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
+            )
+    api.stop_story.assert_not_awaited()
+    assert "status" not in api.patch.await_args.kwargs["json"]

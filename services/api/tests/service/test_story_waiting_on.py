@@ -72,9 +72,18 @@ async def test_a_wait_is_cleared_by_the_transition_that_ends_it(
     assert parked.status_code == status.HTTP_200_OK, parked.text
     assert parked.json()["waiting_on"] == StoryWaitingOn.HUMAN_REVIEW
 
-    resumed = await async_client.post(f"/api/stories/{story_id}/start", json={"actor": "po"})
+    refused = await async_client.post(f"/api/stories/{story_id}/start", json={"actor": "po"})
+    assert refused.status_code == status.HTTP_409_CONFLICT
+    assert (await async_client.get(f"/api/stories/{story_id}")).json()[
+        "waiting_on"
+    ] == StoryWaitingOn.HUMAN_REVIEW
+    resumed = await async_client.post(
+        f"/api/stories/{story_id}/accept-result",
+        json={"basis": "Reviewed this stopped result"},
+        headers={"X-Admin-Console-Operator": "waiting-on-fixture"},
+    )
     assert resumed.status_code == status.HTTP_200_OK, resumed.text
-    assert resumed.json()["status"] == StoryStatus.IN_PROGRESS
+    assert resumed.json()["status"] == StoryStatus.COMPLETED
     assert resumed.json()["waiting_on"] == StoryWaitingOn.NONE
 
 

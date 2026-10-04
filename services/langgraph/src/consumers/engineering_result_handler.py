@@ -305,8 +305,6 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
         error_msg = bounded_diagnostic(error_msg)
         # A planned task keeps its existing failed-iteration retry policy. A
         # taskless repair must stop durably before its queue entry can be ACKed.
-        if story_id and not planning_task_id:
-            await _park_story_without_new_commit(story_id, task_id, error_msg)
     terminal = {
         "status": RunStatus.FAILED.value,
         "error_message": error_msg,
@@ -321,6 +319,36 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
         **_observability_patch(worker_observability),
         **_attempt_execution_patch(stop_reason, agent_limit_seconds, execution),
     }
+    if (
+        failure_reason is EngineeringFailureReason.NO_NEW_COMMIT
+        and story_id
+        and not planning_task_id
+    ):
+        from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+        retained = EmptyEngineeringTerminal.model_validate(terminal).model_dump(
+            mode="json", exclude_unset=True
+        )
+        # Retain the strict outcome on its owned, still-live Run. Stop teardown
+        # cannot replace known execution facts, and a reclaimed queue entry can
+        # finish this same terminal write without running the engineering graph.
+        try:
+            await api_client.patch(
+                f"runs/{task_id}",
+                json={
+                    "result": terminal["result"],
+                    "error_message": error_msg,
+                    "run_metadata": {
+                        **terminal.get("run_metadata", {}),
+                        EMPTY_RESULT_TERMINAL_KEY: retained,
+                    },
+                },
+            )
+        except Exception:
+            raise EmptyResultSettlementError(
+                f"empty result for run {task_id} is not retained"
+            ) from None
+        await _park_story_without_new_commit(story_id, task_id, error_msg)
     if failure_reason in {
         EngineeringFailureReason.NO_NEW_COMMIT,
         EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED,

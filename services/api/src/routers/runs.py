@@ -645,6 +645,49 @@ async def _park_terminal_publication(story, task, run, db):
             await park_publication(story, task, run, engineering_result.publication, db)
 
 
+def _require_retained_empty_outcome(run, update_data, engineering_attempt):
+    """A teardown or stale terminal writer cannot replace a known paid output."""
+    from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+    pending = (run.run_metadata or {}).get(EMPTY_RESULT_TERMINAL_KEY)
+    if pending is None:
+        return
+    retained = EmptyEngineeringTerminal.model_validate(pending)
+    for field in ("status", "result", "error_message", "engineering_attempt"):
+        if field == "status" and update_data.get("status") not in _TERMINAL_RUN_STATUSES:
+            continue
+        incoming = engineering_attempt if field == "engineering_attempt" else update_data.get(field)
+        expected = getattr(retained, field)
+        if field == "result":
+            expected = expected.model_dump(mode="json")
+        if incoming is not None and incoming != expected:
+            raise HTTPException(409, "A retained empty outcome must use its own terminal writer")
+
+
+def _validate_empty_retention(run, metadata_update, update_data):
+    from pydantic import ValidationError
+
+    from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+    pending = (run.run_metadata or {}).get(EMPTY_RESULT_TERMINAL_KEY)
+    if metadata_update is None and pending is not None:
+        raise HTTPException(409, "A retained empty terminal outcome cannot be cleared")
+    if not isinstance(metadata_update, dict) or EMPTY_RESULT_TERMINAL_KEY not in metadata_update:
+        return
+    if run.type != RunType.ENGINEERING.value or run.task_id is not None:
+        raise HTTPException(422, "Empty-result retention is owned by taskless engineering")
+    try:
+        retained = EmptyEngineeringTerminal.model_validate(
+            metadata_update[EMPTY_RESULT_TERMINAL_KEY]
+        )
+    except ValidationError as exc:
+        raise HTTPException(422, "Invalid retained empty terminal outcome") from exc
+    if pending is not None and retained != EmptyEngineeringTerminal.model_validate(pending):
+        raise HTTPException(409, "A retained empty terminal outcome is immutable")
+    if update_data.get("result") != retained.result.model_dump(mode="json"):
+        raise HTTPException(422, "Empty-result retention must include its exact typed Run result")
+
+
 @router.patch("/{run_id}", response_model=RunRead)
 async def update_run(
     run_id: str,
@@ -700,6 +743,7 @@ async def update_run(
     qa_accounting = run_update.qa_accounting
     update_data.pop("engineering_attempt", None)
     update_data.pop("qa_accounting", None)
+    _require_retained_empty_outcome(run, update_data, engineering_attempt)
     if engineering_attempt is not None and run.type != RunType.ENGINEERING.value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -764,6 +808,7 @@ async def update_run(
     if "run_metadata" in update_data:
         metadata_update = update_data["run_metadata"]
         existing_metadata = run.run_metadata or {}
+        _validate_empty_retention(run, metadata_update, update_data)
         if metadata_update is None and any(
             key in existing_metadata for key in ("commit_publication", "publication_worker_result")
         ):

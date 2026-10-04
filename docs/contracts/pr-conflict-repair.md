@@ -43,6 +43,13 @@ checks project, current PR and cycle (`reopened_at`, otherwise `created_at`), an
 reads the open dirty PR, repository, story branch and actual default through the
 GitHub App. Actor text and model-selected IDs grant no authority.
 
+An unreleased `engineering_stop` additionally requires the explicit command's
+exact `stop_id`. The PO reopen tool carries the stop selected by its authorized
+operator; automatic conflict polling carries none. The API audits release with
+that authenticated actor under the same locks as recovery. A missing or newer
+stop refuses even a valid dirty PR; ordinary stopped-status overrides grant no
+release authority.
+
 Task rows lock before Story rows. A deterministic Task ID per story cycle and
 the Story lock serialize admission: one FIX Task, its immutable admission event
 and `in_progress` landing commit together. Repeated requests reuse that Task;

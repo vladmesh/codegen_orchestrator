@@ -44,10 +44,15 @@ from shared.models.story import Story
 
 from ..database import get_async_session
 from ..dependencies import get_internal_or_admin_actor, require_internal_or_admin
-from ..schemas.actions import AdminAction
+from ..schemas.actions import StoryPlanningRetryRequest
 from ..schemas.story import StoryRead
 from ._story_actions import COMPOSITE_CHAINS, PARK_UNSTARTED_PLANNING_FAILURE, _apply_chain
-from ._story_helpers import _do_transition, _get_story_for_update, _record_story_failure
+from ._story_helpers import (
+    _do_transition,
+    _get_story_for_update,
+    _record_story_failure,
+    _release_engineering_stop,
+)
 
 logger = structlog.get_logger()
 
@@ -150,7 +155,7 @@ async def record_planning_outcome(
 @planning_router.post("/{story_id}/retry-planning", response_model=StoryRead)
 async def retry_story_planning(
     story_id: str,
-    body: AdminAction | None = None,
+    body: StoryPlanningRetryRequest | None = None,
     db: AsyncSession = Depends(get_async_session),
     actor: str = Depends(get_internal_or_admin_actor),
 ) -> StoryRead:
@@ -165,7 +170,7 @@ async def retry_story_planning(
     on its next cycle. The architect's claim voids the failed attempt's
     unadmitted tasks, so nothing of the failed plan survives into the new one.
     """
-    body = body or AdminAction()
+    body = body or StoryPlanningRetryRequest()
     story = await _get_story_for_update(story_id, db)
     if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value or planning_failure_of(story) is None:
         raise HTTPException(
@@ -180,6 +185,7 @@ async def retry_story_planning(
         max_retries=await _config_int(db, PLANNING_MAX_RETRIES_CONFIG_KEY),
         now=datetime.now(UTC),
     )
+    _release_engineering_stop(story, body.stop_id, actor, db)
     story.quarantine_reason = None
     story.planning = planning.model_dump(mode="json")
     _do_transition(story, StoryStatus.IN_PROGRESS)

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Explicit recovery selects its stop; empty-result reclaim retains paid facts,
+  and API launch coverage includes image-only variants so stop fencing preserves authorized actions.
 - Test API containers explicitly configure worker-manager connectivity, so service
   and integration CI can start the publication recovery API without a production default.
 - Unpublished worker commits park for explicit agent-free recovery; committed

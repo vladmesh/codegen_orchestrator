@@ -58,7 +58,9 @@ export function StoryDetailPage() {
   })
 
   const retryPlanningMutation = useMutation({
-    mutationFn: () => requestPlanningRetry(api, id!),
+    mutationFn: () => requestPlanningRetry(
+      api, id!, typeof story?.engineering_stop?.id === 'string' ? story.engineering_stop.id : undefined,
+    ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['story', id] })
       queryClient.invalidateQueries({ queryKey: ['tasks', 'story', id] })

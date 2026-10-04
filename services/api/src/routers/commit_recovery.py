@@ -299,6 +299,15 @@ async def _finish_stopped_run(run, db, redis, story, tasks):
     # cancellation here requires the owned worker to have disappeared.
     if COMMIT_PUBLICATION_KEY in (run.run_metadata or {}):
         return
+    if run.result is not None:
+        retained = EngineeringRunResult.model_validate(run.result)
+        from shared.contracts.dto.run_result import EngineeringFailureReason
+
+        if retained.failure_reason is EngineeringFailureReason.NO_NEW_COMMIT:
+            # The consumer retained its complete paid outcome before stopping.
+            # Its retryable terminal writer, including queue reclaim, owns the
+            # remaining accounting; teardown must not substitute cancellation.
+            return
     run.status = RunStatus.CANCELLED.value
     run.error_message = "Engineering stopped by an explicit Story stop."
     run.result = EngineeringRunResult(engineering_status=EngineeringStatus.FAILED).model_dump(

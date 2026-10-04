@@ -76,6 +76,13 @@ async def test_reported_deployed_head_fails_the_run_and_parks_the_story(real_red
     await real_redis.delete(DEPLOY_QUEUE)
 
     api = AsyncMock()
+    api.post.return_value = {
+        "disposition": "eligible",
+        "project_id": str(make_project().id),
+        "story_id": _STORY_ID,
+        "attempt_id": _ATTEMPT_ID,
+        "initiating_run_id": "live-run-1",
+    }
     api.get_project = AsyncMock(return_value=make_project())
     api.get_primary_repository = AsyncMock(return_value=make_repository())
     api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
@@ -552,18 +559,29 @@ async def test_transient_terminal_write_preserves_the_known_empty_attempt(  # no
         await api.patch(f"tasks/{task['id']}", json={"current_iteration": 3})
         async with await AsyncConnection.connect(os.environ["TEST_DATABASE_URL"]) as db:
             await db.execute("UPDATE runs SET task_id=%s WHERE id=%s", (task["id"], run_id))
-    if precommitted:
-        await api.stop_story(
-            story_id,
-            "human-review",
-            StoryFailure(
-                code="no_new_commit",
-                source="engineering",
-                detail=f"Attempt {run_id}: Worker reported success but no commit was made",
-            ),
-            actor="engineering-worker",
-        )
     original_row = await _durable_stop_row(story_id)
+    from src.consumers.engineering_result_handler import _park_story_without_new_commit
+
+    original_stop = api.stop_story
+
+    async def park_after_lost_stop_response(sid, attempt_id, error):
+        nonlocal original_row
+        if precommitted:
+            # A lost stop response follows the paid output and its retention;
+            # stopping before consumer admission must now fence the graph.
+            await original_stop(
+                sid,
+                "human-review",
+                StoryFailure(
+                    code="no_new_commit",
+                    source="engineering",
+                    detail=f"Attempt {attempt_id}: {error}",
+                ),
+                actor="engineering-worker",
+            )
+            original_row = await _durable_stop_row(sid)
+        await _park_story_without_new_commit(sid, attempt_id, error)
+
     original_patch = api.patch
     writes = []
 
@@ -607,6 +625,10 @@ async def test_transient_terminal_write_preserves_the_known_empty_attempt(  # no
             patch.object(api, "patch", side_effect=fail_first_write),
             patch.object(api, "stop_story", wraps=api.stop_story) as stops,
             patch(
+                "src.consumers.engineering_result_handler._park_story_without_new_commit",
+                side_effect=park_after_lost_stop_response,
+            ),
+            patch(
                 "src.consumers.engineering_result_handler.publish_worker_deletion", AsyncMock()
             ) as deletion,
             capture_logs() as logs,
@@ -641,7 +663,17 @@ async def test_transient_terminal_write_preserves_the_known_empty_attempt(  # no
                 assert row["owner_notification"]["state"] == "owed"
                 if precommitted:
                     assert row == original_row
-            return
+            if planned:
+                return
+            # Reclaim the real API's retained outcome after required delivery
+            # recovers, with every executor/spawn entry still controlled.
+            with (
+                patch("src.consumers.engineering.api_client", api),
+                patch("src.consumers.engineering_result_handler.api_client", api),
+                patch("src.nodes.developer.request_spawn", spawn),
+            ):
+                outcome = await process_engineering_job(message, stream)
+            spawn.assert_awaited_once()
         assert outcome["status"] == "failed"
         run = await api.get_run(run_id)
         assert run.status.value == "failed"

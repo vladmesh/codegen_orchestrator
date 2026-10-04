@@ -12,7 +12,12 @@ from shared.contracts.dto.commit_publication import (
     AttemptDisposition,
     EngineeringStop,
 )
-from shared.contracts.dto.run import RunType
+from shared.contracts.dto.run import (
+    EMPTY_RESULT_TERMINAL_KEY,
+    EmptyEngineeringTerminal,
+    RunStatus,
+    RunType,
+)
 from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.models import Project, Run, Story, Task
@@ -31,6 +36,13 @@ def disposition(story, task, runs, recovered_attempts=frozenset()):
             stop = EngineeringStop.model_validate(story.engineering_stop)
             if stop.released_at is None:
                 return AttemptDisposition.STOPPED
+    for run in runs:
+        if EMPTY_RESULT_TERMINAL_KEY in (run.run_metadata or {}) and run.status in {
+            RunStatus.QUEUED.value,
+            RunStatus.RUNNING.value,
+        }:
+            EmptyEngineeringTerminal.model_validate(run.run_metadata[EMPTY_RESULT_TERMINAL_KEY])
+            return AttemptDisposition.STOPPED
     if task is not None and COMMIT_PUBLICATION_KEY in (task.failure_metadata or {}):
         return AttemptDisposition.PUBLICATION_REQUIRED
     for run in runs:

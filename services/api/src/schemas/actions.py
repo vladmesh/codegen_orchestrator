@@ -2,13 +2,17 @@
 
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AdminAction(BaseModel):
     """Minimal body for admin-triggered actions."""
 
     actor: str = "admin"
+
+
+class StoryPlanningRetryRequest(AdminAction):
+    stop_id: str | None = Field(default=None, min_length=1)
 
 
 class E2ERunAction(AdminAction):

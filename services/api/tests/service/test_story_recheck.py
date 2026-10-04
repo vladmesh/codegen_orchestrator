@@ -97,9 +97,6 @@ async def _story_quarantined_by(  # noqa: PLR0913, PLR0915
     assert story.status_code == HTTPStatus.CREATED, story.text
     story_id = story.json()["id"]
     assert (await async_client.post(f"/api/stories/{story_id}/start")).status_code == HTTPStatus.OK
-    assert (
-        await async_client.post(f"/api/stories/{story_id}/human-review")
-    ).status_code == HTTPStatus.OK
     deploy_receipt = await async_client.post(
         "/api/runs/",
         json={
@@ -157,6 +154,9 @@ async def _story_quarantined_by(  # noqa: PLR0913, PLR0915
         json={"status": "failed", "result": qa_result},
     )
     assert completed_qa.status_code == HTTPStatus.OK, completed_qa.text
+    assert (
+        await async_client.post(f"/api/stories/{story_id}/human-review")
+    ).status_code == HTTPStatus.OK
     quarantined = await async_client.patch(
         f"/api/stories/{story_id}",
         json={"quarantine_reason": qa_result},

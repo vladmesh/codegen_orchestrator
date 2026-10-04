@@ -605,7 +605,6 @@ async def _complete_story(
 ) -> StoryRead:
     """The one completion transaction used by ordinary and accepted-result routes."""
     await _owe_completed_story_notification(story, db, acceptance=acceptance, qa_run_id=qa_run_id)
-    _do_transition(story, StoryStatus.COMPLETED)
     if acceptance is not None:
         story.operator_acceptance = acceptance.model_dump(mode="json")
         if story.engineering_stop is not None:
@@ -645,6 +644,7 @@ async def _complete_story(
         ):
             # Only the ordinary green QA verdict retires a recheck quarantine.
             story.quarantine_reason = None
+    _do_transition(story, StoryStatus.COMPLETED)
     await db.commit()
     await db.refresh(story)
     return StoryRead.model_validate(story, from_attributes=True)
@@ -807,6 +807,19 @@ async def human_review_story(
     from ..attempt_disposition import lock_story_attempts
 
     story, tasks, _, runs = await lock_story_attempts(story_id, db)
+    record_failure = body.failure is not None
+    if (
+        story.engineering_stop is not None
+        and story.engineering_stop.get("released_at") is None
+        and body.failure is not None
+    ):
+        reason = story.quarantine_reason or {}
+        expected = body.failure.model_dump(mode="json")
+        if any(
+            reason.get(key) != expected[key] for key in ("code", "source", "detail")
+        ) or reason.get("commit_publication") != expected.get("commit_publication"):
+            raise HTTPException(409, "A different committed stop already owns this Story")
+        record_failure = False
     # A repeated request re-drives one committed stop rather than issuing a
     # newer identity that would invalidate the operator's in-progress recovery.
     if story.engineering_stop is None or story.engineering_stop.get("released_at") is not None:
@@ -831,7 +844,7 @@ async def human_review_story(
     await _record_qa_routing(story, body.qa_run_id, StoryStatus.WAITING_HUMAN_REVIEW, db)
     if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
         _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
-    if body.failure is not None:
+    if record_failure:
         _record_story_failure(story, body.failure, StoryStatus.WAITING_HUMAN_REVIEW)
     await db.commit()
     await db.refresh(story)

@@ -48,3 +48,14 @@ test('the planning retry posts to the API action', async () => {
     body: { actor: 'admin' },
   }])
 })
+
+test('the planning retry carries its explicitly selected stop', async () => {
+  const bodies: unknown[] = []
+  await requestPlanningRetry({
+    post: async <T>(_path: string, body: unknown): Promise<T> => {
+      bodies.push(body)
+      return {} as T
+    },
+  }, parked.id, 'stop-selected')
+  assert.deepEqual(bodies, [{ actor: 'admin', stop_id: 'stop-selected' }])
+})

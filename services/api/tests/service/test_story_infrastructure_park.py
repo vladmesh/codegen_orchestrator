@@ -768,7 +768,7 @@ async def test_admission_fences_a_parked_story_and_a_parked_task_without_an_atte
     for fenced_id in (sibling.json()["id"], evidence_task.json()["id"]):
         decision = await async_client.post(ADMISSION_URL, json={"task_id": fenced_id})
         assert decision.status_code == 200, decision.text
-        assert decision.json()["reason"] == EngineeringDispatchRefusal.INFRASTRUCTURE_PARKED
+        assert decision.json()["reason"] == EngineeringDispatchRefusal.ENGINEERING_STOPPED
         assert decision.json()["run_id"] is None
         assert await _task_audits(db_session, fenced_id) == []
 
@@ -886,7 +886,10 @@ async def test_a_story_already_with_a_human_is_refused_without_a_workspace_park(
 
     decision = (await async_client.post(ADMISSION_URL, json={"task_id": task_id})).json()
 
-    assert (decision["reason"], decision["infrastructure_park"]) == (WORKSPACE_REFUSAL, None)
+    assert (decision["reason"], decision["infrastructure_park"]) == (
+        EngineeringDispatchRefusal.ENGINEERING_STOPPED,
+        None,
+    )
     assert await _state(async_client, story_id, task_id) == (
         "todo",
         None,

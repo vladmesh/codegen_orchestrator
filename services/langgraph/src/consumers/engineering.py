@@ -276,6 +276,26 @@ async def _engineering_attempt_authority(task_id):
     return AttemptDispositionRead.model_validate(response).disposition
 
 
+async def _finish_retained_terminal(task_id, authority):
+    from shared.contracts.dto.run import EMPTY_RESULT_TERMINAL_KEY, EmptyEngineeringTerminal
+
+    from .engineering_result_handler import _park_story_without_new_commit, _write_empty_terminal
+
+    run = await api_client.get_run(task_id)
+    if (
+        run.status in {RunStatus.RUNNING, RunStatus.QUEUED}
+        and EMPTY_RESULT_TERMINAL_KEY in run.run_metadata
+    ):
+        retained = EmptyEngineeringTerminal.model_validate(
+            run.run_metadata[EMPTY_RESULT_TERMINAL_KEY]
+        )
+        # No graph or executor: finish only the exact durable outcome.
+        await _park_story_without_new_commit(run.story_id, task_id, retained.error_message)
+        await _write_empty_terminal(task_id, retained.model_dump(mode="json", exclude_unset=True))
+        return {"status": "failed", "error": retained.error_message}
+    return {"status": "fenced", "disposition": authority}
+
+
 async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single engineering job by running Engineering Subgraph."""
     from ..subgraphs.engineering import create_engineering_subgraph
@@ -309,7 +329,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     if authority != "eligible":
         # Known outcomes remain owned by their first terminal writer. A stale
         # queue entry cannot start the graph or write an ordinary failure over it.
-        return {"status": "fenced", "disposition": authority}
+        return await _finish_retained_terminal(task_id, authority)
     try:
         await api_client.patch(
             f"runs/{task_id}",

@@ -107,7 +107,7 @@ async def test_budget_refusal_is_atomic_once_and_the_repair_command_resumes_the_
     replies = await asyncio.gather(
         *[async_client.post(DISPATCH, json={"task_id": tid}) for _ in range(5)]
     )
-    assert all(r.json()["reason"] == "task_not_dispatchable" for r in replies)
+    assert all(r.json()["reason"] == "engineering_stopped" for r in replies)
     task = await db_session.get(Task, tid, populate_existing=True)
     story = await db_session.get(Story, sid, populate_existing=True)
     # No Run exists, so the Task keeps its unspent attempt; only the Story stops.
@@ -158,7 +158,7 @@ async def test_budget_refusal_is_atomic_once_and_the_repair_command_resumes_the_
     # Funding by itself does not restart the stopped Story.
     assert (await async_client.post(DISPATCH, json={"task_id": tid})).json()[
         "reason"
-    ] == "task_not_dispatchable"
+    ] == "engineering_stopped"
     # The ordinary repair command is admissible again; a lost response repeats.
     for _ in range(2):
         repaired = await async_client.post(
@@ -320,7 +320,21 @@ async def test_repair_command_cannot_resume_replaced_or_busy_work(
                     "overrides": ["story_waiting_human_review"],
                 },
             )
-            assert admitted.json()["outcome"] == "admitted", admitted.text
+            assert admitted.json()["reason"] == "engineering_stopped", admitted.text
+            # A legacy live row may already exist when stop commits. The
+            # administrator override cannot create it after that stop.
+            db_session.add(
+                Run(
+                    id=f"preexisting-{other.json()['id']}",
+                    type="engineering",
+                    status="running",
+                    project_id=dirty_story[1]["project_id"],
+                    story_id=sid,
+                    task_id=other.json()["id"],
+                    run_metadata={},
+                )
+            )
+            await db_session.commit()
     before = await history(db_session, tid)
     response = await async_client.post(
         f"/api/stories/{sid}/repair-pr-conflicts", json=dirty_story[1]

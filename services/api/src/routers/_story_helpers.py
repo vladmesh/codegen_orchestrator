@@ -120,6 +120,37 @@ def _do_transition(story: Story, to_status: StoryStatus) -> None:
     _land_on(story, to_status)
 
 
+def _release_engineering_stop(story: Story, stop_id: str | None, actor: str, db) -> None:
+    """An authenticated, validated native action releases only its selected stop.
+
+    Called under the action's locks after its existing ownership and budget
+    proofs. Automatic callers carry no selected stop and therefore fail closed.
+    """
+    from shared.contracts.dto.commit_publication import EngineeringStop
+    from shared.models import WorkAdmissionAudit
+
+    if story.engineering_stop is None:
+        return
+    stop = EngineeringStop.model_validate(story.engineering_stop)
+    if stop.released_at is not None:
+        return
+    if stop_id != stop.id:
+        raise HTTPException(409, {"code": "engineering_stopped", "stop_id": stop.id})
+    story.engineering_stop = stop.model_copy(
+        update={"released_at": datetime.now(UTC), "release_actor": actor}
+    ).model_dump(mode="json")
+    db.add(
+        WorkAdmissionAudit(
+            subject="engineering_stop",
+            outcome="released",
+            actor=actor,
+            reference_id=story.id,
+            before_value=stop.model_dump(mode="json"),
+            after_value=story.engineering_stop,
+        )
+    )
+
+
 async def work_cycle_task_count(story: Story, db: AsyncSession) -> int:
     """Tasks of the story's current plan, by the rule of ``in_work_cycle``."""
     query = select(func.count()).select_from(Task).where(Task.story_id == story.id)

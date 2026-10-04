@@ -382,6 +382,7 @@ async def reopen_story(
             project_id=record["project_id"],
             pr_number=record["pr_number"],
             cycle_started_at=record.get("reopened_at") or record["created_at"],
+            stop_id=(record.get("engineering_stop") or {}).get("id"),
         )
         response = await api.post_raw(
             f"stories/{story_id}/repair-pr-conflicts",
