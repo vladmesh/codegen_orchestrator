@@ -447,7 +447,16 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
 
 
 @pytest.mark.asyncio
-async def test_lease_rejects_malformed_typed_turn_before_wrapper_execution():
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"content": "Hello World"},
+        {"request_id": "", "prompt": "do the work"},
+        {"request_id": "req-1", "attempt_id": "attempt-1", "prompt": "do the work"},
+        {"request_id": "req-1", "turn_deadline_seconds": 60, "prompt": "do the work"},
+    ],
+)
+async def test_lease_rejects_malformed_typed_turn_before_wrapper_execution(payload):
     redis = FakeAsyncRedis(decode_responses=True)
     main.app.state.redis = redis
     worker_id = "typed-turn-worker"
@@ -462,15 +471,7 @@ async def test_lease_rejects_malformed_typed_turn_before_wrapper_execution():
     await main.register_worker(registration, main.settings.WORKER_BROKER_INTERNAL_TOKEN)
     await redis.xadd(
         registration.input_stream,
-        {
-            "data": json.dumps(
-                {
-                    "request_id": "req-1",
-                    "attempt_id": "attempt-1",
-                    "prompt": "do the work",
-                }
-            )
-        },
+        {"data": json.dumps(payload)},
     )
 
     with pytest.raises(main.HTTPException) as invalid:

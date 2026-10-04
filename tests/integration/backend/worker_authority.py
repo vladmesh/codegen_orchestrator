@@ -3,15 +3,21 @@
 from uuid import uuid4
 
 from shared.contracts.dto.commit_publication import AttemptDisposition, AttemptDispositionRead
+from shared.contracts.dto.deploy_dispatch import DeployRunStart
 from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchCommand,
     EngineeringDispatchOutcome,
     EngineeringDispatchRead,
 )
-from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run import RunStatus, RunType, RunUpdate
 from shared.contracts.dto.story import StoryCreate
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.worker_turn import (
+    AttemptTurnMetadata,
+    EngineeringTurnPublication,
+    WorkerTurnInput,
+)
 
 
 async def seed_worker_authority(api, seed_project, seed_task, owners) -> WorkerOwnership:
@@ -102,3 +108,66 @@ async def assert_persisted_worker_authority(api, owner, task_id):
         attempt_id=owner.attempt_id,
         initiating_run_id=owner.run_id,
     )
+
+
+async def publish_worker_fixture_turn(
+    api,
+    owner: WorkerOwnership,
+    worker_id: str,
+    *,
+    request_id: str,
+    prompt: str,
+    turn_deadline_seconds: int,
+) -> tuple[WorkerTurnInput, str]:
+    """After real worker readiness, start its admitted Run and publish one typed turn.
+
+    No new admission or engineering consumer is involved. Native start refuses
+    terminal/stopped work; publication checks locked eligibility and manager-owned
+    Redis identity. Readback proves the supported metadata patch took effect.
+    """
+    turn = WorkerTurnInput(
+        request_id=request_id,
+        attempt_id=owner.attempt_id,
+        turn_deadline_seconds=turn_deadline_seconds,
+        prompt=prompt,
+    )
+    path = f"/api/runs/{owner.attempt_id}"
+    response = await api.get(path)
+    response.raise_for_status()
+    run = response.json()
+    assert run["id"] == owner.attempt_id
+    assert run["project_id"] == owner.project_id and run["story_id"] == owner.story_id
+    assert run["type"] == RunType.ENGINEERING
+    assert run["status"] in {RunStatus.QUEUED, RunStatus.RUNNING}
+    metadata = AttemptTurnMetadata.from_run_metadata(run["run_metadata"])
+    assert metadata.worker_id in {None, worker_id}
+    assert metadata.initiating_run_id in {None, owner.run_id}
+    response = await api.post(f"{path}/start", json={})
+    response.raise_for_status()
+    started = DeployRunStart.model_validate(response.json())
+    assert started.run_id == owner.attempt_id and started.started
+    assert started.run_status is RunStatus.RUNNING
+    response = await api.patch(
+        path,
+        json=RunUpdate(
+            run_metadata=AttemptTurnMetadata(
+                worker_id=worker_id, initiating_run_id=owner.run_id
+            ).as_run_metadata()
+        ).model_dump(mode="json", exclude_unset=True),
+    )
+    response.raise_for_status()
+    await assert_persisted_worker_authority(api, owner, run["task_id"])
+    response = await api.get(path)
+    response.raise_for_status()
+    persisted = response.json()
+    assert persisted["status"] == RunStatus.RUNNING
+    metadata = AttemptTurnMetadata.from_run_metadata(persisted["run_metadata"])
+    assert metadata.worker_id == worker_id and metadata.initiating_run_id == owner.run_id
+    response = await api.post(
+        f"{path}/publish-worker-turn",
+        json=EngineeringTurnPublication(worker_id=worker_id, turn=turn).model_dump(
+            mode="json", exclude_none=True
+        ),
+    )
+    response.raise_for_status()
+    return turn, response.json()["stream_id"]

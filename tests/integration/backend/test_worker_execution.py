@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +20,7 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
 )
 from shared.contracts.queues.worker_result import WorkerResultStatus, parse_worker_result
+from shared.contracts.worker_turn import WorkerTurnInput, active_turn_key
 
 from .conftest import (
     REDIS_STREAM_COMMANDS,
@@ -28,6 +30,7 @@ from .conftest import (
     wait_for_create_response,
     wait_for_stream_message,
 )
+from .worker_authority import publish_worker_fixture_turn
 
 
 @pytest.mark.integration
@@ -351,7 +354,7 @@ assert not (home / ".config/gh/hosts.yml").exists()
 
     @pytest.mark.asyncio
     async def test_worker_executes_task_with_mocked_claude(
-        self, redis_client, docker_client, scaffolded_workspace, worker_authority
+        self, api_client, redis_client, docker_client, scaffolded_workspace, worker_authority
     ):
         """
         A no-model task reaches the shipped wrapper and its repository refusal.
@@ -394,13 +397,19 @@ assert not (home / ".config/gh/hosts.yml").exists()
         )
         assert exit_code == 0, output.decode()
 
-        # 3. Verify Streams logic (via internal knowledge of channels)
+        # 3. Start the admitted attempt and bind the ready manager-created worker.
         input_stream = WorkerChannels.INPUT_PATTERN.value.format(worker_id=worker_id)
-
-        # 4. Send Input
-        # Factory runner expects 'content' in data
-        task_data = {"content": "Hello World"}
-        await redis_client.xadd(input_stream, {"data": json.dumps(task_data)})
+        turn, stream_id = await publish_worker_fixture_turn(
+            api_client,
+            command.config.ownership,
+            worker_id,
+            request_id=f"turn-{req_id}",
+            prompt="Hello World",
+            turn_deadline_seconds=60,
+        )
+        inputs = await redis_client.xrange(input_stream)
+        assert len(inputs) == 1 and inputs[0][0] == stream_id
+        assert WorkerTurnInput.model_validate_json(inputs[0][1]["data"]) == turn
 
         # 5. Wait for the typed worker result on the output stream.
         # The worker publishes a WorkerResult (completed/failed/blocked/rejected) — even a
@@ -410,8 +419,24 @@ assert not (home / ".config/gh/hosts.yml").exists()
         output_msg = await wait_for_stream_message(redis_client, output_stream, timeout=60)
         output_data = json.loads(output_msg["data"])
         assert output_data["status"] in {s.value for s in WorkerResultStatus}
-        assert parse_worker_result(output_data).execution == EngineeringExecutionEvidence(
+        typed_result = parse_worker_result(output_data)
+        assert typed_result.execution == EngineeringExecutionEvidence(
             execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
             infrastructure_refusal=EngineeringInfrastructureRefusal.REPOSITORY_AUTH_UNAVAILABLE,
         )
+        # The broker owns request correlation, output receipt and input ACK.
+        # A manager-generated container-death result cannot satisfy these proofs.
+        assert output_msg["request_id"] == turn.request_id
+        assert await redis_client.xlen(output_stream) == 1
+        assert (
+            await redis_client.get(f"worker:output-receipt:{worker_id}:{stream_id}")
+            == hashlib.sha256(typed_result.model_dump_json().encode()).hexdigest()
+        )
+        broker = await redis_client.hgetall(f"worker:broker:{worker_id}")
+        pending = await redis_client.xpending(input_stream, broker["consumer_group"])
+        assert pending["pending"] == 0
+        groups = await redis_client.xinfo_groups(input_stream)
+        group = next(g for g in groups if g["name"] == broker["consumer_group"])
+        assert group["last-delivered-id"] == stream_id
+        assert not await redis_client.hgetall(active_turn_key(worker_id))
         assert not Path(WORKSPACE_BASE_PATH, scaffolded_workspace, "cli-started").exists()

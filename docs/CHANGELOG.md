@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- DinD publishes its no-model Factory turn through native typed attempt authority
+  and proves broker output acceptance/ACK, so repository refusal reaches the shipped wrapper.
 - DinD proves standalone attempt identity and isolates native queue attribution
   from a competing engineering consumer, so worker creation cannot race fixture settlement.
 - DinD worker fixtures persist and read back eligible attempt authority; scoped

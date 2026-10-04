@@ -13,6 +13,7 @@ from shared.contracts.dto.commit_publication import CommitPublication, Publicati
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
 from shared.contracts.queues.worker_result import WorkerFailedResult
+from shared.contracts.worker_turn import EngineeringTurnPublication, WorkerTurnInput
 from shared.models import Project, Repository, Run, Story, Task, User, WorkAdmissionAudit
 from shared.models.commit_recovery import CommitRecovery
 from shared.models.engineering_attempt_ledger import EngineeringAttemptLedger
@@ -202,6 +203,67 @@ async def stop(client, story):
     result = response.json()
     assert result["engineering_stop"]["actor"] == "internal_service"
     return result["engineering_stop"]["id"]
+
+
+@pytest.mark.parametrize("attempt", ["live"], indirect=True)
+@pytest.mark.parametrize(
+    "invalid", [None, "request", "deadline", "attempt", "worker", "project", "queued"]
+)
+async def test_native_turn_publication_requires_owned_running_attempt_and_deduplicates(
+    attempt, async_client, db_session, invalid
+):
+    project, story, _, run, _ = attempt
+    redis = get_redis_client().redis
+    worker_id = run.run_metadata["worker_id"]
+    await redis.hset(
+        f"worker:meta:{worker_id}",
+        mapping={
+            "project_id": "foreign" if invalid == "project" else str(project.id),
+            "story_id": story.id,
+        },
+    )
+    publication = EngineeringTurnPublication(
+        worker_id=worker_id,
+        turn=WorkerTurnInput(
+            request_id=f"turn-{run.id}",
+            attempt_id=run.id,
+            turn_deadline_seconds=60,
+            prompt="No model",
+        ),
+    )
+    body = publication.model_dump(mode="json", exclude_none=True)
+    if invalid in {"request", "deadline"}:
+        del body["turn"]["request_id" if invalid == "request" else "turn_deadline_seconds"]
+    elif invalid == "attempt":
+        body["turn"]["attempt_id"] = "foreign"
+    elif invalid == "worker":
+        body["worker_id"] = "foreign"
+    elif invalid == "queued":
+        run.status = "queued"
+        await db_session.commit()
+    stream = f"worker:{worker_id}:input"
+    path = f"/api/runs/{run.id}/publish-worker-turn"
+    before = await redis.xlen(stream)
+    response = await async_client.post(path, json=body)
+    if invalid:
+        assert response.status_code == (422 if invalid in {"request", "deadline"} else 409)
+        assert await redis.xlen(stream) == before
+        assert not await redis.exists(
+            f"engineering:turn-publication:{run.id}:{publication.turn.request_id}"
+        )
+        return
+    assert response.status_code == 200, response.text
+    replay = await async_client.post(path, json=body)
+    assert replay.status_code == 200 and replay.json() == response.json()
+    assert await redis.xlen(stream) == before + 1
+    stream_id = response.json()["stream_id"]
+    entries = await redis.xrange(stream, min=stream_id, max=stream_id)
+    assert len(entries) == 1
+    fields = entries[0][1]
+    assert (
+        WorkerTurnInput.model_validate_json(fields.get(b"data", fields.get("data")))
+        == publication.turn
+    )
 
 
 @pytest.mark.asyncio
