@@ -14,7 +14,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
 )
-from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QA_ROUTED_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
@@ -23,6 +23,7 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionRead,
     WorkAdmissionReason,
 )
+from shared.contracts.queues.qa import QAMessage
 from shared.contracts.vocab import AgentType
 from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.work_admission import (
@@ -73,6 +74,123 @@ def _rows(values: dict[str, object]) -> MagicMock:
         SimpleNamespace(key=key, value=value) for key, value in values.items()
     ]
     return result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("criteria", "handoff", "expected"),
+    [
+        ("- GET /health returns 200", "matching", WorkAdmissionOutcome.ADMITTED),
+        (
+            "- GET /health returns 200\n- GET /reminders returns 200",
+            "matching",
+            WorkAdmissionOutcome.ADMITTED,
+        ),
+        (
+            "- GET /health returns 200\n- The bot replies to /start",
+            "matching",
+            WorkAdmissionOutcome.DENIED,
+        ),
+        (" ", "matching", WorkAdmissionOutcome.DENIED),
+        ("- GET /health returns 200", "absent", WorkAdmissionOutcome.DENIED),
+        ("- GET /health returns 200", "other_run", WorkAdmissionOutcome.DENIED),
+        ("- GET /health returns 200", "other_project", WorkAdmissionOutcome.DENIED),
+        ("- GET /health returns 200", "other_story", WorkAdmissionOutcome.DENIED),
+        ("- GET /health returns 200", "invalid", WorkAdmissionOutcome.DENIED),
+    ],
+)
+async def test_qa_handoff_requires_model_diagnostics_only_for_exploratory_checks(
+    monkeypatch, criteria, handoff, expected
+):
+    """Health QA must still reach its HTTP consumer when model profiles are absent."""
+    from datetime import UTC, datetime, timedelta
+
+    from shared.contracts.dto.engineering_budget_policy import (
+        EngineeringBudgetAdmissionOutcome,
+        EngineeringBudgetAdmissionRead,
+    )
+
+    project_id = "00000000-0000-0000-0000-000000000001"
+    story_id = "story-health"
+    message = QAMessage(
+        project_id=project_id if handoff != "other_project" else "other-project",
+        story_id=story_id if handoff != "other_story" else "other-story",
+        initiating_run_id="live-health",
+        run_id="qa-health" if handoff != "other_run" else "qa-other",
+        application_id=1,
+        deployed_url="http://product.test:8000",
+        acceptance_criteria=criteria,
+    )
+    command = PaidRunStartCommand(
+        id="qa-health",
+        type=RunType.QA,
+        project_id=project_id,
+        story_id=story_id,
+        run_metadata={QA_HANDOFF_KEY: QAHandoffPlan(qa_message=message).model_dump(mode="json")}
+        if handoff != "absent"
+        else {},
+    )
+    if handoff == "invalid":
+        del command.run_metadata[QA_HANDOFF_KEY]["qa_message"]["application_id"]
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.scalars.side_effect = [
+        _rows({}),
+        _rows(
+            {
+                "work_admission.emergency_stop": False,
+                "work_admission.max_concurrent_paid_runs": 1,
+                "work_admission.engineering_executor_override": "none",
+                "work_admission.qa_executor_override": "none",
+            }
+        ),
+        _rows({}),
+    ]
+    db.scalar.side_effect = [None, None, SimpleNamespace(owner_id=7, config={}), None, 0]
+    now = datetime.now(UTC)
+    diagnostic = ExecutorDiagnostic(
+        executor=AgentType.CODEX,
+        enabled=True,
+        auth_mode=ExecutorAuthMode.HOST_SESSION,
+        availability=ExecutorAvailability.UNAVAILABLE,
+        observed_at=now,
+        expires_at=now + timedelta(seconds=60),
+        active_lease_count=0,
+        reason_code="local_auth_invalid",
+        reason="Required local host-session material is unusable.",
+        profile=host_profile_for_reason("local_auth_invalid"),
+    )
+    unavailable = AsyncMock(return_value=(diagnostic, None))
+    monkeypatch.setattr("src.work_admission.current_executor_diagnostic", unavailable)
+    reserve = AsyncMock(
+        return_value=EngineeringBudgetAdmissionRead(
+            attempt_id=command.id,
+            user_id=7,
+            outcome=EngineeringBudgetAdmissionOutcome.ADMITTED,
+            reservation_microusd=0,
+            known_spend_microusd=0,
+            active_held_microusd=0,
+            available_microusd=None,
+            reservation_state=None,
+        )
+    )
+    monkeypatch.setattr("src.engineering_budget_admission.admit_engineering_attempt", reserve)
+
+    result = await start_paid_run(command, db)
+
+    assert result.admission.outcome is expected
+    if expected is WorkAdmissionOutcome.ADMITTED:
+        unavailable.assert_not_awaited()
+        reserve.assert_awaited_once()
+        run, audit = [call.args[0] for call in db.add.call_args_list]
+        assert run.id == command.id
+        assert run.run_metadata[QA_HANDOFF_KEY] == command.run_metadata[QA_HANDOFF_KEY]
+        assert ExecutorDecision.from_run_metadata(run.run_metadata) == result.executor_decision
+        assert audit.outcome == WorkAdmissionOutcome.ADMITTED.value
+    else:
+        unavailable.assert_awaited_once()
+        reserve.assert_not_awaited()
+        assert result.admission.reason is WorkAdmissionReason.EXECUTOR_UNAVAILABLE
 
 
 @pytest.mark.asyncio

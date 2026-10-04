@@ -2,9 +2,11 @@
 
 from datetime import UTC, datetime
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.acceptance import parse_health_only_criteria
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorOverride
 from shared.contracts.dto.executor_diagnostics import (
@@ -13,7 +15,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnosticSnapshot,
 )
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QA_ROUTED_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
@@ -318,6 +320,23 @@ async def _executor_diagnostic_allows_admission(
     return final_diagnostic, False
 
 
+def _health_only_qa_handoff(command: PaidRunStartCommand) -> bool:
+    """Only this Run's typed HTTP-only handoff proves no executor will start."""
+    if command.type is not RunType.QA or QA_HANDOFF_KEY not in command.run_metadata:
+        return False
+    try:
+        plan = QAHandoffPlan.model_validate(command.run_metadata[QA_HANDOFF_KEY])
+    except ValidationError:
+        return False
+    message = plan.qa_message
+    return (
+        message.run_id == command.id
+        and message.project_id == str(command.project_id)
+        and message.story_id == command.story_id
+        and parse_health_only_criteria(message.acceptance_criteria) is not None
+    )
+
+
 async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> PaidRunStartRead:
     """Atomically decide and create one queued engineering or QA run.
 
@@ -407,7 +426,14 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     # This is deliberately after every non-billable control check and directly
     # before the engineering reservation/Run mutation.  See the helper for the
     # exact confirmation-version linearization point.
-    diagnostic, admitted_by_diagnostic = await _executor_diagnostic_allows_admission(decision, db)
+    # HTTP-only QA runs in the consumer itself. Its persisted handoff uses the
+    # same criteria parser as that consumer, so no model profile is needed.
+    # Count controls, budget reservation and the immutable decision still apply.
+    admitted_by_diagnostic = _health_only_qa_handoff(command)
+    if not admitted_by_diagnostic:
+        diagnostic, admitted_by_diagnostic = await _executor_diagnostic_allows_admission(
+            decision, db
+        )
     if not admitted_by_diagnostic:
         reason = (
             WorkAdmissionReason.EXECUTOR_UNAVAILABLE
