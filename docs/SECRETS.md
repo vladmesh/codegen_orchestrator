@@ -3,9 +3,15 @@
 Explicit commit recovery uses authenticated API-to-manager connectivity
 (`WORKER_MANAGER_URL` is required) and the existing own-repo scoped mint/cache.
 Each native publication reacquires the token, including margin-based expiry
-refresh. Only transient Git environment config receives its Basic header;
-released headers and credential stores are disabled. Neither API claims/receipts,
-Git argv, checkout files nor diagnostics contain tokens. Recovery starts no agent.
+refresh, after validating a bounded manager-owned object snapshot. Privileged Git
+never runs in the worker checkout, even for preservation inspection or object
+export. Only source object bytes and corroborated refs cross that boundary;
+worker config, scripts, hooks, alternates and environment cannot run in manager
+context. The clean repository has manager-owned config/home, disabled askpass/hooks,
+no credential helpers/proxy/redirects, and exact own-repo HTTPS transport. Only
+transient Git environment config receives its URL-scoped Basic header. Neither
+API claims/receipts, Git argv, checkout files nor diagnostics contain tokens.
+Recovery starts no agent and cleanup removes only its temporary snapshot.
 See [the recovery runbook](runbooks/preserved-commit-recovery.md).
 
 The secrets management architecture in Codegen Orchestrator separates the responsibilities between the Orchestrator and the user projects.

@@ -339,9 +339,15 @@ async def update_story(
             raise HTTPException(
                 status_code=403, detail="merged deploy observations require the internal producer"
             )
-    story = await _get_story_for_update(story_id, db)
-
     update_data = body.model_dump(exclude_unset=True)
+    if "quarantine_reason" in update_data:
+        from ..attempt_disposition import lock_story_attempts
+        from ..publication_park import guard_quarantine_patch
+
+        story, _, _, runs = await lock_story_attempts(story_id, db)
+        await guard_quarantine_patch(story, update_data["quarantine_reason"], runs, db)
+    else:
+        story = await _get_story_for_update(story_id, db)
     for field, value in update_data.items():
         setattr(story, field, value)
 
@@ -813,6 +819,9 @@ async def human_review_story(
     from ..attempt_disposition import lock_story_attempts
 
     story, tasks, _, runs = await lock_story_attempts(story_id, db)
+    from ..publication_park import guard_publication_failure
+
+    await guard_publication_failure(body.failure, runs, db)
     record_failure = body.failure is not None
     if (
         story.engineering_stop is not None
@@ -1115,7 +1124,14 @@ async def fail_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryStopTransition()
-    story = await _get_story_for_update(story_id, db)
+    if body.failure is not None and body.failure.commit_publication is not None:
+        from ..attempt_disposition import lock_story_attempts
+        from ..publication_park import guard_publication_failure
+
+        story, _, _, runs = await lock_story_attempts(story_id, db)
+        await guard_publication_failure(body.failure, runs, db)
+    else:
+        story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.FAILED)
     if body.failure is not None:

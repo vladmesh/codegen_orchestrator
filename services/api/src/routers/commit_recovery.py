@@ -649,13 +649,9 @@ async def recover_commit(
 async def _handoff_recovery(story, task, project, run, claim, actor, db):
     # Reuse the native completion owner. Failed Run/accounting are untouched.
     from ..attempt_disposition import release_engineering_stop
+    from ..publication_park import retired_publication_controls
 
-    config = dict(project.config or {})
-    project_hold = config.get(COMMIT_PUBLICATION_KEY)
-    if project_hold is not None:
-        held = CommitPublication.model_validate(project_hold)
-        if held.attempt_id != run.id:
-            refuse("stale_attempt", "A different preserved attempt owns this checkout")
+    reason, metadata, config = retired_publication_controls(story, task, project, run, claim)
     release_engineering_stop(
         story,
         claim.stop_id,
@@ -691,12 +687,9 @@ async def _handoff_recovery(story, task, project, run, claim, actor, db):
             await apply_task_completion(
                 task, actor, {"commit_recovery": run.id, "commit_sha": claim.commit_sha}, db
             )
-        metadata = dict(task.failure_metadata or {})
-        metadata.pop(COMMIT_PUBLICATION_KEY, None)
         task.failure_metadata = metadata or None
-    if project_hold is not None:
-        config.pop(COMMIT_PUBLICATION_KEY)
-        project.config = config
+    project.config = config
+    story.quarantine_reason = reason
     _do_transition(story, StoryStatus.IN_PROGRESS)
     claim.handed_off_at = datetime.now(UTC)
     db.add(

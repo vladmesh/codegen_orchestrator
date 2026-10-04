@@ -32,6 +32,25 @@ def test_guard_derives_compose_entrypoint_modules(guard):
     assert "src.consumers.po" in guard.modules_for("langgraph")
 
 
+def test_recovery_image_executes_fixed_native_git_probe(guard, monkeypatch):
+    calls = []
+    monkeypatch.setattr(guard, "run", calls.append)
+    monkeypatch.setattr(guard, "capture", lambda command: "{}")
+    monkeypatch.setattr(guard.service_image_locks, "check_image", lambda *args: [])
+    image = next(image for image in guard.SERVICE_IMAGES if image.name == "worker-manager")
+    guard.check_service_image(image, guard.modules_for(image.name))
+    assert [
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "/usr/bin/git",
+        image.tag,
+        "--version",
+    ] in calls
+    assert "shared.git_snapshot" in guard.modules_for(image.name)
+
+
 def test_compose_coverage_contract_rejects_an_unimported_module(guard):
     coverage = {
         image.name: guard.modules_for(image.name)

@@ -284,8 +284,8 @@ async def test_stop_races_retry_and_fences_late_completion(attempt, async_client
 
 
 @pytest.mark.asyncio
-async def test_publication_refusal_parks_atomically_and_preserves_paid_outcome(
-    attempt, async_client, db_session
+async def test_publication_refusal_parks_atomically_and_preserves_paid_outcome(  # noqa: PLR0915
+    attempt, async_client, db_session, monkeypatch
 ):
     project, story, task, old, repo = attempt
     # Use a new live attempt rather than rewrite the immutable failed fixture.
@@ -353,6 +353,213 @@ async def test_publication_refusal_parks_atomically_and_preserves_paid_outcome(
     assert (
         await async_client.post(f"/api/tasks/{task.id}/retry-failed", json={})
     ).status_code == 409
+    # Primary typed park, not legacy adoption. Generic projections grant no
+    # authority to erase the active control, including a nested replacement.
+    parked_reason = (await async_client.get(f"/api/stories/{story.id}")).json()["quarantine_reason"]
+    for reason in (None, {}, {"failure": {"commit_publication": evidence.model_dump(mode="json")}}):
+        refused = await async_client.patch(
+            f"/api/stories/{story.id}", json={"quarantine_reason": reason}
+        )
+        assert refused.status_code == 409, refused.text
+        assert (await async_client.get(f"/api/stories/{story.id}")).json()[
+            "quarantine_reason"
+        ] == parked_reason
+    stop_id = await stop(async_client, story)
+    original_run = (await async_client.get(f"/api/runs/{run.id}")).json()
+    original_ledger = ledger.to_dict()
+    before_commands = await get_redis_client().redis.xlen("worker:commands")
+    calls = []
+    from src.routers import commit_recovery
+
+    class Publisher:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, **kwargs):
+            calls.append(url)
+            receipt = CommitPublication(
+                published=True,
+                commit_sha=SHA,
+                remote_sha=SHA,
+                branch=f"story/{story.id}",
+                attempt_id=run.id,
+                worker_id=run.run_metadata["worker_id"],
+            )
+            return httpx.Response(
+                200, json=receipt.model_dump(mode="json"), request=httpx.Request("POST", url)
+            )
+
+    monkeypatch.setattr(commit_recovery.httpx, "AsyncClient", Publisher)
+    command = {"attempt_id": run.id, "commit_sha": SHA, "stop_id": stop_id}
+    for wrong in ({**command, "commit_sha": "c" * 40}, {**command, "stop_id": "stale-stop"}):
+        refused = await async_client.post(f"/api/stories/{story.id}/recover-commit", json=wrong)
+        assert refused.status_code == 409, refused.text
+    answers = await asyncio.gather(
+        *[
+            async_client.post(f"/api/stories/{story.id}/recover-commit", json=command)
+            for _ in range(2)
+        ]
+    )
+    for answer in answers:
+        assert answer.status_code == 200 and answer.json()["handed_off_at"], answer.text
+    # Read/replay is the same continuation after a lost caller response.
+    replay = await async_client.post(f"/api/stories/{story.id}/recover-commit", json=command)
+    assert replay.json() == answers[0].json() == answers[1].json()
+    assert len(calls) == 1
+    await db_session.refresh(task)
+    await db_session.refresh(project)
+    assert task.status == "done" and task.current_iteration == 2
+    assert "commit_publication" not in (task.failure_metadata or {})
+    assert "commit_publication" not in project.config
+    handed_off = (await async_client.get(f"/api/stories/{story.id}")).json()
+    assert handed_off["status"] == "in_progress"
+    assert "commit_publication" not in str(handed_off["quarantine_reason"])
+    for _ in range(2):
+        discovered = await async_client.get(f"/api/stories/{story.id}/recovered-commit")
+        assert discovered.json()["attempt_id"] == run.id
+    handoffs = list(
+        (
+            await db_session.scalars(
+                select(WorkAdmissionAudit).where(
+                    WorkAdmissionAudit.subject == "commit_recovery",
+                    WorkAdmissionAudit.reference_id == run.id,
+                    WorkAdmissionAudit.outcome == "handed_off",
+                )
+            )
+        ).all()
+    )
+    assert len(handoffs) == 1
+    late_park = await async_client.post(
+        f"/api/runs/{run.id}/park-publication", json=output.model_dump(mode="json")
+    )
+    assert late_park.status_code == 200
+    # Both typed failure surfaces reject the original publication replay before
+    # creating a newer stop, changing status, or owing a new owner notification.
+    for action in ("human-review", "fail"):
+        late_failure = await async_client.post(
+            f"/api/stories/{story.id}/{action}", json={"failure": parked_reason}
+        )
+        assert late_failure.status_code == 409, late_failure.text
+    assert (await async_client.get(f"/api/stories/{story.id}")).json() == handed_off
+    later = await async_client.post(
+        f"/api/stories/{story.id}/human-review",
+        json={
+            "failure": {
+                "code": "no_new_commit",
+                "source": "engineering",
+                "detail": "Later ordinary failure",
+            }
+        },
+    )
+    assert later.status_code == 200, later.text
+    later_stop = later.json()["engineering_stop"]["id"]
+    assert later_stop != stop_id and "commit_publication" not in str(
+        later.json()["quarantine_reason"]
+    )
+    old_recovery = await async_client.post(f"/api/stories/{story.id}/recover-commit", json=command)
+    assert old_recovery.json() == replay.json()
+    assert (await async_client.get(f"/api/stories/{story.id}")).json()["engineering_stop"][
+        "id"
+    ] == later_stop
+    # Native address-less acceptance is authorized for a Story stopped before
+    # QA; it releases exactly the later reviewed stop and does not spend work.
+    accepted = await async_client.post(
+        f"/api/stories/{story.id}/accept-result",
+        json={"basis": "Reviewed later ordinary failure"},
+        headers={"X-Admin-Console-Operator": "recovery-fixture"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "completed"
+    assert accepted.json()["engineering_stop"]["id"] == later_stop
+    assert accepted.json()["engineering_stop"]["released_at"]
+    assert (await async_client.get(f"/api/runs/{run.id}")).json() == original_run
+    await db_session.refresh(ledger)
+    assert ledger.to_dict() == original_ledger
+    assert original_run["result"]["publication"]["stderr"] == "non-fast-forward"
+    assert await get_redis_client().redis.xlen("worker:commands") == before_commands
+
+
+@pytest.mark.parametrize("attempt", ["live"], indirect=True)
+@pytest.mark.parametrize("newer_hold", [False, True])
+async def test_primary_park_recovery_cannot_overwrite_newer_attempt_or_hold(
+    attempt, async_client, db_session, newer_hold
+):
+    project, story, task, run, repo = attempt
+    evidence = CommitPublication(
+        failure=PublicationFailure.PUSH_REFUSED,
+        commit_sha=SHA,
+        branch=f"story/{story.id}",
+        attempt_id=run.id,
+        worker_id=run.run_metadata["worker_id"],
+        repository_id=repo.id,
+        repository_url=repo.git_url,
+        stderr="original preserved diagnostics",
+    )
+    output = WorkerFailedResult(
+        error="Publication refused",
+        failure_reason=EngineeringFailureReason.WORKER_COMMIT_NOT_PUBLISHED,
+        publication=evidence,
+    )
+    parked = await async_client.post(
+        f"/api/runs/{run.id}/park-publication", json=output.model_dump(mode="json")
+    )
+    assert parked.status_code == 200, parked.text
+    stop_id = await stop(async_client, story)
+    original = (await async_client.get(f"/api/runs/{run.id}")).json()
+    # Fixture persists another Story's later attempt sharing the Project checkout.
+    sibling = Story(
+        id=f"sibling-{story.id}",
+        project_id=project.id,
+        title="Later checkout owner",
+        status="in_progress",
+        waiting_on="none",
+    )
+    db_session.add(sibling)
+    await db_session.flush()
+    later = Run(
+        id=f"later-{run.id}",
+        type="engineering",
+        status="failed",
+        project_id=project.id,
+        story_id=sibling.id,
+        created_at=datetime.now(UTC) + timedelta(seconds=1),
+        run_metadata={**run.run_metadata, "worker_id": "later-owned-worker"},
+        result={"engineering_status": "failed"},
+    )
+    db_session.add(later)
+    await db_session.refresh(project)
+    if newer_hold:
+        project.config = {
+            **project.config,
+            "commit_publication": evidence.model_copy(
+                update={
+                    "attempt_id": later.id,
+                    "worker_id": "later-owned-worker",
+                    "branch": f"story/{sibling.id}",
+                }
+            ).model_dump(mode="json"),
+        }
+    await db_session.commit()
+    held = dict(project.config)
+    refused = await async_client.post(
+        f"/api/stories/{story.id}/recover-commit",
+        json={"attempt_id": run.id, "commit_sha": SHA, "stop_id": stop_id},
+    )
+    assert refused.status_code == 409, refused.text
+    assert (await async_client.get(f"/api/runs/{run.id}")).json() == original
+    await db_session.refresh(project)
+    await db_session.refresh(story)
+    await db_session.refresh(task)
+    assert project.config == held
+    assert story.engineering_stop["id"] == stop_id and story.engineering_stop["released_at"] is None
+    assert task.status == "waiting_human_review" and task.current_iteration == 2
+    assert await db_session.get(CommitRecovery, run.id) is None
 
 
 @pytest.mark.asyncio

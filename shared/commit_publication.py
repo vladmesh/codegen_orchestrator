@@ -88,7 +88,7 @@ def _push_and_readback(git, sha, branch, secrets):
     )
 
 
-def publish_commit(
+def _publication_operation(
     workspace: Path,
     branch: str,
     commit: str,
@@ -97,7 +97,8 @@ def publish_commit(
     repository_url: str | None = None,
     env: dict[str, str] | None = None,
     secrets: tuple[str, ...] = (),
-) -> CommitPublication:
+    publish: bool,
+) -> CommitPublication | None:
     """Verify the named local HEAD, inspect it, push that SHA, prove the ref.
 
     A failed/ambiguous push still gets readback. Exact remote proof wins even
@@ -150,8 +151,43 @@ def publish_commit(
         inspection = _inspect_commit(git, sha, baseline)
         if inspection is not None:
             return refuse(*inspection)
-        return _push_and_readback(git, sha, branch, secrets)
+        return _push_and_readback(git, sha, branch, secrets) if publish else None
     except subprocess.TimeoutExpired:
         return refuse(PublicationFailure.TIMEOUT)
     except OSError as exc:
         return refuse(PublicationFailure.INSPECTION_FAILED, str(exc))
+
+
+def inspect_commit(workspace, branch, commit, *, baseline, repository_url, env):
+    """Run the same local proof before the privileged owner obtains credentials."""
+    return _publication_operation(
+        workspace,
+        branch,
+        commit,
+        baseline=baseline,
+        repository_url=repository_url,
+        env=env,
+        publish=False,
+    )
+
+
+def publish_commit(
+    workspace: Path,
+    branch: str,
+    commit: str,
+    *,
+    baseline: str | None = None,
+    repository_url: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: tuple[str, ...] = (),
+) -> CommitPublication:
+    return _publication_operation(
+        workspace,
+        branch,
+        commit,
+        baseline=baseline,
+        repository_url=repository_url,
+        env=env,
+        secrets=secrets,
+        publish=True,
+    )

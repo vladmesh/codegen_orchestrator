@@ -77,8 +77,10 @@ settlement consumes this exact output, including provider facts, before generic
 failure handling. Stop reconciliation does the same after owned removal proof.
 Broker output, input ACK and immutable body receipt are atomic; same-body replay
 after a lost HTTP response creates no duplicate output. A changed body refuses.
-Developer teardown preserves its checkout; GC preserves local untracked commits
-and fails closed when native Git cannot establish their absence.
+Developer teardown preserves its checkout; GC inspects a clean object snapshot,
+preserves unpublished local commits and fails closed on unknown UID ownership,
+indirection, unsupported layout, corruption or a source race. No privileged Git
+operation, including preservation inspection, runs in the worker checkout.
 
 Taskless `no_new_commit` settlement retains an `EmptyEngineeringTerminal`
 payload in the owned live Run's `empty_result_terminal` metadata before stopping.
@@ -132,11 +134,39 @@ result. A different SHA or stop refuses. Missing ownership, workspace/object,
 wrong repository/branch, changed HEAD, injected/no-new content, non-fast-forward,
 credential refusal, timeout and readback mismatch never authorize handoff.
 
-Manager derives the direct checkout child from the owned Repository ID, refuses
-a live workspace lease, obtains `get_repo_scoped_token` for that repository at
-each execution and passes transient native Git configuration via environment.
-Released headers/helpers are overridden; tokens appear in neither argv nor
-files/logs. `WORKER_MANAGER_URL` is required API connectivity configuration.
+Manager derives the direct checkout child from the owned Repository ID and refuses
+a live workspace lease. `shared.git_snapshot` walks source directories with
+descriptor-relative no-follow opens, reads symbolic HEAD and direct loose/packed
+refs, and copies only ordinary object bytes into a private manager-owned repository.
+Objects are copied, never hard-linked. Config, worktree files, hooks, templates,
+grafts, replacement refs, alternates and executable/transport context are not imported.
+Linked, shallow, promisor or indirect object stores refuse with actionable typed
+evidence; missing data requires deliberate operator restoration. No source Git
+command is used, including to export the objects.
+
+The supported layout is a SHA-1 direct checkout with a real `.git` directory,
+loose objects or complete pack/index pairs (optional reverse index), direct
+loose/packed heads/remotes/tags and an optional same-remote HEAD symbolic ref.
+Object-info packs/commit-graph caches are inspected as regular bounded data and
+never imported. Bounds are 1 GiB total input, 256 MiB per object file, 1 MiB per
+ref file, 100,000 entries, depth 16, and 60 seconds per copy/inventory. Unsupported
+layouts retain the original checkout. HEAD/ref bytes and device/inode/mode/size/
+mtime/ctime inventories of source refs, objects and parent directories are
+compared after copy and again before/after credential acquisition. A source race
+refuses; the command cannot fabricate a different original SHA or branch.
+
+Fixed `/usr/bin/git` runs only in the clean repository with manager-written refs
+and config and a sterile environment/home. Strict object validation and the
+shared publisher's exact HEAD/branch, baseline/ancestry/difference and injected-path
+proofs precede token minting. Global/system config, inherited Git/discovery/loader/
+proxy/secret environment and credential helpers are absent; hooks and askpass are
+disabled. Only the canonical server-owned `https://github.com/<owner>/<repo>[.git]`
+transport is allowed, without proxy or redirects. `get_repo_scoped_token` reacquires
+that own-repo credential on each execution; its transient URL-scoped header is
+absent from argv, files, receipts and redacted diagnostics. The shared non-force
+publisher and exact remote readback remain authoritative after a lost reply.
+Cleanup removes only the temporary manager repository. `WORKER_MANAGER_URL` is
+required API connectivity configuration.
 The base Compose file supplies the native manager endpoint; production and
 stand inherit it. Independent service/integration API containers, including
 image-only `api-factory`, explicitly supply their synthetic topology endpoint.
@@ -144,11 +174,36 @@ Unit fixtures and service-image import checks declare theirs independently;
 absence still fails startup. `.env.example` documents standalone connectivity.
 
 Verified handoff uses the native audited Task completion owner, releases only
-the named stop, clears this attempt's checkout hold and returns Story to
+the named stop, retires this attempt's active publication controls and returns Story to
 `in_progress` atomically with `handed_off_at`. The native `complete_stories`
 owner discovers it, resolves the current-cycle PR and retains PR/CI/merge/deploy
 ownership. The failed Run and ledger are unchanged. Recovery starts no worker,
 executor, coding turn or paid admission. Replays never repeat Task handoff.
+
+`services/api/src/publication_park.py` owns projection lifecycle. Handoff prepares
+retirement only against its locked exact verified claim/receipt: Task failure
+metadata, Project checkout hold, and every Story quarantine publication field,
+including nested StoryFailure evidence. A different attempt/SHA refuses before
+any stop release or mutation. The same transaction commits retirement, stop
+release, native completion and `handed_off_at`. The original failed Run/result,
+ledger, claim/receipt and audits remain readable history. Failure recording can
+carry an active projection forward, but cannot carry the retired attempt into a
+later ordinary cause.
+An absent diagnostic SHA remains absent in history; deliberate adoption still
+requires complete server identity and exact native proof before retirement.
+
+| Control writer/reader | Lifecycle owner and fence |
+|---|---|
+| Broker output park, Run terminal park, stop/removal settlement | `park_publication` validates attempt/worker, retains a different hold, and refuses to repark a handed-off claim |
+| Story human-review/fail publication causes | `guard_publication_failure` requires the locked canonical Run evidence and an unretired claim before any status/stop/notice write |
+| Generic Story quarantine PATCH | Roster/Story/Project/Run locks and `guard_quarantine_patch` protect canonical active evidence; caller projections cannot erase, replace or introduce publication authority |
+| Recovery handoff | `retired_publication_controls` verifies the exact receipt and all scoped projections before shared stop release and native continuation |
+| Disposition, admission, launch, retry, deploy and explicit release consumers | Existing stop-first authority and Project/Task controls remain; handed-off Run evidence is history, and only this owner retires its projections |
+
+No actor text or mutable quarantine authorizes retirement. Replayed old recovery
+only reads its claim; late refusal/failure writers cannot recreate the hold or
+clear a different/newer stop. All native explicit release consumers in the table
+above retain their existing cause, ownership and budget proofs.
 
 Legacy work requires explicit `adopt_preserved_commit=true`, complete persisted
 worker/initiating-Run/baseline and Repository ownership, and native exact local

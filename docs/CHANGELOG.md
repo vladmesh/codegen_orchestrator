@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-04
 
+- Recovery validates copied objects in a clean manager repository before minting;
+  verified handoff retires its publication holds so later operator actions remain usable.
 - Empty-result retention compares and persists the typed outcome, so omitted optional
   fields cannot block honest settlement or replay while changed facts still refuse.
 - Native actions share cause-aware stop release; retained empty outcomes require

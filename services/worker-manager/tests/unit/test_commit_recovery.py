@@ -1,5 +1,7 @@
 """Recovery execution ownership and transient scoped credential boundary."""
 
+from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,14 +11,31 @@ import pytest
 from shared.contracts.dto.commit_publication import CommitPublication, PublicationFailure
 from src.routers import commit_recovery
 
-SHA = "b" * 40
 PROJECT = "00000000-0000-0000-0000-000000000001"
+
+
+def git(path, *args):
+    return subprocess.run(
+        ["/usr/bin/git", *args], cwd=path, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 @pytest.fixture
 def owned_checkout(tmp_path, monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "fixture-internal")
-    (tmp_path / "repo-owned").mkdir()
+    work = tmp_path / "repo-owned"
+    work.mkdir()
+    git(work, "init", "--initial-branch=story/story-owned")
+    git(work, "config", "user.name", "Fixture")
+    git(work, "config", "user.email", "fixture@example.test")
+    git(work, "remote", "add", "origin", "https://github.com/fixture/owned.git")
+    (work / "app.txt").write_text("base")
+    git(work, "add", "app.txt")
+    git(work, "commit", "-m", "base")
+    baseline = git(work, "rev-parse", "HEAD")
+    (work / "app.txt").write_text("change")
+    git(work, "commit", "-am", "change")
+    sha = git(work, "rev-parse", "HEAD")
     identity = {
         "worker_id": "worker-owned",
         "attempt_id": "eng-owned",
@@ -26,13 +45,13 @@ def owned_checkout(tmp_path, monkeypatch):
         "repository_id": "repo-owned",
         "repository_url": "https://github.com/fixture/owned.git",
         "branch": "story/story-owned",
-        "baseline": "a" * 40,
+        "baseline": baseline,
         "cycle": None,
         "iteration": 2,
     }
     claim = {
         "identity": identity,
-        "commit_sha": SHA,
+        "commit_sha": sha,
         "attempt_id": "eng-owned",
         "story_id": "story-owned",
         "actor": "internal_service",
@@ -82,6 +101,7 @@ def owned_checkout(tmp_path, monkeypatch):
         github=github,
         redis=FakeRedis(decode_responses=True),
         scaffolded_workspace_path=str(tmp_path),
+        fixture_claim=claim,
     )
     return SimpleNamespace(app=SimpleNamespace(state=state)), run, repository
 
@@ -94,11 +114,11 @@ async def test_recovery_reacquires_scoped_token_and_never_starts_executor(
 
     def native(workspace, branch, sha, **kwargs):
         calls.append(kwargs)
-        assert workspace.name == "repo-owned" and branch == "story/story-owned" and sha == SHA
-        assert kwargs["baseline"] == "a" * 40
+        assert workspace != Path(req.app.state.scaffolded_workspace_path) / "repo-owned"
+        assert branch == "story/story-owned" and sha == req.app.state.fixture_claim["commit_sha"]
+        assert kwargs["baseline"] == req.app.state.fixture_claim["identity"]["baseline"]
         assert kwargs["env"]["GIT_CONFIG_KEY_2"] == "credential.helper"
         assert kwargs["env"]["GIT_CONFIG_VALUE_2"] == ""
-        assert kwargs["env"]["GIT_CONFIG_VALUE_0"] == ""
         assert "GITHUB_TOKEN" not in kwargs["env"]
         return CommitPublication(published=True, commit_sha=sha, remote_sha=sha, branch=branch)
 
@@ -115,8 +135,6 @@ async def test_recovery_reacquires_scoped_token_and_never_starts_executor(
     )
     # The request has no container/manager/executor capability, and the checkout
     # has no credential files after both native calls.
-    from pathlib import Path
-
     assert list(Path(req.app.state.scaffolded_workspace_path).rglob(".git-credentials")) == []
 
 

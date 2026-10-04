@@ -41,3 +41,37 @@ A newer attempt, cycle/iteration change, different SHA or different/newer stop
 refuses continuation. Replaying an already handed-off claim only reads its old
 result and cannot clear a later stop. Ordinary paid resume remains a separate
 audited budget action and refuses preserved unpublished work.
+
+Recovery supports a direct SHA-1 checkout with ordinary loose or packed objects,
+complete pack/index pairs and direct loose/packed refs; an ordinary clone's
+same-remote symbolic HEAD is supported. The manager securely copies bounded
+object bytes, corroborates the original branch/HEAD and source inventory, and
+validates in a clean private repository before obtaining credentials. Worker
+config, hooks, templates, scripts, replace refs and Git environment are never
+executed or imported. Symlinks, alternate/promisor stores, grafts, shallow or
+linked worktrees, missing/corrupt objects, excessive bounds and source changes
+refuse. See the [snapshot limits and contract](../contracts/commit-publication-and-stop.md).
+Restore unsupported/missing data deliberately outside recovery, preserving its
+only copy. A copied snapshot does not repair or overwrite the source.
+
+Successful handoff retires only the verified attempt's Task, Project and Story
+publication controls, including nested failure evidence. Original Run diagnostics
+and paid accounting remain history. A subsequent ordinary failure/stop uses its
+own native authorized action; old refusal/recovery replay cannot park it again
+or release that later stop. Generic Story quarantine PATCH cannot retire an
+active publication hold.
+
+There is no abandonment action. A permanent non-force refusal remains held;
+do not bypass it with force push, another paid coding turn or database edits.
+Agent-free continuation of an already-published late result after Stop is not
+implicitly authorized by this action. The observer retained both as separate P2
+PO proposals (`issue:b6d99e9ebba3f66f777b`, `issue:f16916126a6ea0ad1b6e`).
+Receipt retention (`issue:7635cf2f4c1f1ffe269b`) and conditional GC UID/disk retention
+(`issue:c323662f1dce574e5d84`) are also separate P2 proposals. Cleanup must retain
+active idempotency proof, and unknown GC ownership fails closed. No abandonment,
+extra resume or receipt-cleanup feature is introduced here.
+
+DoD10 still requires PO readback of the released Story's human-review state,
+newest failed original engineering Run, persisted worker/initiating-Run/baseline,
+matching current Project initiation, direct owned Repository checkout and exact
+original story branch/HEAD. Those production facts remain unverified on this card.
