@@ -228,6 +228,9 @@ jobs:
         timeout-minutes: 10
         run: make test-unit
 
+      - name: Run privileged runner regressions
+        run: bash scripts/ci-infra.sh bound --step privileged --timeout 2m -- make test-privileged
+
       - name: Check nothing built is behind the tree on shared
         timeout-minutes: 1
         run: make check-shared-freshness

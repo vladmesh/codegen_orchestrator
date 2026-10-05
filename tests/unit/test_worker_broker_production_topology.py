@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import subprocess
 
+import pytest
+
 REPO_ROOT = Path(__file__).parents[2]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
 
@@ -49,6 +51,7 @@ def _resolved_production_compose(tmp_path: Path) -> dict:
     return json.loads(result.stdout)
 
 
+@pytest.mark.docker
 def test_resolved_production_worker_network_is_broker_only(tmp_path):
     compose = _resolved_production_compose(tmp_path)
     services = compose["services"]
@@ -59,6 +62,7 @@ def test_resolved_production_worker_network_is_broker_only(tmp_path):
     assert "worker" not in services["worker-manager"]["networks"]
 
 
+@pytest.mark.docker
 def test_the_qa_executor_network_has_no_route_off_itself(tmp_path):
     """The whole QA write guarantee is this flag.
 
@@ -74,6 +78,7 @@ def test_the_qa_executor_network_has_no_route_off_itself(tmp_path):
     assert qa_egress["name"] == "codegen_qa_egress"
 
 
+@pytest.mark.docker
 def test_only_the_qa_runtime_and_the_broker_are_reachable_from_it(tmp_path):
     """Everything else on the platform stays off the executor's network."""
     compose = _resolved_production_compose(tmp_path)

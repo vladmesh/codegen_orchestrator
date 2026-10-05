@@ -645,8 +645,9 @@ def test_a_longer_retry_attempt_bound_is_counted_three_times(gate):
     pull = gate.step_by_name(jobs["fast-checks"], "Pull Redis image with retry")
     pull["run"] = pull["run"].replace("--attempt-timeout 90s", "--attempt-timeout 300s")
 
-    # The backup image retry and restore regression add five minutes to the budget.
-    with pytest.raises(SystemExit, match="fast-checks can take 52.5 minutes"):
+    # The backup image retry and restore regression add five minutes to the budget,
+    # the privileged runner regressions two and a half.
+    with pytest.raises(SystemExit, match="fast-checks can take 55 minutes"):
         gate.assert_job_timeouts(jobs)
 
 

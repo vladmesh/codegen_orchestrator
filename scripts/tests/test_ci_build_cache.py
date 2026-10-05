@@ -105,13 +105,18 @@ def test_the_override_is_written_as_the_resolved_file_says(tmp_path, monkeypatch
     )
 
 
-@pytest.mark.skipif(
-    subprocess.run(["docker", "compose", "version"], capture_output=True).returncode != 0,
-    reason="docker compose is not installed",
-)
+def _docker_compose_installed() -> bool:
+    # Probed when the test runs, not in a skipif: a decorator runs at import, before
+    # the host profile's `-m "not ci_only"` could deselect the test.
+    return subprocess.run(["docker", "compose", "version"], capture_output=True).returncode == 0
+
+
+@pytest.mark.docker
 @pytest.mark.parametrize("compose_file", TEST_COMPOSE_FILES, ids=lambda path: path.stem)
 def test_every_test_compose_file_gets_a_cache_for_every_image_it_builds(compose_file):
     """`docker compose config` only parses: nothing is built or pulled."""
+    if not _docker_compose_installed():
+        pytest.skip("docker compose is not installed")
     config = cache.resolved_compose(str(compose_file))
 
     override = cache.compose_override(config)

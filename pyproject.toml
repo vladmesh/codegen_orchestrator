@@ -79,9 +79,16 @@ testpaths = ["tests"]
 # `shared` lives in the tree and is not installed, so the repo root has to be
 # importable for every pytest run rooted here.
 pythonpath = ["."]
+addopts = "--strict-markers"
 markers = [
     "integration: marks tests as integration tests",
     "requires_github: marks tests requiring real GitHub credentials",
+    # The ci_only family (scripts/ci_only_markers.py): the host profile deselects it.
+    "ci_only: runs in CI only, never in the host profile of scripts/test-unit-local.sh",
+    "docker: implies ci_only; runs the real docker CLI (compose config, build, info)",
+    "ansible: implies ci_only; runs ansible-core for real (ansible-playbook, PlaybookCLI)",
+    "privileged: implies ci_only; needs root or sudo and changes the machine (useradd, become)",
+    "kit_gate: implies ci_only; runs the product kit's toolchain gate (generate, ruff, xenon, deptry)",
 ]
 
 # Ruff is configured in the root ruff.toml. A [tool.ruff] section here would be

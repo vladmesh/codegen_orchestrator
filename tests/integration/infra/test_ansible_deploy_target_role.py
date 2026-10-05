@@ -1,4 +1,10 @@
-"""Regression tests for deploy-target bootstrap ownership."""
+"""Regression tests for deploy-target bootstrap ownership.
+
+The permissions proof creates a system user with sudo and applies the role twice with
+`ansible-playbook` and `become`, so the whole module is `privileged`: CI runs it on the
+throwaway GitHub runner (fast-checks, `make test-privileged`), and neither the control
+host's profile nor the infra compose suite (`-m "not privileged"`) collects it.
+"""
 
 import os
 from pathlib import Path
@@ -14,7 +20,9 @@ import uuid
 import pytest
 import yaml
 
-ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
+pytestmark = pytest.mark.privileged
+
+ANSIBLE_DIR = Path(__file__).parents[3] / "services" / "infra-service" / "ansible"
 ROLE_TASKS = ANSIBLE_DIR / "roles" / "deploy_target" / "tasks" / "main.yml"
 SOFTWARE_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "provision_software.yml"
 # Two applies leave 30 seconds for setup, assertions and cleanup under pytest's 90s limit.

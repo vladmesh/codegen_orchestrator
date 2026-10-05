@@ -148,7 +148,9 @@ services:
       dockerfile: tests/compose/integration/Dockerfile
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
-    command: ["pytest", "tests/integration/infra/", "-v", "-x"]
+    # The privileged deploy-target proof needs the GitHub runner's sudo and ansible, not
+    # this container: fast-checks runs it with `make test-privileged`.
+    command: ["pytest", "tests/integration/infra/", "-v", "-x", "-m", "not privileged"]
     environment:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379/0

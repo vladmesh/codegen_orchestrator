@@ -74,7 +74,7 @@ values are refused before persistence and that omitted status leaves it intact.
 
 | Layer | Location | Dependencies | CI | Speed |
 |-------|----------|-------------|-----|-------|
-| **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks) | Pre-push + CI | ~12s (parallel) |
+| **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks); `ci_only` family in CI only | Host profile + CI | host ≤ 300 s at 2 jobs |
 | **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
 | **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI when relevant paths change | ~10-30 min |
 | **Live** | `tests/live/` | Full stack (real services, no LLM) | Manual | ~30s–10 min |
@@ -143,14 +143,21 @@ Only GitHub and administrator Telegram responses are synthetic; no provider,
 worker container, live repository mutation or production recovery is exercised.
 
 ```bash
-# Unit (fast, no deps — run before every push)
-make test-unit                 # All services (parallel, ~12s; no host services)
+# Unit, full profile: every suite at once, every marker (what CI fast-checks runs)
+make test-unit
+
+# Unit, host profile: at most UNIT_JOBS (default 2) suites at once, -m "not ci_only",
+# no live-offline suite (what a weak control host runs)
+uv run bash scripts/test-unit-local.sh --host
 
 # Serial mode (verbose output per service)
 uv run bash scripts/test-unit-local.sh --serial
 
-# Same suite as one module entry point (what Ummanu's `check broad --module shared` runs)
-uv run python -m shared            # accepts the same flags, e.g. `--serial`
+# The host profile as one module entry point (what Ummanu's `check broad --module shared` runs)
+uv run python -m shared            # = test-unit-local.sh --host; accepts e.g. `--serial`
+
+# Privileged regressions: sudo useradd, ansible-playbook with become (CI runner only)
+make test-privileged
 
 # Service (Docker, single service)
 make test-service SERVICE=api
@@ -257,6 +264,43 @@ Both must pass.
 | packages (worker-wrapper) | 9 files | — | 3 files | — |
 
 `make test-unit` runs the suites listed in `ALL_SUITES` (`scripts/test-unit-local.sh`).
+
+### Host profile and CI split
+
+`scripts/test-unit-local.sh` has two profiles over the same `ALL_SUITES` table:
+
+- **Full** (no flag; `make test-unit`, CI `fast-checks`): every suite at once, every test.
+- **Host** (`--host`; `python -m shared`, the Ummanu broad check on the control host): at most
+  `UNIT_JOBS` suites at a time (default 2), `-m "not ci_only"` on every suite, and none of
+  `HOST_EXCLUDED_SUITES` (the `live-offline` suite). It prints its total wall time.
+
+**Budget for the host profile: 300 s or less wall time and 1.5 GB or less peak RSS for the whole
+process tree at 2 jobs.** A change that breaks it moves tests to CI rather than raising the budget.
+
+The `ci_only` marker family keeps heavy tests out of the host profile while CI still runs them.
+`ci_only` is the umbrella; the sub-markers say why and each implies it (`scripts/ci_only_markers.py`,
+loaded by the runner): `docker` (real docker CLI, such as `docker compose config`), `ansible` (real
+ansible-core), `privileged` (root or sudo, changes the machine) and `kit_gate` (the product kit's
+generate/ruff/xenon/deptry gate). All five are registered in the root `pyproject.toml` and every
+service `pytest.ini`, under `--strict-markers`.
+
+| Marked test | Marker | CI job that runs it |
+|---|---|---|
+| `tests/integration/infra/test_ansible_deploy_target_role.py` (moved from infra-service unit) | `privileged` (module) | `fast-checks`: `make test-privileged` (the infra compose suite deselects it) |
+| infra-service `test_ansible_runner_config.py::...include_role_using_repository_config` | `ansible` | `fast-checks`: `make test-unit` (suite `infra-service`) |
+| worker-manager `test_compose_runner.py` real-compose and real-daemon tests | `docker` | `fast-checks`: `make test-unit` (suite `worker-manager`) |
+| `tests/unit/test_production_compose_mounts.py`, `test_stand_e2e_workflow.py`, `test_secure_admin_entry.py`, `test_worker_broker_production_topology.py` compose renders | `docker` | `fast-checks`: `make test-unit` (suite `repo`) |
+| `scripts/tests/test_ci_build_cache.py` compose-file cache test | `docker` | `fast-checks`: `make test-unit` (suite `scripts`) |
+| `tests/unit/test_level1_change_set.py` | `kit_gate` (module) | `fast-checks`: `make test-unit` (suite `repo`) |
+| `tests/live` offline (`live-offline` suite) | whole suite | `fast-checks`: `make test-unit` (suite `live-offline`) |
+
+`scripts/tests/test_host_sweep_is_light.py` guards the split, and `scripts/check-ci-gate.py` runs
+the same scan (`scripts/host_sweep.py`): every test file the host profile collects is parsed for a
+process start of `ansible-playbook`, `PlaybookCLI`, `sudo`, `useradd`, `runuser`, `systemctl`,
+`docker`, `xenon`, `deptry` or `copier` (directly, through a local wrapper or helper, or through a
+fixture). A test that reaches one without a `ci_only`-family marker fails both: a heavy file is
+claimed by a CI target, never by the host profile. A spawn at import time (for example in a
+`skipif` condition) fails even when marked, because it runs before `-m` deselects anything.
 Every test in them runs under a 90 s `pytest-timeout` bound (`--timeout-method=thread`), so a hang
 fails that suite in minutes instead of reaching the CI step timeout silently: it prints
 `Timeout: <node id>`, the stacks of the pending asyncio tasks (`scripts/unit_test_timeout.py`) and

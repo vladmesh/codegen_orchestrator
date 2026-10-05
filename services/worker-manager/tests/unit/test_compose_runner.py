@@ -346,6 +346,7 @@ class TestComposeRunner:
         assert "cpus: '1.0'" in snapshot_path.read_text()
         assert "memory: 512M" in snapshot_path.read_text()
 
+    @pytest.mark.docker
     @pytest.mark.asyncio
     async def test_real_service_template_resolution_passes_the_production_validator(self, tmp_path):
         fixture = TEMPLATE_PIN.fixture_path()
@@ -371,6 +372,7 @@ class TestComposeRunner:
             for source in (fixture / "infra").glob("compose*.yml")
         )
 
+    @pytest.mark.docker
     @pytest.mark.asyncio
     async def test_real_documented_integration_resolution_passes_the_production_validator(
         self, tmp_path
@@ -808,6 +810,7 @@ class TestComposeRunner:
 
         mock_run.assert_not_called()
 
+    @pytest.mark.docker
     @pytest.mark.asyncio
     async def test_real_daemon_resource_identity_policy_preserves_victim_resources(self, tmp_path):
         if not _real_docker_available():

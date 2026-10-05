@@ -2028,6 +2028,7 @@ def test_mega_noop_requires_telegram_but_bypasses_model_credentials(tmp_path):
     )
 
 
+@pytest.mark.docker
 def test_actual_stand_renderer_provisions_required_policy_for_clean_compose(tmp_path):
     step = _steps()["Render protected dynamic configuration"]
     # Use the workflow's literal policy, without supplying it from the test or
@@ -2101,6 +2102,7 @@ def _render_stand_stack(project_dir: Path, qa_worker_env: str | None, extra_env:
     return json.loads(result.stdout)
 
 
+@pytest.mark.docker
 def test_the_llm_channel_heads_get_the_stand_codex_profile_and_claude_token(tmp_path):
     """langgraph and architect answer through codex and claude on the stand's own credentials.
 
@@ -2142,6 +2144,7 @@ def _telethon_by_service(config: dict) -> dict[str, dict[str, str]]:
     return found
 
 
+@pytest.mark.docker
 def test_the_qa_session_reaches_qa_worker_and_no_other_service_on_the_stand(tmp_path):
     session = "1" + "A" * 40
     config = _render_stand_stack(
@@ -2160,6 +2163,7 @@ def test_the_qa_session_reaches_qa_worker_and_no_other_service_on_the_stand(tmp_
     assert config["services"]["qa-worker"]["environment"]["POSTGRES_DB"]
 
 
+@pytest.mark.docker
 def test_a_stand_without_the_qa_worker_env_file_still_renders(tmp_path):
     assert _telethon_by_service(_render_stand_stack(tmp_path, None)) == {}
 

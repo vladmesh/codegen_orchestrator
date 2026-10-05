@@ -1,4 +1,4 @@
-"""``python -m shared`` is the canonical broad unit suite: the tree's own runner, same coverage."""
+"""``python -m shared`` is the canonical broad unit suite: the tree's own runner, host profile."""
 
 from __future__ import annotations
 
@@ -20,9 +20,10 @@ def test_runner_is_the_trees_own_script() -> None:
     assert entry.UNIT_SCRIPT.is_file()
 
 
-def test_command_forwards_caller_flags() -> None:
-    assert entry.build_command(["--serial"]) == ["bash", str(entry.UNIT_SCRIPT), "--serial"]
-    assert entry.build_command([]) == ["bash", str(entry.UNIT_SCRIPT)]
+def test_command_runs_the_host_profile_and_forwards_caller_flags() -> None:
+    script = str(entry.UNIT_SCRIPT)
+    assert entry.build_command(["--serial"]) == ["bash", script, "--host", "--serial"]
+    assert entry.build_command([]) == ["bash", script, "--host"]
 
 
 def test_env_puts_interpreter_dir_first_on_path(tmp_path: Path) -> None:

@@ -288,6 +288,13 @@ test-integration-template-runner:
 test-unit:
 	@uv run bash scripts/test-unit-local.sh
 
+# Tests marked privileged need root or passwordless sudo and change the machine
+# (useradd, ansible-playbook with become): the throwaway GitHub runner only, never
+# the control host. CI fast-checks runs this target.
+.PHONY: test-privileged
+test-privileged:
+	uv run python -m pytest -q -p scripts.unit_test_timeout --timeout=90 --timeout-method=thread tests/integration/infra/test_ansible_deploy_target_role.py
+
 .PHONY: test-backup-db
 test-backup-db:
 	uv run pytest -q tests/integration/backup/test_verified_database_backup.py
