@@ -96,6 +96,7 @@ async def test_scripted_selection_persists_one_install_and_dispatches_without_en
             ),
         ):
             planned = await scripted_install_plan(pid, story["id"], "reminders", ["remind"])
+        assert "error" not in planned, planned
         assert planned["coverage_outcome"] == "admitted", planned
         tasks = await api.get_tasks_by_story(story["id"])
         assert len(tasks) == 1

@@ -136,7 +136,7 @@ class CatalogPlanApi(_FakeBriefBoundary):
         )
 
     async def get_project(self, project_id, **_kwargs):
-        return make_project(status="active", modules=["backend", "tg_bot"])
+        return make_project(status="active", config={"modules": ["backend", "tg_bot"]})
 
     async def get_primary_repository(self, project_id):
         return make_repository(acceptance_criteria=self.criteria or PREVIOUS_CRITERIA)

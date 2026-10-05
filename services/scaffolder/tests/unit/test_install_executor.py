@@ -2,13 +2,49 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from shared.contracts.queues.scaffold import ScaffoldMessage
-from src.install import InstallExecutionError, run_install
+from src.install import InstallExecutionError, install_environment, run_install
+
+
+@pytest.mark.parametrize("suffix", ["", ".git"])
+@pytest.mark.parametrize(
+    "foreign",
+    [
+        "https://github.com/vladmesh/codegen-product-kit.git",
+        "https://github.com/owner/notes-fork.git",
+    ],
+)
+def test_product_auth_does_not_reach_the_public_catalog(tmp_path, suffix, foreign):
+    git_url = "https://github.com/owner/notes"
+    env = install_environment("synthetic-token", tmp_path, git_url)
+    owned = subprocess.run(
+        ["git", "config", "--get-urlmatch", "http.extraheader", git_url + suffix],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert owned.returncode == 0 and owned.stdout.startswith("Authorization: Basic ")
+    catalog = subprocess.run(
+        [
+            "git",
+            "config",
+            "--get-urlmatch",
+            "http.extraheader",
+            foreign,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert catalog.returncode == 1 and catalog.stdout == ""
 
 
 def message():

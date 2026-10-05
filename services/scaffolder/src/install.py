@@ -51,7 +51,7 @@ def protected_files(root, tracked):
     }
 
 
-def install_environment(token, root):
+def install_environment(token, root, git_url):
     auth = _git_auth_env(token)
     permitted = {
         "HOME",
@@ -65,6 +65,17 @@ def install_environment(token, root):
         "GIT_CONFIG_VALUE_0",
     }
     env = {key: value for key, value in auth.items() if key in permitted}
+    owned = git_url.removesuffix(".git").rstrip("/")
+    # Product credentials belong to this repository. Published kit/catalog
+    # fetches in child commands must remain anonymous.
+    env.update(
+        {
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": f"http.{owned}/.extraheader",
+            "GIT_CONFIG_KEY_1": f"http.{owned}.git/.extraheader",
+            "GIT_CONFIG_VALUE_1": env["GIT_CONFIG_VALUE_0"],
+        }
+    )
     env.update(
         {"GIT_TERMINAL_PROMPT": "0", "UV_NO_PROGRESS": "1", "VIRTUAL_ENV": str(root / ".venv")}
     )
@@ -92,7 +103,7 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         raise InstallExecutionError(
             "preflight", "branch_writer_live: workspace lock is held"
         ) from error
-    env = install_environment(token, root)
+    env = install_environment(token, root, git_url)
     stage, base, head = "preflight", None, None
     stages = []
     verification = None

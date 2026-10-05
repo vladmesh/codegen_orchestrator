@@ -164,6 +164,8 @@ read-only probe runs under the product's isolated interpreter and checks saved
 source/ref, root requirement/lock/installed tooling, actual core, required modules,
 independent tags, target Python, binding ownership and command/settings conflicts.
 Older cores require a reviewed native Copier update; no overwrite or automatic repair.
+Git authorization is scoped to the owned product repository; published kit catalog
+and component fetches run anonymously without receiving the product credential.
 
 The executor runs fixed argument vectors in the product's own environment:
 `kit add <package>`, `kit add <library>` for each recommendation,

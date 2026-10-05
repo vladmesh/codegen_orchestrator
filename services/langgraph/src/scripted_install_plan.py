@@ -1,5 +1,7 @@
 """No-model planning harness for an explicit catalog selection and confirmed brief."""
 
+from shared.contracts.dto.story_planning import PlanningChannels
+
 from .agents.architect.tools import plan_install, record_requirement_coverage, reset_task_chain
 from .clients.api import api_client
 from .kit_catalog import KitCatalog, get_kit_catalog_reader
@@ -60,7 +62,9 @@ async def _owned_plan(catalog, brief, attempt, project_id, story_id, package, re
         )
         if "error" in coverage:
             return coverage
-    admitted = await api_client.admit_product_brief_coverage(brief.id, attempt)
+    admitted = await api_client.admit_product_brief_coverage(
+        brief.id, attempt, channels=PlanningChannels()
+    )
     return {
         "task_id": result["id"],
         "type": result["type"],

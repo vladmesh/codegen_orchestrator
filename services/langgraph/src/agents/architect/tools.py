@@ -238,11 +238,13 @@ async def plan_install(
         return {"error": "catalog_unavailable"}
     project = await api_client.get_project(project_id)
     repository = await api_client.get_primary_repository(project_id)
+    modules = None if project is None else project.config.get("modules")
     if (
         project is None
         or repository is None
         or project.status == "draft"
-        or not {"backend", "tg_bot"}.issubset(project.modules)
+        or not isinstance(modules, list)
+        or not {"backend", "tg_bot"}.issubset(modules)
     ):
         return {"error": "product_incompatible: requires an existing backend,tg_bot product"}
     try:
