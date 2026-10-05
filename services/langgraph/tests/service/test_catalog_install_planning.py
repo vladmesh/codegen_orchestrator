@@ -61,6 +61,13 @@ async def test_scripted_selection_persists_one_install_and_dispatches_without_en
                     "user_wording": "Add the catalog reminders capability",
                 }
             ],
+            "usage_examples": [
+                {
+                    "requirement_id": "remind",
+                    "user_sends": "Remind me to call Sam tomorrow at 10",
+                    "product_answers": "Confirm the reminder, then list or cancel it",
+                }
+            ],
         }
         brief = await api.post(
             "product-briefs/",

@@ -396,7 +396,7 @@ async def test_generic_mutations_cannot_replace_install_ownership(install_task, 
         result = await async_client.post(f"/api/tasks/{install_task['id']}/{suffix}", json=body)
         assert result.status_code == 409, result.text
         assert "catalog_install_requires_owned_settlement" in result.text
-    result = await async_client.put(
+    result = await async_client.patch(
         f"/api/tasks/{install_task['id']}", json={"repository_id": None}
     )
     assert result.status_code == 409 and "install_ownership_immutable" in result.text
