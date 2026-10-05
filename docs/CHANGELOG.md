@@ -5,6 +5,11 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-05
 
+- Mechanical notes and reminders briefs use the released usage-example fields; every `Level1Brief`
+  now validates as a Product Brief proposal when built, so a refused document fails offline.
+- The stand handoff and acceptance artifact carry `mechanical-install-<run_id>.json`, so a
+  `mega-noop` run keeps its redacted partial-failure facts.
+
 - Mechanical stand provenance uses the workflow's synced SHA because bootstrap excludes `.git`;
   partial failure artifacts no longer abort on Git metadata absent from the stand.
 

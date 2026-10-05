@@ -48,8 +48,6 @@ import pipeline_helpers
 import pytest
 import yaml
 
-from shared.contracts.dto.product_brief import ProposedProductBriefContent
-
 pytestmark = pytest.mark.needs_no_api_credential
 
 MARKER = "e2e-abc123def456"
@@ -61,19 +59,6 @@ def _client(handler):
     return httpx.AsyncClient(base_url="http://test", transport=httpx.MockTransport(handler))
 
 
-def _proposed_content(brief) -> ProposedProductBriefContent:
-    """The document as the released write boundary parses it, not as a dict."""
-    arguments = brief.present_arguments("11111111-1111-1111-1111-111111111111")
-    return ProposedProductBriefContent(
-        summary=arguments["summary"],
-        must_requirements=arguments["must_requirements"],
-        language=arguments["language"],
-        usage_examples=arguments["usage_examples"],
-        limitations=arguments["limitations"],
-        initial_settings=arguments["initial_settings"],
-    )
-
-
 def test_the_level1_brief_is_a_document_the_released_write_shape_accepts():
     """It parses as a proposed revision, so `present_product_brief` cannot refuse it.
 
@@ -82,7 +67,7 @@ def test_the_level1_brief_is_a_document_the_released_write_shape_accepts():
     the same check the live tool performs — asserted through the contract rather
     than re-stated as a list of expected strings.
     """
-    content = _proposed_content(build_level1_brief(MARKER))
+    content = build_level1_brief(MARKER).proposed_content()
 
     assert content.language == LEVEL1_BRIEF_LANGUAGE
     assert content.limitations
@@ -724,7 +709,7 @@ def test_the_extension_brief_is_a_document_the_released_write_shape_accepts():
     reads the deployment as. A revision the write boundary would refuse is a run
     that spends its first story and then stops.
     """
-    content = _proposed_content(build_level1_extension_brief(MARKER, EXTENSION_MARKER))
+    content = build_level1_extension_brief(MARKER, EXTENSION_MARKER).proposed_content()
 
     assert content.language == LEVEL1_BRIEF_LANGUAGE
     assert content.limitations

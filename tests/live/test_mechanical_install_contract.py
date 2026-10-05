@@ -1,12 +1,21 @@
 """Offline rejection checks for the final native stand evidence."""
 
+from dataclasses import replace
 import tomllib
 from types import SimpleNamespace
 
+from level1_brief import build_level1_brief
 from level1_change_set import _fixture_text
-from mechanical_install import check_execution, check_readback, command_result, install_scope
-from mechanical_notes import notes_operations
+from mechanical_install import (
+    check_execution,
+    check_readback,
+    command_result,
+    install_brief,
+    install_scope,
+)
+from mechanical_notes import configure_notes, notes_operations
 from pipeline_helpers import ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY, Level1PhaseFailed
+from pydantic import ValidationError
 import pytest
 
 pytestmark = pytest.mark.needs_no_api_credential
@@ -18,6 +27,47 @@ def test_native_task_does_not_enter_the_first_story_engineering_roster():
         ctx["task_ids"] = ["native-install"]
     assert ctx[ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY] == ["notes-backend", "notes-bot"]
     assert ctx["level1_extension"]["task_ids"] == ["native-install"]
+
+
+def test_both_mechanical_briefs_are_documents_the_released_write_shape_accepts():
+    """Each story presents a revision `present_product_brief` parses as written."""
+    notes = configure_notes(
+        {"level1_marker": "unique", "level1_brief": build_level1_brief("unique")}
+    )["level1_brief"].proposed_content()
+    install = install_brief("unique").proposed_content()
+
+    assert (notes.language, install.language) == ("en", "en")
+    assert [
+        (one.requirement_id, one.user_sends, one.product_answers) for one in notes.usage_examples
+    ] == [
+        ("level1_command", "/note keep this", "Saved: keep this"),
+        ("level1_setting", "/notes", "keep this"),
+    ]
+    assert [
+        (one.requirement_id, one.user_sends, one.product_answers) for one in install.usage_examples
+    ] == [
+        (
+            "install_reminders",
+            "/remind buy milk in 2 minutes",
+            "Scheduled for a word-month instant: buy milk",
+        ),
+    ]
+    assert [(one.key, one.value) for one in install.initial_settings] == [("timezone", "Etc/UTC")]
+
+
+def test_a_brief_the_write_shape_would_refuse_cannot_be_built():
+    """The dataclass is the boundary, so no path reaches the PO with a refused document."""
+    with pytest.raises(ValidationError, match="user_sends"):
+        replace(
+            install_brief("unique"),
+            usage_examples=(
+                {
+                    "requirement_id": "install_reminders",
+                    "user_input": "/remind buy milk in 2 minutes",
+                    "expected_result": "Scheduled for a word-month instant: buy milk",
+                },
+            ),
+        )
 
 
 def test_notes_reuses_the_released_dependencies_and_registers_owned_handlers():

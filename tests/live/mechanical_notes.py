@@ -146,13 +146,13 @@ def configure_notes(ctx):
         usage_examples=(
             {
                 "requirement_id": "level1_command",
-                "user_input": "/note keep this",
-                "expected_result": "Saved: keep this",
+                "user_sends": "/note keep this",
+                "product_answers": "Saved: keep this",
             },
             {
                 "requirement_id": "level1_setting",
-                "user_input": "/notes",
-                "expected_result": "keep this",
+                "user_sends": "/notes",
+                "product_answers": "keep this",
             },
         ),
     )

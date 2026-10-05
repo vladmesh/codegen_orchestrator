@@ -358,6 +358,26 @@ def test_build_and_admission_preserve_redacted_worker_run_evidence(tmp_path):
     assert scan_artifact(output, canaries=("not-present",)) == []
 
 
+def test_the_mechanical_acceptance_record_reaches_the_final_artifact(tmp_path):
+    """The handoff and the final artifact both admit it; its partial facts arrive unchanged."""
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    record = "mechanical-install-live-0123456789ab.json"
+    partial = {"status": "failed", "phase": "brief", "source_sha": "a" * 40}
+    (run_dir / record).write_text(json.dumps(partial), encoding="utf-8")
+    (run_dir / "mechanical-install-notes.json.bak").write_text("{}", encoding="utf-8")
+    output = tmp_path / "acceptance"
+    handoff = tmp_path / "handoff"
+    (handoff / "run").mkdir(parents=True)
+    (handoff / "machines.json").write_text("{}\n", encoding="utf-8")
+    (handoff / "run" / record).write_text(json.dumps(partial), encoding="utf-8")
+
+    assert scan_artifact(handoff, canaries=("not-present",)) == []
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+    assert json.loads((output / record).read_text(encoding="utf-8")) == partial
+    assert not (output / "mechanical-install-notes.json.bak").exists()
+    assert scan_artifact(output, canaries=("not-present",)) == []
+
+
 def _paid_failure_inputs(tmp_path, evidence: dict, *, service_log: bool = True):
     manifest, run_dir, cleanup = _write_inputs(tmp_path)
     (run_dir / PAID_EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
