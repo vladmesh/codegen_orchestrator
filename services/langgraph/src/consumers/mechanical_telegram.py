@@ -104,6 +104,47 @@ def message_record(message):
     }
 
 
+async def reconcile_emission(read_rows, original, evidence):
+    """Publication can reach Telegram before the producer commits its emitted state."""
+    phase = "emission_reconciliation"
+    evidence["phase"] = phase
+    delivery = evidence["delivery"]
+    observations = delivery["reconciliation_rows"] = []
+    identity = ("id", "user_ref", "text", "remind_at")
+    try:
+        async with asyncio.timeout(REPLY_TIMEOUT):
+            while True:
+                rows = await read_rows()
+                if not isinstance(rows, list):
+                    raise ProbeFailure(phase, "reminder readback is not a row list")
+                observations.append(
+                    [
+                        {key: row.get(key) for key in (*identity, "state")}
+                        if isinstance(row, dict)
+                        else {"invalid_row_type": type(row).__name__}
+                        for row in rows
+                    ]
+                )
+                if any(not isinstance(row, dict) for row in rows):
+                    raise ProbeFailure(phase, "malformed reminder row")
+                matches = [row for row in rows if row.get("id") == original["id"]]
+                if len(matches) != 1 or any(
+                    matches[0].get(key) != original[key] for key in identity
+                ):
+                    raise ProbeFailure(phase, "confirmed reminder missing, replaced or changed")
+                current = matches[0]
+                if current.get("state") == "emitted":
+                    delivery["row"] = current
+                    return
+                if current.get("state") != "due":
+                    raise ProbeFailure(
+                        phase, "expected the confirmed reminder to be due or emitted"
+                    )
+                await asyncio.sleep(1)
+    except TimeoutError:
+        raise ProbeFailure(phase, "emitted state was not visible before deadline") from None
+
+
 async def run_conversation(  # noqa: C901, PLR0915 - sequential fixed chat and correlation steps
     client, bot, http, *, mode, marker, headers, evidence
 ):
@@ -210,11 +251,9 @@ async def run_conversation(  # noqa: C901, PLR0915 - sequential fixed chat and c
             expected=lambda text: text == "Reminder: buy milk",
             timeout=max(1, remaining + DUE_LATE_SECONDS),
         )
-        check_delivery(message_record(due), first, after_id=confirmed.id)
-        emitted = next(row for row in await read_rows() if row["id"] == first["id"])
-        if emitted["state"] != "emitted" or emitted["user_ref"] != owner:
-            raise ProbeFailure("due_delivery", "actual arrival lacks emitted owner row")
-        evidence["delivery"] = {"message": message_record(due), "row": emitted}
+        evidence["delivery"] = {"message": message_record(due)}
+        check_delivery(evidence["delivery"]["message"], first, after_id=confirmed.id)
+        await reconcile_emission(read_rows, first, evidence)
         second_text = f"stand-cancel-{marker}"
         before = await read_rows()
         _, presets = await send(

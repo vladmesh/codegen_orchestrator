@@ -19,7 +19,10 @@ def test_malformed_mechanical_selection_cannot_fall_through_to_a_model():
 
 
 @pytest.mark.asyncio
-async def test_fixed_conversation_observes_edited_callbacks_and_only_reads_http(monkeypatch):  # noqa: PLR0915
+@pytest.mark.parametrize("delayed_emission", [False, True])
+async def test_fixed_conversation_observes_edited_callbacks_and_only_reads_http(  # noqa: C901, PLR0915
+    monkeypatch, delayed_emission
+):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -114,15 +117,17 @@ async def test_fixed_conversation_observes_edited_callbacks_and_only_reads_http(
             return next(item for item in messages if item.id == ids)
         inbound = [item for item in messages if item.id > min_id]
         if any(item.raw_text == "Reminder: buy milk" for item in inbound):
-            rows[0]["state"] = "emitted"
+            rows[0]["state"] = "due" if delayed_emission else "emitted"
         return list(reversed(inbound))
 
     async def read(path, *, headers):
         assert path == "/reminders"
         assert headers == {"identity": "runtime-only"}
-        return SimpleNamespace(
-            raise_for_status=lambda: None, json=lambda: [dict(item) for item in rows]
-        )
+        snapshot = [dict(item) for item in rows]
+        if rows and rows[0]["state"] == "due":
+            # Publication already reached the chat; confirmation commits after this read.
+            rows[0]["state"] = "emitted"
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: snapshot)
 
     client = SimpleNamespace(send_message=send, get_messages=get)
     http = SimpleNamespace(get=AsyncMock(side_effect=read))
@@ -156,6 +161,11 @@ async def test_fixed_conversation_observes_edited_callbacks_and_only_reads_http(
     assert evidence["cancellation"]["reply"]["id"] == evidence["cancellation"]["selected"]["id"]
     assert evidence["cancellation"]["row"]["state"] == "cancelled"
     assert "stand-note-mark" in evidence["notes_after"]["text"]
+    assert evidence["delivery"]["row"]["state"] == "emitted"
+    if delayed_emission:
+        observed = evidence["delivery"]["reconciliation_rows"]
+        assert [snapshot[0]["state"] for snapshot in observed] == ["due", "emitted"]
+        assert all(snapshot[0]["id"] == rows[0]["id"] for snapshot in observed)
 
 
 def row():
@@ -226,6 +236,77 @@ def test_delivery_requires_actual_inbound_message_and_bounded_aware_arrival():
                 row(),
                 after_id=10,
             )
+
+
+async def test_permanently_due_row_times_out_with_delivery_and_row_evidence(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.consumers import mechanical_telegram as probe
+
+    original = row()
+    arrival = {"id": 12, "out": False, "text": "Reminder: buy milk", "date": original["remind_at"]}
+    probe.check_delivery(arrival, original, after_id=10)
+    evidence = {"delivery": {"message": arrival}}
+    read = AsyncMock(return_value=[original | {"state": "due"}])
+    monkeypatch.setattr(probe, "REPLY_TIMEOUT", 0.01)
+    with pytest.raises(ProbeFailure, match="emission_reconciliation:.*deadline"):
+        await probe.reconcile_emission(read, original, evidence)
+    assert evidence["phase"] == "emission_reconciliation"
+    assert evidence["delivery"]["message"] == arrival
+    assert evidence["delivery"]["reconciliation_rows"][0][0]["state"] == "due"
+    assert "row" not in evidence["delivery"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"user_ref": "telegram:99"},
+        {"id": "replaced"},
+        {"text": "other"},
+        {"remind_at": "2026-10-05T13:02:20"},
+        {"state": "cancelled"},
+        {"state": "scheduled"},
+        {"state": None},
+    ],
+)
+async def test_reconciliation_rejects_changed_identity_content_or_state(change):
+    from unittest.mock import AsyncMock
+
+    from src.consumers import mechanical_telegram as probe
+
+    original = row()
+    candidate = original | {"state": "emitted"} | change
+    evidence = {"delivery": {"message": {"id": 12}}}
+    read = AsyncMock(side_effect=[[original | {"state": "due"}], [candidate]])
+    with pytest.raises(ProbeFailure, match="emission_reconciliation"):
+        await probe.reconcile_emission(read, original, evidence)
+    assert read.await_count == 2
+    assert evidence["delivery"]["reconciliation_rows"][-1][0] == candidate
+    assert "row" not in evidence["delivery"]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [row(), row()],
+        [42],
+        {"id": "reminder-1"},
+        [{}],
+        [{key: value for key, value in row().items() if key != "state"}],
+    ],
+)
+async def test_reconciliation_rejects_missing_duplicate_or_malformed_rows(rows):
+    from unittest.mock import AsyncMock
+
+    from src.consumers import mechanical_telegram as probe
+
+    evidence = {"delivery": {"message": {"id": 12}}}
+    read = AsyncMock(return_value=rows)
+    with pytest.raises(ProbeFailure, match="emission_reconciliation"):
+        await probe.reconcile_emission(read, row(), evidence)
+    assert read.await_count == 1
+    assert "row" not in evidence["delivery"]
 
 
 def test_cancel_requires_same_owner_id_and_terminal_state():

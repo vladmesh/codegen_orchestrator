@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-05
 
+- Mechanical QA reconciles the exact due reminder after actual Telegram arrival, so the
+  producer's later emission confirmation cannot cause a false stand failure.
+
 - `mega-noop` proves native reminders installation into persistent notes, with owned planning,
   real Telegram receipt/delivery/cancellation and redacted release evidence without model turns.
 
