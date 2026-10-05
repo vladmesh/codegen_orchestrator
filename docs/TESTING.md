@@ -636,6 +636,10 @@ the architect's own coverage routes by the harness, the first-story developer is
 QA runs fixed actual-chat steps inside the native temporary access window. Its budget is the ledger in
 `shared/stand_deadlines.py`, whose entries are the waits themselves; the 196-minute cap is derived
 from them and stated in `tests/live/README.md`.
+The workflow passes its exact revision as `STAND_SOURCE_SHA`: bootstrap rsync excludes `.git`.
+Mechanical provenance requires that full SHA to match the service release before container
+readback; manual stand runs must supply the revision they synced. Partial artifacts record a
+missing or malformed revision explicitly without replacing the original failure.
 
 It proves, on real services and a real deployment: a user that registered itself through the
 product's own front door — a Telegram id nobody has used, a promo code minted through the internal

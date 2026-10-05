@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-05
 
+- Mechanical stand provenance uses the workflow's synced SHA because bootstrap excludes `.git`;
+  partial failure artifacts no longer abort on Git metadata absent from the stand.
+
 - Mechanical QA reconciles the exact due reminder after actual Telegram arrival, so the
   producer's later emission confirmation cannot cause a false stand failure.
 

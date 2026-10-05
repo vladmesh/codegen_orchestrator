@@ -992,7 +992,9 @@ jobs:
           # The runner recreates services when it switches the QA executor; it does
           # so through the release override bring-up generated, which it is named
           # here, with --no-build --pull never, and refuses the run without it.
-          remote_command=$(printf 'cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join %q uv 600 < /dev/null && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && export UV_FROZEN=1 && export STAND_SERVICE_RELEASE_COMPOSE=%q && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${STAND_BACKGROUND_DIR}" "${STAND_SERVICE_RELEASE_COMPOSE}" "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
+          # Bootstrap excludes .git, so the mechanical suite compares service
+          # provenance with this independent identity of the source rsynced above.
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join %q uv 600 < /dev/null && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && export UV_FROZEN=1 && export STAND_SOURCE_SHA=%q && export STAND_SERVICE_RELEASE_COMPOSE=%q && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${STAND_BACKGROUND_DIR}" "${GITHUB_SHA}" "${STAND_SERVICE_RELEASE_COMPOSE}" "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
           invocation_log="${RUNNER_TEMP}/remote-invocation.log"
           printf 'workflow=%s run=%s attempt=%s sha=%s run_tag=%s suite=%s host=%s qa=%s worker=%s\n' \
             "${GITHUB_WORKFLOW}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${GITHUB_SHA}" \
