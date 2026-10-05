@@ -1344,6 +1344,10 @@ def developer_engineering_timeout(ctx: dict) -> int:
 
 def qa_run_timeout(ctx: dict) -> int:
     """How long one story's QA Run is waited on, by who judges it."""
+    if "mechanical_acceptance" in ctx:
+        from shared.stand_deadlines import MECHANICAL_QA_TIMEOUT  # noqa: PLC0415
+
+        return MECHANICAL_QA_TIMEOUT
     if ctx.get("qa_requires_executor"):
         return LIVE_QA_RUN_TIMEOUT
     return QA_RUN_TIMEOUT
@@ -2389,6 +2393,33 @@ async def _confirm_level1_brief_and_publish_story(
     # The deploy stack can arise as soon as the story's plan is released, so
     # recovery ownership precedes the story publication.
     own_deploy_ahead(ctx)
+    if "mechanical_acceptance" in ctx:
+        # The same PO create/bind/publish path, with one synchronous claim taken
+        # inside it before the Architect can receive its message.
+        owned_config = {
+            **config,
+            "configurable": {
+                **config["configurable"],
+                "claim_scripted_plan_before_publish": True,
+            },
+        }
+        created = await po["create_story"].ainvoke(
+            {
+                "project_id": ctx["project_id"],
+                "title": brief.story_title,
+                "description": brief.story_description,
+                "product_brief_id": ctx["brief_id"],
+            },
+            config=owned_config,
+        )
+        story = PO_STORY_ID_RE.search(created)
+        attempt = re.search(r"Planning attempt: ([A-Za-z0-9_-]+)", created)
+        if story is None or attempt is None:
+            raise Level1PhaseFailed(
+                "brief", "PO did not publish a story under its scripted planning claim"
+            )
+        ctx["story_id"] = story.group(1)
+        return {"outcome": "claimed", "planning_attempt_id": attempt.group(1)}
     claim_ahead = asyncio.create_task(_claim_plan_as_soon_as_it_is_claimable(api, ctx))
     try:
         created = await po["create_story"].ainvoke(

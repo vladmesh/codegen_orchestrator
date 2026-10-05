@@ -539,7 +539,8 @@ cleanup consumes the declared job outputs and refuses missing profile attestatio
 bound with method `signal`, so a hung test fails as a pytest timeout naming the test, with a
 traceback, and its fixture's cleanup still runs. The bounds come from `shared/stand_deadlines.py`.
 The item that sets up the level-1 lifecycle gets the lifecycle's explicit waits: 8440 s under
-`mega-noop` and 14980 s under `mega-live`. Every teardown gets the 700-second reserve, and every
+the focused scripted engineering fixture, 10910 s under mechanical `mega-noop`, and 14980 s under
+`mega-live`. Every teardown gets the 700-second reserve, and every
 other item gets 1800 s. A hang is reported first by the test timeout, then by `stand_run`'s suite
 backstop (SIGINT, then a process-group kill), and last by the workflow's job limit. The ledger checks
 that ordering at import for both level-1 suites. `tests/live/README.md` has the table.
@@ -602,7 +603,7 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 |------|----------------|-------|----------|----------------|
 | Scaffold | `test-live-smoke` | ~3 | ~30s | API CRUD, scaffold phase, stream routing |
 | Engineering | `test-live-engineering` | ~3 | ~3.5 min | Worker spawn, task dispatch, engineering flow |
-| Full (level 1) | `test-live-mega-noop` | 42 | ~20 min of suite time observed (2026-09-20), 155 min cap | Two stories on one project: confirmed Product Brief, scripted engineering, deploy, deterministic QA, undeploy; the second story installs the kit catalog package `reminders` with `kit add` |
+| Full (level 1) | `test-live-mega-noop` | 1 | dispatcher-owned acceptance pending, 196 min cap | Persistent notes through scripted engineering, separate native reminders INSTALL with recommended textparse and default binding, App/PR/CI/deploy proof, fixed actual Telegram receipt/due arrival/preset/cancel, zero install-story engineering, zero model calls, revocation and undeploy |
 | Full (level 2) | `test-live-mega-live` | 42 | no baseline measurement yet, 265 min cap | Both stories prove provider-reported developer and QA spend on the ledger, with settled owner reservations (stand runner only) |
 
 **Key properties**:
@@ -627,12 +628,13 @@ unreadable surface.
 
 ### What level 1 proves — and what it does not
 
-`mega-noop` (`tests/live/test_full_pipeline.py::TestFullPipeline`) is the free deterministic
+`mega-noop` (`tests/live/test_full_pipeline.py::TestMechanicalInstall`) is the free deterministic
 lifecycle: **no model is asked anything, at any stage**. The PO document is a constant
 (`tests/live/level1_brief.py`) driven through the released PO tools, the plan is admitted through
-the architect's own coverage routes by the harness, the developer is the scripted `NoopRunner`, and
-QA is the deterministic health-only observation. Its budget is the ledger in
-`shared/stand_deadlines.py`, whose entries are the waits themselves; the 155-minute cap is derived
+the architect's own coverage routes by the harness, the first-story developer is the scripted
+`NoopRunner`, and the second Story uses native INSTALL with the live catalog planner.
+QA runs fixed actual-chat steps inside the native temporary access window. Its budget is the ledger in
+`shared/stand_deadlines.py`, whose entries are the waits themselves; the 196-minute cap is derived
 from them and stated in `tests/live/README.md`.
 
 It proves, on real services and a real deployment: a user that registered itself through the
@@ -645,8 +647,16 @@ nothing but this run; two ordered scripted engineering Tasks on one reused Story
 generated product's own CI, the merged deploy and the settings seed the confirmed brief asked for,
 read back off the deployment; deterministic QA, the completed Story, the durable owner
 notification a *bot* product's owner is owed; then **a second story on the same project** in the
-workspace the first left behind, with its own corrected brief revision, its own deploy through the
-PR poller and its own completion message; an explicit undeploy; and finally the two proofs the run
+workspace the first left behind, installing reminders 0.5.0, textparse 0.1.0 and their released
+default binding under one planning claim held before Architect publication. The real bot schedules
+`/remind buy milk in 2 minutes` immediately and replies with the word-month receipt, delivers it
+through the real timer/relay, then schedules an untimed task with In 5 minutes and cancels it through
+the list's Cancel button. Notes survive the redeploy; the explicit product timezone is Etc/UTC.
+`mechanical-install-<run_id>.json` retains source/service/image digests, admission and operation,
+GitHub branch/base/head and CI/merge/deploy, scoped zero engineering and zero model evidence,
+grant/revoke facts, timezone and message/row identities, timestamps, partial failing stage and
+request-to-deployed duration. The 600-second comparison is informational. The suite ends with
+native revocation, explicit undeploy and the two proofs the run
 takes about itself — that it left nothing behind and that no story of it ever waited for a person.
 
 It cannot catch anything that only a model does. There is no developer agent turn, so no prompt,
@@ -655,7 +665,7 @@ test-integration`, and the one-shot compose containers it leaves behind, are a r
 path, not this one) and no transcript to judge. There is no Architect turn, so nothing here shows
 that a real architect plans a brief, covers its requirements or publishes a usable acceptance
 criterion. There is no QA executor turn, so no product behaviour is judged by a model: the QA gate
-accepts `/health` answering and nothing else. It says nothing about executor selection, paid-run
+accepts the declared HTTP checks and fixed chat conversation. It says nothing about model executor selection, paid-run
 admission of a model call, provider cost or transcript retention beyond the noop settlement rows it
 asserts. Those are the paid suites' subject: `mega-live` for one developer and one QA executor pair
 on this same lifecycle, `mega-brief` for the Architect-planned brief with a real developer and
@@ -672,10 +682,10 @@ agent configuration only and restores it always; `tests/live/README.md` has its 
 
 ### What level 2 adds
 
-`mega-live` (`make stand-run SUITE=mega-live WORKER=<agent> QA=<agent>`) is not a second suite: it is
-`TestFullPipeline` again, with the developer resolved from `LIVE_WORKER_AGENT_TYPE` in one function
+`mega-live` (`make stand-run SUITE=mega-live WORKER=<agent> QA=<agent>`) retains
+`TestFullPipeline`, with the developer resolved from `LIVE_WORKER_AGENT_TYPE` in one function
 (`pipeline_helpers.level1_developer_agent_type`) and the stand runner as the only place that sets it.
-Everything level 1 proves it proves again, and three facts change. A real developer (`claude` or
+Its second Story remains engineering-based package coverage. A real developer (`claude` or
 `codex`) is handed the product contract in prose — endpoints and their JSON, the settings and where
 they are declared, the command and its menu, and the kit rules its own CI enforces — never a change
 set, and both story branches must carry its commits; the deployed-product probes then judge what the
@@ -694,8 +704,9 @@ probe expects (`shared.contracts.bot_access.QA_TEST_TELEGRAM_ID`) and able to re
 the stand product bot named by `STAND_PRODUCT_BOT_TOKEN`. The workflow proves all three on the
 runner before any paid step (`scripts/stand_telethon_preflight.py`) and refuses the run as
 `telethon_session_unauthorized`, `telethon_identity_mismatch` or `telethon_bot_unreachable`; the
-credentials then reach qa-worker alone, through its own env file. `mega-noop` never opens the session
-and renders with the values empty. `scripts/make_stand_session.py` authorizes a new stand session.
+credentials then reach qa-worker alone, through its own env file. `mega-noop` requires the same
+proven session for fixed probes while bypassing model sessions. `scripts/make_stand_session.py`
+authorizes a new stand session.
 
 ## Integration Test Architecture
 

@@ -166,6 +166,18 @@ _NO_BRIEF_REFUSAL = (
 )
 
 
+async def claim_scripted_plan(api, brief_id, headers):
+    """Internal no-model caller owns the plan before the existing Architect publication."""
+    response = await api.post_raw(
+        f"product-briefs/{brief_id}/planning-attempts/claim", headers=headers
+    )
+    response.raise_for_status()
+    claim = response.json()
+    if claim["outcome"] != "claimed":
+        raise RuntimeError(f"planning_{claim['outcome']}")
+    return claim["planning_attempt_id"]
+
+
 @tool
 async def create_story(
     project_id: str,
@@ -246,6 +258,13 @@ async def create_story(
     if failure := await _bind_brief_to_story(brief.id, story_id, headers):
         return failure
 
+    # Internal Python harness configuration is not a tool argument or a wire format.
+    # The normal tool's behavior is unchanged; the scripted caller transfers this
+    # single claim to its planner instead of racing the automatic model consumer.
+    planning_attempt = None
+    if config["configurable"].get("claim_scripted_plan_before_publish") is True:
+        planning_attempt = await claim_scripted_plan(api, brief.id, headers)
+
     # The architect needs this spec when decomposing a newly created project.
     # Persist it before any path can publish the story for downstream work.
     if action == "create" and description:
@@ -289,7 +308,8 @@ async def create_story(
 
     logger.info("po_story_submitted_to_architect", story_id=story_id, action=action)
     return (
-        f"Story created and sent to architect for decomposition.\n"
+        (f"Planning attempt: {planning_attempt}\n" if planning_attempt else "")
+        + f"Story created and sent to architect for decomposition.\n"
         f"Story: {story_id} — {title}\n"
         f"The architect will break it into tasks and start engineering work."
     )

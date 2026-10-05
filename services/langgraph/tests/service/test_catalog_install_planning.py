@@ -19,8 +19,10 @@ from tests.unit.test_catalog_install import snapshot
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transfer_claim", [False, True])
 async def test_scripted_selection_persists_one_install_and_dispatches_without_engineering(
     real_redis,
+    transfer_claim,
 ):
     api = LanggraphAPIClient()
     api.base_url = os.environ["TEST_API_BASE_URL"]
@@ -83,6 +85,9 @@ async def test_scripted_selection_persists_one_install_and_dispatches_without_en
             json={"request_id": f"confirm-{telegram}", "content": content},
         )
         await api.post(f"product-briefs/{brief['id']}/story", json={"story_id": story["id"]})
+        claim = await api.claim_planning_attempt(brief["id"]) if transfer_claim else None
+        if claim is not None:
+            assert claim.outcome == "claimed"
         reader = AsyncMock()
         reader.read.return_value = snapshot()
         # Only catalog transport is controlled. This resource corpus is copied
@@ -95,13 +100,21 @@ async def test_scripted_selection_persists_one_install_and_dispatches_without_en
                 "src.llm.openrouter.ChatOpenAI", side_effect=AssertionError("model is forbidden")
             ),
         ):
-            planned = await scripted_install_plan(pid, story["id"], "reminders", ["remind"])
+            planned = await scripted_install_plan(
+                pid,
+                story["id"],
+                "reminders",
+                ["remind"],
+                planning_attempt_id=claim.planning_attempt_id if claim is not None else None,
+            )
         assert "error" not in planned, planned
         assert planned["coverage_outcome"] == "admitted", planned
         tasks = await api.get_tasks_by_story(story["id"])
         assert len(tasks) == 1
         task = tasks[0]
         assert task.type == "install" and task.repository_id == repo["id"]
+        if claim is not None:
+            assert task.planning_attempt_id == claim.planning_attempt_id
         assert task.install.package.version == "0.5.0" and task.dispatch_admitted is True
         coverage = await api.list_requirement_coverage(brief["id"])
         assert len(coverage) == 1 and coverage[0].task_id == task.id

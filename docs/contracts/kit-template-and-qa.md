@@ -228,8 +228,16 @@ confirmation/preset/list/cancel corpus under the product bot interpreter. Its re
 and exact non-force Git head. DB/Redis service tests prove actual persisted closure,
 coverage, dispatch, zero engineering accounting and exclusive/recoverable ownership.
 The older `mega-noop` engineering runner directive remains historical evidence of a
-different route; it does not prove mechanical installation. The final live no-model
-notes-bot stand is a subsequent acceptance step, not a CI or sprint-closure claim.
+different route, retained by the ordinary engineering fixture and `mega-live`.
+Registered `mega-noop` now selects `TestMechanicalInstall`: its second confirmed
+brief transfers the PO-owned claim, taken before Architect publication, to the fixed
+`python -m src.scripted_install_plan` invocation. The catalog reader and native
+coverage/admission remain authoritative. Fixed QA borrows the scheduler's exact
+Telegram grant, observes receipt, due arrival and preset cancellation in the real
+chat, and leaves revocation to the existing owner. Its redacted
+`mechanical-install-<run_id>.json` records partial phases, native operation/publication,
+deployed registry digests, protected notes, timezone, accounting and chat correlation.
+Only dispatcher-owned final-main stand evidence can establish live acceptance.
 The persisted planning Python value is a compatibility baseline, not an observed product
 interpreter; native preflight validates the actual product interpreter before mutation.
 

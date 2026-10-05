@@ -475,7 +475,10 @@ async def _process_install_mode(msg, repo_full_name, github, github_token, api, 
     try:
         result = await run_install(msg, settings, decision.git_url, github_token, fence)
         log.info(
-            "catalog_install_published", operation_id=msg.operation_id, head_sha=result.head_sha
+            "catalog_install_published",
+            operation_id=msg.operation_id,
+            head_sha=result.head_sha,
+            execution_stages=result.stages,
         )
         return {"status": "success", "head_sha": result.head_sha, "operation_id": msg.operation_id}
     except asyncio.CancelledError:

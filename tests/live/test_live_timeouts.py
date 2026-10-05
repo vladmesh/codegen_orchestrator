@@ -17,6 +17,7 @@ import pytest
 from shared.stand_deadlines import (
     BRIEF_TEST_BOUNDS,
     LIVE_TEST_BOUNDS,
+    MECHANICAL_TEST_BOUNDS,
     NOOP_TEST_BOUNDS,
     ORDINARY_TEST_BOUNDS,
 )
@@ -148,6 +149,10 @@ def test_every_collected_live_test_has_a_finite_signal_bound(collected):
 def test_the_item_that_sets_up_a_lifecycle_carries_its_waits(collected):
     items = collected
 
+    mechanical = _members(items, "tests/live/test_full_pipeline.py::TestMechanicalInstall::")
+    assert mechanical[0]["timeout"] == MECHANICAL_TEST_BOUNDS.setup_item_seconds
+    assert mechanical[0]["teardown"] == MECHANICAL_TEST_BOUNDS.teardown_seconds
+
     level1 = _members(items, FULL_PIPELINE_CLASS)
     assert level1[0]["timeout"] == NOOP_TEST_BOUNDS.setup_item_seconds
     assert {row["timeout"] for row in level1[1:]} == {NOOP_TEST_BOUNDS.item_seconds}
@@ -199,7 +204,9 @@ def test_a_deselected_first_item_moves_the_lifecycle_bound_to_the_next(collected
     assert result.returncode == 0, result.stdout + result.stderr
     rows = json.loads(out.read_text(encoding="utf-8"))
     assert first not in {row["nodeid"] for row in rows}
-    assert rows[0]["timeout"] == NOOP_TEST_BOUNDS.setup_item_seconds
+    ordinary = [row for row in rows if row["nodeid"].startswith(FULL_PIPELINE_CLASS)]
+    assert ordinary[0]["timeout"] == NOOP_TEST_BOUNDS.setup_item_seconds
+    assert rows[0]["timeout"] == MECHANICAL_TEST_BOUNDS.setup_item_seconds
 
 
 # ── A hang is a pytest failure ───────────────────────────────────────────

@@ -75,3 +75,33 @@ async def test_forged_project_lease_cannot_execute_an_owned_install():
         assert (await consume(delivery, api))["reason"] == "message_ownership_mismatch"
     execute.assert_not_awaited()
     assert api.catalog_install_command.call_args.args[1].action == "refuse"
+
+
+@pytest.mark.asyncio
+async def test_publication_retains_native_stages_for_redacted_stand_proof():
+    msg = message()
+    api = AsyncMock()
+    api.catalog_install_command.return_value = decision(msg)
+    stages = [
+        {
+            "stage": "push",
+            "argv": ["git", "-c", "core.hooksPath=/dev/null", "push"],
+            "returncode": 0,
+        }
+    ]
+    log = MagicMock()
+    with patch(
+        "src.install.run_install",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                head_sha="a" * 40,
+                stages=stages,
+            )
+        ),
+    ):
+        result = await _process_install_mode(
+            msg, "owner/notes", AsyncMock(), "synthetic-github", api, SimpleNamespace(), log
+        )
+    assert result["status"] == "success"
+    assert log.info.call_args.kwargs["execution_stages"] == stages
+    assert "synthetic-github" not in str(log.info.call_args)

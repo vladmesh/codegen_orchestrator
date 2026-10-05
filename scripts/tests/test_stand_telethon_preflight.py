@@ -315,17 +315,18 @@ def test_the_prove_command_exits_nonzero_with_the_reason_and_no_credential(monke
     assert captured.out == ""
 
 
-def test_only_suites_whose_qa_executor_judges_the_bot_product_need_the_session(capsys):
+def test_bot_product_suites_require_the_session_independently_of_models(capsys):
     assert preflight.QA_TELETHON_SUITES == {
-        name for name, suite in SUITES.items() if suite.llm and suite.telegram_bot_product
+        name for name, suite in SUITES.items() if suite.telegram_bot_product
     }
     assert preflight.needs_session("mega-live")
-    for suite in ("mega-noop", "mega-brief", "mega-brief-package", "tests/live/test_x.py"):
+    assert preflight.needs_session("mega-noop")
+    for suite in ("mega-brief", "mega-brief-package", "tests/live/test_x.py"):
         assert not preflight.needs_session(suite)
 
     assert preflight.main(["needs-session", "--suite", "mega-live"]) == 0
     assert preflight.main(["needs-session", "--suite", "mega-noop"]) == 0
-    assert capsys.readouterr().out == "true\nfalse\n"
+    assert capsys.readouterr().out == "true\ntrue\n"
 
 
 def test_needs_session_runs_on_a_bare_python_without_telethon_or_pydantic():

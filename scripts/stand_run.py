@@ -63,11 +63,11 @@ from shared.live_contour import CONTOURS
 from shared.stand_deadlines import (
     CUSTOM_TARGET_TIMEOUT_SECONDS,
     LIVE_SUITE_TIMEOUT_SECONDS,
+    MECHANICAL_SUITE_TIMEOUT_SECONDS,
     MEGA_BRIEF_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
     MEGA_BRIEF_PRODUCTIVE_SECONDS,
-    NOOP_SUITE_TIMEOUT_SECONDS,
 )
 
 if TYPE_CHECKING:
@@ -184,7 +184,7 @@ STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS = 600
 STAND_JOB_RESERVE_SECONDS = 480
 # 360 minutes covers 45m provisioning + 10m workflow reserve + the longest
 # runner path + an 8m job reserve. The longest path is `mega-live` (281m); the
-# Product Brief runners are 76m and 96m, and `mega-noop` is 171m. Every one of
+# Product Brief runners are 76m and 96m, and `mega-noop` is 212m. Every one of
 # those is checked against this cap in `scripts/tests/test_stand_run.py`, and
 # `tests/unit/test_documented_stand_budgets.py` checks that the minutes stated
 # in this comment are the constants below.
@@ -230,21 +230,20 @@ class Suite:
     cleanup_grace_seconds: int = 0
     #: A short process-group grace after the backstop interrupts a wedged suite.
     termination_grace_seconds: int = PROCESS_GROUP_TERMINATION_GRACE_SECONDS
-    #: The suite deploys the level-1 Telegram-bot product. With `llm`, its QA
-    #: executor opens the QA Telegram session, which the workflow proves before
-    #: any spend (scripts/stand_telethon_preflight.py).
+    #: The suite deploys a Telegram bot. Fixed and model QA both need the
+    #: session the workflow proves before spend (stand_telethon_preflight.py).
     telegram_bot_product: bool = False
     description: str = ""
 
 
 SUITES: dict[str, Suite] = {
     "mega-noop": Suite(
-        target="tests/live/test_full_pipeline.py::TestFullPipeline",
+        target="tests/live/test_full_pipeline.py::TestMechanicalInstall",
         telegram_bot_product=True,
         llm=False,
-        timeout_seconds=NOOP_SUITE_TIMEOUT_SECONDS,
+        timeout_seconds=MECHANICAL_SUITE_TIMEOUT_SECONDS,
         description=(
-            "level 1: the two-story lifecycle with the scripted developer and deterministic QA, "
+            "level 1: scripted notes then native catalog install and real Telegram QA, "
             "no model call"
         ),
     ),

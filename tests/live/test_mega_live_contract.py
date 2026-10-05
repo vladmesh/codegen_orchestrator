@@ -129,7 +129,8 @@ async def test_each_suite_creates_the_level1_project_with_its_own_developer(
     """
     child = _suite_child_environment(tmp_path, monkeypatch, argv)
 
-    assert child["command"][3] == "tests/live/test_full_pipeline.py::TestFullPipeline"
+    target = "TestMechanicalInstall" if developer == "noop" else "TestFullPipeline"
+    assert child["command"][3] == f"tests/live/test_full_pipeline.py::{target}"
     _adopt(monkeypatch, child["env"])
     ctx, requests = await _create_level1_project(monkeypatch, tmp_path)
 

@@ -10,6 +10,7 @@ Run standalone: python -m src.consumers.qa
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import httpx
 from pydantic import ValidationError
@@ -494,6 +495,87 @@ async def _establish_caller_identity(
     return caller_identity, None
 
 
+async def _run_mechanical_qa(msg, selected, stored, result, redaction):
+    """Borrow only the identity/target the scheduler has already granted to this Run."""
+    from shared.contracts.dto.temporary_access import TemporaryAccessStatus  # noqa: PLC0415
+
+    from .mechanical_telegram import ProbeFailure, report, run_fixed_probe  # noqa: PLC0415
+
+    evidence = {"phase": "grant", "status": "running", "run_id": msg.run_id}
+    try:
+        if not msg.run_id or not msg.bot_username or not result.passed:
+            raise ProbeFailure("grant", "fixed probe needs a healthy bot and persisted QA Run")
+        grant = await api_client.get_temporary_access_grant(f"tempaccess-{msg.run_id}")
+        if (
+            grant.status != TemporaryAccessStatus.GRANTED
+            or grant.qa_run_id != msg.run_id
+            or grant.project_id != msg.project_id
+            or grant.target_application_id != msg.application_id
+            or grant.target_base_url != msg.deployed_url
+            or grant.channel != "telegram"
+            or grant.external_id != str(QA_TEST_TELEGRAM_ID)
+            or grant.qa_message != msg
+        ):
+            raise ProbeFailure(
+                "grant", "native grant does not own this exact QA target and identity"
+            )
+        evidence["grant"] = {
+            "id": grant.id,
+            "head_sha": grant.head_sha,
+            "application_id": grant.target_application_id,
+            "granted_at": grant.granted_at.isoformat(),
+            "status": grant.status.value,
+        }
+        identity = QACallerIdentity(
+            "telegram", str(QA_TEST_TELEGRAM_ID), stored["USER_IDENTITY_CAPABILITY"]
+        )
+        await run_fixed_probe(
+            mode=selected[0],
+            marker=selected[1],
+            bot_username=msg.bot_username,
+            deployed_url=msg.deployed_url,
+            headers=identity.headers(),
+            evidence=evidence,
+            redaction=redaction,
+        )
+        final_grant = await api_client.get_temporary_access_grant(grant.id)
+        if final_grant.status != TemporaryAccessStatus.GRANTED:
+            raise ProbeFailure("grant", "native grant ended before probe completion")
+        evidence["grant_valid_through"] = datetime.now(UTC).isoformat()
+        await api_client.patch(
+            f"runs/{msg.run_id}",
+            json={
+                "run_metadata": {
+                    QA_CALLER_IDENTITY_KEY: caller_identity_record(identity),
+                    "qa_telegram_identity": {"handed_over": True},
+                },
+            },
+        )
+        result.checks.append(
+            {
+                "name": "mechanical Telegram probe",
+                "pass": True,
+                "detail": "fixed real-chat conversation completed",
+            }
+        )
+    except Exception as exc:
+        evidence.update(
+            status="failed",
+            phase=getattr(exc, "phase", evidence["phase"]),
+            failure_type=type(exc).__name__,
+        )
+        result.passed = False
+        result.checks.append(
+            {
+                "name": "mechanical Telegram probe",
+                "pass": False,
+                "detail": f"{evidence['phase']}: {type(exc).__name__}",
+            }
+        )
+    result.report = redaction.text(report(evidence))
+    return result
+
+
 async def _resolve_jobs_capability(
     *,
     project_id: str,
@@ -717,6 +799,35 @@ async def _load_qa_executor_decision(run_id: str) -> ExecutorDecision | QABlocke
     return decision
 
 
+def _qa_criteria(criteria):
+    from .mechanical_telegram import selection  # noqa: PLC0415
+
+    mechanical = selection(criteria)
+    checks = parse_health_only_criteria(mechanical[2] if mechanical else criteria)
+    if mechanical and checks is None:
+        raise ValueError("fixed stand probes require deterministic HTTP criteria")
+    return mechanical, checks
+
+
+async def _health_caller_identity(msg, stored, mechanical):
+    if mechanical:
+        return None, None
+    return await _establish_caller_identity(msg, stored, telegram_account_id=None)
+
+
+async def _run_deterministic_qa(msg, checks, mechanical):
+    stored, redaction = await _run_secrets(msg.project_id)
+    identity, blocker = await _health_caller_identity(msg, stored, mechanical)
+    if blocker:
+        return None, blocker
+    result = await run_health_checks(
+        deployed_url=msg.deployed_url, checks=checks, caller_identity=identity, redaction=redaction
+    )
+    if mechanical:
+        result = await _run_mechanical_qa(msg, mechanical, stored, result, redaction)
+    return result, None
+
+
 async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single QA job from qa:queue.
 
@@ -759,7 +870,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         # them first: criteria that only state GET expectations need nothing but
         # the deployed URL.
         acceptance_criteria = msg.acceptance_criteria
-        health_checks = parse_health_only_criteria(acceptance_criteria)
+        mechanical, health_checks = _qa_criteria(acceptance_criteria)
 
         blocker = await check_deployed_url_reachable(msg.deployed_url)
         if blocker:
@@ -847,20 +958,13 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             # The same identity and redaction an exploratory run has: a package
             # route among the checks is read as the verified QA user, and what the
             # checks retain is scrubbed of every capability the run holds.
-            stored, redaction = await _run_secrets(msg.project_id)
-            caller_identity, identity_blocker = await _establish_caller_identity(
-                msg, stored, telegram_account_id=None
+            qa_result, identity_blocker = await _run_deterministic_qa(
+                msg, health_checks, mechanical
             )
             if identity_blocker:
                 return await _handle_qa_blocked(
                     run_id=run_id, blocker=identity_blocker, attempts=attempts
                 )
-            qa_result = await run_health_checks(
-                deployed_url=msg.deployed_url,
-                checks=health_checks,
-                caller_identity=caller_identity,
-                redaction=redaction,
-            )
         else:
             qa_result, exploratory_blocker = await _run_exploratory_qa(
                 msg=msg,
