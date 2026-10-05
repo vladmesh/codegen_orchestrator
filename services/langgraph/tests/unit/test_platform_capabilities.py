@@ -212,7 +212,7 @@ class TestTheManifestIsVersionedAndReviewed:
     def test_it_carries_a_version_and_the_owner_review_marker(self):
         manifest = load_manifest()
 
-        assert manifest.version == 13
+        assert manifest.version == 14
         assert manifest.status == "owner-reviewed"
         assert manifest.review == "product list agreed by the owner 2026-09-28"
 
@@ -329,7 +329,7 @@ class TestTheArchitectBlock:
         block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
 
         assert "`packages/catalog.yaml`" in block
-        assert "install with `kit add <name>`" in block
+        assert "explicit selection uses plan_install and scaffolder mode=install" in block
 
     def test_it_lists_no_package_of_its_own(self):
         """Packages come from the kit's live catalog at planning time, not from here.

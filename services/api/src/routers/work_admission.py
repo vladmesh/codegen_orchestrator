@@ -18,6 +18,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnosticSnapshot,
 )
 from shared.contracts.dto.run import RunType
+from shared.contracts.dto.task import TaskType
 from shared.contracts.dto.work_admission import (
     EmergencyStopCommand,
     EmergencyStopRead,
@@ -306,12 +307,17 @@ async def start_paid_run_endpoint(
     # Invariant B: a paid engineering run bound to an existing Task row is
     # created only by the admission point. This route is the paid gate for
     # everything else, and it stays that: only a command that *is* a Task
-    # dispatch is refused, so the deploy-fix handoff — which leaves task_id
-    # null — is untouched. A non-null task_id must name a Task row: the route
+    # dispatch is refused, so the deploy-fix handoff: which leaves task_id
+    # null: is untouched. A non-null task_id must name a Task row: the route
     # rejects an unknown reference before the Run insert reaches its FK. The
     # question is decided here, server-side, from a column-only existence check
     # that materialises no entity for the transaction that follows.
     if command.type is RunType.ENGINEERING and command.task_id is not None:
+        kind = await db.scalar(select(Task.type).where(Task.id == command.task_id))
+        if kind == TaskType.INSTALL.value:
+            raise HTTPException(
+                409, {"code": "catalog_install_not_engineering", "task_id": command.task_id}
+            )
         names_a_task = await db.scalar(select(Task.id).where(Task.id == command.task_id))
         if names_a_task is None:
             raise HTTPException(
@@ -397,7 +403,7 @@ async def admit_engineering_dispatch_endpoint(
     """The one admission point for paid engineering dispatch.
 
     Every condition is decided here, on rows locked for the duration, and an
-    admitted decision leaves the queued Run and its budget hold committed — the
+    admitted decision leaves the queued Run and its budget hold committed: the
     same commit boundary `POST /work-admission/paid-runs` has, because that is
     the call this one wraps. A refusal commits too: the paid gate's audit fact is
     written whether it admitted or not.

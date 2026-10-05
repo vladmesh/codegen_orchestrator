@@ -97,8 +97,35 @@ import main                                     # bare import, не работа
 ## Dependencies
 
 - `python-telegram-bot` — Telegram Bot API
+- `faststream[redis]`, `redis`, `jsonschema` — Generated binding relay and action validation
 - `httpx` — HTTP client for backend communication
 - `shared` — Generated events and schemas from `shared/`
+
+## Product Bindings
+
+`services/tg_bot/bindings/*.yaml` and service settings manifests are product-owned.
+`src/generated/bindings.py` and `binding_relay.py` are regenerated; edit bindings and run
+`make generate-from-spec`, never handwritten reminders handlers. No binding means an inert
+seed with no parser/relay startup. Bindings require both backend and tg_bot environments.
+
+Use `kit bind reminders --default --product-root .` after installing reminders and textparse;
+use `kit bind reminders --file /path/to/override.yaml --product-root .` for an explicit override.
+Repeated defaults retain and refuse differing product edits. Bind declares the required
+product timezone in the existing settings registry but never sets its value. Set it separately
+through capability-protected `POST /settings/set`; handlers read product-scoped `/settings/get`
+and fail without a valid IANA value. No timezone environment fallback or per-user value.
+
+Generated registration preserves admission in group -1 and reserved `/start` and `/command`.
+Callbacks keep bounded opaque context for ten minutes, tied to initiating user/chat/action,
+and are consumed before any await. Restart/expiry requires rerunning the command. Commands
+and callbacks always call `request_as_telegram_user` with the real update user, never an owner
+from callback data. Generated mutations use one attempt to avoid automatic repeated effects.
+
+The relay owns a separate subscriber broker, started/stopped through bot hooks. It consumes
+declared Redis streams in `events:tg_bot` from first-start `0-0`, with persistent seven-day
+completed-event dedupe and token-owned retryable claims. Transient sends remain pending;
+blocked/missing chats and invalid recipients terminate with bounded logs. A crash/ambiguous
+Telegram response before completion may duplicate a send; never promise exactly-once delivery.
 
 ## Доступ к боту
 

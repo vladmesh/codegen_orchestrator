@@ -334,8 +334,9 @@ class TestCapabilityShapeDirectives:
     def test_the_package_task_installs_and_never_hand_writes_package_code(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
         assert "Package code is never hand-written into a product." in prompt
-        assert "install it with `kit add <name>` from the product root" in prompt
-        assert "resolves the released package from the live catalog" in prompt
+        assert "`plan_install(name)`" in prompt
+        assert "exactly one typed INSTALL" in prompt
+        assert "no engineering agent or paid engineering Run" in prompt
         assert "regeneration" in prompt.lower()
         assert "--wheel" not in prompt
         assert "build the package wheel" not in prompt
@@ -343,7 +344,7 @@ class TestCapabilityShapeDirectives:
     def test_names_the_catalog_as_where_packages_are_listed(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
         assert "package catalog (`packages/catalog.yaml`" in prompt
-        assert "name the package the task installs by its catalog name" in prompt
+        assert "catalog snapshot shown in this attempt" in prompt
 
     def test_plans_packages_only_from_the_live_catalog_block(self):
         """The catalog arrives per run, in the block the consumer builds from the reader."""
@@ -352,7 +353,7 @@ class TestCapabilityShapeDirectives:
         prompt = " ".join(SYSTEM_PROMPT.split())
         assert f'as the "{KIT_CATALOG_HEADING}" block' in prompt
         assert "plan a capability as a package only when a package listed there covers it" in (
-            prompt
+            prompt.lower()
         )
         assert "When the block says the catalog is unavailable, no package can be planned" in (
             prompt

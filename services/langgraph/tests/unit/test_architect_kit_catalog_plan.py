@@ -1,7 +1,7 @@
 """A scripted architect resolves two briefs against the kit catalog through the real graph.
 
 The model is scripted to make the calls an architect following the prompt and the
-"Kit package catalog" block makes; everything past it is real — the consumer, its
+"Kit package catalog" block makes; everything past it is real: the consumer, its
 briefing, the graph, its tool node, `create_task` with its package check, and the
 admission. The catalog is the unit double (`kit_catalog_off_github` in `conftest.py`):
 the pinned kit tooling's own catalog, filtered by the real `installable`. What is
@@ -80,8 +80,10 @@ def _script(api: CatalogPlanApi, tasks: list[_Task], covers: list[str]) -> list[
     turns = [
         turn(
             (
-                "create_task",
-                {
+                "plan_install" if task is _INSTALL_REMINDERS else "create_task",
+                {"name": "reminders"}
+                if task is _INSTALL_REMINDERS
+                else {
                     "title": task.title,
                     "description": task.description,
                     "type": "feature",
@@ -128,7 +130,7 @@ def _tool_errors(seen: list[list[BaseMessage]]) -> list[str]:
     return [
         str(message.content)
         for message in seen[-1]
-        if isinstance(message, ToolMessage) and "was refused" in str(message.content)
+        if isinstance(message, ToolMessage) and '"error"' in str(message.content)
     ]
 
 
@@ -165,11 +167,12 @@ async def test_a_reminders_brief_installs_the_catalog_package():
     # The planner was shown the catalog the double read, package by package.
     briefing = seen[0][-1].content
     assert f"Kit package catalog (read live from {BUNDLED_KIT_CATALOG_SOURCE}" in briefing
-    assert "- reminders (installs 0.4.0): One-time text reminders" in briefing
+    assert "- reminders (installs 0.5.0): One-time text reminders" in briefing
     assert "  capabilities: remind me at a time; schedule a one-time text reminder" in briefing
     assert "  settings it asks for: reminder_owner_ref: Owner of the seeded" in briefing
     assert "  required environment: REDIS_URL: Redis broker" in briefing
-    assert "only when a package listed here covers it" in briefing
+    assert "plan_install" in briefing
+    assert "textparse" in briefing and "default binding" in briefing
 
 
 @pytest.mark.asyncio
@@ -180,7 +183,7 @@ async def test_a_brief_no_package_covers_plans_no_package():
     assert api.released == ["task-1"]
     assert {SHOPPING_ADD, SHOPPING_LIST} == set(api.coverage)
     assert_plan_installs_no_package(api)
-    assert "- reminders (installs 0.4.0)" in seen[0][-1].content
+    assert "- reminders (installs 0.5.0)" in seen[0][-1].content
 
 
 @pytest.mark.asyncio
@@ -198,7 +201,7 @@ async def test_an_unavailable_catalog_is_briefed_and_refuses_every_install(kit_c
     assert "- reminders (installs" not in briefing
     assert api.task_payloads == []
     (refusal,) = _tool_errors(seen)
-    assert "catalog was unavailable when this plan started" in refusal
+    assert "catalog_unavailable" in refusal
 
 
 def _with(task: _Task, description: str) -> _Task:
@@ -237,8 +240,8 @@ def _with(task: _Task, description: str) -> _Task:
         pytest.param(
             shopping_list_brief,
             _with(_SHOPPING_LIST, "Install `kit add reminders` and build the list on it."),
-            None,
-            "installs a package",
+            "catalog_install_requires_plan_install",
+            "the plan created no task",
             id="installs-a-package-nothing-asked-for",
         ),
     ],
@@ -256,5 +259,8 @@ async def test_the_checks_fail_on_a_plan_that_breaks_a_rule(brief, task, refused
         if brief is reminders_brief
         else assert_plan_installs_no_package
     )
-    with pytest.raises(AssertionError, match=failure):
-        check(api)
+    if failure == "the plan created no task":
+        assert api.task_payloads == []
+    else:
+        with pytest.raises(AssertionError, match=failure):
+            check(api)

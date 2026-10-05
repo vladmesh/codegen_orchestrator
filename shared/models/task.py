@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.task import (
@@ -15,9 +15,16 @@ from .base import Base
 
 
 class Task(Base):
-    """Task — a unit of work with agile statuses (planning layer)."""
+    """Task: a unit of work with agile statuses (planning layer)."""
 
     __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "(type = 'install' AND install IS NOT NULL AND story_id IS NOT NULL "
+            "AND repository_id IS NOT NULL) OR (type <> 'install' AND install IS NULL)",
+            name="ck_tasks_install_payload",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     project_id: Mapped[uuid.UUID] = mapped_column(
@@ -47,9 +54,11 @@ class Task(Base):
         String(255), ForeignKey("tasks.id"), nullable=True
     )
     failure_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    install: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    install_operation: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     # Whether this task has crossed the coverage-to-dispatch boundary. True for
     # every task that is not planned against an unadmitted Product Brief, which
-    # is every task that existed before the boundary did — so a `todo` status
+    # is every task that existed before the boundary did: so a `todo` status
     # keeps meaning "dispatchable" everywhere except under a brief still being
     # planned. Written false only at creation under an active planning attempt,
     # and back to true only by that brief's one admission step.
@@ -64,7 +73,7 @@ class Task(Base):
 
 
 class TaskEvent(Base):
-    """TaskEvent — history of status transitions and iteration events."""
+    """TaskEvent: history of status transitions and iteration events."""
 
     __tablename__ = "task_events"
 

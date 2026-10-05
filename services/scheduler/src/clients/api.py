@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from shared.clients.internal_api import InternalAPIClient
 from shared.clients.run_api import RunAPIClientMixin
 from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.catalog_install import InstallCommand, InstallDecision
 from shared.contracts.dto.deploy_dispatch import (
     DeployDispatchSupersede,
     DeployDispatchWithdrawal,
@@ -96,6 +97,14 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
         return None if payload is None else CommitRecoveryRead.model_validate(payload)
 
     """HTTP client for scheduler-required API endpoints."""
+
+    async def catalog_install_command(
+        self, task_id: str, command: InstallCommand
+    ) -> InstallDecision:
+        response = await self.request(
+            "POST", f"tasks/{task_id}/catalog-install", json=command.model_dump(mode="json")
+        )
+        return InstallDecision.model_validate(response.json())
 
     def __init__(self) -> None:
         super().__init__(get_settings().api_base_url)
@@ -308,7 +317,7 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
 
         Selected by the state of the record and ordered oldest first, so the
         recovery sweep's work is every message still owed rather than the ones
-        belonging to a story that happens to still be in a status it scans — a
+        belonging to a story that happens to still be in a status it scans: a
         terminal transition takes the story out of every such status.
         """
         resp = await self.request("GET", "runs/owner-notifications/owed", params={"limit": limit})
@@ -366,7 +375,7 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
         """Return the newest run for a story, validating only that run.
 
         The runs endpoint returns the story's runs newest-first. Routing only
-        cares about the latest one, so we validate `rows[0]` alone — an older,
+        cares about the latest one, so we validate `rows[0]` alone: an older,
         legacy/corrupt run must not fail a story whose current run is valid.
         """
         params: dict[str, str] = {"story_id": story_id}
@@ -735,7 +744,7 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
     ) -> TaskResourceWaitRead:
         """Park a refused engineering task in WAITING_RESOURCES in one API transaction.
 
-        The wait's facts, the transition and — when the park starts the wait —
+        The wait's facts, the transition and: when the park starts the wait —
         the owed announcement on the refused Run commit together.
         """
         resp = await self.request(

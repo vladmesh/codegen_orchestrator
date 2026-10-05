@@ -13,6 +13,8 @@ FROM base AS deps
 COPY shared/pyproject.toml ./shared/pyproject.toml
 RUN mkdir -p ./shared/shared && touch ./shared/shared/__init__.py
 COPY services/tg_bot/pyproject.toml services/tg_bot/uv.lock ./services/tg_bot/
+# kit add libraries are locked as local wheel dependencies.
+COPY services/tg_bot/packages ./services/tg_bot/packages
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd services/tg_bot && uv sync --frozen --no-install-project --no-dev
 COPY shared/shared ./shared/shared

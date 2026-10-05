@@ -1,4 +1,4 @@
-"""Task Dispatcher — admits and dispatches engineering work.
+"""Task Dispatcher: admits and dispatches engineering work.
 
 The dispatcher owns one responsibility: ask the durable admission point about
 TODO tasks and hand admitted work to the engineering queue. Scaffold triggering,
@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import httpx
 import structlog
 
+from shared.contracts.dto.catalog_install import InstallCommand
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
 from shared.contracts.dto.engineering_dispatch import (
     EngineeringAttemptStartCommand,
@@ -33,9 +34,10 @@ from shared.contracts.dto.run import RunDTO, RunStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.contracts.vocab import ActionType, OwnerNotificationEvent
 from shared.pr_conflict_repair import settle_pr_repair_attempt
-from shared.queues import ENGINEERING_QUEUE
+from shared.queues import ENGINEERING_QUEUE, SCAFFOLD_QUEUE
 from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
@@ -107,7 +109,7 @@ async def _enriched_description(api_client: SchedulerAPIClient, task: TaskDTO) -
 
     Message building, never admission: this decides what the worker is told, and
     it runs only once the admission point has already admitted the dispatch. The
-    sibling read here answers "what has been done" — the admission point does its
+    sibling read here answers "what has been done": the admission point does its
     own sibling read, on locked rows, to answer "may anything be done at all".
     """
     description = task.description or ""
@@ -281,7 +283,7 @@ async def _initiating_run(
     """The Run this work was initiated by, or None when the id is not a Run's.
 
     A project created through the PO brief flow carries the id of the request
-    the owner made, not of a Run — nothing was dispatched to produce it. The
+    the owner made, not of a Run: nothing was dispatched to produce it. The
     API answering 404 is the evidence for that, and the only thing it is taken
     as: any other failure is a failure to find out and is raised.
     """
@@ -306,7 +308,7 @@ async def _park_refused_story(
 
     Where the durable record lives follows from what initiated the work. A Run
     keeps its own refusal, as it always has. A story whose initiator is a PO
-    request has no Run to hang one on, so the record goes on the story — the
+    request has no Run to hang one on, so the record goes on the story: the
     same place the PR poller puts one for an ending nothing dispatched.
     """
     source_run = await _initiating_run(api_client, decision.initiating_run_id, log)
@@ -440,18 +442,23 @@ async def dispatch_todo_tasks(
     """Ask the admission point about every todo task and act on its answer.
 
     This function selects the candidates and executes decisions; it holds no
-    admission condition of its own. Whether a task may be dispatched — the
+    admission condition of its own. Whether a task may be dispatched: the
     internal project, the scaffold, the workspace, the blocker, the story, the
-    prior attempt, the budget and the slot — is one question answered server-side
+    prior attempt, the budget and the slot: is one question answered server-side
     on locked rows by `admit_engineering_dispatch`.
 
     Returns the number of tasks dispatched.
     """
     dispatched = 0
 
-    for task in await api_client.get_tasks_by_status(TaskStatus.TODO):
+    candidates = await api_client.get_tasks_by_status(TaskStatus.TODO)
+    for task in candidates:
         log = logger.bind(task_id=task.id, story_id=task.story_id)
         try:
+            if task.type is TaskType.INSTALL:
+                if await _dispatch_install(api_client, redis_client, task, log):
+                    dispatched += 1
+                continue
             decision = await api_client.admit_engineering_dispatch(
                 EngineeringDispatchCommand(task_id=task.id)
             )
@@ -478,12 +485,68 @@ async def dispatch_todo_tasks(
     return dispatched
 
 
+async def _dispatch_install(api_client, redis_client, task, log) -> bool:
+    from .scaffold_trigger import _github_repo_name, _template_config
+
+    decision = await api_client.catalog_install_command(task.id, InstallCommand(action="admit"))
+    if decision.outcome != "admitted":
+        log.info("catalog_install_dispatch_refused", reason=decision.reason)
+        return False
+    operation = decision.operation
+    if operation is None or decision.install is None:
+        raise RuntimeError("Install admission omitted durable ownership")
+    name = _github_repo_name(decision.git_url)
+    if name is None:
+        raise RuntimeError("Install repository has no owned GitHub URL")
+    template_repo, template_ref = _template_config()
+    message = ScaffoldMessage(
+        project_id=str(task.project_id),
+        repository_id=operation.repository_id,
+        template_repo=template_repo,
+        template_ref=template_ref,
+        project_name=name,
+        modules="backend,tg_bot",
+        mode="install",
+        task_id=task.id,
+        story_id=operation.story_id,
+        operation_id=operation.id,
+        cycle_started_at=operation.cycle_started_at,
+        install=decision.install,
+    )
+    # Redis is only a publication throttle. A lost XADD response expires and
+    # republishes the same durable operation; the API claim fences deliveries.
+    key = f"catalog-install:queued:{operation.id}"
+    if not await redis_client.redis.set(key, "1", nx=True, ex=60):
+        return False
+    await redis_client.publish_message(SCAFFOLD_QUEUE, message)
+    return True
+
+
+async def _recover_catalog_installs(api_client):
+    tasks = [
+        *await api_client.get_tasks_by_status(TaskStatus.IN_DEV),
+        *await api_client.get_tasks_by_status(TaskStatus.CANCELLED),
+    ]
+    for running in tasks:
+        if (
+            running.type is TaskType.INSTALL
+            and running.install_operation is not None
+            and running.install_operation.state == "running"
+        ):
+            try:
+                await api_client.catalog_install_command(running.id, InstallCommand(action="admit"))
+            except Exception:
+                logger.exception("catalog_install_recovery_observation_failed", task_id=running.id)
+
+
 async def task_dispatcher_loop() -> None:
     """Periodically dispatch admitted engineering tasks."""
     from ..clients.api import api_client
 
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
-        return {"tasks_dispatched": await dispatch_todo_tasks(api_client, redis_client)}
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+        await _recover_catalog_installs(api_client)
+        return {"tasks_dispatched": dispatched}
 
     await runtime.periodic_loop(
         interval=_dispatch_interval,

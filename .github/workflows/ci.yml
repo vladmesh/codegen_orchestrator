@@ -527,7 +527,7 @@ jobs:
   template-compatibility:
     name: Template Compatibility (${{ matrix.entry }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     needs: [lint, ci-contract]
     if: needs.lint.result == 'success' && needs.ci-contract.result == 'success'
     env:
@@ -566,6 +566,13 @@ jobs:
           bash scripts/ci-infra.sh bound --step compatibility-smoke --timeout 15m --
           make test-template-compat ARTIFACT_DIR="$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
 
+      - name: Prove released mechanical catalog install executor
+        if: matrix.candidate == false
+        run: >-
+          bash scripts/ci-infra.sh bound --step mechanical-install --timeout 8m --
+          uv run python tests/integration/template/mechanical_install_smoke.py
+          --output-dir "$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
+
       - name: Run candidate compatibility smoke
         if: matrix.candidate == true && inputs.service_template_candidate_ref != ''
         run: >-
@@ -584,7 +591,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: template-compat-${{ matrix.entry }}
-          path: ${{ runner.temp }}/template-compat-${{ matrix.entry }}/template-compat-result.json
+          path: |
+            ${{ runner.temp }}/template-compat-${{ matrix.entry }}/template-compat-result.json
+            ${{ runner.temp }}/template-compat-${{ matrix.entry }}/mechanical-install-result.json
           if-no-files-found: error
 
       - name: Expose CI infrastructure failure

@@ -50,6 +50,18 @@ def mock_publish() -> Iterator[AsyncMock]:
         yield mock
 
 
+@pytest.fixture
+def mock_bindings(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    from services.tg_bot.src.main import bindings
+
+    mock = MagicMock()
+    mock.start = AsyncMock()
+    mock.stop = AsyncMock()
+    monkeypatch.setattr(bindings, "start", mock.start)
+    monkeypatch.setattr(bindings, "stop", mock.stop)
+    return mock
+
+
 @pytest.mark.asyncio
 async def test_handle_command_publishes_event(
     mock_publish: AsyncMock,
@@ -71,14 +83,63 @@ async def test_handle_command_publishes_event(
 
 
 @pytest.mark.asyncio
-async def test_post_init_and_shutdown_manage_broker(mock_broker: MagicMock) -> None:
+async def test_post_init_and_shutdown_manage_broker(
+    mock_broker: MagicMock, mock_bindings: MagicMock
+) -> None:
+    from unittest.mock import call
+
     from services.tg_bot.src.main import post_init, post_shutdown
 
+    lifecycle = MagicMock()
+    lifecycle.attach_mock(mock_broker.connect, "connect")
+    lifecycle.attach_mock(mock_bindings.start, "start")
+    lifecycle.attach_mock(mock_bindings.stop, "stop")
+    lifecycle.attach_mock(mock_broker.close, "close")
     application = MagicMock()
     await post_init(application)
     await post_shutdown(application)
 
     mock_broker.connect.assert_awaited_once()
+    mock_broker.close.assert_awaited_once()
+    mock_bindings.start.assert_awaited_once_with(application)
+    mock_bindings.stop.assert_awaited_once_with(application)
+    assert lifecycle.mock_calls == [
+        call.connect(),
+        call.start(application),
+        call.stop(application),
+        call.close(),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_init_closes_broker_when_binding_start_fails(
+    mock_broker: MagicMock, mock_bindings: MagicMock
+) -> None:
+    from services.tg_bot.src.main import post_init
+
+    mock_bindings.start.side_effect = RuntimeError("binding start failed")
+    application = MagicMock()
+    with pytest.raises(RuntimeError, match="binding start failed"):
+        await post_init(application)
+
+    mock_broker.connect.assert_awaited_once()
+    mock_bindings.start.assert_awaited_once_with(application)
+    mock_broker.close.assert_awaited_once()
+    mock_bindings.stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_shutdown_closes_broker_when_binding_stop_fails(
+    mock_broker: MagicMock, mock_bindings: MagicMock
+) -> None:
+    from services.tg_bot.src.main import post_shutdown
+
+    mock_bindings.stop.side_effect = RuntimeError("binding stop failed")
+    application = MagicMock()
+    with pytest.raises(RuntimeError, match="binding stop failed"):
+        await post_shutdown(application)
+
+    mock_bindings.stop.assert_awaited_once_with(application)
     mock_broker.close.assert_awaited_once()
 
 

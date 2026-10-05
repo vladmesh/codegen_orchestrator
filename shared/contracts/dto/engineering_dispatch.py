@@ -69,13 +69,13 @@ class EngineeringDispatchRepair(StrEnum):
 
     Named rather than performed: the admission point decides, the dispatcher
     executes, so a decision never carries a hidden side effect. Which repair it
-    is never depends on `current_iteration` — see `EngineeringDispatchRead`.
+    is never depends on `current_iteration`: see `EngineeringDispatchRead`.
     """
 
     #: This task's own dispatch, still live: the message went out on an earlier
     #: tick and only the transition out of todo was missing. Counts as dispatched.
     RECOVER_OWN_ATTEMPT = "recover_own_attempt"
-    #: Somebody else's live attempt is still holding the story branch — typically
+    #: Somebody else's live attempt is still holding the story branch: typically
     #: one the supervisor's retry path stepped over. The task is put back in
     #: in_dev and nothing is dispatched.
     ADOPT_LIVE_ATTEMPT = "adopt_live_attempt"
@@ -92,8 +92,10 @@ class EngineeringDispatchRefusal(StrEnum):
     line, so no two conditions share a value and none of them is a bare bool.
     """
 
-    #: The locked row is no longer in todo — somebody moved it while this tick
+    #: The locked row is no longer in todo: somebody moved it while this tick
     #: was reading the candidate list.
+    CATALOG_INSTALL_NOT_ENGINEERING = "catalog_install_not_engineering"
+    CATALOG_INSTALL_IN_FLIGHT = "catalog_install_in_flight"
     ENGINEERING_STOPPED = "engineering_stopped"
     COMMIT_PUBLICATION_REQUIRED = "commit_publication_required"
     TASK_NOT_DISPATCHABLE = "task_not_dispatchable"
@@ -109,7 +111,7 @@ class EngineeringDispatchRefusal(StrEnum):
     #: A project written before run ownership existed: no run to attribute a
     #: worker to, and none can be reconstructed.
     PROJECT_HAS_NO_INITIATING_RUN = "project_has_no_initiating_run"
-    #: Still a draft — the scaffold has not run.
+    #: Still a draft: the scaffold has not run.
     PROJECT_NOT_SCAFFOLDED = "project_not_scaffolded"
     WORKSPACE_NOT_READY = "workspace_not_ready"
     #: Not ready because ensure-workspace failed and recorded `scaffold_error`.
@@ -164,7 +166,7 @@ PAID_WORK_REFUSALS: dict[WorkAdmissionReason, EngineeringDispatchRefusal] = {
 
 #: The typed error `POST /work-admission/paid-runs` returns for a paid
 #: engineering start whose `task_id` names an existing Task row. That command is
-#: a Task dispatch, and a Task dispatch is admitted in exactly one place — every
+#: a Task dispatch, and a Task dispatch is admitted in exactly one place: every
 #: other paid start still goes through the paid gate unchanged, including the
 #: deploy-fix handoff, which names no Task row.
 ENGINEERING_TASK_REQUIRES_ADMISSION = "engineering_task_dispatch_requires_admission"
@@ -200,7 +202,7 @@ class EngineeringDispatchCommand(BaseModel):
     read server-side, on the locked rows, inside the deciding transaction. A
     caller that could pass the project status or the sibling list would be a
     caller that could pass a stale one. The other two fields say nothing about
-    the state — `origin` names who is asking, and `overrides` names, one typed
+    the state: `origin` names who is asking, and `overrides` names, one typed
     value at a time, the refusals this caller is authorised to walk past.
     """
 
@@ -209,7 +211,7 @@ class EngineeringDispatchCommand(BaseModel):
     task_id: str = Field(min_length=1)
     origin: EngineeringDispatchOrigin = EngineeringDispatchOrigin.DISPATCHER
     #: Conditions this caller is authorised to override, named one by one. An
-    #: empty list — the default, and the only thing the scheduler ever sends — is
+    #: empty list: the default, and the only thing the scheduler ever sends: is
     #: full admission. An override is not an absence of admission: the condition
     #: is still evaluated, the decision reports it in `overridden`, and the
     #: attempt records it, so a dispatch that only happened because a human said

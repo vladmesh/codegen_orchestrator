@@ -1,4 +1,4 @@
-"""Core scaffold logic — copier + make setup + git push.
+"""Core scaffold logic: copier + make setup + git push.
 
 Pure business logic with no queue/API dependencies.
 All I/O happens via asyncio subprocess calls.
@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+import signal
 
 import structlog
 import yaml
@@ -40,6 +41,7 @@ async def _run_cmd(
     cwd: Path | None = None,
     timeout: int = 600,
     env: dict[str, str] | None = None,
+    kill_process_group: bool = False,
 ) -> tuple[int, str, str]:
     """Run an argument vector and return (returncode, stdout, stderr)."""
     proc = await asyncio.create_subprocess_exec(
@@ -48,10 +50,14 @@ async def _run_cmd(
         stderr=asyncio.subprocess.PIPE,
         cwd=str(cwd) if cwd else None,
         env=env,
+        **({"start_new_session": True} if kill_process_group else {}),
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except (TimeoutError, asyncio.CancelledError):
+        if kill_process_group:
+            with suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
         if proc.returncode is None:
             with suppress(ProcessLookupError):
                 proc.kill()
@@ -136,8 +142,8 @@ async def _nothing_to_commit(workspace: Path) -> bool:
 
     `git status --porcelain` is machine-readable and locale-independent: an empty
     listing after `git add .` means index and worktree both match HEAD, so there was
-    nothing for `git commit` to record. Any other outcome — output, or a status call
-    that itself fails — is a real commit failure.
+    nothing for `git commit` to record. Any other outcome: output, or a status call
+    that itself fails: is a real commit failure.
     """
     rc, out, _ = await _run_cmd(["git", "status", "--porcelain"], cwd=workspace)
     return rc == 0 and not out.strip()

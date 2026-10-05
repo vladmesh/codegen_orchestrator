@@ -209,7 +209,7 @@ class TestArchitectToolSurface:
 
     The consumer already transitions the story around this agent's run, so a
     story-transition tool here gave one code path two Story transitions for the
-    same story — and hid the API's refusal of the second one behind a 422
+    same story: and hid the API's refusal of the second one behind a 422
     fallback that re-read the story and reported success.
     """
 
@@ -219,6 +219,7 @@ class TestArchitectToolSurface:
         assert not hasattr(tools, "transition_story")
         names = {tool.name for tool in tools.get_architect_tools()}
         assert names == {
+            "plan_install",
             "get_story",
             "get_project_spec",
             "get_tasks_by_story",
@@ -519,11 +520,11 @@ class TestCreateTaskInstallsOnlyCatalogPackages:
             "Run `.venv/bin/kit add reminders`.",
         ],
     )
-    async def test_a_catalog_name_is_accepted(self, mock_api, description):
+    async def test_a_catalog_name_requires_the_mechanical_tool(self, mock_api, description):
         result = await self._create(description)
 
-        assert result["id"] == "task-new"
-        assert mock_api.create_task.call_args[0][0]["description"] == description
+        assert "catalog_install_requires_plan_install" in result["error"]
+        mock_api.create_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_an_unknown_name_is_refused_with_the_catalog_listed(self, mock_api):

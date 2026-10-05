@@ -88,6 +88,56 @@ export interface StoryPlanning {
   recorded_at: string
 }
 
+export interface InstallComponent {
+  name: string
+  distribution: string
+  version: string
+  tag: string
+}
+
+export interface DefaultBinding {
+  package: string
+  resource: string
+  sha256: string
+  functions: string[]
+}
+
+export interface CatalogInstall {
+  package: InstallComponent
+  libraries: InstallComponent[]
+  binding: DefaultBinding
+  core_version: string
+  python_version: string
+  catalog_digest: string
+  tooling_commit: string
+}
+
+export interface InstallVerification {
+  core_version: string
+  tooling_commit: string
+  binding_sha256: string
+  distributions: Record<string, string>
+  component_targets: Record<string, string>
+  protected_sha256: Record<string, string>
+}
+
+export interface InstallOperation {
+  id: string
+  project_id: string
+  task_id: string
+  story_id: string
+  repository_id: string
+  cycle_started_at: string
+  state: 'queued' | 'running' | 'published' | 'refused' | 'recovery_required'
+  stage: 'queued' | 'claimed' | 'preflight' | 'package' | 'library' | 'bind' | 'generate' | 'validate' | 'readback' | 'commit' | 'push' | 'published' | 'lease_lost' | 'cancelled'
+  token?: string | null
+  heartbeat_at?: string | null
+  head_sha?: string | null
+  base_sha?: string | null
+  detail?: string | null
+  verification?: InstallVerification | null
+}
+
 export type StoryType = 'product' | 'technical'
 
 export type StoryStatus =
@@ -159,6 +209,8 @@ export interface Task {
   failure_metadata?: Record<string, unknown> | null
   dispatch_admitted: boolean
   planning_attempt_id?: string | null
+  install?: CatalogInstall | null
+  install_operation?: InstallOperation | null
   created_at: string
   updated_at?: string | null
   last_event?: string | null

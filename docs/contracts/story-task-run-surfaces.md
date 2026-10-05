@@ -236,3 +236,14 @@ has local schemas for analytics, brainstorming, API keys, ports, promo
 codes, system configuration, and LK interactions. Their canonical definitions
 are the corresponding `services/api/src/schemas/*.py` modules unless the table
 above names a shared contract import.
+
+## Mechanical install tasks
+
+TaskCreate type=install requires CatalogInstall plus story/repository ownership;
+TaskRead and TaskDTO carry identical install and API-owned install_operation data.
+TaskUpdate cannot rewrite that ownership or supply execution fields. Generic
+start/complete/retry/resume are refused; DELETE preserves cancellation, releasing
+queued operations while running writers still owe owned settlement. Internal/admin
+catalog-install commands admit/claim/checkpoint/publish/refuse without a Run.
+Bearer-admin recovery selects the current operation and matching stop/cause. See
+[the install contract](kit-template-and-qa.md#installing-a-kit-package-into-a-generated-product).

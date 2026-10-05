@@ -1,0 +1,254 @@
+protocol_version: 1
+name: reminders
+version: 0.5.0
+requires_core: ">=2.2,<3"
+provides: []
+requires: []
+package_dependencies: [alembic, fastapi, faststream, pydantic, redis, sqlalchemy]
+http:
+  prefix: /reminders
+database:
+  schema: reminders
+  migrations: codegen_kit_reminders:migrations
+deployment:
+  modes: [in_process]
+events:
+  publishes: [reminders.due]
+  consumes: [job_fired]
+  messages:
+    reminders.due:
+      model: ReminderDue
+      recipient: user_ref
+      schema:
+        type: object
+        properties:
+          reminder_id: {type: string, format: uuid}
+          user_ref: {type: string}
+          text: {type: string}
+          remind_at: {type: string, format: date-time}
+        required: [reminder_id, user_ref, text, remind_at]
+        additionalProperties: false
+    job_fired:
+      model: JobFired
+      schema:
+        type: object
+        properties:
+          contract_version:
+            {type: integer, minimum: 1, maximum: 1, default: 1}
+          command_id: {type: string}
+          name: {type: string}
+          arguments: {}
+          fired_by_product: {type: string}
+          fired_by_run: {type: string}
+          accepted_at: {type: string, format: date-time}
+        required:
+          [command_id, name, arguments, fired_by_product, fired_by_run, accepted_at]
+        additionalProperties: false
+settings_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    reminder_owner_ref: {type: string, minLength: 1}
+  additionalProperties: false
+setting_seeds:
+  - key: reminder_owner_ref
+    scope: product
+jobs_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    tick:
+      type: object
+      properties:
+        at: {type: string, format: date-time}
+      required: [at]
+      additionalProperties: false
+  additionalProperties: false
+timers:
+  - job: tick
+    every_seconds: 60
+environment:
+  - name: REDIS_URL
+    required: true
+resources: []
+
+actions:
+- name: create
+  summary: Schedule a one-time reminder for the verified caller.
+  operation:
+    method: POST
+    path: ''
+  input:
+    properties:
+      text:
+        type: string
+        minLength: 1
+      remind_at:
+        type: string
+        format: date-time
+    additionalProperties: false
+    type: object
+    required:
+    - remind_at
+    - text
+  output:
+    properties:
+      id:
+        type: string
+        format: uuid
+      user_ref:
+        type: string
+      text:
+        type: string
+      remind_at:
+        type: string
+        format: date-time
+      state:
+        type: string
+        enum:
+        - scheduled
+        - cancelled
+        - due
+        - emitted
+      created_at:
+        type: string
+        format: date-time
+      cancelled_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      due_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      emitted_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+    type: object
+    required:
+    - created_at
+    - id
+    - remind_at
+    - state
+    - text
+    - user_ref
+- name: list
+  summary: List reminders owned by the verified caller.
+  operation:
+    method: GET
+    path: ''
+  input:
+    type: object
+    properties: {}
+    additionalProperties: false
+  output:
+    items:
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_ref:
+          type: string
+        text:
+          type: string
+        remind_at:
+          type: string
+          format: date-time
+        state:
+          type: string
+          enum:
+          - scheduled
+          - cancelled
+          - due
+          - emitted
+        created_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+        due_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+        emitted_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+      type: object
+      required:
+      - created_at
+      - id
+      - remind_at
+      - state
+      - text
+      - user_ref
+    type: array
+- name: cancel
+  summary: Cancel a scheduled reminder owned by the verified caller.
+  operation:
+    method: DELETE
+    path: /{reminder_id}
+  input:
+    type: object
+    properties:
+      reminder_id:
+        type: string
+        format: uuid
+    additionalProperties: false
+    required:
+    - reminder_id
+  output:
+    properties:
+      id:
+        type: string
+        format: uuid
+      user_ref:
+        type: string
+      text:
+        type: string
+      remind_at:
+        type: string
+        format: date-time
+      state:
+        type: string
+        enum:
+        - scheduled
+        - cancelled
+        - due
+        - emitted
+      created_at:
+        type: string
+        format: date-time
+      cancelled_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      due_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      emitted_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+    type: object
+    required:
+    - created_at
+    - id
+    - remind_at
+    - state
+    - text
+    - user_ref
+default_binding: codegen_kit_reminders:bindings/default.yaml

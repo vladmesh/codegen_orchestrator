@@ -213,36 +213,22 @@ changed generated contract**. A product whose manifest was edited without regene
 startup with `generated package contract is stale; run make generate-from-spec` — it will not
 boot, and no test that skips startup will tell you.
 
-### Installing a kit package
+### Catalog installation ownership
 
-Some capabilities ship as a kit package instead of product code: an installed wheel that declares
-a `codegen_kit.packages` entry point and owns its own database schema, HTTP prefix, and prefixed
-settings and job names. **Package code is never hand-written into a product.** A package is
-installed, never copied in by hand, and the core activates one only when it is both installed and
-listed in the backend manifest.
+Explicit catalog additions to an existing compatible backend,tg_bot product are
+one typed INSTALL task executed by scaffolder mode=install. They are excluded from
+paid engineering admission and this worker. The deterministic plan_install tool
+owns the package, recommended libraries and released default binding as one closure;
+do not recreate the parser or handlers or turn a refused install into a coding task.
 
-The kit lists every package it offers in its package catalog (`packages/catalog.yaml` in the kit
-repository): each package's name, the capabilities it provides, the settings a product supplies and
-its released versions. Install a package by its catalog name, from the product root:
-
-```bash
-.venv/bin/kit add <name>
-```
-
-`kit add <name>` resolves the kit's live catalog, picks the newest released version this product's
-core admits, builds that released tag, verifies the wheel against the catalog entry, and performs
-the whole product mutation: it copies the wheel under `services/backend/packages/`, adds the
-backend dependency and its lock entry, records the entry-point-only dependency so dependency
-linting accepts it, adds the name to the manifest's `packages:` allowlist, synchronizes the backend
-environment, and regenerates the product contract. It is the only supported way to install a
-package. Do not build a wheel yourself and do not perform any of those steps by hand, and do not
-stop before the command has run. Commit everything it changed, including the wheel under
-`services/backend/packages/`: the committed wheel is what the product's CI and images install.
-
-Verify the install before reporting success: `services/backend/manifest.yaml` lists the package
-under `packages:`, and the generated `codegen_kit/_active_packages.py` records its name, version
-and manifest digest. An empty `ACTIVE_PACKAGES` after an install means regeneration did not run,
-and the product will refuse to start.
+Package code is never hand-written into a product. Scaffolder uses the package catalog
+(`packages/catalog.yaml` in the kit) and owns fixed kit add/bind commands, regeneration, actual product
+readback, preservation of app/spec/environment/binding bytes and its non-force story
+head. An incompatible core, binding conflict or unresolved Copier rejection requires
+human review through the native update/recovery contract. Default binding declares
+timezone schema only; a confirmed explicit value follows the typed settings seed/deploy
+path. See docs/contracts/kit-template-and-qa.md, "Installing a kit package into a
+generated product". Ordinary feature work keeps its existing worker lifecycle.
 
 ## Commit & Push
 

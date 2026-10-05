@@ -210,6 +210,10 @@ def _pydantic_shape(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, A
         return {"kind": "enum", "values": tuple(sorted(schema["enum"])), "nullable": False}
     if "const" in schema:
         return {"kind": "enum", "values": (schema["const"],), "nullable": False}
+    if "patternProperties" in schema:
+        values = list(schema["patternProperties"].values())
+        assert values and all(value == values[0] for value in values), "heterogeneous regex map"
+        return {"kind": "map", "values": _pydantic_shape(values[0], root), "nullable": False}
     if "properties" in schema or (
         schema.get("type") == "object" and "additionalProperties" not in schema
     ):
@@ -305,6 +309,15 @@ def _assert_contract(
         f"{frontend_name} drifted from {getattr(model, '__name__', str(model))}:\n"
         f"expected={expected}\nactual={actual}"
     )
+
+
+def test_regex_keyed_maps_keep_their_recursive_value_contract():
+    schema = {"type": "object", "patternProperties": {"^[a-z]+$": {"type": "string"}}}
+    assert _pydantic_shape(schema, schema) == {
+        "kind": "map",
+        "values": {"kind": "string", "nullable": False},
+        "nullable": False,
+    }
 
 
 def _discover_frontend_api_calls() -> Counter[tuple[str, str, str, str | None]]:

@@ -17,15 +17,18 @@ list could install what the kit no longer releases.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
+import hashlib
+import json
 import time
 
 from framework.catalog import (
     CATALOG_PATH,
     Catalog,
     CatalogError,
+    CatalogLibrary,
     CatalogPackage,
     CatalogVersion,
     IncompatibleCatalogVersionError,
@@ -43,6 +46,7 @@ logger = structlog.get_logger(__name__)
 CATALOG_TIMEOUT_SECONDS = 10.0
 #: A read this recent answers again without a fetch; a release waits at most this long.
 CATALOG_CACHE_SECONDS = 300.0
+CATALOG_RESOURCE_MAX_BYTES = 262144
 
 
 class KitCatalogFailure(StrEnum):
@@ -75,6 +79,11 @@ class KitCatalog:
     source: str
     core_version: str
     packages: tuple[InstallablePackage, ...]
+    libraries: tuple[CatalogLibrary, ...] = ()
+    bindings: dict[str, str] = field(default_factory=dict)
+    manifests: dict[str, str] = field(default_factory=dict)
+    digest: str = ""
+    raw: str = ""
 
     @property
     def names(self) -> frozenset[str]:
@@ -113,7 +122,17 @@ def installable(catalog: Catalog, source: str, core_version: str = CORE_VERSION)
             logger.info("kit_catalog_package_incompatible", package=package.name, core=core_version)
             continue
         packages.append(InstallablePackage(package=package, version=version))
-    return KitCatalog(source=source, core_version=core_version, packages=tuple(packages))
+    return KitCatalog(
+        source=source,
+        core_version=core_version,
+        packages=tuple(packages),
+        libraries=catalog.libraries,
+        digest=hashlib.sha256(
+            json.dumps(
+                asdict(catalog), sort_keys=True, default=lambda value: value.model_dump(mode="json")
+            ).encode()
+        ).hexdigest(),
+    )
 
 
 class KitCatalogReader:
@@ -131,8 +150,10 @@ class KitCatalogReader:
         timeout: float = CATALOG_TIMEOUT_SECONDS,
         ttl: float = CATALOG_CACHE_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        component_source: str | None = None,
     ) -> None:
         self.url = url
+        self.component_source = component_source
         self._timeout = timeout
         self._ttl = ttl
         self._clock = clock
@@ -172,11 +193,46 @@ class KitCatalogReader:
             catalog = parse_catalog(response.text, self.url)
         except CatalogError as error:
             return KitCatalogUnavailable(self.url, KitCatalogFailure.INVALID, str(error))
-        return installable(catalog, self.url)
+        answer = installable(catalog, self.url)
+        bindings = {}
+        manifests = {}
+        if self.component_source is not None:
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    for item in answer.packages:
+                        if item.package.default_binding is None:
+                            continue
+                        module, resource = item.package.default_binding.split(":", 1)
+                        path = f"{item.package.path}/{module.replace('.', '/')}/{resource}"
+                        url = f"{self.component_source.rstrip('/')}/{item.version.tag}/{path}"
+                        result = await client.get(url)
+                        result.raise_for_status()
+                        if len(result.content) > CATALOG_RESOURCE_MAX_BYTES:
+                            raise ValueError("default binding resource exceeds read limit")
+                        bindings[item.name] = result.text
+                        manifest_url = (
+                            f"{self.component_source.rstrip('/')}/{item.version.tag}/"
+                            f"{item.package.path}/{module.replace('.', '/')}/package.yaml"
+                        )
+                        manifest_response = await client.get(manifest_url)
+                        manifest_response.raise_for_status()
+                        if len(manifest_response.content) > CATALOG_RESOURCE_MAX_BYTES:
+                            raise ValueError("package manifest exceeds read limit")
+                        manifests[item.name] = manifest_response.text
+            except (httpx.HTTPError, ValueError) as error:
+                return KitCatalogUnavailable(
+                    self.url,
+                    KitCatalogFailure.INVALID,
+                    f"binding_unavailable: {type(error).__name__}",
+                )
+        return replace(answer, bindings=bindings, manifests=manifests, raw=response.text)
 
 
 @lru_cache
 def get_kit_catalog_reader() -> KitCatalogReader:
     """The process's one reader, at the configured source and ref."""
     settings = get_settings()
-    return KitCatalogReader(catalog_url(settings.kit_catalog_source, settings.kit_catalog_ref))
+    return KitCatalogReader(
+        catalog_url(settings.kit_catalog_source, settings.kit_catalog_ref),
+        component_source=settings.kit_catalog_source,
+    )

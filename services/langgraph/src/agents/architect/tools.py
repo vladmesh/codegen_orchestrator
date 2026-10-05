@@ -3,7 +3,7 @@
 Tools for the architect ReAct agent to decompose stories into tasks.
 All tools use the shared LanggraphAPIClient singleton.
 
-Task chaining: create_task auto-chains tasks sequentially — each new task
+Task chaining: create_task auto-chains tasks sequentially: each new task
 is blocked by the previous one. The LLM doesn't need to track task IDs
 or manage dependencies.
 
@@ -17,30 +17,24 @@ so the model can neither redirect a task to another story/project nor invent an
 attempt. A run that is not planning under a brief carries `None` for the brief
 fields, and then `create_task` sends the ordinary non-brief shape.
 
-Capability shape is deliberately absent from every tool schema too. Whether a
-capability is reuse, a shared service, a container or an in-process kit package
-is decided in the plan and carried in the task's own description and acceptance
-criteria, which is what the engineering worker reads; `TaskCreate` has no field
-for it, so an argument here would name a decision nothing downstream stores or
-enforces. The prompt states the ladder and the package protocol under
-"Capability Shape".
-
-What a package task may install is checked, though: `create_task` refuses a
-`kit add` of a name outside the live kit catalog the run was briefed with
-(`kit_catalog_packages` in state, `None` when the catalog was unavailable) and
-any install from a wheel file or built artifact, so a plan installs only what
-`kit add` resolves from the catalog itself.
+Catalog selection uses `plan_install(name)`: the injected catalog snapshot owns
+package, recommended library and default-binding identities in a typed INSTALL.
+`create_task` continues ordinary engineering planning, but refuses prose kit
+installation recipes and supplied artifacts. No model field controls command
+vectors, component sources, operation leases or engineering accounting.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+from dataclasses import replace
 import io
 import re
 import shlex
 from typing import Annotated
 
+from framework.catalog import parse_catalog
 from framework.cli import _parser as kit_cli_parser
 import httpx
 from langchain_core.tools import tool
@@ -49,9 +43,11 @@ from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.product_brief import RequirementCoverageCreate
-from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.task import TaskCreate, TaskStatus, TaskType
 
+from ...catalog_install import InstallRefusal, plan_install_payload
 from ...clients.api import api_client
+from ...kit_catalog import installable
 
 logger = structlog.get_logger(__name__)
 
@@ -167,9 +163,9 @@ async def get_project_spec(project_id: str, detail: str = "") -> dict:
     This is usually enough for task decomposition.
 
     Use `detail` only when the summary is insufficient for a specific decision:
-        detail="models"  — full model definitions with fields and types
-        detail="events"  — full event definitions
-        detail="domains" — full domain operations with methods and paths
+        detail="models" : full model definitions with fields and types
+        detail="events" : full event definitions
+        detail="domains": full domain operations with methods and paths
 
     Args:
         project_id: Project ID.
@@ -225,6 +221,64 @@ async def get_tasks_by_story(story_id: str) -> list[dict]:
 
 
 @tool
+async def plan_install(
+    name: str,
+    story_id: Annotated[str, InjectedState("story_id")],
+    project_id: Annotated[str, InjectedState("project_id")],
+    kit_install_snapshot: Annotated[dict | None, InjectedState("kit_install_snapshot")],
+    planning_attempt_id: Annotated[str | None, InjectedState("planning_attempt_id")] = None,
+) -> dict:
+    """Select a catalog package on an existing backend,tg_bot product.
+
+    Creates exactly one mechanical INSTALL task, including curated libraries and
+    the default binding. No model or engineering Run executes installation.
+    Use this for explicit catalog selections; never split the closure into coding tasks.
+    """
+    if kit_install_snapshot is None:
+        return {"error": "catalog_unavailable"}
+    project = await api_client.get_project(project_id)
+    repository = await api_client.get_primary_repository(project_id)
+    if (
+        project is None
+        or repository is None
+        or project.status == "draft"
+        or not {"backend", "tg_bot"}.issubset(project.modules)
+    ):
+        return {"error": "product_incompatible: requires an existing backend,tg_bot product"}
+    try:
+        snapshot = replace(
+            installable(
+                parse_catalog(kit_install_snapshot["catalog"]),
+                kit_install_snapshot["source"],
+                kit_install_snapshot["core_version"],
+            ),
+            bindings=kit_install_snapshot["bindings"],
+            manifests=kit_install_snapshot["manifests"],
+        )
+        payload = plan_install_payload(snapshot, name, "3.12.0")
+        body = TaskCreate(
+            title=f"Install catalog package {name}",
+            type=TaskType.INSTALL,
+            project_id=project_id,
+            repository_id=repository.id,
+            story_id=story_id,
+            install=payload,
+            status=TaskStatus.TODO,
+            created_by="architect",
+            blocked_by_task_id=_last_task_id.get(story_id),
+            planning_attempt_id=planning_attempt_id,
+            description=f"Install {name} through scaffolder; review the generated story PR.",
+            acceptance_criteria="The selected package, recommended libraries and default binding "
+            "are installed, regenerated and validated in the product.",
+        )
+    except (InstallRefusal, ValueError) as error:
+        return {"error": str(error)}
+    result = await api_client.create_task(body.model_dump(mode="json"))
+    _last_task_id[story_id] = result.id
+    return result.model_dump(mode="json")
+
+
+@tool
 async def create_task(
     title: str,
     description: str,
@@ -241,9 +295,9 @@ async def create_task(
     one created for the same story. Just call create_task in the right order —
     dependencies are handled for you.
 
-    A task that installs a kit package names it as `kit add <name>` with a name
-    from the Kit package catalog in your instructions; any other install is
-    refused with the reason.
+    Explicit catalog installation uses plan_install(name), which owns one typed
+    INSTALL task and its package/library/default-binding closure. This tool
+    refuses kit install prose; use it for unrelated ordinary feature work.
 
     Args:
         title: Short task title.
@@ -255,6 +309,12 @@ async def create_task(
     if refusal is not None:
         logger.warning("architect_task_package_refused", title=title, detail=refusal)
         return {"error": f"task {title!r} was refused: {refusal}"}
+
+    if _KIT_ADD.search(f"{description}\n{acceptance_criteria}"):
+        return {
+            "error": f"task {title!r} was refused: catalog_install_requires_plan_install; "
+            "call plan_install(name) for one typed mechanical install task"
+        }
 
     blocked_by = _last_task_id.get(story_id)
 
@@ -295,9 +355,9 @@ async def create_task(
 def _refusal_detail(error: httpx.HTTPStatusError) -> str:
     """What the API refused, in the words it refused it with.
 
-    The architect's next move depends on which refusal this was — an unknown
+    The architect's next move depends on which refusal this was: an unknown
     requirement id is a different repair from a disposition that named both a
-    task and a reason — so the detail is handed back to the model rather than
+    task and a reason: so the detail is handed back to the model rather than
     flattened into "failed".
     """
     try:
@@ -323,7 +383,7 @@ async def record_requirement_coverage(
     returned undone. Neither is not an answer and both is two answers.
 
     Nothing in this story's plan is released until every must-requirement id has
-    a disposition recorded here, so call this once per requirement — including
+    a disposition recorded here, so call this once per requirement: including
     the ones you are returning.
 
     Args:
@@ -374,7 +434,7 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
     """Update the repository's acceptance criteria for regression testing.
 
     Call this AFTER creating all tasks. Pass the COMPLETE updated list of
-    acceptance criteria — not just the new ones. Read the current criteria
+    acceptance criteria: not just the new ones. Read the current criteria
     first (returned in the response), add checks for new functionality from
     this story, and remove checks for deleted functionality.
 
@@ -386,7 +446,7 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
         - Telegram: /start responds with welcome message
 
     A behaviour the product runs on a schedule is named in its own form, which
-    the platform reads rather than an executor — QA fires the behaviour itself
+    the platform reads rather than an executor: QA fires the behaviour itself
     and judges it on what follows THEN:
         - FIRE JOB daily_digest THEN a digest message is delivered to the owner
         - FIRE JOB daily_digest WITH {"languages":["ru","en"]} THEN a digest per configured language
@@ -429,6 +489,7 @@ def get_architect_tools() -> list:
         get_project_spec,
         get_tasks_by_story,
         create_task,
+        plan_install,
         record_requirement_coverage,
         update_acceptance_criteria,
     ]

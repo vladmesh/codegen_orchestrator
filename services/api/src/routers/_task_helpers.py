@@ -1,4 +1,4 @@
-"""Task router helpers — shared DB utilities, converters, validators."""
+"""Task router helpers: shared DB utilities, converters, validators."""
 
 from datetime import UTC, datetime
 import secrets
@@ -59,6 +59,8 @@ def to_read(task: Task, last_event: str | None = None) -> TaskRead:
         failure_metadata=getattr(task, "failure_metadata", None),
         dispatch_admitted=task.dispatch_admitted,
         planning_attempt_id=task.planning_attempt_id,
+        install=task.install,
+        install_operation=task.install_operation,
         created_at=task.created_at,
         updated_at=task.updated_at,
         last_event=last_event,
@@ -81,12 +83,12 @@ async def _load_task(task_id: str, db: AsyncSession, *, for_update: bool) -> Tas
 
 
 async def get_task(task_id: str, db: AsyncSession) -> Task:
-    """Read a task without taking a row lock — read-only paths only."""
+    """Read a task without taking a row lock: read-only paths only."""
     return await _load_task(task_id, db, for_update=False)
 
 
 async def get_task_for_update(task_id: str, db: AsyncSession) -> Task:
-    """Read a task with SELECT ... FOR UPDATE — every path that mutates the row.
+    """Read a task with SELECT ... FOR UPDATE: every path that mutates the row.
 
     Concurrent transitions of the same task then serialize on the row, so the
     loser validates against the status the winner committed and is refused.
@@ -137,7 +139,7 @@ def cancellation_is_reachable(from_status: str) -> bool:
     form a sweep over many rows needs: a caller that cancels a *set* of tasks
     has to leave the rows the transition table refuses where they are rather
     than force them or fail the whole transaction. A status the enum does not
-    know is not cancellable either — it is not a status.
+    know is not cancellable either: it is not a status.
     """
     try:
         from_s = TaskStatus(from_status)
@@ -149,8 +151,8 @@ def cancellation_is_reachable(from_status: str) -> bool:
 async def apply_cancellation(task: Task, db: AsyncSession) -> bool:
     """Move one *already locked* task row to cancelled, without committing.
 
-    The whole of the cancel transition lives here — the already-cancelled no-op,
-    the `VALID_TRANSITIONS` check, the status event — so that `DELETE
+    The whole of the cancel transition lives here: the already-cancelled no-op,
+    the `VALID_TRANSITIONS` check, the status event: so that `DELETE
     /api/tasks/{id}` and the Product Brief takeover that voids a superseded plan
     are one writer with one set of rules, not two. Commit is the caller's,
     because a takeover cancels in the same transaction that mints the new
@@ -163,6 +165,14 @@ async def apply_cancellation(task: Task, db: AsyncSession) -> bool:
     validate_transition(task.status, TaskStatus.CANCELLED)
     old_status = task.status
     task.status = TaskStatus.CANCELLED
+    if task.type == "install" and task.install_operation is not None:
+        from shared.contracts.dto.catalog_install import InstallOperation
+
+        operation = InstallOperation.model_validate(task.install_operation)
+        if operation.state == "queued":
+            operation.state, operation.stage = "refused", "cancelled"
+            operation.detail = "Cancelled before execution claim; no product mutation."
+            task.install_operation = operation.model_dump(mode="json")
     await create_status_event(task, old_status, TaskStatus.CANCELLED, "system", {}, db)
     return True
 

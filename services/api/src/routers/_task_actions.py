@@ -1,4 +1,4 @@
-"""Task action endpoints — state machine transitions."""
+"""Task action endpoints: state machine transitions."""
 
 from typing import NoReturn
 
@@ -39,6 +39,7 @@ from ._story_helpers import (
     _validate_transition as _validate_story_transition,
 )
 from ._task_helpers import (
+    apply_cancellation,
     create_status_event,
     get_task_for_update,
     to_read,
@@ -51,12 +52,12 @@ action_router = APIRouter()
 
 #: The conditions the operator spawn button is authorised to walk past, named
 #: once here rather than being absent. `spawn-worker` exists to start a task a
-#: human picked out — from backlog, or again on one already in_dev — so it
+#: human picked out: from backlog, or again on one already in_dev: so it
 #: overrides the dispatchability status and the prior-attempt fence, which are
 #: exactly the two conditions that describe "the scheduler would not have
-#: started this now". Everything else — the internal project, an unresolved
+#: started this now". Everything else: the internal project, an unresolved
 #: blocker, a busy story, a draft or unprepared project, the budget and the
-#: slot — refuses an operator spawn exactly as it refuses a scheduled one, and
+#: slot: refuses an operator spawn exactly as it refuses a scheduled one, and
 #: the overrides that were used are recorded on the attempt.
 _OPERATOR_SPAWN_OVERRIDES = [
     EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE,
@@ -182,6 +183,8 @@ async def fail_task(
 ) -> TaskRead:
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
+    if task.type == "install":
+        await require_automatic_task(task, db)
 
     validate_transition(task.status, TaskStatus.FAILED)
 
@@ -338,9 +341,11 @@ async def resume_task(
     infrastructure refusal (its own retry clears that evidence), one that still
     has a live run, or one whose story branch another task's worker holds.
     """
-    # Ladder: Task, then Story, then Run — the order admission and every other
+    # Ladder: Task, then Story, then Run: the order admission and every other
     # task/story writer take them.
     task = await get_task_for_update(task_id, db)
+    if task.type == "install":
+        await require_automatic_task(task, db)
     from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
 
     if COMMIT_PUBLICATION_KEY in (task.failure_metadata or {}):
@@ -439,8 +444,8 @@ async def resume_task(
         "iteration": iteration,
         "max_iterations": iteration + body.retries,
         "retries": body.retries,
-        # What the parked attempts left behind — a gave-up reason, a resource
-        # wait's start — belongs to them: kept here, and gone from the task, so
+        # What the parked attempts left behind: a gave-up reason, a resource
+        # wait's start: belongs to them: kept here, and gone from the task, so
         # nothing reads it as the fresh attempt's own.
         "previous_failure_metadata": task.failure_metadata,
     }
@@ -571,6 +576,13 @@ async def transition_task(
 ) -> TaskRead:
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
+    if task.type == "install":
+        if to_status == TaskStatus.CANCELLED.value:
+            await apply_cancellation(task, db)
+            await db.commit()
+            await db.refresh(task)
+            return to_read(task)
+        await require_automatic_task(task, db)
     _refuse_client_resume_audit(task, body)
 
     if to_status == TaskStatus.IN_DEV:
@@ -684,7 +696,7 @@ async def spawn_worker(
         raise RuntimeError("Locked task disappeared before worker handoff")
     try:
         # The admitted row is the locked one, so this is the status the transition
-        # is actually applied to — not the one the unlocked peek above saw.
+        # is actually applied to: not the one the unlocked peek above saw.
         task_status = TaskStatus(task.status)
         if task_status is not TaskStatus.IN_DEV:
             if task_status is TaskStatus.BACKLOG:

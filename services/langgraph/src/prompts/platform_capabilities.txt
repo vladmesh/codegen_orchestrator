@@ -1,6 +1,7 @@
-## Platform capabilities (manifest v13, owner-reviewed)
+## Platform capabilities (manifest v14, owner-reviewed)
 What a product built here can and cannot have. The product is a Telegram bot and has no web address.
 Can:
+- Add a catalog capability: An existing bot can add a released catalog capability while retaining its own features.
 - Plain HTTP self links: The bot can include plain HTTP self links; their address can change when the product moves.
 - Telegram bot: A Telegram bot people chat with, using commands, buttons and menus.
 - The bot remembers data: The bot remembers data such as records, lists and history, and keeps it when the bot is updated.

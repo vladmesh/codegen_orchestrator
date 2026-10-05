@@ -372,3 +372,46 @@ async def test_completion_hands_the_pull_request_to_the_poller_without_auto_merg
     assert "auto-merge" not in github.create_pull_request.await_args.kwargs["body"].lower()
     api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 7})
     api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "published,branch_contains,completes",
+    [(_STORY_HEAD_SHA, True, True), (_STORY_HEAD_SHA, False, False), ("b" * 40, True, False)],
+)
+async def test_install_handoff_requires_its_exact_durable_head(
+    api_client, redis_client, published, branch_contains, completes
+):
+    from shared.contracts.dto.catalog_install import InstallOperation
+    from shared.contracts.dto.task import TaskType
+
+    task = _done_task().model_copy(
+        update={
+            "type": TaskType.INSTALL,
+            "install_operation": InstallOperation(
+                project_id=_PROJ_ID,
+                id="install-1",
+                task_id="task-A",
+                story_id="story-1",
+                repository_id="repo-1",
+                cycle_started_at=_NOW,
+                state="published",
+                stage="published",
+                head_sha=published,
+            ),
+        }
+    )
+    api_client.get_tasks_by_story.return_value = [task]
+    github = _completing_github("story-1")
+    github.branch_contains_commit.return_value = branch_contains
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)):
+        assert await complete_stories(api_client, redis_client) == int(completes)
+    github.branch_contains_commit.assert_awaited_once_with(
+        "org", "test-project", "story/story-1", published
+    )
+    github.merge_pull_request.assert_not_awaited()
+    if completes:
+        api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 7})
+    else:
+        api_client.stop_story.assert_awaited_once()
+        api_client.transition_story.assert_not_awaited()

@@ -1,0 +1,246 @@
+# Package catalog: every kit package and its released versions.
+#
+# `kit add <name>` reads this file live from the kit repository's default branch, so a new
+# package release needs no kit core tag. Format and release procedure: docs/CONTRACTS.md,
+# "Package catalog and releases". A release PR bumps the package version and appends its
+# entry under `versions`; the annotated tag `packages/<name>/v<version>` is published at the
+# merge commit by a separate PO operation.
+format_version: 1
+libraries:
+  - name: textparse
+    distribution: codegen-kit-textparse
+    path: packages/codegen-kit-textparse
+    module: codegen_kit_textparse
+    summary: Three deterministic English reminder-time forms with an explicit clock and zone.
+    functions:
+      - name: when
+        input:
+          type: object
+          properties:
+            text: {type: string}
+            lang: {type: string, const: en}
+            now: {type: string, format: date-time}
+            tz: {type: string, format: x-iana-tz}
+          required: [text, lang, now, tz]
+          additionalProperties: false
+        output:
+          type: [object, 'null']
+          properties:
+            at: {type: string, format: date-time}
+            rest: {type: string}
+          required: [at, rest]
+          additionalProperties: false
+        value: at
+    versions:
+      - {version: 0.1.0, tag: packages/textparse/v0.1.0, requires_python: '>=3.11'}
+extensions: []
+packages:
+  - name: reminders
+    distribution: codegen-kit-reminders
+    path: packages/codegen-kit-reminders
+    summary: One-time text reminders that a product user schedules, lists and cancels.
+    capabilities:
+      - remind me at a time
+      - schedule a one-time text reminder
+      - list my upcoming reminders
+      - cancel a reminder
+      - notify the product when a reminder is due
+    recommended_with:
+      - {library: textparse, why: Parses an English time phrase for a one-time reminder.}
+    settings:
+      - name: reminder_owner_ref
+        summary: Owner of the seeded first-deploy reminder, in the canonical caller form telegram:<id>.
+    environment:
+      - name: REDIS_URL
+        required: true
+        summary: Redis broker that delivers job_fired and publishes reminders.due.
+    actions:
+    - name: create
+      summary: Schedule a one-time reminder for the verified caller.
+      operation:
+        method: POST
+        path: ''
+      input:
+        properties:
+          text:
+            type: string
+            minLength: 1
+          remind_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+        type: object
+        required:
+        - remind_at
+        - text
+      output:
+        properties:
+          id:
+            type: string
+            format: uuid
+          user_ref:
+            type: string
+          text:
+            type: string
+          remind_at:
+            type: string
+            format: date-time
+          state:
+            type: string
+            enum:
+            - scheduled
+            - cancelled
+            - due
+            - emitted
+          created_at:
+            type: string
+            format: date-time
+          cancelled_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          due_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          emitted_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        type: object
+        required:
+        - created_at
+        - id
+        - remind_at
+        - state
+        - text
+        - user_ref
+    - name: list
+      summary: List reminders owned by the verified caller.
+      operation:
+        method: GET
+        path: ''
+      input:
+        type: object
+        properties: {}
+        additionalProperties: false
+      output:
+        items:
+          properties:
+            id:
+              type: string
+              format: uuid
+            user_ref:
+              type: string
+            text:
+              type: string
+            remind_at:
+              type: string
+              format: date-time
+            state:
+              type: string
+              enum:
+              - scheduled
+              - cancelled
+              - due
+              - emitted
+            created_at:
+              type: string
+              format: date-time
+            cancelled_at:
+              anyOf:
+              - type: string
+                format: date-time
+              - type: 'null'
+            due_at:
+              anyOf:
+              - type: string
+                format: date-time
+              - type: 'null'
+            emitted_at:
+              anyOf:
+              - type: string
+                format: date-time
+              - type: 'null'
+          type: object
+          required:
+          - created_at
+          - id
+          - remind_at
+          - state
+          - text
+          - user_ref
+        type: array
+    - name: cancel
+      summary: Cancel a scheduled reminder owned by the verified caller.
+      operation:
+        method: DELETE
+        path: /{reminder_id}
+      input:
+        type: object
+        properties:
+          reminder_id:
+            type: string
+            format: uuid
+        additionalProperties: false
+        required:
+        - reminder_id
+      output:
+        properties:
+          id:
+            type: string
+            format: uuid
+          user_ref:
+            type: string
+          text:
+            type: string
+          remind_at:
+            type: string
+            format: date-time
+          state:
+            type: string
+            enum:
+            - scheduled
+            - cancelled
+            - due
+            - emitted
+          created_at:
+            type: string
+            format: date-time
+          cancelled_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          due_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          emitted_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        type: object
+        required:
+        - created_at
+        - id
+        - remind_at
+        - state
+        - text
+        - user_ref
+    default_binding: codegen_kit_reminders:bindings/default.yaml
+    versions:
+      - version: 0.3.0
+        tag: packages/reminders/v0.3.0
+        requires_core: ">=2,<3"
+      - version: 0.4.0
+        tag: packages/reminders/v0.4.0
+        requires_core: ">=2.1,<3"
+      - version: 0.5.0
+        tag: packages/reminders/v0.5.0
+        requires_core: ">=2.2,<3"

@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-05
+
+- Catalog selections persist one typed install; scaffolder validates and publishes its owned
+  story head with released kit 0.8.0, preserving product files without paid engineering.
+
 ## 2026-10-04
 
 - The unit runner, compose runner and stand render test pass only the three Ummanu docker-guard

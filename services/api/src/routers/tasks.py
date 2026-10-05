@@ -1,4 +1,4 @@
-"""Tasks router — CRUD + action-based status transitions + events (planning layer)."""
+"""Tasks router: CRUD + action-based status transitions + events (planning layer)."""
 
 from datetime import UTC, datetime
 import re
@@ -9,10 +9,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.catalog_install import (
+    InstallCommand,
+    InstallDecision,
+    InstallOperatorRequest,
+)
 from shared.contracts.dto.task import TaskStatus
-from shared.models import Task, TaskEvent
+from shared.models import Task, TaskEvent, User
 
 from ..database import get_async_session
+from ..dependencies import require_bearer_admin, require_internal_or_admin
 from ..schemas.task import (
     TaskCreate,
     TaskEventCreate,
@@ -106,6 +112,7 @@ async def create_task(
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
+        install=body.install.model_dump(mode="json") if body.install else None,
         dispatch_admitted=dispatch_admitted,
         planning_attempt_id=planning_attempt_id,
         created_at=now,
@@ -158,6 +165,7 @@ async def push_task(
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
+        install=body.install.model_dump(mode="json") if body.install else None,
         dispatch_admitted=dispatch_admitted,
         planning_attempt_id=planning_attempt_id,
         created_at=now,
@@ -288,6 +296,11 @@ async def update_task(
     # Task: a task may not join a plan that is still being built, and while it is
     # unadmitted it may not leave the one it was planned into.
     task = await take_task_for_plan_fenced_update(task_id=task_id, update_data=update_data, db=db)
+    if task.type == "install" and any(
+        field in update_data and update_data[field] != getattr(task, field)
+        for field in ("project_id", "story_id", "repository_id", "blocked_by_task_id")
+    ):
+        raise HTTPException(409, {"code": "install_ownership_immutable"})
 
     from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
 
@@ -380,3 +393,27 @@ async def create_task_event(
         event_type=event.event_type,
     )
     return event
+
+
+@router.post("/{task_id}/catalog-install", response_model=InstallDecision)
+async def catalog_install_command(
+    task_id: str,
+    body: InstallCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> InstallDecision:
+    from ..catalog_install import install_command
+
+    return await install_command(task_id, body, db)
+
+
+@router.post("/{task_id}/catalog-install/recovery", response_model=InstallDecision)
+async def recover_catalog_install(
+    task_id: str,
+    body: InstallOperatorRequest,
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(require_bearer_admin),
+) -> InstallDecision:
+    from ..catalog_install_recovery import operator_install_recovery
+
+    return await operator_install_recovery(task_id, body, f"user:{admin.id}", db)

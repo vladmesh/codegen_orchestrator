@@ -1,12 +1,13 @@
-"""Task DTOs and enums — single source of truth for task statuses and types (planning layer)."""
+"""Task DTOs and enums: single source of truth for task statuses and types (planning layer)."""
 
 from enum import StrEnum
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.catalog_install import CatalogInstall, InstallOperation
 
 
 class TaskStatus(StrEnum):
@@ -28,6 +29,7 @@ class TaskType(StrEnum):
     FEATURE = "feature"
     FIX = "fix"
     REFACTOR = "refactor"
+    INSTALL = "install"
 
 
 class TaskEventType(StrEnum):
@@ -113,10 +115,12 @@ class TaskDTO(TimestampedDTO):
     #: Whether this task crossed the coverage-to-dispatch boundary. Required,
     #: with no default: a response that omitted it would otherwise be read as an
     #: invented "admitted", which is exactly the authority the boundary exists to
-    #: withhold. Paired with `TaskRead` — see `TestTaskReadPairing`.
+    #: withhold. Paired with `TaskRead`: see `TestTaskReadPairing`.
     dispatch_admitted: bool
     #: The architect planning attempt this task was planned under, if any.
     planning_attempt_id: str | None = None
+    install: CatalogInstall | None = None
+    install_operation: InstallOperation | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
 
@@ -140,6 +144,8 @@ class TaskEventDTO(TimestampedDTO):
 class TaskCreate(BaseModel):
     """Create task request."""
 
+    model_config = ConfigDict(extra="forbid")
+
     project_id: uuid.UUID
     type: TaskType = TaskType.FEATURE
     title: str
@@ -160,6 +166,17 @@ class TaskCreate(BaseModel):
     #: ignored everywhere else, because a task outside a brief plan is admitted
     #: by existing.
     planning_attempt_id: str | None = None
+
+    install: CatalogInstall | None = None
+
+    @model_validator(mode="after")
+    def install_contract(self):
+        if self.type is TaskType.INSTALL:
+            if self.install is None or not self.story_id or not self.repository_id:
+                raise ValueError("INSTALL requires payload, story and repository ownership")
+        elif self.install is not None:
+            raise ValueError("only INSTALL carries an install payload")
+        return self
 
 
 class TaskUpdate(BaseModel):

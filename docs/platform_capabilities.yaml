@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 13
+version: 14
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -20,11 +20,14 @@ derived_from:
     # The commit the pinned release resolves to. The release tag itself is written down only
     # in `scripts/system_configs.yaml` (`scheduler.service_template_ref`); a test ties this
     # commit to the vendored render of that pin, so moving the pin fails until it is updated.
-    commit: 56da5c83cb8d011823ce2cb70345415b223b93ab
+    commit: b5716efe6ae03c13e1762e372c63e6639843d122
     note: >-
       The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is
       still an admitted Copier source, but no new product is scaffolded from it.
   code:
+    - services/scaffolder/src/install.py
+    - services/api/src/catalog_install.py
+    - services/langgraph/src/catalog_install.py
     - services/langgraph/src/subgraphs/devops/deployer.py
     - services/langgraph/src/subgraphs/devops/secret_resolver.py
     - services/langgraph/src/subgraphs/devops/deploy_workflow.py
@@ -44,32 +47,36 @@ derived_from:
 # Everything technical lives in `how` (can) and `technical` (cannot), which only the Architect's
 # block and the document carry.
 can:
+  - id: catalog_install
+    name: Add a catalog capability
+    plain: An existing bot can add a released catalog capability while retaining its own features.
+    how: >-
+      plan_install selects package/libraries/default binding in one INSTALL on owned clean
+      core-2.2 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to
+      PR/CI/deploy without engineering. Review refusals; confirm timezone.
   - id: http_self_address
     name: Plain HTTP self links
     plain: The bot can include plain HTTP self links; their address can change when the product moves.
     how: >-
-      Required derived `PUBLIC_BASE_URL` is the single backend's HTTP endpoint shared by
-      resolver, deployer and smoke; IPv6 is bracketed. Missing/ambiguous allocations and
-      effective native/mapped loopback, unspecified or multicast addresses fail with the key
-      named. IPv6 deploy reads released executable transport at the built commit, refusing
-      unverified workflows or .rej with DEPLOY_HOST named. Existing products need a reviewed
-      kit update and reconciled merge. No domain/TLS/frontend/inbound webhook capability is added.
+      PUBLIC_BASE_URL derives from one backend allocation; IPv6 is bracketed. Missing,
+      ambiguous, loopback, unspecified or multicast addresses refuse. IPv6 deploy requires
+      released executable transport at the built commit; unverified workflow or .rej refuses
+      with DEPLOY_HOST. Existing products need reviewed kit update and reconciled merge.
+      No domain/TLS/frontend/webhook capability is added.
   - id: telegram_bot
     name: Telegram bot
     plain: A Telegram bot people chat with, using commands, buttons and menus.
     how: >-
-      Kit module `tg_bot` (python-telegram-bot 21.4, `run_polling`), so the bot needs no web
-      address. Kit module `backend` (FastAPI) is always included: the PO adds it to every
-      project. The deployer reports `http://{server_ip}:{port}` of the backend's allocated port,
-      the only port a product publishes; there is no domain name and no https.
+      Kit tg_bot (python-telegram-bot 21.4, run_polling) needs no web address. PO includes
+      backend (FastAPI) in every product. Its allocated http://{server_ip}:{port} is the
+      sole public port; no domain or https.
   - id: stored_data
     name: The bot remembers data
     plain: The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
     how: >-
-      `postgres:16` service `db` with the named volume `db_data`, deployed with the backend,
-      reachable only from the product's own containers (`db:5432`). `redis:7-alpine` at
-      `redis:6379` carries queues, caches and product events (Redis Streams); it has no volume,
-      so it is not permanent storage.
+      Product postgres:16 at db:5432 uses persistent db_data. Product redis:7-alpine at
+      redis:6379 carries queues, caches and Redis Streams without persistent storage.
+      Both are private to product containers.
   - id: scheduled_work
     name: Actions on a schedule or later
     plain: The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
@@ -322,7 +329,8 @@ kit:
   catalog: >-
     the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings;
     it is read live from the kit's default branch at planning time and the planning
-    instructions list each installable package; install with `kit add <name>`; a new package
+    instructions list admitted packages, libraries, recommendations and default bindings;
+    explicit selection uses plan_install and scaffolder mode=install; a new package
     release needs no orchestrator change.
 
 deploy_targets:

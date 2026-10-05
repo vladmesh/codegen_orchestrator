@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 13, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 14, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -10,6 +10,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ### Can
 
+- **Add a catalog capability.** An existing bot can add a released catalog capability while retaining its own features.
 - **Plain HTTP self links.** The bot can include plain HTTP self links; their address can change when the product moves.
 - **Telegram bot.** A Telegram bot people chat with, using commands, buttons and menus.
 - **The bot remembers data.** The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
@@ -31,10 +32,13 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ## Technical detail
 
-Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `56da5c83cb8d011823ce2cb70345415b223b93ab`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
+Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `b5716efe6ae03c13e1762e372c63e6639843d122`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
 
 Code it was read from:
 
+- `services/scaffolder/src/install.py`
+- `services/api/src/catalog_install.py`
+- `services/langgraph/src/catalog_install.py`
 - `services/langgraph/src/subgraphs/devops/deployer.py`
 - `services/langgraph/src/subgraphs/devops/secret_resolver.py`
 - `services/langgraph/src/subgraphs/devops/deploy_workflow.py`
@@ -51,17 +55,21 @@ Code it was read from:
 
 ### How each capability works
 
+#### Add a catalog capability
+
+How: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.2 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
+
 #### Plain HTTP self links
 
-How: Required derived `PUBLIC_BASE_URL` is the single backend's HTTP endpoint shared by resolver, deployer and smoke; IPv6 is bracketed. Missing/ambiguous allocations and effective native/mapped loopback, unspecified or multicast addresses fail with the key named. IPv6 deploy reads released executable transport at the built commit, refusing unverified workflows or .rej with DEPLOY_HOST named. Existing products need a reviewed kit update and reconciled merge. No domain/TLS/frontend/inbound webhook capability is added.
+How: PUBLIC_BASE_URL derives from one backend allocation; IPv6 is bracketed. Missing, ambiguous, loopback, unspecified or multicast addresses refuse. IPv6 deploy requires released executable transport at the built commit; unverified workflow or .rej refuses with DEPLOY_HOST. Existing products need reviewed kit update and reconciled merge. No domain/TLS/frontend/webhook capability is added.
 
 #### Telegram bot
 
-How: Kit module `tg_bot` (python-telegram-bot 21.4, `run_polling`), so the bot needs no web address. Kit module `backend` (FastAPI) is always included: the PO adds it to every project. The deployer reports `http://{server_ip}:{port}` of the backend's allocated port, the only port a product publishes; there is no domain name and no https.
+How: Kit tg_bot (python-telegram-bot 21.4, run_polling) needs no web address. PO includes backend (FastAPI) in every product. Its allocated http://{server_ip}:{port} is the sole public port; no domain or https.
 
 #### The bot remembers data
 
-How: `postgres:16` service `db` with the named volume `db_data`, deployed with the backend, reachable only from the product's own containers (`db:5432`). `redis:7-alpine` at `redis:6379` carries queues, caches and product events (Redis Streams); it has no volume, so it is not permanent storage.
+How: Product postgres:16 at db:5432 uses persistent db_data. Product redis:7-alpine at redis:6379 carries queues, caches and Redis Streams without persistent storage. Both are private to product containers.
 
 #### Actions on a schedule or later
 
@@ -115,7 +123,7 @@ Why: Postgres and Redis get host ports allocated, but production compose publish
 
 Why: Nothing snapshots or copies the `db_data` volume; it lives only on the product's server.
 
-### Kit at 56da5c83cb8d
+### Kit at b5716efe6ae0
 
 Modules:
 
@@ -130,7 +138,7 @@ Core contracts every backend carries:
 - caller identity v1: Package routes serve only the caller verified by `X-Identity-Capability` (`USER_IDENTITY_CAPABILITY`), `X-User-Channel`, `X-User-External-Id`; `user_ref` is `<channel>:<external_id>`.
 - events v1: Durable product events on Redis Streams, each handled once per consuming service.
 
-Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings; it is read live from the kit's default branch at planning time and the planning instructions list each installable package; install with `kit add <name>`; a new package release needs no orchestrator change.
+Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings; it is read live from the kit's default branch at planning time and the planning instructions list admitted packages, libraries, recommendations and default bindings; explicit selection uses plan_install and scaffolder mode=install; a new package release needs no orchestrator change.
 
 ### Deploy targets
 

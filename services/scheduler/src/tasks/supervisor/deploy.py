@@ -538,7 +538,7 @@ async def _handle_deploy_success_story(
     result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Deploy succeeded — transition story to TESTING and start the QA run.
+    """Deploy succeeded: transition story to TESTING and start the QA run.
 
     A private bot admits QA only through the deploy-time test slot, so the run
     is started from a temporary access grant instead of directly: the grant is
@@ -554,8 +554,8 @@ async def _handle_deploy_success_story(
 
     # A QA handoff needs both the deployed URL and the application id. `application_id`
     # is legitimately optional on a DeployRunResult (a standalone deploy, or one where
-    # the app record couldn't be resolved), so validate the precondition here — before
-    # mutating story/run state — and route a success that can't reach QA to a visible
+    # the app record couldn't be resolved), so validate the precondition here: before
+    # mutating story/run state: and route a success that can't reach QA to a visible
     # failure instead of crashing the tick mid-handoff.
     if deployed_url is None or application_id is None:
         missing = ", ".join(
@@ -566,7 +566,7 @@ async def _handle_deploy_success_story(
         log.error("deploy_success_missing_handoff_fields", missing=missing)
         await api_client.fail_story(story_id)
         await _notify_admin_failure(
-            story_id, project_id, f"deploy reported success but missing {missing} — cannot run QA"
+            story_id, project_id, f"deploy reported success but missing {missing}: cannot run QA"
         )
         return False
 
@@ -580,7 +580,7 @@ async def _handle_deploy_success_story(
         await _notify_admin_failure(
             story_id,
             project_id,
-            "deploy succeeded but the project's repository has no acceptance criteria — "
+            "deploy succeeded but the project's repository has no acceptance criteria: "
             "cannot run QA",
         )
         return False
@@ -606,13 +606,13 @@ async def _handle_deploy_success_story(
         log.error("qa_handoff_project_missing", project_id=project_id)
         await api_client.fail_story(story_id)
         await _notify_admin_failure(
-            story_id, project_id, "deploy succeeded but the project is gone — cannot run QA"
+            story_id, project_id, "deploy succeeded but the project is gone: cannot run QA"
         )
         return False
 
     # A project that predates run ownership names no run, so its QA executor
     # could not be attributed once it dies. Fail the story rather than create an
-    # unownable worker — the same refusal the API gives an admin.
+    # unownable worker: the same refusal the API gives an admin.
     try:
         initiating_run_id = require_initiating_run(project)
     except ProjectPredatesRunOwnership as exc:
@@ -623,7 +623,7 @@ async def _handle_deploy_success_story(
         await _notify_admin_failure(
             story_id,
             project_id,
-            "deploy succeeded but the project names no initiating run — cannot run QA",
+            "deploy succeeded but the project names no initiating run: cannot run QA",
         )
         return False
 
@@ -634,7 +634,7 @@ async def _handle_deploy_success_story(
         await _notify_admin_failure(
             story_id,
             project_id,
-            "deploy succeeded but its commit is unknown — QA cannot be granted temporary access",
+            "deploy succeeded but its commit is unknown: QA cannot be granted temporary access",
         )
         return False
 
@@ -720,10 +720,16 @@ async def _handle_deploy_code_fix(
     description: str,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Deploy failed with CODE_FIX — redispatch to engineering if retries remain.
+    """Deploy failed with CODE_FIX: redispatch to engineering if retries remain.
 
     Returns True if redispatched, False if retries exhausted.
     """
+    from ..catalog_install import refuse_install_coding_fallback
+
+    if await refuse_install_coding_fallback(
+        api_client, story_id, "deployment requested a code fix"
+    ):
+        return False
     # A fix is another attempt inside the run that initiated the work, so the
     # message carries the project's run: the worker it spawns belongs to the
     # same run as the one whose deploy failed.
@@ -870,7 +876,7 @@ async def _fail_deploy_fix_handoff(
 def _code_fix_description(error_details: str) -> str:
     """Describe an ordinary code-fix failure without settings-seed policy."""
     return (
-        "Deploy failed — fix the code so containers start cleanly.\n\n"
+        "Deploy failed: fix the code so containers start cleanly.\n\n"
         f"Error: {error_details}\n\n"
         "Run the service locally or check imports/dependencies before pushing."
     )
@@ -895,7 +901,7 @@ async def _handle_deploy_retry(
     run,
     log: structlog.stdlib.BoundLogger,
 ) -> DeployRetryAction:
-    """Deploy failed with RETRY — re-publish deploy message if retries remain.
+    """Deploy failed with RETRY: re-publish deploy message if retries remain.
 
     Returns whether a new attempt was dispatched, an already-completed
     grant was reconciled, or ordinary recovery failed.
@@ -1017,7 +1023,7 @@ def _reconciled_success_result(result: DeployRunResult) -> DeployRunResult | Non
 
     ``DeployRunResult`` holds the invariant that a success cannot carry a
     settings-seed failure, so re-validating here —
-    rather than ``model_copy``, which runs no validators — is what makes this
+    rather than ``model_copy``, which runs no validators: is what makes this
     reconciliation reach it. Any future reconciliation that builds a success
     the same way inherits the check instead of having to remember it.
     """
@@ -1121,8 +1127,8 @@ async def _deploy_retry_attempt(
     The count comes from the deploy Runs themselves, newest first: every retry
     the supervisor dispatches is a Run triggered by `SUPERVISOR_RETRY_TRIGGER`,
     and a successful deploy of the story closes the failure episode. So the bound
-    holds however long a story takes and across scheduler restarts — a Redis
-    counter with a TTL let a story slower than the TTL retry without end — and a
+    holds however long a story takes and across scheduler restarts: a Redis
+    counter with a TTL let a story slower than the TTL retry without end: and a
     story that succeeded after two retries starts its next episode at attempt 1.
 
     This is the only reader of `deploy.max_deploy_retries`.
@@ -1153,7 +1159,7 @@ async def _handle_deploy_give_up(
     run,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Deploy failed with GIVE_UP — terminal failure, admin notified."""
+    """Deploy failed with GIVE_UP: terminal failure, admin notified."""
     log.warning("deploy_supervisor_give_up", run_id=run.id)
     error_msg = (run.result.error_details if run.result else None) or "unknown error"
     await api_client.fail_story(story_id)
@@ -1241,8 +1247,8 @@ async def _route_refused_deploy(
     """Give the refusal the one behaviour the shared table owes its disposition.
 
     The classification is read from the run result rather than re-derived, and
-    the behaviour comes from `shared.allocation_disposition` — the same table the
-    engineering path consults — so this branch can neither treat a refusal as a
+    the behaviour comes from `shared.allocation_disposition`: the same table the
+    engineering path consults: so this branch can neither treat a refusal as a
     product failure nor answer two dispositions the same way. Collapsing them is
     what left a request no server could ever fit polling forever with nobody
     told. The contract already refuses a `WAITING_INFRASTRUCTURE` result without
@@ -1327,8 +1333,8 @@ async def _escalate_refused_deploy(
 
     This is the same queue a quarantined QA story reaches, entered the same way:
     the reason is recorded on the story first, then the `human-review` action
-    moves it. It is deliberately not `fail_story` — an infrastructure refusal is
-    never evidence that the user's project is broken — and deliberately not
+    moves it. It is deliberately not `fail_story`: an infrastructure refusal is
+    never evidence that the user's project is broken: and deliberately not
     another wait, because the condition it would wait for cannot change on its
     own.
     """
@@ -1347,7 +1353,7 @@ async def _escalate_refused_deploy(
     # Owed before the transition for the same reason the QA paths owe theirs:
     # this line takes the story out of DEPLOYING, and nothing scans it
     # afterwards. A refusal nobody is told about was previously one swallowed
-    # exception away — the publish used to sit behind `except Exception: log`.
+    # exception away: the publish used to sit behind `except Exception: log`.
     owed = None
     if tell_owner:
         owed = await owe_owner_notification(
@@ -1412,7 +1418,7 @@ async def _handle_deploy_infrastructure_wait(
     could take the request, while a project already bound to a host is refused by
     *that* host: a fleet with one healthy server and one broken one the project
     sits on would otherwise re-dispatch, be refused, and re-dispatch again
-    forever. Escalating on elapsed time bounds that cycle too — the same clock,
+    forever. Escalating on elapsed time bounds that cycle too: the same clock,
     carried across re-dispatches, ends both shapes of a wait that is not working.
     """
     waiting_since = _infrastructure_wait_started_at(run)
@@ -1450,8 +1456,8 @@ async def _handle_deploy_infrastructure_wait(
     head_sha = _deploy_run_head_sha(run)
     if not head_sha:
         # No wait can supply a commit this run never recorded, so waiting for one
-        # is the silent hang again. The story is not failed — a deploy run
-        # without a head_sha is this platform's defect, not the project's — it
+        # is the silent hang again. The story is not failed: a deploy run
+        # without a head_sha is this platform's defect, not the project's: it
         # goes to a human.
         log.error("deploy_infrastructure_wait_head_sha_missing", run_id=run.id)
         await _escalate_refused_deploy(
@@ -1536,7 +1542,7 @@ async def _handle_deploy_waiting_user_secret(
     run,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Deploy is blocked on a required user secret — park the story, ask the owner once.
+    """Deploy is blocked on a required user secret: park the story, ask the owner once.
 
     The story moves DEPLOYING → WAITING_USER_SECRET (not FAILED) in one API
     transaction with the ask owed on this Run
@@ -1547,8 +1553,8 @@ async def _handle_deploy_waiting_user_secret(
     was delivered, so a publish that failed, an owner nobody can reach, or a
     process that died before asking can never start it.
 
-    Repeating this for the same Run owes nothing new — the API keeps an ask the
-    Run already carries and answers a story already waiting with that ask — so
+    Repeating this for the same Run owes nothing new: the API keeps an ask the
+    Run already carries and answers a story already waiting with that ask: so
     a tick that retries an entry whose answer was lost cannot ask twice.
     supervise_waiting_user_secret_stories only checks for the secret's arrival;
     it never re-sends the request.
@@ -1580,7 +1586,7 @@ async def _handle_deploy_waiting_user_secret(
 def _user_secret_request_text(missing) -> str:
     """What PO is told to ask the owner, by key and description only.
 
-    The secret `consumers` never leave the resolver — only the key and its
+    The secret `consumers` never leave the resolver: only the key and its
     description reach the user.
     """
     secret_lines = "\n".join(f"- {m.key}: {m.description}" for m in missing)
@@ -1606,7 +1612,7 @@ async def owe_user_secret_request(
     the record of exactly one wait: a story that comes back for a second secret
     does so on a new Run, with a new record and a new ask. Its `terminal_status`
     is WAITING_USER_SECRET, so the seam publishes it only while the story is
-    really waiting, and voids it — sending nothing — if the secret arrived and
+    really waiting, and voids it: sending nothing: if the secret arrived and
     the story moved on first.
 
     Entering the wait owes the ask in the transition's own API transaction
@@ -1651,12 +1657,12 @@ async def supervise_waiting_user_secret_stories(
 ) -> dict[str, int]:
     """Poll WAITING_USER_SECRET stories; re-deploy once every missing secret is saved.
 
-    Reads the missing keys from the story's latest deploy run, checks the project's
-    stored secret key names, and re-dispatches the deploy — the same way RETRY does
-    — when all are present, moving the story back to DEPLOYING. A story whose set is
-    still incomplete stays waiting: no state change, no repeated message to the user.
+     Reads the missing keys from the story's latest deploy run, checks the project's
+     stored secret key names, and re-dispatches the deploy: the same way RETRY does
+    : when all are present, moving the story back to DEPLOYING. A story whose set is
+     still incomplete stays waiting: no state change, no repeated message to the user.
 
-    Returns dict with 'redispatched' and 'failed' counts.
+     Returns dict with 'redispatched' and 'failed' counts.
     """
     stories = await api_client.get_stories_by_status(StoryStatus.WAITING_USER_SECRET)
     if not stories:
@@ -1679,7 +1685,7 @@ async def supervise_waiting_user_secret_stories(
             failed += 1
             continue
         # A run without a parseable result (QUEUED/RUNNING re-dispatch already in
-        # flight, or superseded) means there is nothing to act on yet — keep waiting.
+        # flight, or superseded) means there is nothing to act on yet: keep waiting.
         if run is None or run.result is None:
             continue
 
@@ -1714,7 +1720,7 @@ async def _redispatch_waiting_deploy(
     run,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Every missing secret is saved — re-run deploy the same path RETRY uses.
+    """Every missing secret is saved: re-run deploy the same path RETRY uses.
 
     head_sha is resolved from the source run exactly as the RETRY path does; a
     missing head_sha is a typed failure (fail the story, notify admin), never a
@@ -1795,5 +1801,5 @@ async def _redispatch_waiting_deploy(
 
 
 # ---------------------------------------------------------------------------
-# QA supervision — TESTING stories
+# QA supervision: TESTING stories
 # ---------------------------------------------------------------------------

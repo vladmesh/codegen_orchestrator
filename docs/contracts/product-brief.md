@@ -412,3 +412,14 @@ and decides no admission with it.
 debug route. Missing Redis data is `degraded` or unavailable, never a fabricated
 zero. Legacy or invalid executor decisions remain labelled as such and are not
 reconstructed from current configuration.
+
+## Explicit catalog selections
+
+plan_install uses the attempt's injected catalog/resources to persist one typed
+INSTALL task with the same planning_attempt_id, story/repository ownership and
+sequential predecessor as ordinary planning. Coverage refers to this task; it
+remains unadmitted until the existing complete-coverage transaction releases it.
+The scripted_install_plan harness calls the same tool and coverage API without a
+model. Missing or incompatible catalog/dependencies returns a named refusal and
+no task. Default binding declares timezone schema without inventing its value;
+confirmed initial_settings retains the existing seed/deploy ownership.
