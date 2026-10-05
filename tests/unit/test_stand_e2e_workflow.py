@@ -318,7 +318,7 @@ def test_the_target_snapshot_travels_from_the_suite_not_an_ssh_after_teardown():
     )
 
 
-def _collect(files: dict[str, str] | None) -> set[str]:
+def _collect_contents(files: dict[str, str] | None) -> dict[str, str]:
     """Run the collection the way the workflow runs it, over one directory shape.
 
     `files` is what the run left in the runner directory; `None` is a run that
@@ -348,7 +348,11 @@ def _collect(files: dict[str, str] | None) -> set[str]:
             ],
             check=True,
         )
-        return {path.name for path in extracted.iterdir()}
+        return {path.name: path.read_text(encoding="utf-8") for path in extracted.iterdir()}
+
+
+def _collect(files: dict[str, str] | None) -> set[str]:
+    return set(_collect_contents(files))
 
 
 def test_a_run_that_owes_no_target_snapshot_still_hands_over_its_evidence():
@@ -390,6 +394,30 @@ def test_a_snapshot_that_was_wanted_and_failed_leaves_the_rest_collectable():
     collected = _collect({"run-evidence-claude-claude.json": "{}"})
 
     assert collected == {"run-evidence-claude-claude.json"}
+
+
+def test_the_mechanical_acceptance_record_travels_unchanged_with_the_run_evidence():
+    """`mega-noop` writes its partial-failure facts beside the run evidence; they reach the runner.
+
+    Byte for byte, and only they: a stray JSON or a secret file left in the same
+    directory stays on the ephemeral host.
+    """
+    partial = '{\n  "status": "failed",\n  "phase": "brief"\n}\n'
+    collected = _collect_contents(
+        {
+            "run-evidence-claude-claude.json": "{}",
+            "mechanical-install-live-0123456789ab.json": partial,
+            "debug-mechanical-install-brief-20261005-184000.md": "dump",
+            "suite-config.json": "{}",
+            "stand.env": "TOKEN=secret",
+        }
+    )
+
+    assert collected == {
+        "run-evidence-claude-claude.json": "{}",
+        "mechanical-install-live-0123456789ab.json": partial,
+        "debug-mechanical-install-brief-20261005-184000.md": "dump",
+    }
 
 
 def test_a_run_directory_with_nothing_in_it_is_an_empty_handover_not_a_failure():

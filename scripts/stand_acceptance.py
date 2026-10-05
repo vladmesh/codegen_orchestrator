@@ -28,6 +28,10 @@ PROVISIONING_DIAGNOSTIC_FILES = (
 )
 COMBINATION_LOG = re.compile(r"(?:claude|codex)-(?:claude|codex)\.log\Z")
 RUN_EVIDENCE = re.compile(r"run-evidence-[a-z0-9-]+-[0-9T+.]+\.json\Z")
+# The mechanical stand's own redacted acceptance record, written beside the run
+# evidence on every exit (`tests/live/mechanical_install.py::write_artifact`) and
+# keyed on the run's ownership-manifest id.
+MECHANICAL_INSTALL_EVIDENCE = re.compile(r"mechanical-install-[a-z0-9-]+\.json\Z")
 # The redacted service log tails the runner collects when the suite itself
 # failed, the counterpart of the provisioning-failure diagnostics above.
 SUITE_DIAGNOSTIC_FILES = ("suite-services.log",)
@@ -177,7 +181,10 @@ def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
         for source in sorted(run_dir.iterdir()):
             if source.is_file() and COMBINATION_LOG.fullmatch(source.name):
                 shutil.copyfile(source, output / source.name)
-            if source.is_file() and RUN_EVIDENCE.fullmatch(source.name):
+            if source.is_file() and (
+                RUN_EVIDENCE.fullmatch(source.name)
+                or MECHANICAL_INSTALL_EVIDENCE.fullmatch(source.name)
+            ):
                 shutil.copyfile(source, output / source.name)
             if source.is_file() and DEBUG_DUMP.fullmatch(source.name):
                 shutil.copyfile(source, output / source.name)
@@ -725,9 +732,9 @@ def _scan_artifact_issues(
         valid_combination = COMBINATION_LOG.fullmatch(path.name) and (
             path.parent == artifact or path.parent == artifact / "run"
         )
-        valid_run_evidence = RUN_EVIDENCE.fullmatch(path.name) and (
-            path.parent == artifact or path.parent == artifact / "run"
-        )
+        valid_run_evidence = (
+            RUN_EVIDENCE.fullmatch(path.name) or MECHANICAL_INSTALL_EVIDENCE.fullmatch(path.name)
+        ) and (path.parent == artifact or path.parent == artifact / "run")
         valid_debug_dump = DEBUG_DUMP.fullmatch(path.name) and (
             path.parent == artifact or path.parent == artifact / "run"
         )

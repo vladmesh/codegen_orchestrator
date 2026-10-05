@@ -27,7 +27,7 @@ cd "${run_directory}"
 # Patterns and literals go through the same existence test, so neither kind can
 # reach `tar` as a name that is not there.
 files=()
-for name in run-evidence-*.json debug-*.md target-app.log; do
+for name in run-evidence-*.json mechanical-install-*.json debug-*.md target-app.log; do
   test ! -f "${name}" || files+=("${name}")
 done
 
