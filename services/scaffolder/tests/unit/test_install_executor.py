@@ -25,6 +25,7 @@ def test_product_auth_does_not_reach_the_public_catalog(tmp_path, suffix, foreig
     env = install_environment("synthetic-token", tmp_path, git_url)
     owned = subprocess.run(
         ["git", "config", "--get-urlmatch", "http.extraheader", git_url + suffix],
+        cwd=tmp_path,
         env=env,
         capture_output=True,
         text=True,
@@ -39,6 +40,7 @@ def test_product_auth_does_not_reach_the_public_catalog(tmp_path, suffix, foreig
             "http.extraheader",
             foreign,
         ],
+        cwd=tmp_path,
         env=env,
         capture_output=True,
         text=True,
