@@ -53,6 +53,7 @@ from services.langgraph.src.agents.qa.caller_identity import (
     canonical_user_ref,
 )
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
+from shared.contracts.dto.product_brief import ProposedProductBriefContent
 
 #: The language the level-1 user confirms their brief in. Deliberately not the
 #: harness's own language: the completion message is composed in the *brief's*
@@ -117,6 +118,13 @@ class Level1Brief:
     #: after the one this brief is keyed on.
     further_settings: tuple[dict[str, str], ...] = ()
 
+    def __post_init__(self) -> None:
+        # Every way a suite writes a brief — these builders, its own constructor
+        # call, `dataclasses.replace` — crosses the released write boundary here,
+        # so a document `present_product_brief` would refuse fails where it is
+        # written rather than at the PO an hour into a stand run.
+        self.proposed_content()
+
     @property
     def requirement_ids(self) -> list[str]:
         """The ids every disposition and every admission is counted over."""
@@ -124,9 +132,14 @@ class Level1Brief:
 
     def present_arguments(self, project_id: str) -> dict:
         """Exactly what `present_product_brief` is called with, and nothing more."""
+        return {"project_id": project_id, "title": self.title, **self._content_arguments()}
+
+    def proposed_content(self) -> ProposedProductBriefContent:
+        """The document as the released write boundary parses it, not as a dict."""
+        return ProposedProductBriefContent.model_validate(self._content_arguments())
+
+    def _content_arguments(self) -> dict:
         return {
-            "project_id": project_id,
-            "title": self.title,
             "summary": self.summary,
             "must_requirements": [dict(one) for one in self.must_requirements],
             "language": self.language,

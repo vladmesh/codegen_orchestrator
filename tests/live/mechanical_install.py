@@ -537,6 +537,38 @@ def check_readback(facts, *, installed, baseline=None, operation=None, expected_
             )
 
 
+def install_brief(marker: str) -> Level1Brief:
+    """The second story's confirmed brief: install the catalog reminders package."""
+    return Level1Brief(
+        marker=marker,
+        title="Install reminders",
+        summary="Add the catalog reminders package to my notes bot.",
+        must_requirements=(
+            {
+                "id": "install_reminders",
+                "text": "Install reminders with its recommended parser and default bot binding.",
+                "user_wording": "Install reminders and preserve my notes.",
+            },
+        ),
+        usage_examples=(
+            {
+                "requirement_id": "install_reminders",
+                "user_sends": "/remind buy milk in 2 minutes",
+                "product_answers": "Scheduled for a word-month instant: buy milk",
+            },
+        ),
+        limitations=("English, one-time reminders, one product timezone.",),
+        settings_key="timezone",
+        settings_value=TIMEZONE,
+        settings_description="Explicit product-wide IANA timezone.",
+        story_title="Install catalog reminders",
+        story_description=(
+            "Install the explicit reminders catalog capability into this live notes bot."
+        ),
+        language="en",
+    )
+
+
 async def native_second_story(  # noqa: PLR0915 - native owners execute each acceptance phase
     api, api_internal, api_observer, ctx, *, debug_prefix
 ):
@@ -559,36 +591,7 @@ async def native_second_story(  # noqa: PLR0915 - native owners execute each acc
     marker = ctx["level1_marker"]
     with install_scope(ctx):
         artifact["phase"] = "brief"
-        ctx["level1_brief"] = Level1Brief(
-            marker=marker,
-            title="Install reminders",
-            summary="Add the catalog reminders package to my notes bot.",
-            must_requirements=(
-                {
-                    "id": "install_reminders",
-                    "text": (
-                        "Install reminders with its recommended parser and default bot binding."
-                    ),
-                    "user_wording": "Install reminders and preserve my notes.",
-                },
-            ),
-            usage_examples=(
-                {
-                    "requirement_id": "install_reminders",
-                    "user_sends": "/remind buy milk in 2 minutes",
-                    "product_answers": "Scheduled for a word-month instant: buy milk",
-                },
-            ),
-            limitations=("English, one-time reminders, one product timezone.",),
-            settings_key="timezone",
-            settings_value=TIMEZONE,
-            settings_description="Explicit product-wide IANA timezone.",
-            story_title="Install catalog reminders",
-            story_description=(
-                "Install the explicit reminders catalog capability into this live notes bot."
-            ),
-            language="en",
-        )
+        ctx["level1_brief"] = install_brief(marker)
         await h.create_level1_confirmed_brief(api, ctx)
         requested = await api.get(f"/api/stories/{ctx['story_id']}")
         requested.raise_for_status()
