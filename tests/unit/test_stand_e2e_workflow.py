@@ -1353,6 +1353,40 @@ def _on_host(command: str, host: Path) -> str:
     return command.replace("/opt/codegen_orchestrator", str(host))
 
 
+def test_suite_receives_the_workflow_revision_without_git_metadata(tmp_path):
+    commands = _run_step_against_fake_ssh(
+        tmp_path,
+        "Run selected stand suite",
+        {
+            "SUITE": "mega-noop",
+            "WORKER": "claude",
+            "QA": "codex",
+            "TEMPLATE_SOURCE": "",
+            "TEMPLATE_REF": "",
+            "STAND_PRODUCT_BOT_TOKEN": "test-product-token",
+        },
+    )
+    host = tmp_path / "stand-without-git"
+    (host / "scripts").mkdir(parents=True)
+    (host / "scripts/stand_background.sh").write_text("exit 0\n")
+    binaries = tmp_path / "stand-bin"
+    _write_executable(
+        binaries / "uv",
+        '#!/bin/bash\nprintf "%s" "${STAND_SOURCE_SHA:?}" > "${OBSERVED_SOURCE}"\n',
+    )
+    observed = tmp_path / "observed-source"
+    result = subprocess.run(
+        ["bash", "-e", "-c", _on_host(commands[0], host)],
+        input="test-product-token\n",
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{binaries}:/usr/bin:/bin", "OBSERVED_SOURCE": str(observed)},
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert observed.read_text() == STAND_SHA
+
+
 def test_the_release_gate_waits_boundedly_for_both_chains_before_any_money_is_spent():
     steps = list(_steps())
     gate = _steps()[RELEASE_WAIT_STEP]

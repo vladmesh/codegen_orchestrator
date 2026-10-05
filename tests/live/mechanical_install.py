@@ -153,6 +153,17 @@ def sql_snapshot(ctx):
     return facts
 
 
+def workflow_source_sha():
+    """Bootstrap rsync excludes .git; the workflow supplies its synced revision."""
+    source = os.environ.get("STAND_SOURCE_SHA")
+    require(
+        source is not None and service_release.GIT_SHA.fullmatch(source) is not None,
+        "service_provenance",
+        "STAND_SOURCE_SHA must name the full 40-character workflow revision",
+    )
+    return source
+
+
 def service_provenance():
     deadline = time.monotonic() + 30
 
@@ -161,13 +172,13 @@ def service_provenance():
         require(seconds > 0, "service_provenance", "immutable service readback exceeded 30 seconds")
         return seconds
 
-    source = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    source = workflow_source_sha()
     record = Path("deployed-service-images.json")
     release = service_release.load_release(record)
     require(
         release is not None and release.git_sha == source,
         "service_provenance",
-        "stand must run the published service release for its exact checked-out source",
+        "stand must run the published service release for its exact synced source",
     )
     compose = ["docker", "compose"]
     for path in (
@@ -783,9 +794,11 @@ def write_artifact(ctx):
     """Write partial facts on all exits; the workflow's suite verdict also owns cleanup."""
     artifact = ctx["mechanical_acceptance"]
     retain_qa(ctx, artifact, "first_qa")
-    artifact["source_sha"] = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], text=True
-    ).strip()
+    try:
+        artifact["source_sha"] = workflow_source_sha()
+    except h.Level1PhaseFailed as exc:
+        artifact["source_sha"] = None
+        artifact["source_sha_error"] = str(exc)
     artifact["kit"] = {
         "source": TEMPLATE_PIN.source,
         "ref": TEMPLATE_PIN.ref,
