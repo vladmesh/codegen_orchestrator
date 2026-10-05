@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-05
 
+- Mechanical notes and reminders briefs use the released usage-example fields, so `mega-noop`
+  passes Product Brief proposal validation before planning either story.
+
 - Mechanical stand provenance uses the workflow's synced SHA because bootstrap excludes `.git`;
   partial failure artifacts no longer abort on Git metadata absent from the stand.
 

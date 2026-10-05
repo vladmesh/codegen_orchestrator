@@ -575,8 +575,8 @@ async def native_second_story(  # noqa: PLR0915 - native owners execute each acc
             usage_examples=(
                 {
                     "requirement_id": "install_reminders",
-                    "user_input": "/remind buy milk in 2 minutes",
-                    "expected_result": "Scheduled for a word-month instant: buy milk",
+                    "user_sends": "/remind buy milk in 2 minutes",
+                    "product_answers": "Scheduled for a word-month instant: buy milk",
                 },
             ),
             limitations=("English, one-time reminders, one product timezone.",),
