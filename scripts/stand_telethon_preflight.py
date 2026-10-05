@@ -48,12 +48,11 @@ from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 
 TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
 PRODUCT_BOT_TOKEN_ENV = "STAND_PRODUCT_BOT_TOKEN"  # noqa: S105 - a name, not a secret
-# The suites whose QA executor judges a Telegram-bot product: `mega-live` is the
-# level-1 lifecycle (a bot) with a real QA executor. `mega-noop` deploys the same
-# bot but its QA is deterministic and never opens the session; the Product Brief
+# Bot product suites need a proven session independently of model use:
+# mega-noop's fixed probe and mega-live's QA executor both use it. Product Brief
 # suites run a QA executor on products that are not bots. Pinned against the
 # runner's suite table by scripts/tests/test_stand_telethon_preflight.py.
-QA_TELETHON_SUITES = frozenset({"mega-live"})
+QA_TELETHON_SUITES = frozenset({"mega-noop", "mega-live"})
 # One bound per Telegram round trip. A hung MTProto connection is a refusal
 # with its stage named, never a step that waits for the job timeout.
 CALL_TIMEOUT_SECONDS = 30

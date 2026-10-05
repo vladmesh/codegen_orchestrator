@@ -50,16 +50,16 @@ JUnit metadata, logs, and run directories always record the canonical name.
 
 | Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0 — 42 tests, level 1: three scripted engineering Tasks across two Stories and deterministic QA | 1 | a user registered through the product's own door — a fresh Telegram id, a promo code minted through the internal API and redeemed by that named actor, and the engineering budget policy the code arms; one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; then a **second story on the same project** — a corrected brief revision confirmed through the same PO tools, one scripted Task on the reused workspace that also installs the kit catalog package `reminders` with `kit add`, deploy through the PR poller, health-only QA of `GET /reminders` as the verified QA identity, the seeded reminder emitted by the kit core's timer, and a second completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 155 min | measured from stand artifacts; no baseline measurement yet |
-| `mega-live` | `tests/live/test_full_pipeline.py::TestFullPipeline` | the same 42 tests; three developer attempts (plus any retry) by the selected model, and one QA executor turn per story | 1 selected `--worker` / `--qa` pair | level 2: exactly the `mega-noop` lifecycle — registration door, constant brief, harness-admitted plans, two stories on one project, both deploy paths, settings seed, notifications, undeploy — except that a real developer (`claude` or `codex`) writes the product code from the contract its task descriptions state in prose, and a real QA executor judges each deployed story against the repository criteria its plan admission wrote; the first story also carries a live-only bot behaviour — it answers a native Telegram location with its coordinates rounded to 4 decimals — which that executor must prove as the QA account with a probe it runs in its sandbox (the `telegram/location` library seed or its own script): `test_qa_passed` requires the location check in `passed_checks`, not in `unverified_checks` (the one exception: an executor's own out-of-range location check reported not applicable, accepted only on the seed probe's own argument refusal of the value it names, recorded as `qa.location_refusals_accepted`), and a retained `telegram` probe that exited 0, sent a native geo point and shows the bot's reply, and the evidence artifact's QA Run record carries those probe records; every engineering Run is decided for the requested developer, carries a provider-reported cost and settles its reservation under the run owner's promo policy; each story's QA Run is decided for the requested executor, records provider-reported QA spend and settles its owner reservation | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 265 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestMechanicalInstall` | 0; one lifecycle assertion, two scripted engineering Tasks in the first Story and one native INSTALL in the second | 1 | registered owner and promo admission; one backend,tg_bot product; confirmed notes brief under an owned planning claim; persistent notes save/list through the QA Telegram account; separate explicit reminders brief and one transferred claim; live catalog planner, native coverage/admission, scheduler/scaffolder install, App publication, PR/CI/merge/deploy; explicit Etc/UTC setting; actual scheduling receipt and timer arrival, preset scheduling and Cancel callback; notes retained across deployment; zero install-story engineering and suite-wide model observations | native grant revocation, explicit undeploy and manifest-owned residue proof | 196 min | request-to-deployed seconds and comparison to the 600-second guideline retained separately from total suite time; no live acceptance claimed before dispatcher run |
+| `mega-live` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 42 engineering lifecycle tests; three developer attempts (plus any retry) by the selected model, and one QA executor turn per story | 1 selected `--worker` / `--qa` pair | level 2: the ordinary engineering lifecycle — registration door, constant brief, harness-admitted plans, two stories on one project, both deploy paths, settings seed, notifications, undeploy — except that a real developer (`claude` or `codex`) writes the product code from the contract its task descriptions state in prose, and a real QA executor judges each deployed story against the repository criteria its plan admission wrote; the first story also carries a live-only bot behaviour — it answers a native Telegram location with its coordinates rounded to 4 decimals — which that executor must prove as the QA account with a probe it runs in its sandbox (the `telegram/location` library seed or its own script): `test_qa_passed` requires the location check in `passed_checks`, not in `unverified_checks` (the one exception: an executor's own out-of-range location check reported not applicable, accepted only on the seed probe's own argument refusal of the value it names, recorded as `qa.location_refusals_accepted`), and a retained `telegram` probe that exited 0, sent a native geo point and shows the bot's reply, and the evidence artifact's QA Run record carries those probe records; every engineering Run is decided for the requested developer, carries a provider-reported cost and settles its reservation under the run owner's promo policy; each story's QA Run is decided for the requested executor, records provider-reported QA spend and settles its owner reservation | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 265 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 50 min + 10 min grace | the fixture's own productive deadline, then the runner's hard stop; no baseline measurement yet |
 | `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 65 min + 15 min grace | a longer productive window than `mega-brief`, because the kit install is inside its engineering budget; no baseline measurement yet |
 
 The local target names reflect that same contract:
 
-- `make test-live-mega-noop` runs the level-1 class with no developer model, whatever the caller's
+- `make test-live-mega-noop` runs the mechanical class with no developer model, whatever the caller's
   environment carries.
-- `make test-live-mega-live WORKER=<agent> QA=<agent>` runs the same class as `mega-live` through the
+- `make test-live-mega-live WORKER=<agent> QA=<agent>` runs the engineering class through the
   stand runner, which owns the QA executor switch.
 - `make test-live-mega-brief` runs only the Product Brief E2E class for one locally configured pair.
 - `make test-live-mega-brief-package` runs only its package variant, the same path onto the kit
@@ -70,7 +70,7 @@ that owns the coverage you want, or use `make stand-run SUITE=<suite>` for a can
 
 ### The QA Telegram session
 
-`mega-live`'s QA executor tests the level-1 Telegram-bot product as the QA account, so the stand
+`mega-noop`'s fixed probe and `mega-live`'s QA executor test the bot as the QA account, so the stand
 needs that account's Telethon session. The `stand` environment secrets `TELETHON_API_ID`,
 `TELETHON_API_HASH` and `TELETHON_SESSION` are required, and the session must belong to the QA
 identity the QA runtime's `/start` probe compares against (`QA_TEST_TELEGRAM_ID`,
@@ -81,7 +81,7 @@ Telegram session" step signs in on the runner, checks the user id, resolves the 
 `telethon_session_unauthorized`, `telethon_identity_mismatch` or `telethon_bot_unreachable`. The
 render writes the three values to `.stand-qa-worker.env`, installed as the stand's `.qa-worker.env`,
 which `docker-compose.stand.yml` hands to qa-worker and no other service (the stand `.env` is every
-service's `env_file`). `mega-noop` runs deterministic QA and renders them empty. The session and API
+service's `env_file`). Telegram session requirements are independent of model sessions. The session and API
 hash are protected values of the service-tail redaction and of every artifact admission. A new stand
 session is authorized with `scripts/make_stand_session.py`.
 
@@ -168,7 +168,16 @@ throughout a redeploy — the Run is the fact, not the status; the application's
 once that Run has settled; the health probe; QA; completed-story and PO delivery. **Teardown**
 spends 10m: undeploy Run, terminal application and port-allocation release. The whole `mega-noop`
 path — 45m provisioning, 10m pre-provisioning reserve, preflight, readiness, the executor switch,
-this cap, the sweep and the job reserve — comes to 234 of the workflow's 360 job-minutes.
+its mechanical cap, the sweep and the job reserve — comes to 275 of the workflow's 360 job-minutes.
+
+The preceding `NOOP_LIFECYCLE_WAITS` ledger remains the ordinary focused engineering
+fixture's budget. Registered `mega-noop` selects `TestMechanicalInstall`, whose
+`MECHANICAL_LIFECYCLE_WAITS` sum to 10910 seconds: first-story waits with 600-second QA,
+native planner/install/deploy/chat/notification/revocation waits, three fixed readbacks,
+provenance/model observation and undeploy. Its cap is 196 minutes (11760 seconds),
+leaving 700 seconds for cleanup and 150 seconds for polling/diagnostics. The probe itself
+is bounded at 280 seconds, plus a 30-second session disconnect. Notes never enter
+the install's engineering scope; real due arrival uses the released relay and timer.
 
 `mega-live` is the same lifecycle with its two forks, and its ledger (`LIVE_LIFECYCLE_WAITS`) is the
 noop ledger with exactly two kinds of entry replaced: each developer Task is waited on for
@@ -214,7 +223,8 @@ would have no bound at all: pytest-timeout drops an item's timer whenever its se
 
 | Items | Body bound | Teardown bound |
 |---|---|---|
-| The first `TestFullPipeline` item under `mega-noop`, which sets up the lifecycle | 8440 s: the lifecycle's explicit waits (`NOOP_LIFECYCLE_WAITS`) | 700 s (the teardown reserve) |
+| `TestMechanicalInstall` under `mega-noop` | 10910 s: `MECHANICAL_LIFECYCLE_WAITS` | 700 s (the teardown reserve) |
+| The first focused scripted `TestFullPipeline` item | 8440 s: `NOOP_LIFECYCLE_WAITS` | 700 s |
 | The first `TestFullPipeline` item under `mega-live` | 14980 s: `LIVE_LIFECYCLE_WAITS` | 700 s |
 | Every other `TestFullPipeline` item (they only assert on the fixture's context) | 1800 s | 700 s |
 | The first item of each `mega-brief*` class | 4800 s, the longer brief's hard stop | 700 s |
@@ -223,7 +233,7 @@ would have no bound at all: pytest-timeout drops an item's timer whenever its se
 A hang is reported in this order: the **test timeout**, then `stand_run`'s **suite backstop** (SIGINT
 to the process group, then a kill after the termination grace), then the workflow's **job limit**.
 For `mega-noop` and `mega-live`, the ledger checks at import that any single item's bound plus the
-teardown reserve is less than the suite cap (8440 + 700 < 9300 and 14980 + 700 < 15900). When a hang
+teardown reserve is less than the suite cap (10910 + 700 < 11760 and 14980 + 700 < 15900). When a hang
 fails the lifecycle item, `-x` stops the session and pytest tears the module down at session end,
 outside any item. The margin the cap leaves then still covers the cleanup, so pytest reports the hang
 before the backstop can fire. An ordinary live test is checked the same way against the 2700-second

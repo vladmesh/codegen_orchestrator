@@ -167,7 +167,7 @@ def test_the_readme_states_the_job_path_the_workflow_actually_gives_a_run() -> N
         + stand_run.PREFLIGHT_TIMEOUT_SECONDS
         + stand_run.READINESS_TIMEOUT_SECONDS
         + stand_run.EXECUTOR_SWITCH_TIMEOUT_SECONDS
-        + stand_deadlines.NOOP_SUITE_TIMEOUT_SECONDS
+        + stand_deadlines.MECHANICAL_SUITE_TIMEOUT_SECONDS
         + stand_run.SWEEP_TIMEOUT_SECONDS
         + stand_run.STAND_JOB_RESERVE_SECONDS
     )
@@ -240,7 +240,7 @@ def test_the_runner_comment_explains_the_job_cap_with_the_runner_paths_it_has() 
     assert _minutes(longest[1]) == runner_path(stand_deadlines.LIVE_SUITE_TIMEOUT_SECONDS)
     assert _minutes(briefs[1]) == stand_run.BRIEF_RUNNER_TIMEOUT_SECONDS
     assert _minutes(briefs[2]) == stand_run.BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS
-    assert _minutes(briefs[3]) == runner_path(stand_deadlines.NOOP_SUITE_TIMEOUT_SECONDS)
+    assert _minutes(briefs[3]) == runner_path(stand_deadlines.MECHANICAL_SUITE_TIMEOUT_SECONDS)
     assert _minutes(reserve[1]) == stand_run.STAND_JOB_RESERVE_SECONDS
 
 
@@ -271,9 +271,20 @@ def test_the_testing_doc_counts_the_level1_tests_the_class_actually_has() -> Non
         TESTING_DOC,
     )
 
-    assert int(row[1]) == len(tests)
-    assert _minutes(row[2]) == stand_deadlines.NOOP_SUITE_TIMEOUT_SECONDS
-    # Level 2 is the same class, so the same tests, under its own derived cap.
+    mechanical = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "TestMechanicalInstall"
+    )
+    mechanical_tests = [
+        node
+        for node in mechanical.body
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+        and node.name.startswith("test_")
+    ]
+    assert int(row[1]) == len(mechanical_tests)
+    assert _minutes(row[2]) == stand_deadlines.MECHANICAL_SUITE_TIMEOUT_SECONDS
+    # Level 2 retains the engineering class and its own derived cap.
     assert int(live_row[1]) == len(tests)
     assert _minutes(live_row[2]) == stand_deadlines.LIVE_SUITE_TIMEOUT_SECONDS
 

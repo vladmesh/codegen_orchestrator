@@ -401,6 +401,55 @@ NOOP_TEST_BOUNDS = LiveTestBounds(
     suite_cap_seconds=NOOP_SUITE_TIMEOUT_SECONDS,
 )
 
+# The mechanical stand reuses the first engineering story and its native
+# lifecycle owners, then spends INSTALL and fixed chat waits instead of a
+# second engineering turn. Ordinary two-story focused coverage keeps its ledger.
+MECHANICAL_INSTALL_TIMEOUT = 900
+MECHANICAL_QA_TIMEOUT = 600
+MECHANICAL_READBACK_TIMEOUT = 360
+MECHANICAL_REVOKE_TIMEOUT = 180
+MECHANICAL_PLAN_TIMEOUT = 120
+MECHANICAL_FIRST_STORY_WAITS = tuple(
+    (label, MECHANICAL_QA_TIMEOUT if label == "deterministic QA" else seconds)
+    for label, seconds in NOOP_FIRST_STORY_WAITS
+)
+MECHANICAL_SECOND_STORY_WAITS = (
+    ("owned planner invocation", MECHANICAL_PLAN_TIMEOUT),
+    ("native install publication", MECHANICAL_INSTALL_TIMEOUT),
+    ("GitHub App publication readback", MECHANICAL_READBACK_TIMEOUT),
+    ("merged deploy Run and image publication", DEPLOY_RUN_TIMEOUT),
+    ("typed redeploy outcome", SECOND_STORY_DEPLOY_OUTCOME_TIMEOUT),
+    ("application terminal status", DEPLOY_TIMEOUT),
+    ("fixed real-chat QA", MECHANICAL_QA_TIMEOUT),
+    ("Story.completed", STORY_COMPLETION_TIMEOUT),
+    ("owner notification", OWNER_NOTIFICATION_TIMEOUT),
+    ("native access revocation", MECHANICAL_REVOKE_TIMEOUT),
+)
+MECHANICAL_EXTRA_WAITS = (
+    ("baseline readback", MECHANICAL_READBACK_TIMEOUT),
+    ("first native access revocation", MECHANICAL_REVOKE_TIMEOUT),
+    ("deployed component readback", MECHANICAL_READBACK_TIMEOUT),
+    ("immutable service provenance", 30),
+    ("zero model observation", 30),
+    ("native publication observation", 30),
+    ("two deployed image tag checks", 120),
+)
+MECHANICAL_LIFECYCLE_WAITS = (
+    *MECHANICAL_FIRST_STORY_WAITS,
+    *MECHANICAL_SECOND_STORY_WAITS,
+    *MECHANICAL_EXTRA_WAITS,
+    *NOOP_TEARDOWN_WAITS,
+)
+MECHANICAL_SUITE_TIMEOUT_SECONDS = (
+    sum(seconds for _, seconds in MECHANICAL_LIFECYCLE_WAITS) + NOOP_TEARDOWN_RESERVE_SECONDS + 150
+)
+MECHANICAL_TEST_BOUNDS = LiveTestBounds(
+    setup_item_seconds=sum(seconds for _, seconds in MECHANICAL_LIFECYCLE_WAITS),
+    item_seconds=ORDINARY_TEST_BOUNDS.item_seconds,
+    teardown_seconds=LIVE_TEST_TEARDOWN_TIMEOUT_SECONDS,
+    suite_cap_seconds=MECHANICAL_SUITE_TIMEOUT_SECONDS,
+)
+
 #: `mega-live`: the same shape over the level-2 ledger.
 LIVE_TEST_BOUNDS = LiveTestBounds(
     setup_item_seconds=live_lifecycle_explicit_waits(),
@@ -439,6 +488,7 @@ for _name, _bounds, _waits, _reserve in (
 for _name, _bounds in (
     ("ordinary live test", ORDINARY_TEST_BOUNDS),
     ("mega-noop", NOOP_TEST_BOUNDS),
+    ("mechanical mega-noop", MECHANICAL_TEST_BOUNDS),
     ("mega-live", LIVE_TEST_BOUNDS),
 ):
     if _bounds.max_item_seconds() + _bounds.teardown_seconds >= _bounds.suite_cap_seconds:

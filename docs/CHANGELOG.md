@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-05
 
+- `mega-noop` proves native reminders installation into persistent notes, with owned planning,
+  real Telegram receipt/delivery/cancellation and redacted release evidence without model turns.
+
 - Install Git bypasses product hooks with scoped credentials; anonymous product checks,
   protected bot entrypoints and a shared GC lock preserve owned notes workspaces.
 

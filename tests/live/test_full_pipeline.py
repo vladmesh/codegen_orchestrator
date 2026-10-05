@@ -17,16 +17,17 @@ per product change. What it deploys therefore carries a backend endpoint, a
 product-scoped setting and a Telegram command handler that no scaffolded tree
 has — and the assertions below ask the deployment for them, not the repository.
 
-One lifecycle, one class, and one fork: who develops the product
-(`pipeline_helpers.level1_developer_agent_type`).
+The first-story lifecycle is shared; the suite selects its second story.
 
-* `mega-noop` — level 1. The merged scripted runner applies the change set each
-  task description carries, and QA is the deterministic health check. No model
-  is asked anything.
+* `mega-noop` — TestMechanicalInstall: two scripted Tasks build persistent notes;
+  a separate native INSTALL Story uses the live catalog, then fixed QA observes
+  actual Telegram scheduling receipts, timer delivery and cancellation. No model
+  is asked anything; notes are saved/listed before and after installation.
 * `mega-live` — level 2. A real developer model (`claude` or `codex`) is given
   the same contract in prose and writes the code itself, and a real QA executor
   judges the deployed product against the criteria each story's plan admission
-  writes. Every test below holds in both modes; where what a test can observe
+  writes. TestFullPipeline also retains focused scripted engineering coverage;
+  where what a test can observe
   differs — the scripted path, the settlement's cost, the QA executor — it
   asserts the level-2 fact with the same strength, and never skips.
 """
@@ -174,6 +175,7 @@ async def _pipeline_run(
     debug_prefix: str,
     lifecycle_undeploy: bool = False,
     registration_door: bool = False,
+    mechanical_install: bool = False,
 ):
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions.
 
@@ -217,9 +219,16 @@ async def _pipeline_run(
                 run_owner.telegram_id if run_owner is not None else TEST_TELEGRAM_ID
             )
             ctx = await create_project(api, api_internal, run_owner)
+            if mechanical_install:
+                from datetime import UTC, datetime  # noqa: PLC0415
+                import time  # noqa: PLC0415
+
+                ctx["mechanical_started"] = time.monotonic()
+                ctx["mechanical_started_at"] = datetime.now(UTC).isoformat()
+                ctx["mechanical_acceptance"] = {"status": "running", "phase": "bootstrap"}
             record_run_po_position(ctx, run_po_position)
             async with cleanup_guard(
-                lambda: cleanup_and_prove(api_internal, api_observer, ctx),
+                lambda: _pipeline_cleanup(api_internal, api_observer, ctx),
                 manifest=ctx["manifest"],
             ):
                 # One artifact per combination, written before teardown removes
@@ -239,6 +248,12 @@ async def _pipeline_run(
                     ],
                 )
                 try:
+                    if mechanical_install:
+                        from mechanical_install import service_provenance  # noqa: PLC0415
+                        from mechanical_notes import configure_notes  # noqa: PLC0415
+
+                        configure_notes(ctx)
+                        ctx["mechanical_acceptance"]["services"] = service_provenance()
                     # The proofs an assertion reads are taken before the context
                     # reaches the tests, never in the `finally` below: pytest
                     # runs a module fixture's teardown after the last test that
@@ -257,7 +272,19 @@ async def _pipeline_run(
                         api_internal,
                         ctx,
                     ):
+                        if mechanical_install:
+                            from mechanical_install import require_complete  # noqa: PLC0415
+
+                            require_complete(ctx)
                         yield value
+                except BaseException as exc:
+                    if mechanical_install:
+                        ctx["mechanical_acceptance"].update(
+                            status="failed",
+                            phase=getattr(exc, "phase", ctx["mechanical_acceptance"]["phase"]),
+                            failure_type=type(exc).__name__,
+                        )
+                    raise
                 finally:
                     # A phase that raised mid-story leaves its stage sampler
                     # running; nothing may read the API after teardown.
@@ -276,6 +303,27 @@ async def _pipeline_run(
                     await record_pre_teardown_proofs(api_internal, ctx)
                     evidence_pass(ctx)
                     emit_run_evidence(ctx)
+                    if mechanical_install:
+                        from mechanical_install import write_artifact  # noqa: PLC0415
+
+                        write_artifact(ctx)
+
+
+async def _pipeline_cleanup(api_internal, api_observer, ctx):
+    try:
+        await cleanup_and_prove(api_internal, api_observer, ctx)
+    except BaseException:
+        if "mechanical_acceptance" in ctx:
+            ctx["mechanical_acceptance"].update(status="failed", cleanup="failed")
+        raise
+    else:
+        if "mechanical_acceptance" in ctx:
+            ctx["mechanical_acceptance"]["cleanup"] = "passed"
+    finally:
+        if "mechanical_acceptance" in ctx:
+            from mechanical_install import write_artifact  # noqa: PLC0415
+
+            write_artifact(ctx)
 
 
 async def _complete_level1_story(api_internal, ctx: dict, *, debug_prefix: str) -> bool:
@@ -433,8 +481,18 @@ async def _level1_lifecycle_tail(
     """
     if not await _complete_level1_story(api_internal, ctx, debug_prefix=debug_prefix):
         return False
-    await _level1_extension_story(api, api_internal, api_observer, ctx, debug_prefix=debug_prefix)
-    return await _undeploy_level1_product(api, api_internal, ctx, debug_prefix=debug_prefix)
+    if "mechanical_acceptance" in ctx:
+        from mechanical_install import native_second_story  # noqa: PLC0415
+
+        await native_second_story(api, api_internal, api_observer, ctx, debug_prefix=debug_prefix)
+    else:
+        await _level1_extension_story(
+            api, api_internal, api_observer, ctx, debug_prefix=debug_prefix
+        )
+    undeployed = await _undeploy_level1_product(api, api_internal, ctx, debug_prefix=debug_prefix)
+    if "mechanical_acceptance" in ctx and not undeployed:
+        raise Level1PhaseFailed("undeploy", "product undeploy or residue proof failed")
+    return undeployed
 
 
 def _require_level1_merge_artifact(ctx: dict, *, phase: str, debug_prefix: str) -> None:
@@ -784,6 +842,33 @@ async def pipeline():
         registration_door=True,
     ):
         yield ctx
+
+
+@pytest_asyncio.fixture(loop_scope="module", scope="module")
+async def mechanical_pipeline():
+    async for ctx in _pipeline_run(
+        create_level1_bot_project,
+        debug_prefix="mechanical-install",
+        lifecycle_undeploy=True,
+        registration_door=True,
+        mechanical_install=True,
+    ):
+        yield ctx
+
+
+class TestMechanicalInstall:
+    async def test_native_install_and_actual_chat_acceptance(self, mechanical_pipeline):
+        facts = mechanical_pipeline["mechanical_acceptance"]
+        assert facts["status"] == "passed", facts
+        assert facts["phase"] == "completed"
+        assert mechanical_pipeline["no_intervention_error"] is None
+        assert mechanical_pipeline["first_task_status"] == TaskStatus.DONE
+        assert mechanical_pipeline["second_task_status"] == TaskStatus.DONE
+        assert mechanical_pipeline["engineering_settlement_error"] is None
+        assert (
+            mechanical_pipeline["application_before_undeploy"]["status"]
+            == ApplicationStatus.RUNNING.value
+        )
 
 
 def _live(pipeline: dict) -> bool:

@@ -680,6 +680,41 @@ class TestTeardownProject:
 
 class TestCreateStory:
     @pytest.mark.asyncio
+    async def test_scripted_claim_precedes_architect_publication(
+        self, mock_api_client, mock_stream_client
+    ):
+        project = _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}})
+        mock_api_client.get_raw.side_effect = [project, _brief(), _make_response([]), project]
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-owned"}),
+            _brief(story_id="story-owned"),
+            _make_response({"outcome": "claimed", "planning_attempt_id": "plan-owned"}),
+        ]
+        mock_api_client.patch_raw.return_value = project
+
+        async def publish(*_args):
+            assert mock_api_client.post_raw.call_count == 3
+            assert (
+                mock_api_client.post_raw.call_args.args[0]
+                == f"product-briefs/{BRIEF_ID}/planning-attempts/claim"
+            )
+
+        mock_stream_client.publish_message.side_effect = publish
+        config = _make_config("user-42")
+        config["configurable"]["claim_scripted_plan_before_publish"] = True
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Install reminders",
+                "description": "Install catalog reminders",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=config,
+        )
+        assert "Planning attempt: plan-owned" in result
+        mock_stream_client.publish_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_a_held_story_elsewhere_does_not_stop_new_ordered_work(
         self, mock_api_client, mock_stream_client
     ):

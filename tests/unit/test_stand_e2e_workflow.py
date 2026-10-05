@@ -451,7 +451,7 @@ def test_make_targets_preserve_the_canonical_suite_contract():
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
     assert 'test-live-mega-noop:\n\t@echo "Running mega-noop' in makefile
-    assert "pytest tests/live/test_full_pipeline.py::TestFullPipeline -v" in makefile
+    assert "pytest tests/live/test_full_pipeline.py::TestMechanicalInstall -v" in makefile
     assert "test-live-mega: test-live-mega-noop" in makefile
     # Level 1 is told of no developer, whatever the caller's environment carries.
     assert "env -u LIVE_WORKER_AGENT_TYPE -u LIVE_LLM_QA -u LIVE_QA_AGENT_TYPE" in makefile
@@ -1914,7 +1914,7 @@ def test_the_qa_session_is_required_for_a_suite_that_opens_it():
     assert "scripts.stand_telethon_preflight needs-session" in suite["run"]
     assert "qa_telethon=" in suite["run"]
     assert needs_session("mega-live") is True
-    assert needs_session("mega-noop") is False
+    assert needs_session("mega-noop") is True
     for name in TELETHON_NAMES:
         assert step["env"][name] == f"${{{{ secrets.{name} }}}}"
 
@@ -1938,7 +1938,7 @@ def test_mega_live_renders_the_qa_session_for_qa_worker_and_not_into_the_stand_e
     assert "TELETHON" not in (tmp_path / ".stand.env").read_text()
 
 
-def test_mega_noop_renders_without_the_qa_session_as_it_always_has(tmp_path):
+def test_non_telegram_suite_renders_without_the_qa_session(tmp_path):
     result = _run_render(tmp_path, qa_telethon="false", **dict.fromkeys(TELETHON_NAMES, ""))
 
     assert result.returncode == 0, result.stderr
@@ -1946,6 +1946,24 @@ def test_mega_noop_renders_without_the_qa_session_as_it_always_has(tmp_path):
         f"{name}=\n" for name in TELETHON_NAMES
     )
     assert "TELETHON" not in (tmp_path / ".stand.env").read_text()
+
+
+def test_mega_noop_requires_telegram_but_bypasses_model_credentials(tmp_path):
+    models = {
+        "MODEL_SESSIONS": "false",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN": "",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": "",
+    }
+    result = _run_render(tmp_path, qa_telethon="true", **models, TELETHON_SESSION="")
+    assert result.returncode != 0
+    assert "missing required qa-worker configuration: TELETHON_SESSION" in result.stderr
+    result = _run_render(tmp_path, qa_telethon="true", **models)
+    assert result.returncode == 0, result.stderr
+    assert "TELETHON" not in (tmp_path / ".stand.env").read_text()
+    assert (
+        "TELETHON_SESSION=value-of-TELETHON_SESSION"
+        in (tmp_path / ".stand-qa-worker.env").read_text()
+    )
 
 
 def test_actual_stand_renderer_provisions_required_policy_for_clean_compose(tmp_path):

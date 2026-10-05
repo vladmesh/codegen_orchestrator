@@ -15,7 +15,6 @@ from scripts.stand_run import (
     BRIEF_SUITE_TIMEOUT_SECONDS,
     LIVE_RUNNER_TIMEOUT_SECONDS,
     LIVE_SUITE_TIMEOUT_SECONDS,
-    NOOP_SUITE_TIMEOUT_SECONDS,
     QA_EXECUTOR_ENV,
     STAND_JOB_RESERVE_SECONDS,
     STAND_JOB_TIMEOUT_MINUTES,
@@ -34,6 +33,7 @@ from scripts.stand_run import (
     write_qa_executor,
 )
 from shared import stand_deadlines
+from shared.stand_deadlines import NOOP_SUITE_TIMEOUT_SECONDS
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +104,7 @@ def test_no_suite_runs_more_than_the_one_pair_it_was_asked_for():
 
 def test_canonical_suites_have_exact_targets_and_timeouts():
     expected_targets = {
-        "mega-noop": "tests/live/test_full_pipeline.py::TestFullPipeline",
+        "mega-noop": "tests/live/test_full_pipeline.py::TestMechanicalInstall",
         "mega-live": "tests/live/test_full_pipeline.py::TestFullPipeline",
         "mega-brief": "tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
         "mega-brief-package": (
@@ -174,7 +174,7 @@ def test_noop_cap_covers_both_stories_and_the_undeploy_lifecycle():
     assert sum(second.values()) == 3740
     assert stand_deadlines.noop_lifecycle_explicit_waits() == 8440
     assert NOOP_SUITE_TIMEOUT_SECONDS == 9300
-    assert SUITES["mega-noop"].timeout_seconds == NOOP_SUITE_TIMEOUT_SECONDS
+    assert SUITES["mega-noop"].timeout_seconds == stand_deadlines.MECHANICAL_SUITE_TIMEOUT_SECONDS
     assert (
         NOOP_SUITE_TIMEOUT_SECONDS - stand_deadlines.noop_lifecycle_explicit_waits()
         >= stand_deadlines.NOOP_TEARDOWN_RESERVE_SECONDS
@@ -188,7 +188,7 @@ def test_noop_cap_covers_both_stories_and_the_undeploy_lifecycle():
         + stand_run.PREFLIGHT_TIMEOUT_SECONDS
         + stand_run.READINESS_TIMEOUT_SECONDS
         + stand_run.EXECUTOR_SWITCH_TIMEOUT_SECONDS
-        + NOOP_SUITE_TIMEOUT_SECONDS
+        + stand_deadlines.MECHANICAL_SUITE_TIMEOUT_SECONDS
         + stand_run.SWEEP_TIMEOUT_SECONDS
         + stand_run.STAND_JOB_RESERVE_SECONDS
     )

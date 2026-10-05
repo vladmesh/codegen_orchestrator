@@ -1,6 +1,12 @@
 """No-model planning harness for an explicit catalog selection and confirmed brief."""
 
+import argparse
+import asyncio
+
+import structlog
+
 from shared.contracts.dto.story_planning import PlanningChannels
+from shared.log_config import setup_logging
 
 from .agents.architect.tools import plan_install, record_requirement_coverage, reset_task_chain
 from .clients.api import api_client
@@ -8,21 +14,31 @@ from .kit_catalog import KitCatalog, get_kit_catalog_reader
 
 
 async def scripted_install_plan(
-    project_id: str, story_id: str, package: str, requirement_ids: list[str]
+    project_id: str,
+    story_id: str,
+    package: str,
+    requirement_ids: list[str],
+    *,
+    planning_attempt_id: str | None = None,
 ):
-    catalog = await get_kit_catalog_reader().read()
-    if not isinstance(catalog, KitCatalog):
-        return {"error": "catalog_unavailable"}
     brief = await api_client.get_product_brief_by_story(story_id)
-    if brief is None or str(brief.project_id) != project_id:
+    if brief is None or str(brief.project_id) != project_id or not brief.confirmed_at:
         return {"error": "confirmed_brief_required"}
     if set(requirement_ids) != {item.id for item in brief.content.must_requirements}:
         return {"error": "explicit_requirement_selection_required"}
-    claim = await api_client.claim_planning_attempt(brief.id)
-    if claim.outcome != "claimed":
-        return {"error": f"planning_{claim.outcome}"}
-    attempt = claim.planning_attempt_id
+    if planning_attempt_id is not None:
+        if not brief.planning_attempt_active or brief.planning_attempt_id != planning_attempt_id:
+            return {"error": "planning_claim_not_owned"}
+        attempt = planning_attempt_id
+    else:
+        claim = await api_client.claim_planning_attempt(brief.id)
+        if claim.outcome != "claimed":
+            return {"error": f"planning_{claim.outcome}"}
+        attempt = claim.planning_attempt_id
     try:
+        catalog = await get_kit_catalog_reader().read()
+        if not isinstance(catalog, KitCatalog):
+            return {"error": "catalog_unavailable"}
         return await _owned_plan(
             catalog, brief, attempt, project_id, story_id, package, requirement_ids
         )
@@ -71,3 +87,32 @@ async def _owned_plan(catalog, brief, attempt, project_id, story_id, package, re
         "install": result["install"],
         "coverage_outcome": admitted.outcome,
     }
+
+
+async def _invoke(args):
+    try:
+        result = await scripted_install_plan(
+            args.project,
+            args.story,
+            args.package,
+            args.requirement,
+            planning_attempt_id=args.attempt,
+        )
+        structlog.get_logger().info("scripted_install_result", result=result)
+        return 0 if result.get("coverage_outcome") == "admitted" else 1
+    finally:
+        await api_client.close()
+
+
+def main():
+    """Fixed internal invocation in the LangGraph service, never a payload/command bridge."""
+    setup_logging(service_name="scripted_install_plan", log_format="json")
+    parser = argparse.ArgumentParser()
+    for name in ("project", "story", "package", "attempt"):
+        parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--requirement", action="append", required=True)
+    return asyncio.run(_invoke(parser.parse_args()))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

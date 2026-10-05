@@ -378,11 +378,11 @@ test-live-engineering:
 	@echo "Running engineering pipeline test (~3-5 min)..."
 	@uv run pytest tests/live/test_pipeline_engineering.py -v --tb=long -x -s
 
-# The class runs level 2 when it is told of a developer model; level 1 is told of none.
+# Mechanical acceptance uses the shared first story, then native INSTALL and fixed chat QA.
 test-live-mega-noop:
-	@echo "Running mega-noop: TestFullPipeline only (no LLM)..."
+	@echo "Running mega-noop: TestMechanicalInstall (no LLM)..."
 	@env -u LIVE_WORKER_AGENT_TYPE -u LIVE_LLM_QA -u LIVE_QA_AGENT_TYPE \
-		uv run pytest tests/live/test_full_pipeline.py::TestFullPipeline -v --tb=long -x -s
+		uv run pytest tests/live/test_full_pipeline.py::TestMechanicalInstall -v --tb=long -x -s
 
 # L1 retired compatibility spelling `test-live-mega: test-live-mega-noop`; use the canonical target directly.
 # Level 2 is the same class with a real developer and a real QA executor. Which

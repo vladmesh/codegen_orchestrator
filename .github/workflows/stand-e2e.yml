@@ -668,7 +668,7 @@ jobs:
           # to every service through env_file. The QA session belongs to
           # qa-worker alone, so it travels in its own file, which only the
           # qa-worker of docker-compose.stand.yml reads. Required when the suite
-          # opens the session (mega-live); allowed empty otherwise (mega-noop).
+          # opens the session (mega-live and mega-noop); allowed empty otherwise.
           telethon = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
           model_session = ("STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT")
           required = names if os.environ["MODEL_SESSIONS"] == "true" else tuple(name for name in names if name not in model_session)

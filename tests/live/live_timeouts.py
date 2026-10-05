@@ -19,6 +19,7 @@ from shared.stand_deadlines import (
     BRIEF_TEST_BOUNDS,
     LIVE_TEST_BOUNDS,
     LIVE_TEST_TIMEOUT_METHOD,
+    MECHANICAL_TEST_BOUNDS,
     NOOP_TEST_BOUNDS,
     ORDINARY_TEST_BOUNDS,
     LiveTestBounds,
@@ -26,6 +27,7 @@ from shared.stand_deadlines import (
 
 #: The module fixture each lifecycle suite's whole run lives in, by test module.
 LEVEL1_LIFECYCLE = ("test_full_pipeline.py", "pipeline")
+MECHANICAL_LIFECYCLE = ("test_full_pipeline.py", "mechanical_pipeline")
 BRIEF_LIFECYCLES = (
     ("test_product_brief_pipeline.py", "product_brief_pipeline"),
     ("test_product_brief_package_pipeline.py", "product_brief_package_pipeline"),
@@ -50,7 +52,7 @@ def level1_test_bounds() -> LiveTestBounds:
 
 def _lifecycle(item: pytest.Item) -> tuple[str, str] | None:
     module = item.path.name
-    for lifecycle in (LEVEL1_LIFECYCLE, *BRIEF_LIFECYCLES):
+    for lifecycle in (LEVEL1_LIFECYCLE, MECHANICAL_LIFECYCLE, *BRIEF_LIFECYCLES):
         if lifecycle[0] == module and lifecycle[1] in getattr(item, "fixturenames", ()):
             return lifecycle
     return None
@@ -64,6 +66,8 @@ def item_bounds(items: list[pytest.Item]) -> list[ItemBound]:
         lifecycle = _lifecycle(item)
         if lifecycle is None:
             suite = ORDINARY_TEST_BOUNDS
+        elif lifecycle == MECHANICAL_LIFECYCLE:
+            suite = MECHANICAL_TEST_BOUNDS
         elif lifecycle == LEVEL1_LIFECYCLE:
             suite = level1_test_bounds()
         else:
