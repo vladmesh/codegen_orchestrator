@@ -1,0 +1,31 @@
+name: Released template fixture
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['pipeline/**']
+    paths:
+      - scripts/render_template_fixture.py
+      - scripts/system_configs.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+      - uses: ./.github/actions/setup-uv-with-retry
+        timeout-minutes: 3
+      - name: Render the released producer without tooling overrides
+        timeout-minutes: 9
+        run: uv run python -m scripts.render_template_fixture --output-dir "$RUNNER_TEMP/fixture"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        timeout-minutes: 1
+        with:
+          name: released-template-fixture
+          path: ${{ runner.temp }}/fixture
+          if-no-files-found: error
