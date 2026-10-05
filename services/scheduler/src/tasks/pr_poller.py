@@ -128,7 +128,7 @@ def _build_failure_description(evidence: dict) -> str:
     return "\n".join(lines)
 
 
-async def _images_ready_for_deploy(  # noqa: PLR0913  # one merge's context, each part named
+async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, each part named
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
     redis_client: RedisStreamClient,
@@ -221,7 +221,7 @@ async def _refuse_unpublished_images(
     No deploy Run exists yet and none is created: nothing was dispatched, so
     there is nothing for a Run to be the record of. The typed reason therefore
     goes on the story, the same way an infrastructure refusal does, and the story
-    joins the human-review queue rather than being failed: a project whose CI
+    joins the human-review queue rather than being failed — a project whose CI
     did not publish is not evidence that the project is broken, and it is not a
     condition another wait can resolve.
     """
@@ -240,8 +240,8 @@ async def _refuse_unpublished_images(
         },
     )
     # The owner hears about this ending, not only the administrators. It is
-    # terminal for them in the only sense they have: their product stops moving
-    # until a person looks at it: and the story leaves PR_REVIEW on the next
+    # terminal for them in the only sense they have — their product stops moving
+    # until a person looks at it — and the story leaves PR_REVIEW on the next
     # line, so no later tick scans it and nothing else would ever tell them.
     owed = await owe_story_owner_notification(
         api_client,
@@ -407,7 +407,7 @@ def _has_usable_failed_job_evidence(run: object) -> bool:
     )
 
 
-async def _handle_failed_run(  # noqa: PLR0913  # one CI run's context, each part named
+async def _handle_failed_run(  # noqa: PLR0913 — one CI run's context, each part named
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
     redis_client: RedisStreamClient,
@@ -910,7 +910,7 @@ async def poll_merged_prs(
                 git_url = repo.git_url or ""
                 owner, repo_name = _parse_owner_repo(git_url)
 
-                # complete_stories stores the exact PR number: use it for precise lookup.
+                # complete_stories stores the exact PR number — use it for precise lookup.
                 # This prevents picking up stale merged PRs from previous QA fix cycles.
                 if not story.pr_number:
                     log.warning("poll_merged_no_pr_number")
@@ -934,8 +934,8 @@ async def poll_merged_prs(
                 head_sha = merged_pr.get("head", {}).get("sha", "")
                 # What the story produced and what gets deployed are two different
                 # commits. No merge method makes the branch's new HEAD equal the pull
-                # request head: a merge creates a commit, squash and rebase rewrite
-                # one: and the project's CI publishes images from the branch, so the
+                # request head — a merge creates a commit, squash and rebase rewrite
+                # one — and the project's CI publishes images from the branch, so the
                 # deployed commit is the merge commit and nothing else.
                 deployed_commit_sha = merged_pr.get("merge_commit_sha") or ""
                 log.info(

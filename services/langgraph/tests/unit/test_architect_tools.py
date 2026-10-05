@@ -209,7 +209,7 @@ class TestArchitectToolSurface:
 
     The consumer already transitions the story around this agent's run, so a
     story-transition tool here gave one code path two Story transitions for the
-    same story: and hid the API's refusal of the second one behind a 422
+    same story — and hid the API's refusal of the second one behind a 422
     fallback that re-read the story and reported success.
     """
 

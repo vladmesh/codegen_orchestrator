@@ -1,4 +1,4 @@
-"""Task Dispatcher: admits and dispatches engineering work.
+"""Task Dispatcher — admits and dispatches engineering work.
 
 The dispatcher owns one responsibility: ask the durable admission point about
 TODO tasks and hand admitted work to the engineering queue. Scaffold triggering,
@@ -109,7 +109,7 @@ async def _enriched_description(api_client: SchedulerAPIClient, task: TaskDTO) -
 
     Message building, never admission: this decides what the worker is told, and
     it runs only once the admission point has already admitted the dispatch. The
-    sibling read here answers "what has been done": the admission point does its
+    sibling read here answers "what has been done" — the admission point does its
     own sibling read, on locked rows, to answer "may anything be done at all".
     """
     description = task.description or ""
@@ -283,7 +283,7 @@ async def _initiating_run(
     """The Run this work was initiated by, or None when the id is not a Run's.
 
     A project created through the PO brief flow carries the id of the request
-    the owner made, not of a Run: nothing was dispatched to produce it. The
+    the owner made, not of a Run — nothing was dispatched to produce it. The
     API answering 404 is the evidence for that, and the only thing it is taken
     as: any other failure is a failure to find out and is raised.
     """
@@ -308,7 +308,7 @@ async def _park_refused_story(
 
     Where the durable record lives follows from what initiated the work. A Run
     keeps its own refusal, as it always has. A story whose initiator is a PO
-    request has no Run to hang one on, so the record goes on the story: the
+    request has no Run to hang one on, so the record goes on the story — the
     same place the PR poller puts one for an ending nothing dispatched.
     """
     source_run = await _initiating_run(api_client, decision.initiating_run_id, log)
@@ -442,9 +442,9 @@ async def dispatch_todo_tasks(
     """Ask the admission point about every todo task and act on its answer.
 
     This function selects the candidates and executes decisions; it holds no
-    admission condition of its own. Whether a task may be dispatched: the
+    admission condition of its own. Whether a task may be dispatched — the
     internal project, the scaffold, the workspace, the blocker, the story, the
-    prior attempt, the budget and the slot: is one question answered server-side
+    prior attempt, the budget and the slot — is one question answered server-side
     on locked rows by `admit_engineering_dispatch`.
 
     Returns the number of tasks dispatched.

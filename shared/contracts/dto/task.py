@@ -1,4 +1,4 @@
-"""Task DTOs and enums: single source of truth for task statuses and types (planning layer)."""
+"""Task DTOs and enums — single source of truth for task statuses and types (planning layer)."""
 
 from enum import StrEnum
 from typing import Any
@@ -115,7 +115,7 @@ class TaskDTO(TimestampedDTO):
     #: Whether this task crossed the coverage-to-dispatch boundary. Required,
     #: with no default: a response that omitted it would otherwise be read as an
     #: invented "admitted", which is exactly the authority the boundary exists to
-    #: withhold. Paired with `TaskRead`: see `TestTaskReadPairing`.
+    #: withhold. Paired with `TaskRead` — see `TestTaskReadPairing`.
     dispatch_admitted: bool
     #: The architect planning attempt this task was planned under, if any.
     planning_attempt_id: str | None = None

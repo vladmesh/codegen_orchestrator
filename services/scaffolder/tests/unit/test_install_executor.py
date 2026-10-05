@@ -9,7 +9,34 @@ from unittest.mock import AsyncMock
 import pytest
 
 from shared.contracts.queues.scaffold import ScaffoldMessage
-from src.install import InstallExecutionError, install_environment, run_install
+from src.install import (
+    InstallExecutionError,
+    install_environment,
+    product_environment,
+    protected_files,
+    run_install,
+)
+
+
+def test_product_environment_discards_inherited_credentials(tmp_path, monkeypatch):
+    for name in ("GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GITHUB_TOKEN", "SECRET_KEY"):
+        monkeypatch.setenv(name, "synthetic-parent-secret")
+    env = product_environment(tmp_path)
+    assert not any(key.startswith("GIT_CONFIG_") for key in env)
+    assert "synthetic-parent-secret" not in env.values()
+
+
+def test_bot_owned_sources_are_protected_and_generated_output_is_mutable(tmp_path):
+    tracked = [
+        "services/tg_bot/src/main.py",
+        "services/tg_bot/src/menu.py",
+        "services/tg_bot/src/generated/bindings.py",
+    ]
+    for name in tracked:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("baseline\n")
+    assert set(protected_files(tmp_path, tracked)) == set(tracked[:2])
 
 
 @pytest.mark.parametrize("suffix", ["", ".git"])
@@ -113,7 +140,7 @@ async def test_dirty_checkout_is_retained_and_never_runs_kit(tmp_path, monkeypat
 
     async def command(args, **kwargs):
         calls.append(args)
-        if args[:3] == ["git", "status", "--porcelain"]:
+        if "status" in args and "--porcelain" in args:
             return 0, " M notes.py\n", ""
         return 0, "", ""
 

@@ -15,7 +15,7 @@ from .base import Base
 
 
 class Task(Base):
-    """Task: a unit of work with agile statuses (planning layer)."""
+    """Task — a unit of work with agile statuses (planning layer)."""
 
     __tablename__ = "tasks"
     __table_args__ = (
@@ -58,7 +58,7 @@ class Task(Base):
     install_operation: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     # Whether this task has crossed the coverage-to-dispatch boundary. True for
     # every task that is not planned against an unadmitted Product Brief, which
-    # is every task that existed before the boundary did: so a `todo` status
+    # is every task that existed before the boundary did — so a `todo` status
     # keeps meaning "dispatchable" everywhere except under a brief still being
     # planned. Written false only at creation under an active planning attempt,
     # and back to true only by that brief's one admission step.
@@ -73,7 +73,7 @@ class Task(Base):
 
 
 class TaskEvent(Base):
-    """TaskEvent: history of status transitions and iteration events."""
+    """TaskEvent — history of status transitions and iteration events."""
 
     __tablename__ = "task_events"
 

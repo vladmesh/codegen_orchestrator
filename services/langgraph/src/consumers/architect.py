@@ -1,4 +1,4 @@
-"""Architect consumer: consumes from architect:queue and decomposes stories into tasks.
+"""Architect consumer — consumes from architect:queue and decomposes stories into tasks.
 
 Run standalone: python -m src.consumers.architect
 """
@@ -80,7 +80,7 @@ SCAFFOLD_WAIT_MAX = 300  # max wait time (5 min)
 
 #: How often the owning architect proves it is alive. Strictly below the one
 #: timeout the brief contract declares, and by a whole multiple of it, so a
-#: single lost heartbeat: a slow API call, one retryable failure: does not
+#: single lost heartbeat — a slow API call, one retryable failure — does not
 #: hand this architect's plan to a second one while it is still planning.
 PLANNING_HEARTBEAT_INTERVAL = PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS / 3
 
@@ -95,7 +95,7 @@ class ReturnedRequirementsNoticeError(RuntimeError):
 
     Raised out of the job on purpose: the queue entry stays unacknowledged, the
     consumer reclaims it once it is idle, and the replay publishes the notice
-    again: through the already-decomposed skip or the `ALREADY_ADMITTED` claim.
+    again — through the already-decomposed skip or the `ALREADY_ADMITTED` claim.
     """
 
 
@@ -132,7 +132,7 @@ async def _heartbeat_planning_attempt(brief_id: str, planning_attempt_id: str, l
     """Refresh the claim until cancelled.
 
     A failed beat is logged and the loop continues: the brief row is the
-    authority on who owns the plan, and it answers again: through the coverage
+    authority on who owns the plan, and it answers again — through the coverage
     writes and the one admission step, both of which refuse anyone but the
     active attempt. Turning a transient API error here into a failed job would
     throw away a plan the architect may still be allowed to finish.
@@ -152,7 +152,7 @@ async def _planning_heartbeat(attempt: _PlanningAttempt, log):
     """Hold the claim for the body, and stop beating however the body ends.
 
     Success, an LLM exception and cancellation all leave through the same
-    `finally`, so no beat outlives the job that owns the claim: a heartbeat
+    `finally`, so no beat outlives the job that owns the claim — a heartbeat
     still running after the consumer returned would keep a dead architect's
     plan alive and lock every other architect out of it for good.
     """
@@ -170,12 +170,12 @@ async def _planning_heartbeat(attempt: _PlanningAttempt, log):
 async def _release_planning_attempt(attempt: _PlanningAttempt, log) -> None:
     """Give the incomplete plan back, so recovery need not wait out the timeout.
 
-    Called when this run will not admit: the planner failed, or the plan came
+    Called when this run will not admit — the planner failed, or the plan came
     back incomplete. Nothing is released by this: `finish` gives up ownership,
     and only `admit` ever crosses the boundary. Failing to give it up is not
-    worth failing the job over: the claim goes stale on its own within
+    worth failing the job over — the claim goes stale on its own within
     `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`, and what happens to the story
-    next is decided by the planning outcome recorded after this: so it is
+    next is decided by the planning outcome recorded after this — so it is
     logged rather than raised over whatever went wrong first.
     """
     try:
@@ -263,7 +263,7 @@ async def _admit_plan(
 
     Called exactly once per owned plan, after the graph has returned. `None`
     means the plan was released (or had already been); a result dict is the
-    incomplete answer, which releases nothing and is not retried here: a
+    incomplete answer, which releases nothing and is not retried here — a
     second admit would give the same answer, because the missing dispositions
     are missing.
     """
@@ -344,7 +344,7 @@ def _returned_notice_text(brief: ProductBriefRead, returned: list) -> str:
     return "\n".join(lines)
 
 
-async def _notify_returned_requirements(  # noqa: PLR0913  # one admitted plan's recipient
+async def _notify_returned_requirements(  # noqa: PLR0913 — one admitted plan's recipient
     brief: ProductBriefRead,
     planning_attempt_id: str,
     *,
@@ -459,7 +459,7 @@ def _is_plan_task(task: TaskDTO, story: StoryDTO, brief: ProductBriefRead | None
     A cancelled task is never a plan, and neither is a closed task from before
     a reopen. For a brief-backed story a plan is what the boundary released
     (`dispatch_admitted`) or what a live attempt is still building; the
-    unadmitted leftovers of a released or voided attempt are neither: they are
+    unadmitted leftovers of a released or voided attempt are neither — they are
     exactly what the next claim voids.
     """
     if task.status == TaskStatus.CANCELLED:
@@ -548,7 +548,7 @@ def _planning_failure_detail(error: BaseException | str, usage: ChannelUsage) ->
     return f"[LLM channels answered: {', '.join(answered) or 'none'}; failed: {failed}] {head}"
 
 
-async def _report_planning_failure(  # noqa: PLR0913  # one attempt's whole outcome
+async def _report_planning_failure(  # noqa: PLR0913 — one attempt's whole outcome
     msg: ArchitectMessage,
     error: BaseException | str,
     *,
@@ -559,7 +559,7 @@ async def _report_planning_failure(  # noqa: PLR0913  # one attempt's whole outc
 ) -> StoryPlanning | None:
     """Record the failed attempt on the story; the API decides retry or park.
 
-    `None` when the API refused because the story already left planning: a
+    `None` when the API refused because the story already left planning — a
     stale report, nothing to retry. Any other refusal raises
     `PlanningFailureUnrecordedError`, so the job is replayed rather than the
     story left in_progress with nothing scheduled.
@@ -644,7 +644,7 @@ def _failed_result(error: str, recorded: StoryPlanning | None) -> dict:
 
 
 def _planning_state(attempt: _PlanningAttempt | None) -> dict:
-    """The planning identity of this run: the same three keys on every run.
+    """The planning identity of this run — the same three keys on every run.
 
     Present and `None` rather than absent, so a tool that reads them out of the
     state reads one shape whether or not this story is brief-backed.
@@ -684,7 +684,7 @@ def _requirements_briefing(attempt: _PlanningAttempt | None) -> str:
         "Its must-requirements are:\n"
         f"{listed}\n"
         "Record exactly one disposition for EVERY id above with "
-        "record_requirement_coverage: the task that covers it, or the reason it is "
+        "record_requirement_coverage — the task that covers it, or the reason it is "
         "returned. Nothing you plan is dispatched until all of them are recorded."
     )
     conflicts = capability_conflicts(attempt.brief.content)
@@ -707,7 +707,7 @@ def _usage_briefing(attempt: _PlanningAttempt) -> str:
     """How the user confirmed each requirement is used, grouped by requirement, verbatim.
 
     Grouped in requirement order rather than in the order the user was shown
-    them, because every group is planned: or returned: as one requirement.
+    them, because every group is planned — or returned — as one requirement.
     Empty for a brief stored before usage examples existed.
     """
     if not attempt.usage_examples:
@@ -905,7 +905,7 @@ async def _wait_for_scaffold(
 
     Returns (project, error, failure). If error is set, caller should abort;
     ``failure`` then says why the story itself has to stop. A recorded
-    ``scaffold_error`` ends the wait at once: ``scaffold_trigger`` never retries
+    ``scaffold_error`` ends the wait at once — ``scaffold_trigger`` never retries
     that project, so waiting out the window would only hide the cause.
     """
     if project.status != ProjectStatus.DRAFT:
@@ -949,7 +949,7 @@ async def _wait_for_scaffold(
 async def _stop_story_on_scaffold_failure(story_id: str, failure: StoryFailure, log) -> bool:
     """Take the story out of ``in_progress`` with the reason it cannot go on.
 
-    A recorded scaffold error is final: nothing retries that project: so the
+    A recorded scaffold error is final — nothing retries that project — so the
     story fails. A timeout with no recorded error may still be a scaffold that
     is merely slow, so the story is parked for a person instead, which they can
     resume. Either way the reason and the owner's notice are written by the API
@@ -1034,7 +1034,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         return live_work_settled({"status": "skipped", "reason": "planning retry not due"})
 
     # Skip if already in_progress with a plan (duplicate message from supervisor retry)
-    # But never skip reopened stories: they need re-decomposition
+    # But never skip reopened stories — they need re-decomposition
     skipped = await _skip_already_decomposed(msg, story, redis, log)
     if skipped is not None:
         return skipped

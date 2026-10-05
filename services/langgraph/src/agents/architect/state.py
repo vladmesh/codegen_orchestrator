@@ -12,7 +12,7 @@ class ArchitectState(AgentState):
     that the consumer injects before the first LLM call.
 
     The four Product Brief fields are the planning identity of this run, and
-    the consumer sets all four on every run: `None`, `None`, `[]` and `[]` for
+    the consumer sets all four on every run — `None`, `None`, `[]` and `[]` for
     a story with no brief. They are state rather than tool arguments because the
     LLM must not be able to invent a planning attempt id: tools take them
     through `InjectedState`, so the model never sees them in a tool schema and

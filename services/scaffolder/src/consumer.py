@@ -1,4 +1,4 @@
-"""Scaffolder consumer: consumes from scaffold:queue.
+"""Scaffolder consumer — consumes from scaffold:queue.
 
 Run standalone: python -m src.main
 """
@@ -248,7 +248,7 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     if result.success:
         project_config = await _update_project_on_success(msg, result, api, settings, log)
 
-        # Set branch protection + auto-merge (non-fatal: scaffold succeeds regardless)
+        # Set branch protection + auto-merge (non-fatal — scaffold succeeds regardless)
         try:
             await github.update_branch_protection(
                 org,

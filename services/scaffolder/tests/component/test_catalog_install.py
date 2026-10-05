@@ -33,6 +33,8 @@ def product(tmp_path, monkeypatch):
     git(root, "config", "user.email", "fixture@localhost")
     (root / "services/tg_bot/src/handlers").mkdir(parents=True)
     (root / "services/tg_bot/src/handlers/notes.py").write_text("notes = 'retained'\n")
+    (root / "services/tg_bot/src/main.py").write_text("registered_notes = True\n")
+    (root / "services/tg_bot/src/menu.py").write_text("commands = ['note']\n")
     (root / ".gitignore").write_text("*.rej\n.venv/\n")
     git(root, "add", "-A")
     git(root, "commit", "-m", "Owned notes")
@@ -53,7 +55,7 @@ def product(tmp_path, monkeypatch):
 
     async def command(args, **kwargs):
         calls.append(args)
-        if args == ["git", "remote", "get-url", "origin"]:
+        if git_operation(args) == ["git", "remote", "get-url", "origin"]:
             return 0, "https://github.com/owner/notes", ""
         if Path(args[0]).name == "python":
             return 0, json.dumps(proof), ""
@@ -66,6 +68,10 @@ def product(tmp_path, monkeypatch):
 
     monkeypatch.setattr("src.install._run_cmd", command)
     return root, remote, calls, command
+
+
+def git_operation(args):
+    return ["git", *args[3:]] if args[:3] == ["git", "-c", "core.hooksPath=/dev/null"] else args
 
 
 async def execute(product, tmp_path, fence=None):
@@ -115,7 +121,7 @@ async def test_lost_push_response_is_read_back_without_duplicate_commit(
 
     async def lost(args, **kwargs):
         result = await original(args, **kwargs)
-        return (1, "", "response lost") if args[:2] == ["git", "push"] else result
+        return (1, "", "response lost") if git_operation(args)[:2] == ["git", "push"] else result
 
     monkeypatch.setattr("src.install._run_cmd", lost)
     result = await execute(product, tmp_path)
@@ -128,7 +134,7 @@ async def test_unknown_push_retains_commit_for_operator_recovery(product, tmp_pa
     root, _, _, original = product
 
     async def failed(args, **kwargs):
-        if args[:2] == ["git", "push"]:
+        if git_operation(args)[:2] == ["git", "push"]:
             return 1, "", "fake-token could not push"
         return await original(args, **kwargs)
 
@@ -138,6 +144,70 @@ async def test_unknown_push_retains_commit_for_operator_recovery(product, tmp_pa
     assert caught.value.head_sha == git(root, "rev-parse", "HEAD")
     assert "fake-token" not in str(caught.value)
     assert git(root, "status", "--porcelain") == ""
+
+
+@pytest.mark.asyncio
+async def test_infrastructure_git_bypasses_enabled_product_hooks(product, tmp_path):
+    root, remote, calls, _ = product
+    hooks = root / ".githooks"
+    hooks.mkdir()
+    marker = root / ".git/hook-invoked"
+    canary = hooks / "pre-push"
+    canary.write_text("#!/bin/sh\ntouch .git/hook-invoked\nexit 91\n")
+    canary.chmod(0o755)
+    git(root, "config", "core.hooksPath", ".githooks")
+    git(root, "add", "-A")
+    git(root, "commit", "-m", "Product hook canary")
+    git(root, "-c", "core.hooksPath=/dev/null", "push", "origin", "main")
+    plain = subprocess.run(["git", "push", "origin", "main"], cwd=root, capture_output=True)
+    assert plain.returncode != 0 and marker.exists()
+    marker.unlink()
+    result = await execute(product, tmp_path)
+    assert not marker.exists()
+    assert git(root, "config", "core.hooksPath") == ".githooks"
+    assert git(remote, "rev-parse", "refs/heads/story/story-1") == result.head_sha
+    assert all(
+        args[1:3] == ["-c", "core.hooksPath=/dev/null"] for args in calls if args[0] == "git"
+    )
+
+
+@pytest.mark.asyncio
+async def test_only_owned_remote_git_receives_install_credential(product, tmp_path, monkeypatch):
+    _, _, _, original = product
+    observed = []
+
+    async def inspect(args, **kwargs):
+        authenticated = any(key.startswith("GIT_CONFIG_VALUE_") for key in kwargs["env"])
+        observed.append((git_operation(args), authenticated))
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr("src.install._run_cmd", inspect)
+    await execute(product, tmp_path)
+    for args, authenticated in observed:
+        assert authenticated == (
+            args[:2] in (["git", "fetch"], ["git", "ls-remote"], ["git", "push"])
+        )
+    assert any(Path(args[0]).name == "mypy" for args, _ in observed)
+    assert any(Path(args[0]).name == "kit" and args[1] == "add" for args, _ in observed)
+
+
+@pytest.mark.parametrize("filename", ["main.py", "menu.py"])
+@pytest.mark.asyncio
+async def test_owned_bot_application_mutation_refuses_publication(
+    product, tmp_path, monkeypatch, filename
+):
+    root, remote, _, original = product
+
+    async def mutate(args, **kwargs):
+        result = await original(args, **kwargs)
+        if args == ["make", "generate-from-spec"]:
+            (root / f"services/tg_bot/src/{filename}").write_text("overwritten = True\n")
+        return result
+
+    monkeypatch.setattr("src.install._run_cmd", mutate)
+    with pytest.raises(InstallExecutionError, match="protected_files_changed"):
+        await execute(product, tmp_path)
+    assert git(remote, "ls-remote", str(remote), "refs/heads/story/story-1") == ""
 
 
 @pytest.mark.asyncio

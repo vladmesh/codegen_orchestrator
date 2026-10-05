@@ -5,11 +5,13 @@ from dataclasses import dataclass, field
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 
 from shared.contracts.dto.catalog_install import InstallCommand, InstallVerification
 from shared.diagnostics import redact_diagnostic
+from shared.workspace_preservation import acquire_install_workspace_lock
 from src.scaffold import _git_auth_env, _run_cmd, _workspace_path
 
 
@@ -40,6 +42,8 @@ def protected_files(root, tracked):
             or any(part in parts for part in ("app", "controllers", "handlers"))
             or "bindings" in parts
             and "generated" not in parts
+            or name.startswith("services/tg_bot/src/")
+            and "generated" not in parts
         ):
             selected.add(name)
     for prefix in ("", "services/backend/", "services/tg_bot/"):
@@ -51,8 +55,7 @@ def protected_files(root, tracked):
     }
 
 
-def install_environment(token, root, git_url):
-    auth = _git_auth_env(token)
+def product_environment(root):
     permitted = {
         "HOME",
         "PATH",
@@ -60,11 +63,19 @@ def install_environment(token, root, git_url):
         "LC_ALL",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
-        "GIT_CONFIG_COUNT",
-        "GIT_CONFIG_KEY_0",
-        "GIT_CONFIG_VALUE_0",
     }
-    env = {key: value for key, value in auth.items() if key in permitted}
+    env = {key: value for key, value in os.environ.items() if key in permitted}
+    env.update(
+        {"GIT_TERMINAL_PROMPT": "0", "UV_NO_PROGRESS": "1", "VIRTUAL_ENV": str(root / ".venv")}
+    )
+    env["PATH"] = f"{root / '.venv/bin'}:{env['PATH']}"
+    return env
+
+
+def install_environment(token, root, git_url):
+    """Repository-scoped auth for owned infrastructure fetch/readback/push only."""
+    env = product_environment(root)
+    authorization = _git_auth_env(token)["GIT_CONFIG_VALUE_0"]
     owned = git_url.removesuffix(".git").rstrip("/")
     # Product credentials belong to this repository. Published kit/catalog
     # fetches in child commands must remain anonymous.
@@ -73,13 +84,10 @@ def install_environment(token, root, git_url):
             "GIT_CONFIG_COUNT": "2",
             "GIT_CONFIG_KEY_0": f"http.{owned}/.extraheader",
             "GIT_CONFIG_KEY_1": f"http.{owned}.git/.extraheader",
-            "GIT_CONFIG_VALUE_1": env["GIT_CONFIG_VALUE_0"],
+            "GIT_CONFIG_VALUE_0": authorization,
+            "GIT_CONFIG_VALUE_1": authorization,
         }
     )
-    env.update(
-        {"GIT_TERMINAL_PROMPT": "0", "UV_NO_PROGRESS": "1", "VIRTUAL_ENV": str(root / ".venv")}
-    )
-    env["PATH"] = f"{root / '.venv/bin'}:{env['PATH']}"
     return env
 
 
@@ -93,17 +101,14 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         raise InstallExecutionError(
             "preflight", "repository_unowned: expected an owned GitHub HTTPS URL"
         )
-    lock_dir = root.parent / ".catalog-install-locks"
-    lock_dir.mkdir(exist_ok=True)
-    lock = (lock_dir / msg.repository_id).open("a")
+    env = product_environment(root)
+    git_env = install_environment(token, root, git_url)
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock = acquire_install_workspace_lock(root)
     except BlockingIOError as error:
-        lock.close()
         raise InstallExecutionError(
             "preflight", "branch_writer_live: workspace lock is held"
         ) from error
-    env = install_environment(token, root, git_url)
     stage, base, head = "preflight", None, None
     stages = []
     verification = None
@@ -117,8 +122,13 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
 
     async def command(args, *, allow_absent=False, command_env=None):
         await checkpoint()
+        selected_env = command_env if command_env is not None else env
+        if args[0] == "git":
+            if args[1] in {"fetch", "ls-remote", "push"}:
+                selected_env = git_env
+            args = ["git", "-c", "core.hooksPath=/dev/null", *args[1:]]
         rc, out, err = await _run_cmd(
-            args, cwd=root, env=command_env or env, timeout=600, kill_process_group=True
+            args, cwd=root, env=selected_env, timeout=600, kill_process_group=True
         )
         stages.append({"stage": stage, "argv": args, "returncode": rc})
         if rc != 0 and not (allow_absent and rc == 1):
@@ -246,8 +256,6 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
                 "user.name=Codegen Bot",
                 "-c",
                 "user.email=codegen@localhost",
-                "-c",
-                "core.hooksPath=/dev/null",
                 "commit",
                 "-m",
                 f"Install catalog package {msg.install.package.name} ({msg.operation_id})",
@@ -263,17 +271,25 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         # A lost push response is observed, never inferred. One immediate remote
         # read can prove it landed; otherwise the retained exact head is parked.
         await checkpoint()
+        push_args = [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            "origin",
+            f"HEAD:refs/heads/{branch}",
+        ]
         rc, out, err = await _run_cmd(
-            ["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
+            push_args,
             cwd=root,
-            env=env,
+            env=git_env,
             timeout=600,
             kill_process_group=True,
         )
         stages.append(
             {
                 "stage": stage,
-                "argv": ["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
+                "argv": push_args,
                 "returncode": rc,
             }
         )

@@ -15,7 +15,7 @@ class ScaffoldMessage(BaseMessage):
     Consumed by scaffolder service.
 
     Modes:
-        full: Full scaffold: copier + make setup + git push (new projects).
+        full: Full scaffold — copier + make setup + git push (new projects).
         ensure: Verify workspace exists; if missing, clone + setup (existing projects).
         install: Execute the exclusively claimed typed catalog operation (existing products).
     """

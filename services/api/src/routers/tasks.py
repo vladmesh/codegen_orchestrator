@@ -1,4 +1,4 @@
-"""Tasks router: CRUD + action-based status transitions + events (planning layer)."""
+"""Tasks router — CRUD + action-based status transitions + events (planning layer)."""
 
 from datetime import UTC, datetime
 import re

@@ -164,8 +164,10 @@ read-only probe runs under the product's isolated interpreter and checks saved
 source/ref, root requirement/lock/installed tooling, actual core, required modules,
 independent tags, target Python, binding ownership and command/settings conflicts.
 Older cores require a reviewed native Copier update; no overwrite or automatic repair.
-Git authorization is scoped to the owned product repository; published kit catalog
-and component fetches run anonymously without receiving the product credential.
+Infrastructure Git uses process-local `core.hooksPath=/dev/null`, preserving the
+product's local hook configuration. Only owned fetch, remote readback and push receive
+repository-scoped Git authorization. Product probes, kit/component fetches, generation,
+tests and per-service mypy use an explicit anonymous environment allowlist.
 
 The executor runs fixed argument vectors in the product's own environment:
 `kit add <package>`, `kit add <library>` for each recommendation,
@@ -174,7 +176,8 @@ mypy and existing product tests. Kit commands fetch the default catalog and inde
 released tags; no wheel/source override or task-authored patch is accepted. Readback
 checks installed distributions/interpreter prefixes, default resource bytes,
 backend allowlist and generated ACTIVE_PACKAGES manifest digests. Existing app,
-controller, handler, spec, binding and environment bytes plus answers/root lock are
+controller, handler, owned tg_bot/src application files (excluding generated output),
+spec, binding and environment bytes plus answers/root lock are
 hashed before mutation and compared before commit. Default binding declares timezone
 schema only; confirmed explicit values use Product Brief initial_settings and the
 existing seed/deploy path. Credentials, user IDs and timezone values never enter
@@ -196,6 +199,10 @@ cancelled Tasks and unrelated/newer stops are preserved. Expired leases are obse
 by the scheduler, including cancelled running installs. Queue redelivery reads terminal
 operations and never executes or commits again. Owned subprocess groups, heartbeat,
 workspace lock, GitHub pool and project lease are released on all exits.
+Workspace GC takes the same nonblocking repository flock before preservation checks,
+deletion and API notification. A busy install is protected even without worker metadata.
+The `.catalog-install-locks` directory and lock files are never collected or unlinked:
+install releases after its subprocesses end; GC releases after cleanup notification.
 
 `POST /tasks/{id}/catalog-install/recovery` requires an authenticated bearer admin,
 selected current operation and matching stop/cause. `recover` requires the retained
@@ -212,7 +219,9 @@ operation alone with no stop ID; it preserves the current Story/cycle/quarantine
 retained proof and head. It cannot publish cancelled work or release another stop.
 
 The existing template compatibility CI lane executes the production executor over a
-real released notes product, preserves a custom notes handler and protected hashes,
+real released notes product with hooks enabled before setup, preserves registered notes
+save/list commands and protected application hashes, rejects a plain push with a failing
+pre-push canary, and proves executor push/readback never invokes that canary. It
 reads component tag object/target/tree provenance, and runs the released fake-backend
 confirmation/preset/list/cancel corpus under the product bot interpreter. Its redacted
 `mechanical-install-result.json` identifies the candidate, executed stages, readback
@@ -221,6 +230,8 @@ coverage, dispatch, zero engineering accounting and exclusive/recoverable owners
 The older `mega-noop` engineering runner directive remains historical evidence of a
 different route; it does not prove mechanical installation. The final live no-model
 notes-bot stand is a subsequent acceptance step, not a CI or sprint-closure claim.
+The persisted planning Python value is a compatibility baseline, not an observed product
+interpreter; native preflight validates the actual product interpreter before mutation.
 
 ## Central QA of a product that carries a kit package
 

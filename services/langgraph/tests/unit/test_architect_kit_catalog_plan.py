@@ -1,7 +1,7 @@
 """A scripted architect resolves two briefs against the kit catalog through the real graph.
 
 The model is scripted to make the calls an architect following the prompt and the
-"Kit package catalog" block makes; everything past it is real: the consumer, its
+"Kit package catalog" block makes; everything past it is real — the consumer, its
 briefing, the graph, its tool node, `create_task` with its package check, and the
 admission. The catalog is the unit double (`kit_catalog_off_github` in `conftest.py`):
 the pinned kit tooling's own catalog, filtered by the real `installable`. What is

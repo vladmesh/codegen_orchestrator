@@ -1,4 +1,4 @@
-"""Story completion: PR creation, worker cleanup, and next-story triggering."""
+"""Story completion — PR creation, worker cleanup, and next-story triggering."""
 
 from __future__ import annotations
 
@@ -232,8 +232,8 @@ async def complete_stories(  # noqa: PLR0915  # PR owner also verifies mechanica
             task_statuses = [t.status for t in tasks]
             # A cancelled task is not outstanding work, so it cannot be waited on.
             # Counting it was what stranded a story for ever: an operator cancelling
-            # a task through `DELETE /api/tasks/{id}`, and: since the Product Brief
-            # boundary exists: the corpse of a superseded plan, which the takeover
+            # a task through `DELETE /api/tasks/{id}`, and — since the Product Brief
+            # boundary exists — the corpse of a superseded plan, which the takeover
             # cancels because nothing will ever release it.
             live_statuses = [s for s in task_statuses if s != TaskStatus.CANCELLED]
             if tasks and not live_statuses:

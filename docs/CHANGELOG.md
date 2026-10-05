@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-05
 
+- Install Git bypasses product hooks with scoped credentials; anonymous product checks,
+  protected bot entrypoints and a shared GC lock preserve owned notes workspaces.
+
 - Catalog selections persist one typed install; scaffolder validates and publishes its owned
   story head with released kit 0.8.0, preserving product files without paid engineering.
 

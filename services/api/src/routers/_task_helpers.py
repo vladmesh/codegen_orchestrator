@@ -1,4 +1,4 @@
-"""Task router helpers: shared DB utilities, converters, validators."""
+"""Task router helpers — shared DB utilities, converters, validators."""
 
 from datetime import UTC, datetime
 import secrets
@@ -83,12 +83,12 @@ async def _load_task(task_id: str, db: AsyncSession, *, for_update: bool) -> Tas
 
 
 async def get_task(task_id: str, db: AsyncSession) -> Task:
-    """Read a task without taking a row lock: read-only paths only."""
+    """Read a task without taking a row lock — read-only paths only."""
     return await _load_task(task_id, db, for_update=False)
 
 
 async def get_task_for_update(task_id: str, db: AsyncSession) -> Task:
-    """Read a task with SELECT ... FOR UPDATE: every path that mutates the row.
+    """Read a task with SELECT ... FOR UPDATE — every path that mutates the row.
 
     Concurrent transitions of the same task then serialize on the row, so the
     loser validates against the status the winner committed and is refused.
@@ -139,7 +139,7 @@ def cancellation_is_reachable(from_status: str) -> bool:
     form a sweep over many rows needs: a caller that cancels a *set* of tasks
     has to leave the rows the transition table refuses where they are rather
     than force them or fail the whole transaction. A status the enum does not
-    know is not cancellable either: it is not a status.
+    know is not cancellable either — it is not a status.
     """
     try:
         from_s = TaskStatus(from_status)
@@ -151,8 +151,8 @@ def cancellation_is_reachable(from_status: str) -> bool:
 async def apply_cancellation(task: Task, db: AsyncSession) -> bool:
     """Move one *already locked* task row to cancelled, without committing.
 
-    The whole of the cancel transition lives here: the already-cancelled no-op,
-    the `VALID_TRANSITIONS` check, the status event: so that `DELETE
+    The whole of the cancel transition lives here — the already-cancelled no-op,
+    the `VALID_TRANSITIONS` check, the status event — so that `DELETE
     /api/tasks/{id}` and the Product Brief takeover that voids a superseded plan
     are one writer with one set of rules, not two. Commit is the caller's,
     because a takeover cancels in the same transaction that mints the new

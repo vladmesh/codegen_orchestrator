@@ -307,8 +307,8 @@ async def start_paid_run_endpoint(
     # Invariant B: a paid engineering run bound to an existing Task row is
     # created only by the admission point. This route is the paid gate for
     # everything else, and it stays that: only a command that *is* a Task
-    # dispatch is refused, so the deploy-fix handoff: which leaves task_id
-    # null: is untouched. A non-null task_id must name a Task row: the route
+    # dispatch is refused, so the deploy-fix handoff — which leaves task_id
+    # null — is untouched. A non-null task_id must name a Task row: the route
     # rejects an unknown reference before the Run insert reaches its FK. The
     # question is decided here, server-side, from a column-only existence check
     # that materialises no entity for the transaction that follows.
@@ -403,7 +403,7 @@ async def admit_engineering_dispatch_endpoint(
     """The one admission point for paid engineering dispatch.
 
     Every condition is decided here, on rows locked for the duration, and an
-    admitted decision leaves the queued Run and its budget hold committed: the
+    admitted decision leaves the queued Run and its budget hold committed — the
     same commit boundary `POST /work-admission/paid-runs` has, because that is
     the call this one wraps. A refusal commits too: the paid gate's audit fact is
     written whether it admitted or not.

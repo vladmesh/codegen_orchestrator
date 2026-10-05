@@ -3,7 +3,7 @@
 Tools for the architect ReAct agent to decompose stories into tasks.
 All tools use the shared LanggraphAPIClient singleton.
 
-Task chaining: create_task auto-chains tasks sequentially: each new task
+Task chaining: create_task auto-chains tasks sequentially — each new task
 is blocked by the previous one. The LLM doesn't need to track task IDs
 or manage dependencies.
 
@@ -163,9 +163,9 @@ async def get_project_spec(project_id: str, detail: str = "") -> dict:
     This is usually enough for task decomposition.
 
     Use `detail` only when the summary is insufficient for a specific decision:
-        detail="models" : full model definitions with fields and types
-        detail="events" : full event definitions
-        detail="domains": full domain operations with methods and paths
+        detail="models"  — full model definitions with fields and types
+        detail="events"  — full event definitions
+        detail="domains" — full domain operations with methods and paths
 
     Args:
         project_id: Project ID.
@@ -357,9 +357,9 @@ async def create_task(
 def _refusal_detail(error: httpx.HTTPStatusError) -> str:
     """What the API refused, in the words it refused it with.
 
-    The architect's next move depends on which refusal this was: an unknown
+    The architect's next move depends on which refusal this was — an unknown
     requirement id is a different repair from a disposition that named both a
-    task and a reason: so the detail is handed back to the model rather than
+    task and a reason — so the detail is handed back to the model rather than
     flattened into "failed".
     """
     try:
@@ -385,7 +385,7 @@ async def record_requirement_coverage(
     returned undone. Neither is not an answer and both is two answers.
 
     Nothing in this story's plan is released until every must-requirement id has
-    a disposition recorded here, so call this once per requirement: including
+    a disposition recorded here, so call this once per requirement — including
     the ones you are returning.
 
     Args:
@@ -436,7 +436,7 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
     """Update the repository's acceptance criteria for regression testing.
 
     Call this AFTER creating all tasks. Pass the COMPLETE updated list of
-    acceptance criteria: not just the new ones. Read the current criteria
+    acceptance criteria — not just the new ones. Read the current criteria
     first (returned in the response), add checks for new functionality from
     this story, and remove checks for deleted functionality.
 
@@ -448,7 +448,7 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
         - Telegram: /start responds with welcome message
 
     A behaviour the product runs on a schedule is named in its own form, which
-    the platform reads rather than an executor: QA fires the behaviour itself
+    the platform reads rather than an executor — QA fires the behaviour itself
     and judges it on what follows THEN:
         - FIRE JOB daily_digest THEN a digest message is delivered to the owner
         - FIRE JOB daily_digest WITH {"languages":["ru","en"]} THEN a digest per configured language

@@ -121,7 +121,7 @@ async def supervise_testing_stories(
             continue
 
         # A terminal QA run always carries a result (validation enforces it);
-        # None here only means a superseded/non-terminal run: skip it.
+        # None here only means a superseded/non-terminal run — skip it.
         if run.result is None:
             log.info("qa_run_superseded_skip", run_id=run.id, run_status=run.status.value)
             continue
@@ -213,14 +213,14 @@ async def _recover_qa_handoff(
     because from that moment the temporary-access sweep owns it, and a plan that
     only had to publish is left alone once the publish is stamped.
 
-    The age bound keeps this off a handoff that is merely in progress: a run
+    The age bound keeps this off a handoff that is merely in progress — a run
     created seconds ago is being worked on, not abandoned. It bounds the
     publish-only plan, where the stamp is written after the publish and only the
     clock tells an unfinished handoff from a finished one whose stamp was lost.
     An access-backed plan needs no such bound: "a grant exists for this run" is
     the exact test, and a handoff the target refused left no grant at all. Making
     it wait out the recovery window is what left a second story's QA unstarted
-    while the previous story's grant was already being cleaned up: the retry
+    while the previous story's grant was already being cleaned up — the retry
     arrived minutes after the target was free.
 
     Returns True if this tick took the handoff over.
@@ -322,7 +322,7 @@ async def _quarantine_unverified_application(
         # for this run. The operator's route back is a recheck, after the target
         # has been reconciled.
         await notify_admins_best_effort(
-            f"QA harness blocker parked story {story_id} (project {project_id}): "
+            f"QA harness blocker parked story {story_id} (project {project_id}) — "
             f"{harness.category.value}.\n"
             f"run: {run.id}\n"
             f"attempted: {harness.attempted}\n"
@@ -357,7 +357,7 @@ def _harness_repair(category: QABlockerCategory, story_id: str) -> str:
 
 
 def _product_failures(result: QARunResult) -> list[QAFailedCheck]:
-    """The failed checks that judge the product: the only ones a fix task may carry."""
+    """The failed checks that judge the product — the only ones a fix task may carry."""
     return [check for check in result.failed_checks if check.cause is QAFailedCheckCause.PRODUCT]
 
 
@@ -483,8 +483,8 @@ async def _handle_qa_failed(
             {"quarantine_reason": {"qa_outcome": QAOutcome.FAILED.value, "qa_failure": evidence}},
         )
         # The owner is told here, not only the administrators. This transition
-        # ends the story for them exactly as a quarantine does: their product
-        # stops moving until a human looks at it: and an ending they are not
+        # ends the story for them exactly as a quarantine does — their product
+        # stops moving until a human looks at it — and an ending they are not
         # told about is the silence this seam exists to remove. It goes through
         # the same record for the same reason: the story leaves TESTING on the
         # next line and nothing scans it afterwards.
@@ -556,8 +556,8 @@ def _fix_attempts_exhausted_text(summary: str, exhausted_limit: int) -> str:
     """What the owner is told when QA kept failing and the fixes ran out.
 
     Deliberately the same event PO already routes for a quarantine: from the
-    owner's side this *is* the quarantine case: the product is stopped and a
-    human has to decide: and inventing a second event name would only mean PO
+    owner's side this *is* the quarantine case — the product is stopped and a
+    human has to decide — and inventing a second event name would only mean PO
     dropping it as unknown.
     """
     return (

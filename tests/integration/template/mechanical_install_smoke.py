@@ -54,11 +54,69 @@ asyncio.run(main())
         return json.loads(destination.read_text())
 
 
-async def prove(output):
+def customize_notes(product):
+    """Retain notes commands registered in the owned bot application."""
+    notes = product / "services/tg_bot/src/handlers/notes.py"
+    notes.parent.mkdir(parents=True)
+    notes.write_text(
+        '"""Owned notes commands retained through catalog installation."""\n'
+        "from telegram import Update\n"
+        "from telegram.ext import ContextTypes\n\n"
+        "NOTES: list[str] = []\n\n"
+        "async def handle_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:\n"
+        "    if update.message:\n"
+        '        text = " ".join(context.args or [])\n'
+        "        NOTES.append(text)\n"
+        '        await update.message.reply_text("Saved: " + text)\n\n'
+        "async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:\n"
+        "    if update.message:\n"
+        '        await update.message.reply_text("\\n".join(NOTES))\n'
+    )
+    main = product / "services/tg_bot/src/main.py"
+    source = main.read_text()
+    registration = "    bindings.register(application, BackendClient)"
+    assert source.count(registration) == 1
+    main.write_text(
+        source.replace(
+            registration,
+            "    from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n"
+            '    application.add_handler(CommandHandler("note", handle_note))\n'
+            '    application.add_handler(CommandHandler("notes", handle_notes))\n' + registration,
+        )
+    )
+    test = product / "services/tg_bot/tests/unit/test_retained_notes.py"
+    test.write_text(
+        '"""The owned application registers and executes its retained notes commands."""\n'
+        "from types import SimpleNamespace\n"
+        "from unittest.mock import AsyncMock\n"
+        "import pytest\n"
+        "from services.tg_bot.src import main\n"
+        "from services.tg_bot.src.handlers.notes import NOTES\n\n"
+        "@pytest.mark.asyncio\n"
+        "async def test_registered_notes_save_and_list(monkeypatch: pytest.MonkeyPatch) -> None:\n"
+        '    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:synthetic-test-token")\n'
+        "    app = main.build_application()\n"
+        "    handlers = {command: handler for handler in app.handlers[0]\n"
+        '                for command in getattr(handler, "commands", [])}\n'
+        "    NOTES.clear()\n"
+        "    message = SimpleNamespace(reply_text=AsyncMock())\n"
+        "    update = SimpleNamespace(message=message)\n"
+        '    await handlers["note"].callback(update, SimpleNamespace(args=["Keep", "notes"]))\n'
+        '    message.reply_text.assert_awaited_once_with("Saved: Keep notes")\n'
+        "    message.reply_text.reset_mock()\n"
+        '    await handlers["notes"].callback(update, SimpleNamespace(args=[]))\n'
+        '    message.reply_text.assert_awaited_once_with("Keep notes")\n'
+        "    NOTES.clear()\n"
+    )
+    return notes
+
+
+async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one owned product
     output.mkdir(parents=True, exist_ok=True)
     artifact = {
         "candidate_sha": run(["git", "rev-parse", "HEAD"], ROOT),
         "fence_commands": [],
+        "credential_boundary": [],
         "status": "running",
     }
     try:
@@ -81,7 +139,9 @@ async def prove(output):
                 ],
                 ROOT,
             )
+            run(["git", "init", "-q", "-b", "main"], product)
             run(["make", "setup"], product)
+            assert run(["git", "config", "--get", "core.hooksPath"], product) == ".githooks"
             run(
                 [
                     str(product / "services/tg_bot/.venv/bin/python"),
@@ -92,20 +152,32 @@ async def prove(output):
                 product,
                 os.environ | {"PYTHONPATH": f"{product}:{product / 'shared'}"},
             )
-            notes = product / "services/tg_bot/src/handlers/notes.py"
-            notes.parent.mkdir(parents=True)
-            notes.write_text(
-                '"""Owned notes customization retained through installation."""\n'
-                'def note(text: str) -> str:\n    return "Saved: " + text\n'
-            )
+            notes = customize_notes(product)
             artifact["notes_sha256"] = hashlib.sha256(notes.read_bytes()).hexdigest()
+            product_env = install.product_environment(product) | {
+                "PYTHONPATH": f"{product}:{product / 'shared'}"
+            }
+            notes_test = [
+                str(product / "services/tg_bot/.venv/bin/python"),
+                "-m",
+                "pytest",
+                "services/tg_bot/tests/unit/test_retained_notes.py",
+                "-q",
+            ]
+            run(notes_test, product, product_env)
+            canary_marker = product / ".git/install-pre-push-canary"
+            canary = product / ".githooks/pre-push"
+            artifact["released_pre_push_sha256"] = hashlib.sha256(canary.read_bytes()).hexdigest()
+            canary.write_text("#!/bin/sh\ntouch .git/install-pre-push-canary\nexit 91\n")
+            canary.chmod(0o755)
             remote = base / "remote.git"
             run(["git", "init", "--bare", "-q", "-b", "main", str(remote)], ROOT)
-            run(["git", "init", "-q", "-b", "main"], product)
             run(["git", "add", "-A"], product)
             run(
                 [
                     "git",
+                    "-c",
+                    "core.hooksPath=/dev/null",
                     "-c",
                     "user.name=CI",
                     "-c",
@@ -117,7 +189,18 @@ async def prove(output):
                 product,
             )
             run(["git", "remote", "add", "origin", str(remote)], product)
-            run(["git", "push", "origin", "main"], product)
+            run(["git", "-c", "core.hooksPath=/dev/null", "push", "origin", "main"], product)
+            plain_push = subprocess.run(
+                ["git", "push", "origin", "main"],
+                cwd=product,
+                env=product_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert plain_push.returncode != 0 and canary_marker.is_file()
+            artifact["plain_push_canary_returncode"] = plain_push.returncode
+            canary_marker.unlink()
             payload = select_payload()
             message = ScaffoldMessage(
                 project_id="ci-project",
@@ -136,9 +219,23 @@ async def prove(output):
             actual_command = install._run_cmd
 
             async def transport(argv, **kwargs):
+                operation = argv[3] if argv[0] == "git" else None
+                credential_present = any(
+                    key.startswith("GIT_CONFIG_VALUE_") for key in kwargs["env"]
+                )
+                assert credential_present == (
+                    argv[0] == "git" and operation in {"fetch", "ls-remote", "push"}
+                )
+                artifact["credential_boundary"].append(
+                    {
+                        "executable": Path(argv[0]).name,
+                        "git_operation": operation,
+                        "credential_present": credential_present,
+                    }
+                )
                 # GitHub's repository transport is the one controlled edge. All
                 # git branch/commit/non-force-push/readback operations are real.
-                if argv == ["git", "remote", "get-url", "origin"]:
+                if argv == ["git", "-c", "core.hooksPath=/dev/null", "remote", "get-url", "origin"]:
                     return 0, "https://github.com/ci/notes\n", ""
                 return await actual_command(argv, **kwargs)
 
@@ -158,12 +255,32 @@ async def prove(output):
                 install._run_cmd = actual_command
             artifact["execution"] = asdict(result)
             artifact["selection"] = payload
+            assert not canary_marker.exists()
+            assert run(["git", "config", "--get", "core.hooksPath"], product) == ".githooks"
+            artifact["product_hooks"] = {
+                "configured_path": ".githooks",
+                "canary_invoked_by_executor": False,
+                "plain_push_refused": True,
+                "exact_remote_head": result.head_sha,
+            }
             assert artifact["notes_sha256"] == hashlib.sha256(notes.read_bytes()).hexdigest()
             assert (
-                run(["git", "ls-remote", "origin", "refs/heads/story/ci-story"], product).split()[0]
+                run(
+                    [
+                        "git",
+                        "-c",
+                        "core.hooksPath=/dev/null",
+                        "ls-remote",
+                        "origin",
+                        "refs/heads/story/ci-story",
+                    ],
+                    product,
+                ).split()[0]
                 == result.head_sha
             )
             assert run(["git", "status", "--porcelain"], product) == ""
+            run(notes_test, product, product_env)
+            artifact["retained_notes_scenarios"] = {"registered": True, "save": True, "list": True}
             # Reuse the released kit's fake-backend scenario corpus, unchanged,
             # at the tooling SHA this actual product resolved and executed.
             scenario = base / "binding_scenarios.py"

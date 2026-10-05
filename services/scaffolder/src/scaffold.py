@@ -1,4 +1,4 @@
-"""Core scaffold logic: copier + make setup + git push.
+"""Core scaffold logic — copier + make setup + git push.
 
 Pure business logic with no queue/API dependencies.
 All I/O happens via asyncio subprocess calls.
@@ -142,8 +142,8 @@ async def _nothing_to_commit(workspace: Path) -> bool:
 
     `git status --porcelain` is machine-readable and locale-independent: an empty
     listing after `git add .` means index and worktree both match HEAD, so there was
-    nothing for `git commit` to record. Any other outcome: output, or a status call
-    that itself fails: is a real commit failure.
+    nothing for `git commit` to record. Any other outcome — output, or a status call
+    that itself fails — is a real commit failure.
     """
     rc, out, _ = await _run_cmd(["git", "status", "--porcelain"], cwd=workspace)
     return rc == 0 and not out.strip()

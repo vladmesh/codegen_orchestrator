@@ -1,9 +1,9 @@
 """The Copier template pin is written down once, and everything else derives from it.
 
 `scripts/system_configs.yaml` is the production seed a deployed orchestrator reads, so it
-is the definition. The sites that used to repeat it: the live suite's scaffold defaults,
+is the definition. The sites that used to repeat it — the live suite's scaffold defaults,
 the stage-5 smoke, the vendored fixture's directory name and the CI gate's exclusion for
-that fixture: now read `scripts.template_pin`, and these tests hold that shape: one
+that fixture — now read `scripts.template_pin`, and these tests hold that shape: one
 literal in the tree, and a changed definition arriving at every derived site.
 """
 

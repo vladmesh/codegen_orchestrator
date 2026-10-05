@@ -1,4 +1,4 @@
-"""Unit tests for tasks router: CRUD, actions, events (planning layer)."""
+"""Unit tests for tasks router — CRUD, actions, events (planning layer)."""
 
 from unittest.mock import AsyncMock, MagicMock
 import uuid
