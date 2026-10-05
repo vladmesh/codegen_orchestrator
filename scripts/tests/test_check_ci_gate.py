@@ -20,6 +20,10 @@ def gate():
     return _load_gate()
 
 
+def test_actual_workflow_meets_the_complete_ci_contract(gate):
+    gate.main()
+
+
 def _write_pyproject(root: Path, python_files: str | None) -> None:
     setting = "" if python_files is None else f"python_files = {python_files}\n"
     (root / "pyproject.toml").write_text(

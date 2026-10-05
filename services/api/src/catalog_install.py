@@ -70,7 +70,7 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
     def refuse(code):
         return InstallDecision(outcome="refused", reason=code, operation=operation)
 
-    async def park(stage, detail, state="recovery_required"):
+    async def park(stage, detail, state="recovery_required", *, park_story=True):
         operation.state = state
         operation.stage = stage
         operation.detail = redact_diagnostic(detail)[:2000]
@@ -78,7 +78,7 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
             await move(TaskStatus.IN_DEV)
         if task.status == TaskStatus.IN_DEV.value:
             await move(TaskStatus.WAITING_HUMAN_REVIEW)
-        if story.status == StoryStatus.IN_PROGRESS.value:
+        if park_story and story.status == StoryStatus.IN_PROGRESS.value:
             failure = StoryFailure(
                 code=StoryFailureCode.SCAFFOLD_FAILED,
                 source="scaffolder",
@@ -91,40 +91,38 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
     if operation is not None:
         if command.action != "admit" and command.operation_id != operation.id:
             return refuse("stale_operation")
+        # Cancellation/stop may forbid more work while the same owner still owes
+        # a refusal record. It must retain exact head/workspace evidence without
+        # changing a newer cycle, cancelled task or an unrelated story stop.
+        if (
+            command.action == "refuse"
+            and operation.state == "running"
+            and operation.token == command.token
+        ):
+            if command.head_sha:
+                operation.head_sha = command.head_sha
+            return await park(
+                command.stage or operation.stage,
+                command.detail or "Install refused.",
+                "recovery_required"
+                if operation.head_sha
+                or (command.stage or operation.stage) not in {"preflight", "claimed"}
+                else "refused",
+                park_story=operation.cycle_started_at == cycle,
+            )
+
+        if operation.state == "running" and (
+            operation.heartbeat_at is None or operation.heartbeat_at + INSTALL_LEASE < now
+        ):
+            return await park(
+                "lease_lost",
+                "Execution lease expired; inspect retained checkout and exact head before retry.",
+                park_story=operation.cycle_started_at == cycle,
+            )
         if operation.cycle_started_at != cycle:
             return refuse("stale_cycle")
         if operation.state in {"published", "refused", "recovery_required"}:
             return InstallDecision(outcome="settled", operation=operation)
-
-    # Cancellation/stop may forbid more work while the same owner still owes
-    # a refusal record. It must retain exact head/workspace evidence without
-    # changing a newer cycle, cancelled task or an unrelated story stop.
-    if (
-        command.action == "refuse"
-        and operation is not None
-        and operation.state == "running"
-        and operation.token == command.token
-    ):
-        if command.head_sha:
-            operation.head_sha = command.head_sha
-        return await park(
-            command.stage or operation.stage,
-            command.detail or "Install refused.",
-            "recovery_required"
-            if operation.head_sha
-            or (command.stage or operation.stage) not in {"preflight", "claimed"}
-            else "refused",
-        )
-
-    if (
-        operation is not None
-        and operation.state == "running"
-        and (operation.heartbeat_at is None or operation.heartbeat_at + INSTALL_LEASE < now)
-    ):
-        return await park(
-            "lease_lost",
-            "Execution lease expired; inspect retained checkout and exact head before retry.",
-        )
 
     if reason is not None or story.status != StoryStatus.IN_PROGRESS.value:
         return refuse(reason.value if reason else "story_not_in_progress")
@@ -200,15 +198,6 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
     if operation.heartbeat_at is None or operation.heartbeat_at + INSTALL_LEASE < now:
         return await park("lease_lost", "Execution lease expired; retained work needs review.")
     operation.heartbeat_at = now
-    if command.action == "refuse":
-        return await park(
-            command.stage or operation.stage,
-            command.detail or "Install refused.",
-            "recovery_required"
-            if operation.head_sha
-            or (command.stage or operation.stage) not in {"preflight", "claimed"}
-            else "refused",
-        )
     if command.verification is not None:
         proof = command.verification
         expected = {item.name: item.version for item in [payload.package, *payload.libraries]}

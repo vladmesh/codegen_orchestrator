@@ -9,11 +9,59 @@ import pytest
 from sqlalchemy import func, select
 
 from shared.contracts.dto.task import TaskDTO
-from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Run, Task
+from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Run, Story, Task
 from shared.queues import ENGINEERING_QUEUE, WORKER_COMMANDS
 
 LEASE_OWNER = "owner"
 OTHER_OWNER = "different"
+
+
+@pytest.mark.asyncio
+async def test_expired_cancelled_old_cycle_can_be_reconciled_without_changing_new_story(
+    install_task, async_client, db_session
+):
+    from src.dependencies import create_lk_jwt
+
+    admission = await command(async_client, install_task, "admit")
+    oid = admission["operation"]["id"]
+    await command(async_client, install_task, "claim", operation_id=oid, token=LEASE_OWNER)
+    await async_client.delete(f"/api/tasks/{install_task['id']}")
+    task = await db_session.get(Task, install_task["id"])
+    task.install_operation = {
+        **task.install_operation,
+        "heartbeat_at": (datetime.now(UTC) - timedelta(minutes=20)).isoformat(),
+    }
+    story = await db_session.get(Story, install_task["story_id"])
+    story.reopened_at = datetime.now(UTC)
+    await db_session.commit()
+    before = (await async_client.get(f"/api/stories/{story.id}")).json()
+    settled = await command(async_client, install_task, "admit")
+    assert settled["operation"]["state"] == "recovery_required"
+    after = (await async_client.get(f"/api/stories/{story.id}")).json()
+    assert {key: after[key] for key in ("status", "reopened_at", "quarantine_reason")} == {
+        key: before[key] for key in ("status", "reopened_at", "quarantine_reason")
+    }
+    admin = await post(
+        async_client,
+        "/api/users/",
+        {
+            "telegram_id": uuid.uuid4().int % 1_000_000_000,
+            "is_admin": True,
+        },
+        201,
+    )
+    result = await async_client.post(
+        f"/api/tasks/{task.id}/catalog-install/recovery",
+        headers={"X-Internal-Key": "", "Authorization": f"Bearer {create_lk_jwt(admin['id'])}"},
+        json={"operation_id": oid, "action": "retry"},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["operation"]["state"] == "refused"
+    after = (await async_client.get(f"/api/stories/{story.id}")).json()
+    assert {key: after[key] for key in ("status", "reopened_at", "quarantine_reason")} == {
+        key: before[key] for key in ("status", "reopened_at", "quarantine_reason")
+    }
+    assert (await async_client.get(f"/api/tasks/{task.id}")).json()["status"] == "cancelled"
 
 
 def payload():

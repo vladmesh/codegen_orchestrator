@@ -204,6 +204,11 @@ local story branch with its reviewed remote; no executor reset is implicit. A ca
 Task remains cancelled when retry releases its reviewed blocking operation. Wrong
 cycle/operation, unrelated stop or unpublished/unverified head refuses.
 
+Expiry also settles an older cycle's writer without parking the newer Story. After
+reconciling its retained checkout, bearer-admin `retry` can release that cancelled
+operation alone with no stop ID; it preserves the current Story/cycle/quarantine,
+retained proof and head. It cannot publish cancelled work or release another stop.
+
 The existing template compatibility CI lane executes the production executor over a
 real released notes product, preserves a custom notes handler and protected hashes,
 reads component tag object/target/tree provenance, and runs the released fake-backend

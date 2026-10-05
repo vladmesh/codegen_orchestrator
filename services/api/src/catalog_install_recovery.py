@@ -29,6 +29,38 @@ async def operator_install_recovery(task_id, body, actor, db):
     repository = await db.scalar(
         select(Repository).where(Repository.id == task.repository_id).with_for_update()
     )
+    cause = story.quarantine_reason
+    owns_review = (
+        story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
+        and cause
+        and cause.get("detail", "").startswith(f"Catalog install {operation.id} at ")
+        and operation.cycle_started_at == (story.reopened_at or story.created_at)
+    )
+    if (
+        task.status == TaskStatus.CANCELLED.value
+        and not owns_review
+        and operation.id == body.operation_id
+        and operation.state in {"refused", "recovery_required"}
+        and body.action == "retry"
+        and body.stop_id is None
+    ):
+        # Reconciliation of a cancelled writer releases only that operation.
+        # A newer cycle or another stop remains owned by its existing authority.
+        db.add(
+            TaskEvent(
+                task_id=task.id,
+                event_type=TaskEventType.NOTE.value,
+                actor=actor,
+                details={
+                    "catalog_install_settlement": operation.model_dump(mode="json"),
+                    "operator_action": body.action,
+                },
+            )
+        )
+        operation.state = "refused"
+        task.install_operation = operation.model_dump(mode="json")
+        await db.commit()
+        return InstallDecision(outcome="settled", operation=operation)
     if (
         operation.id != body.operation_id
         or operation.cycle_started_at != (story.reopened_at or story.created_at)
@@ -37,7 +69,6 @@ async def operator_install_recovery(task_id, body, actor, db):
         or operation.state not in {"refused", "recovery_required"}
     ):
         raise HTTPException(409, {"code": "stale_install_recovery"})
-    cause = story.quarantine_reason
     if not cause or not cause.get("detail", "").startswith(f"Catalog install {operation.id} at "):
         raise HTTPException(409, {"code": "unrelated_story_stop"})
     if body.action == "recover":
