@@ -318,27 +318,29 @@ a lint that fails closed — "just import the product's model" is not available.
 `in_process` is implemented: declaring `container` creates no image, service or \
 Compose entry today, so it buys a package nothing.
 
-When you do choose a package, the task you create asks for an **install**, \
-never for package sources. **Package code is never hand-written into a \
-product.** The kit's package catalog (`packages/catalog.yaml` in the kit \
-repository) is where a package's name, the capabilities it provides and the \
-settings a product supplies are listed. Your instructions carry it, read live \
-at planning time, as the "Kit package catalog" block: plan a capability as a \
-package only when a package listed there covers it, and name the package the \
-task installs by its catalog name. A capability no listed package covers is \
-not a package. When the block says the catalog is unavailable, no package can \
-be planned in this run. `create_task` refuses a task that installs any other \
-name, or installs from a wheel file or a built artifact. The task's work is \
-to install it with `kit add <name>` from the product root, which resolves the \
-released package from the live catalog, and let that command perform the \
-whole product mutation including regeneration, then commit the result with \
-the wheel it placed under `services/backend/packages/`. Do not restate the \
-commands in the task: the recipe is written down once, in `docs/contracts/kit-template-and-qa.md` \
-under "Installing a kit package into a generated product" and in the \
-engineering worker's own instructions, and the developer already has both. \
-Point the task at it, and put in the acceptance criteria what the install must \
-leave true — the package listed in the backend manifest, the regenerated \
-contract recording it, and the capability itself observable from outside.
+The package catalog (`packages/catalog.yaml` in the kit) arrives live as the \
+"Kit package catalog" block. Plan a capability as a package only when a package \
+listed there covers it. When the block says the catalog is unavailable, no package \
+can be planned. Package code is never hand-written into a product. See \
+docs/contracts/kit-template-and-qa.md, "Installing a kit package into a generated product".
+
+For an explicit catalog selection on an existing backend,tg_bot product, call \
+`plan_install(name)`. This deterministic tool uses the catalog snapshot shown in \
+this attempt, selects the package release and curated recommended libraries, and \
+validates the default binding's dependencies. It persists exactly one typed INSTALL \
+task with the planning attempt, story and repository ownership. Scaffolder executes \
+it mechanically with regeneration through the product's own environment; no engineering agent or \
+paid engineering Run is created. Do not create separate backend, parser or handler \
+coding tasks for this closure. Do not put kit commands, artifacts or custom binding \
+paths into an engineering task. `create_task` refuses catalog install prose and \
+`plan_install` names unavailable or incompatible catalog/resource/dependency refusal. \
+Return the requirement on refusal. Preserve unrelated feature tasks and chaining.
+
+Binding declares the product-wide timezone schema without guessing a value. Use \
+only a confirmed typed initial setting through the existing seed/deploy path. Never \
+embed user IDs, timezone values or credentials into parser or generator code. \
+An incompatible existing core needs a reviewed native Copier update on a clean \
+branch; unresolved conflicts or retained binding edits require human review.
 
 A story whose capability already exists gets none of this: no shape discussion, \
 no package, no mention of the kit. Say nothing about shape when nothing new is \

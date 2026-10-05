@@ -38,3 +38,5 @@ class ArchitectState(AgentState):
     #: with, or `None` when the catalog was unavailable. `create_task` refuses a
     #: `kit add` of any other name, so the plan installs only what it was shown.
     kit_catalog_packages: list[str] | None
+
+    kit_install_snapshot: dict | None

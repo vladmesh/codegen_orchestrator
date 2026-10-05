@@ -331,3 +331,16 @@ is the only API route that lands a Story in `waiting_user_secret`; the single-ho
 `wait-user-secret` route is removed. The scheduler spends one attempt in the routing tick and the
 `owner_notifications` loop recovers the rest, with the terminal endings' bound, spacing and
 escalation.
+
+## Catalog installation and engineering exclusion
+
+INSTALL dispatch uses the API's durable catalog-install command and scaffold queue.
+Engineering dispatch, direct paid-runs and spawn-worker refuse INSTALL with
+catalog_install_not_engineering before executor selection or Run/ledger/budget/worker
+creation. An ordinary branch writer refuses catalog_install_in_flight while a
+project install is queued, running or requires recovery. Installation shares the
+Task/Story/Project lock ladder, coverage/stop/publication fences and current-cycle
+ownership. No paid reservation is created or released for a mechanical operation.
+[Install settlement](kit-template-and-qa.md#installing-a-kit-package-into-a-generated-product)
+owns lease loss, exact-head recovery and explicit retry; engineering retry cannot
+replace retained work.

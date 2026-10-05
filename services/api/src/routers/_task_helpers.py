@@ -59,6 +59,8 @@ def to_read(task: Task, last_event: str | None = None) -> TaskRead:
         failure_metadata=getattr(task, "failure_metadata", None),
         dispatch_admitted=task.dispatch_admitted,
         planning_attempt_id=task.planning_attempt_id,
+        install=task.install,
+        install_operation=task.install_operation,
         created_at=task.created_at,
         updated_at=task.updated_at,
         last_event=last_event,
@@ -163,6 +165,14 @@ async def apply_cancellation(task: Task, db: AsyncSession) -> bool:
     validate_transition(task.status, TaskStatus.CANCELLED)
     old_status = task.status
     task.status = TaskStatus.CANCELLED
+    if task.type == "install" and task.install_operation is not None:
+        from shared.contracts.dto.catalog_install import InstallOperation
+
+        operation = InstallOperation.model_validate(task.install_operation)
+        if operation.state == "queued":
+            operation.state, operation.stage = "refused", "cancelled"
+            operation.detail = "Cancelled before execution claim; no product mutation."
+            task.install_operation = operation.model_dump(mode="json")
     await create_status_event(task, old_status, TaskStatus.CANCELLED, "system", {}, db)
     return True
 

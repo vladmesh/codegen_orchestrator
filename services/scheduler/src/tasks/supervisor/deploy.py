@@ -724,6 +724,12 @@ async def _handle_deploy_code_fix(
 
     Returns True if redispatched, False if retries exhausted.
     """
+    from ..catalog_install import refuse_install_coding_fallback
+
+    if await refuse_install_coding_fallback(
+        api_client, story_id, "deployment requested a code fix"
+    ):
+        return False
     # A fix is another attempt inside the run that initiated the work, so the
     # message carries the project's run: the worker it spawns belongs to the
     # same run as the one whose deploy failed.

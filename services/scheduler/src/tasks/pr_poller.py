@@ -495,6 +495,13 @@ async def _handle_failed_run(  # noqa: PLR0913 — one CI run's context, each pa
     if task_has_run:
         return False
 
+    from .catalog_install import refuse_install_coding_fallback
+
+    if await refuse_install_coding_fallback(
+        api_client, story_id, f"PR CI failed at {head_sha}; review {run_url}", tasks=tasks
+    ):
+        return True
+
     if attempt > _ci_failure_limit():
         # Same reason as the unpublished-images refusal: the story leaves
         # PR_REVIEW here and nothing scans it afterwards, so this is the last
@@ -686,6 +693,12 @@ async def _merge_open_pr(
 
     mergeable_state = pull_request.get("mergeable_state")
     if mergeable_state == "dirty":
+        from .catalog_install import refuse_install_coding_fallback
+
+        if await refuse_install_coding_fallback(
+            api_client, story_id, f"PR {pr_number} has a merge conflict"
+        ):
+            return None
         story = await api_client.get_story(story_id)
         command = PRConflictRepairCommand(
             project_id=project_id,

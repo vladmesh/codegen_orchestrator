@@ -94,6 +94,8 @@ class EngineeringDispatchRefusal(StrEnum):
 
     #: The locked row is no longer in todo — somebody moved it while this tick
     #: was reading the candidate list.
+    CATALOG_INSTALL_NOT_ENGINEERING = "catalog_install_not_engineering"
+    CATALOG_INSTALL_IN_FLIGHT = "catalog_install_in_flight"
     ENGINEERING_STOPPED = "engineering_stopped"
     COMMIT_PUBLICATION_REQUIRED = "commit_publication_required"
     TASK_NOT_DISPATCHABLE = "task_not_dispatchable"

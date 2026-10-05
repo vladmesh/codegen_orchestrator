@@ -97,14 +97,22 @@ def kit_catalog_off_github(monkeypatch):
     Tests of the reader build their own `KitCatalogReader`; a test of an unavailable
     catalog sets `read.return_value` on the reader this returns.
     """
+    from dataclasses import replace
+
     from framework.catalog import bundled_catalog
 
     from src import kit_catalog
     from src.consumers import architect
 
     reader = MagicMock(spec=kit_catalog.KitCatalogReader)
+    data = Path(__file__).parent / "fixtures/catalog-install"
     reader.read = AsyncMock(
-        return_value=kit_catalog.installable(bundled_catalog(), BUNDLED_KIT_CATALOG_SOURCE)
+        return_value=replace(
+            kit_catalog.installable(bundled_catalog(), BUNDLED_KIT_CATALOG_SOURCE),
+            raw=(data / "catalog.yaml").read_text(),
+            bindings={"reminders": (data / "default.yaml").read_text()},
+            manifests={"reminders": (data / "package.yaml").read_text()},
+        )
     )
     monkeypatch.setattr(architect, "get_kit_catalog_reader", lambda: reader)
     return reader

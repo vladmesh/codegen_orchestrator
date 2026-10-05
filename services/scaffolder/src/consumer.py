@@ -154,6 +154,8 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
 
             # Route by mode
             args = (msg, repo_full_name, github, github_token, api, settings, log)
+            if msg.mode == "install":
+                return await _process_install_mode(*args)
             if msg.mode == "ensure":
                 return await _process_ensure_mode(*args)
             return await _process_full_mode(*args)
@@ -167,6 +169,10 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
             await _record_scaffold_error(msg, error, api, log)
         return {"status": "failed", "error": error}
     except Exception as exc:
+        if msg.mode == "install":
+            # The scoped operation must settle durably before ACK; a failed
+            # settlement stays pending and never fails unrelated stories.
+            raise
         error = redact_diagnostic(exc)
         log.error("scaffold_job_exception", error=error, exc_info=True)
         # A handled exception is terminal for this queue delivery. Record it for
@@ -404,6 +410,105 @@ async def _process_ensure_mode(
     return {"status": "failed", "error": result.error or "unknown error"}
 
 
+async def _process_install_mode(msg, repo_full_name, github, github_token, api, settings, log):
+    from shared.contracts.dto.catalog_install import InstallCommand
+    from src.install import InstallExecutionError, run_install
+
+    token = uuid.uuid4().hex
+
+    async def command(body):
+        owned = body.model_copy(update={"operation_id": msg.operation_id, "token": token})
+        try:
+            return await api.catalog_install_command(msg.task_id, owned)
+        except Exception:
+            # One response-loss replay uses the same immutable operation and
+            # token. Persistent unavailability leaves this queue entry pending.
+            return await api.catalog_install_command(msg.task_id, owned)
+
+    decision = await command(InstallCommand(action="claim"))
+    if decision.outcome == "settled":
+        return {"status": "skipped", "operation_id": msg.operation_id}
+    if decision.outcome != "claimed":
+        return {"status": "skipped", "reason": decision.reason}
+    operation = decision.operation
+    if (
+        operation is None
+        or str(operation.project_id) != msg.project_id
+        or operation.task_id != msg.task_id
+        or operation.story_id != msg.story_id
+        or operation.repository_id != msg.repository_id
+        or operation.cycle_started_at != msg.cycle_started_at
+        or decision.install != msg.install
+        or decision.git_url is None
+        or decision.git_url.removesuffix(".git").rstrip("/")
+        != f"https://github.com/{repo_full_name}"
+    ):
+        await command(
+            InstallCommand(action="refuse", stage="preflight", detail="message_ownership_mismatch")
+        )
+        return {"status": "failed", "reason": "message_ownership_mismatch"}
+
+    async def fence(body):
+        answer = await command(body)
+        if answer.outcome == "refused" or (
+            answer.outcome == "settled"
+            and (answer.operation is None or answer.operation.state != "published")
+        ):
+            raise InstallExecutionError(body.stage or "lease_lost", answer.reason or "lease_lost")
+
+    owner = asyncio.current_task()
+    heartbeat_lost = False
+
+    async def heartbeat():
+        nonlocal heartbeat_lost
+        try:
+            while True:
+                await asyncio.sleep(30)
+                await fence(InstallCommand(action="heartbeat"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            heartbeat_lost = True
+            owner.cancel()
+
+    refreshing = asyncio.create_task(heartbeat())
+    try:
+        result = await run_install(msg, settings, decision.git_url, github_token, fence)
+        log.info(
+            "catalog_install_published", operation_id=msg.operation_id, head_sha=result.head_sha
+        )
+        return {"status": "success", "head_sha": result.head_sha, "operation_id": msg.operation_id}
+    except asyncio.CancelledError:
+        await command(
+            InstallCommand(
+                action="refuse",
+                stage="lease_lost" if heartbeat_lost else "cancelled",
+                detail="Execution cancelled; retain the owned checkout for review.",
+            )
+        )
+        if not heartbeat_lost:
+            raise
+        return {"status": "failed", "reason": "lease_lost"}
+    except InstallExecutionError as error:
+        await command(
+            InstallCommand(
+                action="refuse",
+                stage=error.stage,
+                head_sha=error.head_sha,
+                base_sha=error.base_sha,
+                detail=str(error),
+            )
+        )
+        log.warning("catalog_install_refused", stage=error.stage, operation_id=msg.operation_id)
+        return {"status": "failed", "stage": error.stage, "operation_id": msg.operation_id}
+    finally:
+        refreshing.cancel()
+        try:
+            await refreshing
+        except asyncio.CancelledError:
+            pass
+
+
 async def _record_scaffold_error(msg, error: str, api, log) -> None:
     """Record a failed ensure on the project.
 
@@ -520,7 +625,7 @@ async def run_worker() -> None:
                 # keep it until reclaim or TTL; otherwise the next scheduler
                 # tick can publish a duplicate alongside the pending entry.
                 project_id = msg.data.get("project_id")
-                if settled and project_id:
+                if settled and project_id and msg.data.get("mode") != "install":
                     inflight_key = f"scaffold:inflight:{project_id}"
                     await redis.redis.delete(inflight_key)
                 unbind_message_context()

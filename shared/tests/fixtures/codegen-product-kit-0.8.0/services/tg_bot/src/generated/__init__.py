@@ -1,0 +1,1 @@
+"""Generated Telegram binding contracts."""

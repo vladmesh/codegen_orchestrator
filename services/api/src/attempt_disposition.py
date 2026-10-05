@@ -107,7 +107,16 @@ async def lock_story_attempts(story_id, db):
     from .routers._task_helpers import get_task_for_update
 
     ids = list((await db.scalars(select(Task.id).where(Task.story_id == story_id))).all())
-    tasks = [await get_task_for_update(i, db) for i in sorted(ids)]
+    project_id = await db.scalar(select(Story.project_id).where(Story.id == story_id))
+    install_ids = list(
+        (
+            await db.scalars(
+                select(Task.id).where(Task.project_id == project_id, Task.type == "install")
+            )
+        ).all()
+    )
+    all_tasks = [await get_task_for_update(i, db) for i in sorted(set(ids) | set(install_ids))]
+    tasks = [task for task in all_tasks if task.id in ids]
     story = await _get_story_for_update(story_id, db)
     current = set((await db.scalars(select(Task.id).where(Task.story_id == story_id))).all())
     if current - set(ids):
@@ -152,6 +161,8 @@ async def locked_disposition(story, task, runs, db):
 
 async def require_automatic_task(task, db):
     """Called after the Task lock; shared by automatic retry/start/completion."""
+    if task.type == "install":
+        raise HTTPException(409, {"code": "catalog_install_requires_owned_settlement"})
     story = None
     if task.story_id:
         # All writers that examine siblings use lock_story_attempts instead.

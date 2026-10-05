@@ -338,6 +338,30 @@ def _health_only_qa_handoff(command: PaidRunStartCommand) -> bool:
 
 
 async def _engineering_start_refusal(command, db):
+    if command.type is RunType.ENGINEERING and command.task_id is not None:
+        from fastapi import HTTPException
+
+        from shared.models import Task
+
+        kind = await db.scalar(select(Task.type).where(Task.id == command.task_id))
+        if kind == "install":
+            raise HTTPException(409, {"code": "catalog_install_not_engineering"})
+    if command.type is RunType.ENGINEERING and command.story_id is None:
+        from shared.models import Task
+
+        from .routers._task_helpers import get_task_for_update
+
+        install_ids = list(
+            (
+                await db.scalars(
+                    select(Task.id).where(
+                        Task.project_id == command.project_id, Task.type == "install"
+                    )
+                )
+            ).all()
+        )
+        for task_id in sorted(install_ids):
+            await get_task_for_update(task_id, db)
     if command.type is RunType.ENGINEERING and command.story_id is not None:
         from shared.contracts.dto.commit_publication import AttemptDisposition
 
@@ -375,6 +399,22 @@ async def _engineering_start_refusal(command, db):
         )
         if project is None:
             raise RuntimeError("Engineering admission has no owned Project")
+        from fastapi import HTTPException
+
+        from shared.models import Task
+
+        operations = (
+            await db.scalars(
+                select(Task.install_operation).where(
+                    Task.project_id == project.id, Task.type == "install"
+                )
+            )
+        ).all()
+        if any(
+            operation and operation["state"] in {"queued", "running", "recovery_required"}
+            for operation in operations
+        ):
+            raise HTTPException(409, {"code": "catalog_install_in_flight"})
         if COMMIT_PUBLICATION_KEY in (project.config or {}):
             CommitPublication.model_validate(project.config[COMMIT_PUBLICATION_KEY])
             return PaidRunStartRead(

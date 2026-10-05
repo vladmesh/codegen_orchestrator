@@ -10,7 +10,7 @@ from shared.clients.github import GitHubAppClient, NoCommitsBetweenError
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryDTO, StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
-from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
@@ -154,7 +154,36 @@ async def _has_recovered_taskless_commit(api_client, story_id):
     return True
 
 
-async def complete_stories(
+async def _install_publication_refusal(tasks, story, pr, github, owner, repo_name, branch):
+    installs = [
+        task for task in tasks if task.type is TaskType.INSTALL and task.status is TaskStatus.DONE
+    ]
+    install_refusal = None
+    for installed in installs:
+        operation = installed.install_operation
+        if operation is None or operation.state != "published" or not operation.head_sha:
+            install_refusal = "Install Task lacks its exact durable publication head"
+            break
+        if operation.cycle_started_at != (story.reopened_at or story.created_at):
+            install_refusal = "Install Task belongs to an older story cycle"
+            break
+        if not await github.branch_contains_commit(owner, repo_name, branch, operation.head_sha):
+            install_refusal = "Story PR branch does not contain the published install head"
+            break
+    if (
+        install_refusal is None
+        and installs
+        and all(
+            task.type is TaskType.INSTALL or task.status is TaskStatus.CANCELLED for task in tasks
+        )
+    ):
+        latest = max(installs, key=lambda task: task.created_at)
+        if pr["head"]["sha"] != latest.install_operation.head_sha:
+            install_refusal = "Install Story PR head differs from its exact published head"
+    return install_refusal
+
+
+async def complete_stories(  # noqa: PLR0915  # PR owner also verifies mechanical publication
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> int:
@@ -257,6 +286,22 @@ async def complete_stories(
                         repo_name=repo_name,
                         branch=branch,
                     )
+                    install_refusal = await _install_publication_refusal(
+                        tasks, story, pr, github, owner, repo_name, branch
+                    )
+                    if install_refusal is not None:
+                        await api_client.stop_story(
+                            story_id,
+                            "human-review",
+                            StoryFailure(
+                                code=StoryFailureCode.SCAFFOLD_FAILED,
+                                source="scheduler",
+                                detail=install_refusal
+                                + "; inspect the retained operation and branch.",
+                            ),
+                            actor="scheduler",
+                        )
+                        continue
                     pr_number = pr["number"]
                     await api_client.update_story(story_id, {"pr_number": pr_number})
                     pr_node_id = pr.get("node_id", "")

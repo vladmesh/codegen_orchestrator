@@ -19,6 +19,11 @@ from shared.worker_compose import (
     worker_compose_project_filter,
     worker_id_of_compose_project,
 )
+from shared.workspace_preservation import (
+    CATALOG_INSTALL_LOCKS,
+    acquire_install_workspace_lock,
+    has_preserved_work,
+)
 
 from . import qa_egress, workspace as workspace_mod
 from .config import settings
@@ -334,7 +339,9 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
             continue
 
         for entry in entries:
-            if entry == ".compose-plans" or entry.startswith(workspace_mod.QA_WORKSPACE_PREFIX):
+            if entry in {".compose-plans", CATALOG_INSTALL_LOCKS} or entry.startswith(
+                workspace_mod.QA_WORKSPACE_PREFIX
+            ):
                 continue
             if entry in live_repo_ids:
                 continue
@@ -344,19 +351,25 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
             except OSError:
                 continue
             if age_hours > max_age_hours:
-                from shared.workspace_preservation import has_preserved_work
-
-                if has_preserved_work(ws_dir):
-                    logger.info("workspace_gc_preserved_git_work", repo_id=entry)
+                try:
+                    lock = acquire_install_workspace_lock(ws_dir)
+                except BlockingIOError:
+                    logger.info("workspace_gc_install_live", repo_id=entry)
                     continue
-                workspace_mod.remove_workspace(base_path, entry)
-                await _notify_workspace_deleted(entry)
-                logger.info(
-                    "workspace_gc_removed",
-                    project_id=entry,
-                    base_path=base_path,
-                    age_hours=round(age_hours, 1),
-                )
+                try:
+                    if has_preserved_work(ws_dir):
+                        logger.info("workspace_gc_preserved_git_work", repo_id=entry)
+                        continue
+                    workspace_mod.remove_workspace(base_path, entry)
+                    await _notify_workspace_deleted(entry)
+                    logger.info(
+                        "workspace_gc_removed",
+                        project_id=entry,
+                        base_path=base_path,
+                        age_hours=round(age_hours, 1),
+                    )
+                finally:
+                    lock.close()
 
 
 async def _notify_workspace_deleted(repo_id: str) -> None:

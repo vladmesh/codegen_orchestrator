@@ -38,6 +38,8 @@ def _make_task(**overrides):
         # that was never planned against a Product Brief is admitted already.
         "dispatch_admitted": True,
         "planning_attempt_id": None,
+        "install": None,
+        "install_operation": None,
         "created_at": now,
         "updated_at": now,
     }

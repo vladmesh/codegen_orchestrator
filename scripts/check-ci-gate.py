@@ -287,7 +287,7 @@ CONCURRENCY = {
     ),
     "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
 }
-TEMPLATE_COMPAT_TIMEOUT_MINUTES = 30
+TEMPLATE_COMPAT_TIMEOUT_MINUTES = 40
 BUILDX_RETRY_ATTEMPTS = 3
 SIMULATED_REGISTRY_FAILURE_INPUT = "simulate_first_attempt_registry_failure"
 SIMULATED_PULL_HANG_INPUT = "simulate_first_attempt_pull_hang"
@@ -1908,7 +1908,7 @@ def assert_gate(jobs: dict[str, Any]) -> None:
 def assert_template_compatibility(jobs: dict[str, Any]) -> None:
     job = require_job(jobs, "template-compatibility")
     if job.get("timeout-minutes") != TEMPLATE_COMPAT_TIMEOUT_MINUTES:
-        fail("template compatibility job must have a 30 minute timeout")
+        fail("template compatibility job must have a 40 minute timeout")
     if job.get("strategy", {}).get("fail-fast") is not False:
         fail("template compatibility matrix must disable fail-fast")
     if matrix_values(job, "entry") != {"baseline", "candidate"}:

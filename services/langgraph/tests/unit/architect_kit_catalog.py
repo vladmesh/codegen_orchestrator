@@ -2,11 +2,10 @@
 
 Sprint 1477, DoD4: the architect resolves a capability against the catalog by itself.
 A confirmed brief asking for one-time reminders yields a plan that installs the
-`reminders` package the catalog lists, as `kit add reminders` with no supplied artifact,
-and whose criteria name what the install leaves true: the package in the backend
-manifest, the regenerated contract recording it, and the capability observable from
-outside. A brief whose capability no catalog package covers — a shopping list, which the
-product builds in its own backend — yields a plan with no `kit add` at all.
+`reminders` package with recommended textparse and the released default binding as
+one owned typed INSTALL task, with no supplied artifact or engineering task recipe.
+A brief whose capability no catalog package covers, such as a shopping list built
+in the product backend, yields ordinary feature tasks and no catalog install.
 
 Both runs apply these checks to what the real tools sent to the stub API: the scripted
 run in CI (`tests/unit/test_architect_kit_catalog_plan.py`) and the real-LLM run, skipped
@@ -22,8 +21,9 @@ import re
 from unittest.mock import MagicMock, patch
 
 from shared.contracts.dto.product_brief import ProductBriefContent
+from shared.contracts.dto.task import TaskDTO
 from shared.contracts.queues.architect import ArchitectMessage
-from tests.unit.factories import make_product_brief, make_repository, make_story
+from tests.unit.factories import make_product_brief, make_project, make_repository, make_story
 from tests.unit.test_architect_consumer import _FakeBriefBoundary, _FakeRedis
 
 STORY_ID = "story-kit-catalog"
@@ -126,7 +126,17 @@ class CatalogPlanApi(_FakeBriefBoundary):
 
     async def create_task(self, task_data):
         self.task_payloads.append(task_data)
-        return await super().create_task(task_data)
+        task = await super().create_task(task_data)
+        return TaskDTO.model_validate(
+            {
+                **task.model_dump(mode="json"),
+                "type": task_data["type"],
+                "install": task_data.get("install"),
+            }
+        )
+
+    async def get_project(self, project_id, **_kwargs):
+        return make_project(status="active", config={"modules": ["backend", "tg_bot"]})
 
     async def get_primary_repository(self, project_id):
         return make_repository(acceptance_criteria=self.criteria or PREVIOUS_CRITERIA)
@@ -190,29 +200,26 @@ def assert_no_task_installs_a_supplied_artifact(api: CatalogPlanApi) -> None:
 
 
 def assert_plan_installs_reminders_from_the_catalog(api: CatalogPlanApi) -> None:
-    """A task installs `reminders` as `kit add reminders`, and its criteria say what holds."""
+    """One typed install owns the complete package/library/default-binding closure."""
     assert api.task_payloads, "the plan created no task"
-    installs = installed_packages(api)
-    assert REMINDERS in installs, (
-        f"no task installs {REMINDERS} with `kit add {REMINDERS}`: "
-        f"{[_text(task) for task in api.task_payloads]}"
-    )
-    assert set(installs) == {REMINDERS}, f"the plan installs more than {REMINDERS}: {installs}"
+    assert len(api.task_payloads) == 1
+    task = api.task_payloads[0]
+    assert task["type"] == "install", "no task installs reminders through the mechanical route"
+    assert task["planning_attempt_id"] == api.attempt_id
+    assert task["story_id"] == STORY_ID and task["repository_id"]
+    payload = task["install"]
+    assert payload["package"]["name"] == REMINDERS
+    assert payload["package"]["version"] == "0.5.0"
+    assert [item["name"] for item in payload["libraries"]] == ["textparse"]
+    assert payload["binding"]["functions"] == ["textparse.when"]
+    assert payload["binding"]["resource"] == "codegen_kit_reminders:bindings/default.yaml"
     assert_no_task_installs_a_supplied_artifact(api)
-    for task in api.task_payloads:
-        if task["title"] not in installs[REMINDERS]:
-            continue
-        criteria = task["acceptance_criteria"]
-        assert _MANIFEST.search(criteria), f"criteria do not name the manifest: {criteria}"
-        assert _REGENERATED_CONTRACT.search(criteria), (
-            f"criteria do not name the regenerated contract: {criteria}"
-        )
-        assert _OBSERVABLE.search(criteria), f"criteria name no observable: {criteria}"
 
 
 def assert_plan_installs_no_package(api: CatalogPlanApi) -> None:
     """No task runs `kit add`: no catalog package covers what the brief asks for."""
     for task in api.task_payloads:
+        assert task["type"] != "install", "installs a package"
         assert not _KIT_ADD.search(_text(task)), (
             f"task {task['title']!r} installs a package: {_text(task)}"
         )

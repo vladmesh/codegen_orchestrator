@@ -588,6 +588,7 @@ def _bot_main() -> str:
         "    is_active,\n"
         "    telegram_external_id,\n"
         ")\n"
+        "from services.tg_bot.src.generated import bindings\n"
     )
     menu_import = (
         "from services.tg_bot.src.menu import "

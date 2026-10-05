@@ -61,7 +61,7 @@ from shared.contracts.dto.project import (
 )
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
     PaidRunStartRead,
@@ -183,11 +183,21 @@ async def _lock_dispatch_tasks(task_id: str, db: AsyncSession):
     from .routers._task_helpers import get_task_for_update
 
     blocker_id, story_id = await _peek_edges(task_id, db)
+    project_id = await db.scalar(select(Task.project_id).where(Task.id == task_id))
+    install_ids = set(
+        (
+            await db.scalars(
+                select(Task.id).where(
+                    Task.project_id == project_id, Task.type == TaskType.INSTALL.value
+                )
+            )
+        ).all()
+    )
     roster = set()
     if story_id:
         roster = set((await db.scalars(select(Task.id).where(Task.story_id == story_id))).all())
     locked = {}
-    for member in sorted(({task_id, blocker_id} | roster) - {None}):
+    for member in sorted(({task_id, blocker_id} | roster | install_ids) - {None}):
         locked[member] = await get_task_for_update(member, db)
     return locked[task_id], locked, blocker_id, story_id
 
@@ -721,6 +731,18 @@ def _prior_attempt(
     return None
 
 
+def _install_engineering_refusal(task, locked):
+    if task.type == TaskType.INSTALL.value:
+        return EngineeringDispatchRefusal.CATALOG_INSTALL_NOT_ENGINEERING
+    if any(
+        member.install_operation
+        and member.install_operation["state"] in {"queued", "running", "recovery_required"}
+        for member in locked.values()
+    ):
+        return EngineeringDispatchRefusal.CATALOG_INSTALL_IN_FLIGHT
+    return None
+
+
 async def admit_engineering_dispatch(
     command: EngineeringDispatchCommand, db: AsyncSession
 ) -> EngineeringDispatchRead:
@@ -766,7 +788,9 @@ async def admit_engineering_dispatch(
     # walking past it would buy a worker for a plan the architect has not
     # finished, and the release is a property of the whole plan rather than of
     # this one task.
-    row_refusal = _dispatch_task_refusal(task, overrides)
+    row_refusal = _install_engineering_refusal(task, locked) or _dispatch_task_refusal(
+        task, overrides
+    )
     if row_refusal is None and task.blocked_by_task_id:
         blocker = locked.get(task.blocked_by_task_id)
         # The locked row names a blocker the peek did not: the edge was rewritten

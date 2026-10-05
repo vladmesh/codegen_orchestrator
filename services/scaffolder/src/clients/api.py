@@ -5,6 +5,7 @@ from __future__ import annotations
 import structlog
 
 from shared.clients.internal_api import InternalAPIClient
+from shared.contracts.dto.catalog_install import InstallCommand, InstallDecision
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.story_failure import StoryFailure
@@ -25,6 +26,14 @@ def get_api_client() -> ScaffolderAPIClient:
 
 class ScaffolderAPIClient(InternalAPIClient):
     """HTTP client for project/repository updates."""
+
+    async def catalog_install_command(
+        self, task_id: str, command: InstallCommand
+    ) -> InstallDecision:
+        response = await self.request(
+            "POST", f"tasks/{task_id}/catalog-install", json=command.model_dump(mode="json")
+        )
+        return InstallDecision.model_validate(response.json())
 
     def __init__(self) -> None:
         super().__init__(get_settings().api_base_url)

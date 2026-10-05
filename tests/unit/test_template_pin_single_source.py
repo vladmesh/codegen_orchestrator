@@ -31,6 +31,7 @@ LITERAL_ALLOWED = {
     "scripts/system_configs.yaml",
     "docs/contracts/kit-template-and-qa.md",
     "docs/CHANGELOG.md",
+    "docs/evidence/catalog-install-fixture.json",
 }
 FIXTURE_TREE = "shared/tests/fixtures/"
 # Dependency manifests are written by a package resolver and hold third-party versions.
@@ -89,7 +90,7 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
 
 def test_production_pin_is_the_immutable_kit_release() -> None:
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 7, 1)
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 8, 0)
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -98,7 +99,7 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    corrected_commit = "56da5c83cb8d011823ce2cb70345415b223b93ab"
+    corrected_commit = "b5716efe6ae03c13e1762e372c63e6639843d122"
 
     assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
     assert answers["_src_path"] == template_pin.TEMPLATE_PIN.source

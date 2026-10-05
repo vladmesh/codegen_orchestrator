@@ -507,3 +507,15 @@ current override, `stand_e2e`, is admitted by the internal provisioning request,
 carried through the queue, and consumed by infra-service for the disposable
 Stand target. It is not inferred from mutable server labels; a replay retains
 the profile that was originally queued.
+
+## Mechanical catalog operation
+
+Scaffolder install owns the existing project teardown/execution lease, one GitHub
+App client, a durable operation claim/heartbeat and a workspace lock. Concurrent
+deliveries cannot execute the same operation; published/refused/recovery records
+are terminal to queue replay. Every mutation checks the API's stop/current-cycle
+fence; cancellation kills owned subprocess groups and records retained work.
+Expired running operations, including cancelled Tasks, are parked once for review.
+A refusal parks only its owned Story and preserves unrelated stops. Exact verified
+heads pass to existing story PR/CI/deploy owners; no engineering fallback repairs
+a mechanical refusal. See the kit installation contract for operator recovery.

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from shared.clients.internal_api import InternalAPIClient
 from shared.clients.run_api import RunAPIClientMixin
 from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.catalog_install import InstallCommand, InstallDecision
 from shared.contracts.dto.deploy_dispatch import (
     DeployDispatchSupersede,
     DeployDispatchWithdrawal,
@@ -96,6 +97,14 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
         return None if payload is None else CommitRecoveryRead.model_validate(payload)
 
     """HTTP client for scheduler-required API endpoints."""
+
+    async def catalog_install_command(
+        self, task_id: str, command: InstallCommand
+    ) -> InstallDecision:
+        response = await self.request(
+            "POST", f"tasks/{task_id}/catalog-install", json=command.model_dump(mode="json")
+        )
+        return InstallDecision.model_validate(response.json())
 
     def __init__(self) -> None:
         super().__init__(get_settings().api_base_url)

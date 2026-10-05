@@ -35,7 +35,7 @@ SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 # catalog read at the pinned kit ref, so the version it lands is fixed by the pin: the
 # newest catalog version the pinned core admits.
 KIT_PACKAGE = "reminders"
-KIT_PACKAGE_VERSION = "0.4.0"
+KIT_PACKAGE_VERSION = "0.5.0"
 KIT_PACKAGE_WHEEL_GLOB = "codegen_kit_reminders-*.whl"
 ACTIVE_PACKAGES_RELPATH = Path("codegen_kit/_active_packages.py")
 BACKEND_MANIFEST_RELPATH = Path("services/backend/manifest.yaml")

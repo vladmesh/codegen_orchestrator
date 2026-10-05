@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+import signal
 
 import structlog
 import yaml
@@ -40,6 +41,7 @@ async def _run_cmd(
     cwd: Path | None = None,
     timeout: int = 600,
     env: dict[str, str] | None = None,
+    kill_process_group: bool = False,
 ) -> tuple[int, str, str]:
     """Run an argument vector and return (returncode, stdout, stderr)."""
     proc = await asyncio.create_subprocess_exec(
@@ -48,10 +50,14 @@ async def _run_cmd(
         stderr=asyncio.subprocess.PIPE,
         cwd=str(cwd) if cwd else None,
         env=env,
+        **({"start_new_session": True} if kill_process_group else {}),
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except (TimeoutError, asyncio.CancelledError):
+        if kill_process_group:
+            with suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
         if proc.returncode is None:
             with suppress(ProcessLookupError):
                 proc.kill()

@@ -18,6 +18,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnosticSnapshot,
 )
 from shared.contracts.dto.run import RunType
+from shared.contracts.dto.task import TaskType
 from shared.contracts.dto.work_admission import (
     EmergencyStopCommand,
     EmergencyStopRead,
@@ -312,6 +313,11 @@ async def start_paid_run_endpoint(
     # question is decided here, server-side, from a column-only existence check
     # that materialises no entity for the transaction that follows.
     if command.type is RunType.ENGINEERING and command.task_id is not None:
+        kind = await db.scalar(select(Task.type).where(Task.id == command.task_id))
+        if kind == TaskType.INSTALL.value:
+            raise HTTPException(
+                409, {"code": "catalog_install_not_engineering", "task_id": command.task_id}
+            )
         names_a_task = await db.scalar(select(Task.id).where(Task.id == command.task_id))
         if names_a_task is None:
             raise HTTPException(

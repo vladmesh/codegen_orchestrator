@@ -21,10 +21,10 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.7.1` tag, object
-`b1c90af4d0daee59bd63146d7871d4c8bf63f24a`, which dereferences to
-`56da5c83cb8d011823ce2cb70345415b223b93ab`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.7.1` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.8.0` tag, object
+`09df6747c8030540789f97f9862f455af3dbb541`, which dereferences to
+`b5716efe6ae03c13e1762e372c63e6639843d122`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.8.0` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`. The root `codegen-kit-tooling`
 dependency and its lock resolve the same commit.
 It represents the committed checkout: generated ignored `.env` and `TASK.md`
@@ -39,9 +39,13 @@ The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
 after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs, as since the
 kit's [0.6.3 release](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md).
 
-Kit core `2.1.0`, which this tag ships (introduced by `0.7.0`; `0.7.1` changes only the template's
-lifespan unit tests, so a product with an installed package passes its CI unit leg without Redis),
-adds two things a generated product now does:
+This release carries core facade `2.2.0`, protocol `1` and tooling distribution `0.1.0`.
+It adds library recommendations and typed default bot bindings. The retained fixture
+was rendered in [CI run 37270358184](https://github.com/vladmesh/codegen_orchestrator/actions/runs/37270358184);
+[producer hashes](../evidence/catalog-install-fixture.json) cover every tracked file and the saved answers.
+
+Historical core `2.1.0` introduced by `0.7.0` added these product behaviors;
+`0.7.1` fixed lifespan tests with installed packages:
 
 - **A core timer loop.** The backend fires the timers an installed package declares in its
   manifest, once per slot through the ordinary jobs path (`command_id`
@@ -67,7 +71,7 @@ verified QA user" below). `POST /jobs/fire` of `reminders.tick` with `X-Jobs-Cap
 
 This pin changes new-product scaffolding; it does not migrate deployed products.
 Existing products need a reviewed Copier update on a clean review branch:
-`copier update --defaults --trust --vcs-ref=0.7.1 --conflict=rej`. Preserve selected
+`copier update --defaults --trust --vcs-ref=<reviewed-release> --conflict=rej`. Preserve selected
 modules and owned application/spec/environment bytes, back up ignored real
 environment data through the product's restricted procedure, and compare its
 bytes locally without exposing credentials. Read back answers/source, tooling
@@ -111,95 +115,123 @@ substituted, or accepted for a new scaffold.
 
 ## Installing a kit package into a generated product
 
-A kit package is an installed wheel that declares a `codegen_kit.packages` entry point, and the
-generated product activates one only when it is both installed and listed under `packages:` in
-`services/backend/manifest.yaml`. The kit lists every package it offers in its package catalog,
-`packages/catalog.yaml` in the kit repository: each package's name, distribution, a one-line
-summary, the user-language capabilities it provides, the settings a product supplies, the
-environment it needs, and its released versions with each version's tag and `requires_core`. The
-catalog is where a package's name, capabilities and settings are looked up.
+An explicit catalog selection on an existing compatible backend,tg_bot product uses
+`plan_install(name)`, not an engineering recipe. The deterministic tool takes the
+catalog snapshot injected into that planning attempt, selects the admitted package,
+curated recommended library releases and released default binding, validates their
+identities and binding function requirements, and creates one `TaskType.INSTALL`.
+No model runs in closure planning or execution. `scripted_install_plan` invokes the
+same tool, API, planning attempt, requirement coverage and admission without a model.
+`create_task` refuses kit install prose; unrelated feature tasks retain ordinary chaining.
 
-The recipe an engineering worker follows is one command, from the product root:
+`dto/catalog_install.py` defines package/library name, distribution, version and
+independent `packages/<name>/v<version>` tag; binding owner, module resource,
+SHA256 and required library functions; core/Python admission, catalog digest and
+resolved tooling SHA. Unknown fields, commands, supplied artifacts, traversal,
+duplicate components and binding owners outside the closure refuse. TaskCreate
+requires story/repository ownership; TaskRead/TaskDTO persist the same payload.
+`tasks.install_operation` is API-owned; clients cannot forge it or move install
+ownership through TaskUpdate. The migration adds nullable JSON columns and a DB
+constraint pairing the payload with INSTALL and required ownership.
 
-```bash
-.venv/bin/kit add <name>
-```
+The live reader uses the pinned kit loader, bounded HTTP reads and a five-minute
+successful-read cache. Binding and manifest bytes come from the independent released
+component tag. Unavailable or invalid catalogs, unknown/incompatible packages,
+missing recommendations/resources and binding dependency failures are named refusals
+with no install task. No stale list, prose classifier, arbitrary schema mapping or
+reminders-only planner supplies a replacement. The released reminders closure is
+reminders `0.5.0`, recommended textparse `0.1.0`, and its default binding requiring
+`textparse.when`; the executor rechecks it against the kit's real default live catalog.
 
-`kit add <name>` reads the catalog live from the kit repository's default branch, picks the
-newest released version whose `requires_core` admits the product's core, fetches that version's
-annotated package tag `packages/<name>/v<version>`, builds the wheel, and refuses it unless its
-distribution, version and entry point equal the catalog entry. It then performs the whole product
-mutation — the wheel copy under `services/backend/packages/`, the backend dependency and its lock
-entry, the entry-point-only dependency record dependency linting needs, the manifest allowlist
-entry, `uv sync --frozen` of the backend environment, and regeneration. The result, including the
-committed wheel under `services/backend/packages/`, is committed: that wheel is the installation
-boundary the product's own CI and images consume. Package code is never hand-written into a
-product, and nothing has to be vendored into a product that will never install a package.
+Scheduler dispatch calls `POST /tasks/{id}/catalog-install` with `InstallCommand`.
+Admission locks Task rows in order, then Story, Project, Repository and engineering
+Runs. Coverage, predecessor, active prepared owned project, current story cycle,
+stop/publication disposition and live branch writer fences precede a queued durable
+operation. ScaffoldMessage mode=install carries its project/task/story/repository/cycle,
+operation ID and validated payload. Redis NX/TTL throttles publication only; lost
+responses republish the same operation. Concurrent claim tokens admit one writer;
+response-loss replay uses its identical token. Paid admission and manual spawn refuse
+`catalog_install_not_engineering` before executor selection, Run/attempt ledger,
+budget reservation or worker publication. Ordinary branch writers also refuse while
+an install is queued, running or requires recovery.
 
-Because the catalog is read live, releasing a new package version is a kit catalog entry and a
-package tag; it does not move the orchestrator's kit pin. A product's core only filters versions
-(kit core `2.1.0` resolves reminders `0.4.0`, core `2.0.0` resolves `0.3.0`). `--catalog-source`
-and `--catalog-ref` point the read at another repository or ref; the stage-5 smoke uses
-`--catalog-ref` with the pinned tag so its install is deterministic. `kit add <name> --wheel
-<artifact>` remains the kit's explicit-artifact escape hatch for an already built wheel; no
-orchestrator recipe uses it.
+Scaffolder owns its existing project execution/teardown lease and GitHub App client,
+a durable install heartbeat, and a nonblocking workspace lock. It requires the real
+owned repository and clean checkout, refuses rejection artifacts even when ignored,
+and switches or creates `story/<story_id>` without resetting unrelated content.
+Unpublished local or changed remote heads refuse. Before package mutation, a fixed
+read-only probe runs under the product's isolated interpreter and checks saved
+source/ref, root requirement/lock/installed tooling, actual core, required modules,
+independent tags, target Python, binding ownership and command/settings conflicts.
+Older cores require a reviewed native Copier update; no overwrite or automatic repair.
+Infrastructure Git uses process-local `core.hooksPath=/dev/null`, preserving the
+product's local hook configuration. Only owned fetch, remote readback and push receive
+repository-scoped Git authorization. Product probes, kit/component fetches, generation,
+tests and per-service mypy use an explicit anonymous environment allowlist.
 
-Regeneration is part of installing or changing a package or a manifest, not an optional follow-up.
-Generation writes the active package set with each package's manifest digest into
-`codegen_kit/_active_packages.py`, and the runtime refuses a stale or changed generated contract
-(`generated package contract is stale; run make generate-from-spec`), so a product whose manifest
-was edited without regenerating does not boot.
+The executor runs fixed argument vectors in the product's own environment:
+`kit add <package>`, `kit add <library>` for each recommendation,
+`kit bind <package> --default`, regeneration, spec validation, each service's own
+mypy and existing product tests. Kit commands fetch the default catalog and independent
+released tags; no wheel/source override or task-authored patch is accepted. Readback
+checks installed distributions/interpreter prefixes, default resource bytes,
+backend allowlist and generated ACTIVE_PACKAGES manifest digests. Existing app,
+controller, handler, owned tg_bot/src application files (excluding generated output),
+spec, binding and environment bytes plus answers/root lock are
+hashed before mutation and compared before commit. Default binding declares timezone
+schema only; confirmed explicit values use Product Brief initial_settings and the
+existing seed/deploy path. Credentials, user IDs and timezone values never enter
+parser/generator code.
 
-The architect decides that a capability is a package in the first place. Its prompt
-(`services/langgraph/src/prompts/architect/__init__.py`, "Capability Shape") states the ladder —
-reuse what exists, then a shared service, then a container, then an in-process kit package — the
-two shapes that disqualify a package outright (a capability needing a synchronous call into the
-host, or a stateless consumer), and the protocol a package plan accepts: event-only outward
-dependency, prefixed settings and job names, an owned schema and migration version table, and the
-import boundary the lint enforces. A task it plans for a package asks for the install recipe above
-by reference and never for hand-written package code. The decision is carried in the task's
-description and acceptance criteria, not in a `TaskCreate` field: no tool argument names a
-capability shape.
+Verification and exact base/head checkpoints precede a non-force commit/push. A
+lost push response succeeds only after the remote exact head is observed. Publication
+marks the Task done with verified closure under the same API fences. Existing story
+completion resolves the exact branch/PR, checks that it contains the saved install
+head (exact equality for install-only stories), and hands off to the existing CI,
+merge and deploy owners. Scaffolder never opens duplicate PRs, merges or deploys.
+CI, conflict, deploy and QA coding failures park mechanical work for review instead
+of buying an engineering fallback.
 
-Which packages exist the architect learns from the same live catalog `kit add` installs from, not
-from a list of the orchestrator's own. At planning time `services/langgraph/src/kit_catalog.py`
-fetches `packages/catalog.yaml` from the kit's default branch over HTTP (`KIT_CATALOG_SOURCE`, a
-raw-file base, and `KIT_CATALOG_REF`, default `HEAD`; a bounded timeout and a five-minute
-in-process cache of a successful read), parses it with the pinned kit tooling's own
-`framework.catalog.parse_catalog`, and keeps the packages with a version that admits the pinned
-`CORE_VERSION`. Every run's briefing carries a "Kit package catalog" block with each installable
-package's name, summary, capabilities, the settings it asks for and its required environment, and
-the rule that a capability is a package only when a listed package covers it. A failed read
-(transport, status, YAML or validation) never falls back to an older or hard-coded list: the block
-says the catalog is unavailable and that no package can be planned in that run. `create_task`
-enforces the same boundary on what the plan writes. Each `kit add` invocation in a task is split
-with `shlex` and parsed by the pinned kit's own CLI parser (`framework.cli._parser`), so the check
-accepts exactly what the installed `kit` accepts: an invocation that sets the wheel option in any
-spelling that parser takes (`--wheel`, `--wh`, `--wheel=…`), names a package the briefed catalog
-does not list, cannot be parsed, or comes while the catalog was unavailable is refused, as is a
-`.whl` file named anywhere or a kit distribution installed through pip or uv. The architect reads
-the reason and repairs the task. It is a planning lint that keeps task text on the catalog route,
-not a security boundary: a command assembled from shell variables or aliases is beyond it. So releasing a new package, or a new version of
-one, needs no orchestrator change: it is plannable once the kit's catalog lists it.
+A refusal records its finite stage and redacted bounded diagnostic. Preflight refusal
+is `refused`; work after mutation, lease loss, cancellation or uncertain push is
+`recovery_required`, retaining exact head and proof. Only its Story is parked;
+cancelled Tasks and unrelated/newer stops are preserved. Expired leases are observed
+by the scheduler, including cancelled running installs. Queue redelivery reads terminal
+operations and never executes or commits again. Owned subprocess groups, heartbeat,
+workspace lock, GitHub pool and project lease are released on all exits.
+Workspace GC takes the same nonblocking repository flock before preservation checks,
+deletion and API notification. A busy install is protected even without worker metadata.
+The `.catalog-install-locks` directory and lock files are never collected or unlinked:
+install releases after its subprocesses end; GC releases after cleanup notification.
 
-The orchestrator states this recipe to the engineering worker in
-`services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. The stage-5 template
-compatibility smoke proves it against a real render rather than a replica: it renders a second
-product from the same pinned ref, asserts that a product with no packages ships `packages: []` and
-an empty `ACTIVE_PACKAGES`, installs `reminders` through `kit add reminders --catalog-ref <pinned
-tag>`, and asserts the generated contract then records the package's name, version `0.4.0` and
-manifest digest, and that the wheel was placed under `services/backend/packages/`.
+`POST /tasks/{id}/catalog-install/recovery` requires an authenticated bearer admin,
+selected current operation and matching stop/cause. `recover` requires the retained
+verified head already published on the exact story branch; it performs no kit commands
+or push. `retry` archives prior evidence and returns a reviewed repaired checkout's
+Task to TODO. The operator must first clean/reconcile retained files and align the
+local story branch with its reviewed remote; no executor reset is implicit. A cancelled
+Task remains cancelled when retry releases its reviewed blocking operation. Wrong
+cycle/operation, unrelated stop or unpublished/unverified head refuses.
 
-The model-free lifecycle runs the same recipe on a product that is already deployed. In
-`mega-noop` the project's second story installs `reminders` into the product the first story
-deployed: its change set ends with the scripted runner's one non-file directive, `@@ kit-add
-<name>` (`packages/worker-wrapper/src/worker_wrapper/runners/noop.py`), which runs
-`.venv/bin/kit add <name>` from the product root after `make setup` and before staging, as the named
-step `kit-add`, with no catalog option, so the stand installs from the live catalog. The name must
-be a package identifier and is checked with the whole change set before any file is written. The
-kit's backend `start.sh` runs core and package migrations before the server starts, so the deploy
-migrates the package schema before any request; `tests/live/README.md` ("The second story installs
-a catalog package") lists what the suite then asserts.
+Expiry also settles an older cycle's writer without parking the newer Story. After
+reconciling its retained checkout, bearer-admin `retry` can release that cancelled
+operation alone with no stop ID; it preserves the current Story/cycle/quarantine,
+retained proof and head. It cannot publish cancelled work or release another stop.
+
+The existing template compatibility CI lane executes the production executor over a
+real released notes product with hooks enabled before setup, preserves registered notes
+save/list commands and protected application hashes, rejects a plain push with a failing
+pre-push canary, and proves executor push/readback never invokes that canary. It
+reads component tag object/target/tree provenance, and runs the released fake-backend
+confirmation/preset/list/cancel corpus under the product bot interpreter. Its redacted
+`mechanical-install-result.json` identifies the candidate, executed stages, readback
+and exact non-force Git head. DB/Redis service tests prove actual persisted closure,
+coverage, dispatch, zero engineering accounting and exclusive/recoverable ownership.
+The older `mega-noop` engineering runner directive remains historical evidence of a
+different route; it does not prove mechanical installation. The final live no-model
+notes-bot stand is a subsequent acceptance step, not a CI or sprint-closure claim.
+The persisted planning Python value is a compatibility baseline, not an observed product
+interpreter; native preflight validates the actual product interpreter before mutation.
 
 ## Central QA of a product that carries a kit package
 

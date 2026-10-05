@@ -39,6 +39,7 @@ from ._story_helpers import (
     _validate_transition as _validate_story_transition,
 )
 from ._task_helpers import (
+    apply_cancellation,
     create_status_event,
     get_task_for_update,
     to_read,
@@ -182,6 +183,8 @@ async def fail_task(
 ) -> TaskRead:
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
+    if task.type == "install":
+        await require_automatic_task(task, db)
 
     validate_transition(task.status, TaskStatus.FAILED)
 
@@ -341,6 +344,8 @@ async def resume_task(
     # Ladder: Task, then Story, then Run — the order admission and every other
     # task/story writer take them.
     task = await get_task_for_update(task_id, db)
+    if task.type == "install":
+        await require_automatic_task(task, db)
     from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
 
     if COMMIT_PUBLICATION_KEY in (task.failure_metadata or {}):
@@ -571,6 +576,13 @@ async def transition_task(
 ) -> TaskRead:
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
+    if task.type == "install":
+        if to_status == TaskStatus.CANCELLED.value:
+            await apply_cancellation(task, db)
+            await db.commit()
+            await db.refresh(task)
+            return to_read(task)
+        await require_automatic_task(task, db)
     _refuse_client_resume_audit(task, body)
 
     if to_status == TaskStatus.IN_DEV:

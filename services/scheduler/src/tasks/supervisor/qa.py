@@ -439,6 +439,12 @@ async def _handle_qa_failed(
         summary = "QA found product failures: " + "; ".join(c.name for c in failed_checks)
 
     tasks = await api_client.get_tasks_by_story(story_id)
+    from ..catalog_install import refuse_install_coding_fallback
+
+    if await refuse_install_coding_fallback(
+        api_client, story_id, "QA reported a product failure", tasks=tasks
+    ):
+        return False
     prior_evidence = [item for task in tasks if (item := _qa_failure_metadata(task))]
     if any(item.get("qa_run_id") == qa_run_id for item in prior_evidence):
         # create_task commits before this transition. Retry the transition when

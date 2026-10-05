@@ -136,16 +136,17 @@ class TestDeveloperInstructions:
         assert "fire the real named job contract" in instructions
         assert "exactly one durable record for each configured output partition" in instructions
 
-    def test_states_the_kit_package_install_recipe(self):
+    def test_catalog_install_belongs_to_the_mechanical_scaffolder(self):
         instructions = " ".join(self.content.split())
         assert "Package code is never hand-written into a product." in instructions
-        assert ".venv/bin/kit add <name>" in instructions
-        assert "resolves the kit's live catalog" in instructions
         assert "package catalog (`packages/catalog.yaml`" in instructions
-        assert "Do not build a wheel yourself" in instructions
-        assert "codegen_kit/_active_packages.py" in instructions
-        assert "Commit everything it changed, including the wheel under" in instructions
-        assert "services/backend/packages/" in instructions
+        assert "one typed INSTALL task executed by scaffolder mode=install" in instructions
+        assert "excluded from paid engineering admission and this worker" in instructions
+        assert "do not recreate the parser or handlers" in instructions
+        assert "actual product readback" in instructions
+        assert "preservation of app/spec/environment/binding bytes" in instructions
+        assert "non-force story head" in instructions
+        assert "human review through the native update/recovery contract" in instructions
         assert "uv build" not in instructions
         assert "--wheel" not in instructions
         assert "_commit" not in instructions

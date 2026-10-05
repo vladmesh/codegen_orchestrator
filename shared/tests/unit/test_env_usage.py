@@ -399,18 +399,18 @@ def test_template_fixture_content_matches_its_pinned_render():
     assert not (fixture / "TASK.md").exists()
     assert (
         fixture_tree_digest(fixture)
-        == "1e6fe2c96dbcf03762481871972c8384f7f497f5249b1abf696554834c427c85"
+        == "e4a2635c6b5a8818c272156c5d733d69138e7061c8705cd48fccb770744452a3"
     )
 
 
-def test_template_fixture_contains_the_0_6_runtime_boundaries():
+def test_template_fixture_contains_the_released_core_runtime_boundaries():
     fixture = template_fixture()
     packages = (fixture / "codegen_kit/packages.py").read_text()
     database = (fixture / "codegen_kit/database.py").read_text()
     migrations = (fixture / "codegen_kit/migrations.py").read_text()
     settings = (fixture / "services/backend/src/controllers/settings.py").read_text()
 
-    assert 'CORE_VERSION = "2.1.0"' in packages
+    assert 'CORE_VERSION = "2.2.0"' in packages
     assert "await package.runtime.startup(application)" in packages
     assert "class SettingSeedPackage(Protocol):" in packages
     assert "def owned_package_database(caller_path: Path)" in database

@@ -855,6 +855,11 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
             f"- {package.name} (installs {installable.version.version}): {package.summary}",
             "  capabilities: " + "; ".join(package.capabilities),
         ]
+        lines.append("  default binding: " + (package.default_binding or "none"))
+        lines.append(
+            "  recommendations: "
+            + "; ".join(f"{item.library}: {item.why}" for item in package.recommended_with)
+        )
         if package.settings:
             lines.append(
                 "  settings it asks for: "
@@ -867,7 +872,24 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
                 + "; ".join(f"{variable.name}: {variable.summary}" for variable in required)
             )
         entries.append("\n".join(lines))
-    return heading + "\n".join(entries) + "\n" + rule
+    libraries = "\n".join(
+        f"- library {item.name}: {item.summary}; functions: "
+        + ", ".join(f.name for f in item.functions)
+        for item in catalog.libraries
+    )
+    return (
+        heading
+        + "\n".join(entries)
+        + "\n"
+        + libraries
+        + "\n"
+        + rule
+        + (
+            "\nFor an explicit catalog selection on an existing backend,tg_bot product, call "
+            "plan_install(name). It creates one typed INSTALL task with recommended libraries "
+            "and the default binding. Do not create separate parser/backend/handler coding tasks."
+        )
+    )
 
 
 def _recorded_scaffold_error(project: ProjectDTO) -> str | None:
@@ -1120,6 +1142,17 @@ async def _plan(
             "project_id": msg.project_id,
             "telegram_chat_id": msg.telegram_chat_id,
             **_planning_state(planning),
+            "kit_install_snapshot": (
+                {
+                    "catalog": catalog.raw,
+                    "bindings": catalog.bindings,
+                    "manifests": catalog.manifests,
+                    "source": catalog.source,
+                    "core_version": catalog.core_version,
+                }
+                if isinstance(catalog, KitCatalog)
+                else None
+            ),
             "kit_catalog_packages": (
                 sorted(catalog.names) if isinstance(catalog, KitCatalog) else None
             ),

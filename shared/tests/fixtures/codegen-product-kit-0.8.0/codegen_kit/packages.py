@@ -17,7 +17,7 @@ from packaging.version import InvalidVersion, Version
 import yaml
 
 PACKAGE_PROTOCOL_VERSION = 1
-CORE_VERSION = "2.1.0"
+CORE_VERSION = "2.2.0"
 ENTRY_POINT_GROUP = "codegen_kit.packages"
 SETTING_SEED_PARAMETER_COUNT = 3
 
@@ -194,6 +194,8 @@ def _validate_manifest_fields(data: dict[str, Any]) -> None:
         "deployment",
         "environment",
         "resources",
+        "actions",
+        "default_binding",
     }
     unknown = sorted(set(data) - known)
     if unknown:

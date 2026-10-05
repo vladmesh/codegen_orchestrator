@@ -31,6 +31,7 @@ from services.tg_bot.src.access import (
     is_active,
     telegram_external_id,
 )
+from services.tg_bot.src.generated import bindings
 from shared.generated.events import get_broker, publish_command_received
 from shared.generated.schemas import CommandReceived, UserAccess
 from shared.http_client import ServiceClient
@@ -161,12 +162,20 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def post_init(application: Application) -> None:
     """Connect to Redis broker after application init."""
     await get_broker().connect()
+    try:
+        await bindings.start(application)
+    except BaseException:
+        await get_broker().close()
+        raise
     LOGGER.info("Connected to Redis broker")
 
 
 async def post_shutdown(application: Application) -> None:
     """Disconnect from Redis broker on shutdown."""
-    await get_broker().close()
+    try:
+        await bindings.stop(application)
+    finally:
+        await get_broker().close()
     LOGGER.info("Disconnected from Redis broker")
 
 
@@ -207,6 +216,7 @@ def build_application() -> Application:
     application.add_handler(TypeHandler(Update, enforce_access), group=-1)
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("command", handle_command))
+    bindings.register(application, BackendClient)
 
     install_update_logging(application)
     return application
