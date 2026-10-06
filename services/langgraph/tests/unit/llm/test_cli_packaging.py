@@ -27,6 +27,9 @@ from src.llm.cli_turn import CODEX_PROFILE_LOCK_NAME
 from tests.unit.llm.conftest import OPENROUTER_KEY
 from tests.unit.llm.test_channel_chain import DEFAULT, _ask, _chain
 
+# Most tests here start processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 REPO = Path(__file__).resolve().parents[5]
 OWNER_UID, OWNER_GID = 4242, 4343
 

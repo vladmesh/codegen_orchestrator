@@ -129,6 +129,7 @@ def _stdin(cli) -> str:
 
 
 class TestPaymentRequiredAlert:
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         ("failing", "chain"),
         [
@@ -507,6 +508,7 @@ class TestAlertingNeverFailsTheCall:
         assert len(admins.messages) == 1
         assert "llm_alert_dedup_unrecorded" in [log["event"] for log in logs]
 
+    @pytest.mark.subprocess
     async def test_a_hanging_delivery_does_not_delay_the_answer(self, channels, redis, monkeypatch):
         monkeypatch.setattr(alerts_module, "ALERT_DEADLINE_SECONDS", 0.2)
         channels.codex.script(PAYMENT_402)

@@ -37,6 +37,9 @@ from src.llm.cli_turn import CODEX_PROFILE_LOCK_NAME
 from tests.unit.llm.conftest import OPENROUTER_KEY
 from tests.unit.llm.fake_cli import turn
 
+# Most tests here start processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 SRC = Path(__file__).resolve().parents[3] / "src"
 
 
