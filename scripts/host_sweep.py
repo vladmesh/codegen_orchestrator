@@ -6,13 +6,15 @@ that starts a denylisted program (docker, ansible, sudo, the kit toolchain, ...)
 must carry `ci_only` or one of its sub-markers (scripts/ci_only_markers.py), so the
 host deselects it and only the full CI run (`make test-unit`) claims it.
 
-The scan is static. A test file that spawns processes at all is searched for argv
-literals naming a denylisted program, and every file for PlaybookCLI. Each hit is
+The scan is static. Every collected test module and conftest.py is searched for a
+process start (positional or keyword argv, through a module or a `from ... import`
+alias) whose argv names a denylisted program, and for PlaybookCLI. Each hit is
 charged to the function holding it; a helper or fixture passes its charge on to the
 tests and fixtures that name it, so a marked test may use a heavy helper and an
 unmarked one may not. A spawn that runs at import time (a module statement or a
 decorator such as `skipif(subprocess.run(...))`) is always a violation: pytest has
-imported the module before `-m` can deselect anything.
+imported the module before `-m` can deselect anything. So is any heavy function in a
+conftest.py: a marker on a fixture does nothing, so a conftest cannot be made CI-only.
 
 scripts/tests/test_host_sweep_is_light.py and scripts/check-ci-gate.py both run it.
 """
@@ -43,11 +45,11 @@ DENYLIST = frozenset(
         "copier",
     }
 )
-TEST_FILE_PATTERNS = ("test_*.py", "*_test.py")
+TEST_FILE_PATTERNS = ("test_*.py", "*_test.py", "conftest.py")
 SKIP_DIRS = {".venv", "__pycache__", "node_modules", "fixtures"}
 
-# Calls that start a process. A bare name counts only for the names these modules
-# export, imported with `from subprocess import run` and the like.
+# Calls that start a process, as (module, function). The module may be imported under
+# another name, and the function by a bare name (`from subprocess import run as go`).
 SPAWN_ATTRIBUTES = {
     ("subprocess", "run"),
     ("subprocess", "call"),
@@ -64,7 +66,10 @@ SPAWN_ATTRIBUTES = {
     ("os", "execv"),
     ("pty", "spawn"),
 }
+# Bare names that start a process even without a visible import of their own.
 SPAWN_NAMES = {"check_call", "check_output", "Popen", "create_subprocess_exec"}
+# Keyword arguments that carry the argv or shell line of a process start.
+ARGV_KEYWORDS = {"args", "cmd", "command"}
 
 # Files the scan flags although the denylisted program never runs for real. Same
 # rule as check-ci-gate.py's exclusion lists: a reason per line, on the record.
@@ -107,7 +112,7 @@ def host_suites() -> list[tuple[str, str]]:
 
 
 def host_test_files() -> list[str]:
-    """Repo-relative test files the host profile collects."""
+    """Repo-relative test modules and conftest.py files the host profile collects."""
     found: set[str] = set()
     for _, directory in host_suites():
         for pattern in TEST_FILE_PATTERNS:
@@ -137,10 +142,45 @@ def _dotted(node: ast.AST) -> tuple[str, str] | None:
     return None
 
 
-def _is_spawn(call: ast.Call) -> bool:
-    if isinstance(call.func, ast.Name):
-        return call.func.id in SPAWN_NAMES
-    return _dotted(call.func) in SPAWN_ATTRIBUTES
+@dataclass(frozen=True)
+class _Spawns:
+    """How one module can spell a process start: module aliases and bare names."""
+
+    modules: dict[str, str]
+    names: frozenset[str]
+
+    @classmethod
+    def of(cls, tree: ast.Module) -> _Spawns:
+        spawn_modules = {module for module, _ in SPAWN_ATTRIBUTES}
+        modules = {module: module for module in spawn_modules}
+        names = set(SPAWN_NAMES)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in spawn_modules:
+                        modules[alias.asname or alias.name] = alias.name
+            elif isinstance(node, ast.ImportFrom) and node.module in spawn_modules:
+                for alias in node.names:
+                    if (node.module, alias.name) in SPAWN_ATTRIBUTES:
+                        names.add(alias.asname or alias.name)
+        return cls(modules, frozenset(names))
+
+    def started_by(self, call: ast.Call) -> bool:
+        if isinstance(call.func, ast.Name):
+            return call.func.id in self.names
+        dotted = _dotted(call.func)
+        if dotted is None or dotted[0] not in self.modules:
+            return False
+        return (self.modules[dotted[0]], dotted[1]) in SPAWN_ATTRIBUTES
+
+    def argv(self, call: ast.Call) -> list[ast.AST]:
+        """The argv or shell-line arguments of a process start."""
+        keywords = [keyword.value for keyword in call.keywords if keyword.arg in ARGV_KEYWORDS]
+        return [*call.args[:1], *keywords]
+
+
+def _every_argument(call: ast.Call) -> list[ast.AST]:
+    return [*call.args, *(keyword.value for keyword in call.keywords)]
 
 
 def _marker_names(node: ast.AST) -> set[str]:
@@ -250,7 +290,7 @@ def _programs(node: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
     return programs
 
 
-def _wrappers(functions: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> set[str]:
+def _wrappers(functions: list[ast.FunctionDef | ast.AsyncFunctionDef], spawns: _Spawns) -> set[str]:
     """Local functions that hand one of their parameters to a process spawn."""
     # What flows from each function's parameters, and the calls it makes.
     flows: list[tuple[str, set[str], list[ast.Call]]] = []
@@ -276,10 +316,10 @@ def _wrappers(functions: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> set[st
             if name in wrappers:
                 continue
             for call in calls:
-                if _is_spawn(call):
-                    arguments = call.args[:1]
+                if spawns.started_by(call):
+                    arguments = spawns.argv(call)
                 elif _callee(call) in wrappers:
-                    arguments = call.args
+                    arguments = _every_argument(call)
                 else:
                     continue
                 if any(_references(argument) & derived for argument in arguments):
@@ -289,7 +329,9 @@ def _wrappers(functions: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> set[st
     return wrappers
 
 
-def _hits(node: ast.AST, programs: dict[str, str], wrappers: set[str]) -> list[tuple[int, str]]:
+def _hits(
+    node: ast.AST, programs: dict[str, str], wrappers: set[str], spawns: _Spawns
+) -> list[tuple[int, str]]:
     """(line, program) of every heavy process start or PlaybookCLI use inside node."""
     found = []
     for child in ast.walk(node):
@@ -304,10 +346,10 @@ def _hits(node: ast.AST, programs: dict[str, str], wrappers: set[str]) -> list[t
         elif isinstance(child, ast.Constant) and _program(child.value) == "PlaybookCLI":
             found.append((child.lineno, "PlaybookCLI"))
         elif isinstance(child, ast.Call):
-            if _is_spawn(child):
-                arguments = child.args[:1]
+            if spawns.started_by(child):
+                arguments = spawns.argv(child)
             elif _callee(child) in wrappers:
-                arguments = child.args
+                arguments = _every_argument(child)
             else:
                 continue
             for argument in arguments:
@@ -335,6 +377,38 @@ def _import_time_nodes(tree: ast.Module) -> list[ast.AST]:
     return pending
 
 
+_Function = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _functions(tree: ast.Module) -> list[tuple[_Function, ast.ClassDef | None]]:
+    """Module-level functions and class methods, each with its class."""
+    functions: list[tuple[_Function, ast.ClassDef | None]] = []
+    for statement in tree.body:
+        if isinstance(statement, _Function):
+            functions.append((statement, None))
+        elif isinstance(statement, ast.ClassDef):
+            for member in statement.body:
+                if isinstance(member, _Function):
+                    functions.append((member, statement))
+    return functions
+
+
+def _heavy_owners(owners: list[_Owner]) -> dict[str, tuple[int, str]]:
+    """Owner name -> the hit it holds, or reaches through a name it references."""
+    heavy = {owner.name: owner.hits[0] for owner in owners if owner.hits}
+    changed = True
+    while changed:
+        changed = False
+        for owner in owners:
+            if owner.name in heavy:
+                continue
+            reached = sorted(owner.references & heavy.keys())
+            if reached:
+                heavy[owner.name] = heavy[reached[0]]
+                changed = True
+    return heavy
+
+
 def violations_in(path: Path) -> list[Violation]:
     """Heavy calls in one test file that no ci_only-family marker covers."""
     relative = str(path.relative_to(ROOT))
@@ -345,17 +419,12 @@ def violations_in(path: Path) -> list[Violation]:
     if not any(program in source for program in DENYLIST):
         return []
     tree = ast.parse(source, filename=relative)
+    spawns = _Spawns.of(tree)
+    is_conftest = path.name == "conftest.py"
     module_markers = _pytestmark(tree.body)
 
-    functions: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.ClassDef | None]] = []
-    for statement in tree.body:
-        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-            functions.append((statement, None))
-        elif isinstance(statement, ast.ClassDef):
-            for member in statement.body:
-                if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
-                    functions.append((member, statement))
-    wrappers = _wrappers([function for function, _ in functions])
+    functions = _functions(tree)
+    wrappers = _wrappers([function for function, _ in functions], spawns)
     import_time = ast.Module(body=_import_time_nodes(tree), type_ignores=[])
     module_programs = _programs(import_time, {})
 
@@ -376,28 +445,26 @@ def violations_in(path: Path) -> list[Violation]:
                 is_test=is_test,
                 markers=markers,
                 references=_references(function.args) | _references(body),
-                hits=_hits(body, _programs(body, module_programs), wrappers),
+                hits=_hits(body, _programs(body, module_programs), wrappers, spawns),
             )
         )
 
-    heavy = {owner.name: owner.hits[0] for owner in owners if owner.hits}
-    changed = True
-    while changed:
-        changed = False
-        for owner in owners:
-            if owner.name in heavy:
-                continue
-            reached = sorted(owner.references & heavy.keys())
-            if reached:
-                heavy[owner.name] = heavy[reached[0]]
-                changed = True
+    heavy = _heavy_owners(owners)
 
     # A spawn at import time runs before `-m` deselects anything, marker or not.
     found = [
         Violation(relative, line, "import time", program)
-        for line, program in _hits(import_time, module_programs, wrappers)
+        for line, program in _hits(import_time, module_programs, wrappers, spawns)
         if program != "PlaybookCLI"
     ]
+    if is_conftest:
+        # Markers do not reach fixtures, so nothing in a conftest can be CI-only.
+        found.extend(
+            Violation(relative, heavy[owner.name][0], owner.name, heavy[owner.name][1])
+            for owner in owners
+            if owner.name in heavy
+        )
+        return found
     for owner in owners:
         if owner.is_test and owner.name in heavy and not owner.markers & CI_ONLY_FAMILY:
             line, program = heavy[owner.name]

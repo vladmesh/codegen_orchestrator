@@ -49,9 +49,11 @@ def test_the_runner_caps_jobs_and_deselects_ci_only_on_the_host():
     assert "UMMANU_DOCKER" not in script
 
 
-def _scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str) -> list[str]:
+def _scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, name: str = "test_sample.py"
+) -> list[str]:
     monkeypatch.setattr(host_sweep, "ROOT", tmp_path)
-    path = tmp_path / "test_sample.py"
+    path = tmp_path / name
     path.write_text(textwrap.dedent(source))
     return [violation.owner for violation in host_sweep.violations_in(path)]
 
@@ -69,6 +71,72 @@ def test_an_unmarked_docker_run_is_a_violation(tmp_path, monkeypatch):
         """,
     )
     assert found == ["test_render"]
+
+
+@pytest.mark.parametrize(
+    ("imports", "call"),
+    [
+        ("from subprocess import run", 'run(["docker", "compose", "config"])'),
+        ("from subprocess import run as go", 'go(["docker", "info"])'),
+        ("import subprocess as sp", 'sp.check_output(["docker", "info"])'),
+        ("import subprocess", 'subprocess.run(args=["docker", "compose", "config"])'),
+        ("import subprocess", 'subprocess.Popen(args="docker info", shell=True)'),
+        ("from os import system", 'system("sudo -n true")'),
+    ],
+    ids=["from-import", "from-import-alias", "module-alias", "args-keyword", "shell-keyword", "os"],
+)
+def test_every_spelling_of_a_process_start_is_seen(tmp_path, monkeypatch, imports, call):
+    source = f"{imports}\n\ndef test_render():\n    {call}\n"
+    assert _scan(tmp_path, monkeypatch, source) == ["test_render"]
+
+
+def test_a_wrapper_receiving_the_argv_by_keyword_is_seen(tmp_path, monkeypatch):
+    found = _scan(
+        tmp_path,
+        monkeypatch,
+        """
+        import subprocess
+
+        def _run(command):
+            return subprocess.run(command, check=False)
+
+        def test_render():
+            _run(command=["docker", "compose", "config"])
+        """,
+    )
+    assert found == ["test_render"]
+
+
+def test_a_heavy_conftest_fixture_is_a_violation_whatever_it_is_marked(tmp_path, monkeypatch):
+    found = _scan(
+        tmp_path,
+        monkeypatch,
+        """
+        import subprocess
+        import pytest
+
+        pytestmark = pytest.mark.docker
+
+        @pytest.fixture
+        def stack():
+            return subprocess.run(["docker", "compose", "config"], check=True)
+
+        @pytest.fixture
+        def light():
+            return subprocess.run(["git", "status"], check=False)
+        """,
+        name="conftest.py",
+    )
+    assert found == ["stack"]
+
+
+def test_the_host_scan_reads_every_conftest_of_a_host_suite():
+    files = host_sweep.host_test_files()
+    assert "shared/tests/conftest.py" in files
+    assert (
+        "services/api/tests/unit/conftest.py" in files
+        or not (ROOT / "services/api/tests/unit/conftest.py").exists()
+    )
 
 
 def test_a_sub_marker_or_module_mark_covers_the_test(tmp_path, monkeypatch):
