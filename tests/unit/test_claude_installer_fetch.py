@@ -25,7 +25,10 @@ def _installer_command(tmp_path, url):
     command = run.group().removeprefix("RUN ").replace("\\\n", "")
     command = command.replace(INSTALLER_URL, url)
     # curl's own backoff (1, 2, 4 s) is real time; the retry count is what is under test.
-    # A delay of 0 means that backoff to curl, and it takes whole seconds only, so 1.
+    # curl cannot retry without waiting: `--retry-delay 0` selects that same default
+    # backoff (an exhausted fetch takes 7 s), the delay takes whole seconds only, and
+    # `Retry-After: 0` is ignored. 1 s is its shortest wait. This file starts processes
+    # and is `subprocess`-marked, so it runs in CI only, never in the host profile.
     assert "curl --retry 3 " in command
     command = command.replace("curl --retry 3 ", "curl --retry 3 --retry-delay 1 ")
     cli = tmp_path / "claude"

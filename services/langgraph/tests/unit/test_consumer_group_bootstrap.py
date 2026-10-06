@@ -8,7 +8,6 @@ stream position and no other consumer will read it.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -59,9 +58,9 @@ class FakeStreams:
         cursor = self.groups[stream][groupname]
         entries = self.entries.get(stream, [])
         if cursor >= len(entries):
-            # Redis blocks an empty read for `block` ms; a caller must not spin on it.
+            # An empty read that returns at once, as an interrupted one can: the
+            # waiter has to wait out the block window itself rather than spin.
             self.empty_reads += 1
-            await asyncio.sleep(block / 1000)
             return []
         self.groups[stream][groupname] = cursor + 1
         return [(stream, [entries[cursor]])]
@@ -78,6 +77,47 @@ class FakeStreams:
 
     async def aclose(self):
         return None
+
+
+class FakeClock:
+    """The response wait's clock and sleep: time passes only when the waiter sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch) -> FakeClock:
+    from src.clients import worker_spawner
+
+    fake = FakeClock()
+    monkeypatch.setattr(worker_spawner, "_now", fake.time)
+    monkeypatch.setattr(worker_spawner, "_sleep", fake.sleep)
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_an_empty_read_that_returns_at_once_is_not_read_again_at_once(clock):
+    """The wait reads once per block window, however fast an empty read comes back."""
+    from src.clients import worker_spawner
+
+    fake = FakeStreams()
+    stream = "worker:dev-123:output"
+    await fake.xgroup_create(stream, "g", id="0")
+
+    resp = await worker_spawner._wait_for_response(fake, "g", "consumer", None, 5.0, stream)
+
+    assert resp is None
+    assert fake.empty_reads == 5  # noqa: PLR2004 - 5 s at one read per READ_BLOCK_S
+    assert clock.sleeps == [worker_spawner.READ_BLOCK_S] * 5
 
 
 @pytest.mark.asyncio
@@ -104,7 +144,7 @@ async def test_nogroup_recovery_still_delivers_a_message_already_in_the_stream()
 
 
 @pytest.mark.asyncio
-async def test_reused_worker_output_group_starts_at_zero():
+async def test_reused_worker_output_group_starts_at_zero(clock):
     """`send_task_to_worker` bootstraps the output group before the turn is sent."""
     from src.clients.worker_spawner import send_task_to_worker
 
@@ -130,12 +170,13 @@ async def test_reused_worker_output_group_starts_at_zero():
         await send_task_to_worker(
             worker_id="dev-123",
             task_content="do the thing",
-            timeout_seconds=0.05,
+            timeout_seconds=1,
             ownership=_OWNERSHIP,
         )
 
-    # The wait read until its deadline, blocking in the read instead of spinning on it.
-    assert 1 <= fake.empty_reads <= 3
+    # The wait read until its deadline, once per block window instead of spinning.
+    assert fake.empty_reads == 1
+    assert clock.now == 1
 
     output_groups = [c for c in fake.created_at if c[0] == "worker:dev-123:output"]
     assert output_groups, "no consumer group was created for the worker output stream"

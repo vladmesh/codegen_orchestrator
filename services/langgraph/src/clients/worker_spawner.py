@@ -237,6 +237,15 @@ LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
 READ_BLOCK_S = 1.0
 
 
+def _now() -> float:
+    """The response wait's clock. Unit tests drive it, with `_sleep`, instead of real time."""
+    return asyncio.get_running_loop().time()
+
+
+async def _sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
 def _creation_failed(
     request_id: str, worker_id: str, error_msg: str, fields: dict[str, str]
 ) -> SpawnResult:
@@ -353,6 +362,35 @@ def _matches_output_request(msg_data: dict, output_request_id: str | None) -> bo
     )
 
 
+async def _read_one(
+    redis_client: redis.Redis,
+    group_name: str,
+    consumer_id: str,
+    stream: str,
+    block_s: float,
+    group_start_id: str,
+) -> list | None:
+    """One blocking group read; None when the group was gone and has been re-created."""
+    try:
+        return await redis_client.xreadgroup(
+            groupname=group_name,
+            consumername=consumer_id,
+            streams={stream: ">"},
+            count=1,
+            block=max(1, int(block_s * 1000)),
+        )
+    except redis.ResponseError as e:
+        if "NOGROUP" not in str(e):
+            raise
+    # Group is gone (never created, or the stream was dropped under it).
+    # Re-create it where the caller wanted it to start.
+    try:
+        await redis_client.xgroup_create(stream, group_name, id=group_start_id, mkstream=True)
+    except redis.ResponseError:
+        pass
+    return None
+
+
 async def _wait_for_response(
     redis_client: redis.Redis,
     group_name: str,
@@ -376,12 +414,12 @@ async def _wait_for_response(
     failed read and the re-creation, and once the group owns the stream position
     nobody else will read it.
     """
-    start_time = asyncio.get_running_loop().time()
+    start_time = _now()
     last_liveness_check = start_time
 
-    while (remaining := timeout_s - (asyncio.get_running_loop().time() - start_time)) > 0:
+    while (remaining := timeout_s - (_now() - start_time)) > 0:
         # Periodic liveness check (every LIVENESS_CHECK_INTERVAL_S seconds)
-        now = asyncio.get_running_loop().time()
+        now = _now()
         if worker_id and (now - last_liveness_check) >= LIVENESS_CHECK_INTERVAL_S:
             last_liveness_check = now
             try:
@@ -397,71 +435,64 @@ async def _wait_for_response(
                 # Don't fail the whole wait on a check error
                 logger.debug("liveness_check_error", worker_id=worker_id, error=str(e))
 
-        try:
-            messages = await redis_client.xreadgroup(
-                groupname=group_name,
-                consumername=consumer_id,
-                streams={stream: ">"},
-                count=1,
-                block=max(1, int(min(remaining, READ_BLOCK_S) * 1000)),
-            )
-        except redis.ResponseError as e:
-            if "NOGROUP" in str(e):
-                # Group is gone (never created, or the stream was dropped under
-                # it). Re-create it where the caller wanted it to start.
-                try:
-                    await redis_client.xgroup_create(
-                        stream, group_name, id=group_start_id, mkstream=True
-                    )
-                except redis.ResponseError:
-                    pass
-                continue
-            raise
+        block_s = min(remaining, READ_BLOCK_S)
+        read_started = _now()
+        messages = await _read_one(
+            redis_client, group_name, consumer_id, stream, block_s, group_start_id
+        )
+        if messages is None:  # the group was re-created; read again
+            continue
+        if not messages:
+            # An empty read that came back before its block window (an interrupted
+            # or non-blocking read) waits out the rest instead of reading again at once.
+            idle = block_s - (_now() - read_started)
+            if idle > 0:
+                await _sleep(idle)
+            continue
 
-        if messages:
-            for _, stream_msgs in messages:
-                for msg_id, msg_data in stream_msgs:
-                    if not _matches_output_request(msg_data, output_request_id):
-                        # Results from previous turns are retained for a
-                        # bounded period. They are not this handoff, even when
-                        # their payload is malformed.
-                        await redis_client.xack(stream, group_name, msg_id)
-                        continue
-
-                    # Missing 'data' field — poison entry, ACK terminally.
-                    if b"data" not in msg_data and "data" not in msg_data:
-                        await redis_client.xack(stream, group_name, msg_id)
-                        _observe_poison_entry(stream, msg_id, request_id, "missing_data")
-                        if request_id is None:
-                            raise WorkerOutputDecodeError(stream)
-                        continue
-
-                    data_str = msg_data[b"data"] if b"data" in msg_data else msg_data["data"]
-                    try:
-                        resp = json.loads(data_str)
-                    except json.JSONDecodeError as e:
-                        # Undecodable JSON can never succeed on retry, so ACK it
-                        # terminally. str(JSONDecodeError) is positional only
-                        # ("Expecting value: line 1 column 1"), so it carries no
-                        # payload — but never log data_str, it may hold secrets.
-                        await redis_client.xack(stream, group_name, msg_id)
-                        _observe_poison_entry(stream, msg_id, request_id, str(e))
-                        if request_id is None:
-                            # Output-read path: surface poison explicitly rather
-                            # than letting the caller see a transient timeout.
-                            raise WorkerOutputDecodeError(stream) from e
-                        continue
-
-                    if output_request_id is not None:
-                        await redis_client.xack(stream, group_name, msg_id)
-                        return resp
-
-                    # If no request_id filter, return any message
-                    if request_id is None or resp.get("request_id") == request_id:
-                        await redis_client.xack(stream, group_name, msg_id)
-                        return resp
-                    # ACK non-matching messages so they don't pile up
+        for _, stream_msgs in messages:
+            for msg_id, msg_data in stream_msgs:
+                if not _matches_output_request(msg_data, output_request_id):
+                    # Results from previous turns are retained for a
+                    # bounded period. They are not this handoff, even when
+                    # their payload is malformed.
                     await redis_client.xack(stream, group_name, msg_id)
+                    continue
+
+                # Missing 'data' field — poison entry, ACK terminally.
+                if b"data" not in msg_data and "data" not in msg_data:
+                    await redis_client.xack(stream, group_name, msg_id)
+                    _observe_poison_entry(stream, msg_id, request_id, "missing_data")
+                    if request_id is None:
+                        raise WorkerOutputDecodeError(stream)
+                    continue
+
+                data_str = msg_data[b"data"] if b"data" in msg_data else msg_data["data"]
+                try:
+                    resp = json.loads(data_str)
+                except json.JSONDecodeError as e:
+                    # Undecodable JSON can never succeed on retry, so ACK it
+                    # terminally. str(JSONDecodeError) is positional only
+                    # ("Expecting value: line 1 column 1"), so it carries no
+                    # payload — but never log data_str, it may hold secrets.
+                    await redis_client.xack(stream, group_name, msg_id)
+                    _observe_poison_entry(stream, msg_id, request_id, str(e))
+                    if request_id is None:
+                        # Output-read path: surface poison explicitly rather
+                        # than letting the caller see a transient timeout.
+                        raise WorkerOutputDecodeError(stream) from e
+                    continue
+
+                if output_request_id is not None:
+                    await redis_client.xack(stream, group_name, msg_id)
+                    return resp
+
+                # If no request_id filter, return any message
+                if request_id is None or resp.get("request_id") == request_id:
+                    await redis_client.xack(stream, group_name, msg_id)
+                    return resp
+                # ACK non-matching messages so they don't pile up
+                await redis_client.xack(stream, group_name, msg_id)
     return None
 
 
