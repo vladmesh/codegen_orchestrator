@@ -2355,6 +2355,25 @@ def test_scaffold_fence_makes_unterminated_claim_red():
         )
 
 
+def test_active_work_fence_outlasts_a_slow_workflow_cancellation(monkeypatch):
+    """Run 37445448651: the workflow cancel took ~57 s and the 30 s fence went red."""
+    clock = {"now": 0.0}
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        pipeline_helpers.time, "sleep", lambda seconds: clock.update(now=clock["now"] + seconds)
+    )
+
+    def command(*args):
+        if args[0] == "EVAL":
+            return "1" if clock["now"] < 60 else "0"
+        return "" if args[0] == "GET" else "OK"
+
+    pipeline_helpers.cancel_and_wait_for_active_work("project-1", command=command)
+
+    assert clock["now"] >= 60
+    assert pipeline_helpers.RUN_CANCELLATION_TIMEOUT >= 120
+
+
 def test_active_work_fence_makes_ack_failure_red():
     def command(*args):
         if args[0] == "GET":

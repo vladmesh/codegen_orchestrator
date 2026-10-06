@@ -168,3 +168,79 @@ async def test_probe_disconnects_after_identity_failure_or_timeout(monkeypatch, 
     assert evidence["status"] == "failed"
     assert evidence["disconnect"] == "completed"
     assert "never-retain" not in str(evidence)
+
+
+def _fake_telethon(monkeypatch, client):
+    import telethon
+    import telethon.sessions
+
+    monkeypatch.setattr(telethon, "TelegramClient", lambda *_args, **_kwargs: client)
+    monkeypatch.setattr(telethon.sessions, "StringSession", lambda value: value)
+    monkeypatch.setattr(
+        mechanical_telegram,
+        "telethon_env",
+        lambda: {
+            "TELETHON_SESSION": "never-retain-session",
+            "TELETHON_API_ID": "1",
+            "TELETHON_API_HASH": "never-retain-hash",
+        },
+    )
+
+
+async def test_identity_refusal_keeps_its_class_and_reason_in_qa_evidence(monkeypatch):
+    """Run 37451655856 recorded only `identity: ProbeFailure`; the refusal reason was lost."""
+    from shared.telethon_identity import SESSION_UNAUTHORIZED, IdentityNotProven
+
+    _fake_telethon(monkeypatch, SimpleNamespace(disconnect=AsyncMock()))
+
+    async def refuse(_client):
+        # A detail that quotes the session must not survive into evidence.
+        raise IdentityNotProven(SESSION_UNAUTHORIZED, "connect failed: never-retain-session")
+
+    monkeypatch.setattr(mechanical_telegram, "prove_qa_identity", refuse)
+    msg = message()
+    api = SimpleNamespace(
+        get_temporary_access_grant=AsyncMock(return_value=grant(msg)), patch=AsyncMock()
+    )
+    monkeypatch.setattr(qa, "api_client", api)
+    result = await qa._run_mechanical_qa(
+        msg,
+        ("notes", "unique"),
+        {"USER_IDENTITY_CAPABILITY": "cap"},
+        QAResult(passed=True),
+        QARunRedaction(),
+    )
+
+    assert not result.passed
+    evidence = json.loads(result.report)
+    assert evidence["phase"] == "identity"
+    assert evidence["failure_type"] == "IdentityNotProven"
+    assert evidence["failure_cause"]["reason"] == SESSION_UNAUTHORIZED
+    assert evidence["failure_cause"]["detail"].startswith("connect failed: ")
+    (check,) = [c for c in result.checks if c["name"] == "mechanical Telegram probe"]
+    assert check["detail"].startswith(f"identity: IdentityNotProven: {SESSION_UNAUTHORIZED}")
+    assert "never-retain" not in result.report
+    assert "never-retain" not in check["detail"]
+
+
+async def test_unknown_probe_error_keeps_only_its_class(monkeypatch):
+    _fake_telethon(monkeypatch, SimpleNamespace(disconnect=AsyncMock()))
+
+    async def explode(_client):
+        raise ValueError("never-retain-session leaked in a message")
+
+    monkeypatch.setattr(mechanical_telegram, "prove_qa_identity", explode)
+    evidence = {}
+    with pytest.raises(mechanical_telegram.ProbeFailure) as raised:
+        await mechanical_telegram.run_fixed_probe(
+            mode="notes",
+            marker="unique",
+            bot_username="bot",
+            deployed_url="http://unused",
+            headers={},
+            evidence=evidence,
+            redaction=QARunRedaction(),
+        )
+    assert raised.value.cause == {"type": "ValueError"}
+    assert evidence["failure_cause"] == {"type": "ValueError"}
+    assert "never-retain" not in str(evidence) + str(raised.value)

@@ -283,7 +283,9 @@ SERVER_CLEANUP_TIMEOUT = 180
 DB_TEARDOWN_TIMEOUT = 60
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
-RUN_CANCELLATION_TIMEOUT = 30
+# Cancelling a project's GitHub workflow run alone took ~57 s in mega-noop run
+# 37445448651; 30 s made a healthy cancellation a CleanupError.
+RUN_CANCELLATION_TIMEOUT = 120
 RUN_CANCELLATION_POLL_INTERVAL = 0.5
 _ACTIVE_RUN_STATUSES = {"queued", "running"}
 

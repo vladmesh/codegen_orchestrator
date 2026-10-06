@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-06
 
+- Mega-noop QA keeps the probe's inner failure (`IdentityNotProven`, reason, redacted detail) in
+  `failure_cause` and the check detail; it was overwritten as `ProbeFailure`.
+- Live cleanup waits 120 s, not 30 s, for a project's active work to stop; a ~57 s workflow cancel
+  in run 37445448651 failed teardown.
 - Mega-noop checks the QA grant's `head_sha` against the story commit its deploy Run targeted,
   not the merge commit; a passed notes probe no longer fails the `grant` phase.
 - QA admission treats one `Stand mechanical notes|reminders` probe line beside GET checks as
