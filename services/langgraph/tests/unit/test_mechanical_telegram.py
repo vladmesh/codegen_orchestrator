@@ -316,3 +316,34 @@ def test_cancel_requires_same_owner_id_and_terminal_state():
         check_cancel("Cancelled: buy milk", cancelled | {"id": "foreign"}, row())
     with pytest.raises(ProbeFailure):
         check_cancel("Access denied", cancelled, row())
+
+
+@pytest.mark.parametrize(
+    "criteria",
+    [
+        "- GET /health returns 200",
+        "- GET /health returns 200\n- Stand mechanical notes: e2e-1",
+        "- GET /health returns 200\n- Stand mechanical reminders: e2e-1",
+        "- Stand mechanical notes: e2e-1",
+        "- GET /health returns 200\n- Stand mechanical notes: a\n- Stand mechanical reminders: b",
+        "- GET /health returns 200\n- Stand mechanical notes: bad marker",
+        "- GET /health returns 200\n- Stand mechanical notes: a\n- The bot replies",
+        "- GET /health returns 200\n- The bot replies",
+    ],
+)
+def test_admission_and_the_consumer_agree_on_executor_free_qa(criteria):
+    """Work admission skips executor diagnostics exactly when this consumer needs no executor.
+
+    Mega-noop 37438216915: admission read the probe line as prose, wanted a model
+    executor the stand does not have, and parked a story this consumer would
+    have decided on its own.
+    """
+    from shared.contracts.acceptance import parse_deterministic_qa_criteria
+    from src.consumers.qa import _qa_criteria
+
+    try:
+        _, checks = _qa_criteria(criteria)
+        consumer_needs_no_executor = checks is not None
+    except (ProbeFailure, ValueError):
+        consumer_needs_no_executor = False
+    assert (parse_deterministic_qa_criteria(criteria) is not None) is consumer_needs_no_executor

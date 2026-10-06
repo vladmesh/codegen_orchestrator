@@ -6,6 +6,7 @@ import pytest
 
 from shared.contracts.acceptance import (
     BASELINE_ACCEPTANCE_CRITERIA,
+    parse_deterministic_qa_criteria,
     parse_health_only_criteria,
     parse_scheduled_behaviours,
 )
@@ -127,3 +128,30 @@ class TestParseScheduledBehaviours:
             )
             == []
         )
+
+
+class TestDeterministicQACriteria:
+    """Admission's view of "no executor needed" must match the QA consumer's."""
+
+    def test_a_single_stand_probe_beside_health_checks_is_deterministic(self):
+        checks = parse_deterministic_qa_criteria(
+            "- GET /health returns 200\n- Stand mechanical notes: e2e-1"
+        )
+        assert [(c.path, c.expected_status) for c in checks] == [("/health", 200)]
+
+    def test_health_only_criteria_read_exactly_as_before(self):
+        criteria = "- GET /health returns 200\n- GET /reminders returns 200"
+        assert parse_deterministic_qa_criteria(criteria) == parse_health_only_criteria(criteria)
+
+    @pytest.mark.parametrize(
+        "criteria",
+        [
+            "- Stand mechanical notes: e2e-1",
+            "- GET /health returns 200\n- Stand mechanical notes: a\n"
+            "- Stand mechanical reminders: b",
+            "- GET /health returns 200\n- Stand mechanical notes: a\n- The bot replies",
+            "- GET /health returns 200\n- Stand mechanical notes: bad marker",
+        ],
+    )
+    def test_anything_else_needs_an_executor(self, criteria):
+        assert parse_deterministic_qa_criteria(criteria) is None

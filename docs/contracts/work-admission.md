@@ -141,8 +141,10 @@ enforced terminal attempt may be released, settled, or conservatively
 
 Admission writes an immutable `executor_decision` before a billable side effect.
 QA admission skips model diagnostics only when its typed `qa_handoff` matches the
-Run, Project and Story and contains exclusively HTTP GET criteria, parsed by the
-same rule as the QA consumer. Count controls, budget admission and the persisted
+Run, Project and Story and contains only deterministic criteria, parsed by the
+same rule as the QA consumer (`parse_deterministic_qa_criteria`: health-only checks, plus
+at most one fixed `- Stand mechanical notes|reminders: <marker>` probe line the consumer runs
+without an executor). Count controls, budget admission and the persisted
 executor decision still apply; absent, invalid or exploratory handoffs retain diagnostics.
 Consumers load that decision by the engineering task id or QA run id; they do
 not select an executor from mutable project or process configuration. A malformed

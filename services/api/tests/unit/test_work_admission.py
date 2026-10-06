@@ -92,6 +92,30 @@ def _rows(values: dict[str, object]) -> MagicMock:
             WorkAdmissionOutcome.DENIED,
         ),
         (" ", "matching", WorkAdmissionOutcome.DENIED),
+        # The stand's fixed Telegram probe is run by the QA consumer with no
+        # executor; mega-noop 37438216915 was denied here for treating it as prose.
+        (
+            "- GET /health returns 200\n- Stand mechanical notes: e2e-0f1e2d3c4b5a",
+            "matching",
+            WorkAdmissionOutcome.ADMITTED,
+        ),
+        (
+            "- GET /health returns 200\n- Stand mechanical reminders: e2e-0f1e2d3c4b5a",
+            "matching",
+            WorkAdmissionOutcome.ADMITTED,
+        ),
+        (
+            "- GET /health returns 200\n- Stand mechanical notes: a\n"
+            "- Stand mechanical reminders: b",
+            "matching",
+            WorkAdmissionOutcome.DENIED,
+        ),
+        (
+            "- Stand mechanical notes: a\n- The bot replies to /start",
+            "matching",
+            WorkAdmissionOutcome.DENIED,
+        ),
+        ("- Stand mechanical notes: a", "matching", WorkAdmissionOutcome.DENIED),
         ("- GET /health returns 200", "absent", WorkAdmissionOutcome.DENIED),
         ("- GET /health returns 200", "other_run", WorkAdmissionOutcome.DENIED),
         ("- GET /health returns 200", "other_project", WorkAdmissionOutcome.DENIED),

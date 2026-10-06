@@ -66,6 +66,33 @@ def parse_health_only_criteria(criteria: str) -> list[HealthCriterion] | None:
     return checks or None
 
 
+#: The stand's fixed, no-model Telegram probe (`mega-noop` mechanical install):
+#: exactly one such line beside plain GET checks. The QA consumer runs it as a
+#: scripted conversation (`services/langgraph/src/consumers/mechanical_telegram.py`)
+#: and decides the rest over HTTP, so no QA executor starts for that checklist.
+MECHANICAL_PROBE_CRITERION_RE = re.compile(
+    r"^- Stand mechanical (notes|reminders): ([a-zA-Z0-9_-]{1,100})$", re.M
+)
+
+
+def parse_deterministic_qa_criteria(criteria: str) -> list[HealthCriterion] | None:
+    """The GET checks of a checklist QA decides with no executor, or None.
+
+    That is a health-only checklist, or one carrying exactly one fixed stand
+    probe line beside health-only checks. Work admission and the QA consumer
+    must agree on this: when admission treated the probe line as prose it asked
+    for a model QA executor the stand never has, and denied the run the
+    consumer would have decided on its own (mega-noop 37438216915).
+    """
+    probes = list(MECHANICAL_PROBE_CRITERION_RE.finditer(criteria))
+    if len(probes) > 1:
+        return None
+    if probes:
+        probe = probes[0]
+        criteria = criteria[: probe.start()] + criteria[probe.end() :]
+    return parse_health_only_criteria(criteria)
+
+
 #: How a checklist names a scheduled behaviour QA must invoke, and what proves
 #: it ran. The behaviour's name is read off this line deterministically — the
 #: executor never guesses it, and nothing infers it from the prose around it:
