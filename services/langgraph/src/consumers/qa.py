@@ -499,7 +499,13 @@ async def _run_mechanical_qa(msg, selected, stored, result, redaction):
     """Borrow only the identity/target the scheduler has already granted to this Run."""
     from shared.contracts.dto.temporary_access import TemporaryAccessStatus  # noqa: PLC0415
 
-    from .mechanical_telegram import ProbeFailure, report, run_fixed_probe  # noqa: PLC0415
+    from .mechanical_telegram import (  # noqa: PLC0415
+        ProbeFailure,
+        describe_cause,
+        failure_cause,
+        report,
+        run_fixed_probe,
+    )
 
     evidence = {"phase": "grant", "status": "running", "run_id": msg.run_id}
     try:
@@ -559,17 +565,21 @@ async def _run_mechanical_qa(msg, selected, stored, result, redaction):
             }
         )
     except Exception as exc:
+        # The probe already named what failed inside it (IdentityNotProven and its
+        # reason, say); overwriting that with the wrapper's class loses the cause.
+        cause = {key: redaction.text(str(value)) for key, value in failure_cause(exc).items()}
         evidence.update(
             status="failed",
             phase=getattr(exc, "phase", evidence["phase"]),
-            failure_type=type(exc).__name__,
+            failure_type=cause["type"],
+            failure_cause=cause,
         )
         result.passed = False
         result.checks.append(
             {
                 "name": "mechanical Telegram probe",
                 "pass": False,
-                "detail": f"{evidence['phase']}: {type(exc).__name__}",
+                "detail": redaction.text(f"{evidence['phase']}: {describe_cause(cause)}"),
             }
         )
     result.report = redaction.text(report(evidence))
