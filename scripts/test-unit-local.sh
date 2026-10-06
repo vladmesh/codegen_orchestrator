@@ -101,6 +101,16 @@ if [ -n "$UNIT_REPORT_DIR" ]; then
     mkdir -p "$UNIT_REPORT_DIR"
 fi
 
+# pytest exits 5 when it collected no test. In the host profile that is a suite whose
+# every test is in the ci_only family, which is a pass; in CI it stays a failure.
+host_rc() {
+    local rc="$1"
+    if [ "$HOST_PROFILE" = "1" ] && [ "$rc" = "5" ]; then
+        rc=0
+    fi
+    echo "$rc"
+}
+
 suite_report_args() {
     local label="$1"
     REPORT_ARGS=()
@@ -133,10 +143,12 @@ run_tests_serial() {
     local workdir="${pythonpath:-$ROOT}"
     suite_report_args "$label"
     local log="${UNIT_REPORT_DIR:+$UNIT_REPORT_DIR/$label.log}"
-    if (cd "$workdir" && "${CLEAN_ENV[@]}" \
+    local rc=0
+    (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
        python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${REPORT_ARGS[@]}" "${extra_args[@]}") 2>&1 \
-       | tee "${log:-/dev/null}"; then
+       | tee "${log:-/dev/null}" || rc=$?
+    if [ "$(host_rc "$rc")" = "0" ]; then
         PASSED+=("$label")
     else
         FAILED+=("$label")
@@ -169,7 +181,7 @@ run_tests_parallel() {
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
        python -m pytest "$ROOT/$test_dir" --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${REPORT_ARGS[@]}" "${extra_args[@]}") \
        > "$LOGDIR/$label.log" 2>&1 || rc=$?
-    echo "$rc" > "$LOGDIR/$label.rc"
+    host_rc "$rc" > "$LOGDIR/$label.rc"
     if [ -n "$UNIT_REPORT_DIR" ]; then
         cp "$LOGDIR/$label.log" "$UNIT_REPORT_DIR/$label.log"
     fi

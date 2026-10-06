@@ -275,7 +275,8 @@ Both must pass.
 - **Host** (`--host`; `python -m shared`, the Ummanu broad check on the control host): at most
   `UNIT_JOBS` suites at a time (default 2), `-m "not ci_only"` on every suite, a 0.5 s budget per
   test, and none of `HOST_EXCLUDED_SUITES` (the `live-offline` suite). It prints its total wall
-  time; `python -m shared` also prints the CPU time of each suite and of the whole run.
+  time; `python -m shared` also prints the CPU time of each suite and of the whole run. A suite whose every
+  test is in the `ci_only` family collects nothing there (pytest exit 5), which counts as passed.
 
 **Budgets for the host profile** on the control host, at 2 jobs:
 
