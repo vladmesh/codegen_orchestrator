@@ -895,11 +895,12 @@ def notes_tree(tmp_path_factory, change_sets, runner_script) -> Path:
 def test_the_notes_tree_survives_the_product_pre_commit_hook(
     tmp_path_factory, notes_tree: Path
 ) -> None:
-    """Exactly what `.githooks/pre-commit` runs: `make format`, which must exit 0.
+    """The two commands `.githooks/pre-commit`'s `make format` runs, with its flags.
 
-    `ruff format` then `ruff check --fix` over the whole tree, after the
-    generator `make setup` ran first. An unfixable diagnostic (E402, F401 on a
-    name nobody uses, …) fails the commit step with CommitFailed.
+    `ruff format` then `ruff check --fix` over the whole tree (both tasks applied,
+    after `make setup`'s generator). An unfixable diagnostic (E402, …) fails the
+    runner's commit step with CommitFailed. Ruff parity rather than the Makefile
+    itself: this tree has no product venv for `make` to call.
     """
     tree = tmp_path_factory.mktemp("notes-setup") / "product"
     shutil.copytree(notes_tree, tree)
