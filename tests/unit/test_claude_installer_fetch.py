@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import threading
 
@@ -17,6 +18,35 @@ DOCKERFILE = (
 )
 INSTALLER_URL = "https://claude.ai/install.sh"
 
+# curl cannot retry without a real wait: `--retry-delay 0` selects its default 1, 2, 4 s
+# backoff and `Retry-After: 0` is ignored. So the step's `curl` is this shim: it keeps the
+# step's own retry flags (`--retry N`, `--retry-delay D`, `--retry-connrefused`), runs the
+# real curl once per attempt against the local server, and waits D seconds between
+# attempts, which is 0 here. A transient failure is what curl's `--retry` retries on:
+# an HTTP error answer (exit 22) or, with `--retry-connrefused`, a refused connection (7).
+CURL_SHIM = """#!/usr/bin/env bash
+retries=0 delay=0 connrefused=0 args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --retry) retries=$2; shift 2 ;;
+        --retry-delay) delay=$2; shift 2 ;;
+        --retry-connrefused) connrefused=1; shift ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+for ((attempt = 0; ; attempt++)); do
+    status=0
+    "$REAL_CURL" "${args[@]}" || status=$?
+    transient=0
+    [ "$status" -eq 22 ] && transient=1
+    [ "$status" -eq 7 ] && [ "$connrefused" = 1 ] && transient=1
+    if [ "$status" -eq 0 ] || [ "$transient" = 0 ] || [ "$attempt" -ge "$retries" ]; then
+        exit "$status"
+    fi
+    sleep "$delay"
+done
+"""
+
 
 def _installer_command(tmp_path, url):
     dockerfile = DOCKERFILE.read_text()
@@ -24,13 +54,9 @@ def _installer_command(tmp_path, url):
     assert run is not None
     command = run.group().removeprefix("RUN ").replace("\\\n", "")
     command = command.replace(INSTALLER_URL, url)
-    # curl's own backoff (1, 2, 4 s) is real time; the retry count is what is under test.
-    # curl cannot retry without waiting: `--retry-delay 0` selects that same default
-    # backoff (an exhausted fetch takes 7 s), the delay takes whole seconds only, and
-    # `Retry-After: 0` is ignored. 1 s is its shortest wait. This file starts processes
-    # and is `subprocess`-marked, so it runs in CI only, never in the host profile.
+    # The retry count is what is under test, not a real wait between attempts.
     assert "curl --retry 3 " in command
-    command = command.replace("curl --retry 3 ", "curl --retry 3 --retry-delay 1 ")
+    command = command.replace("curl --retry 3 ", "curl --retry 3 --retry-delay 0 ")
     cli = tmp_path / "claude"
     cli.write_text("#!/bin/sh\necho 2.1.278\n")
     cli.chmod(0o755)
@@ -58,8 +84,17 @@ def _run_fetch(tmp_path, statuses, *, empty=False):
     thread.start()
     try:
         marker = tmp_path / "executed"
+        shims = tmp_path / "shims"
+        shims.mkdir()
+        (shims / "curl").write_text(CURL_SHIM)
+        (shims / "curl").chmod(0o755)
         env = os.environ.copy()
-        env.update(CLAUDE_CODE_VERSION="2.1.278", INSTALL_MARKER=str(marker))
+        env.update(
+            CLAUDE_CODE_VERSION="2.1.278",
+            INSTALL_MARKER=str(marker),
+            REAL_CURL=shutil.which("curl"),
+            PATH=f"{shims}:{env['PATH']}",
+        )
         command = _installer_command(tmp_path, f"http://127.0.0.1:{server.server_port}/install.sh")
         result = subprocess.run(
             ["bash", "-c", command],
