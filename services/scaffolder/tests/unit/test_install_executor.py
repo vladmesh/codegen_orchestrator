@@ -22,7 +22,12 @@ def test_product_environment_discards_inherited_credentials(tmp_path, monkeypatc
     for name in ("GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GITHUB_TOKEN", "SECRET_KEY"):
         monkeypatch.setenv(name, "synthetic-parent-secret")
     env = product_environment(tmp_path)
-    assert not any(key.startswith("GIT_CONFIG_") for key in env)
+    # The only git configuration a product command gets is trust in its own checkout.
+    assert {key: value for key, value in env.items() if key.startswith("GIT_CONFIG_")} == {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": str(tmp_path),
+    }
     assert "synthetic-parent-secret" not in env.values()
 
 
@@ -155,3 +160,49 @@ async def test_dirty_checkout_is_retained_and_never_runs_kit(tmp_path, monkeypat
             AsyncMock(),
         )
     assert all("kit" not in Path(args[0]).name for args in calls)
+
+
+def foreign_owned_checkout(root):
+    """A real checkout git treats as owned by another user, as a worker-owned workspace is."""
+    subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+    (root / "notes.py").write_text("dirty\n")
+    return {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
+
+
+@pytest.mark.asyncio
+async def test_install_git_trusts_the_worker_owned_workspace(tmp_path, monkeypatch):
+    root = tmp_path / "repo-1"
+    foreign = foreign_owned_checkout(root)
+    real_run_cmd = run_install.__globals__["_run_cmd"]
+
+    async def as_root_on_worker_checkout(args, *, env, **kwargs):
+        return await real_run_cmd(args, env=env | foreign, **kwargs)
+
+    monkeypatch.setattr("src.install._run_cmd", as_root_on_worker_checkout)
+    with pytest.raises(InstallExecutionError, match="workspace_dirty"):
+        await run_install(
+            message(),
+            SimpleNamespace(workspace_base_path=str(tmp_path)),
+            "https://github.com/owner/notes",
+            "fake-token",
+            AsyncMock(),
+        )
+
+
+@pytest.mark.parametrize("build", ["product", "install"])
+def test_product_tool_git_trusts_the_worker_owned_workspace(tmp_path, build):
+    root = tmp_path / "repo-1"
+    foreign = foreign_owned_checkout(root)
+    env = (
+        product_environment(root)
+        if build == "product"
+        else install_environment("synthetic-token", root, "https://github.com/owner/notes")
+    )
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain"],
+        env=env | foreign,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status.returncode == 0, status.stderr
