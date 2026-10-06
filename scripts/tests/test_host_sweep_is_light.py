@@ -139,6 +139,45 @@ def test_the_host_scan_reads_every_conftest_of_a_host_suite():
     )
 
 
+@pytest.mark.parametrize(
+    "conftest",
+    [
+        "services/langgraph/tests/conftest.py",
+        "services/infra-service/tests/conftest.py",
+        "services/scheduler/tests/conftest.py",
+        "packages/worker-wrapper/tests/conftest.py",
+    ],
+)
+def test_the_host_scan_reads_the_parent_conftests_pytest_imports(conftest):
+    assert (ROOT / conftest).is_file()
+    assert conftest in host_sweep.host_test_files()
+
+
+def test_a_heavy_parent_conftest_of_a_host_suite_is_a_violation(tmp_path, monkeypatch):
+    runner = tmp_path / "scripts" / "test-unit-local.sh"
+    runner.parent.mkdir()
+    runner.write_text(
+        "ALL_SUITES=(\n"
+        '    "svc|services/svc/tests/unit|"\n'
+        '    "live-offline|tests/live||"\n'
+        ")\n"
+        "HOST_EXCLUDED_SUITES=(live-offline)\n"
+    )
+    (tmp_path / "services/svc/tests/unit").mkdir(parents=True)
+    (tmp_path / "tests/live").mkdir(parents=True)
+    (tmp_path / "services/svc/tests/unit/test_light.py").write_text("def test_x():\n    pass\n")
+    (tmp_path / "services/svc/tests/conftest.py").write_text(
+        "import subprocess\n\nsubprocess.run(['docker', 'compose', 'config'], check=True)\n"
+    )
+    monkeypatch.setattr(host_sweep, "ROOT", tmp_path)
+    monkeypatch.setattr(host_sweep, "TEST_UNIT_LOCAL", runner)
+
+    assert "services/svc/tests/conftest.py" in host_sweep.host_test_files()
+    assert [(v.path, v.owner) for v in host_sweep.host_violations()] == [
+        ("services/svc/tests/conftest.py", "import time")
+    ]
+
+
 def test_a_sub_marker_or_module_mark_covers_the_test(tmp_path, monkeypatch):
     marked = """
         import subprocess

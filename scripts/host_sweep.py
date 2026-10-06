@@ -112,9 +112,19 @@ def host_suites() -> list[tuple[str, str]]:
 
 
 def host_test_files() -> list[str]:
-    """Repo-relative test modules and conftest.py files the host profile collects."""
+    """Repo-relative test modules and conftest.py files the host profile collects.
+
+    Besides everything under each suite directory, pytest imports the conftest.py of
+    every directory above the one it is given, so each of those up to the repository
+    root is collected too.
+    """
     found: set[str] = set()
     for _, directory in host_suites():
+        for parent in (ROOT / directory).parents:
+            if parent != ROOT and ROOT not in parent.parents:
+                break
+            if (parent / "conftest.py").is_file():
+                found.add(str((parent / "conftest.py").relative_to(ROOT)))
         for pattern in TEST_FILE_PATTERNS:
             for path in (ROOT / directory).rglob(pattern):
                 relative = path.relative_to(ROOT)
