@@ -71,6 +71,10 @@ import yaml
 from scripts.template_pin import TEMPLATE_PIN
 from shared.contracts.acceptance import parse_health_only_criteria
 
+# The kit's generate, ruff, xenon and deptry over three trees: CI only (make test-unit),
+# never the host profile.
+pytestmark = pytest.mark.kit_gate
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIVE_DIR = REPO_ROOT / "tests" / "live"
 MARKER = "e2e-0f1e2d3c4b5a"

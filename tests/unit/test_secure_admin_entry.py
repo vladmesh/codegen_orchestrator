@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import tempfile
 
+import pytest
+
 ROOT = Path(__file__).parents[2]
 
 
@@ -40,6 +42,7 @@ def _production_compose() -> dict:
     return json.loads(result.stdout)
 
 
+@pytest.mark.docker
 def test_production_admin_is_exposed_only_on_host_loopback():
     config = _production_compose()
     assert config["services"]["admin-frontend"]["ports"] == [

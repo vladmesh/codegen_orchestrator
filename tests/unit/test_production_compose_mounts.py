@@ -166,6 +166,7 @@ def _runtime_mounts(config: dict, project_dir: Path) -> set[tuple[str, str, str,
     return mounts
 
 
+@pytest.mark.docker
 @pytest.mark.parametrize("files", [PROD, STAND], ids=["prod", "stand"])
 def test_no_prod_contour_container_mounts_repository_source(stacks, files):
     config, project_dir = stacks[files]
@@ -173,6 +174,7 @@ def test_no_prod_contour_container_mounts_repository_source(stacks, files):
     assert _source_mounts(config, project_dir) == {}
 
 
+@pytest.mark.docker
 @pytest.mark.parametrize("files", [PROD, STAND], ids=["prod", "stand"])
 def test_every_runtime_mount_of_the_base_file_survives_on_the_prod_contour(stacks, files):
     """The overlay restates runtime mounts by hand; one it forgets is caught here."""
@@ -184,6 +186,7 @@ def test_every_runtime_mount_of_the_base_file_survives_on_the_prod_contour(stack
     assert missing == expected_missing
 
 
+@pytest.mark.docker
 @pytest.mark.parametrize("files", [PROD, STAND], ids=["prod", "stand"])
 def test_the_named_runtime_mounts_are_present_on_the_prod_contour(stacks, files):
     config, _project_dir = stacks[files]
@@ -203,6 +206,7 @@ def test_the_named_runtime_mounts_are_present_on_the_prod_contour(stacks, files)
     assert required - present == set()
 
 
+@pytest.mark.docker
 def test_the_github_app_key_stays_read_only_in_production(stacks):
     config, _project_dir = stacks[PROD]
     for service in (
@@ -216,6 +220,7 @@ def test_the_github_app_key_stays_read_only_in_production(stacks):
         assert key["read_only"] is True, service
 
 
+@pytest.mark.docker
 @pytest.mark.parametrize("files", [BASE, PROD, STAND], ids=["dev", "prod", "stand"])
 def test_the_heads_share_the_codex_workers_profile_read_write(stacks, files):
     """One bundle, three consumers: the heads mount the very directory the workers get.
@@ -238,6 +243,7 @@ def test_the_heads_share_the_codex_workers_profile_read_write(stacks, files):
         assert "CLAUDE_CODE_OAUTH_TOKEN" in service["environment"], head
 
 
+@pytest.mark.docker
 def test_without_a_codex_profile_the_heads_leave_the_codex_channel_unconfigured(tmp_path):
     """No HOST_CODEX_HOME: LLM_CODEX_HOME renders empty, so the channel counts as unset."""
     env_file = tmp_path / ".env"
@@ -253,6 +259,7 @@ def test_without_a_codex_profile_the_heads_leave_the_codex_channel_unconfigured(
         assert config["services"][head]["environment"]["LLM_CODEX_HOME"] == "", head
 
 
+@pytest.mark.docker
 def test_development_keeps_its_source_mounts_and_local_builds(stacks):
     config, project_dir = stacks[BASE]
     mounted = _source_mounts(config, project_dir)

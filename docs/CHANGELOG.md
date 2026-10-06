@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-05
 
+- `python -m shared` runs the light `--host` profile (2 jobs, `-m "not ci_only"`, no live-offline);
+  docker, ansible, sudo and kit-gate tests are marked CI-only and a guard scan keeps them there.
 - Mechanical notes and reminders briefs use the released usage-example fields; every `Level1Brief`
   now validates as a Product Brief proposal when built, so a refused document fails offline.
 - The stand handoff and acceptance artifact carry `mechanical-install-<run_id>.json`, so a

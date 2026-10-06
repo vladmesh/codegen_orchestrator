@@ -10,13 +10,29 @@
 # picking up extra/conflicting values in service Settings classes.
 #
 # Usage:
-#   ./scripts/test-unit-local.sh           # parallel (default, fast)
-#   ./scripts/test-unit-local.sh --serial  # sequential (verbose output)
+#   ./scripts/test-unit-local.sh                # every suite at once (CI, make test-unit)
+#   ./scripts/test-unit-local.sh --host         # the light host profile (python -m shared)
+#   ./scripts/test-unit-local.sh --serial       # sequential (verbose output)
+#
+# The host profile is what a weak control host runs: at most UNIT_JOBS suites at a
+# time (default 2), `-m "not ci_only"` on every suite, and no live-offline suite.
+# Tests marked ci_only, docker, ansible, privileged or kit_gate run in CI only; CI
+# runs this script without --host, so its coverage does not shrink. Budget for the
+# whole profile: 300 s or less and 1.5 GB or less peak RSS at 2 jobs (docs/TESTING.md).
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MODE="${1:-parallel}"
+MODE="parallel"
+HOST_PROFILE=0
+for arg in "$@"; do
+    case "$arg" in
+        --host) HOST_PROFILE=1 ;;
+        --serial) MODE="--serial" ;;
+        *) echo "unknown argument: $arg" >&2; exit 2 ;;
+    esac
+done
+UNIT_JOBS="${UNIT_JOBS:-2}"
 
 # Minimal env for unit tests — no real services needed.
 # Services with pydantic-settings will validate these at import time.
@@ -52,14 +68,6 @@ CLEAN_ENV=(
     DEFAULT_AGENT_TYPE="claude"
     DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test"
 )
-# On the Ummanu control host `docker` is a guard shim that needs these launcher
-# bindings to reach the native backend; the read-only `docker compose config` tests
-# fail without them. Only these three, only when set: CI and production have none.
-for name in UMMANU_DOCKER_PYTHON UMMANU_DOCKER_SOURCE UMMANU_DOCKER_BACKEND; do
-    if [ -n "${!name+x}" ]; then
-        CLEAN_ENV+=("$name=${!name}")
-    fi
-done
 
 # Every unit test is bounded, so a hang fails in minutes with the test's node id,
 # its pending asyncio tasks and every thread's stack (scripts/unit_test_timeout.py)
@@ -72,6 +80,12 @@ TIMEOUT_ARGS=(
     --timeout="$UNIT_TEST_TIMEOUT_SECONDS"
     --timeout-method=thread
 )
+# The markers plugin makes every sub-marker (docker, ansible, privileged, kit_gate)
+# imply ci_only, so the host profile deselects the whole family with one expression.
+MARKER_ARGS=(-p scripts.ci_only_markers)
+if [ "$HOST_PROFILE" = "1" ]; then
+    MARKER_ARGS+=(-m "not ci_only")
+fi
 
 # --- Serial mode (original behavior, verbose) ---
 
@@ -94,7 +108,7 @@ run_tests_serial() {
     local workdir="${pythonpath:-$ROOT}"
     if (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${extra_args[@]}") 2>&1; then
+       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${extra_args[@]}") 2>&1; then
         PASSED+=("$label")
     else
         FAILED+=("$label")
@@ -124,7 +138,7 @@ run_tests_parallel() {
     local rc=0
     (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" --tb=short -q "${TIMEOUT_ARGS[@]}" "${extra_args[@]}") \
+       python -m pytest "$ROOT/$test_dir" --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${extra_args[@]}") \
        > "$LOGDIR/$label.log" 2>&1 || rc=$?
     echo "$rc" > "$LOGDIR/$label.rc"
 }
@@ -158,12 +172,25 @@ ALL_SUITES=(
     "repo|tests/unit|"
     "live-offline|tests/live||$OFFLINE_LIVE_IGNORE_ARGS"
 )
+# Suites the host profile leaves to CI as a whole. scripts/host_sweep.py reads this
+# list too: the guard test scans every file of every other suite.
+HOST_EXCLUDED_SUITES=(live-offline)
+
+SUITES=()
+for suite in "${ALL_SUITES[@]}"; do
+    label="${suite%%|*}"
+    if [ "$HOST_PROFILE" = "1" ] && [[ " ${HOST_EXCLUDED_SUITES[*]} " == *" $label "* ]]; then
+        echo "⏭  $label — CI only, not in the host profile"
+        continue
+    fi
+    SUITES+=("$suite")
+done
 
 FAILED=()
 PASSED=()
 
 if [ "$MODE" = "--serial" ]; then
-    for suite in "${ALL_SUITES[@]}"; do
+    for suite in "${SUITES[@]}"; do
         IFS='|' read -r label test_dir pythonpath extra_pytest_args <<< "$suite"
         run_tests_serial "$label" "$test_dir" "$pythonpath" "$extra_pytest_args"
     done
@@ -171,13 +198,22 @@ else
     LOGDIR=$(mktemp -d)
     trap 'rm -rf "$LOGDIR"' EXIT
 
-    for suite in "${ALL_SUITES[@]}"; do
+    running=0
+    for suite in "${SUITES[@]}"; do
         IFS='|' read -r label test_dir pythonpath extra_pytest_args <<< "$suite"
         run_tests_parallel "$label" "$test_dir" "$pythonpath" "$extra_pytest_args" &
+        # The host profile holds at most UNIT_JOBS suites at once; CI starts them all.
+        if [ "$HOST_PROFILE" = "1" ]; then
+            running=$((running + 1))
+            if [ "$running" -ge "$UNIT_JOBS" ]; then
+                wait -n || true
+                running=$((running - 1))
+            fi
+        fi
     done
     wait
 
-    for suite in "${ALL_SUITES[@]}"; do
+    for suite in "${SUITES[@]}"; do
         IFS='|' read -r label _ _ <<< "$suite"
         rc=$(cat "$LOGDIR/$label.rc" 2>/dev/null || echo 1)
         if [ "$rc" = "0" ]; then
@@ -193,6 +229,12 @@ fi
 
 # Summary
 echo "========================================="
+if [ "$HOST_PROFILE" = "1" ]; then
+    echo "Profile: host (UNIT_JOBS=$UNIT_JOBS, -m \"not ci_only\")"
+else
+    echo "Profile: full"
+fi
+echo "Wall time: ${SECONDS}s"
 echo "Passed: ${#PASSED[@]}"
 echo "Failed: ${#FAILED[@]}"
 if [ ${#FAILED[@]} -gt 0 ]; then

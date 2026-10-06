@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 # Set required env vars before importing modules that validate at import time.
@@ -24,6 +25,7 @@ ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
 class TestAnsibleRunnerConfiguration:
     """The runner must load the configuration that makes playbook roles available."""
 
+    @pytest.mark.ansible
     def test_runner_executes_an_include_role_using_repository_config(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()

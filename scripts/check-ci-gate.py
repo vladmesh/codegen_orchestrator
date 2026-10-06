@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import ci_build_cache, ci_plan  # noqa: E402
+from scripts import ci_build_cache, ci_plan, host_sweep  # noqa: E402
 from scripts.check_service_image_imports import SERVICE_IMAGES  # noqa: E402
 from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
 
@@ -446,6 +446,9 @@ BOUNDED_DOCKER_STEPS = {
 REDIS_CLEANUP_COMMAND = "bash scripts/ci-redis-cleanup-regression.sh"
 BACKUP_DB_STEP = "Run verified database backup regression"
 BACKUP_DB_COMMAND = "make test-backup-db"
+# Tests marked privileged run on the throwaway runner, never on the control host.
+PRIVILEGED_STEP = "Run privileged runner regressions"
+PRIVILEGED_COMMAND = "make test-privileged"
 BACKUP_DB_PULL_STEP = "Pull backup PostgreSQL image with retry"
 BACKUP_DB_PULL_COMMAND = (
     "bash scripts/ci-infra.sh retry --step backup-db-pull --cause image-pull --attempt-timeout 30s "
@@ -736,7 +739,14 @@ def pytest_paths(compose_file: Path) -> list[str]:
         command = service.get("command") if isinstance(service, dict) else None
         if not isinstance(command, list) or not command or command[0] != "pytest":
             continue
-        paths.extend(arg for arg in command[1:] if not arg.startswith("-"))
+        skip_next = False
+        for arg in command[1:]:
+            if skip_next:
+                skip_next = False
+            elif arg.startswith("-"):
+                skip_next = arg in PYTEST_FLAGS_WITH_VALUE
+            else:
+                paths.append(arg)
     if not paths:
         fail(f"{compose_file} runs no pytest command")
     return paths
@@ -868,6 +878,13 @@ def claimed_test_paths(jobs: dict[str, Any]) -> dict[str, str]:
         resolved = resolve_test_path(MAKEFILE, path, None)
         claims.setdefault(resolved, "fast-checks: make test-backup-db")
 
+    privileged = step_by_name(require_job(jobs, "fast-checks"), PRIVILEGED_STEP)
+    if bounded_command(privileged) != PRIVILEGED_COMMAND:
+        fail(f"fast-checks must run the privileged regressions as {PRIVILEGED_COMMAND}")
+    for path in makefile_pytest_paths("test-privileged"):
+        resolved = resolve_test_path(MAKEFILE, path, None)
+        claims.setdefault(resolved, f"fast-checks: {PRIVILEGED_COMMAND}")
+
     for service in matrix_values(require_job(jobs, "test-service"), "service"):
         compose_file = SERVICE_COMPOSE_DIR / f"{service}.yml"
         service_root = SERVICE_COMPOSE_ROOTS.get(service)
@@ -888,6 +905,25 @@ def claimed_test_paths(jobs: dict[str, Any]) -> dict[str, str]:
             resolved = resolve_test_path(MAKEFILE, path, None)
             claims.setdefault(resolved, target)
     return claims
+
+
+def assert_host_profile_is_light() -> None:
+    """A heavy test is claimed by a CI target, never by the host profile.
+
+    `make test-unit` claims every ALL_SUITES directory for CI. The host profile
+    (`--host`, run by `python -m shared` on the control host) collects the same
+    files minus HOST_EXCLUDED_SUITES and deselects the ci_only family, so a test
+    that starts docker, ansible, sudo or the kit toolchain stays CI-only only while
+    it carries one of those markers. scripts/host_sweep.py finds the ones that do not.
+    """
+    violations = host_sweep.host_violations()
+    if violations:
+        fail(
+            "the host profile of test-unit-local.sh would run heavy tests: "
+            + "; ".join(str(violation) for violation in violations)
+            + ". Mark each ci_only (or docker, ansible, privileged, kit_gate) so only "
+            "CI's make test-unit runs it"
+        )
 
 
 def assert_test_suite_coverage(jobs: dict[str, Any]) -> None:
@@ -1943,6 +1979,7 @@ def main() -> None:
     assert_service_tests(jobs)
     assert_integration_tests(jobs)
     assert_test_suite_coverage(jobs)
+    assert_host_profile_is_light()
     assert_pinned_base_images()
     assert_backend_dind_integration(jobs)
     assert_service_image_imports(jobs)

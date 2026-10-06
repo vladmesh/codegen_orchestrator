@@ -9,11 +9,14 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 UNIT_SCRIPT = ROOT / "scripts" / "test-unit-local.sh"
+# The broad check runs on the weak control host, so it is the runner's light host
+# profile; CI runs the full fan-out through `make test-unit` instead.
+HOST_PROFILE_FLAG = "--host"
 
 
 def build_command(argv: list[str]) -> list[str]:
-    """The exact argv ``python -m shared`` executes: the tree's unit runner plus caller flags."""
-    return ["bash", str(UNIT_SCRIPT), *argv]
+    """The exact argv ``python -m shared`` executes: the host profile plus caller flags."""
+    return ["bash", str(UNIT_SCRIPT), HOST_PROFILE_FLAG, *argv]
 
 
 def build_env(base: dict[str, str], interpreter: str) -> dict[str, str]:
