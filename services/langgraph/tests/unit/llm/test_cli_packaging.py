@@ -265,15 +265,6 @@ def _constant(path: Path, name: str) -> str:
     return match.group(1)
 
 
-def test_the_profile_lock_is_the_one_the_worker_wrapper_and_worker_manager_use():
-    wrapper = REPO / "packages/worker-wrapper/src/worker_wrapper/wrapper.py"
-    reader = REPO / "services/worker-manager/src/codex_auth.py"
-
-    assert _constant(wrapper, "CODEX_PROFILE_LOCK_NAME") == CODEX_PROFILE_LOCK_NAME
-    assert _constant(reader, "CODEX_PROFILE_LOCK_NAME") == CODEX_PROFILE_LOCK_NAME
-    assert "profile / CODEX_PROFILE_LOCK_NAME" in wrapper.read_text()
-
-
 # --- PO timeouts ----------------------------------------------------------------
 
 

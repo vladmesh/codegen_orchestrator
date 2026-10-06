@@ -206,6 +206,7 @@ class TestThePublishGuard:
         monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(product))
         return make_wrapper(product, tmp_path / "home")
 
+    @pytest.mark.subprocess
     def test_a_clean_commit_is_pushed_and_read_back_unchanged(
         self, product, published, tmp_path, monkeypatch
     ):

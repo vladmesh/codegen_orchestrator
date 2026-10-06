@@ -31,6 +31,9 @@ from worker_wrapper.wrapper import WorkerWrapper
 
 from scripts.template_pin import TEMPLATE_PIN
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 KIT_MAKEFILE = TEMPLATE_PIN.fixture_path() / "Makefile"
 
 
@@ -96,7 +99,9 @@ class ComposeProxyStub:
                 return
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self.thread.start()
 
     @property

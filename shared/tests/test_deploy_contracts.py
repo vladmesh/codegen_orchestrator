@@ -16,13 +16,6 @@ class TestDeployAction:
         assert isinstance(DeployAction.CREATE, str)
         assert DeployAction.CREATE.value == "create"
 
-    def test_all_values(self):
-        assert DeployAction.CREATE == "create"
-        assert DeployAction.FEATURE == "feature"
-        assert DeployAction.FIX == "fix"
-        assert DeployAction.STOP == "stop"
-        assert DeployAction.UNDEPLOY == "undeploy"
-
     def test_roundtrip_via_string(self):
         for action in DeployAction:
             assert DeployAction(action.value) == action

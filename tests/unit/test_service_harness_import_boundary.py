@@ -3,15 +3,15 @@
 import ast
 from pathlib import Path
 
+from shared.tests import source_index
+
 ROOT = Path(__file__).resolve().parents[2]
-SERVICES = ROOT / "services"
 FORBIDDEN_PREFIX = "shared.live_harness"
 
 
 def _forbidden_imports(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(), filename=str(path))
     imports: list[str] = []
-    for node in ast.walk(tree):
+    for node in source_index.nodes(path):
         if isinstance(node, ast.Import):
             imports.extend(
                 alias.name for alias in node.names if alias.name.startswith(FORBIDDEN_PREFIX)
@@ -29,10 +29,10 @@ def _forbidden_imports(path: Path) -> list[str]:
     return imports
 
 
-def test_production_services_do_not_import_live_harness_modules() -> None:
+def test_production_services_do_not_import_live_harness_modules(production_source_index) -> None:
     offenders = {
         str(path.relative_to(ROOT)): imports
-        for path in SERVICES.glob("*/src/**/*.py")
+        for path in source_index.service_sources()
         if (imports := _forbidden_imports(path))
     }
 

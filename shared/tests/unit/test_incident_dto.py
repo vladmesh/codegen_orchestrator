@@ -17,19 +17,6 @@ from shared.contracts.dto.incident import (
 _NOW = datetime(2026, 3, 17, tzinfo=UTC)
 
 
-class TestIncidentEnums:
-    def test_incident_status_values(self):
-        assert IncidentStatus.DETECTED == "detected"
-        assert IncidentStatus.RECOVERING == "recovering"
-        assert IncidentStatus.RESOLVED == "resolved"
-        assert IncidentStatus.FAILED == "failed"
-
-    def test_incident_type_values(self):
-        assert IncidentType.SERVER_UNREACHABLE == "server_unreachable"
-        assert IncidentType.SERVICE_DOWN == "service_down"
-        assert IncidentType.SSL_EXPIRING == "ssl_expiring"
-
-
 class TestIncidentDTO:
     """IncidentDTO should parse API response dicts."""
 

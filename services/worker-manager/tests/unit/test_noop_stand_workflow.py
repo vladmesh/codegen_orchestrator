@@ -11,6 +11,9 @@ import yaml
 
 from scripts import stand_acceptance, stand_preflight, stand_run
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 ROOT = Path(__file__).resolve().parents[4]
 WORKFLOW = ROOT / ".github/workflows/stand-e2e.yml"
 RAW_TARGETS = ("tests/live/test_llm_channel_failover.py", "tests/live/test_unknown_target.py")

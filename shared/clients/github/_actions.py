@@ -814,8 +814,8 @@ class ActionsMixin:
         owner: str,
         repo: str,
         run_id: int,
-        timeout_seconds: int = 600,
-        poll_interval: int = 15,
+        timeout_seconds: float = 600,
+        poll_interval: float = 15,
         cancel_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict:
         """Wait for a specific workflow run to complete.

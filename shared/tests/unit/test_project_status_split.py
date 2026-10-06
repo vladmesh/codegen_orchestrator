@@ -19,9 +19,6 @@ from shared.models.user import User
 class TestProjectStatusEnum:
     """ProjectStatus should only contain lifecycle states."""
 
-    def test_has_exactly_4_values(self):
-        assert len(ProjectStatus) == 4
-
     def test_values(self):
         assert set(ProjectStatus) == {
             ProjectStatus.DRAFT,
@@ -50,9 +47,6 @@ class TestProjectStatusEnum:
 
 class TestRepositoryStatusEnum:
     """RepositoryStatus tracks whether the repo is accessible."""
-
-    def test_has_exactly_2_values(self):
-        assert len(RepositoryStatus) == 2
 
     def test_values(self):
         assert set(RepositoryStatus) == {

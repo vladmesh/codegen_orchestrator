@@ -13,6 +13,13 @@ from src.consumers.mechanical_telegram import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_poll_wait(monkeypatch):
+    from src.consumers import mechanical_telegram as probe
+
+    monkeypatch.setattr(probe, "POLL_SECONDS", 0)
+
+
 def test_malformed_mechanical_selection_cannot_fall_through_to_a_model():
     with pytest.raises(ProbeFailure, match="selection"):
         selection("- GET /health returns 200\n- Stand mechanical reminders: bad marker")

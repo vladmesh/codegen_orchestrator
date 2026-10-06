@@ -242,8 +242,8 @@ LLM_ENGINEERING_TIMEOUT = 1800  # 30 min
 #: How long the QA consumer gives its executor to reach a verdict
 #: (`services/langgraph/src/consumers/_qa_runner.py`, `QA_TIMEOUT`). Restated, not
 #: imported: a service module is not importable from here, and
-#: `tests/unit/test_documented_stand_budgets.py` reads the service's constant
-#: back out of its source so the two cannot disagree silently.
+#: `services/langgraph/tests/unit/test_qa_verdict_bound_parity.py` imports both
+#: so the two cannot disagree silently.
 QA_EXECUTOR_VERDICT_TIMEOUT = 1200  # 20 min
 
 #: The wait for one story's QA Run when a real executor judges it: the executor's

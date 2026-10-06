@@ -193,6 +193,10 @@ jobs:
         timeout-minutes: 1
         run: uv run ruff check .
 
+      - name: Check unit tests read no documentation or source text
+        timeout-minutes: 1
+        run: uv run python scripts/check_unit_test_reads.py
+
       - name: Expose CI infrastructure failure
         id: infra
         if: always() && hashFiles('scripts/ci-infra.sh') != ''
@@ -201,7 +205,7 @@ jobs:
   fast-checks:
     name: Fast Checks (Unit Tests)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 48
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
     steps:
@@ -226,7 +230,19 @@ jobs:
 
       - name: Run unit tests
         timeout-minutes: 10
+        env:
+          # Per suite: <label>.xml (junit) and <label>.log with the 50 slowest tests.
+          UNIT_REPORT_DIR: ${{ runner.temp }}/unit-reports
         run: make test-unit
+
+      - name: Upload unit junit and durations
+        timeout-minutes: 2
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unit-reports-${{ github.sha }}
+          path: ${{ runner.temp }}/unit-reports/
+          if-no-files-found: warn
 
       - name: Run privileged runner regressions
         run: bash scripts/ci-infra.sh bound --step privileged --timeout 2m -- make test-privileged

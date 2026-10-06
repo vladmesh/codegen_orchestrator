@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).parents[2]
@@ -91,6 +92,7 @@ def test_the_bare_interpreter_really_has_no_third_party_package() -> None:
     assert "No module named 'pydantic'" in result.stderr
 
 
+@pytest.mark.subprocess
 def test_every_host_side_script_imports_without_third_party_packages() -> None:
     offenders = {}
     for module in sorted(_host_modules()):

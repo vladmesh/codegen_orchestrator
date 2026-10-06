@@ -9,6 +9,9 @@ import threading
 
 import pytest
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 DOCKERFILE = (
     Path(__file__).parents[2] / "services/worker-manager/images/worker-base-claude/Dockerfile"
 )
@@ -21,6 +24,10 @@ def _installer_command(tmp_path, url):
     assert run is not None
     command = run.group().removeprefix("RUN ").replace("\\\n", "")
     command = command.replace(INSTALLER_URL, url)
+    # curl's own backoff (1, 2, 4 s) is real time; the retry count is what is under test.
+    # A delay of 0 means that backoff to curl, and it takes whole seconds only, so 1.
+    assert "curl --retry 3 " in command
+    command = command.replace("curl --retry 3 ", "curl --retry 3 --retry-delay 1 ")
     cli = tmp_path / "claude"
     cli.write_text("#!/bin/sh\necho 2.1.278\n")
     cli.chmod(0o755)
@@ -44,7 +51,7 @@ def _run_fetch(tmp_path, statuses, *, empty=False):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     thread.start()
     try:
         marker = tmp_path / "executed"
@@ -103,8 +110,3 @@ def test_a_fetch_that_answered_names_no_infrastructure_cause(tmp_path, statuses,
     result, _, _ = _run_fetch(tmp_path, statuses, empty=empty)
 
     assert INFRA_CAUSE not in result.stdout + result.stderr
-
-
-def test_the_build_log_echo_of_the_command_does_not_carry_the_cause():
-    """A build log prints each RUN command, so the cause line must exist only at run time."""
-    assert INFRA_CAUSE not in DOCKERFILE.read_text()

@@ -12,7 +12,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
+from shared.tests import source_index
+
 API_SRC = Path(__file__).parents[2] / "src"
+
+pytestmark = pytest.mark.usefixtures("api_source_index")
 DECIDER_MODULE = API_SRC / "dependencies.py"
 DECIDER = "resolve_actor"
 
@@ -106,7 +112,7 @@ def _passes_telegram_header_to_user_resolver(
 
 def test_resolve_actor_requires_the_caller_credential():
     """Forgetting the bearer is a signature error, never a fallback branch."""
-    tree = ast.parse(DECIDER_MODULE.read_text())
+    tree = source_index.tree(DECIDER_MODULE)
     decider = next((func for func in _functions(tree) if func.name == DECIDER), None)
     assert decider is not None, f"{DECIDER} is the one actor decider"
 
@@ -123,8 +129,8 @@ def test_resolve_actor_requires_the_caller_credential():
 def test_every_actor_decision_passes_the_caller_credential():
     """A deliberately reintroduced call without `credentials=` fails here."""
     offenders = []
-    for path in sorted(API_SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text())
+    for path in source_index.python_files(API_SRC):
+        tree = source_index.tree(path)
         for call in ast.walk(tree):
             if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
                 continue
@@ -143,8 +149,8 @@ def test_every_actor_decision_passes_the_caller_credential():
 def test_telegram_user_resolution_requires_the_caller_credential():
     """A deliberately restored allocation/project guard fails here before it ships."""
     offenders = []
-    for path in sorted(API_SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text())
+    for path in source_index.python_files(API_SRC):
+        tree = source_index.tree(path)
         module = _relative(path)
         for func in _functions(tree):
             if (module, func.name) in TELEGRAM_USER_LOOKUP_EXEMPTIONS:
@@ -167,7 +173,7 @@ def test_telegram_user_resolution_requires_the_caller_credential():
 def test_telegram_user_lookup_exemptions_still_exist():
     """An obsolete exemption must not silently make a later one look reviewed."""
     for module, name in TELEGRAM_USER_LOOKUP_EXEMPTIONS:
-        tree = ast.parse((API_SRC / module).read_text())
+        tree = source_index.tree(API_SRC / module)
         assert any(func.name == name for func in _functions(tree)), (
             f"{module} no longer defines {name}: drop it from the exemption list"
         )

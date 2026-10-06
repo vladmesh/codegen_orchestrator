@@ -525,6 +525,7 @@ def test_recover_manifests_removes_proven_orphan(monkeypatch, tmp_path):
     assert not manifest.exists()
 
 
+@pytest.mark.subprocess
 def test_recover_manifests_keeps_unproven_resources(monkeypatch, tmp_path):
     _live_harness_modules()  # recovery rebuilds a real context before any phase runs
     manifest = tmp_path / ".live-manifests" / "run.json"

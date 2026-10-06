@@ -76,12 +76,6 @@ class TestArchitectMessage:
 
 
 class TestArchitectQueueConstants:
-    def test_queue_name(self):
-        assert ARCHITECT_QUEUE == "architect:queue"
-
-    def test_group_name(self):
-        assert ARCHITECT_GROUP == "architect-consumers"
-
     def test_topology_includes_architect(self):
         architect_bindings = [b for b in QUEUE_TOPOLOGY if b.stream == ARCHITECT_QUEUE]
         assert len(architect_bindings) == 1

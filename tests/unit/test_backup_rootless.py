@@ -1,16 +1,17 @@
 """The supported h01o user units and client select only their owning daemon."""
 
 import configparser
-import json
 import os
 from pathlib import Path
-import shlex
 import shutil
 import socket
 import subprocess
 
 import pytest
 from test_backup_db import DOCKER
+
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 UNIT_DIR = ROOT / "infra/systemd"
@@ -175,47 +176,6 @@ else:
 
 def invoke(client, env, *args):
     return subprocess.run(["bash", str(client), *args], env=env, capture_output=True, timeout=15)
-
-
-def test_backup_and_independent_readback_ignore_foreign_operator_context(rootless_client):
-    client, env = rootless_client
-    result = invoke(client, env, "backup")
-    assert result.returncode == 0, result.stderr.decode()
-    archive = next(Path(env["BACKUP_DIR"]).glob("*.dump"))
-    assert archive.stat().st_mode & 0o777 == 0o600
-    assert archive.parent.stat().st_mode & 0o777 == 0o700
-    policy = client.parent.parent / "backup.env"
-    policy.write_text(
-        "\n".join(
-            f"{key}={shlex.quote(value)}"
-            for key, value in env.items()
-            if key.startswith(("BACKUP_", "COMPOSE_"))
-        )
-    )
-    policy.chmod(0o600)
-    docs = (ROOT / "docs/DEPLOY.md").read_text()
-    readback_script = (
-        docs.split("# BEGIN owning-user archive readback\n")[1]
-        .split("# END owning-user archive readback")[0]
-        .replace("/usr/local/libexec", str(client.parent))
-    )
-    # Execute the actual documented readback. Only installed paths and native
-    # service-manager inventory are replaced; the client checks identity/permissions
-    # and the controlled Docker fixture checks endpoint selection.
-    readback = subprocess.run(
-        ["bash", "-eu", "-c", readback_script],
-        env={**env, "backup_policy": str(policy), "VERIFIED_BACKUP_PATH": str(archive)},
-        capture_output=True,
-        timeout=15,
-    )
-    assert readback.returncode == 0, readback.stderr.decode()
-    assert b"archive_list_exit=0" in readback.stdout
-    assert b"synthetic-dump-secret-canary" not in readback.stdout + readback.stderr
-    records = [json.loads(line) for line in Path(env["ENDPOINT_LOG"]).read_text().splitlines()]
-    endpoint = f"unix://{env['BACKUP_RUNTIME_DIR']}/docker.sock"
-    assert len(records) == 6
-    assert all(record["host"] == endpoint and record["context"] is None for record in records)
-    assert all(record["args"][:2] == ["--host", endpoint] for record in records[-2:])
 
 
 @pytest.mark.parametrize(

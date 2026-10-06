@@ -541,11 +541,10 @@ async def test_wait_for_run_completion_timeout(authed_client):
                 )
             )
 
-            with patch("asyncio.sleep", return_value=None):
-                with pytest.raises(TimeoutError, match="did not complete"):
-                    await authed_client.wait_for_run_completion(
-                        owner, repo, run_id, timeout_seconds=1, poll_interval=1
-                    )
+            with pytest.raises(TimeoutError, match="did not complete"):
+                await authed_client.wait_for_run_completion(
+                    owner, repo, run_id, timeout_seconds=0.05, poll_interval=0.01
+                )
 
 
 def _run_payload(owner, repo, run_id, status, conclusion=None):
@@ -605,7 +604,11 @@ async def test_wait_for_run_completion_fails_closed_when_the_stop_is_unproven(au
                 return_value=httpx.Response(500)
             )
 
-            with pytest.raises(WorkflowCancellationUnprovenError):
+            # The client's own retry backoff on the 500 is not what is under test.
+            with (
+                patch("shared.clients.github._base.asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(WorkflowCancellationUnprovenError),
+            ):
                 await authed_client.wait_for_run_completion(
                     owner,
                     repo,

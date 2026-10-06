@@ -74,7 +74,7 @@ values are refused before persistence and that omitted status leaves it intact.
 
 | Layer | Location | Dependencies | CI | Speed |
 |-------|----------|-------------|-----|-------|
-| **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks); `ci_only` family in CI only | Host profile + CI | host ≤ 300 s at 2 jobs |
+| **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks); `ci_only` family in CI only | Host profile + CI | host ≤ 300 s wall, ≤ 240 s CPU, ≤ 0.5 s per test |
 | **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
 | **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI when relevant paths change | ~10-30 min |
 | **Live** | `tests/live/` | Full stack (real services, no LLM) | Manual | ~30s–10 min |
@@ -244,7 +244,9 @@ pipeline or production deployment is covered by these checks.
 ## Pre-push Hook
 
 Runs automatically before `git push`:
-1. `make lint` — ruff check
+1. `make lint` — ruff format check, ruff check (import boundaries are `TID251` banned-api rules
+   in `ruff.toml`), and `scripts/check_unit_test_reads.py`: no test under `tests/unit` reads
+   `docs/`, repository Markdown or `inspect.getsource`, except a `test_architecture_guards.py`
 2. `make test-unit` — all unit tests
 
 Both must pass.
@@ -271,17 +273,37 @@ Both must pass.
 
 - **Full** (no flag; `make test-unit`, CI `fast-checks`): every suite at once, every test.
 - **Host** (`--host`; `python -m shared`, the Ummanu broad check on the control host): at most
-  `UNIT_JOBS` suites at a time (default 2), `-m "not ci_only"` on every suite, and none of
-  `HOST_EXCLUDED_SUITES` (the `live-offline` suite). It prints its total wall time.
+  `UNIT_JOBS` suites at a time (default 2), `-m "not ci_only"` on every suite, a 0.5 s budget per
+  test, and none of `HOST_EXCLUDED_SUITES` (the `live-offline` suite). It prints its total wall
+  time; `python -m shared` also prints the CPU time of each suite and of the whole run.
 
-**Budget for the host profile: 300 s or less wall time and 1.5 GB or less peak RSS for the whole
-process tree at 2 jobs.** A change that breaks it moves tests to CI rather than raising the budget.
+**Budgets for the host profile** on the control host, at 2 jobs:
+
+| Budget | Limit | Enforced by |
+|---|---|---|
+| Wall time, whole profile | 300 s | printed by the runner (`Wall time:`) |
+| Peak RSS, whole process tree | 1.5 GB | — |
+| CPU (user + sys, every child), whole profile | `HOST_CPU_BUDGET_SECONDS` = 240 s | `python -m shared` fails a green run above it (`getrusage(RUSAGE_CHILDREN)`) |
+| One test, setup + call + teardown | 0.5 s | `scripts/unit_test_budget.py` (`--unit-test-budget`) fails the test |
+
+The CPU budget is the measured host profile plus about 30 %; the per-suite CPU it prints comes
+from each suite's pytest (`--suite-cpu-file`). The per-test budget leaves out what belongs to the
+suite rather than to the test that happens to run first: setting up session-, module- or
+class-scoped fixtures, and first-time imports. A change that breaks a budget moves tests to CI (a
+`ci_only`-family marker) rather than raising the budget. The full profile in CI has no per-test or
+CPU budget; the 90 s `pytest-timeout` stays the hang guard everywhere.
+
+CI's `fast-checks` sets `UNIT_REPORT_DIR`, so every suite writes `<suite>.xml` (`--junitxml`) and
+`<suite>.log` with `--durations=50`; the job uploads them as the `unit-reports-<sha>` artifact,
+also when the unit step fails.
 
 The `ci_only` marker family keeps heavy tests out of the host profile while CI still runs them.
 `ci_only` is the umbrella; the sub-markers say why and each implies it (`scripts/ci_only_markers.py`,
 loaded by the runner): `docker` (real docker CLI, such as `docker compose config`), `ansible` (real
-ansible-core), `privileged` (root or sudo, changes the machine) and `kit_gate` (the product kit's
-generate/ruff/xenon/deptry gate). All five are registered in the root `pyproject.toml` and every
+ansible-core), `privileged` (root or sudo, changes the machine), `kit_gate` (the product kit's
+generate/ruff/xenon/deptry gate), `subprocess` (starts many processes: bash scripts with fake
+`docker`, real `git`, `make`, python children) and `slow(reason=...)` (needs more than the 0.5 s
+budget; the reason is required). All seven are registered in the root `pyproject.toml` and every
 service `pytest.ini`, under `--strict-markers`.
 
 | Marked test | Marker | CI job that runs it |
@@ -292,6 +314,13 @@ service `pytest.ini`, under `--strict-markers`.
 | `tests/unit/test_production_compose_mounts.py`, `test_stand_e2e_workflow.py`, `test_secure_admin_entry.py`, `test_worker_broker_production_topology.py` compose renders | `docker` | `fast-checks`: `make test-unit` (suite `repo`) |
 | `scripts/tests/test_ci_build_cache.py` compose-file cache test | `docker` | `fast-checks`: `make test-unit` (suite `scripts`) |
 | `tests/unit/test_level1_change_set.py` | `kit_gate` (module) | `fast-checks`: `make test-unit` (suite `repo`) |
+| repo `test_worker_image_release_chain.py`, `test_service_image_release_chain.py`, `test_deploy_service_release.py`, `test_pull_worker_images.py`, `test_pull_service_images.py`, `test_claude_installer_fetch.py`, `test_stand_e2e_workflow.py`, `test_stand_background.py`, `test_deploy_workflow_release_wait.py`, `test_backup_db.py`, `test_backup_rootless.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `repo`) |
+| `scripts/tests/test_ci_infra.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `scripts`) |
+| worker-manager `test_github_workspace_credentials.py`, `test_noop_stand_workflow.py`, `test_infra_git_no_product_hooks.py`, `test_commit_recovery_native.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `worker-manager`) |
+| worker-wrapper `test_makefile_overrides.py`, `test_result_turn_end_grace.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `worker-wrapper`) |
+| api `test_commit_publication.py`; shared `unit/test_ssh_keys.py`; scripts `test_service_image_imports.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suites `api`, `shared`, `scripts`) |
+| scaffolder component `test_catalog_install.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `scaffolder-component`) |
+| single tests over 0.5 s in the other suites (each names its reason) | `subprocess` or `slow` | `fast-checks`: `make test-unit` (the suite that holds it) |
 | `tests/live` offline (`live-offline` suite) | whole suite | `fast-checks`: `make test-unit` (suite `live-offline`) |
 
 `scripts/tests/test_host_sweep_is_light.py` guards the split, and `scripts/check-ci-gate.py` runs

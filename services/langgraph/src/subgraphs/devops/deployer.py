@@ -34,6 +34,8 @@ logger = structlog.get_logger()
 
 DEPLOY_WORKFLOW = "deploy.yml"
 DEPLOY_TIMEOUT_SECONDS = 600
+# A rerun's run reappears in the API a moment after the request; unit tests set it to 0.
+RERUN_SETTLE_SECONDS = 3
 
 # Cancellation is signalled by the GitHub client through exception types that this
 # module must not import (tests substitute their own doubles), so they are matched
@@ -294,7 +296,7 @@ class DeployerNode(FunctionalNode):
             # The claim is an API round trip the lock can expire during.
             await deploy_fence.ensure_held(DeployWrite.WORKFLOW_DISPATCH)
             await github.rerun_failed_jobs(owner, repo, run_id)
-            await asyncio.sleep(3)
+            await asyncio.sleep(RERUN_SETTLE_SECONDS)
 
             run_info = await github.wait_for_run_completion(
                 owner,

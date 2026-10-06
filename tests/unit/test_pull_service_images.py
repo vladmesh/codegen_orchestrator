@@ -20,6 +20,9 @@ import subprocess
 
 import pytest
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PULL_SCRIPT = REPO_ROOT / "infra" / "scripts" / "pull-service-images.sh"
 REAL_RECORD = json.loads(

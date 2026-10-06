@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 from scripts.template_pin import TEMPLATE_PIN
 
 
@@ -27,6 +29,7 @@ def test_planner_payload_is_not_decoded_from_logged_stdout(monkeypatch):
     assert namespace["select_payload"]() == expected
 
 
+@pytest.mark.subprocess
 def test_ci_notes_customization_runs_registered_save_and_list(tmp_path):
     root = Path(__file__).resolve().parents[4]
     script = root / "tests/integration/template/mechanical_install_smoke.py"

@@ -233,6 +233,8 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
 
 
 LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
+# The longest one stream read blocks in Redis; a read never blocks past the wait's deadline.
+READ_BLOCK_S = 1.0
 
 
 def _creation_failed(
@@ -377,7 +379,7 @@ async def _wait_for_response(
     start_time = asyncio.get_running_loop().time()
     last_liveness_check = start_time
 
-    while (asyncio.get_running_loop().time() - start_time) < timeout_s:
+    while (remaining := timeout_s - (asyncio.get_running_loop().time() - start_time)) > 0:
         # Periodic liveness check (every LIVENESS_CHECK_INTERVAL_S seconds)
         now = asyncio.get_running_loop().time()
         if worker_id and (now - last_liveness_check) >= LIVENESS_CHECK_INTERVAL_S:
@@ -401,7 +403,7 @@ async def _wait_for_response(
                 consumername=consumer_id,
                 streams={stream: ">"},
                 count=1,
-                block=1000,
+                block=max(1, int(min(remaining, READ_BLOCK_S) * 1000)),
             )
         except redis.ResponseError as e:
             if "NOGROUP" in str(e):

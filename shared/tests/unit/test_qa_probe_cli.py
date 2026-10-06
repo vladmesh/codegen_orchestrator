@@ -121,7 +121,13 @@ def test_probe_runs_a_python_script_and_records_its_evidence(monkeypatch, tmp_pa
 @pytest.mark.parametrize(
     ("label", "suffix", "body", "expected_status"),
     [
-        ("timeout", ".sh", "printf timed; sleep 1", 124),
+        pytest.param(
+            "timeout",
+            ".sh",
+            "printf timed; sleep 1",
+            124,
+            marks=pytest.mark.slow(reason="the probe's own timeout stops a real script"),
+        ),
         ("nonutf8", ".sh", "printf '\\377\\376 binary\\n'", 0),
         ("large", ".py", "print('x' * 1100000)", 0),
         (

@@ -132,13 +132,6 @@ class TestSystemPrompt:
         assert "Every piece of work the user orders is a **story** with a confirmed" in workflow
         assert "Work is redone by reopening its story, never by a new one." in workflow
 
-    def test_the_fix_story_instruction_is_gone(self):
-        """A story the PO starts on its own is nobody's order (story-4b5265a8)."""
-        assert "fix story" not in SYSTEM_PROMPT.lower()
-        assert "story_type" not in SYSTEM_PROMPT
-        assert "`fix`" not in SYSTEM_PROMPT
-        assert "retry provenance" not in SYSTEM_PROMPT
-
     def test_a_retry_and_a_complaint_reopen_the_original_story(self):
         scenario = " ".join(_section("## Scenario: Add Features or Fix Bugs").split())
         assert (
@@ -316,15 +309,6 @@ class TestSystemPrompt:
         from src.agents.po.tools import get_all_tools
 
         assert "get_story_diagnostics" in {tool.name for tool in get_all_tools()}
-
-    def test_the_old_reassuring_blocked_wording_is_gone(self):
-        assert "specialist is looking into it" not in SYSTEM_PROMPT
-        assert "this is normal" not in SYSTEM_PROMPT
-        assert "specialist is reviewing" not in SYSTEM_PROMPT
-
-    def test_no_trigger_engineering_references(self):
-        """Prompt should not reference deprecated trigger_engineering."""
-        assert "trigger_engineering" not in SYSTEM_PROMPT
 
 
 class TestCreateStoryDocstring:

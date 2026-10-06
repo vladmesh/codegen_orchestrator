@@ -23,6 +23,7 @@ from structlog.testing import capture_logs
 
 from shared.contracts.dto.llm_channel import LLMChannel, LLMChannelConfig
 from shared.notifications import AdminDeliveryResult
+from shared.tests import source_index
 from src.llm import (
     PO_SUBSCRIPTIONS_DOWN_NOTE,
     LLMAgent,
@@ -754,8 +755,10 @@ def test_the_management_key_is_read_only_in_the_openrouter_channel_module():
     src = Path(__file__).resolve().parents[3] / "src"
     readers = sorted(
         str(path.relative_to(src))
-        for path in src.rglob("*.py")
-        if re.search(r"openrouter_management_key|OPENROUTER_MANAGEMENT_KEY", path.read_text())
+        for path in source_index.python_files(src)
+        if re.search(
+            r"openrouter_management_key|OPENROUTER_MANAGEMENT_KEY", source_index.text(path)
+        )
     )
 
     # settings.py declares the field.

@@ -7,6 +7,9 @@ import sys
 
 import pytest
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 SCRIPT = Path(__file__).resolve().parents[1] / "check_service_image_imports.py"
 
 

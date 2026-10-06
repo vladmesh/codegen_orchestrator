@@ -38,7 +38,8 @@
 # word of [A-Za-z0-9._/-], so the marker parses back with one regular expression.
 #
 # A duration D is a whole number with an optional s, m or h suffix (seconds without
-# one), the form timeout(1) takes. A bounded command runs under coreutils timeout, which
+# one), the form timeout(1) takes; seconds may carry one decimal (0.3s), so the unit
+# tests of this helper wait tenths of a second instead of whole ones. A bounded command runs under coreutils timeout, which
 # stops the command's whole process group, so a docker CLI a script started goes with
 # the script. retry exports the attempt number as CI_INFRA_ATTEMPT to the command.
 
@@ -108,33 +109,38 @@ parse_step_and_cause() {
     REST=("$@")
 }
 
-# A duration in seconds, or die: a whole number with an optional s, m or h suffix.
-duration_seconds() {
+# A duration in milliseconds, or die: a whole number with an optional s, m or h suffix,
+# or seconds with one decimal.
+duration_ms() {
     local duration=$1
-    [[ "$duration" =~ ^([0-9]+)([smh]?)$ ]] || die "duration '$duration' is not N, Ns, Nm or Nh"
-    local value=${BASH_REMATCH[1]}
-    case "${BASH_REMATCH[2]}" in
+    [[ "$duration" =~ ^([0-9]+)(\.([0-9]))?([smh]?)$ ]] \
+        || die "duration '$duration' is not N, Ns, N.Ds, Nm or Nh"
+    local value=$((10#${BASH_REMATCH[1]} * 1000 + 10#${BASH_REMATCH[3]:-0} * 100))
+    case "${BASH_REMATCH[4]}" in
         m) value=$((value * 60)) ;;
         h) value=$((value * 3600)) ;;
     esac
+    if [ -n "${BASH_REMATCH[2]}" ] && [[ "${BASH_REMATCH[4]}" =~ [mh] ]]; then
+        die "duration '$duration' is not N, Ns, N.Ds, Nm or Nh"
+    fi
     [ "$value" -gt 0 ] || die "duration '$duration' is not positive"
     echo "$value"
 }
 
-# Run CMD under timeout for at most $1 seconds; its status is the return status, and
-# TIMED_OUT says whether the bound stopped it. timeout exits 124 when its TERM stopped
-# the command and 137 when it had to KILL, but a command can exit 124 or 137 on its own
-# too, so a status alone proves nothing: the bound fired only if the command also ran
-# for the whole bound. Whole seconds suffice, since timeout never fires early and the
-# bound is a whole number of seconds.
+# Run CMD under timeout for at most $1 milliseconds; its status is the return status,
+# and TIMED_OUT says whether the bound stopped it. timeout exits 124 when its TERM
+# stopped the command and 137 when it had to KILL, but a command can exit 124 or 137
+# on its own too, so a status alone proves nothing: the bound fired only if the command
+# also ran for the whole bound, which timeout never cuts short.
 bounded() {
-    local seconds=$1 status=0 started
+    local ms=$1 status=0 started
     shift
-    started=$(date +%s)
-    timeout --kill-after="$KILL_AFTER" "${seconds}s" "$@" || status=$?
+    started=$(date +%s%N)
+    timeout --kill-after="$KILL_AFTER" "$((ms / 1000)).$(printf '%03d' $((ms % 1000)))s" "$@" \
+        || status=$?
     TIMED_OUT=false
     if { [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; } \
-        && [ $(($(date +%s) - started)) -ge "$seconds" ]; then
+        && [ $((($(date +%s%N) - started) / 1000000)) -ge "$ms" ]; then
         TIMED_OUT=true
     fi
     return "$status"
@@ -144,8 +150,8 @@ retry() {
     local step=$1 cause=$2 timeout=$3
     shift 3
     [ $# -gt 0 ] || die "retry needs a command after --"
-    local seconds=""
-    [ -z "$timeout" ] || seconds=$(duration_seconds "$timeout")
+    local ms=""
+    [ -z "$timeout" ] || ms=$(duration_ms "$timeout")
     local attempt status=0 failure
     TIMED_OUT=false
     for ((attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++)); do
@@ -155,8 +161,8 @@ retry() {
             sleep "$wait"
         fi
         status=0
-        if [ -n "$seconds" ]; then
-            CI_INFRA_ATTEMPT=$attempt bounded "$seconds" "$@" || status=$?
+        if [ -n "$ms" ]; then
+            CI_INFRA_ATTEMPT=$attempt bounded "$ms" "$@" || status=$?
         else
             CI_INFRA_ATTEMPT=$attempt "$@" || status=$?
         fi
@@ -180,9 +186,9 @@ bound() {
     local step=$1 timeout=$2
     shift 2
     [ $# -gt 0 ] || die "bound needs a command after --"
-    local seconds status=0
-    seconds=$(duration_seconds "$timeout")
-    bounded "$seconds" "$@" || status=$?
+    local ms status=0
+    ms=$(duration_ms "$timeout")
+    bounded "$ms" "$@" || status=$?
     if [ "$TIMED_OUT" = true ]; then
         echo "ci-infra: the step ran past its bound of $timeout and was stopped"
         mark "$step" step-timeout "The step ran past its bound of $timeout and was stopped. A registry or download that hangs is the usual cause; a hang in the code under test is possible too, so read the step log before rerunning."

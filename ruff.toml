@@ -18,8 +18,21 @@ select = [
     "S",      # flake8-bandit (security)
     "PLR",    # pylint refactor
     "C901",   # mccabe complexity
+    "TID251", # flake8-tidy-imports banned-api: the import boundaries below
 ]
 ignore = ["S101", "B008", "S603"]  # assert in tests, Depends, subprocess
+
+# Import boundaries are lint rules, not tests that grep the tree (AGENTS.md, test rules).
+# A module allowed to cross one is listed under per-file-ignores with TID251.
+[lint.flake8-tidy-imports.banned-api]
+"langchain_openai.ChatOpenAI".msg = "only the openrouter channel (services/langgraph/src/llm/openrouter.py) constructs ChatOpenAI"
+"src.agents.po.tools.tools_briefs".msg = "import PO tools from their owner module, not through src.agents.po.tools"
+"src.agents.po.tools.tools_notices".msg = "import PO tools from their owner module, not through src.agents.po.tools"
+"src.agents.po.tools.tools_projects".msg = "import PO tools from their owner module, not through src.agents.po.tools"
+"src.agents.po.tools.tools_shared".msg = "import PO tools from their owner module, not through src.agents.po.tools"
+"src.agents.po.tools.tools_stories".msg = "import PO tools from their owner module, not through src.agents.po.tools"
+"src.agents.po.tools.CAPABILITY_LIMITS".msg = "import it from src.capability_feasibility, its owner"
+"src.agents.po.tools.MANIFEST_VERSION".msg = "import it from src.capability_feasibility, its owner"
 
 [lint.mccabe]
 max-complexity = 18
@@ -31,6 +44,8 @@ max-branches = 20
 max-returns = 12
 
 [lint.per-file-ignores]
+"services/langgraph/src/llm/openrouter.py" = ["TID251"]
+"services/langgraph/tests/e2e/test_po_finance_bot_brief.py" = ["TID251"]
 "tests/**" = ["PLR2004", "S101", "S607", "S110", "S608"]
 "**/tests/**" = ["PLR2004", "S101", "S607", "S110", "S608"]
 "shared/tests/**" = ["PLR2004", "S101"]

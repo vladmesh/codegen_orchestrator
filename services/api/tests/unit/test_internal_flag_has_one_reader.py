@@ -17,7 +17,11 @@ from pathlib import Path
 
 import pytest
 
+from shared.tests import source_index
+
 API_SRC = Path(__file__).parents[2] / "src"
+
+pytestmark = pytest.mark.usefixtures("api_source_index")
 DECIDER = "resolve_actor"
 DECIDER_MODULE = API_SRC / "dependencies.py"
 
@@ -47,7 +51,7 @@ ANSWERED_FROM_THE_KEY_ALONE = frozenset(
 
 
 def _sources() -> list[Path]:
-    return sorted(p for p in API_SRC.rglob("*.py") if p.is_file())
+    return list(source_index.python_files(API_SRC))
 
 
 def _relative(path: Path) -> str:
@@ -106,7 +110,7 @@ def _functions(tree: ast.AST):
 def test_only_the_decider_reads_the_internal_flag():
     offenders = []
     for path in _sources():
-        tree = ast.parse(path.read_text())
+        tree = source_index.tree(path)
         module = str(path.relative_to(API_SRC))
         for func in _functions(tree):
             if path == DECIDER_MODULE and func.name == DECIDER:
@@ -127,7 +131,7 @@ def test_only_the_decider_reads_the_internal_flag():
 
 
 def test_the_decider_exists_and_answers_with_the_acting_user():
-    tree = ast.parse(DECIDER_MODULE.read_text())
+    tree = source_index.tree(DECIDER_MODULE)
     decider = next((f for f in _functions(tree) if f.name == DECIDER), None)
     assert decider is not None, f"{DECIDER} is the one place the rule lives"
 
@@ -135,15 +139,6 @@ def test_the_decider_exists_and_answers_with_the_acting_user():
     assert {"is_internal", "telegram_id"} <= params, (
         f"{DECIDER} decides from the key and the named user together, got {sorted(params)}"
     )
-
-
-def test_the_exempt_readers_still_exist():
-    """An exemption that outlives its function would silently open a hole."""
-    for module, name in ANSWERED_FROM_THE_KEY_ALONE:
-        tree = ast.parse((API_SRC / module).read_text())
-        assert any(f.name == name for f in _functions(tree)), (
-            f"{module} no longer defines {name}: drop it from the exemption list"
-        )
 
 
 @pytest.mark.parametrize(
@@ -156,7 +151,7 @@ def test_the_exempt_readers_still_exist():
 )
 def test_each_access_guard_asks_the_decider(module: str, guard: str):
     """The guards that exist today, pinned: each one asks rather than decides."""
-    tree = ast.parse((API_SRC / module).read_text())
+    tree = source_index.tree(API_SRC / module)
     func = next((f for f in _functions(tree) if f.name == guard), None)
     assert func is not None, f"{module} no longer defines {guard}"
 

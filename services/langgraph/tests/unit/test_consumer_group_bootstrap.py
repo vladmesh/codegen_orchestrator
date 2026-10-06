@@ -8,6 +8,7 @@ stream position and no other consumer will read it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +30,7 @@ class FakeStreams:
         # stream -> group -> index of the next entry to deliver
         self.groups: dict[str, dict[str, int]] = {}
         self.created_at: list[tuple[str, str, str]] = []
+        self.empty_reads = 0
 
     def publish(self, stream: str, payload: dict) -> str:
         entries = self.entries.setdefault(stream, [])
@@ -57,6 +59,9 @@ class FakeStreams:
         cursor = self.groups[stream][groupname]
         entries = self.entries.get(stream, [])
         if cursor >= len(entries):
+            # Redis blocks an empty read for `block` ms; a caller must not spin on it.
+            self.empty_reads += 1
+            await asyncio.sleep(block / 1000)
             return []
         self.groups[stream][groupname] = cursor + 1
         return [(stream, [entries[cursor]])]
@@ -125,9 +130,12 @@ async def test_reused_worker_output_group_starts_at_zero():
         await send_task_to_worker(
             worker_id="dev-123",
             task_content="do the thing",
-            timeout_seconds=1,
+            timeout_seconds=0.05,
             ownership=_OWNERSHIP,
         )
+
+    # The wait read until its deadline, blocking in the read instead of spinning on it.
+    assert 1 <= fake.empty_reads <= 3
 
     output_groups = [c for c in fake.created_at if c[0] == "worker:dev-123:output"]
     assert output_groups, "no consumer group was created for the worker output stream"

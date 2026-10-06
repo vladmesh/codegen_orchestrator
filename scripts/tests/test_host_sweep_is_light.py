@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "scripts" / "test-unit-local.sh"
 
 
+@pytest.mark.slow(reason="the CI Contract job runs the same scan (scripts/check-ci-gate.py)")
 def test_no_heavy_test_reaches_the_host_profile():
     violations = host_sweep.host_violations()
     assert not violations, "\n".join(str(violation) for violation in violations)
@@ -284,6 +285,7 @@ def test_a_spawn_at_import_time_fails_even_when_marked(tmp_path, monkeypatch):
     assert found == ["import time"]
 
 
+@pytest.mark.subprocess
 def test_a_sub_marker_implies_ci_only_for_the_host_expression(tmp_path):
     (tmp_path / "test_family.py").write_text(
         textwrap.dedent(

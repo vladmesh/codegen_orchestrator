@@ -298,6 +298,7 @@ def test_the_probe_runs_on_a_bare_interpreter_and_describes_it():
     assert isinstance(probe["distributions"], list)
 
 
+@pytest.mark.subprocess
 def test_the_probe_of_this_interpreter_reads_its_own_distributions():
     output = subprocess.run(
         [sys.executable, "-c", locks.PROBE], capture_output=True, text=True, check=True
