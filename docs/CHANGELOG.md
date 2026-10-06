@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-06
 
+- QA admission treats one `Stand mechanical notes|reminders` probe line beside GET checks as
+  deterministic, as the QA consumer does; mega-noop no longer stalls without a QA executor.
 - Mega-noop notes change set mounts its router inside `router.py`'s import block (E402 failed the
   product `pre-commit`); a kit-gate test now runs the hook's `make format` over that exact set.
 - A gave-up worker's failed-step output tail (redacted, ≤2000 chars) is appended to the blocked

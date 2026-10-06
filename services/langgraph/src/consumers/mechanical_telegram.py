@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 import json
-import re
 import time
 from zoneinfo import ZoneInfo
 
 import httpx
 
+from shared.contracts.acceptance import MECHANICAL_PROBE_CRITERION_RE
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.telegram_access_probe import telethon_env
 from shared.telethon_identity import prove_qa_identity
@@ -23,7 +23,7 @@ CLOCK_SKEW_SECONDS = 2
 MONTHS = (
     "January February March April May June July August September October November December"
 ).split()
-CRITERION = re.compile(r"^- Stand mechanical (notes|reminders): ([a-zA-Z0-9_-]{1,100})$", re.M)
+CRITERION = MECHANICAL_PROBE_CRITERION_RE
 
 
 class ProbeFailure(RuntimeError):
