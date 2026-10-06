@@ -3,6 +3,13 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-06
+
+- Mega-noop notes change set mounts its router inside `router.py`'s import block (E402 failed the
+  product `pre-commit`); a kit-gate test now runs the hook's `make format` over that exact set.
+- A gave-up worker's failed-step output tail (redacted, ≤2000 chars) is appended to the blocked
+  reason, so `failure_metadata.reason` and stand evidence show what a hook actually said.
+
 ## 2026-10-05
 
 - `python -m shared` runs the light `--host` profile (2 jobs, `-m "not ci_only"`, no live-offline);

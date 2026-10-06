@@ -21,10 +21,13 @@ contract carries, because widening that contract is a change to
 ``shared/contracts/`` and this card has no mandate for one. ``block_reason`` is
 prose for a human, and a failed run now says which step failed in it.
 
-``stderr`` is deliberately *not* declared: the runner prints the same
-credential-redacted tail to stdout, which the wrapper already retains as
-``agent_stdout_tail``. Declaring it here would put a second copy of it into
-every blocked reason.
+``stderr`` is declared too, and its tail is appended to the blocked reason.
+The runner also prints it to stdout (kept as ``agent_stdout_tail``), but that
+tail stops at the developer node: a gave-up writes only ``block_reason`` into
+the task's ``failure_metadata.reason``. Mega-noop 37380025509 died on the
+commit hook with nothing but ``CommitFailed, exit_code=1`` on record because
+the container was gone before anyone read its stdout. The tail is bounded and
+redacted again here; the runner already strips credentials before sending it.
 """
 
 from pydantic import BaseModel, field_validator, model_validator
@@ -33,6 +36,7 @@ from shared.contracts.queues.worker_result import (
     WorkerBlockedResult,
     WorkerCompletedResult,
 )
+from shared.diagnostics import redact_diagnostic
 
 
 class ResultRequest(BaseModel):
@@ -52,6 +56,8 @@ class ResultRequest(BaseModel):
     error_class: str | None = None
     #: The exit code the failed step returned.
     exit_code: int | None = None
+    #: The failed step's stderr (or stdout) tail, already redacted by the runner.
+    stderr: str | None = None
 
     @field_validator("commit", "summary", "reason", "step", "error_class", mode="before")
     @classmethod
@@ -67,11 +73,22 @@ class ResultRequest(BaseModel):
                 raise ValueError("commit is required when success=true")
             if not self.summary:
                 raise ValueError("summary is required when success=true")
-            if self.step or self.error_class or self.exit_code is not None:
-                raise ValueError("step, error_class and exit_code describe a failure")
+            if self.step or self.error_class or self.exit_code is not None or self.stderr:
+                raise ValueError("step, error_class, exit_code and stderr describe a failure")
         elif not self.reason:
             raise ValueError("reason is required when success=false")
         return self
+
+
+#: How much of the failed step's output the blocked reason carries. Enough for a
+#: hook's whole ruff/xenon/deptry report; the task's failure_metadata is not a log.
+MAX_STDERR_TAIL = 2000
+STDERR_SEPARATOR = "\n--- step output (tail) ---\n"
+
+
+def _stderr_tail(stderr: str | None) -> str:
+    text = redact_diagnostic(stderr or "").strip()
+    return text[-MAX_STDERR_TAIL:]
 
 
 def failure_reason(request: ResultRequest) -> str:
@@ -90,9 +107,13 @@ def failure_reason(request: ResultRequest) -> str:
         )
         if value is not None
     ]
-    if not named:
-        return request.reason or ""
-    return f"{request.reason} ({', '.join(named)})"
+    reason = request.reason or ""
+    if named:
+        reason = f"{reason} ({', '.join(named)})"
+    tail = _stderr_tail(request.stderr)
+    if tail:
+        reason = f"{reason}{STDERR_SEPARATOR}{tail}"
+    return reason
 
 
 def to_worker_result(
