@@ -1,6 +1,7 @@
 """Offline rejection checks for the final native stand evidence."""
 
 from dataclasses import replace
+import json
 import tomllib
 from types import SimpleNamespace
 
@@ -251,3 +252,24 @@ def test_baseline_refuses_missing_digest_wrong_core_lost_notes_or_existing_bindi
 def test_ambiguous_invocation_is_never_accepted(stdout, rc):
     with pytest.raises(Level1PhaseFailed, match="invocation"):
         command_result(SimpleNamespace(stdout=stdout, returncode=rc), "scripted_install_result")
+
+
+def test_the_qa_grant_is_checked_against_the_story_commit_not_the_merge_commit():
+    """Mega-noop 37445448651: a passed probe failed `grant` on head 79f4… vs merge 9bfc…."""
+    from mechanical_install import qa_probe
+
+    probe = {
+        "status": "passed",
+        "phase": "completed",
+        "grant": {"head_sha": "story-head", "application_id": 1},
+    }
+    ctx = {
+        "qa_run": {"result": {"qa_outcome": "passed", "report": json.dumps(probe)}},
+        "deploy_head_sha": "story-head",
+        "deploy_merge_commit_sha": "merge-commit",
+        "application_id": 1,
+    }
+    assert qa_probe(ctx)["grant"]["head_sha"] == "story-head"
+    ctx["deploy_head_sha"] = "another-head"
+    with pytest.raises(Level1PhaseFailed, match="grant"):
+        qa_probe(ctx)
