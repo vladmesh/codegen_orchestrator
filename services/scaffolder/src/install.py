@@ -69,6 +69,15 @@ def product_environment(root):
         {"GIT_TERMINAL_PROMPT": "0", "UV_NO_PROGRESS": "1", "VIRTUAL_ENV": str(root / ".venv")}
     )
     env["PATH"] = f"{root / '.venv/bin'}:{env['PATH']}"
+    # The scaffolder runs as root on a checkout worker-manager chowned to the
+    # worker user; git and the product's own git calls refuse it as dubious.
+    env.update(
+        {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": str(root),
+        }
+    )
     return env
 
 
@@ -81,11 +90,11 @@ def install_environment(token, root, git_url):
     # fetches in child commands must remain anonymous.
     env.update(
         {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_KEY_0": f"http.{owned}/.extraheader",
-            "GIT_CONFIG_KEY_1": f"http.{owned}.git/.extraheader",
-            "GIT_CONFIG_VALUE_0": authorization,
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_1": f"http.{owned}/.extraheader",
+            "GIT_CONFIG_KEY_2": f"http.{owned}.git/.extraheader",
             "GIT_CONFIG_VALUE_1": authorization,
+            "GIT_CONFIG_VALUE_2": authorization,
         }
     )
     return env

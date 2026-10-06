@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-06
 
+- Catalog install trusts its workspace via `safe.directory` in the product and install git env;
+  root scaffolder git refused the worker-owned (1000:1000) checkout as dubious (run 37461078840).
 - Mega-noop QA keeps the probe's inner failure (`IdentityNotProven`, reason, redacted detail) in
   `failure_cause` and the check detail; it was overwritten as `ProbeFailure`.
 - Live cleanup waits 120 s, not 30 s, for a project's active work to stop; a ~57 s workflow cancel

@@ -177,7 +177,10 @@ async def test_only_owned_remote_git_receives_install_credential(product, tmp_pa
     observed = []
 
     async def inspect(args, **kwargs):
-        authenticated = any(key.startswith("GIT_CONFIG_VALUE_") for key in kwargs["env"])
+        authenticated = any(
+            key.startswith("GIT_CONFIG_VALUE_") and value.startswith("Authorization: ")
+            for key, value in kwargs["env"].items()
+        )
         observed.append((git_operation(args), authenticated))
         return await original(args, **kwargs)
 
