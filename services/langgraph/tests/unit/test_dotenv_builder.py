@@ -4,6 +4,8 @@ import base64
 import subprocess
 from unittest.mock import patch
 
+import pytest
+
 from src.subgraphs.devops.dotenv_builder import build_dotenv, encode_dotenv
 
 
@@ -30,6 +32,7 @@ class TestBuildDotenv:
         result = build_dotenv({"A_VAR": "a", "Z_VAR": "z"})
         assert result == "A_VAR=a\nZ_VAR=z\n"
 
+    @pytest.mark.subprocess
     def test_appended_line_does_not_corrupt_last_value(self, tmp_path):
         """Regression for story-92b433c8 (2026-10-02): a generated deploy workflow
         appended `PUBLIC_BASE_URL=...` to the written `.env` with `sed` + `printf`.

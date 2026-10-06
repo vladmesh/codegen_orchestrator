@@ -7,6 +7,9 @@ from unittest.mock import MagicMock
 import pytest
 from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 
 @pytest.fixture
 def wrapper_config():

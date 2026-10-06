@@ -52,6 +52,7 @@ def test_shared_is_not_installed_in_site_packages():
         )
 
 
+@pytest.mark.subprocess
 def test_shared_is_unimportable_without_the_repo_root():
     """No shadow copy: drop the repo root and the import must fail outright."""
     completed = _run_import_probe([REPO_ROOT / "services" / "api"])
@@ -63,6 +64,7 @@ def test_shared_is_unimportable_without_the_repo_root():
     assert "No module named 'shared'" in completed.stderr, completed.stderr
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize(
     "service_dir",
     [

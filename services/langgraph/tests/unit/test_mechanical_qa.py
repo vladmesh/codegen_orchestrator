@@ -126,6 +126,7 @@ async def test_bot_refusal_has_a_named_phase(monkeypatch):
     assert evidence["phase"] == "notes_save"
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize("failure", ["identity", "timeout"])
 async def test_probe_disconnects_after_identity_failure_or_timeout(monkeypatch, failure):
     import asyncio

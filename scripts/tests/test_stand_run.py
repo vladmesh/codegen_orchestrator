@@ -1061,6 +1061,7 @@ def _fake_docker(tmp_path, monkeypatch):
     return env, log, checkout
 
 
+@pytest.mark.subprocess
 def test_the_runner_recreates_from_the_pulled_release_and_builds_nothing(tmp_path, monkeypatch):
     env, log, checkout = _fake_docker(tmp_path, monkeypatch)
     lines: list[str] = []
@@ -1182,6 +1183,7 @@ def _fake_uv(tmp_path, *, exit_code=0):
     return env, recorded
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize("exported", [None, "http://api:8000", "https://elsewhere.example"])
 def test_the_sweep_addresses_the_api_the_suites_used(tmp_path, monkeypatch, exported):
     """Run 35945831487: 39 passed, then `API_BASE_URL is required` made the run red.
@@ -1206,6 +1208,7 @@ def test_the_sweep_addresses_the_api_the_suites_used(tmp_path, monkeypatch, expo
     assert lines == []
 
 
+@pytest.mark.subprocess
 def test_a_failed_sweep_is_red_and_names_its_last_line(tmp_path):
     env, _recorded = _fake_uv(tmp_path, exit_code=1)
     lines: list[str] = []

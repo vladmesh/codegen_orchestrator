@@ -169,6 +169,7 @@ class TestPaymentRequiredAlert:
             "architect",
         )
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         ("failing", "chain"),
         [
@@ -208,6 +209,7 @@ class TestPaymentRequiredAlert:
         [sent] = [log for log in logs if log["event"] == "llm_alert_sent"]
         assert sent["failure_class"] == "quota_exhausted"
 
+    @pytest.mark.subprocess
     async def test_a_usage_limit_without_a_402_is_no_payment_alert(self, channels, redis):
         channels.codex.script(
             {"exit": 1, "stderr": "You've hit your usage limit. Try again in 3 days."}
@@ -228,6 +230,7 @@ class TestPaymentRequiredAlert:
         assert (failed["failure_class"], failed["http_status"]) == ("quota_exhausted", None)
         assert admins.messages == []
 
+    @pytest.mark.subprocess
     async def test_the_reason_is_redacted_and_bounded(self, channels, redis):
         channels.openrouter.outcomes = [
             _status_error(402, f"Payment Required for {OPENROUTER_KEY} " + "x" * 1000)
@@ -246,6 +249,7 @@ class TestPaymentRequiredAlert:
         assert OPENROUTER_KEY not in message
         assert len(message) < 500  # noqa: PLR2004
 
+    @pytest.mark.subprocess
     async def test_other_failures_are_not_alerted(self, channels, redis):
         channels.codex.script(UNAUTHORIZED_401)
         admins = _Admins()
@@ -258,6 +262,7 @@ class TestPaymentRequiredAlert:
         assert answer.response_metadata["llm_channel"] == "claude"
         assert admins.messages == []
 
+    @pytest.mark.subprocess
     async def test_a_failed_send_does_not_set_the_key(self, channels, redis):
         channels.codex.script(PAYMENT_402)
         admins = _Admins(succeeded=0)
@@ -278,6 +283,7 @@ class TestPaymentRequiredAlert:
         assert len(admins.messages) == 2  # noqa: PLR2004 - the lost alert is sent again
         assert await redis.exists(alert_key(LLMAlertKind.PAYMENT_REQUIRED, "codex"))
 
+    @pytest.mark.subprocess
     async def test_a_raised_send_does_not_set_the_key(self, channels, redis):
         channels.codex.script(PAYMENT_402)
         admins = _Admins(error=RuntimeError("users API returned HTTP 503"))
@@ -296,6 +302,7 @@ class TestPaymentRequiredAlert:
         [failed] = [log for log in logs if log["event"] == "llm_alert_failed"]
         assert failed["error_type"] == "RuntimeError"
 
+    @pytest.mark.subprocess
     async def test_dedup_holds_across_processes(self, channels, server):
         channels.codex.script(PAYMENT_402)
         admins = _Admins()
@@ -318,6 +325,7 @@ class TestPaymentRequiredAlert:
         [(message, _)] = admins.messages
         assert "refused architect" in message
 
+    @pytest.mark.subprocess
     async def test_the_window_comes_from_system_config(self, channels, redis):
         channels.codex.script(PAYMENT_402)
         config = _Config({"llm.alert_realert_window_hours": 1})
@@ -332,6 +340,7 @@ class TestPaymentRequiredAlert:
 
         assert 0 < await redis.ttl(alert_key(LLMAlertKind.PAYMENT_REQUIRED, "codex")) <= 3600  # noqa: PLR2004
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         ("config", "event"),
         [
@@ -368,6 +377,7 @@ def _subscriptions_down(channels) -> None:
 
 
 class TestSubscriptionsDown:
+    @pytest.mark.subprocess
     async def test_po_on_openrouter_gets_the_note_and_the_operator_one_alert(self, channels, redis):
         _subscriptions_down(channels)
         admins = _Admins()
@@ -405,6 +415,7 @@ class TestSubscriptionsDown:
         assert "engineering capacity is temporarily unavailable" in note
         assert "timeline" in note
 
+    @pytest.mark.subprocess
     async def test_no_note_and_no_alert_when_codex_answers(self, channels, redis):
         admins = _Admins()
         llm = build_agent_llm(
@@ -417,6 +428,7 @@ class TestSubscriptionsDown:
         assert PO_SUBSCRIPTIONS_DOWN_NOTE not in _stdin(channels.codex)
         assert admins.messages == []
 
+    @pytest.mark.subprocess
     async def test_no_note_and_no_alert_when_claude_answers(self, channels, redis):
         _subscriptions_down(channels)
         admins = _Admins()
@@ -431,6 +443,7 @@ class TestSubscriptionsDown:
         assert channels.openrouter.seen == []
         assert admins.messages == []
 
+    @pytest.mark.subprocess
     async def test_no_note_when_openrouter_answers_without_both_subscriptions_failing(
         self, channels, redis
     ):
@@ -450,6 +463,7 @@ class TestSubscriptionsDown:
         assert not any(isinstance(message, SystemMessage) for message in sent)
         assert admins.messages == []
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize("agent", [LLMAgent.PO_SUMMARIZER, LLMAgent.ARCHITECT])
     async def test_the_summarizer_and_the_architect_get_the_alert_but_no_note(
         self, channels, redis, agent
@@ -473,6 +487,7 @@ class TestSubscriptionsDown:
 
 
 class TestAlertingNeverFailsTheCall:
+    @pytest.mark.subprocess
     async def test_a_dead_redis_and_a_raising_delivery_leave_the_answer_alone(self, channels):
         channels.codex.script(PAYMENT_402)
         admins = _Admins(error=RuntimeError("TELEGRAM_BOT_TOKEN is not set"))
@@ -491,6 +506,7 @@ class TestAlertingNeverFailsTheCall:
         assert "llm_alert_dedup_unreadable" in events
         assert events.count("llm_alert_failed") == 2  # noqa: PLR2004 - the 402 and the degraded alert
 
+    @pytest.mark.subprocess
     async def test_a_dead_redis_still_sends_and_never_raises(self, channels):
         channels.codex.script(PAYMENT_402)
         admins = _Admins()

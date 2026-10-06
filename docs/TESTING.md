@@ -322,7 +322,7 @@ service `pytest.ini`, under `--strict-markers`.
 | api `test_commit_publication.py`; shared `unit/test_ssh_keys.py`; scripts `test_service_image_imports.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suites `api`, `shared`, `scripts`) |
 | langgraph `llm/test_channel_chain.py`, `llm/test_cli_packaging.py` (fake `codex`/`claude` CLI turns); worker-wrapper integration `test_no_injected_artifacts.py` (git) | `subprocess` (module) | `fast-checks`: `make test-unit` (suites `langgraph`, `worker-wrapper-integration`) |
 | scaffolder component `test_catalog_install.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `scaffolder-component`) |
-| single tests over 0.5 s in the other suites (each names its reason) | `subprocess` or `slow` | `fast-checks`: `make test-unit` (the suite that holds it) |
+| every other test that starts a process (`subprocess`), and single tests over 0.5 s (`slow`, each names its reason) | `subprocess` or `slow` | `fast-checks`: `make test-unit` (the suite that holds it) |
 | `tests/live` offline (`live-offline` suite) | whole suite | `fast-checks`: `make test-unit` (suite `live-offline`) |
 
 `scripts/tests/test_host_sweep_is_light.py` guards the split, and `scripts/check-ci-gate.py` runs

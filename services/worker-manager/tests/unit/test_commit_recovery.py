@@ -11,6 +11,9 @@ import pytest
 from shared.contracts.dto.commit_publication import CommitPublication, PublicationFailure
 from src.routers import commit_recovery
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 PROJECT = "00000000-0000-0000-0000-000000000001"
 
 

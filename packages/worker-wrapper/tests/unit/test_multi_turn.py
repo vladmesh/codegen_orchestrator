@@ -74,6 +74,7 @@ def _set_leases(client, consume):
 
 
 class TestMultiTurnConsumeLoop:
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_wrapper_processes_multiple_messages(self, config, broker_client):
         """Wrapper should process 2+ messages sequentially without exiting."""
@@ -101,6 +102,7 @@ class TestMultiTurnConsumeLoop:
         assert call_count == 2  # noqa: PLR2004
         assert wrapper.execute_agent.call_count == 2  # noqa: PLR2004
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_wrapper_continues_after_publishing_output(self, config, broker_client):
         """After publishing output for first message, wrapper keeps listening."""
@@ -141,6 +143,7 @@ class TestMultiTurnConsumeLoop:
 
 
 class TestGitPullBeforeTurn:
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_git_pull_called_before_execute_agent(self, config, broker_client):
         """_git_pull() must be called before each execute_agent()."""
@@ -169,6 +172,7 @@ class TestGitPullBeforeTurn:
 
         assert call_order == ["git_pull", "execute_agent"]
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_git_pull_called_before_each_turn(self, config, broker_client):
         """_git_pull() is called before every turn, not just the first."""
@@ -250,6 +254,7 @@ class TestGitPullBeforeTurn:
 
 
 class TestTaskMdUpdate:
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_task_md_updated_before_execute_agent(self, config, broker_client):
         """TASK.md should be written with prompt before execute_agent."""
@@ -281,6 +286,7 @@ class TestTaskMdUpdate:
             "execute_agent",
         ]
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_task_md_updated_each_turn(self, config, broker_client):
         """TASK.md is updated with each new prompt."""
@@ -319,6 +325,7 @@ class TestTaskMdUpdate:
         content = task_path.read_text()
         assert content == "Fix the broken tests\n\nCI logs: error in test_foo"
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_task_md_write_failure_stops_agent_launch(self, config, broker_client):
         wrapper = WorkerWrapper(config, broker_client=broker_client)
@@ -334,6 +341,7 @@ class TestTaskMdUpdate:
 
         wrapper.execute_agent.assert_not_called()
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_story_md_write_failure_stops_agent_launch(self, config, broker_client):
         wrapper = WorkerWrapper(config, broker_client=broker_client)
@@ -349,6 +357,7 @@ class TestTaskMdUpdate:
 
         wrapper.execute_agent.assert_not_called()
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_no_task_md_update_when_no_prompt(self, config, broker_client):
         """If message has no prompt, _write_task_md should not be called."""

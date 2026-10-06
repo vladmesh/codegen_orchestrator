@@ -229,6 +229,7 @@ def test_local_workspace_sweep_keeps_every_active_repository(monkeypatch):
     assert sorted(ast.literal_eval(active)) == ["repo-1", "repo-2"]
 
 
+@pytest.mark.subprocess
 def test_remote_residue_scan_fails_closed_when_docker_is_unreachable(tmp_path):
     """A dead docker daemon must fail the scan, never report a clean target.
 
@@ -263,6 +264,7 @@ def test_remote_residue_scan_fails_closed_when_docker_is_unreachable(tmp_path):
     assert result.stdout == ""
 
 
+@pytest.mark.subprocess
 def test_remote_residue_scan_reports_containers_and_directories(tmp_path):
     """The same command, with a working docker, still inventories both halves."""
     bin_dir = tmp_path / "bin"
@@ -551,6 +553,7 @@ def test_recover_manifests_keeps_unproven_resources(monkeypatch, tmp_path):
     assert manifest.exists()
 
 
+@pytest.mark.subprocess
 def test_recover_manifests_sweeps_the_runs_label_before_its_context(monkeypatch, tmp_path):
     """The label sweep runs for every manifest, and its failure is reported too.
 

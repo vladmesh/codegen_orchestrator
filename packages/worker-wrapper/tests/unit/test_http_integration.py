@@ -54,6 +54,7 @@ def _make_broker_mock():
 class TestHttpServerLifecycle:
     """HTTP server starts/stops around agent execution."""
 
+    @pytest.mark.subprocess
     async def test_http_result_published_to_output_stream(self):
         """When agent POSTs to /complete, result appears on output stream."""
         config = _make_config()
@@ -98,6 +99,7 @@ class TestHttpServerLifecycle:
             WorkerCompletedResult(commit_sha="abc123", content="Done"),
         )
 
+    @pytest.mark.subprocess
     async def test_http_server_stops_after_agent(self):
         """HTTP server is cleaned up even if agent fails."""
         config = _make_config()
@@ -125,6 +127,7 @@ class TestHttpServerLifecycle:
 class TestStdoutCapture:
     """Agent stdout tail is captured and attached to results."""
 
+    @pytest.mark.subprocess
     async def test_stdout_tail_attached_to_http_result(self):
         """When agent produces stdout, it's included in the published result."""
         config = _make_config()
@@ -172,6 +175,7 @@ class TestStdoutCapture:
         assert result.agent_stdout_tail == "Agent thinking about task..."
         assert result.commit_sha == "abc123"
 
+    @pytest.mark.subprocess
     async def test_stdout_tail_attached_to_error_result(self):
         """When agent crashes, stdout tail is still attached to failed result."""
         config = _make_config()
@@ -276,6 +280,7 @@ class TestStdoutCapture:
 class TestWatchdog:
     """When agent exits without HTTP result, auto-resume or fail."""
 
+    @pytest.mark.subprocess
     async def test_watchdog_publishes_failed_after_resume_fails(self):
         """Agent exits without HTTP → resume attempted → still no result → fail."""
         config = _make_config()
@@ -305,6 +310,7 @@ class TestWatchdog:
         assert output_calls[0][0][1].status == WorkerResultStatus.FAILED
         assert "without reporting result" in output_calls[0][0][1].error
 
+    @pytest.mark.subprocess
     async def test_watchdog_skips_resume_for_non_claude(self):
         """Non-claude agents don't support resume — go straight to fail."""
         config = _make_config(agent_type="factory")
@@ -329,6 +335,7 @@ class TestWatchdog:
         assert len(output_calls) == 1
         assert output_calls[0][0][1].status == WorkerResultStatus.FAILED
 
+    @pytest.mark.subprocess
     async def test_http_result_prevents_watchdog(self):
         """If HTTP result received, watchdog does not publish failed."""
         config = _make_config()

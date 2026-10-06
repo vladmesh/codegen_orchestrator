@@ -15,6 +15,9 @@ import pytest
 
 from src.scaffold import run_scaffold
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 REAL_EXEC = asyncio.create_subprocess_exec
 
 # Byte-identical on both passes: that is what makes the second commit empty.

@@ -189,6 +189,7 @@ def test_a_moved_pin_reaches_the_fixture_path_and_the_ci_gate(
     assert candidate_pin.fixture_relpath in gate.UNPINNED_IMAGE_DIRS
 
 
+@pytest.mark.subprocess
 def test_the_live_override_still_wins_over_the_moved_pin(
     candidate_pin: template_pin.TemplatePin, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -39,6 +39,7 @@ def test_bot_owned_sources_are_protected_and_generated_output_is_mutable(tmp_pat
     assert set(protected_files(tmp_path, tracked)) == set(tracked[:2])
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize("suffix", ["", ".git"])
 @pytest.mark.parametrize(
     "foreign",

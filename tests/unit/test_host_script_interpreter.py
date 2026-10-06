@@ -84,6 +84,7 @@ def test_the_workflow_parse_finds_the_known_host_invocations() -> None:
     assert KNOWN_HOST_MODULES <= modules, sorted(KNOWN_HOST_MODULES - modules)
 
 
+@pytest.mark.subprocess
 def test_the_bare_interpreter_really_has_no_third_party_package() -> None:
     """Without this the guard below could pass by never denying anything."""
     result = _import_under_bare_interpreter("pydantic")

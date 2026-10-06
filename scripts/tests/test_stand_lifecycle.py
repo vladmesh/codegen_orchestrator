@@ -446,6 +446,7 @@ def test_ttl_sweep_deletes_only_exactly_parsed_old_run_resources():
     assert deleted == ["servers/old", "servers/near"]
 
 
+@pytest.mark.subprocess
 def test_module_cli_starts_from_repository_checkout_without_pythonpath():
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)

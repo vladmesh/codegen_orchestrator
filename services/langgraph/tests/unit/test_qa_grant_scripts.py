@@ -33,6 +33,9 @@ from src.consumers._qa_target import (
     IDENTITY_UNREADABLE,
 )
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 QA_USER = "qa-observer"
 MARKER = "codegen-qa-run-deadbeef"
 ENTRY = f'restrict,expiry-time="202609031200" ssh-ed25519 AAAARUNKEY {MARKER}'

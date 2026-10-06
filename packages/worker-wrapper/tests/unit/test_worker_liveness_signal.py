@@ -261,6 +261,7 @@ class TestTheLimitKeepsTheWork:
         )
         assert wrapper._result_event.cancelled is True
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     @pytest.mark.skipif(os.name != "posix", reason="process groups are a POSIX contract")
     async def test_process_group_kill_reaches_a_real_descendant(self):

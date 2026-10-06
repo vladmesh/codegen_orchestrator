@@ -116,6 +116,7 @@ def runner(tmp_path: Path) -> Runner:
     return Runner(tmp_path)
 
 
+@pytest.mark.subprocess
 def test_a_cleanup_that_succeeds_says_so_and_warns_nothing(runner: Runner):
     result = runner.run()
 
@@ -131,6 +132,7 @@ def test_a_cleanup_that_succeeds_says_so_and_warns_nothing(runner: Runner):
     assert "every command succeeded" in runner.summary.read_text()
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize("worker_exit,service_exit", [(1, 0), (0, 2), (1, 2)])
 def test_a_failed_cleanup_is_a_warning_naming_the_script_and_code_and_the_step_succeeds(
     runner: Runner, worker_exit: int, service_exit: int
@@ -154,6 +156,7 @@ def test_a_failed_cleanup_is_a_warning_naming_the_script_and_code_and_the_step_s
             assert command not in runner.summary.read_text()
 
 
+@pytest.mark.subprocess
 def test_an_unreachable_host_is_a_warning_and_the_step_succeeds(runner: Runner):
     result = runner.run(FAKE_SSH_STATUS="255")
 
