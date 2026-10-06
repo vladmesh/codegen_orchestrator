@@ -7,24 +7,12 @@ from pydantic import ValidationError
 import pytest
 
 from shared.contracts.dto.project import ProjectCreate, ProjectDTO, ProjectStatus, ProjectUpdate
-from shared.models.project import Project
 
 
-def test_project_model_has_no_name_synonym():
-    assert not hasattr(Project, "name")
-
-
-def test_project_create_rejects_legacy_name_alias():
-    with pytest.raises(ValidationError):
-        ProjectCreate.model_validate({"name": "Legacy Name"})
-
-
-def test_project_update_rejects_legacy_name_alias():
-    with pytest.raises(ValidationError):
-        ProjectUpdate.model_validate({"name": "Legacy Name"})
-
-
-def test_project_dto_rejects_legacy_name_alias():
+def test_every_project_contract_rejects_the_legacy_name_alias():
+    for model in (ProjectCreate, ProjectUpdate):
+        with pytest.raises(ValidationError):
+            model.model_validate({"name": "Legacy Name"})
     with pytest.raises(ValidationError):
         ProjectDTO.model_validate(
             {

@@ -12,6 +12,7 @@ other half: both headers leave on every call.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import httpx
@@ -19,6 +20,7 @@ import pytest
 
 from shared.clients.internal_api import InternalAPIClient, InternalAPISyncClient
 from shared.log_config.correlation import clear_context, get_correlation_id, set_correlation_id
+from shared.tests import source_index
 
 REPO_ROOT = Path(__file__).parents[3]
 SERVICES = REPO_ROOT / "services"
@@ -76,9 +78,8 @@ CLIENT_CLASSES = {
 
 def _guarded_sources() -> list[Path]:
     """Every module the rule applies to: service code and the shared tree."""
-    service_sources = SERVICES.glob("*/src/**/*.py")
-    shared_sources = (p for p in SHARED.glob("**/*.py") if "tests" not in p.parts)
-    candidates = {*service_sources, *shared_sources} - {TRANSPORT_MODULE, *DEFERRED_OFFENDERS}
+    candidates = {*source_index.service_sources(), *source_index.shared_sources()}
+    candidates -= {TRANSPORT_MODULE, *DEFERRED_OFFENDERS}
     return sorted(p for p in candidates if p.is_file())
 
 
@@ -90,14 +91,14 @@ def _names_a_marker(text: str) -> bool:
     return any(marker in text for marker in INTERNAL_API_MARKERS)
 
 
-def _internal_api_url_names(tree: ast.AST) -> set[str]:
+def _internal_api_url_names(nodes: Iterable[ast.AST]) -> set[str]:
     """Names holding a URL built from the internal API base URL.
 
     `url = f"{config['api_url']}/api/users"` then `session.get(url)` is the same
     bypass as inlining the f-string, so the name carries the taint.
     """
     tainted: set[str] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
             if not _names_a_marker(ast.unparse(node.value)):
                 continue
@@ -109,7 +110,7 @@ def _internal_api_url_names(tree: ast.AST) -> set[str]:
     return tainted
 
 
-def _http_library_imports(tree: ast.AST) -> tuple[dict[str, str], dict[str, str]]:
+def _http_library_imports(nodes: Iterable[ast.AST]) -> tuple[dict[str, str], dict[str, str]]:
     """What the module's own names refer to, for the HTTP libraries it imported.
 
     Returns the local names bound to a library module (`import httpx as h` gives
@@ -118,7 +119,7 @@ def _http_library_imports(tree: ast.AST) -> tuple[dict[str, str], dict[str, str]
     """
     module_aliases: dict[str, str] = {}
     class_aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name in HTTP_CLIENT_CLASSES:
@@ -152,14 +153,14 @@ def _argument_names_the_internal_api(call: ast.Call, tainted: set[str]) -> bool:
     return False
 
 
-def _sends_an_internal_api_path(tree: ast.AST) -> bool:
+def _sends_an_internal_api_path(nodes: Iterable[ast.AST]) -> bool:
     """Whether some request in the module asks for a path of the internal API.
 
     A client built without a target takes one per request, so `/api/...` on a
     request is what says the client it was built from is aimed at the internal
     API rather than at some external service.
     """
-    for node in ast.walk(tree):
+    for node in nodes:
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
         if node.func.attr not in HTTP_VERBS:
@@ -171,7 +172,9 @@ def _sends_an_internal_api_path(tree: ast.AST) -> bool:
     return False
 
 
-def find_raw_internal_api_calls(source: str, label: str) -> list[str]:
+def find_raw_internal_api_calls(
+    source: str, label: str, nodes: Sequence[ast.AST] | None = None
+) -> list[str]:
     """Report every raw HTTP call to the internal API in one module.
 
     Two shapes count: a module that builds its own HTTP client aimed at the
@@ -181,14 +184,19 @@ def find_raw_internal_api_calls(source: str, label: str) -> list[str]:
     resolved through the module's imports, so no spelling of the import hides
     the first shape.
     """
-    tree = ast.parse(source)
     module_talks_to_internal_api = _names_a_marker(source)
-    tainted = _internal_api_url_names(tree)
-    module_aliases, class_aliases = _http_library_imports(tree)
-    asks_for_internal_paths = module_talks_to_internal_api and _sends_an_internal_api_path(tree)
+    if not module_talks_to_internal_api:
+        # Every finding below needs a marker in some unparsed node, and the
+        # unparsed code of a module is in its source: no marker, no finding.
+        return []
+    if nodes is None:  # `nodes` is the module's `ast.walk`, when the caller has it already
+        nodes = tuple(ast.walk(ast.parse(source)))
+    tainted = _internal_api_url_names(nodes)
+    module_aliases, class_aliases = _http_library_imports(nodes)
+    asks_for_internal_paths = module_talks_to_internal_api and _sends_an_internal_api_path(nodes)
     offenders = []
 
-    for node in ast.walk(tree):
+    for node in nodes:
         if not isinstance(node, ast.Call):
             continue
 
@@ -221,15 +229,14 @@ def _transport_copy_candidates() -> list[Path]:
     return [
         path
         for path in _guarded_sources()
-        if SERVICES in path.parents or _names_a_marker(path.read_text())
+        if SERVICES in path.parents or _names_a_marker(source_index.text(path))
     ]
 
 
-def test_no_module_defines_its_own_internal_api_transport():
+def test_no_module_defines_its_own_internal_api_transport(production_source_index):
     offenders = []
     for path in _transport_copy_candidates():
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
+        for node in source_index.nodes(path):
             if (
                 isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
                 and node.name in COPIED_TRANSPORT_NAMES
@@ -242,10 +249,14 @@ def test_no_module_defines_its_own_internal_api_transport():
     )
 
 
-def test_no_module_reaches_the_internal_api_without_the_shared_transport():
+def test_no_module_reaches_the_internal_api_without_the_shared_transport(
+    production_source_index,
+):
     offenders = []
     for path in _guarded_sources():
-        offenders += find_raw_internal_api_calls(path.read_text(), _relative(path))
+        offenders += find_raw_internal_api_calls(
+            source_index.text(path), _relative(path), source_index.nodes(path)
+        )
 
     assert not offenders, (
         "calls to the internal API go through the shared transport, which puts "

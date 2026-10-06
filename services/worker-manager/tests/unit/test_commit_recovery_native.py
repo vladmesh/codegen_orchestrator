@@ -17,6 +17,9 @@ from shared.contracts.dto.commit_publication import PublicationFailure
 from shared.workspace_preservation import has_preserved_work
 from src.routers import commit_recovery
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 owned_checkout = checkout_fixture
 
 
@@ -253,7 +256,7 @@ async def test_proxy_askpass_and_include_cannot_receive_fresh_http_credentials(
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), GitHTTP)
-    thread = Thread(target=server.serve_forever, daemon=True)
+    thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     local = f"http://127.0.0.1:{server.server_port}/owned.git"
 

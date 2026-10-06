@@ -3,7 +3,6 @@
 from pydantic import ValidationError
 import pytest
 
-from shared.contracts.dto.run import RunType
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.queues import QA_GROUP, QA_QUEUE, QUEUE_TOPOLOGY
 
@@ -141,22 +140,7 @@ class TestQAMessage:
             )
 
 
-class TestRunTypeQA:
-    def test_qa_run_type_exists(self):
-        assert RunType.QA == "qa"
-
-    def test_qa_run_type_value(self):
-        assert RunType.QA.value == "qa"
-
-
 class TestQAOutcome:
-    def test_values(self):
-        assert QAOutcome.PASSED == "passed"
-        assert QAOutcome.FAILED == "failed"
-        assert QAOutcome.EXHAUSTED == "exhausted"
-        assert QAOutcome.ERROR == "error"
-        assert QAOutcome.BLOCKED == "blocked"
-
     def test_is_str_enum(self):
         assert isinstance(QAOutcome.PASSED, str)
         assert QAOutcome.PASSED.value == "passed"
@@ -223,12 +207,6 @@ class TestQAMessageStoryOwnership:
 
 
 class TestQAQueueTopology:
-    def test_qa_queue_constant(self):
-        assert QA_QUEUE == "qa:queue"
-
-    def test_qa_group_constant(self):
-        assert QA_GROUP == "qa-consumers"
-
     def test_qa_queue_in_topology(self):
         streams = [b.stream for b in QUEUE_TOPOLOGY]
         assert QA_QUEUE in streams

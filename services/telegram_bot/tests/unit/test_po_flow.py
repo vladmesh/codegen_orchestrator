@@ -113,8 +113,9 @@ class TestReadPOResponse:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_retries_on_transient_error(self):
+    async def test_retries_on_transient_error(self, monkeypatch):
         """Should retry on transient Redis errors."""
+        monkeypatch.setattr("src.main.PO_RESPONSE_READ_RETRY_DELAY_S", 0)
         mock_redis = AsyncMock()
         response_data = {"text": "recovered", "telegram_chat_id": "123"}
         mock_redis.xread = AsyncMock(

@@ -15,6 +15,9 @@ import time
 import pytest
 import yaml
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "scripts" / "ci-infra.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -188,12 +191,12 @@ def test_retry_stops_an_attempt_that_hangs_and_runs_the_next(runner):
     )
 
     result = runner.helper(
-        "retry", "--step", "s", "--cause", "c", "--attempt-timeout", "1s", "--", "hangs-once"
+        "retry", "--step", "s", "--cause", "c", "--attempt-timeout", "0.3s", "--", "hangs-once"
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(runner.call_lines("hangs-once")) == 2
-    assert "attempt 1 of 3 timed out after 1s" in result.stdout
+    assert "attempt 1 of 3 timed out after 0.3s" in result.stdout
     assert runner.markers() == []
 
 
@@ -201,7 +204,7 @@ def test_retry_whose_last_attempt_timed_out_names_the_timeout(runner):
     runner.fake("hangs", "exec sleep 60")
 
     result = runner.helper(
-        "retry", "--step", "dl", "--cause", "registry", "--attempt-timeout", "1", "--", "hangs"
+        "retry", "--step", "dl", "--cause", "registry", "--attempt-timeout", "0.3", "--", "hangs"
     )
 
     assert result.returncode == 124
@@ -214,13 +217,13 @@ def test_retry_whose_last_attempt_timed_out_names_the_timeout(runner):
 def test_bound_stops_a_hung_command_with_its_children_and_names_the_timeout(runner):
     runner.fake("hangs", 'sleep 60 &\necho "$!" > "$RUNNER_TEMP/child"\nwait')
 
-    result = runner.helper("bound", "--step", "service-tests", "--timeout", "1s", "--", "hangs")
+    result = runner.helper("bound", "--step", "service-tests", "--timeout", "0.3s", "--", "hangs")
 
     assert result.returncode == 124
     _assert_one_marker(
         result, runner, "CI-INFRA-FAILURE: job=fast-checks step=service-tests cause=step-timeout"
     )
-    assert "ran past its bound of 1s" in runner.summary.read_text()
+    assert "ran past its bound of 0.3s" in runner.summary.read_text()
     assert _stopped(int((runner.temp / "child").read_text()))
 
 
@@ -275,7 +278,7 @@ def test_retry_counts_a_command_own_status_124_as_a_failure_not_a_timeout(runner
     _assert_one_marker(result, runner, "CI-INFRA-FAILURE: job=fast-checks step=dl cause=registry")
 
 
-@pytest.mark.parametrize("duration", ["0", "10x", "1.5m", "-1"])
+@pytest.mark.parametrize("duration", ["0", "0.0s", "10x", "1.5m", "1.25s", "-1"])
 def test_a_duration_timeout_cannot_read_is_refused(runner, duration):
     runner.fake("quick", "exit 0")
 
@@ -418,7 +421,9 @@ def test_a_hung_image_pull_is_retried_under_its_bound_then_named(runner):
         _step(_jobs()["test-service"], step_id="pull-images")["run"], {"matrix.service": "api"}
     )
 
-    result = runner.run(script, CI_INFRA_JOB="test-service/api", CI_INFRA_PULL_ATTEMPT_TIMEOUT="1s")
+    result = runner.run(
+        script, CI_INFRA_JOB="test-service/api", CI_INFRA_PULL_ATTEMPT_TIMEOUT="0.3s"
+    )
 
     assert result.returncode != 0
     assert runner.call_lines("docker pull") == ["docker pull pgvector/pgvector:0.8.6-pg16"] * 3
@@ -507,7 +512,7 @@ def test_a_retry_action_marks_only_when_every_attempt_failed(runner, action, ste
 BUILDX_ACTION = ACTIONS / "setup-buildx-with-retry"
 # The action's real bound, and the one a test runs it with.
 BUILDX_ATTEMPT_TIMEOUT = "--attempt-timeout 120s"
-TEST_ATTEMPT_TIMEOUT = "--attempt-timeout 1s"
+TEST_ATTEMPT_TIMEOUT = "--attempt-timeout 0.3s"
 
 
 def _buildx_setup(runner, *, registry_failure="false", pull_hang="false"):
@@ -577,7 +582,7 @@ def test_a_first_buildx_attempt_whose_pull_hangs_is_bounded_and_the_next_proceed
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "the buildkit pull of Buildx attempt 1 hangs" in result.stdout
-    assert "attempt 1 of 3 timed out after 1s" in result.stdout
+    assert "attempt 1 of 3 timed out after 0.3s" in result.stdout
     assert runner.call_lines("docker buildx inspect") == [
         "docker buildx inspect --bootstrap ci-builder-2"
     ]
@@ -643,7 +648,7 @@ def test_a_docker_step_that_hangs_is_stopped_inside_the_job_and_named(
     if leg is not None:
         env["CI_INFRA_JOB"] = _render(job["env"]["CI_INFRA_JOB"], matrix)
 
-    result = runner.run(STEP_BOUND.sub("--timeout 1s --", run), **env)
+    result = runner.run(STEP_BOUND.sub("--timeout 0.5s --", run), **env)
 
     assert result.returncode == 124
     _assert_one_marker(
@@ -687,7 +692,7 @@ def test_a_redis_run_that_hangs_is_stopped_inside_fast_checks_and_named(runner):
     _fake_redis_docker(runner, run="exec sleep 60")
     run = _step(_jobs()["fast-checks"], name="Run Redis capability cleanup regression")["run"]
 
-    result = runner.run(STEP_BOUND.sub("--timeout 1s --", run), GITHUB_JOB="fast-checks")
+    result = runner.run(STEP_BOUND.sub("--timeout 0.5s --", run), GITHUB_JOB="fast-checks")
 
     assert result.returncode == 124
     _assert_one_marker(
@@ -715,7 +720,7 @@ def test_a_hung_publish_names_itself_on_its_own_job(runner, job_name, step_name,
     assert run.count(publish) == 1
 
     result = runner.run(
-        STEP_BOUND.sub("--timeout 1s --", run).replace(publish, "publish"),
+        STEP_BOUND.sub("--timeout 0.5s --", run).replace(publish, "publish"),
         GITHUB_JOB=job_name,
     )
 
@@ -752,7 +757,7 @@ def test_a_hung_step_travels_through_the_gate_and_the_gate_stays_red(runner):
     runner.fake("make", "exec sleep 60")
     job = _jobs()["test-service"]
     run = _render(_step(job, step_id="service-tests")["run"], {"matrix.service": "api"})
-    runner.run(STEP_BOUND.sub("--timeout 1s --", run), CI_INFRA_JOB="test-service/api")
+    runner.run(STEP_BOUND.sub("--timeout 0.5s --", run), CI_INFRA_JOB="test-service/api")
     expose = _step(job, name="Expose CI infrastructure failure")
     assert expose["if"].startswith("always()")
     exposed = runner.run(_render(expose["run"], {"matrix.service": "api"}))

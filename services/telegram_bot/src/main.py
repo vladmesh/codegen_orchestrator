@@ -71,6 +71,8 @@ def get_stream_client() -> RedisStreamClient:
 
 # PO response settings
 PO_RESPONSE_TIMEOUT_S = 60
+# Pause after a failed read of the PO response stream before the next read.
+PO_RESPONSE_READ_RETRY_DELAY_S = 0.5
 TYPING_INTERVAL_S = 5
 # What the user sees when their message could not be answered. Fixed on purpose:
 # exception text is for the logs, never for the chat.
@@ -240,7 +242,7 @@ async def _read_po_response(
             raise
         except Exception as e:
             logger.error("po_response_xread_error", error_type=type(e).__name__)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(PO_RESPONSE_READ_RETRY_DELAY_S)
             continue
 
         if not messages:

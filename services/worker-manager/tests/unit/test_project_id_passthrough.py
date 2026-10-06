@@ -586,6 +586,7 @@ class TestWorkspaceGC:
         os.utime(workspace, (old_mtime, old_mtime))
         return workspace, git
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_workspace_gc_removes_old_workspaces(self, mock_docker, published_workspace):
         """Old inactive checkouts whose commits are published can be removed."""
@@ -596,6 +597,7 @@ class TestWorkspaceGC:
             await manager.garbage_collect_workspaces()
         assert not workspace.exists()
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     async def test_workspace_gc_notifies_api_on_delete(self, mock_docker, published_workspace):
         """GC calls _notify_workspace_deleted for each removed workspace."""
@@ -609,6 +611,7 @@ class TestWorkspaceGC:
         assert not workspace.exists()
         mock_notify.assert_awaited_once_with("repo-abc")
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     @pytest.mark.parametrize("publication", ["unpublished", "inspection_unavailable"])
     async def test_workspace_gc_keeps_unproved_work(

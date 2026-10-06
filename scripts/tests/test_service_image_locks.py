@@ -283,6 +283,7 @@ def test_a_direct_reference_not_at_a_full_commit_refuses_the_lock(line):
         locks.parse_lock(f"# header\n{line}\n", ENVIRONMENT)
 
 
+@pytest.mark.subprocess
 def test_the_probe_runs_on_a_bare_interpreter_and_describes_it():
     """Standard library only: it runs in images that may not carry packaging."""
     output = subprocess.run(
@@ -298,6 +299,7 @@ def test_the_probe_runs_on_a_bare_interpreter_and_describes_it():
     assert isinstance(probe["distributions"], list)
 
 
+@pytest.mark.subprocess
 def test_the_probe_of_this_interpreter_reads_its_own_distributions():
     output = subprocess.run(
         [sys.executable, "-c", locks.PROBE], capture_output=True, text=True, check=True

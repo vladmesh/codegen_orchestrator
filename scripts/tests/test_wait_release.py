@@ -219,6 +219,7 @@ def test_the_exit_codes_are_distinct_from_each_other_and_from_the_probe():
 # --- the two real boundaries: the probe script and the GitHub API ---
 
 
+@pytest.mark.subprocess
 def test_the_probe_runs_in_validation_only_mode(tmp_path: Path):
     seen = tmp_path / "seen"
     fake_probe = tmp_path / "probe.sh"
@@ -265,7 +266,9 @@ class _GitHub(http.server.BaseHTTPRequestHandler):
 def github() -> Iterator[tuple[str, type[_GitHub]]]:
     handler = type("GitHub", (_GitHub,), {"requests": [], "status": 200, "body": {}})
     server = http.server.HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    )
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}", handler
@@ -356,6 +359,7 @@ def test_the_service_probe_is_the_service_release_consumer():
     assert wait.SERVICE.tag_variable == "SERVICE_IMAGE_TAG"
 
 
+@pytest.mark.subprocess
 def test_the_service_probe_runs_in_validation_only_mode_for_the_revision(tmp_path: Path):
     seen = tmp_path / "seen"
     fake_probe = tmp_path / "probe.sh"

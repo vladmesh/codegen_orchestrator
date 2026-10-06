@@ -28,6 +28,9 @@ from shared.contracts.queues.worker_result import (
     parse_worker_result,
 )
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "claude_code_2.1.278_result.json"
 BRANCH = "story/story-1"
 FENCE_LOCKS = ("index.lock", "HEAD.lock", f"refs/heads/{BRANCH}.lock")

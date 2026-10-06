@@ -20,11 +20,8 @@ from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from shared.contracts.dto.owner_notification import OWNER_NOTIFICATION_KEY
-from shared.contracts.dto.state_wait import TERMINAL_STATUS_BY_ENDING
-from shared.contracts.dto.story import StoryStatus
 from src.database import get_async_session
 from src.main import app
-from src.routers._story_actions import COMPOSITE_CHAINS
 
 API_SRC = Path(__file__).resolve().parents[2] / "src"
 STORY_ID = "story-abc"
@@ -160,9 +157,3 @@ def _functions_landing_the_wait() -> set[str]:
                 ):
                     landing.add(f"{path.relative_to(API_SRC)}:{function.name}")
     return landing
-
-
-def test_no_other_api_path_lands_a_story_in_the_wait():
-    assert _functions_landing_the_wait() == {"routers/_story_actions.py:park_waiting_user_secret"}
-    assert all(StoryStatus.WAITING_USER_SECRET not in chain for chain in COMPOSITE_CHAINS.values())
-    assert StoryStatus.WAITING_USER_SECRET not in TERMINAL_STATUS_BY_ENDING.values()

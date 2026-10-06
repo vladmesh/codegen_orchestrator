@@ -6,6 +6,9 @@ from worker_wrapper.broker import BrokerMessage
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 
 @pytest.fixture(autouse=True)
 def _no_workspace_check():

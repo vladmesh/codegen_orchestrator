@@ -9,6 +9,9 @@ import subprocess
 import pytest
 import yaml
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "infra/scripts/backup-db.sh"
 CANARY = "synthetic-dump-secret-canary"

@@ -24,6 +24,9 @@ from shared.tests.worker_credential_fixture import WorkerCredentialFixture
 from src import git_ops
 from src.manager import WorkerManager
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 OLD_TOKEN = "synthetic-released-expired-token"  # noqa: S105 - harmless canary
 
 

@@ -30,6 +30,9 @@ from shared.telegram_bot_probe import (
     parse_bot_probe_result,
 )
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 MESSAGE_ID = 41
 # The id the stub gives the probe's own sent message.
 SENT_ID = 100

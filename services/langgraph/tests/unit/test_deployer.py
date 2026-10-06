@@ -45,6 +45,11 @@ def deployer():
 
 
 @pytest.fixture(autouse=True)
+def no_rerun_settle_wait(monkeypatch):
+    monkeypatch.setattr("src.subgraphs.devops.deployer.RERUN_SETTLE_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
 def published_images():
     """Every deploy here runs with the built commit's images already in the registry.
 

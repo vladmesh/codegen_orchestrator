@@ -185,9 +185,7 @@ STAND_JOB_RESERVE_SECONDS = 480
 # 360 minutes covers 45m provisioning + 10m workflow reserve + the longest
 # runner path + an 8m job reserve. The longest path is `mega-live` (281m); the
 # Product Brief runners are 76m and 96m, and `mega-noop` is 212m. Every one of
-# those is checked against this cap in `scripts/tests/test_stand_run.py`, and
-# `tests/unit/test_documented_stand_budgets.py` checks that the minutes stated
-# in this comment are the constants below.
+# those is checked against this cap in `scripts/tests/test_stand_run.py`.
 # Lifecycle cleanup has its own bounded workflow job because jobs cannot share
 # one timeout.
 STAND_JOB_TIMEOUT_MINUTES = 360

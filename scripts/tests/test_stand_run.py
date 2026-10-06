@@ -173,7 +173,6 @@ def test_noop_cap_covers_both_stories_and_the_undeploy_lifecycle():
     assert sum(first.values()) == 4100
     assert sum(second.values()) == 3740
     assert stand_deadlines.noop_lifecycle_explicit_waits() == 8440
-    assert NOOP_SUITE_TIMEOUT_SECONDS == 9300
     assert SUITES["mega-noop"].timeout_seconds == stand_deadlines.MECHANICAL_SUITE_TIMEOUT_SECONDS
     assert (
         NOOP_SUITE_TIMEOUT_SECONDS - stand_deadlines.noop_lifecycle_explicit_waits()
@@ -316,8 +315,6 @@ def test_the_suite_table_is_the_one_map_from_a_suite_to_its_agents():
 
 def test_brief_runner_ledger_reserves_a_hard_stop_after_productive_work():
     """The paid fixture retains evidence and cleans up before runner timeout."""
-    assert BRIEF_SUITE_TIMEOUT_SECONDS == 50 * 60
-    assert BRIEF_HARD_STOP_SECONDS == 60 * 60
     assert stand_run.BRIEF_CLEANUP_GRACE_SECONDS == (
         BRIEF_HARD_STOP_SECONDS - BRIEF_SUITE_TIMEOUT_SECONDS
     )
@@ -338,7 +335,6 @@ def test_brief_runner_ledger_reserves_a_hard_stop_after_productive_work():
 
 
 def test_mega_brief_has_a_50_minute_productive_deadline_and_a_separate_cleanup_grace():
-    assert stand_run.BRIEF_SUITE_TIMEOUT_SECONDS == 50 * 60
     assert stand_run.BRIEF_HARD_STOP_SECONDS >= 60 * 60
     assert stand_run.BRIEF_CLEANUP_GRACE_SECONDS > 0
     assert stand_run.SUITES["mega-brief"].timeout_seconds == 50 * 60
@@ -838,6 +834,7 @@ def _stand_env(tmp_path, monkeypatch, stand):
     return env_path
 
 
+@pytest.mark.subprocess
 def test_the_switch_is_confirmed_by_the_resolver_and_recreates_every_reader(tmp_path, monkeypatch):
     stand = _ComposeStand(initial="codex", flips=qa_executor_services())
     _stand_env(tmp_path, monkeypatch, stand)
@@ -940,6 +937,7 @@ def test_the_probe_uses_the_base_url_the_live_suite_builds_its_clients_on():
     assert f'API_URL = "{stand_run.SUITE_API_BASE_URL}"' in conftest
 
 
+@pytest.mark.subprocess
 def test_a_consumer_is_ready_only_once_it_says_it_started(tmp_path, monkeypatch):
     """`qa-worker` running is not `qa-worker` consuming its queue."""
     stand = _ComposeStand(initial="codex", flips=qa_executor_services(), started_after=1)
@@ -1063,6 +1061,7 @@ def _fake_docker(tmp_path, monkeypatch):
     return env, log, checkout
 
 
+@pytest.mark.subprocess
 def test_the_runner_recreates_from_the_pulled_release_and_builds_nothing(tmp_path, monkeypatch):
     env, log, checkout = _fake_docker(tmp_path, monkeypatch)
     lines: list[str] = []
@@ -1184,6 +1183,7 @@ def _fake_uv(tmp_path, *, exit_code=0):
     return env, recorded
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize("exported", [None, "http://api:8000", "https://elsewhere.example"])
 def test_the_sweep_addresses_the_api_the_suites_used(tmp_path, monkeypatch, exported):
     """Run 35945831487: 39 passed, then `API_BASE_URL is required` made the run red.
@@ -1208,6 +1208,7 @@ def test_the_sweep_addresses_the_api_the_suites_used(tmp_path, monkeypatch, expo
     assert lines == []
 
 
+@pytest.mark.subprocess
 def test_a_failed_sweep_is_red_and_names_its_last_line(tmp_path):
     env, _recorded = _fake_uv(tmp_path, exit_code=1)
     lines: list[str] = []

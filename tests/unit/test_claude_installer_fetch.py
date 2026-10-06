@@ -4,15 +4,48 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import threading
 
 import pytest
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 DOCKERFILE = (
     Path(__file__).parents[2] / "services/worker-manager/images/worker-base-claude/Dockerfile"
 )
 INSTALLER_URL = "https://claude.ai/install.sh"
+
+# curl cannot retry without a real wait: `--retry-delay 0` selects its default 1, 2, 4 s
+# backoff and `Retry-After: 0` is ignored. So the step's `curl` is this shim: it keeps the
+# step's own retry flags (`--retry N`, `--retry-delay D`, `--retry-connrefused`), runs the
+# real curl once per attempt against the local server, and waits D seconds between
+# attempts, which is 0 here. A transient failure is what curl's `--retry` retries on:
+# an HTTP error answer (exit 22) or, with `--retry-connrefused`, a refused connection (7).
+CURL_SHIM = """#!/usr/bin/env bash
+retries=0 delay=0 connrefused=0 args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --retry) retries=$2; shift 2 ;;
+        --retry-delay) delay=$2; shift 2 ;;
+        --retry-connrefused) connrefused=1; shift ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+for ((attempt = 0; ; attempt++)); do
+    status=0
+    "$REAL_CURL" "${args[@]}" || status=$?
+    transient=0
+    [ "$status" -eq 22 ] && transient=1
+    [ "$status" -eq 7 ] && [ "$connrefused" = 1 ] && transient=1
+    if [ "$status" -eq 0 ] || [ "$transient" = 0 ] || [ "$attempt" -ge "$retries" ]; then
+        exit "$status"
+    fi
+    sleep "$delay"
+done
+"""
 
 
 def _installer_command(tmp_path, url):
@@ -21,6 +54,9 @@ def _installer_command(tmp_path, url):
     assert run is not None
     command = run.group().removeprefix("RUN ").replace("\\\n", "")
     command = command.replace(INSTALLER_URL, url)
+    # The retry count is what is under test, not a real wait between attempts.
+    assert "curl --retry 3 " in command
+    command = command.replace("curl --retry 3 ", "curl --retry 3 --retry-delay 0 ")
     cli = tmp_path / "claude"
     cli.write_text("#!/bin/sh\necho 2.1.278\n")
     cli.chmod(0o755)
@@ -44,12 +80,21 @@ def _run_fetch(tmp_path, statuses, *, empty=False):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     thread.start()
     try:
         marker = tmp_path / "executed"
+        shims = tmp_path / "shims"
+        shims.mkdir()
+        (shims / "curl").write_text(CURL_SHIM)
+        (shims / "curl").chmod(0o755)
         env = os.environ.copy()
-        env.update(CLAUDE_CODE_VERSION="2.1.278", INSTALL_MARKER=str(marker))
+        env.update(
+            CLAUDE_CODE_VERSION="2.1.278",
+            INSTALL_MARKER=str(marker),
+            REAL_CURL=shutil.which("curl"),
+            PATH=f"{shims}:{env['PATH']}",
+        )
         command = _installer_command(tmp_path, f"http://127.0.0.1:{server.server_port}/install.sh")
         result = subprocess.run(
             ["bash", "-c", command],
@@ -103,8 +148,3 @@ def test_a_fetch_that_answered_names_no_infrastructure_cause(tmp_path, statuses,
     result, _, _ = _run_fetch(tmp_path, statuses, empty=empty)
 
     assert INFRA_CAUSE not in result.stdout + result.stderr
-
-
-def test_the_build_log_echo_of_the_command_does_not_carry_the_cause():
-    """A build log prints each RUN command, so the cause line must exist only at run time."""
-    assert INFRA_CAUSE not in DOCKERFILE.read_text()

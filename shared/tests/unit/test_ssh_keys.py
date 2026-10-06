@@ -12,6 +12,9 @@ from shared.ssh_keys import (
     validate_stored_admin_private_key,
 )
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 
 def test_provisioning_finalization_contract_binds_the_receipt_to_the_proved_identity():
     from datetime import UTC, datetime

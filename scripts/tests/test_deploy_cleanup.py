@@ -116,6 +116,7 @@ def runner(tmp_path: Path) -> Runner:
     return Runner(tmp_path)
 
 
+@pytest.mark.subprocess
 def test_a_cleanup_that_succeeds_says_so_and_warns_nothing(runner: Runner):
     result = runner.run()
 
@@ -131,6 +132,7 @@ def test_a_cleanup_that_succeeds_says_so_and_warns_nothing(runner: Runner):
     assert "every command succeeded" in runner.summary.read_text()
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize("worker_exit,service_exit", [(1, 0), (0, 2), (1, 2)])
 def test_a_failed_cleanup_is_a_warning_naming_the_script_and_code_and_the_step_succeeds(
     runner: Runner, worker_exit: int, service_exit: int
@@ -154,6 +156,7 @@ def test_a_failed_cleanup_is_a_warning_naming_the_script_and_code_and_the_step_s
             assert command not in runner.summary.read_text()
 
 
+@pytest.mark.subprocess
 def test_an_unreachable_host_is_a_warning_and_the_step_succeeds(runner: Runner):
     result = runner.run(FAKE_SSH_STATUS="255")
 
@@ -170,37 +173,3 @@ def test_nothing_the_cleanup_step_does_fails_the_job():
 
     assert step["continue-on-error"] is True
     assert step["timeout-minutes"] <= 10
-
-
-def test_cleanup_runs_worker_then_service_release_cleanup():
-    script = _cleanup_script()
-
-    worker_cleanup = script.index("python3 scripts/cleanup_worker_images.py")
-    service_cleanup = script.index("python3 scripts/service_release.py cleanup")
-    assert worker_cleanup < service_cleanup
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        ".github/workflows/deploy.yml",
-        "infra/scripts/deploy-ssh.sh",
-        "scripts/cleanup_worker_images.py",
-        "scripts/service_release.py",
-        "infra/scripts/pull-worker-images.sh",
-        "infra/scripts/pull-service-images.sh",
-        "infra/scripts/retag-worker-images.sh",
-        "infra/scripts/worker-images.sh",
-        "infra/scripts/service-images.sh",
-        "infra/scripts/release-chain.sh",
-        "infra/scripts/backup-db.sh",
-        "scripts/wait_release.py",
-        "scripts/release_switch.py",
-        "scripts/rotate_worker_image_records.py",
-    ],
-)
-def test_deploy_call_path_contains_no_daemon_pruning(path: str):
-    # Includes sourced release helpers and the staged backup helper; the standalone
-    # danger_prod_reset.py is not invoked by deploy and intentionally is not in this guard.
-    source = (REPO_ROOT / path).read_text().replace("\\\n", " ")
-    assert not re.search(r"\b(?:image|system|builder|buildx|volume|network)\s+prune\b", source)

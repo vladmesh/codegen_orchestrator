@@ -10,6 +10,7 @@ from shared.tests.git_http_fixture import GitHTTPFixture
 from src.scaffold import run_ensure_workspace
 
 
+@pytest.mark.subprocess
 @pytest.mark.asyncio
 async def test_ensure_workspace_clones_with_native_auth_and_clean_config(tmp_path, monkeypatch):
     token = "scaffolder-component-harmless-canary"  # noqa: S105 - harmless canary

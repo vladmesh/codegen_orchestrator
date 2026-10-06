@@ -30,6 +30,7 @@ def stand(monkeypatch, tmp_path):
     return mechanical_install, record
 
 
+@pytest.mark.subprocess
 def test_service_provenance_checks_the_release_without_git(stand, monkeypatch):
     probe, record = stand
     calls = []

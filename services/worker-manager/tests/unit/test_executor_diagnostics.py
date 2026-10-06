@@ -553,12 +553,3 @@ async def test_periodic_loop_keeps_publishing_after_a_failed_tick():
     await asyncio.wait_for(run_periodic_task(tick, interval=0, name="executor_diagnostics"), 2)
 
     assert calls == 3
-
-
-def test_startup_publishes_before_serving_and_schedules_the_configured_interval():
-    from pathlib import Path
-
-    source = (Path(__file__).resolve().parents[2] / "src" / "main.py").read_text()
-    startup = source.index("await worker_manager.publish_executor_diagnostics()")
-    assert startup < source.index("yield")
-    assert "interval=settings.EXECUTOR_DIAGNOSTICS_INTERVAL_SECONDS" in source

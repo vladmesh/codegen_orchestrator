@@ -13,3 +13,17 @@ os.environ.setdefault(
     "SECRETS_ENCRYPTION_KEY", "wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc="
 )  # Valid Fernet key for tests only
 os.environ.setdefault("LK_JWT_SECRET", "unit-test-lk-jwt-secret")
+
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def api_source_index():
+    """Parse the api source once, as session setup, for the guards that scan all of it."""
+    from shared.tests import source_index
+
+    api_src = Path(__file__).resolve().parents[2] / "src"
+    for path in source_index.python_files(api_src):
+        source_index.tree(path)

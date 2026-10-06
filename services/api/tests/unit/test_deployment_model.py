@@ -47,12 +47,6 @@ class TestDeploymentModel:
 
 
 class TestDeploymentResultEnum:
-    def test_values(self):
-        assert DeploymentResult.PENDING == "pending"
-        assert DeploymentResult.SUCCESS == "success"
-        assert DeploymentResult.FAILED == "failed"
-        assert DeploymentResult.CANCELED == "canceled"
-
     def test_membership(self):
         values = list(DeploymentResult)
         assert len(values) == 4

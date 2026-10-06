@@ -94,3 +94,40 @@ def test_module_is_runnable_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
         runpy.run_module("shared", run_name="__main__", alter_sys=True)
     assert exit_info.value.code == 0
     assert calls == [entry.build_command(["--serial"])]
+
+
+def _passing_run_writing(per_suite: dict[str, float]):
+    class _Completed:
+        returncode = 0
+
+    def fake_run(command, *, cwd, env, check):  # noqa: ANN001
+        for label, seconds in per_suite.items():
+            (Path(env["UNIT_CPU_DIR"]) / f"{label}.json").write_text(
+                f'{{"cpu_seconds": {seconds}}}'
+            )
+        return _Completed()
+
+    return fake_run
+
+
+def test_main_prints_cpu_per_suite_within_the_budget(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(entry.subprocess, "run", _passing_run_writing({"api": 12.5, "repo": 30}))
+    spent = iter([100.0, 142.5])
+    monkeypatch.setattr(entry, "children_cpu", lambda: next(spent))
+    assert entry.main([]) == 0
+    out = capsys.readouterr().out
+    assert out.index("repo") < out.index("api")
+    assert "12.5s" in out
+    assert f"CPU total: 42.5s (budget {entry.HOST_CPU_BUDGET_SECONDS:g}s)" in out
+
+
+def test_a_passing_run_over_the_cpu_budget_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(entry.subprocess, "run", _passing_run_writing({}))
+    spent = iter([0.0, entry.HOST_CPU_BUDGET_SECONDS + 1])
+    monkeypatch.setattr(entry, "children_cpu", lambda: next(spent))
+    assert entry.main([]) == 1
+    assert "over its" in capsys.readouterr().out

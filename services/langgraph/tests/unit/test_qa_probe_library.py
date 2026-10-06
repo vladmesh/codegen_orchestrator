@@ -222,6 +222,7 @@ def _telethon_log(sandbox) -> list[dict]:
     return [json.loads(line) for line in sandbox.log.read_text().splitlines()]
 
 
+@pytest.mark.subprocess
 class TestTheLocationSeedThroughQaProbe:
     async def test_a_location_is_sent_as_values_and_the_probe_is_retained(self, sandbox, endpoint):
         status, _, _ = await _qa(sandbox, endpoint, "telegram_identity")

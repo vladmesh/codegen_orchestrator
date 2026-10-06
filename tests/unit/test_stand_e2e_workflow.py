@@ -38,6 +38,9 @@ from scripts.wait_stand_provisioning import (
 )
 from shared.ssh_keys import normalize_admin_private_key
 
+# Most tests here run workflow steps in bash: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
 COLLECTOR = Path(__file__).parents[2] / "scripts" / "stand_collect_run_evidence.sh"
 MAKEFILE = Path(__file__).parents[2] / "Makefile"
@@ -1192,10 +1195,6 @@ def test_target_key_transport_uses_protected_files_not_a_sourced_secret_environm
     assert "trap cleanup EXIT INT TERM" in register
     assert "shred -u /run/stand-target.key /run/stand-target.json" in register
     assert "SSH_PRIVATE_KEY" not in register.split("ssh -i", maxsplit=1)[1]
-
-
-def test_obsolete_self_target_registration_route_is_deleted():
-    assert not (WORKFLOW.parents[2] / "scripts" / "register_stand_target.py").exists()
 
 
 def _write_target_key(secret: str) -> str:

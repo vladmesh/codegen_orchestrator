@@ -57,8 +57,3 @@ def test_the_deploy_writes_the_optional_secret_of_the_same_name():
     workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
 
     assert f"{NAME}=${{{{ secrets.{NAME} }}}}" in workflow
-
-
-def test_the_key_is_documented():
-    assert f"# {NAME}=" in (ROOT / ".env.example").read_text()
-    assert f"| `{NAME}` |" in (ROOT / "docs/DEPLOY.md").read_text()

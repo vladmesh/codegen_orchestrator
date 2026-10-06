@@ -133,6 +133,7 @@ def test_an_override_naming_an_image_outside_the_service_release_is_refused(live
         check_pending(pending, B)
 
 
+@pytest.mark.subprocess
 def test_check_runs_from_a_lone_copy_of_the_helper(live, tmp_path):
     """The Switch runs it from the pending set, before the checkout holds this revision."""
     lone = tmp_path / "lone"
