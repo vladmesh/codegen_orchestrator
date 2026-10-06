@@ -9,10 +9,14 @@ import os
 from pathlib import Path
 import re
 
+from shared.constants import WorkerWorkspace
 from shared.contracts.dto.catalog_install import InstallCommand, InstallVerification
 from shared.diagnostics import redact_diagnostic
 from shared.workspace_preservation import acquire_install_workspace_lock
 from src.scaffold import _git_auth_env, _run_cmd, _workspace_path
+
+#: Where a developer worker mounts this same checkout.
+WORKER_WORKSPACE = "/workspace"
 
 
 class InstallExecutionError(RuntimeError):
@@ -79,6 +83,29 @@ def product_environment(root):
         }
     )
     return env
+
+
+def reclaim_worker_venvs(root):
+    """Point venvs a worker repointed at its /workspace mount back at this checkout.
+
+    The worker wrapper rewrites shebangs, ``.pth`` and ``direct_url.json`` to
+    ``/workspace/``; executed here, ``.venv/bin/kit`` fails with ENOENT on its
+    interpreter. Dropping the sentinel makes the next worker repoint them again.
+    """
+    mounted, own = f"{WORKER_WORKSPACE}/".encode(), f"{root}/".encode()
+    for path in root.glob("**/.venv/bin/*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        content = path.read_bytes()
+        if content.startswith(b"#!" + mounted):
+            path.write_bytes(b"#!" + own + content[2 + len(mounted) :])
+    site = "**/.venv/lib/*/site-packages/"
+    for path in [*root.glob(f"{site}_*.pth"), *root.glob(f"{site}*.dist-info/direct_url.json")]:
+        content = path.read_bytes()
+        repointed = re.sub(rb"(?m)(^|file://)" + re.escape(mounted), rb"\1" + own, content)
+        if repointed != content:
+            path.write_bytes(repointed)
+    (root / WorkerWorkspace.VENV_SENTINEL).unlink(missing_ok=True)
 
 
 def install_environment(token, root, git_url):
@@ -199,6 +226,7 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         await checkpoint()
         _, tracked_text = await command(["git", "ls-files"])
         protected = protected_files(root, tracked_text.splitlines())
+        reclaim_worker_venvs(root)
         payload = msg.install.model_dump_json()
         probe = str(Path(__file__).with_name("install_probe.py"))
         python = str(root / ".venv/bin/python")

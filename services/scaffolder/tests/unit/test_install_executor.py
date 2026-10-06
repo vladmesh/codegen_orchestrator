@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +15,7 @@ from src.install import (
     install_environment,
     product_environment,
     protected_files,
+    reclaim_worker_venvs,
     run_install,
 )
 
@@ -206,3 +208,38 @@ def test_product_tool_git_trusts_the_worker_owned_workspace(tmp_path, build):
         check=False,
     )
     assert status.returncode == 0, status.stderr
+
+
+def worker_repointed_venv(root):
+    """A product venv after the worker wrapper repointed it at its /workspace mount."""
+    bin_dir = root / ".venv/bin"
+    site = root / ".venv/lib/python3.12/site-packages"
+    bin_dir.mkdir(parents=True)
+    site.mkdir(parents=True)
+    (bin_dir / "python").symlink_to(sys.executable)
+    kit = bin_dir / "kit"
+    kit.write_text("#!/workspace/.venv/bin/python\nprint('kit ran')\n")
+    kit.chmod(0o755)
+    (site / "_shared.pth").write_text("/workspace/shared\n")
+    (site / "tooling-1.dist-info").mkdir()
+    (site / "tooling-1.dist-info/direct_url.json").write_text('{"url": "file:///workspace/pkg"}')
+    (root / ".venv_paths_fixed").write_text("")
+    return kit
+
+
+@pytest.mark.subprocess
+def test_install_runs_venv_scripts_a_worker_repointed(tmp_path):
+    root = tmp_path / "repo-1"
+    kit = worker_repointed_venv(root)
+    with pytest.raises(FileNotFoundError):
+        subprocess.run([str(kit)], check=True)
+
+    reclaim_worker_venvs(root)
+
+    ran = subprocess.run([str(kit)], capture_output=True, text=True, check=True)
+    assert ran.stdout == "kit ran\n"
+    site = root / ".venv/lib/python3.12/site-packages"
+    assert (site / "_shared.pth").read_text() == f"{root}/shared\n"
+    assert f"file://{root}/pkg" in (site / "tooling-1.dist-info/direct_url.json").read_text()
+    # The next worker finds no sentinel and repoints the venv at its mount again.
+    assert not (root / ".venv_paths_fixed").exists()
