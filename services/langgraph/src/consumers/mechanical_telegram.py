@@ -13,7 +13,7 @@ import httpx
 from shared.contracts.acceptance import MECHANICAL_PROBE_CRITERION_RE
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.telegram_access_probe import telethon_env
-from shared.telethon_identity import prove_qa_identity
+from shared.telethon_identity import IdentityNotProven, prove_qa_identity
 
 TIMEZONE = "Etc/UTC"
 PROBE_TIMEOUT = 280
@@ -29,9 +29,30 @@ CRITERION = MECHANICAL_PROBE_CRITERION_RE
 
 
 class ProbeFailure(RuntimeError):
-    def __init__(self, phase, detail):
+    def __init__(self, phase, detail, *, cause=None):
         self.phase = phase
+        # The inner failure the probe caught, already safe to retain: class name,
+        # refusal reason and a detail that never quotes the session.
+        self.cause = cause
         super().__init__(f"{phase}: {detail}")
+
+
+def failure_cause(exc):
+    """What failed inside the probe, without quoting anything it was handed.
+
+    `IdentityNotProven` carries a reason code and a detail written to never
+    contain a secret; any other exception keeps only its class name, because its
+    text may quote the session or the API hash.
+    """
+    if isinstance(exc, ProbeFailure):
+        return exc.cause or {"type": "ProbeFailure", "detail": str(exc)}
+    if isinstance(exc, IdentityNotProven):
+        return {"type": "IdentityNotProven", "reason": exc.reason, "detail": exc.detail}
+    return {"type": type(exc).__name__}
+
+
+def describe_cause(cause):
+    return ": ".join(str(cause[key]) for key in ("type", "reason", "detail") if cause.get(key))
 
 
 def selection(criteria):
@@ -375,8 +396,9 @@ async def run_fixed_probe(
                 )
             evidence.update(status="passed", phase="completed")
     except Exception as exc:
-        evidence.update(status="failed", failure_type=type(exc).__name__)
-        raise ProbeFailure(evidence["phase"], type(exc).__name__) from None
+        cause = {key: redaction.text(value) for key, value in failure_cause(exc).items()}
+        evidence.update(status="failed", failure_type=cause["type"], failure_cause=cause)
+        raise ProbeFailure(evidence["phase"], describe_cause(cause), cause=cause) from None
     finally:
         try:
             await asyncio.wait_for(client.disconnect(), timeout=30)

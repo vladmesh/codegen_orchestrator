@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-06
 
+- Mega-noop QA keeps the probe's inner failure (`IdentityNotProven`, reason, redacted detail) in
+  `failure_cause` and the check detail; it was overwritten as `ProbeFailure`.
+- Live cleanup waits 120 s, not 30 s, for a project's active work to stop; a ~57 s workflow cancel
+  in run 37445448651 failed teardown.
 - Host unit profile: 0.5 s per-test budget, a CPU budget in `python -m shared`, `subprocess`/`slow`
   markers, no real waits; CI uploads junit and durations. AGENTS.md test rules; ~110 useless tests gone.
 - Unit tests may not read `docs/`, repository Markdown or `inspect.getsource` (`make lint`), and the
