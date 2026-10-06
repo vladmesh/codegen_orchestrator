@@ -80,6 +80,23 @@ tests for cross-service flows. Unit tests are for pure logic and fast feedback; 
 observable behavior rather than implementation details. Do not mock a real boundary that the
 relevant test layer can exercise.
 
+## Test rules
+
+Do not add tests that:
+
+- assert a removed name, field, file or wording is absent;
+- check documentation text;
+- grep source text — an architectural boundary is a lint rule (ruff `TID251` banned-api in
+  `ruff.toml`), or a guard on the shared source index (`shared/tests/source_index.py`);
+- compare a constant with its own literal (one historical wire-set test per persisted or
+  streamed enum is the exception).
+
+A removal is proven by deleting its code and its tests and passing the suite. A new unit test runs
+in under 0.5 s with no real sleep and no process start, or it is marked `ci_only` (or a sub-marker:
+`subprocess`, `slow(reason=...)`, see `docs/TESTING.md`). The host profile enforces the 0.5 s
+budget and `make lint` refuses a unit test that reads `docs/`, repository Markdown or
+`inspect.getsource` outside a `test_architecture_guards.py`.
+
 ## Rules
 
 **Documentation language** — project documentation is written in English, including new entries in `docs/CHANGELOG.md`.

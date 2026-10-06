@@ -76,31 +76,6 @@ def test_claude_profile_adapter_version_matches_worker_image_pin():
     assert 'claude --version | grep -F "${CLAUDE_CODE_VERSION}"' in dockerfile
 
 
-def test_claude_private_format_stays_in_versioned_adapter():
-    """Keep private Claude credential field names out of the stable profile reader."""
-    root = Path(__file__).resolve().parents[2] / "src"
-    reader = (root / "claude_auth.py").read_text()
-    adapter = (root / "claude_profile_v21278.py").read_text()
-
-    for private_name in ("claudeAiOauth", "accessToken", "refreshToken", "expiresAt"):
-        assert private_name not in reader
-        assert private_name in adapter
-
-
-def test_codex_private_parser_stays_in_versioned_adapter():
-    """Keep pinned serde_json/JWT semantics out of the generic host-profile layer."""
-    root = Path(__file__).resolve().parents[2] / "src"
-    stable = (root / "host_profile.py").read_text()
-    adapter = (root / "codex_profile_v01446.py").read_text()
-
-    for private_name in ("serde_json_number_out_of_range", "_POW10", "_NUMBER_TOKEN"):
-        assert private_name not in stable
-        assert private_name in adapter
-    assert "pinned_serde_json" not in stable
-    assert "def jwt_expiry(" not in stable
-    assert "def jwt_expiry(" in adapter
-
-
 def test_profile_adapter_provenance_matches_pinned_versions():
     """The compatibility corpus must name the exact CLI/source version it mirrors."""
     manifest_path = (
@@ -784,13 +759,6 @@ def _truncate_in_place(auth_path: Path) -> None:
         handle.truncate(0)
 
 
-def test_the_reader_joins_the_lock_the_worker_wrapper_takes():
-    from src.codex_auth import CODEX_PROFILE_LOCK_NAME
-
-    wrapper = ROOT_DIR / "packages/worker-wrapper/src/worker_wrapper/wrapper.py"
-    assert f'CODEX_PROFILE_LOCK_NAME = "{CODEX_PROFILE_LOCK_NAME}"' in wrapper.read_text()
-
-
 def test_a_torn_read_while_a_cli_holds_the_lock_is_contended_not_logged_out(tmp_path, monkeypatch):
     import src.codex_auth as codex_module
 
@@ -824,6 +792,7 @@ def test_the_same_empty_file_without_a_cli_holding_the_lock_is_logged_out(tmp_pa
     assert inspection.refusal is not None
 
 
+@pytest.mark.subprocess
 def test_an_in_place_refresh_during_the_read_yields_the_new_stable_observation(
     tmp_path, monkeypatch
 ):
@@ -1689,28 +1658,6 @@ def test_a_deeply_nested_claude_credentials_file_is_unusable_not_an_exception(tm
     assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
     with pytest.raises(RuntimeError, match="unreadable"):
         validate_claude_host_session(str(profile))
-
-
-def test_every_reader_json_parse_goes_through_the_total_boundary():
-    root = Path(__file__).resolve().parents[2] / "src"
-    parses = {
-        name: (root / name).read_text().count("json.loads(")
-        for name in (
-            "claude_auth.py",
-            "claude_profile_v21278.py",
-            "codex_auth.py",
-            "codex_profile_v01446.py",
-            "host_profile.py",
-        )
-    }
-
-    assert parses == {
-        "claude_auth.py": 0,
-        "claude_profile_v21278.py": 0,
-        "codex_auth.py": 0,
-        "codex_profile_v01446.py": 1,
-        "host_profile.py": 1,
-    }
 
 
 # --- Claude: standard JSON only, without Codex's pinned serde_json policies ------------

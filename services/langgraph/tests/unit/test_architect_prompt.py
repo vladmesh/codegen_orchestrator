@@ -176,9 +176,6 @@ class TestCriteriaUseOnlyTheQAVocabulary:
 
         return " ".join(present_product_brief.description.split())
 
-    def test_the_architect_prompt_no_longer_invites_curl(self):
-        assert "curl" not in SYSTEM_PROMPT.lower()
-
     def test_the_architect_prompt_names_every_qa_capable_action(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
         assert "- HTTP: a read-only HTTP GET of a route on the deployed URL" in prompt
@@ -394,11 +391,6 @@ class TestDecompositionPhilosophyIsReconciled:
 
 class TestQAUncheckableRequirementRule:
     """A must-requirement QA cannot check is rewritten or returned while it is planned."""
-
-    def test_the_prefix_is_the_one_fixed_form_of_the_reason(self):
-        from shared.contracts.dto.product_brief import NOT_AUTOMATICALLY_VERIFIABLE_PREFIX
-
-        assert NOT_AUTOMATICALLY_VERIFIABLE_PREFIX == "not automatically verifiable:"
 
     def test_the_rule_is_rendered_inside_what_qa_can_check(self):
         from src.prompts.qa_capabilities import render_architect_capabilities

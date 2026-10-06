@@ -34,7 +34,9 @@ class WorkerCredentialFixture:
                 pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         repo = Path(__file__).resolve().parents[2]
         self.helper = root / "git-credential-codegen"
         self.helper.write_text(

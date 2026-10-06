@@ -12,6 +12,8 @@ from pathlib import Path
 import sys
 import tomllib
 
+import pytest
+
 SERVICE = Path(__file__).resolve().parents[2]
 ROOT = SERVICE.parents[1]
 
@@ -117,12 +119,14 @@ def _missing(installed: set[str]) -> dict[str, str]:
     }
 
 
+@pytest.mark.slow(reason="resolves the image dependency graph from the whole uv.lock")
 def test_every_package_reachable_from_main_is_installed_in_the_image():
     missing = _missing(_installed())
 
     assert missing == {}, f"packages imported from src.main but absent from the image: {missing}"
 
 
+@pytest.mark.slow(reason="resolves the image dependency graph from the whole uv.lock")
 def test_the_guard_catches_the_undeclared_notification_transport():
     """Regression: shared.notifications made the image crash on a missing aiohttp."""
     assert _missing(_installed(without=frozenset({"aiohttp"}))) == {

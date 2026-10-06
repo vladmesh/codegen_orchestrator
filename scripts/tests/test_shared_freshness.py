@@ -440,6 +440,7 @@ def test_the_production_contours_are_the_ones_the_deploy_brings_up():
     assert all((REPO_ROOT / name).is_file() for contour in PRODUCTION_CONTOURS for name in contour)
 
 
+@pytest.mark.slow(reason="reads every compose file and Dockerfile in the repository")
 def test_no_production_contour_of_this_repository_runs_the_tree():
     contours = production_contours(REPO_ROOT)
 
@@ -643,6 +644,7 @@ def test_every_dockerfile_in_this_repository_is_covered():
     assert uncovered_dockerfiles(REPO_ROOT) == []
 
 
+@pytest.mark.slow(reason="reads every compose file and Dockerfile in the repository")
 def test_every_dockerfile_in_this_repository_reaches_an_image_name():
     """Totality on the real tree: a Dockerfile no route builds fails this."""
     problems, _routes = build_routes(REPO_ROOT)
@@ -650,6 +652,7 @@ def test_every_dockerfile_in_this_repository_reaches_an_image_name():
     assert problems == []
 
 
+@pytest.mark.slow(reason="reads every compose file and Dockerfile in the repository")
 def test_every_compose_service_in_this_repository_can_be_checked():
     """Including tests/compose/**: a built test image is an image like any other."""
     problems, _ = compose_routes(REPO_ROOT)
@@ -657,6 +660,7 @@ def test_every_compose_service_in_this_repository_can_be_checked():
     assert problems == []
 
 
+@pytest.mark.slow(reason="reads every compose file and Dockerfile in the repository")
 def test_the_tracked_set_covers_the_images_that_bake_shared_and_are_reused():
     references = {image.reference for image in tracked_images(REPO_ROOT)}
 
@@ -685,6 +689,7 @@ def test_the_tracked_set_covers_the_images_that_bake_shared_and_are_reused():
     }
 
 
+@pytest.mark.slow(reason="reads every compose file and Dockerfile in the repository")
 def test_worker_manager_bakes_shared_and_is_tracked():
     """The one compose service in the dev stack that runs the baked copy."""
     assert "services/worker-manager/Dockerfile" in dockerfiles_baking_shared(REPO_ROOT)
@@ -708,6 +713,7 @@ def test_the_makefile_reads_the_hash_from_here_and_counts_it_nowhere_else():
     assert "sha256sum" not in makefile
 
 
+@pytest.mark.subprocess
 def test_the_makefile_hash_equals_the_hash_this_module_computes():
     printed = subprocess.run(
         ["make", "-s", "print-source-hash"],

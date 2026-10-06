@@ -15,6 +15,9 @@ import time
 
 import pytest
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "stand_background.sh"
 
 EXIT_USAGE = 2

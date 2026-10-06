@@ -103,13 +103,6 @@ class TestApplicationHealthFields:
 
 
 class TestApplicationStatusEnum:
-    def test_values(self):
-        assert ApplicationStatus.NOT_DEPLOYED == "not_deployed"
-        assert ApplicationStatus.RUNNING == "running"
-        assert ApplicationStatus.STOPPED == "stopped"
-        assert ApplicationStatus.DOWN == "down"
-        assert ApplicationStatus.DEGRADED == "degraded"
-
     def test_membership(self):
         values = list(ApplicationStatus)
         assert len(values) == 8

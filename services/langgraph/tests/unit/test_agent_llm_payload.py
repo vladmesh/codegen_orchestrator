@@ -118,6 +118,7 @@ def _assert_accepted_by_openrouter(body: dict) -> None:
     assert "max_tokens" not in body
 
 
+@pytest.mark.subprocess
 @pytest.mark.asyncio
 async def test_the_architect_request_carries_tools_and_no_sampling_parameter(openrouter):
     graph = create_architect_graph(

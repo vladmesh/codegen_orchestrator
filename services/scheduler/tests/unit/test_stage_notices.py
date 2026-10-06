@@ -482,6 +482,7 @@ async def test_a_marker_without_a_step_is_announced_once_as_an_entry(
     assert (await read_stage_notice_marker(redis_client, STORY_ID)).entered_at == T0
 
 
+@pytest.mark.slow(reason="simulates eight hours of supervisor ticks")
 @pytest.mark.asyncio
 async def test_tg_1015926438_eight_hours_in_an_unbounded_stage(api_client, redis_client, stories):
     """The production shape: `in_progress` for 8 hours with a sweep every 30 s.

@@ -7,6 +7,9 @@ import pytest
 from shared.commit_publication import publish_commit
 from shared.contracts.dto.commit_publication import PublicationFailure
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 
 def git(path, *args):
     return subprocess.run(

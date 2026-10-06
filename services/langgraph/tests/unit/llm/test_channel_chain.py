@@ -23,6 +23,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from shared.contracts.dto.llm_channel import LLMChannel, LLMChannelConfig
+from shared.tests import source_index
 from src.llm import (
     ChannelFailureClass,
     InvalidChannelChainError,
@@ -35,6 +36,9 @@ from src.llm import (
 from src.llm.cli_turn import CODEX_PROFILE_LOCK_NAME
 from tests.unit.llm.conftest import OPENROUTER_KEY
 from tests.unit.llm.fake_cli import turn
+
+# Most tests here start processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
 
 SRC = Path(__file__).resolve().parents[3] / "src"
 
@@ -274,7 +278,7 @@ class TestSwitchOnChannelFailure:
     async def test_a_channel_past_its_timeout_is_abandoned(self, channels):
         channels.codex.script({"sleep": 30, "answer": turn("too late")})
         chain = [
-            LLMChannelConfig(channel=LLMChannel.CODEX, timeout_seconds=0.5),
+            LLMChannelConfig(channel=LLMChannel.CODEX, timeout_seconds=0.2),
             LLMChannelConfig(channel=LLMChannel.CLAUDE),
         ]
         llm = build_agent_llm(LLMAgent.ARCHITECT, chain, channels.settings())
@@ -550,7 +554,7 @@ class TestCliTurn:
     async def test_codex_waits_for_the_profile_lock_within_its_timeout(self, channels):
         lock_path = channels.codex_home / CODEX_PROFILE_LOCK_NAME
         chain = [
-            LLMChannelConfig(channel=LLMChannel.CODEX, timeout_seconds=0.5),
+            LLMChannelConfig(channel=LLMChannel.CODEX, timeout_seconds=0.2),
             LLMChannelConfig(channel=LLMChannel.CLAUDE),
         ]
         llm = build_agent_llm(LLMAgent.ARCHITECT, chain, channels.settings())
@@ -569,6 +573,7 @@ class TestCliTurn:
         released = await _ask(llm)
         assert released.response_metadata["llm_channel"] == "codex"
 
+    @pytest.mark.slow(reason="three CLI turns of 0.3 s, serialized by the lock under test")
     async def test_codex_turns_on_one_profile_never_overlap(self, channels):
         channels.codex.script({"sleep": 0.3, "answer": turn("serial")})
         llm = build_agent_llm(LLMAgent.ARCHITECT, _chain("codex"), channels.settings())
@@ -630,21 +635,11 @@ class TestRecording:
         ]
 
 
-def test_chat_openai_is_referenced_only_in_the_openrouter_channel_module():
-    referencing = sorted(
-        str(path.relative_to(SRC))
-        for path in SRC.rglob("*.py")
-        if re.search(r"\bChatOpenAI\b", path.read_text())
-    )
-
-    assert referencing == ["llm/openrouter.py"]
-
-
 def test_the_openrouter_key_env_is_read_only_in_the_openrouter_channel_module():
     readers = sorted(
         str(path.relative_to(SRC))
-        for path in SRC.rglob("*.py")
-        if re.search(r"\b(?:po|architect)_llm_api_key\b|_LLM_API_KEY\b", path.read_text())
+        for path in source_index.python_files(SRC)
+        if re.search(r"\b(?:po|architect)_llm_api_key\b|_LLM_API_KEY\b", source_index.text(path))
     )
 
     # settings.py declares the fields; agent_llm_env.py names them for .env.example.

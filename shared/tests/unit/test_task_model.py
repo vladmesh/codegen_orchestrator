@@ -28,31 +28,30 @@ def _setup_db():
 # --- Enum tests ---
 
 
-def test_task_status_values():
-    assert TaskStatus.BACKLOG == "backlog"
-    assert TaskStatus.TODO == "todo"
-    assert TaskStatus.IN_DEV == "in_dev"
-    assert TaskStatus.DONE == "done"
-    assert TaskStatus.BLOCKED == "blocked"
-    assert TaskStatus.FAILED == "failed"
-    assert TaskStatus.CANCELLED == "cancelled"
-
-
-def test_task_type_values():
-    assert TaskType.CREATE == "create"
-    assert TaskType.FEATURE == "feature"
-    assert TaskType.FIX == "fix"
-    assert TaskType.REFACTOR == "refactor"
-
-
-def test_task_event_type_values():
-    assert TaskEventType.STATUS_CHANGE == "status_change"
-    assert TaskEventType.ITERATION_START == "iteration_start"
-    assert TaskEventType.ITERATION_END == "iteration_end"
-    assert TaskEventType.NOTE == "note"
-    assert TaskEventType.COMMENT == "comment"
-    assert not hasattr(TaskEventType, "STEP_START")
-    assert not hasattr(TaskEventType, "STEP_DONE")
+def test_task_enums_are_the_historical_wire_set():
+    """Task rows persist these values: a changed one is a migration, not a rename."""
+    assert {status.value for status in TaskStatus} == {
+        "backlog",
+        "todo",
+        "in_dev",
+        "in_ci",
+        "testing",
+        "waiting_human_review",
+        "waiting_resources",
+        "blocked",
+        "failed",
+        "done",
+        "cancelled",
+    }
+    assert {kind.value for kind in TaskType} == {"create", "feature", "fix", "install", "refactor"}
+    assert {kind.value for kind in TaskEventType} == {
+        "status_change",
+        "iteration_start",
+        "iteration_end",
+        "note",
+        "comment",
+        "worker_report",
+    }
 
 
 # --- Transition matrix tests ---
@@ -94,11 +93,6 @@ def test_in_ci_transitions():
     assert TaskStatus.CANCELLED in allowed
 
 
-def test_in_ci_status_value():
-    assert TaskStatus.IN_CI == "in_ci"
-    assert not hasattr(TaskStatus, "IN_REVIEW")
-
-
 def test_in_dev_can_go_to_blocked():
     assert TaskStatus.BLOCKED in VALID_TRANSITIONS[TaskStatus.IN_DEV]
 
@@ -113,10 +107,6 @@ def test_blocked_transitions():
 
 def test_testing_can_return_to_in_dev():
     assert TaskStatus.IN_DEV in VALID_TRANSITIONS[TaskStatus.TESTING]
-
-
-def test_waiting_human_review_status_value():
-    assert TaskStatus.WAITING_HUMAN_REVIEW == "waiting_human_review"
 
 
 def test_in_dev_can_go_to_waiting_human_review():

@@ -27,6 +27,9 @@ from src.llm.cli_turn import CODEX_PROFILE_LOCK_NAME
 from tests.unit.llm.conftest import OPENROUTER_KEY
 from tests.unit.llm.test_channel_chain import DEFAULT, _ask, _chain
 
+# Most tests here start processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 REPO = Path(__file__).resolve().parents[5]
 OWNER_UID, OWNER_GID = 4242, 4343
 
@@ -263,15 +266,6 @@ def _constant(path: Path, name: str) -> str:
     match = re.search(rf'^{name} = "([^"]+)"$', path.read_text(), flags=re.MULTILINE)
     assert match is not None, f"{name} is not defined in {path}"
     return match.group(1)
-
-
-def test_the_profile_lock_is_the_one_the_worker_wrapper_and_worker_manager_use():
-    wrapper = REPO / "packages/worker-wrapper/src/worker_wrapper/wrapper.py"
-    reader = REPO / "services/worker-manager/src/codex_auth.py"
-
-    assert _constant(wrapper, "CODEX_PROFILE_LOCK_NAME") == CODEX_PROFILE_LOCK_NAME
-    assert _constant(reader, "CODEX_PROFILE_LOCK_NAME") == CODEX_PROFILE_LOCK_NAME
-    assert "profile / CODEX_PROFILE_LOCK_NAME" in wrapper.read_text()
 
 
 # --- PO timeouts ----------------------------------------------------------------

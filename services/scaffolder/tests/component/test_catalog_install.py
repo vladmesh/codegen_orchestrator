@@ -13,6 +13,9 @@ from src.install import InstallExecutionError, run_install
 from src.scaffold import _run_cmd
 from tests.unit.test_install_executor import message
 
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.subprocess
+
 
 def git(root, *args):
     return (

@@ -19,6 +19,8 @@ TIMEZONE = "Etc/UTC"
 PROBE_TIMEOUT = 280
 REPLY_TIMEOUT = 30
 DUE_LATE_SECONDS = 75
+# Every readback and reply poll waits this long between reads; unit tests set it to 0.
+POLL_SECONDS = 1
 CLOCK_SKEW_SECONDS = 2
 MONTHS = (
     "January February March April May June July August September October November December"
@@ -161,7 +163,7 @@ async def reconcile_emission(read_rows, original, evidence):
                     raise ProbeFailure(
                         phase, "expected the confirmed reminder to be due or emitted"
                     )
-                await asyncio.sleep(1)
+                await asyncio.sleep(POLL_SECONDS)
     except TimeoutError:
         raise ProbeFailure(phase, "emitted state was not visible before deadline") from None
 
@@ -201,7 +203,7 @@ async def run_conversation(  # noqa: C901, PLR0915 - sequential fixed chat and c
                 if expected(text):
                     evidence.setdefault("messages", []).append(message_record(item))
                     return item
-            await asyncio.sleep(1)
+            await asyncio.sleep(POLL_SECONDS)
         raise ProbeFailure(phase, "expected bot reply did not arrive before deadline")
 
     async def send(command, phase, expected):
@@ -225,7 +227,7 @@ async def run_conversation(  # noqa: C901, PLR0915 - sequential fixed chat and c
             ):
                 evidence.setdefault("messages", []).append(message_record(message))
                 return message
-            await asyncio.sleep(1)
+            await asyncio.sleep(POLL_SECONDS)
         raise ProbeFailure(phase, "callback did not edit its own bot message before deadline")
 
     note = f"stand-note-{marker}"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -28,19 +27,6 @@ from tests.unit.factories import (
     make_run,
     make_run_start,
 )
-
-
-def test_deploy_job_is_thin_orchestrator_without_complexity_suppression():
-    """Keep M10 closed: the worker entrypoint delegates each deploy phase."""
-    from src.consumers.deploy import process_deploy_job
-
-    source = inspect.getsource(process_deploy_job)
-
-    assert "# noqa:" not in source
-    assert "_claim_deploy_job" in source
-    assert "_load_deploy_base" in source
-    assert "_prepare_deploy" in source
-    assert "_execute_prepared_deploy" in source
 
 
 @pytest.fixture

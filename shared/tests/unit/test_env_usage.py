@@ -439,6 +439,7 @@ def test_template_fixture_extracts_without_crashing(tmp_path: Path):
     }.issubset({(reference.key, reference.source) for reference in references})
 
 
+@pytest.mark.subprocess
 def test_template_fixture_has_known_contract_gaps(tmp_path: Path):
     """What the pinned render is allowed to leave undeclared — with the kit, nothing."""
     shutil.copytree(template_fixture(), tmp_path, dirs_exist_ok=True)
@@ -605,6 +606,7 @@ def test_artifact_is_deterministic_and_bound_to_commit(tmp_path: Path):
     }
 
 
+@pytest.mark.subprocess
 def test_cli_runs_against_generated_project_without_codegen_repository(tmp_path: Path):
     (tmp_path / "app.py").write_text('import os\nos.getenv("DECLARED")\n')
     write_fragment(tmp_path, {"DECLARED": literal_entry()})
@@ -634,6 +636,7 @@ def test_cli_runs_against_generated_project_without_codegen_repository(tmp_path:
     assert json.loads(artifact.read_text())["commit_sha"] == "b" * 40
 
 
+@pytest.mark.subprocess
 def test_vendor_copy_runs_in_isolated_process_without_repository(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()

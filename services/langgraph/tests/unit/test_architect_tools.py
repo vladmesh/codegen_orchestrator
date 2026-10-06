@@ -216,7 +216,6 @@ class TestArchitectToolSurface:
     def test_exposes_no_story_lifecycle_tool(self):
         from src.agents.architect import tools
 
-        assert not hasattr(tools, "transition_story")
         names = {tool.name for tool in tools.get_architect_tools()}
         assert names == {
             "plan_install",

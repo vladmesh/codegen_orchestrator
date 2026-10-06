@@ -10,6 +10,7 @@ from shared.contracts.worker_evidence import RemovalFact, RemovedWorkerEvidence
 from tests.integration.backend import conftest as backend
 
 
+@pytest.mark.subprocess
 def test_scaffolded_repository_matches_worker_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "WORKSPACE_BASE_PATH", str(tmp_path))
     repo_id = backend._create_scaffolded_workspace()

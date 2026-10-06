@@ -20,6 +20,7 @@ def gate():
     return _load_gate()
 
 
+@pytest.mark.slow(reason="the CI Contract job runs this same check on every run")
 def test_actual_workflow_meets_the_complete_ci_contract(gate):
     gate.main()
 
@@ -361,6 +362,7 @@ def test_worker_base_children_take_their_base_from_the_builder(gate):
         assert "ARG BASE_IMAGE=" not in body
 
 
+@pytest.mark.slow(reason="globs the whole repository tree")
 def test_repo_tree_suffix_named_files_are_covered(gate):
     """The real tree, globbed independently of the gate's own walk.
 
@@ -646,8 +648,8 @@ def test_a_longer_retry_attempt_bound_is_counted_three_times(gate):
     pull["run"] = pull["run"].replace("--attempt-timeout 90s", "--attempt-timeout 300s")
 
     # The backup image retry and restore regression add five minutes to the budget,
-    # the privileged runner regressions two and a half.
-    with pytest.raises(SystemExit, match="fast-checks can take 55 minutes"):
+    # the privileged runner regressions two and a half, the unit report upload two.
+    with pytest.raises(SystemExit, match="fast-checks can take 57 minutes"):
         gate.assert_job_timeouts(jobs)
 
 

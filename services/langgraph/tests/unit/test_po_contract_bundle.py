@@ -7,7 +7,10 @@ import shutil
 import subprocess
 import sys
 
+import pytest
 
+
+@pytest.mark.subprocess
 def test_worker_shared_bundle_imports_without_service_modules(tmp_path):
     root = Path(__file__).resolve().parents[4]
     dockerfile = root / "services/worker-manager/images/worker-base-common/Dockerfile"

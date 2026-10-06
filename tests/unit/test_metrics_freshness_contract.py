@@ -9,7 +9,6 @@ import pytest
 import yaml
 
 from shared.allocation_freshness import (
-    ALLOCATION_METRICS_FRESHNESS_SECONDS,
     DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS,
     effective_allocation_metrics_freshness_seconds,
     validate_health_check_interval,
@@ -49,7 +48,6 @@ def _import_scheduler_health_checker(
 
 def test_default_cadence_leaves_room_for_a_missed_health_check() -> None:
     assert validate_health_check_interval(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS) == 60
-    assert ALLOCATION_METRICS_FRESHNESS_SECONDS == 300
 
 
 def test_runtime_override_cannot_make_freshness_expire_between_scheduled_checks() -> None:
@@ -66,6 +64,7 @@ def test_effective_runtime_freshness_override_also_constrains_scheduler_cadence(
         validate_health_check_interval(61, freshness_seconds=freshness)
 
 
+@pytest.mark.subprocess
 def test_scheduler_startup_import_uses_effective_interval_and_freshness_overrides() -> None:
     result = _import_scheduler_health_checker(interval="60", freshness="180")
 
@@ -73,6 +72,7 @@ def test_scheduler_startup_import_uses_effective_interval_and_freshness_override
     assert result.stdout.strip() == "60"
 
 
+@pytest.mark.subprocess
 def test_scheduler_startup_import_refuses_an_unsafe_effective_override() -> None:
     result = _import_scheduler_health_checker(interval="61", freshness="180")
 

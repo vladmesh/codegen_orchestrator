@@ -73,6 +73,7 @@ def _load(name: str, path: Path) -> ModuleType:
     return module
 
 
+@pytest.mark.slow(reason="reads every file git tracks in the repository")
 def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
     ref = template_pin.TEMPLATE_PIN.ref
     literal = re.compile(rf"(?<![\d.]){re.escape(ref)}(?!\.?\d)")
@@ -161,6 +162,7 @@ def candidate_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> template_p
     return moved
 
 
+@pytest.mark.subprocess
 def test_a_moved_pin_reaches_the_live_suite_defaults(
     candidate_pin: template_pin.TemplatePin,
 ) -> None:
@@ -187,6 +189,7 @@ def test_a_moved_pin_reaches_the_fixture_path_and_the_ci_gate(
     assert candidate_pin.fixture_relpath in gate.UNPINNED_IMAGE_DIRS
 
 
+@pytest.mark.subprocess
 def test_the_live_override_still_wins_over_the_moved_pin(
     candidate_pin: template_pin.TemplatePin, monkeypatch: pytest.MonkeyPatch
 ) -> None:

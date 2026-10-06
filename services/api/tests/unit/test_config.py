@@ -48,7 +48,6 @@ def test_settings_and_executor_resolution_work_without_telegram_bot_token(monkey
     settings = Settings(_env_file=None)
     decision = resolve_executor_decision(RunType.ENGINEERING, None, settings)
 
-    assert not hasattr(settings, "telegram_bot_token")
     assert decision.agent_type is AgentType.CODEX
     assert decision.source is ExecutorDecisionSource.API_DEFAULT
 

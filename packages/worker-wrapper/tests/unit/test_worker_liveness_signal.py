@@ -54,6 +54,7 @@ class TestTheLimitKeepsTheWork:
         proc.wait = wait
         return proc, killed
 
+    @pytest.mark.slow(reason="a real child runs into the 1 s agent limit")
     @pytest.mark.asyncio
     async def test_partial_transcript_survives_the_limit(self, tmp_path):
         """An hour of real output is not thrown away because the turn ran out."""
@@ -260,6 +261,7 @@ class TestTheLimitKeepsTheWork:
         )
         assert wrapper._result_event.cancelled is True
 
+    @pytest.mark.subprocess
     @pytest.mark.asyncio
     @pytest.mark.skipif(os.name != "posix", reason="process groups are a POSIX contract")
     async def test_process_group_kill_reaches_a_real_descendant(self):

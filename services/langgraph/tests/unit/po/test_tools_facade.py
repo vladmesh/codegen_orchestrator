@@ -1,56 +1,7 @@
-"""Boundary tests for PO tool composition and domain ownership."""
+"""PO tool composition: the PO graph gets every owner module's tools, in order.
 
-import ast
-from pathlib import Path
-
-_PUBLIC_TOOLS = {
-    "get_all_tools",
-    "get_budget_balance",
-    "note_to_admins",
-    "pass_capability_request",
-    "notify_user",
-    "set_reminder",
-    "web_search",
-}
-
-
-def test_callers_import_tools_from_their_owner_modules() -> None:
-    root = Path(__file__).resolve().parents[5]
-    violations = []
-    for directory in (root / "services" / "langgraph", root / "tests"):
-        for path in directory.rglob("*.py"):
-            if any(part.startswith(".") or part == "__pycache__" for part in path.parts):
-                continue
-            for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
-                if not isinstance(node, ast.ImportFrom):
-                    continue
-                if node.module not in {"src.agents.po.tools", "agents.po.tools"}:
-                    continue
-                for alias in node.names:
-                    if alias.name not in _PUBLIC_TOOLS:
-                        violations.append(f"{path.relative_to(root)}:{node.lineno}: {alias.name}")
-    assert not violations, "Import from the owning PO module:\n" + "\n".join(violations)
-
-
-def test_tools_facade_does_not_export_domain_or_startup_symbols() -> None:
-    from src.agents.po import tools
-
-    retired_names = {
-        "_get_api",
-        "_get_stream_client",
-        "_user_headers",
-        "init_po_clients",
-        "AVAILABLE_MODULES",
-        "HTTP_UNPROCESSABLE",
-        "PRODUCT_BRIEF_POINTER_KEY",
-        "PO_REMINDERS_KEY",
-    }
-    retired_names.update(
-        tool.name for tool in tools.get_all_tools() if tool.name not in _PUBLIC_TOOLS
-    )
-    for name in retired_names:
-        assert not hasattr(tools, name), name
-    assert set(tools.__all__) == _PUBLIC_TOOLS
+That callers import a tool from its owner module is a lint rule (ruff TID251, ruff.toml).
+"""
 
 
 def test_get_all_tools_preserves_tool_identity_and_order() -> None:

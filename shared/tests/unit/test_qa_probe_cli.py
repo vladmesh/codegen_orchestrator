@@ -87,6 +87,7 @@ def test_telegram_cli_prints_the_capability_json_and_uses_error_value_for_exit_s
     assert json.loads(requests[0].data) == expected_call
 
 
+@pytest.mark.subprocess
 def test_probe_runs_a_python_script_and_records_its_evidence(monkeypatch, tmp_path):
     script = tmp_path / "probe.py"
     script.write_text(
@@ -118,10 +119,17 @@ def test_probe_runs_a_python_script_and_records_its_evidence(monkeypatch, tmp_pa
     assert call["args"]["exit_status"] == 7
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize(
     ("label", "suffix", "body", "expected_status"),
     [
-        ("timeout", ".sh", "printf timed; sleep 1", 124),
+        pytest.param(
+            "timeout",
+            ".sh",
+            "printf timed; sleep 1",
+            124,
+            marks=pytest.mark.slow(reason="the probe's own timeout stops a real script"),
+        ),
         ("nonutf8", ".sh", "printf '\\377\\376 binary\\n'", 0),
         ("large", ".py", "print('x' * 1100000)", 0),
         (
@@ -194,6 +202,7 @@ def test_probe_capture_is_total_for_hostile_script_and_endpoint_cases(
         assert "record not retained" in stdout.getvalue()
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize(
     ("secret_name", "field", "secret"),
     [

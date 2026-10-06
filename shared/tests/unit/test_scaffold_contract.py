@@ -8,12 +8,6 @@ from shared.queues import QUEUE_TOPOLOGY, SCAFFOLD_GROUP, SCAFFOLD_QUEUE
 
 
 class TestScaffoldQueue:
-    def test_queue_constant(self):
-        assert SCAFFOLD_QUEUE == "scaffold:queue"
-
-    def test_group_constant(self):
-        assert SCAFFOLD_GROUP == "scaffold-consumers"
-
     def test_topology_binding_exists(self):
         bindings = {b.stream: b.group for b in QUEUE_TOPOLOGY}
         assert bindings[SCAFFOLD_QUEUE] == SCAFFOLD_GROUP

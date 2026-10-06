@@ -6,19 +6,6 @@ from shared.contracts.dto.story import VALID_TRANSITIONS, StoryStatus, StoryType
 
 
 class TestStoryStatus:
-    def test_values(self):
-        assert StoryStatus.CREATED == "created"
-        assert StoryStatus.IN_PROGRESS == "in_progress"
-        assert StoryStatus.REOPENED == "reopened"
-        assert StoryStatus.COMPLETED == "completed"
-        assert StoryStatus.ARCHIVED == "archived"
-
-    def test_failed_value(self):
-        assert StoryStatus.FAILED == "failed"
-
-    def test_testing_value(self):
-        assert StoryStatus.TESTING == "testing"
-
     def test_membership(self):
         values = list(StoryStatus)
         assert len(values) == 11  # noqa: PLR2004
@@ -83,9 +70,6 @@ class TestStoryTransitions:
     def test_reopened_can_fail(self):
         assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.REOPENED]
 
-    def test_waiting_human_review_status_value(self):
-        assert StoryStatus.WAITING_HUMAN_REVIEW == "waiting_human_review"
-
     def test_in_progress_can_go_to_whr(self):
         assert StoryStatus.WAITING_HUMAN_REVIEW in VALID_TRANSITIONS[StoryStatus.IN_PROGRESS]
 
@@ -123,9 +107,6 @@ class TestStoryTransitions:
     def test_testing_can_fail(self):
         assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.TESTING]
 
-    def test_waiting_user_secret_status_value(self):
-        assert StoryStatus.WAITING_USER_SECRET == "waiting_user_secret"  # noqa: S105
-
     def test_deploying_can_wait_for_user_secret(self):
         assert StoryStatus.WAITING_USER_SECRET in VALID_TRANSITIONS[StoryStatus.DEPLOYING]
 
@@ -150,10 +131,6 @@ class TestStoryTransitions:
 
 
 class TestStoryType:
-    def test_values(self):
-        assert StoryType.PRODUCT == "product"
-        assert StoryType.TECHNICAL == "technical"
-
     def test_membership(self):
         values = list(StoryType)
         assert len(values) == 2  # noqa: PLR2004

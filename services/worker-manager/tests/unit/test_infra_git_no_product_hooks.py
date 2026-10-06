@@ -30,7 +30,8 @@ from shared.contracts.queues.worker import AgentType, WorkerOwnership
 from src import git_ops
 from src.manager import WorkerManager
 
-pytestmark = pytest.mark.asyncio
+# Every test here starts processes: CI runs this file, the host profile skips it.
+pytestmark = [pytest.mark.asyncio, pytest.mark.subprocess]
 
 _OWNERSHIP = WorkerOwnership(
     story_id="story-ea07a289", project_id="proj-1", run_id="live-1", attempt_id="eng-1"

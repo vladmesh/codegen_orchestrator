@@ -9,6 +9,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   `failure_cause` and the check detail; it was overwritten as `ProbeFailure`.
 - Live cleanup waits 120 s, not 30 s, for a project's active work to stop; a ~57 s workflow cancel
   in run 37445448651 failed teardown.
+- Host unit profile: 0.5 s per-test budget, a CPU budget in `python -m shared`, `subprocess`/`slow`
+  markers, no real waits; CI uploads junit and durations. AGENTS.md test rules; ~110 useless tests gone.
+- Unit tests may not read `docs/`, repository Markdown or `inspect.getsource` (`make lint`), and the
+  PO-tools and `ChatOpenAI` import boundaries are ruff `TID251` rules instead of tree-grep tests.
 - Mega-noop checks the QA grant's `head_sha` against the story commit its deploy Run targeted,
   not the merge commit; a passed notes probe no longer fails the `grant` phase.
 - QA admission treats one `Stand mechanical notes|reminders` probe line beside GET checks as

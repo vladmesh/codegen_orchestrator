@@ -1,42 +1,17 @@
 """Regression coverage for the projects router package boundary."""
 
-from pathlib import Path
+import pytest
 
 from src.main import app
 
-API_SRC = Path(__file__).parents[2] / "src"
-ROUTERS = API_SRC / "routers"
+
+@pytest.fixture(scope="module")
+def schema():
+    """The OpenAPI document, built once: building it walks every route of the app."""
+    return app.openapi()
 
 
-def test_projects_router_is_a_thin_package_without_duplicate_guards():
-    assert not (ROUTERS / "projects.py").exists()
-    for module in (
-        "__init__.py",
-        "access.py",
-        "lifecycle.py",
-        "secrets.py",
-        "telegram.py",
-        "teardown.py",
-    ):
-        assert (ROUTERS / "projects" / module).exists()
-
-    package = ROUTERS / "projects"
-    facade = (package / "__init__.py").read_text()
-    assert 'APIRouter(prefix="/projects", tags=["projects"])' in facade
-    assert "def _check_project_access" not in facade
-    assert "def _load_locked_project" not in facade
-    for module in package.glob("*.py"):
-        source = module.read_text()
-        assert "def _check_project_access" not in source
-        assert "def _load_locked_project" not in source
-
-    guards = (ROUTERS / "projects_guards.py").read_text()
-    assert "def check_project_access" in guards
-    assert "def load_locked_project" in guards
-
-
-def test_projects_route_table_keeps_its_public_surface():
-    schema = app.openapi()
+def test_projects_route_table_keeps_its_public_surface(schema):
     routes = {
         (method.upper(), path, operation["operationId"], tuple(operation["responses"]))
         for path, item in schema["paths"].items()

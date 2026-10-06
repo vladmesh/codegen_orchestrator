@@ -647,6 +647,7 @@ class TestTheProbeLibraryItIsOffered:
             == WorkerStatus.RUNNING
         )
 
+    @pytest.mark.subprocess
     async def test_the_write_commands_reproduce_each_file_byte_for_byte(self, qa_worker, tmp_path):
         # A unicode-heavy file is three times its characters in bytes; it is
         # written in chunks so no one exec argument nears the kernel's 128 KiB.

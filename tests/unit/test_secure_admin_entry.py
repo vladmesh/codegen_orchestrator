@@ -80,15 +80,3 @@ def test_admin_credentials_have_no_default_value():
     assert "ADMIN_USER: ${ADMIN_USER}" in compose
     assert "ADMIN_USER:-" not in entrypoint
     assert 'if [ -z "$ADMIN_USER" ]; then' in entrypoint
-
-
-def test_deploy_guide_records_the_supported_tunnel_and_safety_checks():
-    deploy = (ROOT / "docs/DEPLOY.md").read_text()
-
-    assert "ssh -N -L 3001:127.0.0.1:3001 deploy@PROD_HOST" in deploy
-    assert "http://127.0.0.1:3001" in deploy
-    assert "sudo ss -ltn '( sport = :3001 )'" in deploy
-    assert (
-        "rg -n 'admin-frontend|handle /api|handle /wm-api|handle /grafana' infra/Caddyfile"
-        in deploy
-    )

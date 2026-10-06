@@ -294,6 +294,7 @@ class TestTheEndpointServesOnlyAProvenIdentity:
 
 
 class TestTheQaCommandKeepsTheSessionOutOfItsOutput:
+    @pytest.mark.subprocess
     async def test_the_identity_lands_in_a_private_file_and_only_the_path_is_printed(
         self, identity_endpoint, tmp_path
     ):

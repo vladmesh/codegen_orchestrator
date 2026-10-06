@@ -44,10 +44,6 @@ class TestRepositoryModel:
 
 
 class TestRepositoryRoleEnum:
-    def test_values(self):
-        assert RepositoryRole.PRIMARY == "primary"
-        assert RepositoryRole.DEPENDENCY == "dependency"
-
     def test_membership(self):
         assert "primary" in list(RepositoryRole)
         assert "dependency" in list(RepositoryRole)

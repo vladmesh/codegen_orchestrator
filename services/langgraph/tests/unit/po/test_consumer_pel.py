@@ -435,7 +435,7 @@ class TestTheInFlightSetAtTheProductionRatio:
     stream on this client.
     """
 
-    TIMEOUT_MS = 200
+    TIMEOUT_MS = 100
     SWEEP_MS = TIMEOUT_MS // 2
 
     @pytest.fixture

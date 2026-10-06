@@ -90,6 +90,7 @@ def test_gh_auth_command_refuses_before_credentials(prefix, subcommand, monkeypa
     run.assert_not_called()
 
 
+@pytest.mark.subprocess
 @pytest.mark.parametrize("args", [["api", "repos/org/repo"], ["issue", "list", "--label", "auth"]])
 def test_native_gh_child_uses_new_auth_for_later_command(args, tmp_path, monkeypatch, capfd):
     native = tmp_path / "native-gh"

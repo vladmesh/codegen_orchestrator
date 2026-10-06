@@ -422,12 +422,14 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
             },
         )
 
+    @pytest.mark.subprocess
     def test_the_account_the_role_creates_passes(self, tmp_path, socket):
         result = self._prove(self._target(tmp_path), socket)
 
         assert result.returncode == 0, result.stderr
         assert "uid=1001" in result.stdout
 
+    @pytest.mark.subprocess
     def test_uid_zero_is_refused(self, tmp_path, socket):
         """`qa-observer` with uid 0 is root wearing another name."""
         result = self._prove(self._target(tmp_path, uid="0"), socket)
@@ -435,6 +437,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert result.returncode != 0
         assert "uid 0" in result.stderr
 
+    @pytest.mark.subprocess
     def test_a_pre_existing_account_in_the_docker_group_is_refused(self, tmp_path, socket):
         result = self._prove(
             self._target(tmp_path, groups="qa-observer docker"),
@@ -444,6 +447,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert result.returncode != 0
         assert "docker group" in result.stderr
 
+    @pytest.mark.subprocess
     def test_somebody_elses_sudoers_rule_is_refused(self, tmp_path, socket):
         """The case the role's own file cannot see: a second rule, in a second file.
 
@@ -462,6 +466,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert result.returncode != 0
         assert "may run more through sudo" in result.stderr
 
+    @pytest.mark.subprocess
     def test_an_acl_straight_onto_the_docker_socket_is_refused(self, tmp_path, socket):
         """No group says so, and `id` cannot see it, so the account is asked instead."""
         result = self._prove(self._target(tmp_path, socket_reachable=True), socket)
@@ -469,12 +474,14 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert result.returncode != 0
         assert str(socket) in result.stderr
 
+    @pytest.mark.subprocess
     def test_an_account_that_is_not_there_is_refused(self, tmp_path, socket):
         result = self._prove(self._target(tmp_path, exists=False), socket)
 
         assert result.returncode != 0
         assert "does not exist" in result.stderr
 
+    @pytest.mark.subprocess
     def test_sudo_that_cannot_answer_is_refused(self, tmp_path, socket):
         """An unprovable seat is a failed seat: silence is never taken for absence."""
         result = self._prove(self._target(tmp_path, sudo=None), socket)
@@ -498,6 +505,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert "{{ qa_target_profile_version | quote }}" in proof["cmd"]
         assert _task_index(PROOF_TASK) == len(_tasks()) - 1
 
+    @pytest.mark.subprocess
     def test_the_proof_reports_the_profile_it_proved(self, tmp_path, socket):
         """The receipt is written from this line, so it has to name the exact profile."""
         result = self._prove(self._target(tmp_path), socket)
@@ -505,6 +513,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert result.returncode == 0, result.stderr
         assert proved_profile_version(result.stdout) == QA_TARGET_PROFILE_VERSION
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         "answer",
         [
@@ -529,6 +538,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
     # before it runs anything, and the account asks the wrapper through sudo.
     SUDO_WARNING = "sudo: unable to resolve host vps-275301: Name or service not known"
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize("where", ["before", "after"])
     def test_a_sudo_warning_beside_the_answer_is_not_an_old_wrapper(self, tmp_path, socket, where):
         """What vps-275301's retrofit was refused on, with the right wrapper installed.
@@ -555,6 +565,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert result.returncode == 0, result.stderr
         assert proved_profile_version(result.stdout) == QA_TARGET_PROFILE_VERSION
 
+    @pytest.mark.subprocess
     def test_a_sudo_warning_does_not_excuse_a_wrapper_of_another_profile(self, tmp_path, socket):
         """Tolerating the noise is not tolerating the answer underneath it."""
         noisy = (
@@ -608,6 +619,7 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
     def _keys(self, tmp_path) -> Path:
         return tmp_path / "home" / ".ssh" / "authorized_keys"
 
+    @pytest.mark.subprocess
     def test_a_seat_that_can_be_taken_passes_and_keeps_no_key_of_the_proof(self, tmp_path, socket):
         result = self._prove(self._target(tmp_path), socket)
 
@@ -618,6 +630,7 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         # would be a standing login nobody issued.
         assert self._keys(tmp_path).read_text() == SENTINEL + "\n"
 
+    @pytest.mark.subprocess
     def test_an_account_with_no_authorized_keys_is_refused(self, tmp_path, socket):
         """The state the fifth paid run reached, made a provisioning failure."""
         result = self._prove(self._target(tmp_path, keys=None), socket)
@@ -625,6 +638,7 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert result.returncode != 0
         assert "nothing to write its key into" in result.stderr
 
+    @pytest.mark.subprocess
     def test_an_authorized_keys_this_role_did_not_open_is_refused(self, tmp_path, socket):
         """A file of that name whose provenance is unknown proves nothing.
 
@@ -640,6 +654,7 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert result.returncode != 0
         assert "does not carry the line this role opens it with" in result.stderr
 
+    @pytest.mark.subprocess
     def test_an_account_sshd_will_not_admit_is_refused_and_the_key_still_comes_out(
         self, tmp_path, socket
     ):
@@ -656,6 +671,7 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert "Permission denied" in result.stderr
         assert self._keys(tmp_path).read_text() == SENTINEL + "\n"
 
+    @pytest.mark.subprocess
     def test_a_login_that_lands_on_another_account_is_refused(self, tmp_path, socket):
         """The seat has to be this account, not merely some account on the host."""
         result = self._prove(self._target(tmp_path), socket, login_as="root")
@@ -663,6 +679,7 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert result.returncode != 0
         assert "instead" in result.stderr
 
+    @pytest.mark.subprocess
     def test_an_administrative_account_that_cannot_reach_the_seat_is_refused(
         self, tmp_path, socket
     ):
@@ -680,12 +697,14 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert result.returncode != 0
         assert "prod-deploy" in result.stderr
 
+    @pytest.mark.subprocess
     def test_an_administrative_account_that_can_reach_the_seat_passes(self, tmp_path, socket):
         result = self._prove(self._target(tmp_path), socket, admin="prod-deploy")
 
         assert result.returncode == 0, result.stderr
         assert "prod-deploy" in result.stdout
 
+    @pytest.mark.subprocess
     def test_a_root_administrative_account_is_asked_nothing(self, tmp_path, socket):
         """root reaches the file by being root; an ACL entry for it would be noise."""
         result = self._prove(self._target(tmp_path, admin_can=False), socket, admin="root")
@@ -1192,6 +1211,7 @@ class TestTheTargetRefusesWhatWrites:
             env={"PATH": f"{docker_log.parent}:/usr/bin:/bin"},
         )
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         "argv",
         [
@@ -1214,12 +1234,14 @@ class TestTheTargetRefusesWhatWrites:
         assert "refused" in result.stderr
         assert not docker.exists(), f"docker was reached with {argv}"
 
+    @pytest.mark.subprocess
     def test_a_call_with_no_sub_command_is_refused(self, docker):
         result = self._wrapper(docker)
 
         assert result.returncode != 0
         assert not docker.exists()
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         "argv",
         [
@@ -1235,6 +1257,7 @@ class TestTheTargetRefusesWhatWrites:
         assert result.returncode != 0
         assert not docker.exists()
 
+    @pytest.mark.subprocess
     def test_the_fixed_contract_read_reaches_only_the_named_container_and_path(self, docker):
         result = self._wrapper(
             docker,
@@ -1249,6 +1272,7 @@ class TestTheTargetRefusesWhatWrites:
         assert reached.startswith("exec weather-bot-backend-1 sh -c ")
         assert reached.endswith(" _ codegen_kit/_active_packages.py 262144\n")
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         "argv",
         [
@@ -1280,6 +1304,7 @@ class TestTheTargetRefusesWhatWrites:
         assert "ps" in names, "capability resolution asks docker which containers this project has"
         assert QA_DOCKER_REQUIRED_VERBS <= names
 
+    @pytest.mark.subprocess
     def test_version_answers_the_pinned_profile_and_every_required_verb(self, docker):
         result = self._wrapper(docker, "version")
 
@@ -1287,6 +1312,7 @@ class TestTheTargetRefusesWhatWrites:
         assert wrapper_answer_problem(result.stdout) is None
         assert not docker.exists(), "version is answered by the wrapper, not by docker"
 
+    @pytest.mark.subprocess
     def test_version_takes_no_arguments_and_never_reaches_docker(self, docker):
         result = self._wrapper(docker, "version", "--format", "{{json .}}")
 

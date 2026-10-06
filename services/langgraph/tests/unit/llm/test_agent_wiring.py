@@ -70,6 +70,7 @@ def _job() -> dict:
 
 
 class TestArchitectConsumer:
+    @pytest.mark.subprocess
     async def test_the_default_chain_plans_without_openrouter_env_and_logs_the_channel(
         self, channels
     ):
@@ -90,6 +91,7 @@ class TestArchitectConsumer:
         assert success["llm_channel_failures"] == []
         assert channels.codex.calls
 
+    @pytest.mark.subprocess
     async def test_a_failed_planning_attempt_names_every_channel_it_tried(self, channels):
         from src.consumers import architect
 
@@ -143,6 +145,7 @@ class TestArchitectConsumer:
         start_worker.assert_not_called()
         api.close.assert_awaited_once()
 
+    @pytest.mark.subprocess
     def test_main_starts_on_the_default_chain_without_openrouter_env(self, channels):
         from src.consumers import architect
 
@@ -158,6 +161,7 @@ class TestArchitectConsumer:
 
         start_worker.assert_called_once()
 
+    @pytest.mark.subprocess
     def test_main_refuses_to_start_when_no_channel_of_the_chain_is_configured(self, channels):
         """The default chain with no credential at all could only exhaust every channel."""
         from src.consumers import architect
@@ -176,6 +180,7 @@ class TestArchitectConsumer:
         for name in ("LLM_CODEX_HOME", "CLAUDE_CODE_OAUTH_TOKEN", "ARCHITECT_LLM_API_KEY"):
             assert name in str(refused.value)
 
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         "configured",
         [
@@ -200,6 +205,7 @@ class TestArchitectConsumer:
 
 
 class TestPoStartup:
+    @pytest.mark.subprocess
     @pytest.mark.parametrize(
         ("records", "missing"),
         [
@@ -231,6 +237,7 @@ class TestPoStartup:
 
         assert configs.asked == ["po", "po_summarizer"]
 
+    @pytest.mark.subprocess
     async def test_no_configured_channel_keeps_the_po_disabled(self, channels):
         """A deployment with no LLM credential at all (the service-test stack) keeps PO off."""
         from src import main
@@ -250,6 +257,7 @@ class TestPoStartup:
             "PO_LLM_API_KEY",
         ]
 
+    @pytest.mark.subprocess
     async def test_the_disabled_po_never_needs_a_checkpoint_database(self, channels):
         """No configured channel: run_worker logs po_consumer_disabled instead of refusing."""
         from src import main
@@ -286,6 +294,7 @@ class TestPoStartup:
 
 
 class TestPoGraph:
+    @pytest.mark.subprocess
     async def test_the_summarizer_runs_on_its_own_chain(self, channels):
         from src.consumers import po
 

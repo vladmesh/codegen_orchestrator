@@ -329,6 +329,7 @@ def test_bot_product_suites_require_the_session_independently_of_models(capsys):
     assert capsys.readouterr().out == "true\ntrue\n"
 
 
+@pytest.mark.subprocess
 def test_needs_session_runs_on_a_bare_python_without_telethon_or_pydantic():
     """The workflow's suite resolution asks it with the runner's bare `python3`."""
     probe = (

@@ -560,6 +560,8 @@ class TestReclaimRunsForTheConsumerLifetime:
             auto_ack=False,
             claim_pending=True,
             pending_timeout_ms=0,
+            # The production floor is a second; the sweep coming round is what is tested.
+            reclaim_interval_ms=50,
         ).__aiter__()
 
         # The consumer starts against an empty stream: the start-up sweep finds

@@ -342,7 +342,6 @@ class TestTheArchitectBlock:
         assert "read live from the kit's default branch at planning time" in block
         assert "a new package release needs no orchestrator change" in block
         assert "reminders 0.4.0" not in block
-        assert not hasattr(load_manifest().kit, "packages")
 
 
 class TestThePromptsCarryTheBlock:

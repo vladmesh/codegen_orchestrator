@@ -57,6 +57,7 @@ class TestTheComposeProjectAWorkerOwns:
 
 
 class TestTheRemoteRunResidueScan:
+    @pytest.mark.subprocess
     def test_it_reports_a_container_and_a_directory_of_the_run(self, tmp_path):
         base = tmp_path / "services"
         (base / "live-test-9-abc").mkdir(parents=True)
@@ -86,6 +87,7 @@ class TestTheRemoteRunResidueScan:
             f"directory {base}/live-test-9-abc",
         ]
 
+    @pytest.mark.subprocess
     def test_an_unreachable_daemon_fails_rather_than_reporting_a_clean_host(self):
         """The one thing a residue scan may never do is answer emptily on failure."""
         command = build_remote_run_residue_command(["live-test-9-abc"], service_base="/nowhere")
@@ -100,6 +102,7 @@ class TestTheRemoteRunResidueScan:
         assert result.returncode != 0
         assert result.stdout.strip() == ""
 
+    @pytest.mark.subprocess
     def test_a_host_with_nothing_of_this_run_answers_nothing_and_succeeds(self, tmp_path):
         fake_docker = tmp_path / "bin"
         fake_docker.mkdir()

@@ -10,9 +10,7 @@ def test_production_deploy_provisions_codex_worker_runtime():
     worker_chain = (ROOT / "infra/scripts/worker-images.sh").read_text()
     pull_script = (ROOT / "infra/scripts/pull-worker-images.sh").read_text()
     deploy_workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
-    deploy_runbook = (ROOT / "docs/DEPLOY.md").read_text()
 
     assert '"worker-base-codex"' in worker_chain
     assert "worker-images.sh" in pull_script
     assert "HOST_CODEX_HOME=${{ secrets.HOST_CODEX_HOME }}" in deploy_workflow
-    assert "`HOST_CODEX_HOME`" in deploy_runbook

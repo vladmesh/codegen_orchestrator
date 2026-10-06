@@ -16,9 +16,10 @@
 #
 # The host profile is what a weak control host runs: at most UNIT_JOBS suites at a
 # time (default 2), `-m "not ci_only"` on every suite, and no live-offline suite.
-# Tests marked ci_only, docker, ansible, privileged or kit_gate run in CI only; CI
-# runs this script without --host, so its coverage does not shrink. Budget for the
-# whole profile: 300 s or less and 1.5 GB or less peak RSS at 2 jobs (docs/TESTING.md).
+# Tests marked ci_only, docker, ansible, privileged, kit_gate, subprocess or slow run
+# in CI only, and every other host-profile test must finish within 0.5 s. CI runs this
+# script without --host, so its coverage does not shrink. Budget for the whole
+# profile: 300 s or less and 1.5 GB or less peak RSS at 2 jobs (docs/TESTING.md).
 
 set -euo pipefail
 
@@ -80,12 +81,46 @@ TIMEOUT_ARGS=(
     --timeout="$UNIT_TEST_TIMEOUT_SECONDS"
     --timeout-method=thread
 )
-# The markers plugin makes every sub-marker (docker, ansible, privileged, kit_gate)
-# imply ci_only, so the host profile deselects the whole family with one expression.
-MARKER_ARGS=(-p scripts.ci_only_markers)
+# The markers plugin makes every sub-marker (docker, ansible, privileged, kit_gate,
+# subprocess, slow) imply ci_only, so the host profile deselects the whole family with
+# one expression. The budget plugin (scripts/unit_test_budget.py) fails a host-profile
+# test that takes longer than UNIT_TEST_BUDGET_SECONDS (setup+call+teardown).
+UNIT_TEST_BUDGET_SECONDS=0.5
+MARKER_ARGS=(-p scripts.ci_only_markers -p scripts.unit_test_budget)
 if [ "$HOST_PROFILE" = "1" ]; then
     MARKER_ARGS+=(-m "not ci_only")
+    MARKER_ARGS+=(--unit-test-budget="$UNIT_TEST_BUDGET_SECONDS")
 fi
+
+# Per-suite evidence, both optional and both named after the suite label:
+#   UNIT_CPU_DIR     <label>.json with the suite's CPU seconds (python -m shared sets it)
+#   UNIT_REPORT_DIR  <label>.xml (junit), and <label>.log with --durations=50 (CI uploads it)
+UNIT_CPU_DIR="${UNIT_CPU_DIR:-}"
+UNIT_REPORT_DIR="${UNIT_REPORT_DIR:-}"
+if [ -n "$UNIT_REPORT_DIR" ]; then
+    mkdir -p "$UNIT_REPORT_DIR"
+fi
+
+# pytest exits 5 when it collected no test. In the host profile that is a suite whose
+# every test is in the ci_only family, which is a pass; in CI it stays a failure.
+host_rc() {
+    local rc="$1"
+    if [ "$HOST_PROFILE" = "1" ] && [ "$rc" = "5" ]; then
+        rc=0
+    fi
+    echo "$rc"
+}
+
+suite_report_args() {
+    local label="$1"
+    REPORT_ARGS=()
+    if [ -n "$UNIT_CPU_DIR" ]; then
+        REPORT_ARGS+=(--suite-cpu-file="$UNIT_CPU_DIR/$label.json")
+    fi
+    if [ -n "$UNIT_REPORT_DIR" ]; then
+        REPORT_ARGS+=(--junitxml="$UNIT_REPORT_DIR/$label.xml" --durations=50)
+    fi
+}
 
 # --- Serial mode (original behavior, verbose) ---
 
@@ -106,9 +141,14 @@ run_tests_serial() {
 
     echo "🧪 $label..."
     local workdir="${pythonpath:-$ROOT}"
-    if (cd "$workdir" && "${CLEAN_ENV[@]}" \
+    suite_report_args "$label"
+    local log="${UNIT_REPORT_DIR:+$UNIT_REPORT_DIR/$label.log}"
+    local rc=0
+    (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${extra_args[@]}") 2>&1; then
+       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${REPORT_ARGS[@]}" "${extra_args[@]}") 2>&1 \
+       | tee "${log:-/dev/null}" || rc=$?
+    if [ "$(host_rc "$rc")" = "0" ]; then
         PASSED+=("$label")
     else
         FAILED+=("$label")
@@ -136,11 +176,15 @@ run_tests_parallel() {
 
     local workdir="${pythonpath:-$ROOT}"
     local rc=0
+    suite_report_args "$label"
     (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${extra_args[@]}") \
+       python -m pytest "$ROOT/$test_dir" --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${REPORT_ARGS[@]}" "${extra_args[@]}") \
        > "$LOGDIR/$label.log" 2>&1 || rc=$?
-    echo "$rc" > "$LOGDIR/$label.rc"
+    host_rc "$rc" > "$LOGDIR/$label.rc"
+    if [ -n "$UNIT_REPORT_DIR" ]; then
+        cp "$LOGDIR/$label.log" "$UNIT_REPORT_DIR/$label.log"
+    fi
 }
 
 # --- Shared test list ---

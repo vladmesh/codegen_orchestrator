@@ -13,6 +13,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from shared.tests import source_index
+
 ROOT = Path(__file__).resolve().parents[2]
 
 #: Every function that publishes an `ArchitectMessage`, and what it publishes for.
@@ -31,16 +33,6 @@ ARCHITECT_PUBLISHERS = {
 }
 
 
-def _source_files() -> list[Path]:
-    roots = [ROOT / "shared", *sorted((ROOT / "services").glob("*/src"))]
-    return [
-        path
-        for root in roots
-        for path in root.rglob("*.py")
-        if "tests" not in path.relative_to(ROOT).parts
-    ]
-
-
 def _publishes_to_architect_queue(call: ast.Call) -> bool:
     func = call.func
     if not (isinstance(func, ast.Attribute) and func.attr == "publish_message"):
@@ -54,9 +46,10 @@ def _publishes_to_architect_queue(call: ast.Call) -> bool:
 
 def _architect_publishers() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
-    for path in _source_files():
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
+    for path in (*source_index.shared_sources(), *source_index.service_sources()):
+        if "ARCHITECT_QUEUE" not in source_index.text(path):
+            continue  # the publish names it, so a module without the name has none
+        for node in source_index.nodes(path):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
             if any(
@@ -67,7 +60,7 @@ def _architect_publishers() -> set[tuple[str, str]]:
     return found
 
 
-def test_every_architect_publisher_is_declared():
+def test_every_architect_publisher_is_declared(production_source_index):
     assert _architect_publishers() == ARCHITECT_PUBLISHERS
 
 
