@@ -13,6 +13,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   product `pre-commit`); a kit-gate test now runs the hook's `make format` over that exact set.
 - A gave-up worker's failed-step output tail (redacted, ≤2000 chars) is appended to the blocked
   reason, so `failure_metadata.reason` and stand evidence show what a hook actually said.
+- `redact_diagnostic` bounds the URL scheme to 32 characters, so redacting a long hex or base64
+  stderr tail is linear (100 kB: tens of seconds to milliseconds); unit tests parse the kit catalog once.
 
 ## 2026-10-05
 

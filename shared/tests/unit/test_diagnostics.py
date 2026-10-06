@@ -1,6 +1,7 @@
 """Regression tests for diagnostics that cross process boundaries."""
 
 import base64
+import time
 
 from shared.diagnostics import redact_diagnostic
 
@@ -37,3 +38,23 @@ def test_redact_diagnostic_recognizes_telegram_endpoint_without_a_known_secret()
 
     assert "987654321:AA-url-only-canary" not in redacted
     assert redacted.endswith("https://api.telegram.org/bot[redacted]/sendMessage")
+
+
+def test_redact_diagnostic_masks_url_userinfo() -> None:
+    redacted = redact_diagnostic("clone git+https://user:pa55@github.com/o/r.git failed")
+
+    assert "user:pa55" not in redacted
+    assert "git+https://[redacted]@github.com/o/r.git" in redacted
+
+
+def test_redact_diagnostic_is_linear_on_long_runs_without_a_scheme() -> None:
+    # A failed step's stderr can carry a long hex or base64 run with no `://`;
+    # an unbounded scheme quantifier made `_URL_USERINFO` quadratic on it.
+    hex_run = "0123456789abcdef" * 6400
+    base64_run = base64.b64encode(bytes(range(256)) * 300).decode()
+
+    for diagnostic in (hex_run, base64_run):
+        assert len(diagnostic) >= 100_000
+        started = time.process_time()
+        assert redact_diagnostic(diagnostic) == diagnostic
+        assert time.process_time() - started < 0.5

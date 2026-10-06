@@ -8,7 +8,7 @@ import re
 
 from pydantic import ValidationError
 
-_URL_USERINFO = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^\s/@]+@", re.IGNORECASE)
+_URL_USERINFO = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]{0,31}://)[^\s/@]+@", re.IGNORECASE)
 _TELEGRAM_BOT_API_URL = re.compile(r"(?i)(https?://api\.telegram\.org/bot)[^\s/?#]+")
 _AUTHORIZATION = re.compile(
     r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?(?:basic|bearer|token)\s+)[^\s\"',}\]]+"
