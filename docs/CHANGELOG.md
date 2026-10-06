@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-06
 
+- Mega-noop checks the QA grant's `head_sha` against the story commit its deploy Run targeted,
+  not the merge commit; a passed notes probe no longer fails the `grant` phase.
 - QA admission treats one `Stand mechanical notes|reminders` probe line beside GET checks as
   deterministic, as the QA consumer does; mega-noop no longer stalls without a QA executor.
 - Mega-noop notes change set mounts its router inside `router.py`'s import block (E402 failed the

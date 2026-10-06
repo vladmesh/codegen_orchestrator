@@ -318,8 +318,13 @@ def qa_probe(ctx):
         "telegram",
         "QA did not complete its fixed real-chat probe",
     )
+    # The grant records the *story* commit its deploy Run targeted
+    # (`run_metadata.head_sha`, services/scheduler/src/tasks/supervisor/deploy.py
+    # `_deploy_run_head_sha`), not the built merge commit; temporary_access.py reads
+    # the deployed commit separately. Comparing it with the merge commit failed
+    # mega-noop 37445448651 on a passed probe whenever the PR merged with a merge commit.
     require(
-        probe["grant"]["head_sha"] == ctx["deploy_merge_commit_sha"]
+        probe["grant"]["head_sha"] == ctx["deploy_head_sha"]
         and probe["grant"]["application_id"] == ctx["application_id"],
         "grant",
         "QA grant does not name the proven deployment head and target",
