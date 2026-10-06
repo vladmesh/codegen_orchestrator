@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import textwrap
+from types import SimpleNamespace
 
 import pytest
+
+from scripts import unit_test_budget as budget_plugin
 
 pytest_plugins = ["pytester"]
 
@@ -67,61 +70,107 @@ def test_the_suite_cpu_file_holds_the_session_cpu(pytester: pytest.Pytester) -> 
     assert json.loads(out.read_text())["cpu_seconds"] > 0
 
 
-def test_shared_fixture_setup_is_not_charged_to_the_first_test(pytester: pytest.Pytester) -> None:
-    pytester.makepyfile(
-        test_shared=textwrap.dedent(
-            """
-            import time
+class _Clock:
+    """A perf counter that moves only when a test says so: no real wait."""
 
-            import pytest
+    def __init__(self) -> None:
+        self.now = 100.0
 
-            @pytest.fixture(scope="session")
-            def expensive():
-                time.sleep(0.15)
+    def perf_counter(self) -> float:
+        return self.now
 
-            def test_first(expensive):
-                pass
 
-            def test_second(expensive):
-                pass
-            """
-        )
+class _Item:
+    """The slice of a pytest item the budget reads."""
+
+    def __init__(self, budget: float, *markers: str) -> None:
+        self.nodeid = "test_sample.py::test_it"
+        self.stash: dict = {}
+        self.config = SimpleNamespace(getoption=lambda name: budget)
+        self._markers = set(markers)
+
+    def get_closest_marker(self, name: str):
+        return name if name in self._markers else None
+
+
+class _Outcome:
+    def __init__(self, report) -> None:
+        self.report = report
+
+    def get_result(self):
+        return self.report
+
+
+def _report(when: str, duration: float):
+    return SimpleNamespace(when=when, duration=duration, failed=False, outcome="passed")
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    fake = _Clock()
+    monkeypatch.setattr(budget_plugin, "time", SimpleNamespace(perf_counter=fake.perf_counter))
+    # No host load and no garbage collection in these runs.
+    monkeypatch.setattr(budget_plugin._HostCost, "since_last_report", classmethod(lambda cls: 0.0))
+    monkeypatch.setattr(budget_plugin._suite, "seconds", 0.0)
+    return fake
+
+
+def _phases(item: _Item, durations: dict[str, float], during=None) -> list:
+    """Report setup, call and teardown as pytest would, running `during(phase)` first."""
+    reports = []
+    for when in ("setup", "call", "teardown"):
+        if during:
+            during(when)
+        hook = budget_plugin.pytest_runtest_makereport(item, None)
+        next(hook)
+        report = _report(when, durations[when])
+        with pytest.raises(StopIteration):
+            hook.send(_Outcome(report))
+        reports.append(report)
+    return reports
+
+
+def test_a_test_s_own_time_over_the_budget_fails_its_teardown(clock):
+    reports = _phases(_Item(0.5), {"setup": 0.1, "call": 0.3, "teardown": 0.2})
+
+    assert [r.outcome for r in reports] == ["passed", "passed", "failed"]
+    assert "took 0.60s" in reports[-1].longrepr
+
+
+def test_a_ci_only_family_test_is_exempt(clock):
+    reports = _phases(_Item(0.5, "slow"), {"setup": 0.1, "call": 3.0, "teardown": 0.1})
+
+    assert reports[-1].outcome == "passed"
+
+
+def test_shared_fixture_setup_is_not_charged_to_the_first_test(clock):
+    def session_fixture(when):
+        if when != "setup":
+            return
+        hook = budget_plugin.pytest_fixture_setup(SimpleNamespace(scope="session"))
+        next(hook)
+        clock.now += 2.0  # the fixture's own work
+        with pytest.raises(StopIteration):
+            next(hook)
+
+    reports = _phases(
+        _Item(0.5), {"setup": 2.05, "call": 0.1, "teardown": 0.0}, during=session_fixture
     )
-    result = pytester.runpytest_inprocess(
-        "-p", "scripts.ci_only_markers", "-p", "scripts.unit_test_budget", "--unit-test-budget=0.1"
-    )
-    result.assert_outcomes(passed=2)
+
+    assert reports[-1].outcome == "passed"
 
 
-def test_a_first_import_is_not_charged_to_the_test_that_makes_it(
-    pytester: pytest.Pytester,
-) -> None:
-    slow_import = "import time\n\ntime.sleep(0.15)\n"
-    pytester.makepyfile(heavy_module=slow_import, heavy_patched=slow_import)
-    pytester.makepyfile(
-        test_lazy=textwrap.dedent(
-            """
-            from unittest import mock
+def test_a_first_import_is_not_charged_to_the_test_that_makes_it(clock):
+    def heavy_import(*_args):
+        clock.now += 1.5
+        return "module"
 
-            def test_imports_it():
-                import heavy_module  # noqa: F401
+    importer = budget_plugin._timed(heavy_import)
 
-            def test_patch_resolves_a_module():
-                with mock.patch("heavy_patched.time"):
-                    pass
-            """
-        )
-    )
-    pytester.syspathinsert()
-    result = pytester.runpytest_inprocess(
-        "-p", "scripts.ci_only_markers", "-p", "scripts.unit_test_budget", "--unit-test-budget=0.1"
-    )
-    result.assert_outcomes(passed=2)
+    def first_import(when):
+        if when == "call":
+            assert importer("heavy") == "module"
 
+    reports = _phases(_Item(0.5), {"setup": 0.0, "call": 1.6, "teardown": 0.0}, during=first_import)
 
-def test_a_real_sleep_is_the_test_s_own_time(pytester: pytest.Pytester) -> None:
-    pytester.makepyfile(test_sleeps="import time\n\ndef test_waits():\n    time.sleep(0.15)\n")
-    result = pytester.runpytest_inprocess(
-        "-p", "scripts.ci_only_markers", "-p", "scripts.unit_test_budget", "--unit-test-budget=0.1"
-    )
-    result.assert_outcomes(passed=1, errors=1)
+    assert reports[-1].outcome == "passed"
