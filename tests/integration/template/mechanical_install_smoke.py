@@ -221,7 +221,8 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
             async def transport(argv, **kwargs):
                 operation = argv[3] if argv[0] == "git" else None
                 credential_present = any(
-                    key.startswith("GIT_CONFIG_VALUE_") for key in kwargs["env"]
+                    key.startswith("GIT_CONFIG_VALUE_") and value.startswith("Authorization: ")
+                    for key, value in kwargs["env"].items()
                 )
                 assert credential_present == (
                     argv[0] == "git" and operation in {"fetch", "ls-remote", "push"}
