@@ -88,32 +88,41 @@ def engineering_commit_without_env_contract(monkeypatch):
 BUNDLED_KIT_CATALOG_SOURCE = "codegen-kit-tooling:framework/package_catalog.yaml"
 
 
-@pytest.fixture(autouse=True)
-def kit_catalog_off_github(monkeypatch):
-    """Keep planning off GitHub: the Architect is briefed with the pinned kit's catalog.
+@pytest.fixture(scope="session")
+def bundled_kit_catalog():
+    """The pinned kit's catalog, parsed once: reparsing its YAML per test cost ~65 ms each.
 
     The answer is the catalog the pinned kit tooling ships (`bundled_catalog`), filtered
     by the real `installable`, so it lists what the live catalog listed at the pin.
-    Tests of the reader build their own `KitCatalogReader`; a test of an unavailable
-    catalog sets `read.return_value` on the reader this returns.
     """
     from dataclasses import replace
 
     from framework.catalog import bundled_catalog
 
     from src import kit_catalog
+
+    data = Path(__file__).parent / "fixtures/catalog-install"
+    return replace(
+        kit_catalog.installable(bundled_catalog(), BUNDLED_KIT_CATALOG_SOURCE),
+        raw=(data / "catalog.yaml").read_text(),
+        bindings={"reminders": (data / "default.yaml").read_text()},
+        manifests={"reminders": (data / "package.yaml").read_text()},
+    )
+
+
+@pytest.fixture(autouse=True)
+def kit_catalog_off_github(monkeypatch, bundled_kit_catalog):
+    """Keep planning off GitHub: the Architect is briefed with the pinned kit's catalog.
+
+    Each test gets its own reader double over the session's `bundled_kit_catalog`.
+    Tests of the reader build their own `KitCatalogReader`; a test of an unavailable
+    catalog sets `read.return_value` on the reader this returns.
+    """
+    from src import kit_catalog
     from src.consumers import architect
 
     reader = MagicMock(spec=kit_catalog.KitCatalogReader)
-    data = Path(__file__).parent / "fixtures/catalog-install"
-    reader.read = AsyncMock(
-        return_value=replace(
-            kit_catalog.installable(bundled_catalog(), BUNDLED_KIT_CATALOG_SOURCE),
-            raw=(data / "catalog.yaml").read_text(),
-            bindings={"reminders": (data / "default.yaml").read_text()},
-            manifests={"reminders": (data / "package.yaml").read_text()},
-        )
-    )
+    reader.read = AsyncMock(return_value=bundled_kit_catalog)
     monkeypatch.setattr(architect, "get_kit_catalog_reader", lambda: reader)
     return reader
 
