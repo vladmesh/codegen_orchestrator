@@ -565,6 +565,7 @@ _FATAL_PRE_COMMIT = '#!/bin/sh\ntouch "$(git rev-parse --show-toplevel)/pre-comm
 _FATAL_PRE_PUSH = '#!/bin/sh\ntouch "$(git rev-parse --show-toplevel)/pre-push-ran"\nexit 1\n'
 
 
+@pytest.mark.subprocess
 class TestFallbackAgainstRealProductHooks:
     """AC4 in the shape the live noop suites actually meet it.
 
@@ -612,6 +613,7 @@ class TestFallbackAgainstRealProductHooks:
         assert _git(workspace, "config", "--local", "--get", "core.hooksPath") == ".githooks"
 
 
+@pytest.mark.subprocess
 class TestScriptedRunAgainstRealProductHooks:
     """AC2 plus the injected-file repair, against a real hook that runs `git add -A`."""
 

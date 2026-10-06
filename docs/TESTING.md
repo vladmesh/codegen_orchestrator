@@ -318,6 +318,7 @@ service `pytest.ini`, under `--strict-markers`.
 | `scripts/tests/test_ci_infra.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `scripts`) |
 | worker-manager `test_github_workspace_credentials.py`, `test_noop_stand_workflow.py`, `test_infra_git_no_product_hooks.py`, `test_commit_recovery_native.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `worker-manager`) |
 | worker-wrapper `test_makefile_overrides.py`, `test_result_turn_end_grace.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `worker-wrapper`) |
+| worker-wrapper `test_noop_change_set.py` classes that commit and push through a real product's git hooks | `subprocess` (class) | `fast-checks`: `make test-unit` (suite `worker-wrapper`) |
 | api `test_commit_publication.py`; shared `unit/test_ssh_keys.py`; scripts `test_service_image_imports.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suites `api`, `shared`, `scripts`) |
 | langgraph `llm/test_channel_chain.py`, `llm/test_cli_packaging.py` (fake `codex`/`claude` CLI turns); worker-wrapper integration `test_no_injected_artifacts.py` (git) | `subprocess` (module) | `fast-checks`: `make test-unit` (suites `langgraph`, `worker-wrapper-integration`) |
 | scaffolder component `test_catalog_install.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `scaffolder-component`) |
