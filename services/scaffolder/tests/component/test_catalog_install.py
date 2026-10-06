@@ -105,7 +105,7 @@ async def test_fixed_closure_preserves_notes_and_publishes_verified_exact_head(p
     assert [args for args in calls if args[0] == "make"] == [
         ["make", "generate-from-spec"],
         ["make", "validate-specs"],
-        ["make", "tests"],
+        ["make", "tests", "REDIS_URL=redis://redis.invalid:6379"],
     ]
     assert [args for args in calls if Path(args[0]).name == "mypy"] == [
         [str(root / f"services/{service}/.venv/bin/mypy"), f"services/{service}"]
