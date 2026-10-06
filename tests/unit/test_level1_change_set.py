@@ -862,3 +862,50 @@ def test_the_extension_criteria_carry_the_package_route(extension_change_set):
         ("/health", 200),
         (module.LEVEL1_EXTENSION_PACKAGE_ROUTE, 200),
     ]
+
+
+# --- The mechanical stand's notes change set --------------------------------
+#
+# mega-noop does not hand the developer the plain level-1 change set: when the
+# mechanical install runs, `tests/live/mechanical_notes.py` rewrites both task
+# descriptions with its own notes change set. That set is what the scripted
+# runner actually commits on the stand, so it has to clear the same hook. The
+# 05.10 red run (37380025509) was this set appending an import after `__all__`
+# in the backend router: `pre-commit` → `make format` → `ruff check --fix` → E402.
+
+
+@pytest.fixture(scope="module")
+def notes_tree(tmp_path_factory, change_sets, runner_script) -> Path:
+    """The pinned kit render with the notes stand's two change sets applied in task order."""
+    sys.path.insert(0, str(LIVE_DIR))
+    try:
+        notes = _load("mechanical_notes", LIVE_DIR / "mechanical_notes.py")
+    finally:
+        sys.path.remove(str(LIVE_DIR))
+    module, _ = change_sets
+    tree = tmp_path_factory.mktemp("notes-kit") / "product"
+    shutil.copytree(TEMPLATE_PIN.fixture_path(), tree)
+    for operations in notes.notes_operations(MARKER):
+        parsed = runner_script["parse_change_set"]("task\n" + module.render_change_set(operations))
+        assert parsed, "the notes change set is not one the runner recognises"
+        runner_script["apply_change_set"](parsed, str(tree))
+    return tree
+
+
+def test_the_notes_tree_survives_the_product_pre_commit_hook(
+    tmp_path_factory, notes_tree: Path
+) -> None:
+    """The two commands `.githooks/pre-commit`'s `make format` runs, with its flags.
+
+    `ruff format` then `ruff check --fix` over the whole tree (both tasks applied,
+    after `make setup`'s generator). An unfixable diagnostic (E402, …) fails the
+    runner's commit step with CommitFailed. Ruff parity rather than the Makefile
+    itself: this tree has no product venv for `make` to call.
+    """
+    tree = tmp_path_factory.mktemp("notes-setup") / "product"
+    shutil.copytree(notes_tree, tree)
+    _make_setup(tree)
+    formatted = _ruff(tree, "format", "--extend-exclude", "*.md", ".")
+    assert formatted.returncode == 0, formatted.stdout + formatted.stderr
+    fixed = _ruff(tree, "check", "--fix", ".")
+    assert fixed.returncode == 0, fixed.stdout + fixed.stderr

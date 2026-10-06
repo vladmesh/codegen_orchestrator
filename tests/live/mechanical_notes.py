@@ -72,16 +72,33 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 '''
 
 
+def _notes_router():
+    """Mount the notes router inside the router module's own import and include blocks.
+
+    Appending the import after `__all__` is an E402 the product's `pre-commit`
+    (`make format` → `ruff check --fix`) refuses, so the commit step fails.
+    """
+    text = _substitute(
+        _backend_router(),
+        "from .routers.level1 import router as level1_router\n",
+        "from .routers.level1 import router as level1_router\n"
+        "from .routers.notes import router as notes_router\n",
+        where="notes router import",
+    )
+    return _substitute(
+        text,
+        'api_router.include_router(level1_router, tags=["level1"])\n',
+        'api_router.include_router(level1_router, tags=["level1"])\n'
+        'api_router.include_router(notes_router, tags=["notes"])\n',
+        where="notes router mount",
+    )
+
+
 def notes_operations(marker):
     backend = [one for one in backend_operations(marker) if one.path != BACKEND_ROUTER]
     backend += [
         Operation("create", NOTES_ROUTER, BACKEND_NOTES),
-        Operation(
-            "replace",
-            BACKEND_ROUTER,
-            _backend_router() + "\nfrom .routers.notes import router as notes_router\n"
-            "api_router.include_router(notes_router)\n",
-        ),
+        Operation("replace", BACKEND_ROUTER, _notes_router()),
     ]
     backend.append(
         Operation(

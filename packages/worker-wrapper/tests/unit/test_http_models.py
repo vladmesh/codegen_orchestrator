@@ -3,6 +3,7 @@
 from pydantic import ValidationError
 import pytest
 from worker_wrapper.http_models import (
+    MAX_STDERR_TAIL,
     ResultRequest,
     to_worker_result,
 )
@@ -121,3 +122,62 @@ class TestFailedStepSurvivesTheBoundary:
     def test_empty_step_is_refused_rather_than_carried(self):
         with pytest.raises(ValidationError):
             ResultRequest(success=False, reason="failed", step="  ")
+
+
+class TestFailedStepOutputSurvivesTheBoundary:
+    """The failed step's stderr reaches the blocked reason, so failure_metadata keeps it.
+
+    Mega-noop 37380025509: the commit hook refused (`make format` → ruff E402),
+    the runner POSTed that stderr, and Pydantic dropped it here. The task's
+    failure_metadata said only `CommitFailed, exit_code=1`, and the container
+    holding the stdout copy was removed before the evidence collector ran.
+    """
+
+    HOOK_STDERR = (
+        "[pre-commit] Running make format...\n"
+        ".venv/bin/ruff check --fix .\n"
+        "E402 Module level import not at top of file\n"
+        "  --> services/backend/src/app/api/router.py:17:1\n"
+        "make: *** [Makefile:101: format] Error 1\n"
+    )
+
+    def test_a_commit_hook_refusal_is_readable_from_the_blocked_reason(self):
+        req = ResultRequest(
+            success=False,
+            reason="noop runner step commit failed",
+            step="commit",
+            error_class="CommitFailed",
+            exit_code=1,
+            stderr=self.HOOK_STDERR,
+        )
+        reason = to_worker_result(req).block_reason
+        assert reason.startswith(
+            "noop runner step commit failed (step=commit, error_class=CommitFailed, exit_code=1)"
+        )
+        assert "E402 Module level import not at top of file" in reason
+        assert "services/backend/src/app/api/router.py:17:1" in reason
+
+    def test_only_the_tail_of_a_long_output_is_kept(self):
+        req = ResultRequest(
+            success=False, reason="failed", step="setup", stderr="x" * 50_000 + "LAST LINE"
+        )
+        reason = to_worker_result(req).block_reason
+        assert reason.endswith("LAST LINE")
+        assert len(reason) < MAX_STDERR_TAIL + 200
+
+    def test_credentials_in_the_output_are_redacted(self):
+        req = ResultRequest(
+            success=False,
+            reason="failed",
+            step="push",
+            stderr="fatal: https://x-access-token:ghs_secretvalue@github.com/o/r.git denied",
+        )
+        assert "ghs_secretvalue" not in to_worker_result(req).block_reason
+
+    def test_blank_output_adds_nothing(self):
+        req = ResultRequest(success=False, reason="failed", step="push", stderr="  \n")
+        assert to_worker_result(req).block_reason == "failed (step=push)"
+
+    def test_output_is_refused_on_a_success(self):
+        with pytest.raises(ValidationError):
+            ResultRequest(success=True, commit="abc123", summary="done", stderr="boom")
