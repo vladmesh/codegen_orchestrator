@@ -20,9 +20,12 @@ NOTES_HANDLERS = "services/tg_bot/src/handlers/notes.py"
 
 # Stored in the product Redis, whose volume survives ordinary image deployments.
 # No reminder implementation, timer, binding or component enters the first story.
+# The locked redis 7.x types each command `Awaitable[T] | T`; the casts keep the
+# install's product mypy green (stand-e2e run 37567975527).
 BACKEND_NOTES = '''"""Product-owned notes, scoped to the core-verified caller."""
 import os
-from typing import Annotated
+from collections.abc import Awaitable
+from typing import Annotated, cast
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
@@ -37,13 +40,13 @@ class Note(BaseModel):
 @router.post("/notes")
 async def save_note(note: Note, owner: Caller) -> Note:
     async with Redis.from_url(os.environ["REDIS_URL"], decode_responses=True) as redis:
-        await redis.rpush("notes:" + owner, note.text)
+        await cast(Awaitable[int], redis.rpush("notes:" + owner, note.text))
     return note
 
 @router.get("/notes")
 async def list_notes(owner: Caller) -> list[str]:
     async with Redis.from_url(os.environ["REDIS_URL"], decode_responses=True) as redis:
-        notes: list[str] = await redis.lrange("notes:" + owner, 0, -1)
+        notes = await cast(Awaitable[list[str]], redis.lrange("notes:" + owner, 0, -1))
     return notes
 '''
 
