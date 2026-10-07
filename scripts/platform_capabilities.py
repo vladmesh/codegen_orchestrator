@@ -278,7 +278,7 @@ def render_architect_block(manifest: CapabilityManifest) -> str:
     kit = manifest.kit
     lines = [
         f"{ARCHITECT_BLOCK_HEADING} (manifest v{manifest.version}, {manifest.status})",
-        f"What a product built here can and cannot have, kit {_kit_ref(manifest)}.",
+        f"Kit {_kit_ref(manifest)}.",
         "Can (how):",
         *[f"- {item.name} [{item.id}]: {' '.join(item.how.split())}" for item in manifest.can],
         "Cannot (why in the code; instead):",

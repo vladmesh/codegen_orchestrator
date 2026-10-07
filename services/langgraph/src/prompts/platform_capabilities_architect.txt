@@ -1,5 +1,5 @@
-## Platform capabilities, technical (manifest v15, owner-reviewed)
-What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@ecdab3af40c5.
+## Platform capabilities, technical (manifest v16, owner-reviewed)
+Kit gh:vladmesh/codegen-product-kit@8d37302e6077.
 Can (how):
 - Add a catalog capability [catalog_install]: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.2 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
 - Plain HTTP self links [http_self_address]: PUBLIC_BASE_URL derives from one backend allocation; IPv6 is bracketed. Missing, ambiguous, loopback, unspecified or multicast addresses refuse. IPv6 deploy requires released executable transport at the built commit; unverified workflow or .rej refuses with DEPLOY_HOST. Existing products need reviewed kit update and reconciled merge. No domain/TLS/frontend/webhook capability is added.
@@ -21,5 +21,5 @@ Cannot (why in the code; instead):
 Kit modules: backend: FastAPI web API with PostgreSQL and Redis, always part of a product; tg_bot: Telegram bot on long polling that talks to the backend.
 Kit core: users: Per-user access for the bot; the platform grants and revokes Telegram users; settings v1: Declared product or per-user settings the platform writes and the product reads; jobs v1: Declared named jobs a caller or the core timer fires; records and dispatches them; caller identity v1: Package routes serve only the caller verified by `X-Identity-Capability` (`USER_IDENTITY_CAPABILITY`), `X-User-Channel`, `X-User-External-Id`; `user_ref` is `<channel>:<external_id>`; events v1: Durable product events on Redis Streams, each handled once per consuming service.
 Kit packages: the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings; it is read live from the kit's default branch at planning time and the planning instructions list admitted packages, libraries, recommendations and default bindings; explicit selection uses plan_install and scaffolder mode=install; a new package release needs no orchestrator change.
-Secret kinds: user_secret, generated_secret, allocation, derived, literal.
+Secret kinds: user_secret, generated_secret, allocation, derived, literal, platform_key, platform_base_url.
 Derived keys (no others exist): APP_ENV, ENVIRONMENT, DEBUG, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_REQUIRE_SSL, BACKEND_API_URL, API_URL, API_BASE_URL, BACKEND_URL, APP_NAME, PROJECT_NAME, COMPOSE_PROJECT_NAME, POSTGRES_DB, ENABLED_MODULES, PUBLIC_BASE_URL, BACKEND_PORT, FRONTEND_PORT, TG_BOT_PORT, POSTGRES_HOST_PORT, REDIS_HOST_PORT, *_IMAGE.

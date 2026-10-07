@@ -19,6 +19,8 @@ from shared.contracts.env_contract import (
     EnvContractEntry,
     GeneratedSecretEntry,
     LiteralEntry,
+    PlatformBaseUrlEntry,
+    PlatformKeyEntry,
     UserSecretEntry,
 )
 from shared.contracts.queues.deploy import DeployOutcome
@@ -336,6 +338,11 @@ class SecretResolverNode(FunctionalNode):
                 override = context.env_overrides.get(key)
                 value = override if override is not None else self._dotenv_value(entry.value)
                 resolved.store(key, value, entry.sensitive)
+            case PlatformKeyEntry() | PlatformBaseUrlEntry():
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+                    f"platform_service_unconfigured: {entry.service} ({key}, {entry.source})",
+                )
             case _:
                 raise TypedSecretResolutionError(
                     DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,

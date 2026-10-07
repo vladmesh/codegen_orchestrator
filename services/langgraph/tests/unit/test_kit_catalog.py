@@ -12,6 +12,7 @@ from framework.spec.package_resolution import CORE_VERSION
 import httpx
 import pytest
 import respx
+import yaml
 
 from src.kit_catalog import (
     CATALOG_TIMEOUT_SECONDS,
@@ -71,6 +72,30 @@ class _Clock:
 
 def _reader(clock: _Clock | None = None, ttl: float = 300.0) -> KitCatalogReader:
     return KitCatalogReader(URL, ttl=ttl, clock=clock or _Clock())
+
+
+@pytest.mark.asyncio
+async def test_pinned_core_admits_a_platform_package_requiring_core_2_4():
+    catalog = yaml.safe_load(CATALOG)
+    package = catalog["packages"][0]
+    package.update(
+        name="fictional-service",
+        distribution="codegen-kit-fictional-service",
+        path="packages/codegen-kit-fictional-service",
+        versions=[
+            {
+                "version": "1.0.0",
+                "tag": "packages/fictional-service/v1.0.0",
+                "requires_core": ">=2.4,<3",
+            }
+        ],
+    )
+    with respx.mock(assert_all_called=True) as http:
+        http.get(URL).mock(return_value=httpx.Response(200, text=yaml.safe_dump(catalog)))
+        answer = await _reader().read()
+
+    assert isinstance(answer, KitCatalog)
+    assert "fictional-service" in answer.names
 
 
 @pytest.mark.asyncio

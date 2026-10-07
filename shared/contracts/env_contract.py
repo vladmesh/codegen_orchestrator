@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 ENV_CONTRACT_VERSION = "1"
 
@@ -21,8 +21,41 @@ EnvSource = Literal[
     "allocation",
     "derived",
     "literal",
+    "platform_key",
+    "platform_base_url",
 ]
 EnvLiteralValue = str | int | float | bool
+
+PlatformServiceName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")]
+PlatformScope = Annotated[str, Field(strict=True, min_length=1)]
+PlatformQuotaValue = Annotated[int, Field(strict=True, ge=0)]
+
+
+class PlatformKeyFields(BaseModel):
+    """Grant requested from a platform service, with no service registry in core."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service: PlatformServiceName
+    scopes: list[PlatformScope]
+    quota: dict[Annotated[str, Field(min_length=1)], PlatformQuotaValue]
+
+
+class PlatformBaseUrlFields(BaseModel):
+    """Explicit HTTPS endpoint for a platform service."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service: PlatformServiceName
+    url: str = Field(pattern=r"^https://[^/?#\s]+(?:[/?#][^\s]*)?$")
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, url: str) -> str:
+        parsed = HttpUrl(url)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("platform base URL must not contain credentials")
+        return url
 
 
 class EnvContractMergeError(ValueError):
@@ -111,8 +144,28 @@ class LiteralEntry(EnvContractEntryBase):
     sensitive: Literal[False] = False
 
 
+class PlatformKeyEntry(EnvContractEntryBase, PlatformKeyFields):
+    """A sensitive product key issued for the declared platform service grant."""
+
+    source: Literal["platform_key"]
+    sensitive: Literal[True] = True
+
+
+class PlatformBaseUrlEntry(EnvContractEntryBase, PlatformBaseUrlFields):
+    """A non-secret endpoint taken from the platform declaration."""
+
+    source: Literal["platform_base_url"]
+    sensitive: Literal[False] = False
+
+
 EnvContractEntry = Annotated[
-    UserSecretEntry | GeneratedSecretEntry | AllocationEntry | DerivedEntry | LiteralEntry,
+    UserSecretEntry
+    | GeneratedSecretEntry
+    | AllocationEntry
+    | DerivedEntry
+    | LiteralEntry
+    | PlatformKeyEntry
+    | PlatformBaseUrlEntry,
     Field(discriminator="source"),
 ]
 

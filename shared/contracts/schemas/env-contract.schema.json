@@ -287,6 +287,155 @@
       "title": "LiteralEntry",
       "type": "object"
     },
+    "PlatformBaseUrlEntry": {
+      "additionalProperties": false,
+      "description": "A non-secret endpoint taken from the platform declaration.",
+      "properties": {
+        "consumers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumers",
+          "type": "array"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "environments": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Environments",
+          "type": "array"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "sensitive": {
+          "const": false,
+          "default": false,
+          "title": "Sensitive",
+          "type": "boolean"
+        },
+        "service": {
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "title": "Service",
+          "type": "string"
+        },
+        "source": {
+          "const": "platform_base_url",
+          "title": "Source",
+          "type": "string"
+        },
+        "url": {
+          "pattern": "^https://[^/?#\\s]+(?:[/?#][^\\s]*)?$",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "service",
+        "url",
+        "source",
+        "environments",
+        "required"
+      ],
+      "title": "PlatformBaseUrlEntry",
+      "type": "object"
+    },
+    "PlatformKeyEntry": {
+      "additionalProperties": false,
+      "description": "A sensitive product key issued for the declared platform service grant.",
+      "properties": {
+        "consumers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumers",
+          "type": "array"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "environments": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Environments",
+          "type": "array"
+        },
+        "quota": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Quota",
+          "type": "object"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "scopes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Scopes",
+          "type": "array"
+        },
+        "sensitive": {
+          "const": true,
+          "default": true,
+          "title": "Sensitive",
+          "type": "boolean"
+        },
+        "service": {
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "title": "Service",
+          "type": "string"
+        },
+        "source": {
+          "const": "platform_key",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "service",
+        "scopes",
+        "quota",
+        "source",
+        "environments",
+        "required"
+      ],
+      "title": "PlatformKeyEntry",
+      "type": "object"
+    },
     "UserSecretEntry": {
       "additionalProperties": false,
       "description": "A secret supplied by a user and persisted at project scope.",
@@ -350,6 +499,8 @@
             "derived": "#/$defs/DerivedEntry",
             "generated_secret": "#/$defs/GeneratedSecretEntry",
             "literal": "#/$defs/LiteralEntry",
+            "platform_base_url": "#/$defs/PlatformBaseUrlEntry",
+            "platform_key": "#/$defs/PlatformKeyEntry",
             "user_secret": "#/$defs/UserSecretEntry"
           },
           "propertyName": "source"
@@ -369,6 +520,12 @@
           },
           {
             "$ref": "#/$defs/LiteralEntry"
+          },
+          {
+            "$ref": "#/$defs/PlatformKeyEntry"
+          },
+          {
+            "$ref": "#/$defs/PlatformBaseUrlEntry"
           }
         ]
       },
