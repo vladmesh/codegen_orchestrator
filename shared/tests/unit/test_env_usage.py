@@ -399,7 +399,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     assert not (fixture / "TASK.md").exists()
     assert (
         fixture_tree_digest(fixture)
-        == "e4a2635c6b5a8818c272156c5d733d69138e7061c8705cd48fccb770744452a3"
+        == "5f48f335483e855fda6ce6c192ac7806504baea08cbaf2e5559627a2bd043279"
     )
 
 

@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 14, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 15, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -32,7 +32,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ## Technical detail
 
-Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `b5716efe6ae03c13e1762e372c63e6639843d122`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
+Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `ecdab3af40c5ab1a7bfeb191ab1b241518ef38a9`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
 
 Code it was read from:
 
@@ -123,7 +123,7 @@ Why: Postgres and Redis get host ports allocated, but production compose publish
 
 Why: Nothing snapshots or copies the `db_data` volume; it lives only on the product's server.
 
-### Kit at b5716efe6ae0
+### Kit at ecdab3af40c5
 
 Modules:
 
