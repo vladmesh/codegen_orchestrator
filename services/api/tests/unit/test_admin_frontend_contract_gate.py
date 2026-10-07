@@ -20,6 +20,12 @@ from shared.contracts.dto.work_admission import (
     PaidWorkControlsCommand,
 )
 from src.schemas.actions import FromRepoRequest, SpawnWorkerRequest
+from src.schemas.admin_console import (
+    AttentionResponse,
+    JourneyDetail,
+    JourneySummary,
+    TopologyResponse,
+)
 from src.schemas.agent_config import AgentConfigRead, AgentConfigUpdate
 from src.schemas.application import ApplicationRead
 from src.schemas.project import MergeSecretsRequest, ProjectRead
@@ -119,6 +125,18 @@ FRONTEND_CONTRACT_MANIFEST: tuple[
         AgentConfigRead,
         AgentConfigUpdate,
     ),
+)
+
+# The console surfaces (Attention, Journeys, Atlas) under the same invariant, kept as
+# their own manifest so each exhaustiveness check stays inside the unit-test budget.
+CONSOLE_CONTRACT_MANIFEST: tuple[
+    tuple[tuple[str, str, str, str | None], type[BaseModel], None],
+    ...,
+] = (
+    (("ConsolePage.tsx", "get", "Attention", None), AttentionResponse, None),
+    (("JourneysPage.tsx", "get", "JourneySummary[]", None), JourneySummary, None),
+    (("JourneyPage.tsx", "get", "JourneyDetail", None), JourneyDetail, None),
+    (("AtlasPage.tsx", "get", "Topology", None), TopologyResponse, None),
 )
 
 
@@ -320,10 +338,12 @@ def test_regex_keyed_maps_keep_their_recursive_value_contract():
     }
 
 
-def _discover_frontend_api_calls() -> Counter[tuple[str, str, str, str | None]]:
+def _discover_frontend_api_calls(
+    manifest: tuple[tuple[tuple[str, str, str, str | None], Any, Any], ...],
+) -> Counter[tuple[str, str, str, str | None]]:
     discovered: Counter[tuple[str, str, str, str | None]] = Counter()
     pattern = re.compile(r"api\.(get|post|put|patch|delete)\s*<\s*([^>]+?)\s*>")
-    for page in sorted({entry[0][0] for entry in FRONTEND_CONTRACT_MANIFEST}):
+    for page in sorted({entry[0][0] for entry in manifest}):
         source = (FRONTEND_PAGES / page).read_text()
         for match in pattern.finditer(source):
             type_arguments = [part.strip() for part in match.group(2).split(",")]
@@ -343,10 +363,25 @@ def test_admin_frontend_contract_manifest_is_exhaustive_for_all_five_surfaces():
             assert call[3] is not None
             _assert_contract(source, call[3], request_model)
 
-    discovered = _discover_frontend_api_calls()
+    discovered = _discover_frontend_api_calls(FRONTEND_CONTRACT_MANIFEST)
     assert discovered == expected_calls, (
         "Every typed Dashboard, Users, Projects, Tasks, and Settings api.* call must appear "
         f"in FRONTEND_CONTRACT_MANIFEST. Missing={expected_calls - discovered}; "
+        f"unmanifested={discovered - expected_calls}"
+    )
+
+
+def test_console_contract_manifest_is_exhaustive_for_the_console_surfaces():
+    source = FRONTEND_TYPES.read_text()
+    expected_calls: Counter[tuple[str, str, str, str | None]] = Counter()
+    for call, response_model, _ in CONSOLE_CONTRACT_MANIFEST:
+        expected_calls[call] += 1
+        _assert_contract(source, call[2], response_model)
+
+    discovered = _discover_frontend_api_calls(CONSOLE_CONTRACT_MANIFEST)
+    assert discovered == expected_calls, (
+        "Every typed Attention, Journeys and Atlas api.* call must appear in "
+        f"CONSOLE_CONTRACT_MANIFEST. Missing={expected_calls - discovered}; "
         f"unmanifested={discovered - expected_calls}"
     )
 

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-07
 
+- Admin console v2: `GET /api/admin/v2/{attention,journeys,topology}` read models and Attention, Journey and
+  Atlas screens, so one story is traceable from brief to running container without five pages.
 - Products scaffold from kit 0.8.1, whose generator reformats after its lint fixes, so a bound product's `bindings.py`
   passes its own `ruff format --check` (stand-e2e run 37579868223); tooling pins move to `ecdab3af`.
 - Production/stand scaffolder `mem_limit` is 2g, not 512m: catalog install's cold product mypy ran past
