@@ -711,8 +711,17 @@ async def native_second_story(  # noqa: PLR0915 - native owners execute each acc
             "GitHub App remote branch readback differs from published install head",
         )
         artifact["phase"] = "deploy"
-        deploy_run = await h.wait_deploy_run(api_internal, ctx, timeout=h.DEPLOY_RUN_TIMEOUT)
-        require(deploy_run is not None, "deploy", "install story produced no deploy Run")
+        # A parked install story (PR CI failure, merge refusal) never deploys; stop at
+        # its park and keep the story's quarantine and PR/CI observations, which
+        # run 37572801062 lost by waiting out the whole deploy budget instead.
+        deploy_run = await h.wait_brief_deploy_run(api_internal, ctx, timeout=h.DEPLOY_RUN_TIMEOUT)
+        artifact["story_observations"] = ctx.get("generated_product_story_observations", [])
+        require(
+            deploy_run is not None,
+            "deploy",
+            "install story produced no deploy Run: "
+            + ctx.get("deploy_run_error", "no deploy run appeared"),
+        )
         _require_level1_merge_artifact(ctx, phase="deploy", debug_prefix=debug_prefix)
         await h.record_story_ci_runs(api, ctx)
         deployed = await h.wait_deploy_outcome(
