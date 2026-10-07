@@ -17,6 +17,10 @@ import { UserDetailPage } from '@/pages/UserDetailPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { StoryDetailPage } from '@/pages/StoryDetailPage'
 import { ApplicationDetailPage } from '@/pages/ApplicationDetailPage'
+import { ConsolePage } from '@/pages/ConsolePage'
+import { JourneysPage } from '@/pages/JourneysPage'
+import { JourneyPage } from '@/pages/JourneyPage'
+import { AtlasPage } from '@/pages/AtlasPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -34,7 +38,11 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route element={<AppLayout />}>
-            <Route index element={<DashboardPage />} />
+            <Route index element={<ConsolePage />} />
+            <Route path="journeys" element={<JourneysPage />} />
+            <Route path="journeys/:storyId" element={<JourneyPage />} />
+            <Route path="atlas" element={<AtlasPage />} />
+            <Route path="overview" element={<DashboardPage />} />
             <Route path="projects" element={<ProjectsPage />} />
             <Route path="projects/:id" element={<ProjectDetailPage />} />
             <Route path="tasks" element={<TasksPage />} />
