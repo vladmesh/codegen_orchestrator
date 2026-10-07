@@ -65,6 +65,11 @@ def product(tmp_path, monkeypatch):
         if Path(args[0]).name == "kit":
             (root / "installed.txt").write_text("released closure\n")
             return 0, "", ""
+        if args == ["make", "generate-from-spec"]:
+            generated = root / "services/tg_bot/src/generated/bindings.py"
+            generated.parent.mkdir(exist_ok=True)
+            generated.write_text("DATA = json.loads(\n    \n        '{}'\n    \n)\n")
+            return 0, "", ""
         if args[0] == "make" or Path(args[0]).name in {"mypy", "ruff"}:
             return 0, "", ""
         return await _run_cmd(args, **kwargs)
@@ -107,9 +112,11 @@ async def test_fixed_closure_preserves_notes_and_publishes_verified_exact_head(p
         [
             str(root / ".venv/bin/ruff"),
             "format",
+            "--force-exclude",
             "--exclude",
             "*.md,.venv/**,**/.venv/**,services/**/migrations/**",
-            ".",
+            "--",
+            "services/tg_bot/src/generated/bindings.py",
         ],
         ["make", "validate-specs"],
         ["make", "tests", "REDIS_URL=redis://redis.invalid:6379"],
