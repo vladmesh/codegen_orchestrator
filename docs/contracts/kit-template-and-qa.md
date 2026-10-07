@@ -21,10 +21,10 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.8.0` tag, object
-`09df6747c8030540789f97f9862f455af3dbb541`, which dereferences to
-`b5716efe6ae03c13e1762e372c63e6639843d122`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.8.0` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.8.1` tag, object
+`eb2e518f72fc464db1375bfead1c163e52429fc7`, which dereferences to
+`ecdab3af40c5ab1a7bfeb191ab1b241518ef38a9`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.8.1` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`. The root `codegen-kit-tooling`
 dependency and its lock resolve the same commit.
 It represents the committed checkout: generated ignored `.env` and `TASK.md`
@@ -40,8 +40,11 @@ after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs, as since the
 kit's [0.6.3 release](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md).
 
 This release carries core facade `2.2.0`, protocol `1` and tooling distribution `0.1.0`.
-It adds library recommendations and typed default bot bindings. The retained fixture
-was rendered in [CI run 37270358184](https://github.com/vladmesh/codegen_orchestrator/actions/runs/37270358184);
+`0.8.0` added library recommendations and typed default bot bindings; `0.8.1` only runs the
+formatter again after the generator's lint fixes, so a product with a non-empty binding keeps
+`services/tg_bot/src/generated/bindings.py` stable under its own drift check and `ruff format --check`
+([0.8.1 notes](https://github.com/vladmesh/codegen-product-kit/blob/ecdab3af40c5ab1a7bfeb191ab1b241518ef38a9/docs/releases/0.8.1.md)). The retained fixture
+was rendered in [CI run 37605629245](https://github.com/vladmesh/codegen_orchestrator/actions/runs/37605629245);
 [producer hashes](../evidence/catalog-install-fixture.json) cover every tracked file and the saved answers.
 
 Historical core `2.1.0` introduced by `0.7.0` added these product behaviors;

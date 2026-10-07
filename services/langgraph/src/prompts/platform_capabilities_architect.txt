@@ -1,5 +1,5 @@
-## Platform capabilities, technical (manifest v14, owner-reviewed)
-What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@b5716efe6ae0.
+## Platform capabilities, technical (manifest v15, owner-reviewed)
+What a product built here can and cannot have, kit gh:vladmesh/codegen-product-kit@ecdab3af40c5.
 Can (how):
 - Add a catalog capability [catalog_install]: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.2 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
 - Plain HTTP self links [http_self_address]: PUBLIC_BASE_URL derives from one backend allocation; IPv6 is bracketed. Missing, ambiguous, loopback, unspecified or multicast addresses refuse. IPv6 deploy requires released executable transport at the built commit; unverified workflow or .rej refuses with DEPLOY_HOST. Existing products need reviewed kit update and reconciled merge. No domain/TLS/frontend/webhook capability is added.

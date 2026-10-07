@@ -1,10 +1,10 @@
 {
   "source": "gh:vladmesh/codegen-product-kit",
-  "ref": "0.8.0",
-  "candidate_sha": "17c4c7c0254abd04944ce327d267cea14af43da0",
-  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: 0.8.0\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
+  "ref": "0.8.1",
+  "candidate_sha": "fc9958f31aef9066a25b7933fad0da74f8b67b12",
+  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: 0.8.1\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
   "tracked_sha256": {
-    ".copier-answers.yml": "8b23ef5d90c2c7da4445546d9c718c41eb61987af46020b1e4969bb38450b493",
+    ".copier-answers.yml": "ba2bb62160830033a8da661162c150039a748e5b573d48889f8ed7c23fae56b0",
     ".coveragerc": "e81eaf903c40f90b6e89ceaaf9d3def080db0265dca88d8955c1d702b91af016",
     ".dockerignore": "7b8eac7cd6e7aac256526e938f203a0c06357edf5c32343e44968430b4580a6a",
     ".env.example": "b9fd3997f087dc3386cbd4829ed965fa5ec1c3d6981ace5699559d2524b81943",
@@ -32,7 +32,7 @@
     "infra/compose.tests.integration.yml": "6b8530c32e55dd156e9d83cf378083296034e63cc1ca5ff84a366eeb435cf0bd",
     "infra/env.contract.yaml": "b9052abeac9fea2e8e39a1b4e5d2a067c9df7dceec83912134dd22fa2ab928f1",
     "mypy.ini": "5262a519571da0963b5b9df960ea6393b9ba0291e8987b32326504d62b65b611",
-    "pyproject.toml": "97db9da161bf306985ec164a26b54df4f1d0c338e81f04db9807f5699e3cbce0",
+    "pyproject.toml": "3108ae1ba860b8164912ab000ed57551b566fd401e8661ebb101730fc2717ea3",
     "pytest.ini": "44fbeef624539fbae76f55804299812bbd139d2a31b29bfd3615687cacb7b788",
     "ruff.toml": "755941b2ac3202f1044abf6a916eda298b03c6b9759be079e2e40ec700ed11f0",
     "services.yml": "827da91d5dc2ff032ba98453cebc83d468c43c79421aef2612ab514911d63fea",
@@ -156,6 +156,6 @@
     "tests/integration/test_durable_events.py": "f7224607fec3d5743a2a029a1704d09d537fb59c3ec7a9f6946117064b8184ca",
     "tests/integration/test_example.py": "1a869093e2346d7b79775ab08c644352b8ea267f5de2437fe67d913424a26ca3",
     "tests/integration/test_user_identifiers.py": "bdfbb9160295da41b2861e2d507eff2574189a9074697df0451628cedd6d4a60",
-    "uv.lock": "908b152abd84740d7b7cf20c4289edff258968a6e50deaa532947d5b4bea9d7a"
+    "uv.lock": "c54a12d0987cddaa6d58f8116c912df97bacccc650af29edfcb7ad3ed0f45d7f"
   }
 }

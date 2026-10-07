@@ -41,7 +41,7 @@ click==8.3.1
     # via
     #   black
     #   ddgs
-codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git@b5716efe6ae03c13e1762e372c63e6639843d122
+codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git@ecdab3af40c5ab1a7bfeb191ab1b241518ef38a9
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 cryptography==49.0.0
     # via
