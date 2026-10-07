@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   mypy finished, it refused the bare awaits at stage validate (stand-e2e run 37567975527).
 - The mechanical stand's install story stops its deploy wait when the story parks and keeps its
   quarantine and PR/CI observations: run 37572801062 waited 22 min on a story parked at 05:05.
+- Catalog install runs the product's `ruff format` after generation: kit 0.8.0 left `bindings.py` unformatted
+  and the story PR's lint leg failed (stand-e2e run 37579868223).
 
 ## 2026-10-06
 

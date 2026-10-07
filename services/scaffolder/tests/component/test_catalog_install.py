@@ -65,7 +65,7 @@ def product(tmp_path, monkeypatch):
         if Path(args[0]).name == "kit":
             (root / "installed.txt").write_text("released closure\n")
             return 0, "", ""
-        if args[0] == "make" or Path(args[0]).name == "mypy":
+        if args[0] == "make" or Path(args[0]).name in {"mypy", "ruff"}:
             return 0, "", ""
         return await _run_cmd(args, **kwargs)
 
@@ -102,8 +102,15 @@ async def test_fixed_closure_preserves_notes_and_publishes_verified_exact_head(p
         [kit, "add", "textparse"],
         [kit, "bind", "reminders", "--default"],
     ]
-    assert [args for args in calls if args[0] == "make"] == [
+    assert [args for args in calls if args[0] == "make" or Path(args[0]).name == "ruff"] == [
         ["make", "generate-from-spec"],
+        [
+            str(root / ".venv/bin/ruff"),
+            "format",
+            "--exclude",
+            "*.md,.venv/**,**/.venv/**,services/**/migrations/**",
+            ".",
+        ],
         ["make", "validate-specs"],
         ["make", "tests", "REDIS_URL=redis://redis.invalid:6379"],
     ]

@@ -22,6 +22,9 @@ WORKER_WORKSPACE = "/workspace"
 #: orchestrator Redis on this network; the kit's unit leg runs against a reserved
 #: TLD that never resolves, so a runtime reaching for Redis fails fast.
 UNIT_LEG_REDIS_URL = "redis://redis.invalid:6379"
+#: The product ``make lint`` format leg's exclusions. Its ``--exclude`` replaces
+#: ruff.toml's, so the check covers ``generated/`` trees too.
+LINT_FORMAT_EXCLUDE = "*.md,.venv/**,**/.venv/**,services/**/migrations/**"
 COMMAND_TIMEOUT = 600
 
 
@@ -255,6 +258,12 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         await command([kit, "bind", msg.install.package.name, "--default"])
         stage = "generate"
         await command(["make", "generate-from-spec"])
+        # The released generator formats before its ruff --fix, which strips the
+        # bindings' redundant parentheses and leaves whitespace lines that the
+        # product CI's format check refuses. Format the lint leg's own file set last.
+        await command(
+            [str(root / ".venv/bin/ruff"), "format", "--exclude", LINT_FORMAT_EXCLUDE, "."]
+        )
         stage = "validate"
         await command(["make", "validate-specs"])
         # The released make typecheck loop returns its last service's status.
