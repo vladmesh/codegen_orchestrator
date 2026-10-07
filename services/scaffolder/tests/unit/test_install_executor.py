@@ -243,3 +243,64 @@ def test_install_runs_venv_scripts_a_worker_repointed(tmp_path):
     assert f"file://{root}/pkg" in (site / "tooling-1.dist-info/direct_url.json").read_text()
     # The next worker finds no sentinel and repoints the venv at its mount again.
     assert not (root / ".venv_paths_fixed").exists()
+
+
+def product_checkout_until(tmp_path, stop):
+    """A fake product checkout whose commands succeed until ``stop(argv)`` answers."""
+    (tmp_path / "repo-1/.git").mkdir(parents=True)
+    calls = []
+
+    async def command(args, **kwargs):
+        calls.append(args)
+        if (answer := stop(args)) is not None:
+            return answer
+        if "get-url" in args:
+            return 0, "https://github.com/owner/notes\n", ""
+        if "show-ref" in args:
+            return 1, "", ""
+        if "rev-parse" in args:
+            return 0, "d" * 40 + "\n", ""
+        if "preflight" in args:
+            return 0, "{}", ""
+        return 0, "", ""
+
+    return calls, command
+
+
+@pytest.mark.asyncio
+async def test_product_unit_leg_never_reaches_the_orchestrator_redis(tmp_path, monkeypatch):
+    # The product .env the Makefile exports names redis://redis:6379; on the scaffolder's
+    # network that is the orchestrator Redis, and a bound product's tests block on it.
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: (2, "tests failed\n", "") if args[:2] == ["make", "tests"] else None
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match="tests failed"):
+        await run_install(
+            message(),
+            SimpleNamespace(workspace_base_path=str(tmp_path)),
+            "https://github.com/owner/notes",
+            "fake-token",
+            AsyncMock(),
+        )
+    assert calls[-1] == ["make", "tests", "REDIS_URL=redis://redis.invalid:6379"]
+
+
+@pytest.mark.asyncio
+async def test_timed_out_product_command_refuses_with_its_argv(tmp_path, monkeypatch):
+    def hang(args):
+        if args[:2] == ["make", "validate-specs"]:
+            raise TimeoutError
+
+    _, command = product_checkout_until(tmp_path, hang)
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError) as refused:
+        await run_install(
+            message(),
+            SimpleNamespace(workspace_base_path=str(tmp_path)),
+            "https://github.com/owner/notes",
+            "fake-token",
+            AsyncMock(),
+        )
+    assert refused.value.stage == "validate"
+    assert str(refused.value) == "timeout: make validate-specs ran over 600 s"

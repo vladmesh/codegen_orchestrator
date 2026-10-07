@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-06
 
+- Catalog install runs the product unit leg with `REDIS_URL=redis://redis.invalid:6379`; its exported
+  `.env` points it at the orchestrator Redis; the stand validate stage hung to timeout (run 37516572347).
+- A timed-out catalog install command refuses with its argv instead of an empty detail.
 - Catalog install points venvs the worker repointed at `/workspace` back at its own checkout;
   `.venv/bin/kit` failed with ENOENT on the `/workspace` interpreter (run 37502715758).
 - Catalog install trusts its workspace via `safe.directory` in the product and install git env;

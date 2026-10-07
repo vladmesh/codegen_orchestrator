@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 
 from shared.constants import WorkerWorkspace
 from shared.contracts.dto.catalog_install import InstallCommand, InstallVerification
@@ -17,6 +18,11 @@ from src.scaffold import _git_auth_env, _run_cmd, _workspace_path
 
 #: Where a developer worker mounts this same checkout.
 WORKER_WORKSPACE = "/workspace"
+#: The product Makefile exports its .env, whose ``redis://redis:6379`` is the
+#: orchestrator Redis on this network; the kit's unit leg runs against a reserved
+#: TLD that never resolves, so a runtime reaching for Redis fails fast.
+UNIT_LEG_REDIS_URL = "redis://redis.invalid:6379"
+COMMAND_TIMEOUT = 600
 
 
 class InstallExecutionError(RuntimeError):
@@ -163,9 +169,14 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
             if args[1] in {"fetch", "ls-remote", "push"}:
                 selected_env = git_env
             args = ["git", "-c", "core.hooksPath=/dev/null", *args[1:]]
-        rc, out, err = await _run_cmd(
-            args, cwd=root, env=selected_env, timeout=600, kill_process_group=True
-        )
+        try:
+            rc, out, err = await _run_cmd(
+                args, cwd=root, env=selected_env, timeout=COMMAND_TIMEOUT, kill_process_group=True
+            )
+        except TimeoutError as error:
+            raise InstallExecutionError(
+                stage, f"timeout: {shlex.join(args)} ran over {COMMAND_TIMEOUT} s", head, base
+            ) from error
         stages.append({"stage": stage, "argv": args, "returncode": rc})
         if rc != 0 and not (allow_absent and rc == 1):
             raise InstallExecutionError(
@@ -253,7 +264,7 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
                 [str(root / f"services/{service}/.venv/bin/mypy"), f"services/{service}"],
                 command_env=env | {"PYTHONPATH": ".", "MYPYPATH": "."},
             )
-        await command(["make", "tests"])
+        await command(["make", "tests", f"REDIS_URL={UNIT_LEG_REDIS_URL}"])
         stage = "readback"
         _, readback = await command([python, "-I", probe, "readback", payload, msg.template_ref])
         evidence = json.loads(readback)
@@ -320,7 +331,7 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
             push_args,
             cwd=root,
             env=git_env,
-            timeout=600,
+            timeout=COMMAND_TIMEOUT,
             kill_process_group=True,
         )
         stages.append(
