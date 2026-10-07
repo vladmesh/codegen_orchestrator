@@ -9,6 +9,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   the 600 s command timeout at stage validate (stand-e2e run 37562802977).
 - The mechanical stand's notes router casts its redis 7.x calls to `Awaitable[T]`: once install's product
   mypy finished, it refused the bare awaits at stage validate (stand-e2e run 37567975527).
+- The mechanical stand's install story stops its deploy wait when the story parks and keeps its
+  quarantine and PR/CI observations: run 37572801062 waited 22 min on a story parked at 05:05.
 
 ## 2026-10-06
 
