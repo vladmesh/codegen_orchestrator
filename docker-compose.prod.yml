@@ -117,7 +117,10 @@ services:
       - *github-app-key
       - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
       - uv-cache:/root/.cache/uv
-    mem_limit: 512m
+    # A catalog install runs the product's cold mypy and unit tests in this
+    # container; under 512m mypy thrashed past the 600 s command timeout
+    # (stand-e2e run 37562802977).
+    mem_limit: 2g
 
   worker-manager:
     logging: *default-logging
