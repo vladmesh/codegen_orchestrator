@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-07
+
+- Production/stand scaffolder `mem_limit` is 2g, not 512m: catalog install's cold product mypy ran past
+  the 600 s command timeout at stage validate (stand-e2e run 37562802977).
+
 ## 2026-10-06
 
 - Catalog install runs the product unit leg with `REDIS_URL=redis://redis.invalid:6379`; its exported
