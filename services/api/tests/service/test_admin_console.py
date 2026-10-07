@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import uuid
 
 import pytest
+from sqlalchemy import delete
 
 from shared.models import (
     Application,
@@ -182,7 +183,25 @@ async def product(db_session):
         ]
     )
     await db_session.commit()
-    return {"project": project, "story": story, "server": server, "waiting": waiting}
+    yield {"project": project, "story": story, "server": server, "waiting": waiting}
+
+    # The rows are committed so the API's own sessions see them; remove them again so
+    # suites that list every task or story never meet this fixture's partial payloads.
+    for model, column, value in (
+        (Deployment, Deployment.project_id, project.id),
+        (PortAllocation, PortAllocation.application_id, app_row.id),
+        (Application, Application.repo_id, repo.id),
+        (Run, Run.project_id, project.id),
+        (Task, Task.project_id, project.id),
+        (ProductBrief, ProductBrief.project_id, project.id),
+        (Story, Story.project_id, project.id),
+        (Repository, Repository.project_id, project.id),
+        (Project, Project.id, project.id),
+        (Server, Server.handle, server.handle),
+        (User, User.id, owner_id),
+    ):
+        await db_session.execute(delete(model).where(column == value))
+    await db_session.commit()
 
 
 async def test_journey_detail_lays_out_the_story_and_its_passport(async_client, product):
