@@ -66,7 +66,7 @@ Stage by stage: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes and thei
 | `worker-manager` | Starts and reaps the coding-agent containers, isolated on the `codegen_worker` network. |
 | `worker-broker` | Authenticated bridge between isolated coding workers and control-plane streams, status/session APIs, and Compose proxy operations. |
 | `infra-service` | Ansible runner: provisions and configures the servers projects land on. |
-| `admin-frontend` | React SPA on 3001 behind nginx basic auth: projects, tasks, workers, queues. |
+| `admin-frontend` | React SPA on 3001 behind nginx basic auth: attention feed, request journeys, the runtime atlas, plus projects, tasks, workers, queues. |
 | `caddy` | Public reverse proxy/TLS edge for production endpoints and the self-hosted registry. |
 | `registry` | Self-hosted Docker Registry used by CI/deploy image flow. |
 | `user-dashboard` | The end user's own view of their projects. |

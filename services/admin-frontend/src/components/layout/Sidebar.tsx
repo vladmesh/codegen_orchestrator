@@ -1,6 +1,9 @@
 import { Link, useLocation } from 'react-router'
 import { cn } from '@/lib/utils'
 import {
+  Siren,
+  Route as RouteIcon,
+  Map as MapIcon,
   LayoutDashboard,
   FolderKanban,
   ListTodo,
@@ -20,8 +23,14 @@ interface NavItem {
   disabled?: boolean
 }
 
+const consoleItems: NavItem[] = [
+  { label: 'Attention', path: '/', icon: Siren },
+  { label: 'Journeys', path: '/journeys', icon: RouteIcon },
+  { label: 'Atlas', path: '/atlas', icon: MapIcon },
+]
+
 const navItems: NavItem[] = [
-  { label: 'Dashboard', path: '/', icon: LayoutDashboard },
+  { label: 'Overview', path: '/overview', icon: LayoutDashboard },
   { label: 'Users', path: '/users', icon: Users },
   { label: 'Projects', path: '/projects', icon: FolderKanban },
   { label: 'Tasks', path: '/tasks', icon: ListTodo },
@@ -41,8 +50,15 @@ export function Sidebar() {
         <BrainCircuit className="h-6 w-6 text-primary" />
         <span className="text-lg font-semibold text-sidebar-foreground">Orchestrator</span>
       </div>
-      <nav className="flex-1 space-y-1 p-2">
-        {navItems.map((item) => {
+      <nav className="flex-1 space-y-1 overflow-y-auto p-2">
+        {[...consoleItems, null, ...navItems].map((item) => {
+          if (item === null) {
+            return (
+              <div key="reference" className="px-3 pb-1 pt-4 font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+                Reference
+              </div>
+            )
+          }
           if (item.disabled) {
             return (
               <span

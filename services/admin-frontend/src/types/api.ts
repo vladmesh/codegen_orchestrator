@@ -790,3 +790,151 @@ export interface AgentConfigUpdate {
   openrouter_app_name?: string | null
   llm_channels?: LLMChannelConfig[] | null
 }
+
+// --- Admin console v2 (services/api/src/schemas/admin_console.py) ---
+
+export interface Fact {
+  label: string
+  value: string
+}
+
+export type JourneyStage =
+  | 'brief'
+  | 'plan'
+  | 'install'
+  | 'build'
+  | 'review'
+  | 'deploy'
+  | 'verify'
+  | 'live'
+
+export type StepStatus = 'pending' | 'active' | 'waiting' | 'done' | 'failed' | 'skipped'
+
+export interface JourneyAttempt {
+  id: string
+  kind: 'engineering' | 'deploy' | 'qa' | 'install'
+  status: string
+  task_id: string | null
+  actor: string | null
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+}
+
+export interface JourneyStep {
+  stage: JourneyStage
+  status: StepStatus
+  started_at: string | null
+  finished_at: string | null
+  attempts: JourneyAttempt[]
+  facts: Fact[]
+}
+
+export interface JourneySummary {
+  story_id: string
+  title: string
+  project_id: string
+  project_title: string
+  status: StoryStatus
+  waiting_on: StoryWaitingOn
+  current_stage: JourneyStage | null
+  created_at: string
+  updated_at: string
+  finished_at: string | null
+}
+
+export interface PackageRef {
+  name: string
+  version: string
+  kind: 'package' | 'library'
+}
+
+export interface ContainerView {
+  name: string
+  status: string
+  placement: string
+  port: number | null
+  reserved_ram_mb: number
+  response_time_ms: number | null
+  uptime_pct_24h: number | null
+  deployed_sha: string | null
+}
+
+export interface ProductPassport {
+  modules: string[]
+  packages: PackageRef[]
+  containers: ContainerView[]
+  user_secrets: string[]
+}
+
+export interface JourneyDetail {
+  summary: JourneySummary
+  request: string | null
+  requirements: number | null
+  pr_number: number | null
+  steps: JourneyStep[]
+  passport: ProductPassport
+}
+
+export interface PlacementView {
+  handle: string
+  role: 'control' | 'product'
+  status: string
+  public_ip: string
+  capacity_cpu: number
+  capacity_ram_mb: number
+  used_ram_mb: number
+  cpu_usage_pct: number | null
+  last_health_check: string | null
+}
+
+export interface ProductView {
+  project_id: string
+  title: string
+  slug: string
+  status: string
+  latest_story_id: string | null
+  passport: ProductPassport
+}
+
+export interface PlatformServiceView {
+  name: string
+  status: string
+  products: string[]
+}
+
+export interface Topology {
+  placements: PlacementView[]
+  products: ProductView[]
+  platform_services: PlatformServiceView[]
+}
+
+export type Severity = 'critical' | 'warning' | 'info'
+
+export interface AttentionItem {
+  kind: 'task' | 'story' | 'incident' | 'application' | 'queue'
+  severity: Severity
+  title: string
+  detail: string | null
+  since: string | null
+  project_id: string | null
+  project_title: string | null
+  story_id: string | null
+  task_id: string | null
+  application_id: number | null
+  server_handle: string | null
+}
+
+export interface ConsoleKpis {
+  active_journeys: number
+  running_runs: number
+  queued_runs: number
+  live_products: number
+  degraded_containers: number
+  median_lead_time_minutes_7d: number | null
+}
+
+export interface Attention {
+  kpis: ConsoleKpis
+  items: AttentionItem[]
+}
