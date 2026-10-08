@@ -4,6 +4,7 @@ import argparse
 import asyncio
 
 import structlog
+import yaml
 
 from shared.contracts.dto.story_planning import PlanningChannels
 from shared.log_config import setup_logging
@@ -13,6 +14,18 @@ from .clients.api import api_client
 from .kit_catalog import KitCatalog, get_kit_catalog_reader
 
 
+def select_capability(catalog: KitCatalog, capability: str) -> str:
+    candidates = [item for item in catalog.packages if capability in item.package.capabilities]
+    if len(candidates) != 1:
+        raise ValueError("exactly one catalog capability match is required")
+    selected = candidates[0]
+    manifest = yaml.safe_load(catalog.manifests[selected.name])
+    sources = {entry["source"]["kind"] for entry in manifest["environment"] if "source" in entry}
+    if not {"platform_key", "platform_base_url"} <= sources:
+        raise ValueError("catalog capability must declare platform sources")
+    return selected.name
+
+
 async def scripted_install_plan(
     project_id: str,
     story_id: str,
@@ -20,6 +33,7 @@ async def scripted_install_plan(
     requirement_ids: list[str],
     *,
     planning_attempt_id: str | None = None,
+    capability: str | None = None,
 ):
     brief = await api_client.get_product_brief_by_story(story_id)
     if brief is None or str(brief.project_id) != project_id or not brief.confirmed_at:
@@ -39,6 +53,8 @@ async def scripted_install_plan(
         catalog = await get_kit_catalog_reader().read()
         if not isinstance(catalog, KitCatalog):
             return {"error": "catalog_unavailable"}
+        if capability is not None:
+            package = select_capability(catalog, capability)
         return await _owned_plan(
             catalog, brief, attempt, project_id, story_id, package, requirement_ids
         )
@@ -97,6 +113,7 @@ async def _invoke(args):
             args.package,
             args.requirement,
             planning_attempt_id=args.attempt,
+            capability=args.capability,
         )
         structlog.get_logger().info("scripted_install_result", result=result)
         return 0 if result.get("coverage_outcome") == "admitted" else 1
@@ -108,8 +125,11 @@ def main():
     """Fixed internal invocation in the LangGraph service, never a payload/command bridge."""
     setup_logging(service_name="scripted_install_plan", log_format="json")
     parser = argparse.ArgumentParser()
-    for name in ("project", "story", "package", "attempt"):
+    for name in ("project", "story", "attempt"):
         parser.add_argument(f"--{name}", required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--package")
+    selection.add_argument("--capability")
     parser.add_argument("--requirement", action="append", required=True)
     return asyncio.run(_invoke(parser.parse_args()))
 

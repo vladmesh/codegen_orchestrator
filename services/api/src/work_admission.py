@@ -1,12 +1,12 @@
 """Atomic count-based admission used by every paid-work entry point."""
 
 from datetime import UTC, datetime
+import os
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.contracts.acceptance import parse_deterministic_qa_criteria
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorOverride
 from shared.contracts.dto.executor_diagnostics import (
@@ -32,6 +32,7 @@ from shared.models import (
     User,
     WorkAdmissionAudit,
 )
+from shared.stand_conversation import parse_stand_qa_criteria
 
 from .config import get_settings
 from .executor_diagnostics import current_executor_diagnostic
@@ -333,7 +334,10 @@ def _health_only_qa_handoff(command: PaidRunStartCommand) -> bool:
         message.run_id == command.id
         and message.project_id == str(command.project_id)
         and message.story_id == command.story_id
-        and parse_deterministic_qa_criteria(message.acceptance_criteria) is not None
+        and parse_stand_qa_criteria(
+            message.acceptance_criteria, contour=os.environ.get("LIVE_CONTOUR")
+        )
+        is not None
     )
 
 

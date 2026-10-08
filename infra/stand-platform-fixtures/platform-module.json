@@ -1,0 +1,21 @@
+{
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/{service}/v1/channels/stand_public",
+      "status": 200,
+      "body": {"channel": "stand_public", "status": "ok", "checked_at": "{now}", "tracked": true}
+    },
+    {
+      "method": "GET",
+      "path": "/{service}/v1/posts",
+      "status": 200,
+      "body": {
+        "items": [{"channel": "stand_public", "id": 101, "seq": 1, "date": "{now}", "text": "Stand public post: привет / hello", "url": "https://t.me/stand_public/101", "edited": false, "deleted": false, "links": [], "media": [], "fetched_at": "{now}"}],
+        "next_cursor": "stand-page-1",
+        "channels": [{"channel": "stand_public", "status": "ok"}],
+        "has_more": false
+      }
+    }
+  ]
+}

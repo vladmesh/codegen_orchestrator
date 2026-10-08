@@ -119,3 +119,6 @@ services:
       TELETHON_API_ID: !reset null
       TELETHON_API_HASH: !reset null
       TELETHON_SESSION: !reset null
+      STAND_CONVERSATION_DIR: /stand-conversations
+    volumes:
+      - ./infra/stand-conversations:/stand-conversations:ro

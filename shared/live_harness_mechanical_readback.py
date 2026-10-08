@@ -11,6 +11,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.clients.registry import DockerRegistryClient, parse_image_reference
+from shared.contracts.env_contract import merge_env_contract_fragments
 from shared.live_harness_cleanup import _file_contents_at, _resolve_ssh_targets, _run_over_ssh
 from shared.log_config import setup_logging
 from src.clients.api import api_client
@@ -47,14 +48,45 @@ if (root / 'codegen_kit/__init__.py').is_file():
 print(json.dumps(result))
 """
 
+COMPONENT_READ = """
+result['component'] = {}
+binding = root / ('services/tg_bot/bindings/' + component['name'] + '.yaml')
+if binding.is_file():
+    result['component']['binding_sha256'] = hashlib.sha256(binding.read_bytes()).hexdigest()
+if (root / 'services/backend/src/main.py').is_file():
+    import yaml
+    from importlib.resources import files
+    from codegen_kit._active_packages import ACTIVE_PACKAGES
+    result['component']['active'] = next(
+        item for item in ACTIVE_PACKAGES if item['name'] == component['name'])
+    result['component']['version'] = m.version(component['distribution'])
+    manifest_bytes = files(component['module']).joinpath('package.yaml').read_bytes()
+    result['component']['manifest_sha256'] = hashlib.sha256(manifest_bytes).hexdigest()
+    result['component']['manifest'] = yaml.safe_load(manifest_bytes)
+    contract_paths = sorted((root / 'services/backend').rglob('*env.contract.yaml'))
+    if not contract_paths:
+        raise RuntimeError('deployed backend environment contract is missing')
+    result['component']['contract_fragments'] = [
+        yaml.safe_load(path.read_text()) for path in contract_paths]
+"""
 
-async def read_deployment(project_name, server_handle):
+
+async def read_deployment(project_name, server_handle, *, component=None):
     targets = await _resolve_ssh_targets(str(api_client.base_url), server_handle)
     if len(targets) != 1:
         raise RuntimeError("deployment does not resolve to exactly one owned target")
     destination, key, _ = targets[0]
     result = {}
     for service in ("backend", "tg_bot"):
+        script = CONTAINER_READ
+        if component is not None:
+            query = json.dumps(component)
+            script = (
+                script.replace("print(json.dumps(result))", "")
+                + f"\ncomponent = json.loads({query!r})\n"
+                + COMPONENT_READ
+                + "\nprint(json.dumps(result))\n"
+            )
         listing = _run_over_ssh(
             destination,
             key,
@@ -128,7 +160,7 @@ async def read_deployment(project_name, server_handle):
                     container_id,
                     "python",
                     "-c",
-                    CONTAINER_READ,
+                    script,
                 ]
             ),
             "",
@@ -136,13 +168,20 @@ async def read_deployment(project_name, server_handle):
         )
         if image.returncode or read.returncode:
             raise RuntimeError(f"{service} fixed artifact read failed")
+        artifacts = json.loads(read.stdout)
+        if component is not None and service == "backend":
+            selected = artifacts["component"]
+            # Use the same validation and merge as the deploy contract loader.
+            selected["contract"] = merge_env_contract_fragments(
+                selected.pop("contract_fragments")
+            ).model_dump(mode="json")
         result[service] = {
             "container_id": container_id,
             "image_id": image_id,
             "reference": reference,
             "registry_digest": registry_digest,
             "digests": json.loads(image.stdout),
-            **json.loads(read.stdout),
+            **artifacts,
         }
     return result
 

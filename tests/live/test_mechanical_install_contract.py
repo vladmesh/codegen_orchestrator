@@ -137,7 +137,7 @@ def baseline():
         },
         "deployment": {
             service: {
-                "core": "2.2.0",
+                "core": "2.4.0",
                 "digests": [f"registry/{service}@sha256:" + "a" * 64],
                 "reference": f"registry/{service}:sha-{'a' * 12}",
                 "registry_digest": "sha256:" + "a" * 64,

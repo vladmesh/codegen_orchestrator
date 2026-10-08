@@ -23,6 +23,8 @@ The first-story lifecycle is shared; the suite selects its second story.
   a separate native INSTALL Story uses the live catalog, then fixed QA observes
   actual Telegram scheduling receipts, timer delivery and cancellation. No model
   is asked anything; notes are saved/listed before and after installation.
+  A third native install selects a platform-backed module by catalog capability,
+  proves stand key issuance and executes fixture-driven RU/EN chat delivery.
 * `mega-live` — level 2. A real developer model (`claude` or `codex`) is given
   the same contract in prose and writes the code itself, and a real QA executor
   judges the deployed product against the criteria each story's plan admission
@@ -485,6 +487,9 @@ async def _level1_lifecycle_tail(
         from mechanical_install import native_second_story  # noqa: PLC0415
 
         await native_second_story(api, api_internal, api_observer, ctx, debug_prefix=debug_prefix)
+        from mechanical_platform import native_third_story  # noqa: PLC0415
+
+        await native_third_story(api, api_internal, api_observer, ctx, debug_prefix=debug_prefix)
     else:
         await _level1_extension_story(
             api, api_internal, api_observer, ctx, debug_prefix=debug_prefix
@@ -861,6 +866,8 @@ class TestMechanicalInstall:
         facts = mechanical_pipeline["mechanical_acceptance"]
         assert facts["status"] == "passed", facts
         assert facts["phase"] == "completed"
+        assert facts["platform_story"]["status"] == "passed"
+        assert facts["platform_story"]["telegram"]["languages"] == {"ru": True, "en": True}
         assert mechanical_pipeline["no_intervention_error"] is None
         assert mechanical_pipeline["first_task_status"] == TaskStatus.DONE
         assert mechanical_pipeline["second_task_status"] == TaskStatus.DONE

@@ -437,6 +437,11 @@ MECHANICAL_EXTRA_WAITS = (
 MECHANICAL_LIFECYCLE_WAITS = (
     *MECHANICAL_FIRST_STORY_WAITS,
     *MECHANICAL_SECOND_STORY_WAITS,
+    *tuple(
+        ("platform story: " + label, seconds) for label, seconds in MECHANICAL_SECOND_STORY_WAITS
+    ),
+    ("platform story: zero model and native publication observations", 60),
+    ("platform story: deployed image tags", 60),
     *MECHANICAL_EXTRA_WAITS,
     *NOOP_TEARDOWN_WAITS,
 )

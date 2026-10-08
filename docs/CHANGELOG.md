@@ -5,6 +5,18 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Stand issuance tests derive the product fixture from the canonical template pin,
+  preserving the real-layout regression when the kit release moves.
+
+- Stand issuance readback merges deployed backend contract fragments with deploy's validator;
+  QA redacts the language-write capability so reflected replies cannot retain it.
+
+- Stand QA keeps session isolation and conversation fixtures in one Compose service;
+  host unit tests reject duplicate Compose mapping keys before native CI renders.
+
+- The no-model stand adds a capability-selected platform install, key-issuance readback and
+  fixture-driven RU/EN chat delivery on the same product, without an engineering Run.
+
 - Stand has an authenticated fixture platform and internal key administration; declared URLs
   can redirect to its TLS ingress only on stand, keeping production isolated.
 

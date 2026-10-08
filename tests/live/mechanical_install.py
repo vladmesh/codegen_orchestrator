@@ -234,20 +234,23 @@ def model_observation(ctx):
     }
 
 
-def check_execution(stages):
+def check_execution(stages, *, libraries=True):
     require(
         {row["stage"] for row in stages}
-        == {
-            "preflight",
-            "package",
-            "library",
-            "bind",
-            "generate",
-            "validate",
-            "readback",
-            "commit",
-            "push",
-        },
+        == (
+            {
+                "preflight",
+                "package",
+                "library",
+                "bind",
+                "generate",
+                "validate",
+                "readback",
+                "commit",
+                "push",
+            }
+            - (set() if libraries else {"library"})
+        ),
         "execution",
         "native executor did not retain every required stage",
     )
@@ -273,7 +276,7 @@ def check_execution(stages):
             )
 
 
-def execution_readback(ctx, operation):
+def execution_readback(ctx, operation, *, libraries=True):
     result = subprocess.run(
         [
             "docker",
@@ -304,7 +307,7 @@ def execution_readback(ctx, operation):
     require(len(matches) == 1, "execution", "expected one native publication observation")
     require(matches[0]["head_sha"] == operation["head_sha"], "execution", "published head differs")
     stages = matches[0]["execution_stages"]
-    check_execution(stages)
+    check_execution(stages, libraries=libraries)
     return stages
 
 
@@ -413,6 +416,11 @@ def require_complete(ctx):
         "lifecycle",
         "native install and fixed QA did not complete",
     )
+    require(
+        ctx["mechanical_acceptance"]["platform_story"]["status"] == "passed",
+        "lifecycle",
+        "platform install and bilingual conversation did not complete",
+    )
     for key in (
         "no_intervention_error",
         "engineering_settlement_error",
@@ -473,7 +481,11 @@ def check_readback(facts, *, installed, baseline=None, operation=None, expected_
                 "readback",
                 f"component already installed in {service}",
             )
-    require(deployment["backend"]["core"] == "2.2.0", "readback", "deployed core differs from pin")
+    from framework.spec.package_resolution import CORE_VERSION  # noqa: PLC0415
+
+    require(
+        deployment["backend"]["core"] == CORE_VERSION, "readback", "deployed core differs from pin"
+    )
     require(
         deployment["backend"]["distributions"]["codegen-kit-reminders"]
         == ("0.5.0" if installed else None),
@@ -819,7 +831,9 @@ def write_artifact(ctx):
     artifact["kit"] = {
         "source": TEMPLATE_PIN.source,
         "ref": TEMPLATE_PIN.ref,
-        "core": "2.2.0",
+        "core": artifact["baseline"]["deployment"]["backend"]["core"]
+        if "baseline" in artifact
+        else None,
         "reminders": "0.5.0",
         "textparse": "0.1.0",
     }

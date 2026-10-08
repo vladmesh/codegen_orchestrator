@@ -534,7 +534,14 @@ async def _run_mechanical_qa(msg, selected, stored, result, redaction):
         identity = QACallerIdentity(
             "telegram", str(QA_TEST_TELEGRAM_ID), stored["USER_IDENTITY_CAPABILITY"]
         )
-        await run_fixed_probe(
+        probe_runner = run_fixed_probe
+        probe_arguments = {}
+        if selected[0] == "conversation":
+            from .stand_conversation import run_probe  # noqa: PLC0415
+
+            probe_runner = run_probe
+            probe_arguments["stored"] = stored
+        await probe_runner(
             mode=selected[0],
             marker=selected[1],
             bot_username=msg.bot_username,
@@ -542,6 +549,7 @@ async def _run_mechanical_qa(msg, selected, stored, result, redaction):
             headers=identity.headers(),
             evidence=evidence,
             redaction=redaction,
+            **probe_arguments,
         )
         final_grant = await api_client.get_temporary_access_grant(grant.id)
         if final_grant.status != TemporaryAccessStatus.GRANTED:
@@ -812,8 +820,9 @@ async def _load_qa_executor_decision(run_id: str) -> ExecutorDecision | QABlocke
 
 def _qa_criteria(criteria):
     from .mechanical_telegram import selection  # noqa: PLC0415
+    from .stand_conversation import selection as conversation_selection  # noqa: PLC0415
 
-    mechanical = selection(criteria)
+    mechanical = conversation_selection(criteria) or selection(criteria)
     checks = parse_health_only_criteria(mechanical[2] if mechanical else criteria)
     if mechanical and checks is None:
         raise ValueError("fixed stand probes require deterministic HTTP criteria")

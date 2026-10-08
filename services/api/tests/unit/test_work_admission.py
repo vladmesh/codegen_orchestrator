@@ -82,6 +82,16 @@ def _rows(values: dict[str, object]) -> MagicMock:
     [
         ("- GET /health returns 200", "matching", WorkAdmissionOutcome.ADMITTED),
         (
+            "- GET /health returns 200\n- Stand conversation: platform-module",
+            "stand",
+            WorkAdmissionOutcome.ADMITTED,
+        ),
+        (
+            "- GET /health returns 200\n- Stand conversation: platform-module",
+            "production",
+            WorkAdmissionOutcome.DENIED,
+        ),
+        (
             "- GET /health returns 200\n- GET /reminders returns 200",
             "matching",
             WorkAdmissionOutcome.ADMITTED,
@@ -127,6 +137,7 @@ async def test_qa_handoff_requires_model_diagnostics_only_for_exploratory_checks
     monkeypatch, criteria, handoff, expected
 ):
     """Health QA must still reach its HTTP consumer when model profiles are absent."""
+    monkeypatch.setenv("LIVE_CONTOUR", "stand" if handoff == "stand" else "production")
     from datetime import UTC, datetime, timedelta
 
     from shared.contracts.dto.engineering_budget_policy import (
