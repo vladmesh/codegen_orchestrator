@@ -186,6 +186,19 @@ manifest or add a product DB trigger, startup poller, or product-owned seed.
 Ordinary service-owned settings retain the service manifest and generated
 registry requirements above.
 
+PO receives installable package capabilities and product settings from the live
+catalog snapshot for its turn. Binding schemas use the same kit helper as the
+Architect; package settings and product-scope seeds use the snapshot's manifest.
+Keys are transcribed exactly, including the package prefix. Values without a
+schema default require an explicit user choice, including a v2 binding's product
+language; the conversation language supplies no such choice. Named items use
+the package's declared seed key. Confirmation refuses missing product-scope keys
+or values outside their schemas with a typed `package_settings_required` tool
+answer, naming the keys and choices to ask for before a new revision. Catalog
+capability phrases and exact setting keys provide the deterministic matching
+floor; PO must also judge paraphrases against the catalog. An unavailable catalog
+adds no package block and leaves ordinary brief confirmation available.
+
 *As a value.* After a successful deploy of a brief-backed story, the deploy
 result handler reads the brief through `GET /api/product-briefs/by-story/{story_id}`
 and writes every `initial_settings` entry into the deployed product through the

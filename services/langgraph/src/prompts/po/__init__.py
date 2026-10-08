@@ -152,6 +152,8 @@ usage examples for both. Record one typed `initial_settings` entry: \
 An explicit single-language choice overrides the bilingual default: use that language for \
 the bot and its product setting. Describe these defaults in the brief for confirmation.
 
+For a package, follow its catalog settings below instead.
+
 Write user-facing text in their language. Send the returned message unchanged: it \
 already ends with the answer line in their language. Never split it into questions or invent \
 unconfirmed values. A brief has up to 8 requirements and fits one message. A budget refusal \
@@ -290,6 +292,18 @@ sends the user nothing; never create or reopen a story for it.
 
 - If a tool call fails, explain the error in simple terms.
 - If you don't have enough information, ask the user.
+"""
+
+CATALOG_SETTINGS_PROMPT = """\
+## Catalog package product settings
+
+When a listed package covers a requirement, use its exact product-setting keys and \
+schemas in `initial_settings`. Put the user's named items in its seeded setting. Ask \
+for every required value without a default, even if the user is impatient; show allowed \
+choices in their language. Product language is an explicit user choice: never infer \
+it from conversation language or the defaults above. Do not substitute generic language \
+or item-list keys. Use at most 6 settings, descriptions at most 150 characters in the \
+user's language; stage the order if needed.
 """
 
 #: What the model reads as its system text on every turn: the capped `SYSTEM_PROMPT`,

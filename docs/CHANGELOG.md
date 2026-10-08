@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- PO reads catalog-owned product settings and refuses confirmation with missing package keys,
+  so seeded items and explicit binding language reach planning unchanged.
+
 - Planning retries preserve admitted reopen plans; fully returned attempts park and reset
   admission even with superseded Tasks. Binding refusals keep deterministic diagnostics.
 

@@ -118,12 +118,13 @@ def kit_catalog_off_github(monkeypatch, bundled_kit_catalog):
     Tests of the reader build their own `KitCatalogReader`; a test of an unavailable
     catalog sets `read.return_value` on the reader this returns.
     """
-    from src import kit_catalog
+    from src import catalog_product_settings, kit_catalog
     from src.consumers import architect
 
     reader = MagicMock(spec=kit_catalog.KitCatalogReader)
     reader.read = AsyncMock(return_value=bundled_kit_catalog)
     monkeypatch.setattr(architect, "get_kit_catalog_reader", lambda: reader)
+    monkeypatch.setattr(catalog_product_settings, "get_kit_catalog_reader", lambda: reader)
     return reader
 
 

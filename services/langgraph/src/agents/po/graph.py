@@ -21,6 +21,11 @@ from langmem.short_term import SummarizationNode
 from pydantic import ValidationError
 import structlog
 
+from ...catalog_product_settings import (
+    PO_CATALOG_CONFIG_KEY,
+    PO_PACKAGES_CONFIG_KEY,
+    render_po_packages,
+)
 from ...prompts.po import MODEL_PROMPT
 from .checkpoints import ProtectedPostgresSaver, ProtectedSerializer
 from .situation import SITUATION_CONFIG_KEY
@@ -44,7 +49,15 @@ def po_prompt(state: POState, config: RunnableConfig) -> list[AnyMessage]:
     for this invocation only and never becomes a checkpointed message.
     """
     situation = config["configurable"].get(SITUATION_CONFIG_KEY)
-    system = f"{MODEL_PROMPT}\n\n{situation}" if situation else MODEL_PROMPT
+    catalog = config["configurable"].get(PO_CATALOG_CONFIG_KEY)
+    packages = (
+        config["configurable"][PO_PACKAGES_CONFIG_KEY]
+        if PO_PACKAGES_CONFIG_KEY in config["configurable"]
+        else render_po_packages(catalog)
+        if catalog is not None
+        else ""
+    )
+    system = "\n\n".join(block for block in (MODEL_PROMPT, packages, situation) if block)
     return [SystemMessage(content=system), *state["messages"]]
 
 

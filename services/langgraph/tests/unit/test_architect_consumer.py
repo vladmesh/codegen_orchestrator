@@ -1279,6 +1279,46 @@ class TestProductBriefInitialSettings:
         return graph.ainvoke.call_args[0][0]
 
     @pytest.mark.asyncio
+    async def test_confirmed_v2_package_settings_reach_architect_unchanged(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        from shared.contracts.dto.product_brief import ProductBriefRead
+        from src.agents.po.tools_briefs import confirm_product_brief
+        from src.catalog_product_settings import PO_CATALOG_CONFIG_KEY
+        from tests.unit.po.catalog_packages import notebook_snapshot
+        from tests.unit.po.test_package_settings import notebook_content, settings
+        from tests.unit.po.test_tools_briefs import (
+            _API,
+            BRIEF_ID,
+            PROJECT_ID,
+            _brief,
+            _config,
+            _install,
+        )
+
+        po_api = _API(briefs={BRIEF_ID: _brief(content=notebook_content(settings()))})
+        _install(po_api, AsyncMock())
+        config = _config()
+        config["configurable"][PO_CATALOG_CONFIG_KEY] = notebook_snapshot()
+        answer = await confirm_product_brief.ainvoke(
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=config
+        )
+        assert "confirmed and frozen" in answer
+        confirmed = ProductBriefRead.model_validate(po_api.briefs[BRIEF_ID])
+        api = _mock_api_get_project
+        api.get_product_brief_by_story = AsyncMock(return_value=confirmed)
+        api.claim_planning_attempt = AsyncMock(return_value=make_planning_attempt())
+        api.admit_product_brief_coverage = AsyncMock(return_value=make_admission())
+        graph = _graph_returning()
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(valid_job_data, mock_redis)
+        assert result["status"] == "success"
+        state = graph.ainvoke.call_args[0][0]
+        assert state["initial_settings"] == confirmed.content.initial_settings
+
+    @pytest.mark.asyncio
     async def test_confirmed_settings_reach_the_state_and_the_prompt(
         self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
     ):
