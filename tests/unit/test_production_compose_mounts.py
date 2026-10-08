@@ -108,6 +108,7 @@ def _render(files: tuple[str, ...], project_dir: Path) -> dict:
     env_file.write_text(
         env_file.read_text()
         + "\nLOKI_URL=http://loki:3100\nHOST_CODEX_HOME=/opt/secrets/codex-stand\n"
+        + "PLATFORM_AUTH_ADMIN_URL=http://auth:8000\nPLATFORM_AUTH_ADMIN_TOKEN=test-admin-token\n"
     )
     command = ["docker", "compose", "--project-directory", str(project_dir)]
     command += ["--env-file", str(env_file)]
@@ -135,6 +136,30 @@ def _repository_path(source: str, project_dir: Path) -> PurePosixPath | None:
         except ValueError:
             continue
     return None
+
+
+@pytest.mark.docker
+@pytest.mark.parametrize("files", [BASE, PROD, STAND], ids=["dev", "prod", "stand"])
+def test_platform_auth_network_is_available_only_to_the_production_deploy_worker(stacks, files):
+    config, _ = stacks[files]
+    links = {
+        key for key, network in config["networks"].items() if network["name"] == "codegen-orch-link"
+    }
+    callers = {
+        name
+        for name, service in config["services"].items()
+        if links.intersection(service["networks"])
+    }
+    if files == PROD:
+        assert links == {"platform_auth"}
+        assert config["networks"]["platform_auth"]["external"] is True
+        assert callers == {"deploy-worker"}
+        env = config["services"]["deploy-worker"]["environment"]
+        assert env["PLATFORM_AUTH_ADMIN_URL"] == "http://auth:8000"
+        assert env["PLATFORM_AUTH_ADMIN_TOKEN"] == "test-admin-token"  # noqa: S105 - fixture token
+    else:
+        assert links == set()
+        assert callers == set()
 
 
 def _source_mounts(config: dict, project_dir: Path) -> dict[str, set[tuple[str, str]]]:

@@ -212,6 +212,28 @@ jobs:
             exit 1
           fi
 
+      - name: Validate production platform auth secrets
+        if: ${{ inputs.environment == 'production' }}
+        shell: bash
+        env:
+          REQUIRED_PLATFORM_AUTH_ADMIN_URL: ${{ secrets.PLATFORM_AUTH_ADMIN_URL }}
+          REQUIRED_PLATFORM_AUTH_ADMIN_TOKEN: ${{ secrets.PLATFORM_AUTH_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            REQUIRED_PLATFORM_AUTH_ADMIN_URL \
+            REQUIRED_PLATFORM_AUTH_ADMIN_TOKEN
+          do
+            if [ -z "${!name}" ]; then
+              missing+=("${name#REQUIRED_}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Missing required production secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       # A repository secret is inherited by every environment that does not define
       # its own, and that inheritance is invisible at the point of use: a contour
       # that simply omits the allowlist receives production's, and with it the
@@ -273,6 +295,10 @@ jobs:
 
           # Internal service authentication
           INTERNAL_API_KEY=${{ secrets.INTERNAL_API_KEY }}
+
+          # Platform auth administration is available only in production.
+          PLATFORM_AUTH_ADMIN_URL=${{ inputs.environment == 'production' && secrets.PLATFORM_AUTH_ADMIN_URL || '' }}
+          PLATFORM_AUTH_ADMIN_TOKEN=${{ inputs.environment == 'production' && secrets.PLATFORM_AUTH_ADMIN_TOKEN || '' }}
 
           # LLM
           ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}

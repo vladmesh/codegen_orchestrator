@@ -1,4 +1,4 @@
-## Platform capabilities, technical (manifest v18, owner-reviewed)
+## Platform capabilities, technical (manifest v19, owner-reviewed)
 Kit gh:vladmesh/codegen-product-kit@8d37302e6077.
 Can (how):
 - Add a catalog capability [catalog_install]: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.4.0 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.

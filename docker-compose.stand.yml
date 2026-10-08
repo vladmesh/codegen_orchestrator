@@ -3,7 +3,22 @@
 # Applied on top of docker-compose.yml and docker-compose.prod.yml, so it states
 # only the differences. Everything not named here is production's definition.
 
+# Replace the production network map so the stand never requires an external
+# platform network. Keep the base networks, including QA's isolated network.
+networks: !override
+  internal:
+    name: codegen_internal
+  worker:
+    name: codegen_worker
+  qa_egress:
+    name: codegen_qa_egress
+    internal: true
+
 services:
+  deploy-worker:
+    networks: !override
+      - internal
+
   worker-manager:
     # Claude keeps its short-lived token. Codex receives a dedicated, file-backed
     # ChatGPT session restored for this serialized run; workers mount that same

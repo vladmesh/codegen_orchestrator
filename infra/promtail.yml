@@ -16,6 +16,12 @@ scrape_configs:
         filters:
           - name: label
             values: ["com.docker.compose.project=codegen_orchestrator"]
+      # Platform compose services on the same Docker daemon
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=codegen_platform"]
       # Worker containers spawned by worker-manager
       - host: unix:///var/run/docker.sock
         refresh_interval: 5s
@@ -27,7 +33,10 @@ scrape_configs:
       # Explicit job label (docker_sd_configs doesn't set it automatically)
       - replacement: docker
         target_label: job
-      # Compose service name (for orchestrator services)
+      # Distinguish compose projects sharing the host
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: compose_project
+      # Compose service name
       - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
         target_label: compose_service
       # Worker ID (for worker containers)

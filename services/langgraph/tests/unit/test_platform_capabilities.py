@@ -146,6 +146,9 @@ def _pinned_kit_production_derived_keys() -> set[str]:
 
 
 class TestTheManifestCoversTheCode:
+    def test_platform_secret_kinds_describe_available_issuance(self):
+        assert "until issuance exists" not in load_manifest().model_dump_json()
+
     def test_every_derived_key_port_service_secret_kind_and_module_is_listed(self):
         assert coverage_gaps(load_manifest()) == []
 
@@ -212,7 +215,7 @@ class TestTheManifestIsVersionedAndReviewed:
     def test_it_carries_a_version_and_the_owner_review_marker(self):
         manifest = load_manifest()
 
-        assert manifest.version == 18
+        assert manifest.version == 19
         assert manifest.status == "owner-reviewed"
         assert manifest.review == "product list agreed by the owner 2026-09-28"
 
