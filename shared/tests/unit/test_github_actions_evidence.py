@@ -1,8 +1,79 @@
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from shared.clients.github import GitHubAppClient
+from shared.clients.github._actions import _failure_log_excerpt
+
+
+@pytest.mark.parametrize(
+    "name, retained",
+    [
+        ("stand", ("Error: SomeError: detail", "make: *** [Makefile:152")),
+        ("pytest", ("____ test_load_config ____", "E   AssertionError:", "FAILED tests/")),
+        ("traceback", ("ValueError: invalid configuration", "make: *** [Makefile:152")),
+        ("traceback-custom", ("RuntimeFailure: invalid configuration", "make: *** [Makefile:152")),
+        ("lint", ("src/main.py:12:5: F821", "make: *** [Makefile:44")),
+        ("tail", ("progress 69",)),
+    ],
+)
+def test_failure_excerpt_retains_root_and_final_diagnostics(name, retained):
+    log = (Path(__file__).parent / "fixtures/github-actions" / f"{name}.log").read_text()
+
+    excerpt = _failure_log_excerpt(log, 40)
+
+    for diagnostic in retained:
+        assert diagnostic in excerpt
+    assert len(excerpt.splitlines()) <= 41
+    if name == "tail":
+        assert excerpt == "\n".join(log.splitlines()[-40:])
+
+
+@pytest.mark.parametrize(
+    "log",
+    ["", "one line", "one\r\ntwo\r\n", "progress\n" * 600_000, "x" * 20_000],
+    ids=["empty", "no-newline", "crlf", "five-megabytes", "long-line"],
+)
+@pytest.mark.parametrize("line_limit", [1, 2, 40, 1000])
+def test_failure_excerpt_bounds_hostile_logs(log, line_limit):
+    excerpt = _failure_log_excerpt(log, line_limit)
+
+    assert len(excerpt.splitlines()) <= line_limit + 1
+    assert len(excerpt) <= 131_072
+    assert all(len(line) <= 2048 for line in excerpt.splitlines())
+
+
+@pytest.mark.parametrize("line_limit", [1, 2, 3, 40, 1000])
+def test_failure_excerpt_keeps_earliest_cause_with_tiny_or_large_budget(line_limit):
+    log = "\n".join(
+        [
+            "Error: first cause",
+            *["Error: secondary failure" for _ in range(100)],
+            "make: *** [Makefile:152: test-integration] Error 1",
+        ]
+    )
+
+    excerpt = _failure_log_excerpt(log, line_limit)
+
+    assert "Error: first cause" in excerpt
+    if line_limit > 1:
+        assert "make: *** [Makefile:152: test-integration] Error 1" in excerpt
+    assert len(excerpt.splitlines()) <= line_limit + 1
+
+
+def test_failure_excerpt_character_bound_includes_separator_and_newlines():
+    log = "\n".join(
+        ["Error: first cause " + "x" * 20_000]
+        + ["x" * 20_000 for _ in range(100)]
+        + ["make: *** [Makefile:152: test-integration] Error 1 " + "x" * 20_000]
+    )
+
+    excerpt = _failure_log_excerpt(log, 1000)
+
+    assert "Error: first cause" in excerpt
+    assert "make: *** [Makefile:152: test-integration] Error 1" in excerpt
+    assert len(excerpt) <= 131_072
 
 
 @pytest.mark.asyncio

@@ -15,15 +15,21 @@ from ._base import (
 
 logger = get_logger(__name__)
 
-_DIAGNOSTIC_LOG_LINE = re.compile(
-    r"::error::|##\[error\]|\b(?:\w*(?:error|exception)|traceback|fatal|panic)\b",
-    re.IGNORECASE,
+_LOG_PREFIX = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+[ \t])?(?:[\w.-]+[ \t]+\|[ \t]?)?")
+_TRACEBACK_EXCEPTION_LOG_LINE = re.compile(r"^[\w.]+(?::|$)")
+_ROOT_DIAGNOSTIC_LOG_LINE = re.compile(
+    r"^(?:E\s+\S|[\w./-]+:\d+:\d+:\s+[A-Z]+\d+\b|"
+    r"[\w.]*(?:Error|Exception):|SystemExit:|KeyboardInterrupt:|"
+    r"(?i:error:|fatal:|panic:|::error\b|##\[error\]))"
 )
 _RUNNER_WRAPPER_LOG_LINE = re.compile(
     r"\b(?:error:\s*)?process completed with exit code \d+\.?\s*$",
     re.IGNORECASE,
 )
-_PYTEST_SUMMARY_LINE = re.compile(r"\bFAILED\b|\b\d+ failed\b", re.IGNORECASE)
+_FINAL_DIAGNOSTIC_LOG_LINE = re.compile(r"^(?:make(?:\[\d+\])?: \*\*\*|FAILED\s)")
+_EXCERPT_LINE_CHARS = 2048
+_EXCERPT_MAX_CHARS = 131_072
+_EXCERPT_SEPARATOR = "... omitted log lines ..."
 
 # Every status GitHub reports for a run it has not finished. Asked one at a time
 # they answer "what can still act" directly, instead of paging through a history
@@ -47,26 +53,63 @@ class WorkflowRunListingIncompleteError(RuntimeError):
 
 
 def _failure_log_excerpt(log: str, line_limit: int) -> str:
-    """Return a bounded excerpt centered on a diagnostic, not a test summary."""
-    lines = log.splitlines()
-    matches = [
-        index
-        for index, line in enumerate(lines)
-        if (
-            _DIAGNOSTIC_LOG_LINE.search(line)
-            and not _PYTEST_SUMMARY_LINE.search(line)
-            and not _RUNNER_WRAPPER_LOG_LINE.search(line)
-        )
-    ]
-    if not matches:
-        return "\n".join(lines[-line_limit:])
+    """Keep the first cause and final diagnostic, with one omission separator at most.
 
-    error_index = matches[-1]
-    before = line_limit // 3
-    start = max(error_index - before, 0)
-    end = min(start + line_limit, len(lines))
-    start = max(end - line_limit, 0)
-    return "\n".join(lines[start:end])
+    Data lines never exceed line_limit; each is clipped to 2048 characters and
+    the whole excerpt to 131072 characters by reducing the data-line budget.
+    With a one-line budget the first cause wins. Runner exit-code wrappers and
+    structured retry logs are not causes; without diagnostics we retain the tail.
+    """
+    budget = min(
+        line_limit, (_EXCERPT_MAX_CHARS - len(_EXCERPT_SEPARATOR) - 1) // (_EXCERPT_LINE_CHARS + 1)
+    )
+    if budget < 1:
+        return ""
+    lines = [line[:_EXCERPT_LINE_CHARS] for line in log.splitlines()]
+    root = None
+    final = None
+    in_traceback = False
+    for index, line in enumerate(lines):
+        # Ordinary progress lines need no regex work, even in multi-megabyte logs.
+        if not in_traceback and ":" not in line and "E " not in line and "FAILED " not in line:
+            continue
+        raw_message = _LOG_PREFIX.sub("", line)
+        message = raw_message.lstrip()
+        if message == "Traceback (most recent call last):":
+            in_traceback = True
+            continue
+        traceback_exception = (
+            in_traceback
+            and message == raw_message
+            and _TRACEBACK_EXCEPTION_LOG_LINE.search(message)
+        )
+        if _RUNNER_WRAPPER_LOG_LINE.search(message):
+            continue
+        if traceback_exception or _ROOT_DIAGNOSTIC_LOG_LINE.search(message):
+            if root is None:
+                root = index
+            final = index
+            in_traceback = False
+        elif _FINAL_DIAGNOSTIC_LOG_LINE.search(message):
+            final = index
+    if root is None:
+        root = final
+    if root is None:
+        return "\n".join(lines[-budget:])
+    if final - root < budget:
+        start = max(root - budget // 3, 0)
+        start = max(min(start, final - budget + 1), 0)
+        return "\n".join(lines[start : start + budget])
+
+    final_budget = max(1, budget // 3) if budget > 1 else 0
+    root_budget = budget - final_budget
+    start = max(root - root_budget // 3, 0)
+    head = lines[start : start + root_budget]
+    if not final_budget:
+        return "\n".join(head)
+    end = final + 1
+    tail_start = end - final_budget
+    return "\n".join([*head, _EXCERPT_SEPARATOR, *lines[tail_start:end]])
 
 
 class ActionsMixin:

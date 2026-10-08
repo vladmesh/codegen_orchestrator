@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Pin kit release 0.10.1 and its rendered fixture to repair bound-product integration generation;
+  retain the first CI cause and final error in bounded failure evidence.
+
 - Stand issuance tests derive the product fixture from the canonical template pin,
   preserving the real-layout regression when the kit release moves.
 

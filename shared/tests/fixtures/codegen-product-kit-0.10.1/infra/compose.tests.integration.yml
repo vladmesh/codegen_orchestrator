@@ -55,6 +55,12 @@ services:
     volumes:
       - ../:/workspace:delegated
       - /app/services/backend/.venv
+      # Image-seeded environments keep generation independent of host Python paths.
+      - /workspace/.venv
+      - /workspace/services/backend/.venv
+
+      - /workspace/services/tg_bot/.venv
+
     env_file:
       - ../.env
       - ./.env.test

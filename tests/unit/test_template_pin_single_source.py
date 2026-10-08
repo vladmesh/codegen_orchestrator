@@ -91,7 +91,7 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
 
 def test_production_pin_is_the_immutable_kit_release() -> None:
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 10, 0)
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 10, 1)
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -100,7 +100,7 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    corrected_commit = "8d37302e6077de02383d70f32f67861698ee5fc6"
+    corrected_commit = "f7de8f96b18f79b94dcd0546905771674cf11cfa"
 
     assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
     assert answers["_src_path"] == template_pin.TEMPLATE_PIN.source

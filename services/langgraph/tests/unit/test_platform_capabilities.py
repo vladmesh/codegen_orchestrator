@@ -215,7 +215,7 @@ class TestTheManifestIsVersionedAndReviewed:
     def test_it_carries_a_version_and_the_owner_review_marker(self):
         manifest = load_manifest()
 
-        assert manifest.version == 20
+        assert manifest.version == 21
         assert manifest.status == "owner-reviewed"
         assert manifest.review == "product list agreed by the owner 2026-09-28"
 

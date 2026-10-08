@@ -280,7 +280,8 @@ def _with(task: _Task, description: str) -> _Task:
         pytest.param(
             reminders_brief,
             _with(_INSTALL_REMINDERS, "Install it with `kit add reminders-pro`."),
-            "which the kit package catalog does not list (installable packages: reminders)",
+            "which the kit package catalog does not list "
+            "(installable packages: reminders, tg-channels)",
             "the plan created no task",
             id="invents-a-package",
         ),
