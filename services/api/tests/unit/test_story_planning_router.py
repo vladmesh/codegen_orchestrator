@@ -57,6 +57,7 @@ def _session(story: Story, max_retries: int = 3) -> AsyncMock:
     result = MagicMock()
     result.scalar_one_or_none.return_value = story
     session.execute = AsyncMock(return_value=result)
+    session.scalar = AsyncMock(return_value=None)
 
     async def get(model, key, **_kwargs):
         assert model is SystemConfig
@@ -162,6 +163,73 @@ async def test_an_unretriable_failure_parks_at_once():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("superseded", [False, True])
+async def test_admission_parks_a_fully_returned_plan_and_retry_reopens_the_same_brief(
+    monkeypatch, superseded
+):
+    from shared.contracts.dto.product_brief import ProductBriefAdmissionCommand
+    from shared.models import ProductBrief, RequirementCoverage, Task
+    from src.routers import product_briefs
+
+    story = _story()
+    session = _session(story)
+    brief = ProductBrief(
+        id="brief-notes",
+        story_id=story.id,
+        project_id=PROJECT_ID,
+        confirmed_at=datetime.now(UTC),
+        planning_attempt_id="plan-notes",
+        planning_attempt_active=True,
+        content={"must_requirements": [{"id": "save"}, {"id": "list"}]},
+    )
+    rows = [
+        RequirementCoverage(
+            requirement_id=key,
+            planning_attempt_id="plan-notes",
+            returned_reason="catalog_install refused: invalid_binding",
+        )
+        for key in ("save", "list")
+    ]
+    dispositions = MagicMock()
+    dispositions.all.return_value = rows
+    tasks = MagicMock()
+    tasks.all.return_value = []
+    retained = MagicMock()
+    old_task = Task(id="task-old", planning_attempt_id="plan-old", status="cancelled")
+    retained.all.return_value = [old_task] if superseded else []
+    session.scalars.side_effect = [dispositions, tasks, dispositions, retained]
+    session.scalar.return_value = brief
+    get_config = session.get
+
+    async def get(model, key, **kwargs):
+        return story if model is Story else await get_config(model, key, **kwargs)
+
+    session.get = get
+    monkeypatch.setattr(product_briefs, "load_brief_for_update", AsyncMock(return_value=brief))
+    monkeypatch.setattr(product_briefs, "_authorize", AsyncMock())
+    admitted = await product_briefs.admit_product_brief_coverage(
+        brief.id,
+        ProductBriefAdmissionCommand(planning_attempt_id="plan-notes"),
+        db=session,
+        internal=True,
+        x_telegram_id=None,
+        credentials=None,
+    )
+    assert admitted.released_task_ids == []
+    assert story.status == "waiting_human_review"
+    assert story.quarantine_reason["code"] == "planning_failed"
+    assert "catalog_install refused: invalid_binding" in story.quarantine_reason["detail"]
+    assert story.planning["state"] == "parked"
+    assert story.owner_notification["state"] == "owed"
+    assert brief.coverage_admitted_at is not None
+    retried = await _retry(story)
+    assert retried.status_code == HTTPStatus.OK, retried.text
+    assert retried.json()["planning"]["state"] == "retrying"
+    assert brief.coverage_admitted_at is None
+    assert brief.planning_attempt_id == "plan-notes"
+
+
+@pytest.mark.asyncio
 async def test_a_reopen_that_failed_before_it_started_is_parked_through_in_progress():
     story = _story(StoryStatus.REOPENED)
     _session(story)
@@ -233,6 +301,41 @@ async def _parked_story() -> Story:
 
 async def _retry(story: Story):
     return await _post(f"/api/stories/{story.id}/retry-planning", {"actor": "admin"})
+
+
+@pytest.mark.asyncio
+async def test_retry_of_an_admitted_reopen_preserves_its_brief_and_retries(redis):
+    from shared.models import ProductBrief, Task
+
+    story = await _parked_story()
+    session = _session(story)
+    brief = ProductBrief(
+        id="brief-notes",
+        story_id=story.id,
+        project_id=PROJECT_ID,
+        coverage_admitted_at=datetime.now(UTC),
+        planning_attempt_id="plan-original",
+        planning_attempt_active=False,
+        content={"must_requirements": [{"id": "save"}]},
+    )
+    before = brief.coverage_admitted_at
+    task = Task(id="task-original", planning_attempt_id="plan-original", status="done")
+    dispositions = MagicMock()
+    dispositions.all.return_value = []
+    tasks = MagicMock()
+    tasks.all.return_value = [task]
+    session.scalar.return_value = brief
+    session.scalars.side_effect = [dispositions, tasks]
+
+    retried = await _retry(story)
+
+    assert retried.status_code == HTTPStatus.OK, retried.text
+    assert retried.json()["planning"]["state"] == "retrying"
+    assert retried.json()["planning"]["reopen"] is True
+    assert brief.coverage_admitted_at == before
+    assert brief.planning_attempt_id == "plan-original"
+    assert brief.planning_attempt_active is False
+    redis.publish_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

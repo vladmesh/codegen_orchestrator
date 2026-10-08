@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 21
+version: 22
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -51,9 +51,9 @@ can:
     name: Add a catalog capability
     plain: An existing bot can add a released catalog capability while retaining its own features.
     how: >-
-      plan_install selects package/libraries/default binding in one INSTALL on owned clean
+      plan_install selects package/libraries/default binding in one INSTALL on clean owned
       core-{core_version} backend,tg_bot. Scaffolder preserves/validates files; hands exact head to
-      PR/CI/deploy without engineering. Review refusals; confirm timezone.
+      PR/CI/deploy without engineering. Binding v1/v2 uses confirmed typed timezone/language settings.
   - id: http_self_address
     name: Plain HTTP self links
     plain: The bot can include plain HTTP self links; their address can change when the product moves.

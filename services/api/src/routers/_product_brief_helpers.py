@@ -23,9 +23,33 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.product_brief import PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.models import ProductBrief, RequirementCoverage, Task
 
 from ._task_helpers import apply_cancellation, cancellation_is_reachable, get_task_for_update
+
+
+def returned_plan_failure(
+    brief: ProductBrief, dispositions: list[RequirementCoverage], *, tasks: list[Task]
+) -> StoryFailure | None:
+    """A complete refusal with no work in this attempt is a planning stop."""
+    required = {item["id"] for item in brief.content["must_requirements"]}
+    returned = {
+        row.requirement_id: row.returned_reason
+        for row in dispositions
+        if row.planning_attempt_id == brief.planning_attempt_id
+        and row.task_id is None
+        and row.returned_reason
+    }
+    has_work = any(task.planning_attempt_id == brief.planning_attempt_id for task in tasks)
+    if has_work or not required or not required.issubset(returned):
+        return None
+    return StoryFailure(
+        code=StoryFailureCode.PLANNING_FAILED,
+        source="architect",
+        detail="Every requirement returned; no task released. "
+        + "; ".join(f"{key}: {returned[key]}" for key in sorted(required)),
+    )
 
 
 async def load_brief_for_update(brief_id: str, db: AsyncSession) -> ProductBrief:

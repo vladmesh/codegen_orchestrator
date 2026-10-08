@@ -1,0 +1,14 @@
+format_version: 1
+libraries: []
+extensions: []
+packages:
+  - name: notebook
+    distribution: codegen-kit-notebook
+    path: packages/codegen-kit-notebook
+    summary: Store and list notes.
+    capabilities: [store notes, list notes]
+    settings: []
+    environment: []
+    default_binding: codegen_kit_notebook:bindings/default.yaml
+    versions:
+      - {version: 0.1.0, tag: packages/notebook/v0.1.0, requires_core: '>=2.2,<3'}

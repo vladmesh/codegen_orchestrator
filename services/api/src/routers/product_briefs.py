@@ -50,7 +50,13 @@ from shared.contracts.dto.product_brief import (
     RequirementCoverageCreate,
     RequirementCoverageRead,
 )
-from shared.contracts.dto.story_planning import planned_record
+from shared.contracts.dto.story_planning import (
+    PLANNING_MAX_RETRIES_CONFIG_KEY,
+    StoryPlanningOutcome,
+    StoryPlanningReport,
+    failed_record,
+    planned_record,
+)
 from shared.models import ProductBrief, Project, RequirementCoverage, Story, Task
 from shared.product_brief_text import render_full_brief_sections
 
@@ -60,6 +66,7 @@ from ._product_brief_helpers import (
     attempt_heartbeat_is_fresh,
     load_brief_for_update,
     require_active_attempt,
+    returned_plan_failure,
     void_superseded_plan,
 )
 from .projects_guards import check_project_access
@@ -696,13 +703,35 @@ async def admit_product_brief_coverage(
     brief.coverage_admitted_at = datetime.now(UTC)
     # The plan is complete, so nobody owns an incomplete plan any more.
     brief.planning_attempt_active = False
-    story = await db.get(Story, story_id)
-    story.planning = planned_record(
-        body,
-        planning_attempt_id=brief.planning_attempt_id,
-        reopen=body.reopen,
-        now=brief.coverage_admitted_at,
-    ).model_dump(mode="json")
+    from ._story_helpers import _get_story_for_update
+    from ._story_planning import _config_int, _park
+
+    story = await _get_story_for_update(story_id, db)
+    failure = returned_plan_failure(brief, dispositions, tasks=tasks)
+    if failure is not None:
+        report = StoryPlanningReport(
+            outcome=StoryPlanningOutcome.FAILED,
+            failure=failure,
+            retriable=False,
+            planning_attempt_id=brief.planning_attempt_id,
+            reopen=body.reopen,
+            channels=body.channels,
+            channel_failures=body.channel_failures,
+        )
+        story.planning = failed_record(
+            None,
+            report,
+            max_retries=await _config_int(db, PLANNING_MAX_RETRIES_CONFIG_KEY),
+            now=brief.coverage_admitted_at,
+        ).model_dump(mode="json")
+        _park(story, failure)
+    else:
+        story.planning = planned_record(
+            body,
+            planning_attempt_id=brief.planning_attempt_id,
+            reopen=body.reopen,
+            now=brief.coverage_admitted_at,
+        ).model_dump(mode="json")
     await db.commit()
     await db.refresh(brief)
     logger.info(

@@ -19,6 +19,7 @@ import tomllib
 import framework
 from framework.binding_product import (
     binding_files,
+    binding_settings,
     default_binding_resource,
     product_core_version,
     require_binding_product,
@@ -58,6 +59,17 @@ def installed(root, service, distribution):
     if Path(evidence["prefix"]).resolve() != environment.resolve():
         raise ValueError("environment_unowned: service interpreter prefix")
     return evidence
+
+
+def validate_binding_settings(root, binding):
+    manifest_path = root / "services/tg_bot/manifest.yaml"
+    if not manifest_path.exists():
+        return
+    properties = yaml.safe_load(manifest_path.read_text())["settings_schema"]["properties"]
+    for key, expected in binding_settings(binding).items():
+        schema = properties.get(key)
+        if schema is not None and schema != expected:
+            raise ValueError(f"binding_conflict: {key} schema is already owned")
 
 
 def probe(mode, payload, ref):  # noqa: C901, PLR0912, PLR0915  # cross-check actual product provenance, binding and activation
@@ -177,13 +189,7 @@ def probe(mode, payload, ref):  # noqa: C901, PLR0912, PLR0915  # cross-check ac
                         reserved.update(item.command for item in current.commands)
                 if reserved.intersection(item.command for item in binding.commands):
                     raise ValueError("binding_conflict: command is already owned")
-                tg_manifest_path = root / "services/tg_bot/manifest.yaml"
-                schema = None
-                if tg_manifest_path.exists():
-                    tg_manifest = yaml.safe_load(tg_manifest_path.read_text())
-                    schema = tg_manifest["settings_schema"]["properties"].get(binding.timezone.key)
-                if schema is not None and schema != {"type": "string", "format": "x-iana-tz"}:
-                    raise ValueError("binding_conflict: timezone schema is already owned")
+                validate_binding_settings(root, binding)
             else:
                 # Kit's native target-interpreter admission, never host Python.
                 from framework.cli import _library_python_version

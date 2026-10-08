@@ -169,6 +169,9 @@ An explicit catalog selection on an existing compatible backend,tg_bot product u
 catalog snapshot injected into that planning attempt, selects the admitted package,
 curated recommended library releases and released default binding, validates their
 identities and binding function requirements, and creates one `TaskType.INSTALL`.
+The pinned kit's `load_binding` selects the v1/v2 model and `validate_binding`
+checks it against the released manifest. V2 has no parser functions; its closure
+keeps an empty `binding.functions`. Unknown versions are `invalid_binding` refusals.
 No model runs in closure planning or execution. `scripted_install_plan` invokes the
 same tool, API, planning attempt, requirement coverage and admission without a model.
 `create_task` refuses kit install prose; unrelated feature tasks retain ordinary chaining.
@@ -227,9 +230,12 @@ checks installed distributions/interpreter prefixes, default resource bytes,
 backend allowlist and generated ACTIVE_PACKAGES manifest digests. Existing app,
 controller, handler, owned tg_bot/src application files (excluding generated output),
 spec, binding and environment bytes plus answers/root lock are
-hashed before mutation and compared before commit. Default binding declares timezone
-schema only; confirmed explicit values use Product Brief initial_settings and the
-existing seed/deploy path. Credentials, user IDs and timezone values never enter
+hashed before mutation and compared before commit. Binding v1 declares a timezone;
+v2 declares a language and optionally a timezone. Setting keys and schemas come from
+the binding through the kit's `binding_settings`, including probe conflict checks.
+Confirmed explicit values use Product Brief initial_settings and the existing
+seed/deploy path; missing confirmed values are returned, never guessed.
+Credentials, user IDs and timezone values never enter
 parser/generator code.
 
 Verification and exact base/head checkpoints precede a non-force commit/push. A

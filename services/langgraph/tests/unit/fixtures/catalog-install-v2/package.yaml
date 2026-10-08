@@ -1,0 +1,25 @@
+protocol_version: 1
+name: notebook
+version: 0.1.0
+requires_core: '>=2.2,<3'
+http: {prefix: /notes}
+default_binding: codegen_kit_notebook:bindings/default.yaml
+actions:
+  - name: add
+    summary: Save a note.
+    operation: {method: POST, path: ''}
+    input:
+      type: object
+      properties: {text: {type: string, minLength: 1}}
+      required: [text]
+      additionalProperties: false
+    output: &note
+      type: object
+      properties: {text: {type: string}}
+      required: [text]
+      additionalProperties: false
+  - name: list
+    summary: List notes.
+    operation: {method: GET, path: ''}
+    input: {type: object, properties: {}, additionalProperties: false}
+    output: {type: array, items: *note}

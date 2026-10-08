@@ -3,8 +3,11 @@
 import hashlib
 from importlib.metadata import distribution
 import json
+from pathlib import Path
+import tempfile
 
-from framework.bindings import Binding, ParsedCreate, validate_binding
+from framework.bindings import Binding, BindingError, ParsedCreate, load_binding, validate_binding
+from framework.bindings_v2 import BindingV2
 from framework.catalog import Catalog, CatalogError
 from framework.spec.packages import PackageManifest
 import yaml
@@ -16,6 +19,17 @@ from .kit_catalog import KitCatalog, KitCatalogAnswer
 
 class InstallRefusal(ValueError):
     pass
+
+
+def load_catalog_binding(content: str) -> Binding | BindingV2:
+    """Use the pinned kit's data-only version dispatch on snapshot bytes."""
+    with tempfile.TemporaryDirectory(prefix="catalog-binding-") as scratch:
+        path = Path(scratch) / "default.yaml"
+        path.write_text(content)
+        try:
+            return load_binding(path)
+        except BindingError as error:
+            raise BindingError(str(error).replace(str(path), "catalog snapshot")) from error
 
 
 def plan_install_payload(
@@ -52,7 +66,7 @@ def plan_install_payload(
         )
     content = snapshot.bindings[name]
     try:
-        binding = Binding.model_validate(yaml.safe_load(content))
+        binding = load_catalog_binding(content)
         if name not in snapshot.manifests:
             raise InstallRefusal("binding_manifest_unavailable")
         manifest = PackageManifest.model_validate(yaml.safe_load(snapshot.manifests[name]))
