@@ -7,12 +7,19 @@ from sqlalchemy import select
 import structlog
 
 from shared.clients.github import GitHubAppClient
-from shared.contracts.dto.catalog_install import InstallDecision, InstallOperation
+from shared.contracts.dto.catalog_install import (
+    InstallDecision,
+    InstallOperation,
+    is_replan_note,
+    replan_reopened,
+)
 from shared.contracts.dto.commit_publication import EngineeringStop
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.task import TaskEventType, TaskStatus
+from shared.contracts.dto.story_failure import CLOSED_TASK_STATUSES, in_work_cycle
+from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.models import Repository, TaskEvent
+from shared.models import Repository, Run, TaskEvent
 from shared.queues import ARCHITECT_QUEUE
 
 from .attempt_disposition import release_engineering_stop
@@ -40,7 +47,7 @@ async def operator_install_recovery(task_id, body, actor, db, redis=None):
     from .routers._task_helpers import create_status_event, validate_transition
     from .routers.projects_guards import load_locked_project
 
-    task, _, _, story_id = await _lock_dispatch_tasks(task_id, db)
+    task, locked, _, story_id = await _lock_dispatch_tasks(task_id, db)
     if task.type != "install" or task.install_operation is None:
         raise HTTPException(409, {"code": "install_operation_missing"})
     operation = InstallOperation.model_validate(task.install_operation)
@@ -51,7 +58,7 @@ async def operator_install_recovery(task_id, body, actor, db, redis=None):
     )
     cause = story.quarantine_reason
     if body.action == "replan":
-        return await _replan(task, operation, story, repository, body, actor, db, redis)
+        return await _replan(task, operation, story, repository, locked, body, actor, db, redis)
     owns_review = (
         story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
         and cause
@@ -149,77 +156,28 @@ async def operator_install_recovery(task_id, body, actor, db, redis=None):
     return InstallDecision(outcome="settled", operation=operation)
 
 
-async def _replan(task, operation, story, repository, body, actor, db, redis):  # noqa: PLR0913  # one locked ladder's rows
-    """Send a story parked after its install PR's CI failed back to the architect.
+async def _replan(task, operation, story, repository, locked, body, actor, db, redis):  # noqa: PLR0913  # one locked ladder's rows
+    """Send a catalog-install story back to the architect for a fresh install plan.
 
-    The install Task pinned its package release at planning, so re-running it
-    cannot pick up a fixed release: a new attempt needs a new plan against the
-    current catalog. The settled Task is cancelled out of the work cycle, the
-    story walks waiting_human_review -> failed -> reopened, and after the commit
-    the architect is asked to re-plan exactly as a reopen asks it. Nothing on
-    GitHub is written here: the operator closes the PR and deletes the branch.
+    Two shapes, told apart by the install Task the call names: a `done` install
+    whose PR failed CI (`_settle_failed_ci_install`), and the install a previous
+    replan cancelled, on a story stopped again because that replanned cycle was
+    planned as something else (`_discard_misplanned_cycle`). Either way the
+    story walks waiting_human_review -> failed -> reopened in this transaction,
+    and after the commit the architect is asked to plan it as a reopen.
     """
     from .routers._recipients import resolve_project_chat_id
     from .routers._story_actions import COMPOSITE_CHAINS, REPLAN_CATALOG_INSTALL, _apply_chain
-    from .routers._task_helpers import apply_cancellation, create_status_event, validate_transition
 
     if redis is None:
         raise RuntimeError("replan publishes the architect job and needs the queue client")
-    cause = story.quarantine_reason
-    cycle = story.reopened_at or story.created_at
-    if operation.id != body.operation_id:
-        raise HTTPException(409, {"code": "stale_install_operation"})
-    if operation.state != "published":
-        raise HTTPException(409, {"code": "install_operation_not_published"})
-    if task.status != TaskStatus.DONE.value:
-        raise HTTPException(409, {"code": "install_task_not_done"})
-    if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
-        raise HTTPException(409, {"code": "story_not_waiting_human_review"})
     if (
-        not cause
-        or cause.get("source") != "scheduler"
-        or not cause.get("detail", "").startswith(INSTALL_CI_REVIEW_PREFIX)
+        task.status == TaskStatus.CANCELLED.value
+        and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
     ):
-        raise HTTPException(409, {"code": "unrelated_story_stop"})
-    stop = (
-        EngineeringStop.model_validate(story.engineering_stop) if story.engineering_stop else None
-    )
-    if stop is None or stop.released_at is not None or stop.id != body.stop_id:
-        raise HTTPException(409, {"code": "engineering_stop_mismatch"})
-    if operation.cycle_started_at != cycle:
-        raise HTTPException(409, {"code": "stale_install_cycle"})
-    owner, name = _github_repository(repository)
-    async with GitHubAppClient() as github:
-        head = await github.get_ref_sha(owner, name, f"heads/story/{story.id}")
-    if head is not None:
-        raise HTTPException(
-            409,
-            {
-                "code": "install_branch_present",
-                "detail": f"Close the install PR and delete the remote branch story/{story.id}, "
-                "then replan.",
-            },
-        )
-
-    release_engineering_stop(story, body.stop_id, actor, db, expected_cause=cause)
-    db.add(
-        TaskEvent(
-            task_id=task.id,
-            event_type=TaskEventType.NOTE.value,
-            actor=actor,
-            details={
-                "catalog_install_settlement": operation.model_dump(mode="json"),
-                "operator_action": body.action,
-            },
-        )
-    )
-    # done -> cancelled is not a hop of its own; backlog is the only way out of
-    # done, and cancellation then takes the one writer every cancel uses.
-    validate_transition(task.status, TaskStatus.BACKLOG)
-    before = task.status
-    task.status = TaskStatus.BACKLOG.value
-    await create_status_event(task, before, TaskStatus.BACKLOG, actor, {}, db)
-    await apply_cancellation(task, db)
+        await _discard_misplanned_cycle(task, operation, story, repository, locked, body, actor, db)
+    else:
+        await _settle_failed_ci_install(task, operation, story, repository, body, actor, db)
     story.quarantine_reason = None
     _apply_chain(story, COMPOSITE_CHAINS[REPLAN_CATALOG_INSTALL])
     message = ArchitectMessage(
@@ -247,3 +205,152 @@ async def _replan(task, operation, story, repository, body, actor, db, redis):  
         )
     logger.info("catalog_install_replanned", story_id=message.story_id, task_id=task.id)
     return InstallDecision(outcome="settled", operation=operation)
+
+
+async def _settle_failed_ci_install(task, operation, story, repository, body, actor, db):  # noqa: PLR0913  # one locked ladder's rows
+    """The first `replan` shape: a story parked after its install PR's CI failed.
+
+    The install Task pinned its package release at planning, so re-running it
+    cannot pick up a fixed release: a new attempt needs a new plan against the
+    current catalog. The settled Task is cancelled out of the work cycle, the
+    story walks waiting_human_review -> failed -> reopened, and after the commit
+    the architect is asked to re-plan exactly as a reopen asks it. Nothing on
+    GitHub is written here: the operator closes the PR and deletes the branch.
+    """
+    from .routers._task_helpers import apply_cancellation, create_status_event, validate_transition
+
+    cause = story.quarantine_reason
+    cycle = story.reopened_at or story.created_at
+    if operation.id != body.operation_id:
+        raise HTTPException(409, {"code": "stale_install_operation"})
+    if operation.state != "published":
+        raise HTTPException(409, {"code": "install_operation_not_published"})
+    if task.status != TaskStatus.DONE.value:
+        raise HTTPException(409, {"code": "install_task_not_done"})
+    if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        raise HTTPException(409, {"code": "story_not_waiting_human_review"})
+    if (
+        not cause
+        or cause.get("source") != "scheduler"
+        or not cause.get("detail", "").startswith(INSTALL_CI_REVIEW_PREFIX)
+    ):
+        raise HTTPException(409, {"code": "unrelated_story_stop"})
+    stop = (
+        EngineeringStop.model_validate(story.engineering_stop) if story.engineering_stop else None
+    )
+    if stop is None or stop.released_at is not None or stop.id != body.stop_id:
+        raise HTTPException(409, {"code": "engineering_stop_mismatch"})
+    if operation.cycle_started_at != cycle:
+        raise HTTPException(409, {"code": "stale_install_cycle"})
+    await _refuse_present_story_branch(story, repository)
+
+    release_engineering_stop(story, body.stop_id, actor, db, expected_cause=cause)
+    db.add(
+        TaskEvent(
+            task_id=task.id,
+            event_type=TaskEventType.NOTE.value,
+            actor=actor,
+            details={
+                "catalog_install_settlement": operation.model_dump(mode="json"),
+                "operator_action": body.action,
+            },
+        )
+    )
+    # done -> cancelled is not a hop of its own; backlog is the only way out of
+    # done, and cancellation then takes the one writer every cancel uses.
+    validate_transition(task.status, TaskStatus.BACKLOG)
+    before = task.status
+    task.status = TaskStatus.BACKLOG.value
+    await create_status_event(task, before, TaskStatus.BACKLOG, actor, {}, db)
+    await apply_cancellation(task, db)
+
+
+async def _refuse_present_story_branch(story, repository):
+    """409 while the remote story branch exists: the next install starts from main."""
+    owner, name = _github_repository(repository)
+    async with GitHubAppClient() as github:
+        head = await github.get_ref_sha(owner, name, f"heads/story/{story.id}")
+    if head is not None:
+        raise HTTPException(
+            409,
+            {
+                "code": "install_branch_present",
+                "detail": f"Close the install PR and delete the remote branch story/{story.id}, "
+                "then replan.",
+            },
+        )
+
+
+async def _discard_misplanned_cycle(  # noqa: PLR0913  # one locked ladder's rows
+    task, operation, story, repository, locked, body, actor, db
+):
+    """The second `replan` shape: a replanned cycle that was planned as something else.
+
+    The install Task a previous `replan` cancelled is the handle: while the story
+    has not been reopened since that replan, the cycle it opened is the one to
+    discard. Every non-terminal Task of that cycle is cancelled, the story walks
+    waiting_human_review -> failed -> reopened, and after the commit the architect
+    is asked again, which plans the cancelled install's packages without the LLM.
+    Nothing on GitHub is written here.
+    """
+    from .routers._task_helpers import apply_cancellation
+
+    notes = (
+        await db.scalars(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task.id, TaskEvent.event_type == TaskEventType.NOTE.value)
+            .order_by(TaskEvent.id)
+        )
+    ).all()
+    replans = [note for note in notes if is_replan_note(note.details or {})]
+    if not replans:
+        raise HTTPException(409, {"code": "install_task_not_replanned"})
+    if not any(replan_reopened(note.created_at, story.reopened_at) for note in replans):
+        raise HTTPException(409, {"code": "story_reopened_since_replan"})
+    if operation.id != body.operation_id:
+        raise HTTPException(409, {"code": "stale_install_operation"})
+    stop = (
+        EngineeringStop.model_validate(story.engineering_stop) if story.engineering_stop else None
+    )
+    if stop is None or stop.released_at is not None or stop.id != body.stop_id:
+        raise HTTPException(409, {"code": "engineering_stop_mismatch"})
+    runs = (
+        await db.scalars(
+            select(Run).where(Run.story_id == story.id).order_by(Run.id).with_for_update()
+        )
+    ).all()
+    if any(run.status in {RunStatus.QUEUED.value, RunStatus.RUNNING.value} for run in runs):
+        raise HTTPException(409, {"code": "story_run_live"})
+    cycle = sorted(
+        (
+            member
+            for member in locked.values()
+            if member.story_id == story.id
+            and in_work_cycle(member.created_at, story.reopened_at, member.status)
+        ),
+        key=lambda member: member.id,
+    )
+    if any(member.type == TaskType.INSTALL.value for member in cycle):
+        raise HTTPException(409, {"code": "cycle_has_install"})
+    if any(member.status == TaskStatus.DONE.value for member in cycle):
+        raise HTTPException(409, {"code": "cycle_has_done_task"})
+    await _refuse_present_story_branch(story, repository)
+
+    release_engineering_stop(story, body.stop_id, actor, db, expected_cause=story.quarantine_reason)
+    cancelled = []
+    for member in cycle:
+        if member.status not in CLOSED_TASK_STATUSES:
+            await apply_cancellation(member, db)
+            cancelled.append(member.id)
+    db.add(
+        TaskEvent(
+            task_id=task.id,
+            event_type=TaskEventType.NOTE.value,
+            actor=actor,
+            details={
+                "catalog_install_settlement": operation.model_dump(mode="json"),
+                "operator_action": body.action,
+                "cancelled_task_ids": cancelled,
+            },
+        )
+    )

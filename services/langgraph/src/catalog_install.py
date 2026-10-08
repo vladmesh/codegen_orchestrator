@@ -16,6 +16,9 @@ from shared.contracts.dto.catalog_install import CatalogInstall, DefaultBinding,
 
 from .kit_catalog import KitCatalog, KitCatalogAnswer
 
+#: The product Python every install is resolved for: the generated product's runtime.
+INSTALL_PYTHON_VERSION = "3.12.0"
+
 
 class InstallRefusal(ValueError):
     pass

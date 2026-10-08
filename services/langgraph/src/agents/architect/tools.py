@@ -45,7 +45,7 @@ import structlog
 from shared.contracts.dto.product_brief import RequirementCoverageCreate
 from shared.contracts.dto.task import TaskCreate, TaskStatus, TaskType
 
-from ...catalog_install import InstallRefusal, plan_install_payload
+from ...catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, plan_install_payload
 from ...clients.api import api_client
 from ...kit_catalog import installable
 
@@ -257,7 +257,7 @@ async def plan_install(
             bindings=kit_install_snapshot["bindings"],
             manifests=kit_install_snapshot["manifests"],
         )
-        payload = plan_install_payload(snapshot, name, "3.12.0")
+        payload = plan_install_payload(snapshot, name, INSTALL_PYTHON_VERSION)
         body = TaskCreate(
             title=f"Install catalog package {name}",
             type=TaskType.INSTALL,

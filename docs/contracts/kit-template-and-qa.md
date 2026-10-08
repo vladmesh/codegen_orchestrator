@@ -278,6 +278,16 @@ Architect plans a new install against the current catalog. A lost publish is ans
 `architect_publish_failed` and re-sent with `send-to-architect`. It writes nothing to
 GitHub; see [the operator runbook](../runbooks/catalog-install-replan.md).
 
+A second `replan` shape names the install Task a previous replan cancelled, while the
+Story is `waiting_human_review` with an unreleased stop and its `reopened_at` is still the
+one that replan stamped (`replan_reopened`). It refuses a live run, an INSTALL or `done`
+Task in the current cycle and a present remote branch; otherwise it releases the stop,
+cancels the cycle's open Tasks, notes the install Task and reopens the Story the same way.
+The Architect plans a reopen that a replan stamped without the LLM: one `plan_install`
+per package of the cancelled install, against the catalog read now, and no other Task.
+A Story with an INSTALL Task in its history is never planned while the catalog is
+unavailable; it records a retriable planning failure and the scheduled retry plans it.
+
 Expiry also settles an older cycle's writer without parking the newer Story. After
 reconciling its retained checkout, bearer-admin `retry` can release that cancelled
 operation alone with no stop ID; it preserves the current Story/cycle/quarantine,

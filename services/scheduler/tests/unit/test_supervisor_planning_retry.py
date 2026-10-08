@@ -20,8 +20,12 @@ import pytest
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 from shared.contracts.dto.story_planning import (
     StoryPlanning,
+    StoryPlanningOutcome,
+    StoryPlanningReport,
     StoryPlanningState,
+    failed_record,
     operator_retry_record,
+    planning_retry_delay,
     planning_retry_queued_key,
 )
 from shared.contracts.dto.user import UserDTO
@@ -172,6 +176,37 @@ async def test_a_reopen_is_retried_as_a_reopen(api_factory, redis_client):
     assert message["story_id"] == "story-reopen"
     assert message["is_reopen"] is True
     assert message["user_report"] == "still broken"
+
+
+@pytest.mark.asyncio
+async def test_a_reopen_delayed_for_the_kit_catalog_is_retried_as_a_reopen(
+    api_factory, redis_client
+):
+    """The architect's catalog-unavailable failure of a replanned story, as the API records it."""
+    from src.tasks.supervisor import supervise_stuck_stories
+
+    report = StoryPlanningReport(
+        outcome=StoryPlanningOutcome.FAILED,
+        failure=StoryFailure(
+            code=StoryFailureCode.PLANNING_FAILED,
+            source="architect",
+            detail="KitCatalogUnavailable: https://kit.invalid/catalog.yaml: transport, "
+            "ConnectError: All connection attempts failed",
+        ),
+        retriable=True,
+        reopen=True,
+    )
+    recorded_at = datetime.now(UTC) - planning_retry_delay(1) - timedelta(seconds=1)
+    owed = failed_record(None, report, max_retries=3, now=recorded_at)
+    assert owed.state is StoryPlanningState.RETRYING
+    api = api_factory([_story("story-replan", "reopened", owed)])
+
+    result = await supervise_stuck_stories(api, redis_client)
+
+    assert result == {"retried": 1, "failed": 0}
+    [message] = await _architect_messages(redis_client)
+    assert message["story_id"] == "story-replan"
+    assert message["is_reopen"] is True
 
 
 @pytest.mark.asyncio

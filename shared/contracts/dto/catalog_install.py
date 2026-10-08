@@ -1,7 +1,7 @@
 """Finite catalog selection and non-engineering operation ownership."""
 
-from datetime import datetime
-from typing import Annotated, Literal
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -117,6 +117,34 @@ class InstallOperatorRequest(Strict):
     operation_id: str
     action: Literal["retry", "recover", "replan"]
     stop_id: str | None = None
+
+
+#: The note key every operator settlement of an install operation writes.
+SETTLEMENT_NOTE_KEY = "catalog_install_settlement"
+
+#: How long after its transaction opened one operator `replan` may stamp the
+#: story's `reopened_at`. The note is written with the database clock of the
+#: transaction's start and the reopen later in that same request, after one
+#: GitHub read; a later reopen needs a whole new work cycle first.
+REPLAN_REOPEN_WINDOW = timedelta(minutes=2)
+
+
+def is_replan_note(details: dict[str, Any]) -> bool:
+    """The note an operator `replan` writes on the install Task it cancelled."""
+    return SETTLEMENT_NOTE_KEY in details and details.get("operator_action") == "replan"
+
+
+def replan_reopened(noted_at: datetime, reopened_at: datetime | None) -> bool:
+    """Whether `reopened_at` is the reopen the `replan` noted at `noted_at` stamped.
+
+    True only while the story has not been reopened since that replan, so its
+    current work cycle is the one the replan opened.
+    """
+    if reopened_at is None:
+        return False
+    noted = noted_at if noted_at.tzinfo else noted_at.replace(tzinfo=UTC)
+    reopened = reopened_at if reopened_at.tzinfo else reopened_at.replace(tzinfo=UTC)
+    return abs(reopened - noted) <= REPLAN_REOPEN_WINDOW
 
 
 class InstallDecision(Strict):
