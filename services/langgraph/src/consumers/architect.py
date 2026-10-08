@@ -13,7 +13,6 @@ from http import HTTPStatus
 import json
 import uuid
 
-from framework.binding_product import binding_settings
 import httpx
 import structlog
 
@@ -54,7 +53,7 @@ from shared.redis import RedisStreamClient
 from ..agents.architect.graph import create_architect_graph
 from ..agents.architect.tools import reset_task_chain
 from ..capability_feasibility import capability_conflicts
-from ..catalog_install import load_catalog_binding
+from ..catalog_product_settings import catalog_binding_settings
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
 from ..kit_catalog import KitCatalog, KitCatalogAnswer, get_kit_catalog_reader
@@ -860,7 +859,7 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
         lines.append("  default binding: " + (package.default_binding or "none"))
         if package.name in catalog.bindings:
             try:
-                schemas = binding_settings(load_catalog_binding(catalog.bindings[package.name]))
+                schemas = catalog_binding_settings(catalog, package.name)
             except ValueError as error:
                 lines.append(f"  binding settings refused: {error}")
             else:

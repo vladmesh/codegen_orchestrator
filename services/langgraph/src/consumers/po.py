@@ -73,6 +73,7 @@ from ..agents.po.tools_notices import (
     remember_owner_event,
 )
 from ..agents.po.tools_shared import init_po_clients
+from ..catalog_product_settings import po_catalog_context
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
 from ..llm import ChannelChainModel, LLMAgent, LLMAlerts, build_agent_llm, load_channel_chain
@@ -595,6 +596,7 @@ async def _handle_message(
         # Only a turn the user is waiting on may message them from a tool;
         # any other turn reaches them only through its gated final reply.
         "user_turn": bool(data.get("request_id")),
+        **await po_catalog_context(),
     }
     if msg_type == "user_message":
         await _record_user_message(client, telegram_chat_id)

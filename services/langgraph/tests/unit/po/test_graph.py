@@ -213,7 +213,11 @@ class TestTheSnapshotIsNotStored:
         client.publish_flat = AsyncMock()
         return client
 
-    async def test_a_system_event_turn_saves_the_event_but_not_its_snapshot(self, po, client):
+    async def test_a_system_event_turn_saves_the_event_but_not_its_snapshot(
+        self, po, client, bundled_kit_catalog
+    ):
+        from src.catalog_product_settings import render_po_packages
+
         graph, model = po
         event = POSystemEvent(
             event=OwnerNotificationEvent.STORY_BLOCKED,
@@ -246,5 +250,7 @@ class TestTheSnapshotIsNotStored:
             ).model_dump(mode="json"),
         )
         user_turn_input = model.inputs[-1]
-        assert user_turn_input[0] == SystemMessage(content=MODEL_PROMPT)
+        assert user_turn_input[0] == SystemMessage(
+            content=f"{MODEL_PROMPT}\n\n{render_po_packages(bundled_kit_catalog)}"
+        )
         assert not any(SNAPSHOT_HEADING in str(message.content) for message in user_turn_input)

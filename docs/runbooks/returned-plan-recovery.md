@@ -15,6 +15,19 @@ New admissions of this state already park in `waiting_human_review` with a typed
 supported `planning-outcome` endpoint before retry. Run these actions only after
 the binding v2 planner fix has deployed. This card does not execute them.
 
+## Correcting confirmed package settings
+
+Retrying planning preserves settings; it cannot repair an invented setting key or add
+a missing product language to `brief-3aa84ea37a6dc51fde616398`. If a confirmed brief is
+still the project's open, unbound revision, PO can call `present_product_brief` with
+`corrects_brief_id` naming it, collect every required catalog setting from the owner,
+and ask them to confirm the new revision. Once bound to a Story, the existing tools
+cannot replace that Story's brief. For `story-8c9a5af6`, a new order on the same project
+is required: collect the package's exact seed key and an explicit allowed product
+language, present and confirm a fresh brief, then create its new Story. The earlier
+brief and Story remain intact; a retry or reopen does not change their confirmed
+settings. Do not run this recovery in production as part of this change.
+
 ## Production Story story-8c9a5af6
 
 Use an authenticated admin Bearer token against the deployed API. Read:

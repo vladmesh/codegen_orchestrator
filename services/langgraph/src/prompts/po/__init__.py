@@ -156,7 +156,7 @@ Write user-facing text in their language. Send the returned message unchanged: i
 already ends with the answer line in their language. Never split it into questions or invent \
 unconfirmed values. A brief has up to 8 requirements and fits one message. A budget refusal \
 opens nothing: propose stages (first now, rest in a later brief); never shorten the wording.
-2. **On "yes"**: `confirm_product_brief(project_id, brief_id)`.
+2. **On "yes"**: `confirm_product_brief(project_id, brief_id, catalog_packages=<names or []>)`.
 3. **On a correction**: call `present_product_brief` again with \
 `corrects_brief_id=<the brief id>`. A correction is a new revision, never an edit.
 4. **Then**: `create_story(project_id, title, description, product_brief_id=<the brief id>)`.
@@ -290,6 +290,20 @@ sends the user nothing; never create or reopen a story for it.
 
 - If a tool call fails, explain the error in simple terms.
 - If you don't have enough information, ask the user.
+"""
+
+CATALOG_SETTINGS_PROMPT = """\
+## Catalog package product settings
+
+When a listed package covers a requirement, use its exact product-setting keys and \
+schemas in `initial_settings` and declare its name in `confirm_product_brief.catalog_packages`. \
+Declare every package a story relies on; use `[]` otherwise. Put named items in its \
+seeded setting. Seeds and defaults are optional. Ask \
+for every required value without a default, even if the user is impatient; show allowed \
+choices in their language. Product language is an explicit user choice: never infer \
+it from conversation language or the defaults above. Do not substitute generic language \
+or item-list keys. Use at most 6 settings, descriptions at most 150 characters in the \
+user's language; stage the order if needed.
 """
 
 #: What the model reads as its system text on every turn: the capped `SYSTEM_PROMPT`,
