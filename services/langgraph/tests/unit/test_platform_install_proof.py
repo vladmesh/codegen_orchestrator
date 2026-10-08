@@ -5,7 +5,6 @@ from contextlib import redirect_stdout
 from copy import deepcopy
 import hashlib
 from io import StringIO
-from pathlib import Path
 import shlex
 import shutil
 import sys
@@ -21,17 +20,35 @@ from framework.spec.packages import parse_package_manifest
 import pytest
 import yaml
 
+from scripts import template_pin
 from shared.contracts.env_contract import EnvContractMergeError
 from shared.live_harness_platform import issuance_proof
 
 
-@pytest.mark.parametrize("conflict", [False, True])
-async def test_backend_probe_merges_generated_package_fragment(tmp_path, monkeypatch, conflict):
+def _product_fixture(tmp_path, monkeypatch, moved_pin):
+    if moved_pin:
+        pin = template_pin.TemplatePin(source="gh:fixture/candidate-kit", ref="candidate")
+        moved_fixture = pin.fixture_path(tmp_path)
+        shutil.copytree(template_pin.TEMPLATE_PIN.fixture_path(), moved_fixture)
+        contract_path = moved_fixture / "services/backend/env.contract.yaml"
+        contract = yaml.safe_load(contract_path.read_text())
+        contract["entries"]["APP_NAME"]["description"] = "Candidate fixture declaration"
+        contract_path.write_text(yaml.safe_dump(contract))
+        monkeypatch.setattr(template_pin, "TEMPLATE_PIN", pin)
+        fixture_path = template_pin.TemplatePin.fixture_path
+        monkeypatch.setattr(
+            template_pin.TemplatePin, "fixture_path", lambda self: fixture_path(self, tmp_path)
+        )
+    return template_pin.TEMPLATE_PIN.fixture_path()
+
+
+@pytest.mark.parametrize(("conflict", "moved_pin"), [(False, False), (True, False), (False, True)])
+async def test_backend_probe_merges_generated_package_fragment(
+    tmp_path, monkeypatch, conflict, moved_pin
+):
     from shared import live_harness_mechanical_readback as readback
 
-    fixture = (
-        Path(__file__).resolve().parents[4] / "shared/tests/fixtures/codegen-product-kit-0.10.0"
-    )
+    fixture = _product_fixture(tmp_path, monkeypatch, moved_pin)
     product = tmp_path / "product"
     shutil.copytree(fixture, product)
     bot = tmp_path / "bot"
@@ -129,6 +146,11 @@ async def test_backend_probe_merges_generated_package_fragment(tmp_path, monkeyp
     assert backend["version"] == "1.0.0"
     assert backend["contract"]["entries"]["APP_NAME"]["source"] == "derived"
     assert backend["contract"]["entries"]["KEY"]["source"] == "platform_key"
+    if moved_pin:
+        assert (
+            backend["contract"]["entries"]["APP_NAME"]["description"]
+            == "Candidate fixture declaration"
+        )
 
 
 def test_bot_binding_readback_runs_without_backend_yaml_dependency(tmp_path, monkeypatch):
