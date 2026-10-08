@@ -45,6 +45,11 @@ x-logging: &default-logging
     max-size: "50m"
     max-file: "5"
 
+networks:
+  platform_auth:
+    external: true
+    name: codegen-orch-link
+
 x-github-app-key: &github-app-key ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
 # The Codex workers' profile, shared read-write with the heads' codex LLM channel.
 x-llm-codex-home: &llm-codex-home ${HOST_CODEX_HOME:-./secrets/codex-unconfigured}:/llm-codex-home
@@ -92,6 +97,10 @@ services:
       - *github-app-key
 
   deploy-worker:
+    # The deploy consumer runs the devops graph and calls the platform auth admin API.
+    networks:
+      - internal
+      - platform_auth
     logging: *default-logging
     volumes: !override
       - *github-app-key

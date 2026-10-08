@@ -444,6 +444,19 @@ would otherwise sign dashboard tokens with a known key.
 | `REGISTRY_PASSWORD` | Docker registry password |
 | `REGISTRY_PASSWORD_HASH` | Bcrypt hash of registry password (for Caddy) |
 
+### Platform auth admin API
+
+| Secret | Description |
+|--------|-------------|
+| `PLATFORM_AUTH_ADMIN_URL` | Required in production: `http://auth:8000` on the external platform network |
+| `PLATFORM_AUTH_ADMIN_TOKEN` | Required in production: copy of the platform's `auth_admin_token` |
+
+The deploy workflow validates both before writing production `.env`; stand receives empty values
+and requires neither secret. `deploy-worker` reads them through its base `env_file: .env` and runs
+the devops graph's secret resolver. Only that service joins the external network in production.
+See [Platform auth admin runbook](runbooks/platform-auth-admin.md) for setup, rotation, verification
+and the Loki query for platform logs.
+
 ### Worker Agents
 
 | Secret | Description |

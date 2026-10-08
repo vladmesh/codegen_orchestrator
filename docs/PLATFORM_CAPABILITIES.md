@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 18, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 19, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -161,8 +161,8 @@ Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package
 - `allocation`: A port the platform reserves for the product on its server.
 - `derived`: A value the platform computes at deploy time; only the keys listed below exist.
 - `literal`: A fixed, non-secret value written in the product's own environment contract.
-- `platform_key`: A platform service key; deployment refuses with platform_service_unconfigured until issuance exists.
-- `platform_base_url`: A platform service HTTPS endpoint; deployment refuses with platform_service_unconfigured until configuration exists.
+- `platform_key`: A platform service key issued and persisted by the platform at deploy time; the user is never asked for it.
+- `platform_base_url`: The service URL declared in the product's environment contract, resolved at deploy time.
 
 ### Derived keys
 

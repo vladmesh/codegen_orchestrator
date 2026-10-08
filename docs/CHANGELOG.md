@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Production deploy-worker reaches platform auth over its external link; deploy validates admin secrets,
+  Promtail collects platform logs, and the runbook documents token rotation and verification.
+
 - Deploy issues and persists platform keys before create-only auth registration, preserving operator grants;
   revoked keys rotate and unavailable auth retries without asking the user.
 
