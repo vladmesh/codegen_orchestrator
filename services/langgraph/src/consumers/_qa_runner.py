@@ -1298,93 +1298,11 @@ def apply_unverifiable_criteria(
     return qa_result
 
 
-_TELEGRAM_COMMAND = re.compile(r"(?<![\w/])/[a-zA-Z][a-zA-Z0-9_]*(?:@[a-zA-Z0-9_]+)?\b")
-
-
-def _commands(text: str) -> set[str]:
-    return {token.split("@")[0].lower() for token in _TELEGRAM_COMMAND.findall(text)}
-
-
-def _input_is_grounded(
-    evidence: QATelegramProbeEvidence,
-    brief: ProductBriefContent | None,
-    prior: Sequence[QATelegramProbeEvidence],
-) -> bool:
-    # The callback tool itself only invokes a button that this run observed.
-    if evidence.action == "callback":
-        return evidence.delivered is True
-    contract = (
-        []
-        if brief is None
-        else [
-            *(example.user_sends for example in brief.usage_examples),
-            *(requirement.text for requirement in brief.must_requirements),
-        ]
-    )
-    visible_help = [
-        reply.text or ""
-        for probe in prior
-        for reply in probe.replies
-        if probe.sent.strip().split()[0:1] in (["/help"], ["/start"])
-        or re.search(r"(?i)\b(commands|help)\b", reply.text or "")
-    ]
-    commands = _commands(evidence.sent)
-    if commands:
-        return commands <= _commands("\n".join([*contract, *visible_help]))
-    return any(evidence.sent.strip() in text for text in [*contract, *visible_help])
-
-
-def _whole_input_match(sent: str, text: str) -> bool:
-    """Match the complete input, without borrowing part of another token."""
-    sent = sent.strip()
-    return (
-        bool(sent) and re.search(r"(?<![\w/@])" + re.escape(sent) + r"(?![\w/@])", text) is not None
-    )
-
-
-def _telegram_check_grounding(
-    check: dict,
-    workspace: QAWorkspace,
-    brief: ProductBriefContent | None,
-) -> dict:
-    """Only a positively attributed, unsupported input leaves product."""
-    if check.get("pass") is not False or check.get("cause") != QAFailedCheckCause.PRODUCT.value:
-        return check
-    evidence = workspace.telegram_probe_evidence
-    step = check.get("telegram_step")
-    if step is None:
-        matches = [
-            index
-            for index, probe in enumerate(evidence, 1)
-            if any(
-                _whole_input_match(probe.sent, text) for text in (check["name"], check["detail"])
-            )
-        ]
-        step = matches[0] if len(matches) == 1 else None
-    if step is None or not 1 <= step <= len(evidence):
-        return check
-    if _input_is_grounded(evidence[step - 1], brief, evidence[: step - 1]):
-        return check
-    return {
-        **check,
-        "cause": QAFailedCheckCause.QA_TOOLING.value,
-        "detail": (
-            "QA tooling: the tested input is absent from the brief's examples/must-requirements "
-            f"and visible bot help; {check['detail']}"
-        ),
-    }
-
-
-def settle_unverified_checks(
-    qa_result: QAResult,
-    *,
-    workspace: QAWorkspace | None = None,
-    brief: ProductBriefContent | None = None,
-) -> QAResult:
+def settle_unverified_checks(qa_result: QAResult) -> QAResult:
     """The one place a check QA could not run leaves the verdict.
 
-    Only failures attributed to recorded, unsupported Telegram inputs change
-    the executor's cause. Unattributed and ambiguous failures keep their cause.
+    Settlement never changes an executor-declared product cause. Brief text,
+    Telegram inputs and optional step evidence do not reinterpret its judgement.
     Every `qa_capability` or `qa_tooling` check is taken out of `checks` and
     recorded in `unverified_checks` with its origin, whether it arose from the
     executor, an ungrounded not-applicable input, a withheld criterion or a
@@ -1396,8 +1314,6 @@ def settle_unverified_checks(
     unverified: list[QAUnverifiedCheck] = []
     kept: list[dict] = []
     for check in qa_result.checks:
-        if workspace is not None:
-            check = _telegram_check_grounding(check, workspace, brief)
         if check.get("pass") is False and check.get("cause") in {
             QAFailedCheckCause.QA_CAPABILITY.value,
             QAFailedCheckCause.QA_TOOLING.value,
@@ -1714,8 +1630,6 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
                     ),
                     prepared_criteria.unverifiable,
                 ),
-                workspace=workspace if target.bot_username else None,
-                brief=brief,
             )
     finally:
         await service.stop()

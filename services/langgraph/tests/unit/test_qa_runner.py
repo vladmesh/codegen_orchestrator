@@ -96,6 +96,13 @@ class TestBuildQAPrompt:
         assert "telegram_probe" in prompt
         assert "post-press evidence" in prompt
 
+    def test_prompt_keeps_invented_inputs_out_of_the_product_contract(self):
+        prompt = build_qa_prompt("- Check replies", "https://bot.example.com", "test_bot")
+        flat = " ".join(prompt.split())
+        assert "brief, its examples or the bot's visible commands/help" in flat
+        assert "Report an unsupported exploratory input as `qa_capability`" in flat
+        assert "or `qa_tooling` with cited evidence, never `product`" in flat
+
     def test_bot_prompt_never_hands_the_agent_telegram_credentials(self):
         prompt = build_qa_prompt(
             acceptance_criteria="- Telegram: /start responds with welcome",

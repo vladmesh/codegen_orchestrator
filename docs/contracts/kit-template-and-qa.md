@@ -543,11 +543,12 @@ reports which path settled the Run and claims nothing about the executor.
 Telegram message and callback tools accept an integer collection wait of 1–60 seconds,
 default 15; their child process timeout is that wait plus 30 seconds. Invalid waits
 return a typed `invalid_wait` refusal without delivery or a run blocker.
-At the single runner settlement point, a failed product check changes cause only
-when an explicit `telegram_step` or one unambiguous whole-input match attributes
-it to a recorded Telegram input unsupported by the confirmed brief's usage
-examples/must-requirements and prior visible bot help/commands. Unattributed,
-ambiguous and other product failures retain the executor's cause.
+At the single runner settlement point, an executor-declared `product` cause is
+always preserved. Settlement moves only failed `qa_capability` / `qa_tooling`
+rows to unverified; brief text and optional `telegram_step` evidence never
+rewrite a product cause. The executor uses the brief, its examples and visible
+bot help/commands to decide the input contract. Unsupported exploratory inputs
+are reported as `qa_capability`, or `qa_tooling` with cited evidence.
 The executor may classify a missed reply as `qa_tooling` when its detail cites
 concrete server-side evidence that this interaction received an answer. Settlement
 retains that citation as unverified, at the same trust level as `qa_capability`;

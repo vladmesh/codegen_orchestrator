@@ -293,8 +293,8 @@ class QAFailedCheckCause(StrEnum):
     performs (`shared.contracts.qa_capabilities`); `qa_access` is the product
     refusing the QA identity.
 
-    `qa_tooling` is a missed server-confirmed reply or a test input with no
-    confirmed contract. The runner settles it as unverified like `qa_capability`.
+    `qa_tooling` is an executor-judged QA tooling failure with cited evidence.
+    The runner settles it as unverified like `qa_capability`.
     The new wire value is additive; all released values and legacy records
     without a cause keep their historical interpretation.
 
@@ -307,7 +307,7 @@ class QAFailedCheckCause(StrEnum):
     PRODUCT = "product"
     QA_CAPABILITY = "qa_capability"
     QA_ACCESS = "qa_access"
-    #: A probe missed a server-confirmed reply or QA invented the tested contract.
+    #: Executor-judged QA tooling failure with cited evidence.
     #: Additive wire value: released causes and the legacy product default stay readable.
     #: Like qa_capability, the runner settles this as unverified, never an engineering fix.
     QA_TOOLING = "qa_tooling"

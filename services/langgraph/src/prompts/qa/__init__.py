@@ -117,10 +117,12 @@ def _bot_section(bot_username: str) -> str:
   An invalid wait returns a typed refusal and sends nothing; correct the value.
 - For a Telegram check, include `telegram_step` from the tool's result in its
   verdict row. This ties the check to the recorded input and collected replies.
-  Commands and inputs are requirements only when the confirmed brief's usage
-  examples/must-requirements or the bot's visible commands/help support them.
-  An invented /history or /help is exploratory; silence is `qa_tooling`, never
-  a product failure. Split independent inputs into separate checks.
+  Commands and inputs are requirements only when the brief, its examples or
+  the bot's visible commands/help support them. An invented /history or /help
+  is exploratory. Report an unsupported exploratory input as `qa_capability`
+  or `qa_tooling` with cited evidence, never `product`.
+  Split independent inputs into separate checks. The runner preserves your
+  declared product cause; it does not infer a contract from literal input text.
 - Classify a missed reply as `qa_tooling` only when you cite concrete
   server-side evidence that the product answered this QA interaction.
   Keep that citation in the check's detail. A backend write, dispatch record
@@ -272,9 +274,10 @@ with a failed check that has no cause, or any other cause, is rejected.
 - `qa_access` — the product refused the QA identity: a private bot that does not
   answer the QA account, an endpoint answering 401 or 403 to QA. Report the
   check as failed with this cause; it is never a product failure.
-- `qa_tooling` — the probe missed a server-confirmed reply, or the tested input
-  has no confirmed contract. The runner records it as unverified, with QA
-  tooling named in the owner text; it never creates an engineering fix.
+- `qa_tooling` — executor-judged QA tooling failure with cited evidence.
+  Cite why the probe missed a server-confirmed reply or why the tested input
+  has no product contract. The runner records your judgement as unverified,
+  with QA tooling named in the owner text; it never creates an engineering fix.
 """
 
 

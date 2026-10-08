@@ -5,14 +5,13 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
-- QA settlement preserves unattributed product failures and attributes invented inputs by recorded steps;
-  server-reply tooling judgements retain executor citations pending a kit log contract.
+- QA settlement preserves every executor-declared product failure; invented-input classification
+  is executor guidance, and QA tooling judgements retain cited evidence as unverified.
 
 - Telegram injection fixtures use a valid one-second wait and a virtual child clock,
   preserving their security checks under the bounded probe wait contract.
 
-- QA Telegram probes accept waits up to 60 seconds; invented inputs
-  settle as unverified QA tooling checks instead of product failures.
+- QA Telegram probes accept waits up to 60 seconds to collect delayed callback replies.
 
 - Production deploy-worker reaches platform auth over its external link; deploy validates admin secrets,
   Promtail collects platform logs, and the runbook documents token rotation and verification.

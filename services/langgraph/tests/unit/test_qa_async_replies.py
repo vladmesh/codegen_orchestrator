@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.run_result import (
     QAFailedCheck,
     QAFailedCheckCause,
@@ -197,20 +196,6 @@ def test_long_wait_collects_progress_delayed_photo_and_messages(monkeypatch, act
     assert evidence.replies[2].text == "Your answer"
 
 
-def _brief():
-    return ProductBriefContent(
-        summary="Bot readings",
-        must_requirements=[{"id": "reading", "text": "Produce a reading"}],
-        usage_examples=[
-            {
-                "requirement_id": "reading",
-                "user_sends": "/reading",
-                "product_answers": "Your answer",
-            }
-        ],
-    )
-
-
 def _failure(name, **fields):
     return QAResult(
         passed=False,
@@ -227,59 +212,11 @@ def _failure(name, **fields):
     )
 
 
-@pytest.mark.parametrize(
-    "text,expected", [("/history", True), ("/reading", False), ("made up input", True)]
-)
-def test_only_brief_or_visible_input_can_fail_product(tmp_path, text, expected):
-    workspace = QAWorkspace(tmp_path)
-    workspace.record_telegram_probe(
-        QATelegramProbeEvidence(
-            action="message",
-            attempted=f"send {text}",
-            sent=text,
-            delivered=True,
-        )
-    )
-    result = settle_unverified_checks(
-        _failure(text, telegram_step=1), workspace=workspace, brief=_brief()
-    )
-    assert result.passed is expected
-    assert bool(result.unverified_checks) is expected
-
-
-def test_visible_help_command_is_a_contract(tmp_path):
-    workspace = QAWorkspace(tmp_path)
-    workspace.record_telegram_probe(
-        QATelegramProbeEvidence(
-            action="message",
-            attempted="send /start",
-            sent="/start",
-            delivered=True,
-            replies=[{"id": 2, "text": "Commands: /history - list readings"}],
-        )
-    )
-    workspace.record_telegram_probe(
-        QATelegramProbeEvidence(
-            action="message",
-            attempted="send /history",
-            sent="/history",
-            delivered=True,
-        )
-    )
-    result = settle_unverified_checks(
-        _failure("/history", telegram_step=2), workspace=workspace, brief=_brief()
-    )
-    assert result.passed is False
-    assert result.checks[0]["cause"] == "product"
-
-
 @pytest.mark.parametrize("cause", ["qa_tooling", "qa_capability"])
-def test_executor_cited_evidence_survives_as_owner_verification_gap(tmp_path, cause):
+def test_executor_cited_evidence_survives_as_owner_verification_gap(cause):
     citation = "container_logs: handler emitted answer; recorded Telegram probe has no reply"
     result = settle_unverified_checks(
         _failure("/reading", cause=cause, detail=citation),
-        workspace=QAWorkspace(tmp_path),
-        brief=_brief(),
     )
     stored = QARunResult(
         qa_outcome=QAOutcome.PASSED,
@@ -338,77 +275,6 @@ def test_invalid_step_is_an_invalid_verdict(step):
     assert result.blocker is not None
 
 
-def test_http_failure_is_still_a_product_failure_in_a_bot_run(tmp_path):
-    result = settle_unverified_checks(
-        _failure("HTTP GET /health endpoint"),
-        workspace=QAWorkspace(tmp_path),
-        brief=_brief(),
-    )
-    assert result.checks[0]["cause"] == "product"
-    assert result.passed is False
-
-
-def test_unattributed_failure_keeps_executor_cause(tmp_path):
-    workspace = QAWorkspace(tmp_path)
-    workspace.record_telegram_probe(
-        QATelegramProbeEvidence(
-            action="message",
-            attempted="send /history",
-            sent="/history",
-            delivered=True,
-        )
-    )
-    result = settle_unverified_checks(
-        _failure("Reading completed"),
-        workspace=workspace,
-        brief=_brief(),
-    )
-    assert result.passed is False
-    assert result.checks[0]["cause"] == "product"
-    assert result.unverified_checks == []
-
-
-def test_ambiguous_inputs_without_a_step_stay_product(tmp_path):
-    workspace = QAWorkspace(tmp_path)
-    for text in ["/reading", "/history"]:
-        workspace.record_telegram_probe(
-            QATelegramProbeEvidence(
-                action="message",
-                attempted=f"send {text}",
-                sent=text,
-                delivered=True,
-            )
-        )
-    result = settle_unverified_checks(
-        _failure("Reading completed"),
-        workspace=workspace,
-        brief=_brief(),
-    )
-    assert result.passed is False
-    assert result.checks[0]["cause"] == "product"
-    assert result.unverified_checks == []
-
-
-def test_explicit_grounded_step_keeps_executor_cause(tmp_path):
-    workspace = QAWorkspace(tmp_path)
-    workspace.record_telegram_probe(
-        QATelegramProbeEvidence(
-            action="message",
-            attempted="send /reading",
-            sent="/reading",
-            delivered=True,
-        )
-    )
-    result = settle_unverified_checks(
-        _failure("/history", telegram_step=1),
-        workspace=workspace,
-        brief=_brief(),
-    )
-    assert result.passed is False
-    assert result.checks[0]["cause"] == "product"
-    assert result.unverified_checks == []
-
-
 @pytest.mark.parametrize("wait", [0, 61, True, 1.5])
 @pytest.mark.parametrize("action", ["message", "callback"])
 def test_script_builder_rejects_invalid_wait(wait, action):
@@ -421,76 +287,24 @@ def test_script_builder_rejects_invalid_wait(wait, action):
             )
 
 
+@pytest.mark.parametrize("cause", ["qa_capability", "qa_tooling"])
+@pytest.mark.parametrize("step", [None, 1, 99])
 @pytest.mark.parametrize(
-    "inputs,name,detail",
-    [
-        (
-            ["/start", "/reading"],
-            "Daily digest job",
-            "fire_job daily_digest: job_evidence shows dispatch failed with exception",
-        ),
-        (["/start", "/reading"], "Reading result", "the reading reply was wrong"),
-        (["/start"], "Daily digest job", "job_evidence shows dispatch failed with exception"),
-        (["/start"], "Saved state", "persisted state has the wrong value"),
-        (["/start"], "Container health", "container evidence shows a crashed process"),
-    ],
+    "name", ["/history", "/start", "The Hobbit", "Daily digest job", "HTTP GET /health"]
 )
-def test_unrelated_or_unattributed_failure_after_probes_stays_product(
-    tmp_path, inputs, name, detail
-):
-    workspace = QAWorkspace(tmp_path)
-    for text in inputs:
-        workspace.record_telegram_probe(
-            QATelegramProbeEvidence(
-                action="message", attempted=f"send {text}", sent=text, delivered=True
-            )
+def test_product_failure_survives_settlement_of_unverified_rows(name, step, cause):
+    fields = {"telegram_step": step} if step is not None else {}
+    verdict = _failure(name, **fields)
+    verdict.telegram_probe_evidence = [
+        QATelegramProbeEvidence(
+            action="message", attempted=f"send {name}", sent=name, delivered=True
         )
-    result = settle_unverified_checks(
-        _failure(name, detail=detail), workspace=workspace, brief=_brief()
-    )
+    ]
+    product = verdict.checks[0].copy()
+    citation = "container_logs: cited executor evidence"
+    verdict.checks.append({"name": "Unverified", "pass": False, "detail": citation, "cause": cause})
+    result = settle_unverified_checks(verdict)
     assert result.passed is False
-    assert result.checks[0]["cause"] == "product"
-    assert result.checks[0]["detail"] == detail
-    assert result.unverified_checks == []
-
-
-@pytest.mark.parametrize(
-    "inputs,name,expected_product",
-    [
-        (["1"], "10 failed", True),
-        (["ok"], "token lookup failed", True),
-        (["/history"], "/history_more failed", True),
-        (["/history"], "/history@other_bot failed", True),
-        (["made up input"], "made up inputs failed", True),
-        (["/history", "/history"], "/history failed", True),
-        (["/history", "/help"], "/history and /help failed", True),
-        (["/reading"], "Reply to '/reading' was wrong", True),
-        (["/history"], "Reply to '/history' was missing", False),
-        (["ok"], "Reply to 'ok' was missing", False),
-        (["made up input"], "Reply to 'made up input' was missing", False),
-    ],
-)
-def test_step_inference_requires_one_whole_input(tmp_path, inputs, name, expected_product):
-    workspace = QAWorkspace(tmp_path)
-    for text in inputs:
-        workspace.record_telegram_probe(
-            QATelegramProbeEvidence(
-                action="message", attempted=f"send {text}", sent=text, delivered=True
-            )
-        )
-    result = settle_unverified_checks(_failure(name), workspace=workspace, brief=_brief())
-    assert result.passed is not expected_product
-    if expected_product:
-        assert result.checks[0]["cause"] == "product"
-        assert result.unverified_checks == []
-    else:
-        assert result.checks == []
-        assert "QA tooling" in result.unverified_checks[0].reason
-
-
-def test_explicit_step_without_a_record_keeps_product_failure(tmp_path):
-    result = settle_unverified_checks(
-        _failure("/history", telegram_step=2), workspace=QAWorkspace(tmp_path), brief=_brief()
-    )
-    assert result.passed is False
-    assert result.checks[0]["cause"] == "product"
+    assert result.checks == [product]
+    assert len(result.unverified_checks) == 1
+    assert citation in result.unverified_checks[0].reason
