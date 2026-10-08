@@ -13,6 +13,9 @@
 }
 
 {$ORCHESTRATOR_HOSTNAME} {
+    # Optional contour routes. Only the stand overlay mounts a matching file.
+    import /etc/caddy/contour/*.caddy
+
     handle /v2/* {
         basic_auth {
             {$REGISTRY_USER} {$REGISTRY_PASSWORD_HASH}

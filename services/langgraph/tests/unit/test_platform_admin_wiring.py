@@ -69,7 +69,7 @@ def test_platform_docker_logs_are_discovered_and_labelled_by_compose_project():
     } in docker["relabel_configs"]
 
 
-def test_admin_credentials_are_validated_and_written_only_for_production():
+def test_production_admin_credentials_are_validated_and_written_with_stand_isolation():
     workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
     steps = {step["name"]: step for step in workflow["jobs"]["deploy"]["steps"]}
     validation = steps["Validate production platform auth secrets"]
@@ -78,6 +78,6 @@ def test_admin_credentials_are_validated_and_written_only_for_production():
     for name in ("PLATFORM_AUTH_ADMIN_URL", "PLATFORM_AUTH_ADMIN_TOKEN"):
         assert validation["env"][f"REQUIRED_{name}"] == f"${{{{ secrets.{name} }}}}"
         assert f"REQUIRED_{name}" in validation["run"]
-        assert (
-            f"{name}=${{{{ inputs.environment == 'production' && secrets.{name} || '' }}}}"
-        ) in script
+        line = next(line for line in script.splitlines() if line.startswith(f"{name}="))
+        assert f"inputs.environment == 'production' && secrets.{name}" in line
+        assert "inputs.environment == 'stand' &&" in line

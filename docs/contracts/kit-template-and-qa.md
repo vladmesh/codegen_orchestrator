@@ -71,6 +71,15 @@ Transport errors, timeouts, 429 and 5xx give `DeployOutcome.RETRY` with
 None of these failures asks for a user secret. Diagnostics exclude response bodies, plaintext
 keys and tokens. Production network/env wiring remains separate work.
 
+Stand alone may set `PLATFORM_BASE_URL_OVERRIDE`, an HTTPS template with one
+`{service}` path slot; settings require `LIVE_CONTOUR=stand` and production deploy
+refuses a non-empty override. Only base URL resolution changes: key issuance still
+uses the same persistence, fencing and auth admin client. The stand overlay runs
+an in-memory fixture platform from the released API image, with internal admin
+authentication and TLS service ingress. Service requests require registered,
+unrevoked keys and service grants; fixture data declares routes and JSON responses.
+The shared admin contract table covers both the issuance unit fake and stand app.
+
 Historical core `2.1.0` introduced by `0.7.0` added these product behaviors;
 `0.7.1` fixed lifespan tests with installed packages:
 

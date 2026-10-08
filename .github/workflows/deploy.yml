@@ -212,6 +212,18 @@ jobs:
             exit 1
           fi
 
+      - name: Validate production platform override
+        if: ${{ inputs.environment == 'production' }}
+        shell: bash
+        env:
+          PLATFORM_BASE_URL_OVERRIDE: ${{ vars.PLATFORM_BASE_URL_OVERRIDE }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PLATFORM_BASE_URL_OVERRIDE}" ]; then
+            echo "Production refuses PLATFORM_BASE_URL_OVERRIDE" >&2
+            exit 1
+          fi
+
       - name: Validate production platform auth secrets
         if: ${{ inputs.environment == 'production' }}
         shell: bash
@@ -296,9 +308,11 @@ jobs:
           # Internal service authentication
           INTERNAL_API_KEY=${{ secrets.INTERNAL_API_KEY }}
 
-          # Platform auth administration is available only in production.
-          PLATFORM_AUTH_ADMIN_URL=${{ inputs.environment == 'production' && secrets.PLATFORM_AUTH_ADMIN_URL || '' }}
-          PLATFORM_AUTH_ADMIN_TOKEN=${{ inputs.environment == 'production' && secrets.PLATFORM_AUTH_ADMIN_TOKEN || '' }}
+          # Stand uses its own internal credential for the in-memory fixture app.
+          PLATFORM_AUTH_ADMIN_URL=${{ inputs.environment == 'production' && secrets.PLATFORM_AUTH_ADMIN_URL || inputs.environment == 'stand' && 'http://stand-fake-platform:8000' || '' }}
+          PLATFORM_AUTH_ADMIN_TOKEN=${{ inputs.environment == 'production' && secrets.PLATFORM_AUTH_ADMIN_TOKEN || inputs.environment == 'stand' && secrets.INTERNAL_API_KEY || '' }}
+          PLATFORM_BASE_URL_OVERRIDE=${{ inputs.environment == 'stand' && format('https://{0}/platform-fake/{{service}}', secrets.ORCHESTRATOR_HOSTNAME) || '' }}
+          STAND_PLATFORM_FIXTURE_FILE=${{ inputs.environment == 'stand' && vars.STAND_PLATFORM_FIXTURE_FILE || '' }}
 
           # LLM
           ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}

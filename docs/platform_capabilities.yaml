@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 19
+version: 20
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -80,10 +80,9 @@ can:
       Read public Telegram channels for posts, digests and new-post delivery only through a
       platform-backed catalog module selected by live catalog capabilities. Private channels
       and groups are not supported. Products must not fetch or scrape t.me, Telegram web
-      previews or Telegram APIs for channel content themselves; only the platform service
-      reaches t.me through the platform egress proxy. Plan it now; deployment handles platform
-      key issuance and the declared base URL; no user key is needed. Auth admin configuration
-      is required; unavailable auth retries.
+      previews or Telegram APIs for channel content themselves. Platform uses its egress proxy.
+      Plan it now; deployment handles key issuance; no user key is needed. Auth admin required;
+      unavailable auth retries. Only stand can override declared HTTPS URLs with its fixture ingress.
   - id: stored_data
     name: The bot remembers data
     plain: The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
