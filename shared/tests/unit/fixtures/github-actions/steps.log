@@ -1,0 +1,87 @@
+2026-10-08T08:00:00.1234567Z ##[group]Run prepare tests
+2026-10-08T08:00:01.1234567Z Error: handled failure in successful setup
+2026-10-08T08:00:02.1234567Z setup finished successfully
+2026-10-08T08:00:03.1234567Z ##[endgroup]
+2026-10-08T08:00:04.1234567Z ##[group]Run make test-integration
+2026-10-08T08:00:05.1234567Z preparing test 0
+2026-10-08T08:00:06.1234567Z preparing test 1
+2026-10-08T08:00:07.1234567Z preparing test 2
+2026-10-08T08:00:08.1234567Z preparing test 3
+2026-10-08T08:00:09.1234567Z preparing test 4
+2026-10-08T08:00:10.1234567Z preparing test 5
+2026-10-08T08:00:11.1234567Z preparing test 6
+2026-10-08T08:00:12.1234567Z preparing test 7
+2026-10-08T08:00:13.1234567Z preparing test 8
+2026-10-08T08:00:14.1234567Z preparing test 9
+2026-10-08T08:00:15.1234567Z preparing test 10
+2026-10-08T08:00:16.1234567Z preparing test 11
+2026-10-08T08:00:17.1234567Z preparing test 12
+2026-10-08T08:00:18.1234567Z preparing test 13
+2026-10-08T08:00:19.1234567Z preparing test 14
+2026-10-08T08:00:20.1234567Z preparing test 15
+2026-10-08T08:00:21.1234567Z preparing test 16
+2026-10-08T08:00:22.1234567Z preparing test 17
+2026-10-08T08:00:23.1234567Z preparing test 18
+2026-10-08T08:00:24.1234567Z preparing test 19
+2026-10-08T08:00:25.1234567Z preparing test 20
+2026-10-08T08:00:26.1234567Z preparing test 21
+2026-10-08T08:00:27.1234567Z preparing test 22
+2026-10-08T08:00:28.1234567Z preparing test 23
+2026-10-08T08:00:29.1234567Z preparing test 24
+2026-10-08T08:00:30.1234567Z preparing test 25
+2026-10-08T08:00:31.1234567Z preparing test 26
+2026-10-08T08:00:32.1234567Z preparing test 27
+2026-10-08T08:00:33.1234567Z preparing test 28
+2026-10-08T08:00:34.1234567Z preparing test 29
+2026-10-08T08:00:35.1234567Z integration-tests-1  | Error: SomeError: actual failing step
+2026-10-08T08:00:36.1234567Z Container env_fixture-service-0 Stopping / Removed
+2026-10-08T08:00:37.1234567Z Container env_fixture-service-1 Stopping / Removed
+2026-10-08T08:00:38.1234567Z Container env_fixture-service-2 Stopping / Removed
+2026-10-08T08:00:39.1234567Z Container env_fixture-service-3 Stopping / Removed
+2026-10-08T08:00:40.1234567Z Container env_fixture-service-4 Stopping / Removed
+2026-10-08T08:00:41.1234567Z Container env_fixture-service-5 Stopping / Removed
+2026-10-08T08:00:42.1234567Z Container env_fixture-service-6 Stopping / Removed
+2026-10-08T08:00:43.1234567Z Container env_fixture-service-7 Stopping / Removed
+2026-10-08T08:00:44.1234567Z Container env_fixture-service-8 Stopping / Removed
+2026-10-08T08:00:45.1234567Z Container env_fixture-service-9 Stopping / Removed
+2026-10-08T08:00:46.1234567Z Container env_fixture-service-10 Stopping / Removed
+2026-10-08T08:00:47.1234567Z Container env_fixture-service-11 Stopping / Removed
+2026-10-08T08:00:48.1234567Z Container env_fixture-service-12 Stopping / Removed
+2026-10-08T08:00:49.1234567Z Container env_fixture-service-13 Stopping / Removed
+2026-10-08T08:00:50.1234567Z Container env_fixture-service-14 Stopping / Removed
+2026-10-08T08:00:51.1234567Z Container env_fixture-service-15 Stopping / Removed
+2026-10-08T08:00:52.1234567Z Container env_fixture-service-16 Stopping / Removed
+2026-10-08T08:00:53.1234567Z Container env_fixture-service-17 Stopping / Removed
+2026-10-08T08:00:54.1234567Z Container env_fixture-service-18 Stopping / Removed
+2026-10-08T08:00:55.1234567Z Container env_fixture-service-19 Stopping / Removed
+2026-10-08T08:00:56.1234567Z Container env_fixture-service-20 Stopping / Removed
+2026-10-08T08:00:57.1234567Z Container env_fixture-service-21 Stopping / Removed
+2026-10-08T08:00:58.1234567Z Container env_fixture-service-22 Stopping / Removed
+2026-10-08T08:00:59.1234567Z Container env_fixture-service-23 Stopping / Removed
+2026-10-08T08:01:00.1234567Z Container env_fixture-service-24 Stopping / Removed
+2026-10-08T08:01:01.1234567Z Container env_fixture-service-25 Stopping / Removed
+2026-10-08T08:01:02.1234567Z Container env_fixture-service-26 Stopping / Removed
+2026-10-08T08:01:03.1234567Z Container env_fixture-service-27 Stopping / Removed
+2026-10-08T08:01:04.1234567Z Container env_fixture-service-28 Stopping / Removed
+2026-10-08T08:01:05.1234567Z Container env_fixture-service-29 Stopping / Removed
+2026-10-08T08:01:06.1234567Z Container env_fixture-service-30 Stopping / Removed
+2026-10-08T08:01:07.1234567Z Container env_fixture-service-31 Stopping / Removed
+2026-10-08T08:01:08.1234567Z Container env_fixture-service-32 Stopping / Removed
+2026-10-08T08:01:09.1234567Z Container env_fixture-service-33 Stopping / Removed
+2026-10-08T08:01:10.1234567Z Container env_fixture-service-34 Stopping / Removed
+2026-10-08T08:01:11.1234567Z Container env_fixture-service-35 Stopping / Removed
+2026-10-08T08:01:12.1234567Z Container env_fixture-service-36 Stopping / Removed
+2026-10-08T08:01:13.1234567Z Container env_fixture-service-37 Stopping / Removed
+2026-10-08T08:01:14.1234567Z Container env_fixture-service-38 Stopping / Removed
+2026-10-08T08:01:15.1234567Z Container env_fixture-service-39 Stopping / Removed
+2026-10-08T08:01:16.1234567Z Container env_fixture-service-40 Stopping / Removed
+2026-10-08T08:01:17.1234567Z Container env_fixture-service-41 Stopping / Removed
+2026-10-08T08:01:18.1234567Z Container env_fixture-service-42 Stopping / Removed
+2026-10-08T08:01:19.1234567Z Container env_fixture-service-43 Stopping / Removed
+2026-10-08T08:01:20.1234567Z Container env_fixture-service-44 Stopping / Removed
+2026-10-08T08:01:21.1234567Z make: *** [Makefile:152: test-integration] Error 1
+2026-10-08T08:01:22.1234567Z ##[error]Process completed with exit code 2.
+2026-10-08T08:01:23.1234567Z ##[endgroup]
+2026-10-08T08:01:24.1234567Z ##[group]Run cleanup
+2026-10-08T08:01:25.1234567Z Error: handled cleanup retry
+2026-10-08T08:01:26.1234567Z cleanup finished

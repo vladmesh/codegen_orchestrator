@@ -21,10 +21,10 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.10.0` tag, object
-`c9c46b522a8ad5e152b2124fa30c8ece8e21a9f0`, which dereferences to
-`8d37302e6077de02383d70f32f67861698ee5fc6`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.10.0` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.10.1` tag, object
+`902ae4aaddc48665f18297b8994e04b1be9c2d6a`, which dereferences to
+`f7de8f96b18f79b94dcd0546905771674cf11cfa`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.10.1` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`. The root `codegen-kit-tooling`
 dependency and its lock resolve the same commit.
 It represents the committed checkout: generated ignored `.env` and `TASK.md`
@@ -41,10 +41,23 @@ kit's [0.6.3 release](https://github.com/vladmesh/codegen-product-kit/blob/f2346
 
 This release carries core facade `2.4.0`, protocol `1` and tooling distribution `0.1.0`.
 It includes generic platform environment sources and finite bilingual binding v2;
-v1 remains unchanged ([platform sources](https://github.com/vladmesh/codegen-product-kit/blob/8d37302e6077de02383d70f32f67861698ee5fc6/docs/releases/0.9.0.md),
-[binding v2](https://github.com/vladmesh/codegen-product-kit/blob/8d37302e6077de02383d70f32f67861698ee5fc6/docs/releases/0.10.0.md)). The retained fixture
-was rendered in [CI run 37703070130](https://github.com/vladmesh/codegen_orchestrator/actions/runs/37703070130);
+v1 remains unchanged. The [core patch](https://github.com/vladmesh/codegen-product-kit/blob/f7de8f96b18f79b94dcd0546905771674cf11cfa/docs/releases/0.10.1.md)
+seeds product-owned environments under `/workspace` in the backend dev image and masks
+host environments with anonymous integration volumes, so bound generation works in CI.
+The retained fixture was rendered in [CI run 37753179032](https://github.com/vladmesh/codegen_orchestrator/actions/runs/37753179032);
 [producer hashes](../evidence/catalog-install-fixture.json) cover every tracked file and the saved answers.
+
+Failed Actions evidence keeps the earliest root diagnostic and final error in at most
+`scheduler.ci_failure_log_excerpt_lines` data lines (40), plus at most two omission separators.
+Root diagnostics include pytest assertion lines, Python exceptions, explicit error annotations
+and lint findings; teardown `make` errors and pytest `FAILED` lines are final diagnostics.
+Run-step boundaries restrict diagnostics to the last failing step. A pytest window starts
+at its preceding test header in the FAILURES section; a header too distant from the
+assertion uses a separate window, with a separator before the assertion context.
+Runner exit-code wrappers and structured retry noise do not displace a cause. A one-line
+budget retains the cause; output without diagnostics retains the tail. Lines are clipped
+to 2048 characters; the data budget is reduced when needed to keep the total within
+131072 characters, including newlines and separators.
 
 `shared/contracts/env_contract.py` mirrors the pinned tooling model, including strict service,
 scope and quota validation and the Python-only credential check for platform URLs. Schema

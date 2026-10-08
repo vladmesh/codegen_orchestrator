@@ -1,10 +1,10 @@
 {
   "source": "gh:vladmesh/codegen-product-kit",
-  "ref": "0.10.0",
-  "candidate_sha": "31d6bf671cb7d8815e84aa1f46404cdae12ad6fd",
-  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: 0.10.0\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
+  "ref": "0.10.1",
+  "candidate_sha": "099ffc16069a2bc5972fc7d79c31b9a1af3231c4",
+  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: 0.10.1\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
   "tracked_sha256": {
-    ".copier-answers.yml": "58a2d3a58bd1fd382684fa26b632b7164b634440cdd664a368d48263f54be6be",
+    ".copier-answers.yml": "4188562d4a84d091174fbb16d66bc46cd2e84683ffbe3d4bccd50e9bc64fe2c4",
     ".coveragerc": "e81eaf903c40f90b6e89ceaaf9d3def080db0265dca88d8955c1d702b91af016",
     ".dockerignore": "7b8eac7cd6e7aac256526e938f203a0c06357edf5c32343e44968430b4580a6a",
     ".env.example": "b9fd3997f087dc3386cbd4829ed965fa5ec1c3d6981ace5699559d2524b81943",
@@ -29,16 +29,16 @@
     "infra/compose.dev.yml": "78cc92a5714c2bf0c5abcd9739c4cacf2304ce2a701e8edaa2bcee4f5ab0d2c2",
     "infra/compose.local.yml": "58f5bc9229c1f2c8ffe82c45f3e9cfa2c7e3b652ac0864412c04be3db7074804",
     "infra/compose.prod.yml": "8d8a731270d4b07d9822584de34f98a514df6f05f26c2a28e8662111cd8a11c3",
-    "infra/compose.tests.integration.yml": "6b8530c32e55dd156e9d83cf378083296034e63cc1ca5ff84a366eeb435cf0bd",
+    "infra/compose.tests.integration.yml": "06e8545c170a2eed06b123ac7b691c8bb98e45cf754880a54b2b8d5a699f7394",
     "infra/env.contract.yaml": "b9052abeac9fea2e8e39a1b4e5d2a067c9df7dceec83912134dd22fa2ab928f1",
     "mypy.ini": "5262a519571da0963b5b9df960ea6393b9ba0291e8987b32326504d62b65b611",
-    "pyproject.toml": "2d7c4fb97526ce1a244c15497649d1fc1caa058364a722e6f327f8e3140edc32",
+    "pyproject.toml": "360c5c42ee64821ed8af0553f8c6ecf758326abc45366ce7887ee3c444cb997d",
     "pytest.ini": "44fbeef624539fbae76f55804299812bbd139d2a31b29bfd3615687cacb7b788",
     "ruff.toml": "755941b2ac3202f1044abf6a916eda298b03c6b9759be079e2e40ec700ed11f0",
     "services.yml": "827da91d5dc2ff032ba98453cebc83d468c43c79421aef2612ab514911d63fea",
     "services/__init__.py": "21df43ebcef012ebb4fcce9cb0dba5ed4a7e22d148886e48fcff90af67898d98",
     "services/backend/AGENTS.md": "ad6f8d06ba53750ce553d8bc317779e700427bd5d937b549c539e54f639400d9",
-    "services/backend/Dockerfile": "cfdce798139255087cd55eee39727b7ba5aa3966f0e5b35496cac473deb80885",
+    "services/backend/Dockerfile": "3ccc86969cfccaa7ac131221638bb397b735b8e6191da87be158dca72043cfb1",
     "services/backend/README.md": "7a87ed86d3a321913e84b68d985ba51425a4ac7f7918f46c1371851d597787ee",
     "services/backend/docs/openapi.json": "3cceafd2f4f3d9893702af8834d055769ff6e9ecc839e6bc8973e28189944abc",
     "services/backend/env.contract.yaml": "3c435793af2317a630f508359792c38baab9b7edecb2792ef2a69d0a2331df01",
@@ -156,6 +156,6 @@
     "tests/integration/test_durable_events.py": "f7224607fec3d5743a2a029a1704d09d537fb59c3ec7a9f6946117064b8184ca",
     "tests/integration/test_example.py": "1a869093e2346d7b79775ab08c644352b8ea267f5de2437fe67d913424a26ca3",
     "tests/integration/test_user_identifiers.py": "bdfbb9160295da41b2861e2d507eff2574189a9074697df0451628cedd6d4a60",
-    "uv.lock": "2d9b0da5c45f777aa433ed7e6d8e651c11530064dac0a4200844e204eee5f3f8"
+    "uv.lock": "a2c07f4695f1ec1f7386b43750ddf2e764198036cae38e8e7623f976d9a90785"
   }
 }

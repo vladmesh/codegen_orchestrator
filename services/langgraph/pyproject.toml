@@ -45,7 +45,7 @@ dependencies = [
     # The kit's own package-catalog loader and core version (src/kit_catalog.py): the
     # Architect plans packages from the kit's live catalog, parsed the way `kit add` parses
     # it. The same commit as the root `[tool.uv.sources]` pin; a unit test ties the two.
-    "codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git@8d37302e6077de02383d70f32f67861698ee5fc6",
+    "codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git@f7de8f96b18f79b94dcd0546905771674cf11cfa",
 
     # shared/ deps (shared is COPY'd as plain files, not pip-installed)
     "pyyaml>=6.0",

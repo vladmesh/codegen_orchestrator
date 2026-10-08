@@ -31,9 +31,24 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && uv sync --frozen --no-install-project \
     && .venv/bin/python -c "from pathlib import Path; import site; Path(site.getsitepackages()[0], 'codegen-kit-tooling.pth').write_text('/app/.venv/lib/python3.12/site-packages\\n')"
 
+# Binding generation reads the bot's installed library metadata, without running the bot.
+COPY services/tg_bot/pyproject.toml services/tg_bot/uv.lock ./services/tg_bot/
+COPY services/tg_bot/packages ./services/tg_bot/packages
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --project services/tg_bot --frozen --no-install-project --no-dev
+
+
 FROM base AS dev
 COPY --from=dev-deps /app/.venv /app/.venv
 COPY --from=dev-deps /app/services/backend/.venv /app/services/backend/.venv
+# Integration Compose masks host virtualenvs with image-seeded volumes here. Binding
+# preflight requires product-owned environments under the generation root (/workspace).
+COPY --from=dev-deps /app/.venv /workspace/.venv
+COPY --from=dev-deps /app/services/backend/.venv /workspace/services/backend/.venv
+
+COPY --from=dev-deps /app/services/tg_bot/.venv /app/services/tg_bot/.venv
+COPY --from=dev-deps /app/services/tg_bot/.venv /workspace/services/tg_bot/.venv
+
 ENV PATH="/app/services/backend/.venv/bin:${PATH}"
 COPY services/backend ./services/backend
 COPY services/backend/README.md ./README.md
