@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Stand QA keeps session isolation and conversation fixtures in one Compose service;
+  host unit tests reject duplicate Compose mapping keys before native CI renders.
+
 - The no-model stand adds a capability-selected platform install, key-issuance readback and
   fixture-driven RU/EN chat delivery on the same product, without an engineering Run.
 
