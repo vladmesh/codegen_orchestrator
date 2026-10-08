@@ -17,7 +17,7 @@ from packaging.version import InvalidVersion, Version
 import yaml
 
 PACKAGE_PROTOCOL_VERSION = 1
-CORE_VERSION = "2.2.0"
+CORE_VERSION = "2.4.0"
 ENTRY_POINT_GROUP = "codegen_kit.packages"
 SETTING_SEED_PARAMETER_COUNT = 3
 

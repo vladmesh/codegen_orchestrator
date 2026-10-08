@@ -3,8 +3,15 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-08
+
+- Catalog-install capability text derives its core version from the pinned kit tooling,
+  so the Architect's static install rule matches catalog admission and product preflight.
+
 ## 2026-10-07
 
+- Scaffolding and tooling use kit 0.10.0/core 2.4; env contracts match its platform sources,
+  which explicitly refuse deploy until configured instead of asking the user for a secret.
 - Products scaffold from kit 0.8.1, whose generator reformats after its lint fixes, so a bound product's `bindings.py`
   passes its own `ruff format --check` (stand-e2e run 37579868223); tooling pins move to `ecdab3af`.
 - Production/stand scaffolder `mem_limit` is 2g, not 512m: catalog install's cold product mypy ran past

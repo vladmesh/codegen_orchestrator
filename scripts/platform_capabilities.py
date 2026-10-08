@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
+from framework.spec.package_resolution import CORE_VERSION
 from pydantic import BaseModel, ConfigDict, Field
 import yaml
 
@@ -131,7 +132,15 @@ class CapabilityManifest(_Model):
 
 def load_manifest(path: Path = MANIFEST_PATH) -> CapabilityManifest:
     """Read and validate the manifest, failing loudly on anything malformed."""
-    return CapabilityManifest.model_validate(yaml.safe_load(path.read_text()))
+    manifest = CapabilityManifest.model_validate(yaml.safe_load(path.read_text()))
+    return manifest.model_copy(
+        update={
+            "can": [
+                item.model_copy(update={"how": item.how.replace("{core_version}", CORE_VERSION)})
+                for item in manifest.can
+            ]
+        }
+    )
 
 
 def _status_line(manifest: CapabilityManifest) -> str:
@@ -278,7 +287,7 @@ def render_architect_block(manifest: CapabilityManifest) -> str:
     kit = manifest.kit
     lines = [
         f"{ARCHITECT_BLOCK_HEADING} (manifest v{manifest.version}, {manifest.status})",
-        f"What a product built here can and cannot have, kit {_kit_ref(manifest)}.",
+        f"Kit {_kit_ref(manifest)}.",
         "Can (how):",
         *[f"- {item.name} [{item.id}]: {' '.join(item.how.split())}" for item in manifest.can],
         "Cannot (why in the code; instead):",

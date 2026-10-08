@@ -9,6 +9,7 @@ import yaml
 from scripts.template_pin import TEMPLATE_PIN
 from shared.contracts.env_contract import GeneratedSecretEntry, merge_env_contract_fragments
 from shared.contracts.env_usage import load_env_contract_fragments
+from shared.contracts.queues.deploy import DeployOutcome
 from src.subgraphs.devops.env_contract_loader import load_environment_contract
 from src.subgraphs.devops.graph import resolve_secrets
 from src.subgraphs.devops.secret_resolver import SecretResolverNode, TypedSecretResolutionError
@@ -119,6 +120,43 @@ async def test_contract_missing_user_secret_is_a_typed_waiting_outcome():
         {"key": "MISSING", "description": "Missing credential"}
     ]
     assert result["resolution_outcome"] == "waiting_for_user_secret"
+
+
+@pytest.mark.parametrize("source", ["platform_key", "platform_base_url"])
+@pytest.mark.parametrize("required", [True, False])
+@patch("src.subgraphs.devops.secret_resolver.api_client")
+async def test_platform_service_refuses_deploy_without_asking_user(api_client, source, required):
+    api_client.merge_secrets = AsyncMock()
+    entry = {
+        "source": source,
+        "environments": ["production"],
+        "required": required,
+        "service": "fictional-service",
+    }
+    entry.update(
+        {"scopes": ["read"], "quota": {"requests": 100}}
+        if source == "platform_key"
+        else {"url": "https://fictional.example.invalid"}
+    )
+    state = _state(
+        {
+            "MISSING": {
+                "source": "user_secret",
+                "environments": ["production"],
+                "consumers": ["backend"],
+                "required": True,
+                "description": "User credential",
+            },
+            "PLATFORM_VALUE": entry,
+        }
+    )
+
+    result = await resolve_secrets(state)
+
+    assert result["resolution_outcome"] is DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED
+    assert "platform_service_unconfigured: fictional-service" in result["errors"][0]
+    assert result.get("missing_user_secrets", []) == []
+    api_client.merge_secrets.assert_not_awaited()
 
 
 def _grant_contract() -> dict:

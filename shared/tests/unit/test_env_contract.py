@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from framework.contracts.env_contract import EnvContractFragment as KitEnvContractFragment
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 import pytest
@@ -313,3 +314,60 @@ def test_validate_fragment_revalidates_constructed_model():
 
     with pytest.raises(ValidationError, match="owner"):
         validate_env_contract_fragment(fragment)
+
+
+def test_env_contract_schema_matches_pinned_kit():
+    assert EnvContractFragment.model_json_schema() == KitEnvContractFragment.model_json_schema()
+
+
+PLATFORM_KEY = {
+    "source": "platform_key",
+    "environments": ["production"],
+    "required": True,
+    "service": "fictional-service",
+    "scopes": ["read"],
+    "quota": {"requests": 100},
+}
+PLATFORM_URL = {
+    "source": "platform_base_url",
+    "environments": ["production"],
+    "required": True,
+    "service": "fictional-service",
+    "url": "https://fictional.example.invalid/api",
+}
+
+
+@pytest.mark.parametrize(
+    "entry, valid",
+    [
+        (PLATFORM_KEY, True),
+        (PLATFORM_URL, True),
+        (PLATFORM_KEY | {"scopes": [], "quota": {}}, True),
+        (PLATFORM_KEY | {"quota": {"requests": 0}}, True),
+        (PLATFORM_KEY | {"service": "Bad_service"}, False),
+        (PLATFORM_URL | {"service": "Bad_service"}, False),
+        (PLATFORM_URL | {"url": "http://fictional.example.invalid"}, False),
+        (PLATFORM_URL | {"url": "https://user:password@fictional.example.invalid"}, False),
+        (PLATFORM_URL | {"url": "https://user@fictional.example.invalid"}, False),
+        (PLATFORM_URL | {"url": "https://:password@fictional.example.invalid"}, False),
+        (PLATFORM_URL | {"url": "https://fictional.example.invalid:bad"}, False),
+        (PLATFORM_KEY | {"quota": {"requests": -1}}, False),
+        (PLATFORM_KEY | {"quota": {"requests": True}}, False),
+        (PLATFORM_KEY | {"quota": {"requests": "100"}}, False),
+        (PLATFORM_KEY | {"scopes": [1]}, False),
+        (PLATFORM_KEY | {"scopes": [""]}, False),
+        (PLATFORM_KEY | {"unknown": "value"}, False),
+        (PLATFORM_URL | {"unknown": "value"}, False),
+        (PLATFORM_KEY | {"sensitive": False}, False),
+        (PLATFORM_URL | {"sensitive": True}, False),
+    ],
+)
+def test_platform_entry_validation_matches_pinned_kit(entry, valid):
+    for model in (EnvContractFragment, KitEnvContractFragment):
+        if valid:
+            fragment = model.model_validate(_fragment(entry))
+            assert fragment.entries["KEY"].service == "fictional-service"
+            assert fragment.entries["KEY"].sensitive is (entry["source"] == "platform_key")
+        else:
+            with pytest.raises(ValidationError):
+                model.model_validate(_fragment(entry))

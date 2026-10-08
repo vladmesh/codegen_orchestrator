@@ -195,7 +195,13 @@ jobs:
 
       - name: Check unit tests read no documentation or source text
         timeout-minutes: 1
-        run: uv run python scripts/check_unit_test_reads.py
+        run: |
+          uv run python scripts/check_unit_test_reads.py
+          if git grep -niE 'tg[-_ ]?reader|tg[-_]sources'; then
+            exit 1
+          else
+            test "$?" -eq 1
+          fi
 
       - name: Expose CI infrastructure failure
         id: infra

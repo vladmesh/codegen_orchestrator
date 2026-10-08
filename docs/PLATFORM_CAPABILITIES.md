@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 15, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 16, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -32,7 +32,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ## Technical detail
 
-Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `ecdab3af40c5ab1a7bfeb191ab1b241518ef38a9`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
+Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `8d37302e6077de02383d70f32f67861698ee5fc6`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
 
 Code it was read from:
 
@@ -57,7 +57,7 @@ Code it was read from:
 
 #### Add a catalog capability
 
-How: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.2 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
+How: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.4.0 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
 
 #### Plain HTTP self links
 
@@ -123,7 +123,7 @@ Why: Postgres and Redis get host ports allocated, but production compose publish
 
 Why: Nothing snapshots or copies the `db_data` volume; it lives only on the product's server.
 
-### Kit at ecdab3af40c5
+### Kit at 8d37302e6077
 
 Modules:
 
@@ -156,6 +156,8 @@ Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package
 - `allocation`: A port the platform reserves for the product on its server.
 - `derived`: A value the platform computes at deploy time; only the keys listed below exist.
 - `literal`: A fixed, non-secret value written in the product's own environment contract.
+- `platform_key`: A platform service key; deployment refuses with platform_service_unconfigured until issuance exists.
+- `platform_base_url`: A platform service HTTPS endpoint; deployment refuses with platform_service_unconfigured until configuration exists.
 
 ### Derived keys
 
