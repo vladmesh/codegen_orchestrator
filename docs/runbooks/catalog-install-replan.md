@@ -11,6 +11,10 @@ package release, so the story needs a fresh install plan from the Architect. The
 operator action for that is `replan` on the existing catalog-install recovery endpoint.
 It writes nothing to GitHub. The operator does the GitHub cleanup first.
 
+`replan` has two shapes on the same endpoint and request body. Sections 1-6 cover the
+first: the install PR failed CI. Section 7 covers the second: a replanned cycle that was
+planned as something other than the install and then stopped.
+
 ## 1. Read the parked state
 
 Use an authenticated admin Bearer token against the deployed API.
@@ -100,9 +104,26 @@ and no new Task has appeared for it.
 
 ## 6. What to watch next
 
-- The Architect logs `architect_job_started` for the story, then plans. A new `install`
-  Task created after `reopened_at` should pin the current catalog release, and the story
-  should move to `in_progress`.
+- The Architect logs `architect_job_started`, then `architect_replanned_install` with the
+  package names and `architect_replanned_install_planned` with the version per package.
+  It plans the reopen itself, without the LLM: exactly one new `install` Task per package
+  of the cancelled install, created after `reopened_at` and pinning the release the
+  catalog lists now, and no `fix` or other Task. The story moves to `in_progress`.
+- If the story's brief was already admitted (`architect_planning_already_admitted`), the
+  Architect logs `architect_replanned_install_owes_no_coverage`: admission happens once
+  per brief, and a Task created outside a planning attempt is dispatch-admitted when it
+  is created. Under a claimed, unadmitted brief it records coverage of every
+  must-requirement by the new install Task and admits the plan.
+- If a package is no longer installable, the Architect creates no Task and records a
+  non-retriable planning failure `CatalogInstallRefused: <name>: <refusal>`, which parks
+  the story for review.
+- A deploy restart can leave the kit catalog briefly unreachable from the new container.
+  The catalog read retries a transport failure for about 10 s. If it still fails, a
+  story with an `install` Task in its history is not planned at all: the Architect logs
+  `architect_planning_delayed_for_catalog`, creates no Task and records a retriable
+  `KitCatalogUnavailable` planning failure. The scheduler re-sends the reopen after the
+  planning backoff (`story_planning_retry_queued`), and that run plans the install.
+  An unreachable catalog delays the plan; it does not change it.
 - The cancelled install Task stays as history. It is not dispatched again and is outside
   the new work cycle.
 - The scheduler dispatches the new install. The scaffolder creates `story/<story_id>`
@@ -110,3 +131,65 @@ and no new Task has appeared for it.
   CI. A second CI failure parks the story the same way, and this runbook applies again.
 - If planning fails, the story shows a `planning` failure; follow the planning recovery
   in [returned-plan-recovery.md](returned-plan-recovery.md).
+
+## 7. Second shape: the replanned cycle was planned as something else
+
+Use this when a story that a first-shape `replan` reopened got something other than its
+install in the new cycle, such as a `fix` Task and an engineering run, and someone
+stopped it with `POST /api/stories/<story_id>/human-review`. Since this change the
+Architect plans a replanned install itself (section 6), so this shape is for cycles
+planned before it, or planned through a path that bypassed it.
+
+Read the state first:
+
+- `GET /api/stories/<story_id>`: `status` `waiting_human_review` and an
+  `engineering_stop` with no `released_at`; note its `id`. `quarantine_reason` may be
+  empty: the stop is released with whatever reason the story carries now.
+- `GET /api/tasks/?story_id=<story_id>`: the cancelled `install` Task the first replan
+  settled; note its `id` and `install_operation.id`. Its events
+  (`GET /api/tasks/<id>/events`) carry the first replan's `note` with
+  `catalog_install_settlement` and `operator_action` `replan`, written just before the
+  story's current `reopened_at`.
+- No run of the story is `queued` or `running`, no Task created since `reopened_at` is an
+  `install` or `done`, and the remote `story/<story_id>` branch is absent. Clean the
+  scaffolder workspace as in section 3 if a branch was ever created locally.
+
+Then call the same endpoint on the cancelled install Task:
+
+```http
+POST /api/tasks/<cancelled_install_task_id>/catalog-install/recovery
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+
+{"operation_id": "<install_operation.id>", "action": "replan", "stop_id": "<engineering_stop.id>"}
+```
+
+On success the API answers 200 `settled` and, in one transaction, releases the stop,
+cancels every Task of the current cycle that is not `done` or `cancelled` (an `in_dev`
+fix goes straight to `cancelled`), adds a `note` on the install Task with the operation,
+`operator_action` `replan` and the `cancelled_task_ids`, and moves the story
+`waiting_human_review` → `failed` → `reopened`. After the commit it publishes the reopen
+job; section 5 applies if it was lost. The Architect then plans the install as in
+section 6.
+
+Each unmet precondition is a 409 that changes nothing:
+
+| Code | Meaning |
+| --- | --- |
+| `install_task_not_replanned` | The cancelled install Task carries no `replan` note |
+| `story_reopened_since_replan` | The story's `reopened_at` is not the one that replan stamped |
+| `stale_install_operation` | `operation_id` is not the Task's operation |
+| `engineering_stop_mismatch` | `stop_id` is not the story's unreleased stop |
+| `story_run_live` | A run of the story is `queued` or `running` |
+| `cycle_has_install` | The current cycle already has an `install` Task |
+| `cycle_has_done_task` | A Task of the current cycle is `done` |
+| `install_branch_present` | The remote `story/<story_id>` branch still exists |
+| `repository_unowned` | The repository is not a GitHub repository URL |
+
+The second shape applies only while the story is `waiting_human_review`. On a cancelled
+install Task of a story in any other status, the call is read as the first shape and
+answers `install_task_not_done`; so does a repeated call after a success.
+
+A replan note is matched to the reopen it caused by time: the note is written at the
+start of the replan's transaction and `reopened_at` later in the same request, so they
+are at most `REPLAN_REOPEN_WINDOW` (2 minutes) apart. A later reopen is further away.

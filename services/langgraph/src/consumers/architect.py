@@ -16,6 +16,7 @@ import uuid
 import httpx
 import structlog
 
+from shared.contracts.dto.catalog_install import is_replan_note, replan_reopened
 from shared.contracts.dto.llm_channel import LLMChannelConfig
 from shared.contracts.dto.product_brief import (
     PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
@@ -43,7 +44,7 @@ from shared.contracts.dto.story_planning import (
     StoryPlanningState,
     planning_is_due,
 )
-from shared.contracts.dto.task import TaskDTO, TaskStatus
+from shared.contracts.dto.task import TaskDTO, TaskEventType, TaskStatus, TaskType
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
@@ -51,12 +52,18 @@ from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
-from ..agents.architect.tools import reset_task_chain
+from ..agents.architect.tools import plan_install, record_requirement_coverage, reset_task_chain
 from ..capability_feasibility import capability_conflicts
+from ..catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, plan_install_payload
 from ..catalog_product_settings import catalog_binding_settings
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
-from ..kit_catalog import KitCatalog, KitCatalogAnswer, get_kit_catalog_reader
+from ..kit_catalog import (
+    KitCatalog,
+    KitCatalogAnswer,
+    KitCatalogUnavailable,
+    get_kit_catalog_reader,
+)
 from ..llm import (
     InvalidChannelChainError,
     LLMAgent,
@@ -1093,24 +1100,217 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             )
             return _failed_result(error, recorded)
 
-        return await _plan(msg, redis, story_status, channels, settings, usage, log)
+        return await _plan(msg, redis, story, channels, settings, usage, log)
 
 
-async def _plan(
+def _catalog_dependent(tasks: list[TaskDTO]) -> bool:
+    """Whether what this story's plan should be depends on the kit catalog.
+
+    A story that has had an INSTALL task is a catalog story: planned without the
+    catalog it can only be planned as something else, as story-360b14d9 was (a fix
+    task in place of its install). The PO's `catalog_packages` declaration is
+    checked against its turn's catalog at confirmation and is not stored
+    (docs/contracts/product-brief.md), so a brief carries nothing to read here.
+    """
+    return any(task.type == TaskType.INSTALL for task in tasks)
+
+
+async def _replanned_install_packages(story: StoryDTO, tasks: list[TaskDTO]) -> list[str]:
+    """The packages of the install Tasks an operator `replan` cancelled to open this cycle.
+
+    Empty unless the story's current reopen is the one a `replan` stamped: its note
+    on the cancelled install Task (`catalog_install_settlement`, `operator_action`
+    `replan`) is the only record of why this cycle exists.
+    """
+    if story.reopened_at is None:
+        return []
+    packages = []
+    for task in sorted(tasks, key=lambda task: task.created_at):
+        if (
+            task.type != TaskType.INSTALL
+            or task.status != TaskStatus.CANCELLED
+            or task.install is None
+        ):
+            continue
+        events = await api_client.get_task_events(task.id)
+        if any(
+            event.event_type == TaskEventType.NOTE
+            and is_replan_note(event.details)
+            and replan_reopened(event.created_at, story.reopened_at)
+            for event in events
+        ):
+            packages.append(task.install.package.name)
+    return list(dict.fromkeys(packages))
+
+
+def _install_snapshot(catalog: KitCatalog) -> dict:
+    """The catalog read `plan_install` resolves a package against."""
+    return {
+        "catalog": catalog.raw,
+        "bindings": catalog.bindings,
+        "manifests": catalog.manifests,
+        "source": catalog.source,
+        "core_version": catalog.core_version,
+    }
+
+
+async def _delay_for_catalog(
+    msg: ArchitectMessage,
+    catalog: KitCatalogUnavailable,
+    planning: _PlanningAttempt | None,
+    usage: ChannelUsage,
+    log,
+) -> dict:
+    """No plan without the catalog for a catalog story: a retriable failure, no task.
+
+    The planning retry the API schedules plans it again once the catalog answers,
+    so an unreadable catalog delays the plan instead of changing it.
+    """
+    error = f"KitCatalogUnavailable: {catalog.source}: {catalog.failure.value}, {catalog.detail}"
+    log.warning(
+        "architect_planning_delayed_for_catalog",
+        failure=catalog.failure.value,
+        detail=catalog.detail,
+    )
+    if planning is not None:
+        await _release_planning_attempt(planning, log)
+    recorded = await _report_planning_failure(
+        msg, error, retriable=True, usage=usage, planning=planning, log=log
+    )
+    return _failed_result(error, recorded)
+
+
+async def _refuse_replanned_install(
+    msg: ArchitectMessage, refusal: str, planning: _PlanningAttempt | None, usage, log
+) -> dict:
+    """A package the current catalog no longer installs: parked for a person, no task."""
+    error = f"CatalogInstallRefused: {refusal}"
+    log.error("architect_replanned_install_refused", refusal=refusal)
+    if planning is not None:
+        await _release_planning_attempt(planning, log)
+    recorded = await _report_planning_failure(
+        msg, error, retriable=False, usage=usage, planning=planning, log=log
+    )
+    return _failed_result(error, recorded)
+
+
+async def _plan_replanned_install(  # noqa: PLR0913 — one replanned cycle's whole plan
+    msg: ArchitectMessage,
+    packages: list[str],
+    catalog: KitCatalog,
+    planning: _PlanningAttempt | None,
+    usage: ChannelUsage,
+    log,
+) -> dict | None:
+    """Plan an operator-replanned install again, without the LLM.
+
+    One `plan_install(name)` per package of the cancelled install Task(s), against
+    the catalog read now, so a release published since is the one installed; no
+    other task. Every package is resolved before any task is created, so a package
+    the catalog no longer installs creates nothing. `None` means planned; a dict
+    is the refusal, already recorded.
+    """
+    for name in packages:
+        try:
+            plan_install_payload(catalog, name, INSTALL_PYTHON_VERSION)
+        except InstallRefusal as refusal:
+            return await _refuse_replanned_install(msg, f"{name}: {refusal}", planning, usage, log)
+    reset_task_chain()
+    snapshot = _install_snapshot(catalog)
+    created = []
+    for name in packages:
+        result = await plan_install.coroutine(
+            name=name,
+            story_id=msg.story_id,
+            project_id=msg.project_id,
+            kit_install_snapshot=snapshot,
+            planning_attempt_id=None if planning is None else planning.planning_attempt_id,
+        )
+        if "error" in result:
+            return await _refuse_replanned_install(
+                msg, f"{name}: {result['error']}", planning, usage, log
+            )
+        created.append(result["id"])
+        log.info(
+            "architect_replanned_install_planned",
+            package=name,
+            version=result["install"]["package"]["version"],
+            task_id=result["id"],
+        )
+    if planning is None:
+        # `_claim_planning_attempt` owned no attempt: the story has no brief, or
+        # its brief was admitted by an earlier plan (`architect_planning_already_admitted`).
+        # Admission is once per brief, and a task created outside an attempt is
+        # dispatch-admitted at creation, so no coverage or admission is owed.
+        log.info("architect_replanned_install_owes_no_coverage", task_ids=created)
+        return None
+    for requirement in planning.must_requirements:
+        coverage = await record_requirement_coverage.coroutine(
+            requirement_id=requirement.id,
+            task_id=created[-1],
+            brief_id=planning.brief_id,
+            planning_attempt_id=planning.planning_attempt_id,
+        )
+        if "error" in coverage:
+            raise RuntimeError(f"replanned install coverage refused: {coverage['error']}")
+    admission = await api_client.admit_product_brief_coverage(
+        planning.brief_id,
+        planning.planning_attempt_id,
+        channels=_channel_report(usage),
+        reopen=msg.is_reopen,
+    )
+    if admission.outcome is ProductBriefAdmissionOutcome.INCOMPLETE:
+        raise RuntimeError(
+            "replanned install admission incomplete: "
+            + ", ".join(admission.missing_requirement_ids)
+        )
+    log.info("architect_product_brief_admitted", brief_id=planning.brief_id, task_ids=created)
+    return None
+
+
+async def _plan(  # noqa: PLR0913 — one planning run's inputs
     msg: ArchitectMessage,
     redis: RedisStreamClient,
-    story_status: StoryStatus,
+    story: StoryDTO,
     channels: list[LLMChannelConfig],
     settings: Settings,
     usage: ChannelUsage,
     log,
 ) -> dict:
-    """Run the Architect graph over the story; `usage` names the LLM channels it used."""
+    """Plan the story; `usage` names the LLM channels it used.
+
+    What gets planned is decided here, once, before any graph runs: a catalog
+    story whose catalog cannot be read is not planned now, and an operator-
+    replanned install is planned again without the LLM.
+    """
+    story_status = story.status
     planning: _PlanningAttempt | None = None
     try:
         planning, early_result = await _claim_planning_attempt(msg, redis, log)
         if early_result is not None:
             return early_result
+
+        tasks = await api_client.get_tasks_by_story(msg.story_id)
+        catalog = await get_kit_catalog_reader().read()
+        if not isinstance(catalog, KitCatalog) and _catalog_dependent(tasks):
+            return await _delay_for_catalog(msg, catalog, planning, usage, log)
+        replanned = await _replanned_install_packages(story, tasks)
+        if replanned:
+            # Not catalog-dependent only when no INSTALL task exists, and a
+            # replanned story has one, so the catalog was read.
+            log.info("architect_replanned_install", packages=replanned)
+            heartbeat = _planning_heartbeat(planning, log) if planning else nullcontext()
+            async with heartbeat:
+                refusal = await _plan_replanned_install(
+                    msg, replanned, catalog, planning, usage, log
+                )
+            if refusal is not None:
+                return refusal
+            await _start_reopened_story(msg, story_status, log)
+            await _report_planning_success(msg, usage, planning, log)
+            await _notify_returned_requirements_of_plan(planning, msg, redis, log)
+            log.info("architect_job_success", replanned_install=replanned)
+            return live_work_settled({"status": "success", "replanned_install": replanned})
 
         reset_task_chain()
         alerts = LLMAlerts.from_settings(settings, redis=redis.redis)
@@ -1141,7 +1341,6 @@ async def _plan(
                 f"Start by calling get_story and get_project_spec."
             )
         user_content += _requirements_briefing(planning)
-        catalog = await get_kit_catalog_reader().read()
         user_content += _kit_catalog_briefing(catalog)
 
         initial_state = {
@@ -1151,15 +1350,7 @@ async def _plan(
             "telegram_chat_id": msg.telegram_chat_id,
             **_planning_state(planning),
             "kit_install_snapshot": (
-                {
-                    "catalog": catalog.raw,
-                    "bindings": catalog.bindings,
-                    "manifests": catalog.manifests,
-                    "source": catalog.source,
-                    "core_version": catalog.core_version,
-                }
-                if isinstance(catalog, KitCatalog)
-                else None
+                _install_snapshot(catalog) if isinstance(catalog, KitCatalog) else None
             ),
             "kit_catalog_packages": (
                 sorted(catalog.names) if isinstance(catalog, KitCatalog) else None
@@ -1188,13 +1379,7 @@ async def _plan(
                 )
                 return refusal
 
-        # Transition reopened stories to in_progress so dispatcher can pick up tasks
-        if story_status == StoryStatus.REOPENED:
-            try:
-                await api_client.transition_story(msg.story_id, "start")
-                log.info("architect_reopened_story_started")
-            except Exception as e:
-                log.warning("architect_reopened_story_start_failed", error=str(e))
+        await _start_reopened_story(msg, story_status, log)
 
         await _report_planning_success(msg, usage, planning, log)
 
@@ -1231,6 +1416,17 @@ async def _plan(
             msg, e, retriable=not retry_cannot_fix(e), usage=usage, planning=planning, log=log
         )
         return _failed_result(str(e), recorded)
+
+
+async def _start_reopened_story(msg: ArchitectMessage, story_status: StoryStatus, log) -> None:
+    """Transition a reopened story to in_progress so the dispatcher can pick up its tasks."""
+    if story_status != StoryStatus.REOPENED:
+        return
+    try:
+        await api_client.transition_story(msg.story_id, "start")
+        log.info("architect_reopened_story_started")
+    except Exception as e:
+        log.warning("architect_reopened_story_start_failed", error=str(e))
 
 
 def _channel_failures(usage: ChannelUsage) -> list[str]:

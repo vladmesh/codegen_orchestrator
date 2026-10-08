@@ -11,12 +11,16 @@ orchestrator pins (`framework.spec.package_resolution.CORE_VERSION`).
 Any failure to read or parse is a typed `KitCatalogUnavailable` answer, never an exception
 into planning and never a stale or hard-coded list: a planner told that the catalog is
 unavailable plans no package this time, which is a correct plan, while one handed an old
-list could install what the kit no longer releases.
+list could install what the kit no longer releases. A transport failure is retried a few
+times first, about `sum(CATALOG_TRANSPORT_BACKOFF_SECONDS)` in all, because the commonest one
+is the network of a container the deploy has just restarted; a status or an invalid body is
+the source's answer and is not asked again.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
@@ -47,6 +51,8 @@ CATALOG_TIMEOUT_SECONDS = 10.0
 #: A read this recent answers again without a fetch; a release waits at most this long.
 CATALOG_CACHE_SECONDS = 300.0
 CATALOG_RESOURCE_MAX_BYTES = 262144
+#: The wait before each retry of a catalog fetch that failed in transport.
+CATALOG_TRANSPORT_BACKOFF_SECONDS = (1.0, 3.0, 6.0)
 
 
 class KitCatalogFailure(StrEnum):
@@ -150,6 +156,7 @@ class KitCatalogReader:
         timeout: float = CATALOG_TIMEOUT_SECONDS,
         ttl: float = CATALOG_CACHE_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         component_source: str | None = None,
     ) -> None:
         self.url = url
@@ -157,6 +164,7 @@ class KitCatalogReader:
         self._timeout = timeout
         self._ttl = ttl
         self._clock = clock
+        self._sleep = sleep
         self._kept: tuple[float, KitCatalog] | None = None
 
     async def read(self) -> KitCatalogAnswer:
@@ -177,14 +185,40 @@ class KitCatalogReader:
             )
         return answer
 
+    async def _get_catalog(self) -> httpx.Response | KitCatalogUnavailable:
+        """The catalog response, retrying only a request that did not complete.
+
+        A URL no request can be made to (`UnsupportedProtocol`, `InvalidURL`) is a
+        configuration error, not a passing one, and answers at once.
+        """
+        delays = iter(CATALOG_TRANSPORT_BACKOFF_SECONDS)
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    return await client.get(self.url)
+            except (httpx.UnsupportedProtocol, httpx.InvalidURL) as error:
+                return self._transport_failure(error)
+            except httpx.HTTPError as error:
+                delay = next(delays, None)
+                if delay is None:
+                    return self._transport_failure(error)
+                logger.info(
+                    "kit_catalog_transport_retry",
+                    source=self.url,
+                    delay=delay,
+                    detail=f"{type(error).__name__}: {error}",
+                )
+                await self._sleep(delay)
+
+    def _transport_failure(self, error: Exception) -> KitCatalogUnavailable:
+        return KitCatalogUnavailable(
+            self.url, KitCatalogFailure.TRANSPORT, f"{type(error).__name__}: {error}"
+        )
+
     async def _fetch(self) -> KitCatalogAnswer:
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.get(self.url)
-        except (httpx.HTTPError, httpx.InvalidURL) as error:
-            return KitCatalogUnavailable(
-                self.url, KitCatalogFailure.TRANSPORT, f"{type(error).__name__}: {error}"
-            )
+        response = await self._get_catalog()
+        if isinstance(response, KitCatalogUnavailable):
+            return response
         if response.status_code != httpx.codes.OK:
             return KitCatalogUnavailable(
                 self.url, KitCatalogFailure.STATUS, f"HTTP {response.status_code}"

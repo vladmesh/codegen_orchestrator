@@ -2,8 +2,9 @@
 
 The HTTP boundary is `respx`; everything past it is real — `parse_catalog` from the
 pinned kit tooling, `CatalogPackage.select` against the pinned `CORE_VERSION`, and the
-reader's cache over an injected clock. Every way a read can fail answers
-`KitCatalogUnavailable` and never raises, and nothing old or hard-coded stands in.
+reader's cache over an injected clock, and its transport retry over an injected sleep.
+Every way a read can fail answers `KitCatalogUnavailable` and never raises, and nothing
+old or hard-coded stands in.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import yaml
 
 from src.kit_catalog import (
     CATALOG_TIMEOUT_SECONDS,
+    CATALOG_TRANSPORT_BACKOFF_SECONDS,
     KitCatalog,
     KitCatalogFailure,
     KitCatalogReader,
@@ -70,8 +72,20 @@ class _Clock:
         return self.now
 
 
-def _reader(clock: _Clock | None = None, ttl: float = 300.0) -> KitCatalogReader:
-    return KitCatalogReader(URL, ttl=ttl, clock=clock or _Clock())
+class _Sleep:
+    """Records each backoff instead of waiting it out."""
+
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.waits.append(seconds)
+
+
+def _reader(
+    clock: _Clock | None = None, ttl: float = 300.0, sleep: _Sleep | None = None
+) -> KitCatalogReader:
+    return KitCatalogReader(URL, ttl=ttl, clock=clock or _Clock(), sleep=sleep or _Sleep())
 
 
 @pytest.mark.asyncio
@@ -203,7 +217,7 @@ async def test_a_failure_is_not_kept_and_the_next_read_tries_again():
     reader = _reader()
     with respx.mock() as http:
         route = http.get(URL).mock(
-            side_effect=[httpx.ConnectError("down"), httpx.Response(200, text=CATALOG)]
+            side_effect=[httpx.Response(503), httpx.Response(200, text=CATALOG)]
         )
         assert isinstance(await reader.read(), KitCatalogUnavailable)
         assert isinstance(await reader.read(), KitCatalog)
@@ -213,10 +227,69 @@ async def test_a_failure_is_not_kept_and_the_next_read_tries_again():
 
 @pytest.mark.asyncio
 async def test_an_invalid_source_url_answers_unavailable():
-    answer = await KitCatalogReader("not a url at all").read()
+    sleep = _Sleep()
+    answer = await KitCatalogReader("not a url at all", sleep=sleep).read()
 
     assert isinstance(answer, KitCatalogUnavailable)
     assert answer.failure == KitCatalogFailure.TRANSPORT
+    # A URL no request can reach is configuration, not a passing failure.
+    assert sleep.waits == []
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_is_retried_after_a_backoff_and_the_retry_answers():
+    sleep = _Sleep()
+    with respx.mock() as http:
+        route = http.get(URL).mock(
+            side_effect=[
+                httpx.ConnectError("All connection attempts failed"),
+                httpx.ReadTimeout("slow"),
+                httpx.Response(200, text=CATALOG),
+            ]
+        )
+        answer = await _reader(sleep=sleep).read()
+
+    assert isinstance(answer, KitCatalog)
+    assert answer.names == frozenset({"reminders"})
+    assert route.call_count == 3
+    assert sleep.waits == list(CATALOG_TRANSPORT_BACKOFF_SECONDS[:2])
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_that_persists_answers_unavailable_after_about_ten_seconds():
+    sleep = _Sleep()
+    with respx.mock() as http:
+        route = http.get(URL).mock(side_effect=httpx.ConnectError("All connection attempts failed"))
+        answer = await _reader(sleep=sleep).read()
+
+    assert isinstance(answer, KitCatalogUnavailable)
+    assert answer.failure == KitCatalogFailure.TRANSPORT
+    assert answer.detail == "ConnectError: All connection attempts failed"
+    assert route.call_count == len(CATALOG_TRANSPORT_BACKOFF_SECONDS) + 1
+    assert sleep.waits == list(CATALOG_TRANSPORT_BACKOFF_SECONDS)
+    assert 8.0 <= sum(sleep.waits) <= 12.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "failure"),
+    [
+        pytest.param(httpx.Response(503), KitCatalogFailure.STATUS, id="status"),
+        pytest.param(
+            httpx.Response(200, text="packages: [unclosed"), KitCatalogFailure.INVALID, id="invalid"
+        ),
+    ],
+)
+async def test_a_status_or_an_invalid_body_is_not_retried(response, failure):
+    sleep = _Sleep()
+    with respx.mock() as http:
+        route = http.get(URL).mock(side_effect=[response, httpx.Response(200, text=CATALOG)])
+        answer = await _reader(sleep=sleep).read()
+
+    assert isinstance(answer, KitCatalogUnavailable)
+    assert answer.failure == failure
+    assert route.call_count == 1
+    assert sleep.waits == []
 
 
 def test_the_fetch_is_bounded():

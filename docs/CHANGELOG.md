@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- The Architect plans a replanned catalog install itself against the current catalog and waits
+  for an unreachable catalog instead of planning without it; `replan` discards a misplanned cycle.
+
 - Catalog-install recovery gains `replan`: a story parked after its install PR's CI failed is
   reopened for a fresh Architect install plan once the operator removed the story branch.
 
