@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-08
+
+- Catalog-install capability text derives its core version from the pinned kit tooling,
+  so the Architect's static install rule matches catalog admission and product preflight.
+
 ## 2026-10-07
 
 - Scaffolding and tooling use kit 0.10.0/core 2.4; env contracts match its platform sources,

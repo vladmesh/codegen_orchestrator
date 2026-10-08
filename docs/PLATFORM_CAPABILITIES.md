@@ -57,7 +57,7 @@ Code it was read from:
 
 #### Add a catalog capability
 
-How: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.2 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
+How: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.4.0 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
 
 #### Plain HTTP self links
 

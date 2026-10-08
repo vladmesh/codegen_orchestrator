@@ -1,7 +1,7 @@
 ## Platform capabilities, technical (manifest v16, owner-reviewed)
 Kit gh:vladmesh/codegen-product-kit@8d37302e6077.
 Can (how):
-- Add a catalog capability [catalog_install]: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.2 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
+- Add a catalog capability [catalog_install]: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.4.0 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
 - Plain HTTP self links [http_self_address]: PUBLIC_BASE_URL derives from one backend allocation; IPv6 is bracketed. Missing, ambiguous, loopback, unspecified or multicast addresses refuse. IPv6 deploy requires released executable transport at the built commit; unverified workflow or .rej refuses with DEPLOY_HOST. Existing products need reviewed kit update and reconciled merge. No domain/TLS/frontend/webhook capability is added.
 - Telegram bot [telegram_bot]: Kit tg_bot (python-telegram-bot 21.4, run_polling) needs no web address. PO includes backend (FastAPI) in every product. Its allocated http://{server_ip}:{port} is the sole public port; no domain or https.
 - The bot remembers data [stored_data]: Product postgres:16 at db:5432 uses persistent db_data. Product redis:7-alpine at redis:6379 carries queues, caches and Redis Streams without persistent storage. Both are private to product containers.

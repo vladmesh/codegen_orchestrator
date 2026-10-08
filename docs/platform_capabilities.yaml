@@ -52,7 +52,7 @@ can:
     plain: An existing bot can add a released catalog capability while retaining its own features.
     how: >-
       plan_install selects package/libraries/default binding in one INSTALL on owned clean
-      core-2.2 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to
+      core-{core_version} backend,tg_bot. Scaffolder preserves/validates files; hands exact head to
       PR/CI/deploy without engineering. Review refusals; confirm timezone.
   - id: http_self_address
     name: Plain HTTP self links
