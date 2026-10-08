@@ -6,7 +6,7 @@ PO consumer additionally requires CHECKPOINT_DATABASE_URL for durable conversati
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from shared.allocation_freshness import ALLOCATION_METRICS_FRESHNESS_SECONDS
 from shared.config import (
@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Required
     redis_url: str = redis_url_field(required=True)
     api_base_url: str = api_base_url_field(required=True)
+
+    # Required at the platform-key execution boundary. Absence refuses that
+    # deploy with platform_service_unconfigured; it supplies no substitute URL/token.
+    platform_auth_admin_url: str | None = Field(default=None, repr=False)
+    platform_auth_admin_token: SecretStr | None = Field(default=None, repr=False)
 
     # Worker configuration
     default_agent_type: AgentType = default_agent_type_field()

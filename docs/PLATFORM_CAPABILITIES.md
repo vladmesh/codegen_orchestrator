@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 17, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 18, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -13,7 +13,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 - **Add a catalog capability.** An existing bot can add a released catalog capability while retaining its own features.
 - **Plain HTTP self links.** The bot can include plain HTTP self links; their address can change when the product moves.
 - **Telegram bot.** A Telegram bot people chat with, using commands, buttons and menus.
-- **Read public Telegram channels.** Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Plan it now; deployment awaits platform key issuance.
+- **Read public Telegram channels.** Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Plan it now; deployment handles platform key issuance; no user key is needed.
 - **The bot remembers data.** The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
 - **Actions on a schedule or later.** The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
 - **Settings without a new version.** The owner later changes settings, such as the list of languages or the texts, without a new version of the bot.
@@ -70,7 +70,7 @@ How: Kit tg_bot uses python-telegram-bot 21.4 run_polling. Every product include
 
 #### Read public Telegram channels
 
-How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module selected by live catalog capabilities. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves; only the platform service reaches t.me through the platform egress proxy. Plan it now; deployment refuses with platform_service_unconfigured until platform key issuance and service configuration exist.
+How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module selected by live catalog capabilities. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves; only the platform service reaches t.me through the platform egress proxy. Plan it now; deployment handles platform key issuance and the declared base URL; no user key is needed. Auth admin configuration is required; unavailable auth retries.
 
 #### The bot remembers data
 

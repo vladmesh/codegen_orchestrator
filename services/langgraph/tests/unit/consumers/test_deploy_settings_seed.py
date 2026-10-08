@@ -162,6 +162,30 @@ def mock_api():
 
 class TestSeedingWhatTheUserConfirmed:
     @pytest.mark.asyncio
+    async def test_binding_language_is_written_as_a_product_setting_after_deploy(
+        self, mock_api, fake_settings_client
+    ):
+        mock_api.get_product_brief_by_story.return_value = _brief(
+            [InitialSetting(key="language", value="en", scope=SettingScope.PRODUCT)]
+        )
+
+        result = await _deploy(mock_api)
+
+        assert result["status"] == "success"
+        assert _FakeSettingsClient.instances[0].calls == [
+            ("language", SettingScope.PRODUCT, None, "en")
+        ]
+        assert _stored_result(mock_api)["settings_seed"] == [
+            {
+                "key": "language",
+                "scope": "product",
+                "subject_id": None,
+                "written": True,
+                "failure": None,
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_confirmed_values_are_written_and_proved(self, mock_api, fake_settings_client):
         mock_api.get_product_brief_by_story = AsyncMock(
             return_value=_brief(

@@ -1,13 +1,17 @@
 """SecretResolverNode — resolves secrets by generating, computing, and checking user-provided."""
 
+import base64
 from collections.abc import Callable
 from dataclasses import dataclass, field
+import hashlib
 from ipaddress import IPv6Address, ip_address
 import json
 import os
+import re
 import secrets as secrets_module
 from urllib.parse import urlparse
 
+from pydantic import SecretStr
 import structlog
 
 from shared.clients.registry import sha_image_tag
@@ -27,6 +31,14 @@ from shared.contracts.queues.deploy import DeployOutcome
 from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
+from ...clients.platform_auth import (
+    KeyInput,
+    PlatformAdmin,
+    PlatformAuthAdminClient,
+    PlatformAuthError,
+    ProductInput,
+)
+from ...config.settings import get_settings
 from ...deploy_fence import DeployFence, DeployFenceLost, DeployWrite
 from ...nodes.base import FunctionalNode
 from ...runtime_identity import project_spec_runtime_slug
@@ -154,9 +166,9 @@ IMAGE_KEY_SUFFIX = "_IMAGE"
 class _ResolvedValues:
     """Accumulates one deploy's resolved contract values."""
 
-    secret_values: dict[str, str] = field(default_factory=dict)
+    secret_values: dict[str, str] = field(default_factory=dict, repr=False)
     non_secret_values: dict[str, str] = field(default_factory=dict)
-    generated: dict[str, str] = field(default_factory=dict)
+    generated: dict[str, str] = field(default_factory=dict, repr=False)
     missing_user: list[MissingUserSecret] = field(default_factory=list)
 
     def store(self, key: str, value: str, sensitive: bool) -> None:
@@ -174,16 +186,17 @@ class _ResolutionContext:
     project_id: str
     project_spec: dict
     state: DevOpsState
-    config_secrets: dict
-    provided_secrets: dict
+    config_secrets: dict = field(repr=False)
+    provided_secrets: dict = field(repr=False)
     env_overrides: dict
 
 
 class SecretResolverNode(FunctionalNode):
     """Resolve secrets from the typed environment contract."""
 
-    def __init__(self):
+    def __init__(self, *, platform_admin: PlatformAdmin | None = None):
         super().__init__(node_id="secret_resolver")
+        self._platform_admin = platform_admin
 
     async def run(self, state: DevOpsState) -> dict:
         """Resolve all secrets from the required environment contract."""
@@ -230,18 +243,7 @@ class SecretResolverNode(FunctionalNode):
                     DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED, str(error)
                 ) from error
 
-        if resolved.generated:
-            try:
-                await self._save_secrets_to_project(
-                    project_id, resolved.generated, state["deploy_fence"]
-                )
-            except DeployFenceLost:
-                raise
-            except Exception as error:
-                raise TypedSecretResolutionError(
-                    DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
-                    "Failed to persist generated secrets",
-                ) from error
+        await self._issue_platform_keys(contract, context, resolved)
         logger.info(
             "environment_contract_resolved",
             secret_count=len(resolved.secret_values),
@@ -338,16 +340,133 @@ class SecretResolverNode(FunctionalNode):
                 override = context.env_overrides.get(key)
                 value = override if override is not None else self._dotenv_value(entry.value)
                 resolved.store(key, value, entry.sensitive)
-            case PlatformKeyEntry() | PlatformBaseUrlEntry():
-                raise TypedSecretResolutionError(
-                    DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
-                    f"platform_service_unconfigured: {entry.service} ({key}, {entry.source})",
-                )
+            case PlatformKeyEntry():
+                pass  # Async issuance persists before it registers any key.
+            case PlatformBaseUrlEntry():
+                resolved.store(key, entry.url, entry.sensitive)
             case _:
                 raise TypedSecretResolutionError(
                     DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
                     f"no resolver for environment contract entry type {type(entry).__name__}",
                 )
+
+    async def _persist_generated(
+        self, context: _ResolutionContext, resolved: _ResolvedValues
+    ) -> None:
+        if not resolved.generated:
+            return
+        try:
+            await self._save_secrets_to_project(
+                context.project_id, dict(resolved.generated), context.state["deploy_fence"]
+            )
+        except DeployFenceLost:
+            raise
+        except Exception:
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED, "Failed to persist generated secrets"
+            ) from None
+        resolved.generated.clear()
+
+    async def _issue_platform_keys(
+        self, contract: CanonicalEnvContract, context: _ResolutionContext, resolved: _ResolvedValues
+    ) -> None:
+        """Obtain → fenced persistence → create-only product/grants → register → resolve."""
+        entries = {
+            key: entry
+            for key, entry in contract.entries.items()
+            if isinstance(entry, PlatformKeyEntry) and "production" in entry.environments
+        }
+        if not entries:
+            await self._persist_generated(context, resolved)
+            return
+        owned_client = None
+        try:
+            admin = self._platform_admin
+            if admin is None:
+                settings = get_settings()
+                if (
+                    not settings.platform_auth_admin_url
+                    or settings.platform_auth_admin_token is None
+                    or not settings.platform_auth_admin_token.get_secret_value()
+                ):
+                    raise TypedSecretResolutionError(
+                        DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+                        "platform_service_unconfigured: auth admin URL and token are required",
+                    )
+                owned_client = PlatformAuthAdminClient(
+                    settings.platform_auth_admin_url, settings.platform_auth_admin_token
+                )
+                admin = owned_client
+            # Stable even if the display title/slug changes; 63 pattern-valid characters.
+            product_id = "orch-" + hashlib.sha256(context.project_id.encode()).hexdigest()[:58]
+            stored_keys = (
+                await admin.product_keys(product_id)
+                if any(key in context.config_secrets for key in entries)
+                else []
+            )
+            revoked = {key.key_id for key in stored_keys if key.revoked_at is not None}
+            values: dict[str, str] = {}
+            for key in entries:
+                value = context.config_secrets.get(key)
+                if value is None or self._platform_key_id(value) in revoked:
+                    value = self._generate_platform_key()
+                    resolved.generated[key] = value
+                values[key] = value
+            await self._persist_generated(context, resolved)
+            fence = context.state["deploy_fence"]
+            await admin.create_product(
+                product_id,
+                ProductInput(
+                    display_name=context.project_spec["title"],
+                    orchestrator_project_id=context.project_id,
+                ),
+                fence,
+            )
+            for key, entry in entries.items():
+                await admin.create_grant(product_id, entry, fence)
+                registered = await admin.register_key(
+                    product_id,
+                    self._platform_key_id(values[key]),
+                    KeyInput(key=SecretStr(values[key]), label=key),
+                    fence,
+                )
+                # Revocation may race the GET. Never deploy that revoked credential.
+                if registered.revoked_at is not None:
+                    values[key] = self._generate_platform_key()
+                    resolved.generated[key] = values[key]
+                    await self._persist_generated(context, resolved)
+                    registered = await admin.register_key(
+                        product_id,
+                        self._platform_key_id(values[key]),
+                        KeyInput(key=SecretStr(values[key]), label=key),
+                        fence,
+                    )
+                    if registered.revoked_at is not None:
+                        raise PlatformAuthError(DeployOutcome.RETRY, "platform_key_revoked")
+                resolved.secret_values[key] = values[key]
+        except PlatformAuthError as error:
+            raise TypedSecretResolutionError(error.outcome, str(error)) from None
+        finally:
+            if owned_client is not None:
+                await owned_client.aclose()
+
+    @staticmethod
+    def _generate_platform_key() -> str:
+        key_id = "".join(
+            secrets_module.choice("abcdefghijklmnopqrstuvwxyz234567") for _ in range(12)
+        )
+        return f"cps_{key_id}_{secrets_module.token_urlsafe(32)}"
+
+    @staticmethod
+    def _platform_key_id(value: str) -> str:
+        match = re.fullmatch(r"cps_([a-z2-7]{12})_([A-Za-z0-9_-]{43})", value)
+        if match is not None:
+            secret = base64.urlsafe_b64decode(match[2] + "=")
+            if base64.urlsafe_b64encode(secret).decode().rstrip("=") == match[2]:
+                return match[1]
+        raise TypedSecretResolutionError(
+            DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED, "platform_stored_key_invalid"
+        )
 
     @staticmethod
     def _resolve_user_secret(
