@@ -24,7 +24,7 @@ from shared.contracts.dto.engineering_attempt import (
     EngineeringAttemptLedgerInput,
     QAAccountingFact,
 )
-from shared.contracts.dto.product_brief import InitialSetting
+from shared.contracts.dto.product_brief import InitialSetting, ProductBriefContent
 from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
 from shared.contracts.dto.qa_verification import QAUnverifiedCheck, QAUnverifiedOrigin
 from shared.contracts.dto.run_result import (
@@ -368,6 +368,10 @@ def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
 
 def _check_shape_error(index: int, check: object, causes: set[str]) -> str | None:
     """Name what is wrong with one executor check, or None when its shape is valid."""
+    if isinstance(check, dict) and "telegram_step" in check:
+        if type(check["telegram_step"]) is not int or check["telegram_step"] < 1:
+            return f"check {index} telegram_step must be a positive integer"
+        check = {key: value for key, value in check.items() if key != "telegram_step"}
     if isinstance(check, dict) and "not_applicable" in check:
         if check["not_applicable"] is not True or set(check) != _NOT_APPLICABLE_CHECK_FIELDS:
             return (
@@ -466,7 +470,13 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
     # failure; whether it stays one is decided by the runner's own evidence
     # (`_ground_not_applicable_checks`), not here.
     failed_causes = {check["cause"] for check in data["checks"] if check.get("pass") is False}
-    judged_failure = bool(failed_causes - {QAFailedCheckCause.QA_CAPABILITY.value})
+    judged_failure = bool(
+        failed_causes
+        - {
+            QAFailedCheckCause.QA_CAPABILITY.value,
+            QAFailedCheckCause.QA_TOOLING.value,
+        }
+    )
     if failed_causes and not judged_failure:
         return None
     if data["pass"] is judged_failure:
@@ -1291,10 +1301,12 @@ def apply_unverifiable_criteria(
 def settle_unverified_checks(qa_result: QAResult) -> QAResult:
     """The one place a check QA could not run leaves the verdict.
 
-    Every `qa_capability` check, wherever it arose — the executor's own, an
-    ungrounded not-applicable one, a criterion withheld before the executor
-    ran, a package row with nothing to exercise it — is taken out of `checks`
-    and recorded in `unverified_checks` with its origin. It is never a failure
+    Settlement never changes an executor-declared product cause. Brief text,
+    Telegram inputs and optional step evidence do not reinterpret its judgement.
+    Every `qa_capability` or `qa_tooling` check is taken out of `checks` and
+    recorded in `unverified_checks` with its origin, whether it arose from the
+    executor, an ungrounded not-applicable input, a withheld criterion or a
+    package row with nothing to exercise it. It is never a failure
     and never a pass. The verdict is then what the remaining checks say: every
     one passed, `passed`; any product or access failure, not. A blocker already
     on the result keeps it unpassed whatever the checks say.
@@ -1302,14 +1314,19 @@ def settle_unverified_checks(qa_result: QAResult) -> QAResult:
     unverified: list[QAUnverifiedCheck] = []
     kept: list[dict] = []
     for check in qa_result.checks:
-        if (
-            check.get("pass") is False
-            and check.get("cause") == QAFailedCheckCause.QA_CAPABILITY.value
-        ):
+        if check.get("pass") is False and check.get("cause") in {
+            QAFailedCheckCause.QA_CAPABILITY.value,
+            QAFailedCheckCause.QA_TOOLING.value,
+        }:
             unverified.append(
                 QAUnverifiedCheck(
                     name=check["name"],
-                    reason=check["detail"],
+                    reason=(
+                        f"QA tooling: {check['detail']}"
+                        if check["cause"] == QAFailedCheckCause.QA_TOOLING.value
+                        and not check["detail"].startswith("QA tooling:")
+                        else check["detail"]
+                    ),
                     origin=check.get(_ORIGIN, QAUnverifiedOrigin.EXECUTOR.value),
                 )
             )
@@ -1322,8 +1339,11 @@ def settle_unverified_checks(qa_result: QAResult) -> QAResult:
     qa_result.passed = qa_result.blocker is None and not any(
         check.get("pass") is False for check in kept
     )
-    note = f"{len(unverified)} check(s) QA could not perform, recorded as unverified: " + "; ".join(
-        check.name for check in unverified
+    tooling = "QA tooling: " if any("QA tooling" in check.reason for check in unverified) else ""
+    note = (
+        tooling
+        + f"{len(unverified)} check(s) QA could not perform, recorded as unverified: "
+        + "; ".join(check.name for check in unverified)
     )
     qa_result.summary = f"{qa_result.summary}; {note}" if qa_result.summary else note
     logger.info(
@@ -1526,6 +1546,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     probe_library: Sequence[QAProbeLibraryFile] = (),
     caller_identity: QACallerIdentity | None = None,
     redaction: QARunRedaction | None = None,
+    brief: ProductBriefContent | None = None,
 ) -> QAResult:
     """Run the one assigned executor over this run's capability endpoint.
 
@@ -1592,6 +1613,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             attempts=attempts,
             probe_library=probe_library,
             redaction=redaction,
+            brief=brief,
         )
         if executor_run is not None:
             return settle_unverified_checks(
@@ -1607,7 +1629,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
                         workspace,
                     ),
                     prepared_criteria.unverifiable,
-                )
+                ),
             )
     finally:
         await service.stop()
@@ -1652,6 +1674,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
     attempts: QAExecutorAttempts,
     probe_library: Sequence[QAProbeLibraryFile] = (),
     redaction: QARunRedaction | None = None,
+    brief: ProductBriefContent | None = None,
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
     """Retry only transient subscription-executor failures.
 
@@ -1667,6 +1690,14 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
         established_facts=established_facts,
         settings_established=settings_established,
     )
+    if brief is not None:
+        prompt += "\n## Confirmed input contract\n" + json.dumps(
+            {
+                "must_requirements": [row.text for row in brief.must_requirements],
+                "usage_examples": [row.model_dump() for row in brief.usage_examples],
+            },
+            ensure_ascii=False,
+        )
     last: QAExecutorUnavailable | None = None
     said = attempts
     scrub = (redaction or QARunRedaction()).text
@@ -1769,6 +1800,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     probe_library: Sequence[QAProbeLibraryFile] = (),
     caller_identity: QACallerIdentity | None = None,
     redaction: QARunRedaction | None = None,
+    brief: ProductBriefContent | None = None,
 ) -> QAResult:
     """Run QA with cleanup residue reported as a blocker on every exit path.
 
@@ -1868,6 +1900,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             probe_library=probe_library,
                             caller_identity=caller_identity,
                             redaction=redaction,
+                            brief=brief,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
             if attempts.started:

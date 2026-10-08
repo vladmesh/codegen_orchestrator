@@ -540,6 +540,24 @@ reports which path settled the Run and claims nothing about the executor.
 
 ## QA probes are Run evidence
 
+Telegram message and callback tools accept an integer collection wait of 1–60 seconds,
+default 15; their child process timeout is that wait plus 30 seconds. Invalid waits
+return a typed `invalid_wait` refusal without delivery or a run blocker.
+At the single runner settlement point, an executor-declared `product` cause is
+always preserved. Settlement moves only failed `qa_capability` / `qa_tooling`
+rows to unverified; brief text and optional `telegram_step` evidence never
+rewrite a product cause. The executor uses the brief, its examples and visible
+bot help/commands to decide the input contract. Unsupported exploratory inputs
+are reported as `qa_capability`, or `qa_tooling` with cited evidence.
+The executor may classify a missed reply as `qa_tooling` when its detail cites
+concrete server-side evidence that this interaction received an answer. Settlement
+retains that citation as unverified, at the same trust level as `qa_capability`;
+owner verification facts say "QA tooling", and no engineering fix is created.
+There is no automatic server-log override: the kit send-log contract is deferred
+to issue:8156ad9d43c12dc956f9. The additive cause and nullable probe message id
+preserve historical result reads.
+
+
 `QARunResult.probe_runs` retains each `qa probe` record in capability-call
 order: its runner-assigned id, closed platform (`telegram`, `http`, or `web`),
 source, arguments, stdout, stderr, exit status, duration and per-text truncation

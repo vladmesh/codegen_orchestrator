@@ -31,9 +31,37 @@ class _Response:
         return None
 
 
+@pytest.mark.parametrize("command", ["telegram_probe", "telegram_click_button"])
+def test_noninteger_wait_is_a_usage_failure(monkeypatch, command):
+    monkeypatch.setenv("QA_CAPABILITY_URL", "http://qa.test/qa/call")
+    monkeypatch.setenv("QA_CAPABILITY_TOKEN", "capability-token")
+    monkeypatch.setattr(sys, "argv", ["qa", command, "--wait-seconds", "abc", "7", "data"])
+    stdout, stderr = StringIO(), StringIO()
+    with pytest.raises(SystemExit) as exited, redirect_stdout(stdout), redirect_stderr(stderr):
+        exec(QA_PROBE_SCRIPT, {"__name__": "__main__"})  # noqa: S102 - injected script source
+    assert exited.value.code == 2
+    assert stdout.getvalue() == ""
+    assert "--wait-seconds requires an integer" in stderr.getvalue()
+
+
 @pytest.mark.parametrize(
     ("argv", "answer", "expected_exit", "expected_call"),
     [
+        (
+            ["telegram_probe", "--wait-seconds", "60", "/reading", "today"],
+            {"delivered": True, "error": None},
+            0,
+            {"tool": "telegram_probe", "args": {"message": "/reading today", "wait_seconds": 60}},
+        ),
+        (
+            ["telegram_click_button", "--wait-seconds", "60", "7", "Y2FyZWVy"],
+            {"delivered": True, "error": None},
+            0,
+            {
+                "tool": "telegram_click_button",
+                "args": {"message_id": 7, "callback_data": "Y2FyZWVy", "wait_seconds": 60},
+            },
+        ),
         (
             ["telegram_probe", "/start"],
             {"tool": "telegram_probe", "delivered": True, "error": None},

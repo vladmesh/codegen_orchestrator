@@ -25,7 +25,7 @@ from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentCreate, IncidentType
-from shared.contracts.dto.product_brief import InitialSetting
+from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
 from shared.contracts.dto.qa_verification import QAUnverifiedCheck
 from shared.contracts.dto.run import RunStatus, RunType
@@ -424,20 +424,19 @@ def _stale_target_profile_blocker(server_info: QAServerInfo) -> QABlocker | None
     )
 
 
-async def _confirmed_initial_settings(story_id: str | None) -> list[InitialSetting]:
-    """The typed settings the user confirmed for this story, or nothing.
+async def _confirmed_qa_brief(story_id: str | None) -> ProductBriefContent | None:
+    """The confirmed settings and input contract for this story, or nothing.
 
     Read through the released brief endpoint, exactly as the deploy path reads
     them before writing them into the product. A story with no brief, or a
-    brief nobody confirmed, has no settings and leaves the run unchanged; that
-    is the ordinary case and not a failure.
+    brief nobody confirmed supplies neither settings nor an input contract.
     """
     if not story_id:
-        return []
+        return None
     brief = await api_client.get_product_brief_by_story(story_id)
     if brief is None or brief.confirmed_at is None:
-        return []
-    return list(brief.content.initial_settings)
+        return None
+    return brief.content
 
 
 async def _stored_secrets(project_id: str) -> dict:
@@ -707,7 +706,8 @@ async def _run_exploratory_qa(
         ownership=ownership,
         stored=stored,
     )
-    confirmed_settings = await _confirmed_initial_settings(msg.story_id)
+    confirmed_brief = await _confirmed_qa_brief(msg.story_id)
+    confirmed_settings = list(confirmed_brief.initial_settings) if confirmed_brief else []
     established_facts: list[str] = [
         *scheduled_behaviour_facts(behaviours, fireable=jobs is not None),
         *confirmed_settings_facts(confirmed_settings),
@@ -773,6 +773,7 @@ async def _run_exploratory_qa(
         provisioning_journal=ServerProvisioningJournal(server_info),
         established_facts=established_facts,
         settings_established=bool(confirmed_settings),
+        brief=confirmed_brief,
         jobs=jobs,
         attempts=attempts,
         probe_library=library.files,

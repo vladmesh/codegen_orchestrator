@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 
+from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.qa_ssh_grant import QASshGrantState
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.queues.worker import WorkerOwnership
@@ -376,6 +377,7 @@ def central_run(tmp_path):
         unavailable=None,
         runtime=RUNTIME,
         redaction=None,
+        brief=None,
     ):
         connection = conn or FakeConn()
         factory = _executor_factory(behaviour, unavailable=unavailable)
@@ -402,6 +404,7 @@ def central_run(tmp_path):
                 provisioning_journal=provisioning_record,
                 established_facts=[],
                 redaction=redaction,
+                brief=brief,
             )
         return result, connection, factory, record
 
@@ -410,6 +413,277 @@ def central_run(tmp_path):
 
 async def _no_executor(harness):
     raise AssertionError("a harness blocker must be decided before any executor starts")
+
+
+@pytest.mark.parametrize("text", ["/history", "/reading"])
+async def test_central_runner_preserves_product_cause_with_confirmed_brief(central_run, text):
+    brief = ProductBriefContent(
+        summary="Readings",
+        must_requirements=[{"id": "reading", "text": "Produce readings"}],
+        usage_examples=[
+            {
+                "requirement_id": "reading",
+                "user_sends": "/reading",
+                "product_answers": "An answer",
+            }
+        ],
+    )
+
+    async def behaviour(harness):
+        answer = await harness.tools["telegram_probe"].ainvoke(
+            {"message": text, "wait_seconds": 60}
+        )
+        return json.dumps(
+            {
+                "pass": False,
+                "summary": "fixture",
+                "checks": [
+                    {
+                        "name": text,
+                        "pass": False,
+                        "detail": "No reply",
+                        "cause": "product",
+                        "telegram_step": answer["telegram_step"],
+                    }
+                ],
+            }
+        )
+
+    async def probe(script, *, env, timeout):
+        assert timeout == 90
+        return SimpleNamespace(
+            stdout="telegram_probe_result:"
+            + json.dumps(
+                {
+                    "action": "message",
+                    "attempted": f"send {text}",
+                    "sent": text,
+                    "delivered": True,
+                    "message_id": 10,
+                    "replies": [],
+                }
+            ),
+            stderr="",
+            exit_status=0,
+        )
+
+    runtime = replace(RUNTIME, telethon_env={"TELETHON_SESSION": "fixture"})
+    with patch("src.agents.qa.tools.run_probe_script", probe):
+        result, _, factory, _ = await central_run(
+            behaviour=behaviour,
+            runtime=runtime,
+            brief=brief,
+            target=replace(TARGET, bot_username="test_bot"),
+        )
+    assert result.blocker is None
+    assert result.passed is False
+    assert result.checks[0]["cause"] == "product"
+    assert result.unverified_checks == []
+    assert "Produce readings" in factory.prompt
+    assert len(result.telegram_probe_evidence) == 1
+
+
+@pytest.mark.parametrize(
+    "inputs,name,detail",
+    [
+        (["/start", "/reading"], "Daily digest job", "job_evidence: dispatch failed"),
+        (["/start", "/reading"], "Reading result", "the reading reply was wrong"),
+        (["/start"], "Daily digest job", "job_evidence: dispatch failed"),
+    ],
+)
+async def test_central_settlement_preserves_unattributed_product_failures(
+    central_run, inputs, name, detail
+):
+    brief = ProductBriefContent(
+        summary="Readings",
+        must_requirements=[{"id": "reading", "text": "Produce readings"}],
+        usage_examples=[
+            {
+                "requirement_id": "reading",
+                "user_sends": "/reading",
+                "product_answers": "An answer",
+            }
+        ],
+    )
+
+    async def behaviour(harness):
+        for text in inputs:
+            await harness.tools["telegram_probe"].ainvoke({"message": text})
+        return json.dumps(
+            {
+                "pass": False,
+                "summary": "fixture",
+                "checks": [{"name": name, "pass": False, "detail": detail, "cause": "product"}],
+            }
+        )
+
+    sent = iter(inputs)
+
+    async def probe(script, *, env, timeout):
+        text = next(sent)
+        return SimpleNamespace(
+            stdout="telegram_probe_result:"
+            + json.dumps(
+                {
+                    "action": "message",
+                    "attempted": f"send {text}",
+                    "sent": text,
+                    "delivered": True,
+                    "replies": [],
+                }
+            ),
+            stderr="",
+            exit_status=0,
+        )
+
+    runtime = replace(RUNTIME, telethon_env={"TELETHON_SESSION": "fixture"})
+    with patch("src.agents.qa.tools.run_probe_script", probe):
+        result, _, _, _ = await central_run(
+            behaviour=behaviour,
+            runtime=runtime,
+            brief=brief,
+            target=replace(TARGET, bot_username="test_bot"),
+        )
+    assert result.blocker is None
+    assert result.passed is False
+    assert result.checks[0]["cause"] == "product"
+    assert result.checks[0]["detail"] == detail
+    assert result.unverified_checks == []
+
+
+@pytest.mark.parametrize("include_step", [False, True], ids=["unattributed", "attributed"])
+@pytest.mark.parametrize(
+    "inputs,example,name,detail,reply",
+    [
+        pytest.param(
+            ["/start", "The Hobbit"],
+            "a book title, for example Dune",
+            "Book result",
+            "The Hobbit returned Error: internal",
+            "Error: internal",
+            id="A-descriptive-free-text-example",
+        ),
+        pytest.param(
+            ["Dune"],
+            None,
+            "Book result",
+            "Dune produced no reply",
+            None,
+            id="C-free-text-without-brief",
+        ),
+        pytest.param(
+            ["/start"],
+            None,
+            "Welcome",
+            "/start produced no reply",
+            None,
+            id="D-start-without-brief",
+        ),
+        pytest.param(
+            ["/start"],
+            "/reading",
+            "Welcome",
+            "/start produced no reply",
+            None,
+            id="E-start-absent-from-brief",
+        ),
+        pytest.param(
+            ["/start", "https://t.me/durov"],
+            "a channel link such as https://t.me/example",
+            "Channel added",
+            "https://t.me/durov replied Checking...; the final answer never followed",
+            "Checking...",
+            id="F-progress-without-final-answer",
+        ),
+        pytest.param(
+            ["/start", "/reading"],
+            "/reading",
+            "Daily digest job",
+            "fire_job daily_digest: job_evidence shows dispatch failed with exception",
+            None,
+            id="round1-job-after-two-probes",
+        ),
+        pytest.param(
+            ["/start", "/reading"],
+            "/reading",
+            "Reading result",
+            "the reading reply was wrong",
+            None,
+            id="round1-brief-example-without-input-in-detail",
+        ),
+        pytest.param(
+            ["/start"],
+            "/reading",
+            "Daily digest job",
+            "job_evidence shows dispatch failed with exception",
+            None,
+            id="round1-job-after-unlisted-start",
+        ),
+        pytest.param(
+            ["/history"],
+            "/reading",
+            "History result",
+            "/history produced no reply",
+            None,
+            id="unlisted-command",
+        ),
+    ],
+)
+async def test_settlement_never_changes_executor_product_failure(
+    central_run, inputs, example, name, detail, reply, include_step
+):
+    brief = (
+        ProductBriefContent(
+            summary="Input handling",
+            must_requirements=[{"id": "input", "text": "Handle the requested input"}],
+            usage_examples=[
+                {"requirement_id": "input", "user_sends": example, "product_answers": "An answer"}
+            ],
+        )
+        if example is not None
+        else None
+    )
+    check = {"name": name, "pass": False, "detail": detail, "cause": "product"}
+
+    async def behaviour(harness):
+        for text in inputs:
+            answer = await harness.tools["telegram_probe"].ainvoke({"message": text})
+        if include_step:
+            check["telegram_step"] = answer["telegram_step"]
+        return json.dumps({"pass": False, "summary": "fixture", "checks": [check]})
+
+    sent = iter(inputs)
+
+    async def probe(script, *, env, timeout):
+        text = next(sent)
+        return SimpleNamespace(
+            stdout="telegram_probe_result:"
+            + json.dumps(
+                {
+                    "action": "message",
+                    "attempted": f"send {text}",
+                    "sent": text,
+                    "delivered": True,
+                    "replies": [{"id": 10, "text": reply}] if reply is not None else [],
+                }
+            ),
+            stderr="",
+            exit_status=0,
+        )
+
+    runtime = replace(RUNTIME, telethon_env={"TELETHON_SESSION": "fixture"})
+    with patch("src.agents.qa.tools.run_probe_script", probe):
+        result, _, _, _ = await central_run(
+            behaviour=behaviour,
+            runtime=runtime,
+            brief=brief,
+            target=replace(TARGET, bot_username="test_bot"),
+        )
+    assert result.blocker is None
+    assert result.passed is False
+    assert result.checks == [check]
+    assert result.unverified_checks == []
+    assert [evidence.sent for evidence in result.telegram_probe_evidence] == inputs
 
 
 class _HarnessConn(FakeConn):

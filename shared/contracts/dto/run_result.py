@@ -293,6 +293,11 @@ class QAFailedCheckCause(StrEnum):
     performs (`shared.contracts.qa_capabilities`); `qa_access` is the product
     refusing the QA identity.
 
+    `qa_tooling` is an executor-judged QA tooling failure with cited evidence.
+    The runner settles it as unverified like `qa_capability`.
+    The new wire value is additive; all released values and legacy records
+    without a cause keep their historical interpretation.
+
     `qa_capability` is the executor's word for a check it could not run. The QA
     runner never settles a Run with one in `failed_checks`: it records it as
     unverified (`QARunResult.unverified_checks`). A stored result written before
@@ -302,6 +307,10 @@ class QAFailedCheckCause(StrEnum):
     PRODUCT = "product"
     QA_CAPABILITY = "qa_capability"
     QA_ACCESS = "qa_access"
+    #: Executor-judged QA tooling failure with cited evidence.
+    #: Additive wire value: released causes and the legacy product default stay readable.
+    #: Like qa_capability, the runner settles this as unverified, never an engineering fix.
+    QA_TOOLING = "qa_tooling"
 
 
 class QAFailedCheck(BaseModel):
@@ -468,12 +477,22 @@ class QATelegramProbeEvidence(BaseModel):
     # None means the child process did not leave enough evidence to prove
     # whether delivery happened. It is still a blocker, never product evidence.
     delivered: bool | None = None
+    #: Sent message id, or pressed bot message id. Unknown on older probe records.
+    message_id: int | None = Field(default=None, ge=1)
     replies: list[QATelegramReplyEvidence] = Field(default_factory=list)
     callback: QATelegramCallbackEvidence | None = None
     # Callback operations re-read the pressed bot reply after the press. This
     # makes an edit-in-place observable even when Telegram sends no new reply.
     post_press_message: QATelegramReplyEvidence | None = None
     error: str | None = None
+
+
+class QATelegramWaitRefusal(BaseModel):
+    """An invalid executor-chosen collection wait; nothing was sent or pressed."""
+
+    model_config = ConfigDict(extra="forbid")
+    reason: Literal["invalid_wait"] = "invalid_wait"
+    detail: str
 
 
 class QAStateChangeCleanup(BaseModel):
@@ -587,7 +606,7 @@ class QARunResult(BaseModel):
     #: The names of the checks this run performed and passed. Empty on a result
     #: written before it was recorded, and on a blocked run.
     passed_checks: list[str] = Field(default_factory=list)
-    #: Checks QA could not run (cause `qa_capability`), taken out of the verdict
+    #: Checks QA could not verify (cause `qa_capability` or `qa_tooling`), taken out of the verdict
     #: by the QA runner: never a failure, never a pass. A run whose only other
     #: checks passed is `passed` with these listed.
     unverified_checks: list[QAUnverifiedCheck] = Field(default_factory=list)

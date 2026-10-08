@@ -59,8 +59,13 @@ class StringSession:
         self.value = value
 """,
     "telethon/sync.py": """
-import base64, os
+import base64, os, time
 from telethon import record
+
+# Advance the child's clock to the validated one-second deadline before its
+# first collection read. The security checks need one poll, not real sleep.
+_ticks = iter((0, 1))
+time.monotonic = lambda: next(_ticks)
 
 
 class Message:
@@ -222,7 +227,7 @@ def _same(received: str, value: str) -> None:
 
 @pytest.mark.parametrize("value", list(HOSTILE.values()), ids=list(HOSTILE))
 async def test_a_hostile_message_and_bot_username_reach_telethon_as_values(child, value):
-    script = build_bot_message_script(value, value, wait_seconds=0)
+    script = build_bot_message_script(value, value, wait_seconds=1)
 
     result = await _run(script, child.environment())
     assert not child.flag.exists(), child.flag.read_text()
@@ -253,7 +258,7 @@ async def test_a_hostile_button_press_reaches_telethon_as_values(child, value):
     data = value.encode("utf-8")
     callback_data = base64.b64encode(data).decode("ascii")
     script = build_bot_callback_script(
-        value, MESSAGE_ID, callback_data, button_text=value, wait_seconds=0
+        value, MESSAGE_ID, callback_data, button_text=value, wait_seconds=1
     )
 
     result = await _run(script, child.environment(button_data=data))
@@ -284,7 +289,7 @@ async def test_a_hostile_button_press_reaches_telethon_as_values(child, value):
 @pytest.mark.parametrize("value", list(HOSTILE.values()), ids=list(HOSTILE))
 async def test_hostile_callback_data_stays_a_value_and_presses_nothing(child, value):
     """Callback data that is not a visible button's is compared as a value and refused."""
-    script = build_bot_callback_script(value, MESSAGE_ID, value, button_text=value, wait_seconds=0)
+    script = build_bot_callback_script(value, MESSAGE_ID, value, button_text=value, wait_seconds=1)
 
     result = await _run(script, child.environment(button_data=b"details"))
     assert not child.flag.exists(), child.flag.read_text()
