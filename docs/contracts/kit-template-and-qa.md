@@ -543,16 +543,18 @@ reports which path settled the Run and claims nothing about the executor.
 Telegram message and callback tools accept an integer collection wait of 1–60 seconds,
 default 15; their child process timeout is that wait plus 30 seconds. Invalid waits
 return a typed `invalid_wait` refusal without delivery or a run blocker.
-Telegram verdict rows may carry the tool's one-based `telegram_step`. The runner
-checks that input against the confirmed brief's usage examples/must-requirements
-or prior visible bot help; unsupported inputs settle as unverified `qa_tooling`.
-Successful `container_logs` reads can override a silent or incomplete probe when
-a structured log records a Telegram send with `status_code=200`, this QA `chat_id`,
-the tested `reply_to_message_id`, and a `message_id` the probe missed. Dispatch,
-backend writes, uncorrelated successes, and unsuccessful log reads do not prove a
-reply. These contradictions also settle as unverified `qa_tooling`, never an
-engineering fix, and owner verification facts say "QA tooling". The additive
-cause and nullable probe message id preserve historical result reads.
+At the single runner settlement point, a failed product check changes cause only
+when an explicit `telegram_step` or one unambiguous whole-input match attributes
+it to a recorded Telegram input unsupported by the confirmed brief's usage
+examples/must-requirements and prior visible bot help/commands. Unattributed,
+ambiguous and other product failures retain the executor's cause.
+The executor may classify a missed reply as `qa_tooling` when its detail cites
+concrete server-side evidence that this interaction received an answer. Settlement
+retains that citation as unverified, at the same trust level as `qa_capability`;
+owner verification facts say "QA tooling", and no engineering fix is created.
+There is no automatic server-log override: the kit send-log contract is deferred
+to issue:8156ad9d43c12dc956f9. The additive cause and nullable probe message id
+preserve historical result reads.
 
 
 `QARunResult.probe_runs` retains each `qa probe` record in capability-call

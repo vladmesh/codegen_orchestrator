@@ -19,7 +19,6 @@ from shared.contracts.acceptance import (
     ScheduledBehaviourCriterion,
     parse_scheduled_behaviours,
 )
-from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.contracts.dto.engineering_attempt import (
     CostSource,
     EngineeringAttemptLedgerInput,
@@ -1335,40 +1334,12 @@ def _input_is_grounded(
     return any(evidence.sent.strip() in text for text in [*contract, *visible_help])
 
 
-def _missed_server_reply(workspace: QAWorkspace, step: int) -> str | None:
-    """A successful Telegram send to this QA chat replying to this operation.
-
-    Only structured records in successful container_logs reads qualify. A
-    backend write, dispatch record or an unrelated HTTP 200 proves no reply.
-    Missing correlation fields stay unknown rather than becoming a conclusion.
-    """
-    probe = workspace.telegram_probe_evidence[step - 1]
-    if probe.message_id is None or probe.delivered is not True:
-        return None
-    collected = {reply.id for reply in probe.replies}
-    if probe.post_press_message is not None:
-        collected.add(probe.post_press_message.id)
-    for logs in workspace.server_logs_after(step):
-        for line in logs.splitlines():
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(record, dict):
-                continue
-            if (
-                record.get("method") in {"sendMessage", "sendPhoto", "sendDocument", "sendVideo"}
-                and record.get("status_code") == httpx.codes.OK
-                and record.get("chat_id") == QA_TEST_TELEGRAM_ID
-                and record.get("reply_to_message_id") == probe.message_id
-                and type(record.get("message_id")) is int
-                and record["message_id"] not in collected
-            ):
-                return (
-                    f"server container_logs confirmed {record['method']} "
-                    f"message {record['message_id']}"
-                )
-    return None
+def _whole_input_match(sent: str, text: str) -> bool:
+    """Match the complete input, without borrowing part of another token."""
+    sent = sent.strip()
+    return (
+        bool(sent) and re.search(r"(?<![\w/@])" + re.escape(sent) + r"(?![\w/@])", text) is not None
+    )
 
 
 def _telegram_check_grounding(
@@ -1376,57 +1347,31 @@ def _telegram_check_grounding(
     workspace: QAWorkspace,
     brief: ProductBriefContent | None,
 ) -> dict:
-    """Refuse to turn an invented input or a missed server reply into a defect."""
+    """Only a positively attributed, unsupported input leaves product."""
     if check.get("pass") is not False or check.get("cause") != QAFailedCheckCause.PRODUCT.value:
         return check
-    words = f"{check['name']} {check['detail']}"
+    evidence = workspace.telegram_probe_evidence
     step = check.get("telegram_step")
-    if step is None and re.search(r"(?i)\b(http|GET|endpoint|status_code)\b", words):
-        return check
     if step is None:
-        # A check can identify its input directly. Multiple operations need
-        # an explicit step rather than an inference from call order.
         matches = [
             index
-            for index, probe in enumerate(workspace.telegram_probe_evidence, 1)
-            if (probe.action == "message" and probe.sent.strip() and probe.sent in words)
-            or (probe.action == "callback" and probe.attempted in words)
+            for index, probe in enumerate(evidence, 1)
+            if any(
+                _whole_input_match(probe.sent, text) for text in (check["name"], check["detail"])
+            )
         ]
         step = matches[0] if len(matches) == 1 else None
-        if not matches and len(workspace.telegram_probe_evidence) == 1:
-            step = 1
-    detail = None
-    if step is not None:
-        if not 1 <= step <= len(workspace.telegram_probe_evidence):
-            detail = "the check names no recorded Telegram operation"
-        else:
-            evidence = workspace.telegram_probe_evidence[step - 1]
-            if _commands(words) - _commands(evidence.sent):
-                detail = "the check's command does not match the recorded input"
-            elif not _input_is_grounded(
-                evidence, brief, workspace.telegram_probe_evidence[: step - 1]
-            ):
-                detail = (
-                    "the tested input is absent from the brief's examples/must-requirements "
-                    "and visible bot help"
-                )
-            elif not evidence.replies or re.search(
-                r"(?i)\b(no .*?(reply|answer)|missing|pending|progress|timeout|not received)\b",
-                words,
-            ):
-                detail = _missed_server_reply(workspace, step)
-    elif (
-        workspace.telegram_probe_evidence
-        or _commands(words)
-        or re.search(r"(?i)\b(telegram|callback|bot|reply|input|command|button)\b", words)
-    ):
-        detail = "the Telegram failure has no uniquely recorded input; supply telegram_step"
-    if detail is None:
+    if step is None or not 1 <= step <= len(evidence):
+        return check
+    if _input_is_grounded(evidence[step - 1], brief, evidence[: step - 1]):
         return check
     return {
         **check,
         "cause": QAFailedCheckCause.QA_TOOLING.value,
-        "detail": f"QA tooling: {detail}; {check['detail']}",
+        "detail": (
+            "QA tooling: the tested input is absent from the brief's examples/must-requirements "
+            f"and visible bot help; {check['detail']}"
+        ),
     }
 
 
@@ -1438,10 +1383,12 @@ def settle_unverified_checks(
 ) -> QAResult:
     """The one place a check QA could not run leaves the verdict.
 
-    Every `qa_capability` or `qa_tooling` check, wherever it arose — the executor's own, an
-    ungrounded not-applicable one, a criterion withheld before the executor
-    ran, a package row with nothing to exercise it — is taken out of `checks`
-    and recorded in `unverified_checks` with its origin. It is never a failure
+    Only failures attributed to recorded, unsupported Telegram inputs change
+    the executor's cause. Unattributed and ambiguous failures keep their cause.
+    Every `qa_capability` or `qa_tooling` check is taken out of `checks` and
+    recorded in `unverified_checks` with its origin, whether it arose from the
+    executor, an ungrounded not-applicable input, a withheld criterion or a
+    package row with nothing to exercise it. It is never a failure
     and never a pass. The verdict is then what the remaining checks say: every
     one passed, `passed`; any product or access failure, not. A blocker already
     on the result keeps it unpassed whatever the checks say.

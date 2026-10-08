@@ -121,10 +121,12 @@ def _bot_section(bot_username: str) -> str:
   examples/must-requirements or the bot's visible commands/help support them.
   An invented /history or /help is exploratory; silence is `qa_tooling`, never
   a product failure. Split independent inputs into separate checks.
-- If the probe missed a reply, read container logs for successful Telegram
-  sends tied to the QA chat and the tested message/callback. A confirmed send
-  absent from the probe is `qa_tooling`. A backend write or unrelated HTTP 200
-  does not prove the bot replied. Quote the correlated log evidence in detail.
+- Classify a missed reply as `qa_tooling` only when you cite concrete
+  server-side evidence that the product answered this QA interaction.
+  Keep that citation in the check's detail. A backend write, dispatch record
+  or unrelated HTTP 200 does not prove the bot replied. The runner retains
+  your judgement as unverified; it does not automatically infer missed sends
+  from container logs.
 - A probe of your own reaches the bot as the same account through the file
   `{QA_PROBE_NAME} telegram_identity` writes for your Telethon client; never print that file.
 - Every Telegram check is either pass or fail, decided by sending the message.

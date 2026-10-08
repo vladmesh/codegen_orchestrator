@@ -122,7 +122,6 @@ class QAWorkspace:
     #: first, before any bound is applied.
     redaction: QARunRedaction = field(default_factory=QARunRedaction)
     _trace: list[dict] = field(default_factory=list)
-    _telegram_positions: list[int] = field(default_factory=list)
 
     @property
     def report_path(self) -> Path:
@@ -210,18 +209,8 @@ class QAWorkspace:
         evidence = self.redaction.value(evidence)
         blocker = self.redaction.value(blocker)
         self.telegram_probe_evidence.append(evidence)
-        self._telegram_positions.append(len(self._trace))
         if blocker is not None and self.telegram_probe_blocker is None:
             self.telegram_probe_blocker = blocker
-
-    def server_logs_after(self, step: int) -> list[str]:
-        """Successful runtime log reads after a recorded Telegram operation."""
-        position = self._telegram_positions[step - 1]
-        return [
-            self._trace[observation.position - 1]["response"]
-            for observation in self.observations
-            if observation.tool == "container_logs" and observation.position > position
-        ]
 
     def record_probe(  # noqa: PLR0911, PLR0913 - the retained record is the typed endpoint contract
         self,

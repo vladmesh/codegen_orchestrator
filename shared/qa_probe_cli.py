@@ -162,7 +162,10 @@ def build_call(argv):
     if command in ("telegram_probe", "telegram_click_button") and rest[:1] == ["--wait-seconds"]:
         if len(rest) < 2:
             fail("--wait-seconds requires an integer")
-        wait_args = {"wait_seconds": int(rest[1])}
+        try:
+            wait_args = {"wait_seconds": int(rest[1])}
+        except ValueError:
+            fail("--wait-seconds requires an integer")
         rest = rest[2:]
     if command == "telegram_probe":
         if not rest:

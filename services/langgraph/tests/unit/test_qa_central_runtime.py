@@ -482,6 +482,74 @@ async def test_central_runner_grounds_failed_inputs_in_confirmed_brief(central_r
     assert len(result.telegram_probe_evidence) == 1
 
 
+@pytest.mark.parametrize(
+    "inputs,name,detail",
+    [
+        (["/start", "/reading"], "Daily digest job", "job_evidence: dispatch failed"),
+        (["/start", "/reading"], "Reading result", "the reading reply was wrong"),
+        (["/start"], "Daily digest job", "job_evidence: dispatch failed"),
+    ],
+)
+async def test_central_settlement_preserves_unattributed_product_failures(
+    central_run, inputs, name, detail
+):
+    brief = ProductBriefContent(
+        summary="Readings",
+        must_requirements=[{"id": "reading", "text": "Produce readings"}],
+        usage_examples=[
+            {
+                "requirement_id": "reading",
+                "user_sends": "/reading",
+                "product_answers": "An answer",
+            }
+        ],
+    )
+
+    async def behaviour(harness):
+        for text in inputs:
+            await harness.tools["telegram_probe"].ainvoke({"message": text})
+        return json.dumps(
+            {
+                "pass": False,
+                "summary": "fixture",
+                "checks": [{"name": name, "pass": False, "detail": detail, "cause": "product"}],
+            }
+        )
+
+    sent = iter(inputs)
+
+    async def probe(script, *, env, timeout):
+        text = next(sent)
+        return SimpleNamespace(
+            stdout="telegram_probe_result:"
+            + json.dumps(
+                {
+                    "action": "message",
+                    "attempted": f"send {text}",
+                    "sent": text,
+                    "delivered": True,
+                    "replies": [],
+                }
+            ),
+            stderr="",
+            exit_status=0,
+        )
+
+    runtime = replace(RUNTIME, telethon_env={"TELETHON_SESSION": "fixture"})
+    with patch("src.agents.qa.tools.run_probe_script", probe):
+        result, _, _, _ = await central_run(
+            behaviour=behaviour,
+            runtime=runtime,
+            brief=brief,
+            target=replace(TARGET, bot_username="test_bot"),
+        )
+    assert result.blocker is None
+    assert result.passed is False
+    assert result.checks[0]["cause"] == "product"
+    assert result.checks[0]["detail"] == detail
+    assert result.unverified_checks == []
+
+
 class _HarnessConn(FakeConn):
     """A target whose QA harness answers one command the way a broken host does."""
 
