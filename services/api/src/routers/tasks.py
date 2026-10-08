@@ -16,9 +16,10 @@ from shared.contracts.dto.catalog_install import (
 )
 from shared.contracts.dto.task import TaskStatus
 from shared.models import Task, TaskEvent, User
+from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import require_bearer_admin, require_internal_or_admin
+from ..dependencies import get_redis_client, require_bearer_admin, require_internal_or_admin
 from ..schemas.task import (
     TaskCreate,
     TaskEventCreate,
@@ -413,7 +414,8 @@ async def recover_catalog_install(
     body: InstallOperatorRequest,
     db: AsyncSession = Depends(get_async_session),
     admin: User = Depends(require_bearer_admin),
+    redis: RedisStreamClient = Depends(get_redis_client),
 ) -> InstallDecision:
     from ..catalog_install_recovery import operator_install_recovery
 
-    return await operator_install_recovery(task_id, body, f"user:{admin.id}", db)
+    return await operator_install_recovery(task_id, body, f"user:{admin.id}", db, redis=redis)

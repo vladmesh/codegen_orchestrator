@@ -458,6 +458,13 @@ RETRY_AFTER_CI_FAILURE = "retry-after-ci-failure"
 #: Applied by `POST /stories/{id}/planning-outcome`, not an endpoint of its own.
 PARK_UNSTARTED_PLANNING_FAILURE = "park-unstarted-planning-failure"
 
+#: Returning a catalog-install story parked after its install PR's CI failed to
+#: the architect for a fresh install plan: the failed attempt is recorded and a
+#: new work cycle opens, which the architect starts once it has planned.
+#: Applied by `POST /tasks/{id}/catalog-install/recovery` (action `replan`), not
+#: an endpoint of its own.
+REPLAN_CATALOG_INSTALL = "replan-catalog-install"
+
 #: Every composite Story move the platform performs, as the ordered chain of
 #: hops it applies.  Nothing outside this table walks a Story through more than
 #: one status; a new composite is a new entry here plus its endpoint below.
@@ -470,6 +477,10 @@ COMPOSITE_CHAINS: dict[str, tuple[StoryStatus, ...]] = {
     PARK_UNSTARTED_PLANNING_FAILURE: (
         StoryStatus.IN_PROGRESS,
         StoryStatus.WAITING_HUMAN_REVIEW,
+    ),
+    REPLAN_CATALOG_INSTALL: (
+        StoryStatus.FAILED,
+        StoryStatus.REOPENED,
     ),
 }
 

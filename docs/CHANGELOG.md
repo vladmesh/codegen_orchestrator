@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Catalog-install recovery gains `replan`: a story parked after its install PR's CI failed is
+  reopened for a fresh Architect install plan once the operator removed the story branch.
+
 - Brief confirmation requires explicit catalog package reliance; generic language/timezone keys
   leave ordinary orders independent, and package seeds remain optional.
 

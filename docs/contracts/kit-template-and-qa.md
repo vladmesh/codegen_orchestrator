@@ -268,6 +268,16 @@ local story branch with its reviewed remote; no executor reset is implicit. A ca
 Task remains cancelled when retry releases its reviewed blocking operation. Wrong
 cycle/operation, unrelated stop or unpublished/unverified head refuses.
 
+`replan` answers the scheduler's park after a published install's PR failed CI. It
+requires the `done` Task's current `published` operation, the scheduler's
+`Catalog installation requires review:` stop with its unreleased stop ID, and an absent
+remote `story/<id>` branch (`install_branch_present` otherwise). In one transaction it
+releases the stop, cancels the Task and moves the Story `waiting_human_review` →
+`failed` → `reopened`; after commit it publishes a reopen `ArchitectMessage`, so the
+Architect plans a new install against the current catalog. A lost publish is answered
+`architect_publish_failed` and re-sent with `send-to-architect`. It writes nothing to
+GitHub; see [the operator runbook](../runbooks/catalog-install-replan.md).
+
 Expiry also settles an older cycle's writer without parking the newer Story. After
 reconciling its retained checkout, bearer-admin `retry` can release that cancelled
 operation alone with no stop ID; it preserves the current Story/cycle/quarantine,
