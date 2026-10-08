@@ -707,8 +707,7 @@ async def admit_product_brief_coverage(
     from ._story_planning import _config_int, _park
 
     story = await _get_story_for_update(story_id, db)
-    has_tasks = await db.scalar(select(Task.id).where(Task.story_id == story_id).limit(1))
-    failure = returned_plan_failure(brief, dispositions, has_tasks=has_tasks is not None)
+    failure = returned_plan_failure(brief, dispositions, tasks=tasks)
     if failure is not None:
         report = StoryPlanningReport(
             outcome=StoryPlanningOutcome.FAILED,

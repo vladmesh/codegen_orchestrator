@@ -30,9 +30,9 @@ from ._task_helpers import apply_cancellation, cancellation_is_reachable, get_ta
 
 
 def returned_plan_failure(
-    brief: ProductBrief, dispositions: list[RequirementCoverage], *, has_tasks: bool
+    brief: ProductBrief, dispositions: list[RequirementCoverage], *, tasks: list[Task]
 ) -> StoryFailure | None:
-    """A complete refusal with no work is a planning stop, carrying its reasons."""
+    """A complete refusal with no work in this attempt is a planning stop."""
     required = {item["id"] for item in brief.content["must_requirements"]}
     returned = {
         row.requirement_id: row.returned_reason
@@ -41,7 +41,8 @@ def returned_plan_failure(
         and row.task_id is None
         and row.returned_reason
     }
-    if has_tasks or not required or not required.issubset(returned):
+    has_work = any(task.planning_attempt_id == brief.planning_attempt_id for task in tasks)
+    if has_work or not required or not required.issubset(returned):
         return None
     return StoryFailure(
         code=StoryFailureCode.PLANNING_FAILED,

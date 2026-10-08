@@ -286,13 +286,24 @@ async def test_a_returned_requirement_is_a_disposition(async_client: AsyncClient
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("superseded", [False, True])
 async def test_fully_returned_taskless_plan_retries_the_same_confirmed_brief(
-    async_client: AsyncClient, db_session: AsyncSession, legacy: bool
+    async_client: AsyncClient, db_session: AsyncSession, legacy: bool, superseded: bool
 ):
     project_id = await _project(async_client, await _owner(async_client))
     brief_id, story_id, attempt = await _planned_brief(async_client, project_id)
     started = await async_client.post(f"/api/stories/{story_id}/start", json={"actor": "architect"})
     assert started.status_code == HTTPStatus.OK, started.text
+    if superseded:
+        old_task_id = await _planned_task(async_client, project_id, story_id, attempt)
+        await _go_stale(db_session, brief_id)
+        takeover = await async_client.post(f"{BRIEFS_URL}/{brief_id}/planning-attempts/claim")
+        assert takeover.json()["outcome"] == ProductBriefPlanningAttemptOutcome.CLAIMED
+        assert takeover.json()["planning_attempt_id"] != attempt
+        attempt = takeover.json()["planning_attempt_id"]
+        voided = await async_client.get(f"/api/tasks/{old_task_id}")
+        assert voided.json()["status"] == "cancelled"
+        assert voided.json()["dispatch_admitted"] is False
     refusal = "catalog_install refused: invalid_binding"
     for key in ("r1", "r2"):
         covered = await _cover(async_client, brief_id, key, attempt, returned_reason=refusal)
@@ -335,6 +346,10 @@ async def test_fully_returned_taskless_plan_retries_the_same_confirmed_brief(
     assert after["coverage_admitted_at"] is None
     assert after["content"] == before["content"]
     assert after["confirmed_at"] == before["confirmed_at"]
+    if superseded:
+        voided = await async_client.get(f"/api/tasks/{old_task_id}")
+        assert voided.json()["status"] == "cancelled"
+        assert voided.json()["dispatch_admitted"] is False
     claim = await async_client.post(f"{BRIEFS_URL}/{brief_id}/planning-attempts/claim")
     assert claim.json()["outcome"] == ProductBriefPlanningAttemptOutcome.CLAIMED
     replacement = claim.json()["planning_attempt_id"]
@@ -361,11 +376,16 @@ async def test_planning_retry_preserves_an_admitted_plan_with_released_work(
     await _cover(async_client, brief_id, "r1", attempt, task_id=task_id)
     await _cover(async_client, brief_id, "r2", attempt, returned_reason="unavailable")
     await _admit(async_client, brief_id, attempt)
+    failed = await async_client.post(f"/api/stories/{story_id}/fail", json={"actor": "admin"})
+    assert failed.status_code == HTTPStatus.OK, failed.text
+    reopened = await async_client.post(f"/api/stories/{story_id}/reopen", json={"actor": "admin"})
+    assert reopened.status_code == HTTPStatus.OK, reopened.text
     parked = await async_client.post(
         f"/api/stories/{story_id}/planning-outcome",
         json={
             "outcome": "failed",
             "retriable": False,
+            "reopen": True,
             "failure": {
                 "code": "planning_failed",
                 "source": "architect",
@@ -375,12 +395,18 @@ async def test_planning_retry_preserves_an_admitted_plan_with_released_work(
     )
     assert parked.status_code == HTTPStatus.OK, parked.text
     before = (await async_client.get(f"{BRIEFS_URL}/{brief_id}")).json()
-    refused = await async_client.post(f"/api/stories/{story_id}/retry-planning")
-    assert refused.status_code == HTTPStatus.CONFLICT
+    retried = await async_client.post(f"/api/stories/{story_id}/retry-planning")
+    assert retried.status_code == HTTPStatus.OK, retried.text
+    assert retried.json()["planning"]["state"] == "retrying"
+    assert retried.json()["planning"]["reopen"] is True
     after = (await async_client.get(f"{BRIEFS_URL}/{brief_id}")).json()
     assert after["coverage_admitted_at"] == before["coverage_admitted_at"]
+    assert after["planning_attempt_id"] == before["planning_attempt_id"]
+    assert after["content"] == before["content"]
+    claim = await async_client.post(f"{BRIEFS_URL}/{brief_id}/planning-attempts/claim")
+    assert claim.json()["outcome"] == ProductBriefPlanningAttemptOutcome.ALREADY_ADMITTED
     story = await async_client.get(f"/api/stories/{story_id}")
-    assert story.json()["status"] == "waiting_human_review"
+    assert story.json()["status"] == "in_progress"
 
 
 # --- exactly one live architect per incomplete plan ---------------------------

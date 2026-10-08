@@ -1,11 +1,14 @@
 # Recover a fully returned plan after deployment
 
 For an admitted, confirmed Product Brief whose current attempt returned every
-must-requirement and whose Story has zero Tasks, the existing operator action is
+must-requirement and released no Tasks in that attempt, the existing operator action is
 `POST /api/stories/{story_id}/retry-planning`. The API rechecks that evidence,
 clears only the admission stamp, preserves confirmed content, and writes planning
 as `retrying` due now. The scheduler publishes the Architect job; the next claim
 replaces the attempt and its coverage. No new order or SQL update is needed.
+Tasks from superseded attempts, including cancelled rows, do not count as work
+in this attempt. Other parked planning failures still retry without resetting
+the Brief's admission, including reopens whose original plan released work.
 
 New admissions of this state already park in `waiting_human_review` with a typed
 `planning_failed` reason. Older admissions need one data repair through the
@@ -23,7 +26,10 @@ Use an authenticated admin Bearer token against the deployed API. Read:
 - `GET /api/product-briefs/{brief_id}/coverage`: require a nonempty set of
   must-requirements, each with a current-attempt disposition, no `task_id`, and
   a nonempty `returned_reason`.
-- `GET /api/tasks/?story_id=story-8c9a5af6`: require an empty list.
+- `GET /api/tasks/?story_id=story-8c9a5af6`: require no Task whose
+  `planning_attempt_id` equals the Brief's current `planning_attempt_id`.
+  The original production refusal had zero Tasks; retained cancelled Tasks
+  from superseded attempts also satisfy the current-attempt check.
 
 If the Story is still `in_progress` with that old admitted refusal, perform the
 one-off repair:
@@ -65,7 +71,8 @@ Content-Type: application/json
 
 If the Story has an active `engineering_stop`, include its current `id` as
 `stop_id` in that body. A missing or stale selection refuses release. This action
-also performs the admission reset for the verified taskless, all-returned brief.
+also performs the admission reset for the verified all-returned brief with no
+current-attempt Tasks. Admission replay still answers `already_admitted`.
 Check that the Story is `in_progress`, `planning.state` is `retrying`, and the
 same Brief has `coverage_admitted_at: null` with unchanged confirmation/content.
 There is no direct Redis publication. After a lost response, re-read before

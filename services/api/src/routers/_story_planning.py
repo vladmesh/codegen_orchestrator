@@ -194,15 +194,10 @@ async def retry_story_planning(
                 )
             ).all()
         )
-        has_tasks = await db.scalar(select(Task.id).where(Task.story_id == story_id).limit(1))
-        if returned_plan_failure(brief, dispositions, has_tasks=has_tasks is not None) is None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="An admitted Product Brief can only be retried when every requirement "
-                "was returned and the story has no tasks",
-            )
-        brief.coverage_admitted_at = None
-        brief.planning_attempt_active = False
+        tasks = list((await db.scalars(select(Task).where(Task.story_id == story_id))).all())
+        if returned_plan_failure(brief, dispositions, tasks=tasks) is not None:
+            brief.coverage_admitted_at = None
+            brief.planning_attempt_active = False
     planning = operator_retry_record(
         _recorded_planning(story),
         max_retries=await _config_int(db, PLANNING_MAX_RETRIES_CONFIG_KEY),

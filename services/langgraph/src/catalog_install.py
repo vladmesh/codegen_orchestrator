@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 
-from framework.bindings import Binding, ParsedCreate, load_binding, validate_binding
+from framework.bindings import Binding, BindingError, ParsedCreate, load_binding, validate_binding
 from framework.bindings_v2 import BindingV2
 from framework.catalog import Catalog, CatalogError
 from framework.spec.packages import PackageManifest
@@ -26,7 +26,10 @@ def load_catalog_binding(content: str) -> Binding | BindingV2:
     with tempfile.TemporaryDirectory(prefix="catalog-binding-") as scratch:
         path = Path(scratch) / "default.yaml"
         path.write_text(content)
-        return load_binding(path)
+        try:
+            return load_binding(path)
+        except BindingError as error:
+            raise BindingError(str(error).replace(str(path), "catalog snapshot")) from error
 
 
 def plan_install_payload(

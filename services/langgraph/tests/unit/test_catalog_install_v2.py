@@ -88,5 +88,8 @@ def test_invalid_v2_or_unknown_version_is_a_named_refusal(before, after, reason)
     current = replace(
         current, bindings={"notebook": current.bindings["notebook"].replace(before, after)}
     )
-    with pytest.raises(InstallRefusal, match=reason):
+    with pytest.raises(InstallRefusal, match=reason) as first:
         plan_install_payload(current, "notebook", "3.12.0")
+    with pytest.raises(InstallRefusal, match=reason) as repeated:
+        plan_install_payload(current, "notebook", "3.12.0")
+    assert str(repeated.value) == str(first.value)
