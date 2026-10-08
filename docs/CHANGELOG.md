@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Telegram injection fixtures use a valid one-second wait and a virtual child clock,
+  preserving their security checks under the bounded probe wait contract.
+
 - QA Telegram probes accept waits up to 60 seconds; invented inputs and server-confirmed missed replies
   settle as unverified QA tooling checks instead of product failures.
 
