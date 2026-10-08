@@ -115,7 +115,7 @@ class InstallCommand(Strict):
 
 class InstallOperatorRequest(Strict):
     operation_id: str
-    action: Literal["retry", "recover"]
+    action: Literal["retry", "recover", "replan"]
     stop_id: str | None = None
 
 

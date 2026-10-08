@@ -30,6 +30,8 @@ ARCHITECT_PUBLISHERS = {
     # The PO starting new work or a reopen.
     ("services/langgraph/src/agents/po/tools_stories.py", "create_story"),
     ("services/langgraph/src/agents/po/tools_stories.py", "reopen_story"),
+    # An operator's catalog-install replan reopening a story, after its commit.
+    ("services/api/src/catalog_install_recovery.py", "_replan"),
 }
 
 
