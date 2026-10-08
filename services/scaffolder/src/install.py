@@ -22,6 +22,9 @@ WORKER_WORKSPACE = "/workspace"
 #: orchestrator Redis on this network; the kit's unit leg runs against a reserved
 #: TLD that never resolves, so a runtime reaching for Redis fails fast.
 UNIT_LEG_REDIS_URL = "redis://redis.invalid:6379"
+#: The product ``make lint`` format leg's exclusions. Its ``--exclude`` replaces
+#: ruff.toml's, so the check covers ``generated/`` trees too.
+LINT_FORMAT_EXCLUDE = "*.md,.venv/**,**/.venv/**,services/**/migrations/**"
 COMMAND_TIMEOUT = 600
 
 
@@ -63,6 +66,15 @@ def protected_files(root, tracked):
     return {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in sorted(selected)
     }
+
+
+def install_written_python(root, written, protected):
+    """Python files an install stage wrote, from ``git ls-files -z`` output."""
+    return sorted(
+        name
+        for name in set(written.split("\0"))
+        if name.endswith(".py") and name not in protected and (root / name).is_file()
+    )
 
 
 def product_environment(root):
@@ -133,7 +145,7 @@ def install_environment(token, root, git_url):
     return env
 
 
-async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  # noqa: C901, PLR0915  # fixed stages share a workspace lease and retained head
+async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  # noqa: C901, PLR0912, PLR0915  # fixed stages share a workspace lease and retained head
     root = _workspace_path(settings.workspace_base_path, msg.repository_id)
     if not (root / ".git").is_dir():
         raise InstallExecutionError(
@@ -255,6 +267,25 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         await command([kit, "bind", msg.install.package.name, "--default"])
         stage = "generate"
         await command(["make", "generate-from-spec"])
+        # The released generator formats before its ruff --fix, which strips the
+        # bindings' redundant parentheses and leaves whitespace lines that the
+        # product CI's format check refuses. Format only what this install wrote:
+        # owner sources stay byte-identical, the protected-file check proves it.
+        _, written = await command(
+            ["git", "ls-files", "-z", "--modified", "--others", "--exclude-standard"]
+        )
+        if formatted := install_written_python(root, written, protected):
+            await command(
+                [
+                    str(root / ".venv/bin/ruff"),
+                    "format",
+                    "--force-exclude",
+                    "--exclude",
+                    LINT_FORMAT_EXCLUDE,
+                    "--",
+                    *formatted,
+                ]
+            )
         stage = "validate"
         await command(["make", "validate-specs"])
         # The released make typecheck loop returns its last service's status.
