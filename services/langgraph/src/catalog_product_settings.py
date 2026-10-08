@@ -49,6 +49,16 @@ class PackageSettingsRefusal(BaseModel):
     instruction: str
 
 
+class PackageCatalogRefusal(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal[
+        "unknown_catalog_packages", "package_settings_unavailable", "package_catalog_unavailable"
+    ]
+    packages: list[str]
+    instruction: str
+
+
 async def turn_catalog(config: RunnableConfig) -> KitCatalogAnswer:
     """A tool sees the same snapshot as this turn's prompt."""
     configurable = config["configurable"]
@@ -73,7 +83,6 @@ def catalog_binding_settings(catalog: KitCatalog, name: str) -> dict[str, dict]:
 
 def package_product_settings(catalog: KitCatalog, item: InstallablePackage) -> list[ProductSetting]:
     package = item.package
-    descriptions = {setting.name: setting.summary for setting in package.settings}
     settings = []
     if package.name in catalog.bindings:
         binding = load_catalog_binding(catalog.bindings[package.name])
@@ -88,10 +97,22 @@ def package_product_settings(catalog: KitCatalog, item: InstallablePackage) -> l
                     key=key,
                     schema=schema,
                     required="default" not in schema,
-                    description=descriptions.get(key, schema.get("description", package.summary)),
+                    description=(
+                        "product language: one of " + ", ".join(schema["enum"])
+                        if purpose == "language"
+                        else "product timezone: " + schema["format"]
+                    ),
                     purpose=purpose,
                 )
             )
+    return settings + package_owned_settings(catalog, item)
+
+
+def package_owned_settings(catalog: KitCatalog, item: InstallablePackage) -> list[ProductSetting]:
+    """Only namespaced manifest settings identify package ownership."""
+    package = item.package
+    descriptions = {setting.name: setting.summary for setting in package.settings}
+    settings = []
     if package.name in catalog.manifests:
         manifest = PackageManifest.model_validate(yaml.safe_load(catalog.manifests[package.name]))
         seeds = {seed.key for seed in manifest.setting_seeds}
@@ -100,7 +121,7 @@ def package_product_settings(catalog: KitCatalog, item: InstallablePackage) -> l
                 ProductSetting(
                     key=f"{_package_prefix(package.name)}.{local_key}",
                     schema=schema,
-                    required="default" not in schema,
+                    required=local_key not in seeds and "default" not in schema,
                     description=descriptions.get(
                         local_key, schema.get("description", package.summary)
                     ),
@@ -138,28 +159,34 @@ def render_po_packages(catalog: KitCatalogAnswer) -> str:
     return block
 
 
-def _normalise(text: str) -> str:
-    return " ".join(text.casefold().replace("ё", "е").split())
-
-
 def package_settings_refusal(
-    content: ProductBriefContent, catalog: KitCatalogAnswer, brief_id: str
-) -> PackageSettingsRefusal | None:
-    """A catalog capability or an exact package key identifies its setting contract.
-
-    Capability phrases are a deterministic floor, as in manifest intake; the PO
-    still judges paraphrased requirements against the whole catalog block.
-    """
+    content: ProductBriefContent,
+    catalog: KitCatalogAnswer,
+    brief_id: str,
+    catalog_packages: list[str],
+) -> PackageSettingsRefusal | PackageCatalogRefusal | None:
+    """Check declared packages and owned keys; generic binding keys identify none."""
     if not isinstance(catalog, KitCatalog):
+        if catalog_packages:
+            return PackageCatalogRefusal(
+                status="package_catalog_unavailable",
+                packages=catalog_packages,
+                instruction=(
+                    "The catalog is unavailable. Retry when it is readable; "
+                    "never guess package settings."
+                ),
+            )
         return None
-    text = _normalise(
-        " ".join(
-            [
-                content.summary,
-                *(f"{item.text} {item.user_wording or ''}" for item in content.must_requirements),
-            ]
+    declared = set(catalog_packages)
+    if unknown := sorted(declared - catalog.names):
+        return PackageCatalogRefusal(
+            status="unknown_catalog_packages",
+            packages=unknown,
+            instruction=(
+                "Nothing was confirmed. Declare exact names from this turn's catalog, "
+                "or [] for an ordinary brief."
+            ),
         )
-    )
     product_values = {
         setting.key: setting.value
         for setting in content.initial_settings
@@ -168,12 +195,23 @@ def package_settings_refusal(
     all_keys = {setting.key for setting in content.initial_settings}
     questions = []
     for item in catalog.packages:
-        settings = package_product_settings(catalog, item)
-        if not (
-            any(_normalise(capability) in text for capability in item.package.capabilities)
-            or any(setting.key in all_keys for setting in settings)
-            or _normalise(item.name) in text.split()
-        ):
+        relevant = item.name in declared
+        try:
+            owned = package_owned_settings(catalog, item)
+            relevant = relevant or any(setting.key in all_keys for setting in owned)
+            settings = package_product_settings(catalog, item) if relevant else []
+        except ValueError:
+            if relevant:
+                return PackageCatalogRefusal(
+                    status="package_settings_unavailable",
+                    packages=[item.name],
+                    instruction=(
+                        "Nothing was confirmed. The kit refuses this package's binding "
+                        "or manifest; repair catalog data before retrying."
+                    ),
+                )
+            continue
+        if not relevant:
             continue
         for setting in settings:
             issue = None

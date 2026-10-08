@@ -22,7 +22,7 @@ from tests.unit.test_architect_graph import _ScriptedToolCallingModel
 SHOW = {"name": "show_full_brief", "args": {"brief_id": BRIEF_ID}, "id": "call-show"}
 CONFIRM = {
     "name": "confirm_product_brief",
-    "args": {"project_id": PROJECT_ID, "brief_id": BRIEF_ID},
+    "args": {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []},
     "id": "call-confirm",
 }
 LIST_PROJECTS = {"name": "list_projects", "args": {}, "id": "call-list"}

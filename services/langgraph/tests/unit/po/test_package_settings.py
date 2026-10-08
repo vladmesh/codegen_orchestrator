@@ -88,15 +88,13 @@ async def test_confirm_refuses_missing_package_keys(stream_client, wrong_scope):
     config["configurable"][PO_CATALOG_CONFIG_KEY] = notebook_snapshot()
     answer = json.loads(
         await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=config
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": ["notebook"]},
+            config=config,
         )
     )
     assert api.posts == []
     assert answer["status"] == "package_settings_required"
-    assert {item["key"] for item in answer["settings"]} == {
-        "interface_locale",
-        "notebook.starting_notes",
-    }
+    assert {item["key"] for item in answer["settings"]} == {"interface_locale"}
     language = next(item for item in answer["settings"] if item["key"] == "interface_locale")
     assert language["schema"]["enum"] == ["ru", "en"]
     assert "ask the user" in answer["instruction"].lower()
@@ -111,7 +109,7 @@ async def test_confirm_preserves_confirmed_package_values(stream_client):
     config = _config()
     config["configurable"][PO_CATALOG_CONFIG_KEY] = notebook_snapshot()
     answer = await confirm_product_brief.ainvoke(
-        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=config
+        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []}, config=config
     )
     assert "confirmed and frozen" in answer
     confirmed = ProductBriefContent.model_validate(api.posts[0][1]["content"])
@@ -130,7 +128,7 @@ async def test_confirm_refuses_a_value_outside_binding_allowed_values(stream_cli
     config["configurable"][PO_CATALOG_CONFIG_KEY] = notebook_snapshot()
     answer = json.loads(
         await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=config
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []}, config=config
         )
     )
     assert api.posts == []
@@ -164,7 +162,7 @@ async def test_catalog_outage_leaves_confirmation_working(stream_client):
         "fixture", KitCatalogFailure.TRANSPORT, "offline"
     )
     answer = await confirm_product_brief.ainvoke(
-        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=config
+        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []}, config=config
     )
     assert "confirmed and frozen" in answer
     assert api.posts[0][0] == f"product-briefs/{BRIEF_ID}/confirm"
@@ -185,7 +183,7 @@ async def test_binding_key_is_read_from_this_snapshot(stream_client):
     config["configurable"][PO_CATALOG_CONFIG_KEY] = catalog
     answer = json.loads(
         await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=config
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []}, config=config
         )
     )
     assert [item["key"] for item in answer["settings"]] == ["reply_locale"]

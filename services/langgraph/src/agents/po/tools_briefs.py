@@ -499,7 +499,9 @@ async def _refuse_settings_that_are_secrets(
 
 
 @tool
-async def confirm_product_brief(project_id: str, brief_id: str, *, config: RunnableConfig) -> str:
+async def confirm_product_brief(
+    project_id: str, brief_id: str, catalog_packages: list[str], *, config: RunnableConfig
+) -> str:
     """Freeze the presented Product Brief after the user answered yes.
 
     Call this only once the user confirmed the exact message
@@ -511,6 +513,11 @@ async def confirm_product_brief(project_id: str, brief_id: str, *, config: Runna
     Args:
         project_id: Project ID (UUID).
         brief_id: The brief id `present_product_brief` returned.
+        catalog_packages: Required declaration of exact catalog names this brief
+            relies on. Use [] for an ordinary brief. Declare every package needed
+            for a catalog capability, regardless of how the user worded it.
+            Generic language/timezone keys do not select a package. No declaration
+            is stored in the brief; the turn snapshot validates it before confirmation.
     """
     api = _get_api()
     headers = _user_headers(config)
@@ -539,7 +546,9 @@ async def confirm_product_brief(project_id: str, brief_id: str, *, config: Runna
             f"carry:\n{outdated}\nPresent it again with corrects_brief_id='{brief.id}', "
             "adding what is missing, before asking the user anything."
         )
-    if refusal := package_settings_refusal(content, await turn_catalog(config), brief.id):
+    if refusal := package_settings_refusal(
+        content, await turn_catalog(config), brief.id, catalog_packages
+    ):
         return refusal.model_dump_json(by_alias=True)
     confirmation = ProductBriefConfirm(
         request_id=_confirmation_request_id(brief.id),

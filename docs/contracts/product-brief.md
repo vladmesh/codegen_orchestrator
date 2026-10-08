@@ -189,15 +189,23 @@ registry requirements above.
 PO receives installable package capabilities and product settings from the live
 catalog snapshot for its turn. Binding schemas use the same kit helper as the
 Architect; package settings and product-scope seeds use the snapshot's manifest.
-Keys are transcribed exactly, including the package prefix. Values without a
-schema default require an explicit user choice, including a v2 binding's product
-language; the conversation language supplies no such choice. Named items use
-the package's declared seed key. Confirmation refuses missing product-scope keys
+Keys are transcribed exactly, including the package prefix. Required binding
+values without a default need an explicit user choice, including a v2 binding's
+product language; the conversation language supplies no such choice. A package
+seed or schema default makes that setting optional; named items still use the
+declared seed key. `confirm_product_brief` requires a `catalog_packages` tool
+argument listing every catalog package the brief relies on, or `[]` for an
+ordinary brief. The turn snapshot validates the declaration; an unknown name
+returns a typed `unknown_catalog_packages` answer. This declaration is not stored
+in the shared DTO or database. Only a declared package or one of its owned,
+prefixed manifest keys identifies reliance; generic binding keys and prose do
+not. Confirmation refuses missing required product-scope keys
 or values outside their schemas with a typed `package_settings_required` tool
-answer, naming the keys and choices to ask for before a new revision. Catalog
-capability phrases and exact setting keys provide the deterministic matching
-floor; PO must also judge paraphrases against the catalog. An unavailable catalog
-adds no package block and leaves ordinary brief confirmation available.
+answer, naming the keys and choices to ask for before a new revision. A package
+whose binding or manifest the kit refuses does not block unrelated briefs;
+reliance on that package returns `package_settings_unavailable`. An unavailable
+catalog adds no package block and leaves ordinary brief confirmation available;
+declared reliance then returns `package_catalog_unavailable` until it can be checked.
 
 *As a value.* After a successful deploy of a brief-backed story, the deploy
 result handler reads the brief through `GET /api/product-briefs/by-story/{story_id}`

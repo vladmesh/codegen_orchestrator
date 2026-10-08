@@ -1301,7 +1301,8 @@ class TestProductBriefInitialSettings:
         config = _config()
         config["configurable"][PO_CATALOG_CONFIG_KEY] = notebook_snapshot()
         answer = await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=config
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": ["notebook"]},
+            config=config,
         )
         assert "confirmed and frozen" in answer
         confirmed = ProductBriefRead.model_validate(po_api.briefs[BRIEF_ID])

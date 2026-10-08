@@ -77,7 +77,7 @@ async def confirmed_brief_id(
     brief_id = presented.split("(id: ")[1].split(")")[0]
 
     confirmed = await confirm_product_brief.ainvoke(
-        {"project_id": project_id, "brief_id": brief_id},
+        {"project_id": project_id, "brief_id": brief_id, "catalog_packages": []},
         config=make_config(),
     )
     assert "is confirmed and frozen" in confirmed, confirmed

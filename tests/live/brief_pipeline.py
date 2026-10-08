@@ -119,7 +119,8 @@ async def _po_create_confirmed_story(api, ctx: dict, scenario: BriefScenario) ->
         ctx["brief_requirement_ids"] = scenario.requirement_ids
 
         confirmed = await po["confirm_product_brief"].ainvoke(
-            {"project_id": ctx["project_id"], "brief_id": ctx["brief_id"]}, config=config
+            {"project_id": ctx["project_id"], "brief_id": ctx["brief_id"], "catalog_packages": []},
+            config=config,
         )
         assert "confirmed and frozen" in confirmed, confirmed
 

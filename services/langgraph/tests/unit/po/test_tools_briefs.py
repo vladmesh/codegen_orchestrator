@@ -267,7 +267,7 @@ async def test_receipt_variant_is_shown_confirmed_and_only_chosen_variant_is_pla
     assert line in full
 
     await confirm_product_brief.ainvoke(
-        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
+        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []}, config=_config()
     )
     stored = api.briefs[BRIEF_ID]
     assert stored["confirmed_at"] is not None
@@ -949,7 +949,8 @@ class TestConfirming:
         _install(api, stream_client)
 
         message = await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []},
+            config=_config(),
         )
 
         path, body = api.posts[0]
@@ -964,7 +965,8 @@ class TestConfirming:
         _install(api, stream_client)
 
         message = await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []},
+            config=_config(),
         )
 
         assert api.posts == []
@@ -978,7 +980,8 @@ class TestConfirming:
         _install(api, stream_client)
 
         message = await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []},
+            config=_config(),
         )
 
         assert "does not match the stored revision" in message
@@ -997,7 +1000,8 @@ class TestConfirming:
         _install(api, stream_client)
 
         message = await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []},
+            config=_config(),
         )
 
         assert api.posts == []
@@ -1010,7 +1014,8 @@ class TestConfirming:
         _install(api, stream_client)
 
         message = await confirm_product_brief.ainvoke(
-            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []},
+            config=_config(),
         )
 
         assert api.posts == []
