@@ -21,6 +21,17 @@ still undisposed (`incomplete`, releasing nothing) or stamps
 and closes it (`admitted`). A second call is a replay, not a rival: it answers
 `already_admitted` and releases nothing twice.
 
+An attempt that returns every must-requirement and leaves its Story with zero
+Tasks is admitted as a completed disposition, but records `parked` planning
+with a typed `planning_failed` reason carrying the refusals. In the same
+transaction the Story enters `waiting_human_review` and owes owner/admin notices.
+`retry-planning` locks Brief before Story and clears this admission stamp only
+when every requirement was returned by that attempt and the Story still has no
+Tasks. The confirmed content stays intact; the next claim mints a new attempt
+and removes the superseded coverage. Admitted plans with work refuse retry with
+409. [Recovery of an older taskless admission](../runbooks/returned-plan-recovery.md)
+uses the existing planning-outcome and retry-planning actions, without SQL.
+
 Exactly one architect owns an incomplete plan.
 `POST /api/product-briefs/{id}/planning-attempts/{claim,heartbeat,finish}` fence
 it on the brief row: a claim against an active attempt with a fresh heartbeat

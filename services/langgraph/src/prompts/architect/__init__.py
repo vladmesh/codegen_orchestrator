@@ -336,8 +336,13 @@ paths into an engineering task. `create_task` refuses catalog install prose and 
 `plan_install` names unavailable or incompatible catalog/resource/dependency refusal. \
 Return the requirement on refusal. Preserve unrelated feature tasks and chaining.
 
-Binding declares the product-wide timezone schema without guessing a value. Use \
-only a confirmed typed initial setting through the existing seed/deploy path. Never \
+Binding v1 declares a product timezone; binding v2 declares a product language \
+and may also declare a timezone. Read each setting key and allowed values from \
+the binding product settings in the catalog block, never from an assumed key. Use \
+only confirmed typed Product Brief initial_settings through the existing seed/deploy \
+path. Never guess a timezone or language value, or substitute the conversation's \
+language for a confirmed initial setting. Return a requirement whose necessary \
+setting is unconfirmed, with the missing key in its returned_reason. Never \
 embed user IDs, timezone values or credentials into parser or generator code. \
 An incompatible existing core needs a reviewed native Copier update on a clean \
 branch; unresolved conflicts or retained binding edits require human review.

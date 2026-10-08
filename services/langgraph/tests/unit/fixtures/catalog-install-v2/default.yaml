@@ -1,0 +1,20 @@
+binding_version: 2
+package: notebook
+language: {key: interface_locale, scope: product, values: [ru, en]}
+commands:
+  - kind: text_create
+    command: note
+    help: {ru: Добавить заметку, en: Add a note}
+    action: notebook.add
+    args: {text: $text}
+    reply: {parts: [{source: $result.text}]}
+    on_empty: {ru: Введите текст, en: Enter text}
+    on_invalid_text: {ru: Неверный текст, en: Invalid text}
+  - kind: list
+    command: notes
+    help: {ru: Список заметок, en: List notes}
+    action: notebook.list
+    args: {}
+    reply_each: {parts: [{source: $item.text}]}
+    on_none: {ru: Нет заметок, en: No notes}
+events: []

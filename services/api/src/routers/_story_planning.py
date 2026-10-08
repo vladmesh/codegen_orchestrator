@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -39,13 +40,14 @@ from shared.contracts.dto.story_planning import (
     operator_retry_record,
     planned_record,
 )
-from shared.models import SystemConfig
+from shared.models import ProductBrief, RequirementCoverage, SystemConfig, Task
 from shared.models.story import Story
 
 from ..database import get_async_session
 from ..dependencies import get_internal_or_admin_actor, require_internal_or_admin
 from ..schemas.actions import StoryPlanningRetryRequest
 from ..schemas.story import StoryRead
+from ._product_brief_helpers import returned_plan_failure
 from ._story_actions import COMPOSITE_CHAINS, PARK_UNSTARTED_PLANNING_FAILURE, _apply_chain
 from ._story_helpers import (
     _do_transition,
@@ -170,6 +172,11 @@ async def retry_story_planning(
     unadmitted tasks, so nothing of the failed plan survives into the new one.
     """
     body = body or StoryPlanningRetryRequest()
+    # Brief -> Story is also admission's lock order. Hold the brief through the
+    # reset so a claim or replay cannot observe half of the operator's retry.
+    brief = await db.scalar(
+        select(ProductBrief).where(ProductBrief.story_id == story_id).with_for_update()
+    )
     story = await _get_story_for_update(story_id, db)
     if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value or planning_failure_of(story) is None:
         raise HTTPException(
@@ -179,6 +186,23 @@ async def retry_story_planning(
                 f"planning_failed reason; story {story.id} is '{story.status}'"
             ),
         )
+    if brief is not None and brief.coverage_admitted_at is not None:
+        dispositions = list(
+            (
+                await db.scalars(
+                    select(RequirementCoverage).where(RequirementCoverage.brief_id == brief.id)
+                )
+            ).all()
+        )
+        has_tasks = await db.scalar(select(Task.id).where(Task.story_id == story_id).limit(1))
+        if returned_plan_failure(brief, dispositions, has_tasks=has_tasks is not None) is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An admitted Product Brief can only be retried when every requirement "
+                "was returned and the story has no tasks",
+            )
+        brief.coverage_admitted_at = None
+        brief.planning_attempt_active = False
     planning = operator_retry_record(
         _recorded_planning(story),
         max_retries=await _config_int(db, PLANNING_MAX_RETRIES_CONFIG_KEY),

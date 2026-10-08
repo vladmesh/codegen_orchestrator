@@ -57,6 +57,7 @@ def _session(story: Story, max_retries: int = 3) -> AsyncMock:
     result = MagicMock()
     result.scalar_one_or_none.return_value = story
     session.execute = AsyncMock(return_value=result)
+    session.scalar = AsyncMock(return_value=None)
 
     async def get(model, key, **_kwargs):
         assert model is SystemConfig
@@ -159,6 +160,67 @@ async def test_an_unretriable_failure_parks_at_once():
 
     assert resp.json()["status"] == "waiting_human_review"
     assert resp.json()["planning"]["failed_attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admission_parks_a_fully_returned_plan_and_retry_reopens_the_same_brief(monkeypatch):
+    from shared.contracts.dto.product_brief import ProductBriefAdmissionCommand
+    from shared.models import ProductBrief, RequirementCoverage
+    from src.routers import product_briefs
+
+    story = _story()
+    session = _session(story)
+    brief = ProductBrief(
+        id="brief-notes",
+        story_id=story.id,
+        project_id=PROJECT_ID,
+        confirmed_at=datetime.now(UTC),
+        planning_attempt_id="plan-notes",
+        planning_attempt_active=True,
+        content={"must_requirements": [{"id": "save"}, {"id": "list"}]},
+    )
+    rows = [
+        RequirementCoverage(
+            requirement_id=key,
+            planning_attempt_id="plan-notes",
+            returned_reason="catalog_install refused: invalid_binding",
+        )
+        for key in ("save", "list")
+    ]
+    dispositions = MagicMock()
+    dispositions.all.return_value = rows
+    tasks = MagicMock()
+    tasks.all.return_value = []
+    session.scalars.side_effect = [dispositions, tasks, dispositions]
+    session.scalar.side_effect = [None, brief, None]
+    get_config = session.get
+
+    async def get(model, key, **kwargs):
+        return story if model is Story else await get_config(model, key, **kwargs)
+
+    session.get = get
+    monkeypatch.setattr(product_briefs, "load_brief_for_update", AsyncMock(return_value=brief))
+    monkeypatch.setattr(product_briefs, "_authorize", AsyncMock())
+    admitted = await product_briefs.admit_product_brief_coverage(
+        brief.id,
+        ProductBriefAdmissionCommand(planning_attempt_id="plan-notes"),
+        db=session,
+        internal=True,
+        x_telegram_id=None,
+        credentials=None,
+    )
+    assert admitted.released_task_ids == []
+    assert story.status == "waiting_human_review"
+    assert story.quarantine_reason["code"] == "planning_failed"
+    assert "catalog_install refused: invalid_binding" in story.quarantine_reason["detail"]
+    assert story.planning["state"] == "parked"
+    assert story.owner_notification["state"] == "owed"
+    assert brief.coverage_admitted_at is not None
+    retried = await _retry(story)
+    assert retried.status_code == HTTPStatus.OK, retried.text
+    assert retried.json()["planning"]["state"] == "retrying"
+    assert brief.coverage_admitted_at is None
+    assert brief.planning_attempt_id == "plan-notes"
 
 
 @pytest.mark.asyncio

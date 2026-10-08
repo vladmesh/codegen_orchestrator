@@ -284,6 +284,105 @@ async def test_a_returned_requirement_is_a_disposition(async_client: AsyncClient
     assert answer.json()["released_task_ids"] == [task_id]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_fully_returned_taskless_plan_retries_the_same_confirmed_brief(
+    async_client: AsyncClient, db_session: AsyncSession, legacy: bool
+):
+    project_id = await _project(async_client, await _owner(async_client))
+    brief_id, story_id, attempt = await _planned_brief(async_client, project_id)
+    started = await async_client.post(f"/api/stories/{story_id}/start", json={"actor": "architect"})
+    assert started.status_code == HTTPStatus.OK, started.text
+    refusal = "catalog_install refused: invalid_binding"
+    for key in ("r1", "r2"):
+        covered = await _cover(async_client, brief_id, key, attempt, returned_reason=refusal)
+        assert covered.status_code == HTTPStatus.OK, covered.text
+    if legacy:
+        # Persist exactly the pre-fix admission state; operator recovery must
+        # work after deployment without a new brief or a new order.
+        brief = await db_session.get(ProductBrief, brief_id)
+        brief.coverage_admitted_at = datetime.now(UTC)
+        brief.planning_attempt_active = False
+        await db_session.commit()
+        parked = await async_client.post(
+            f"/api/stories/{story_id}/planning-outcome",
+            json={
+                "outcome": "failed",
+                "retriable": False,
+                "planning_attempt_id": attempt,
+                "failure": {"code": "planning_failed", "source": "architect", "detail": refusal},
+            },
+        )
+        assert parked.status_code == HTTPStatus.OK, parked.text
+    else:
+        admitted = await _admit(async_client, brief_id, attempt)
+        assert admitted.status_code == HTTPStatus.OK, admitted.text
+        assert admitted.json()["released_task_ids"] == []
+        replay = await _admit(async_client, brief_id, attempt)
+        assert replay.json()["outcome"] == ProductBriefAdmissionOutcome.ALREADY_ADMITTED
+    parked = await async_client.get(f"/api/stories/{story_id}")
+    assert parked.json()["status"] == "waiting_human_review"
+    assert parked.json()["planning"]["state"] == "parked"
+    assert parked.json()["quarantine_reason"]["code"] == "planning_failed"
+    assert refusal in parked.json()["quarantine_reason"]["detail"]
+    before = (await async_client.get(f"{BRIEFS_URL}/{brief_id}")).json()
+    retry = await async_client.post(
+        f"/api/stories/{story_id}/retry-planning", json={"actor": "admin"}
+    )
+    assert retry.status_code == HTTPStatus.OK, retry.text
+    assert retry.json()["planning"]["state"] == "retrying"
+    after = (await async_client.get(f"{BRIEFS_URL}/{brief_id}")).json()
+    assert after["coverage_admitted_at"] is None
+    assert after["content"] == before["content"]
+    assert after["confirmed_at"] == before["confirmed_at"]
+    claim = await async_client.post(f"{BRIEFS_URL}/{brief_id}/planning-attempts/claim")
+    assert claim.json()["outcome"] == ProductBriefPlanningAttemptOutcome.CLAIMED
+    replacement = claim.json()["planning_attempt_id"]
+    assert replacement != attempt
+    stale = await _admit(async_client, brief_id, attempt)
+    assert stale.status_code == HTTPStatus.CONFLICT
+    task_id = await _planned_task(async_client, project_id, story_id, replacement)
+    for key in ("r1", "r2"):
+        await _cover(async_client, brief_id, key, replacement, task_id=task_id)
+    admitted = await _admit(async_client, brief_id, replacement)
+    assert admitted.json()["released_task_ids"] == [task_id]
+    completed = await async_client.get(f"/api/stories/{story_id}")
+    assert completed.json()["planning"]["state"] == "planned"
+
+
+@pytest.mark.asyncio
+async def test_planning_retry_preserves_an_admitted_plan_with_released_work(
+    async_client: AsyncClient,
+):
+    project_id = await _project(async_client, await _owner(async_client))
+    brief_id, story_id, attempt = await _planned_brief(async_client, project_id)
+    await async_client.post(f"/api/stories/{story_id}/start", json={"actor": "architect"})
+    task_id = await _planned_task(async_client, project_id, story_id, attempt)
+    await _cover(async_client, brief_id, "r1", attempt, task_id=task_id)
+    await _cover(async_client, brief_id, "r2", attempt, returned_reason="unavailable")
+    await _admit(async_client, brief_id, attempt)
+    parked = await async_client.post(
+        f"/api/stories/{story_id}/planning-outcome",
+        json={
+            "outcome": "failed",
+            "retriable": False,
+            "failure": {
+                "code": "planning_failed",
+                "source": "architect",
+                "detail": "operator review",
+            },
+        },
+    )
+    assert parked.status_code == HTTPStatus.OK, parked.text
+    before = (await async_client.get(f"{BRIEFS_URL}/{brief_id}")).json()
+    refused = await async_client.post(f"/api/stories/{story_id}/retry-planning")
+    assert refused.status_code == HTTPStatus.CONFLICT
+    after = (await async_client.get(f"{BRIEFS_URL}/{brief_id}")).json()
+    assert after["coverage_admitted_at"] == before["coverage_admitted_at"]
+    story = await async_client.get(f"/api/stories/{story_id}")
+    assert story.json()["status"] == "waiting_human_review"
+
+
 # --- exactly one live architect per incomplete plan ---------------------------
 
 

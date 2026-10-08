@@ -116,7 +116,11 @@ same transaction makes the `human-review` stop with the `StoryFailure` and both 
 `created`/`in_progress`/`reopened` is a 409 and writes nothing. `POST /api/stories/{id}/retry-planning`
 (internal or admin, optional `StoryPlanningRetryRequest`) is valid only for `waiting_human_review` with a
 `planning_failed` stop, else 422: one transaction clears the stop, lands on `in_progress` and writes
-`retrying` due now with `failed_attempts` 0, and nothing is published. The scheduler supervisor
+`retrying` due now with `failed_attempts` 0, and nothing is published.
+For an admitted all-returned brief with no Story Tasks, retry also clears the admission
+stamp under Brief-before-Story locks, so the next claim can plan the same confirmed order.
+An admitted brief with work or incomplete return evidence refuses retry with 409.
+The scheduler supervisor
 (`supervise_stuck_stories`, one sequential loop in `scheduler-pipeline`) is the one publisher of an
 `ArchitectMessage` for a `retrying` record, so an operator's re-run is queued within one cycle. The
 Redis key `planning_retry_queued_key` (TTL `supervisor.story_retry_ttl`) is its throttle, never a

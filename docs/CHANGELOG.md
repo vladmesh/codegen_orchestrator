@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Catalog installs use kit binding v1/v2 admission and confirmed binding settings;
+  fully returned taskless plans park for retry against the same confirmed brief.
+
 - CI failure excerpts retain close final errors and pytest headers across long tracebacks;
   step boundaries prevent earlier successful commands from supplying the cause.
 

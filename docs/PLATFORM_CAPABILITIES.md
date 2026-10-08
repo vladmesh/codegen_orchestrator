@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 21, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 22, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -58,7 +58,7 @@ Code it was read from:
 
 #### Add a catalog capability
 
-How: plan_install selects package/libraries/default binding in one INSTALL on owned clean core-2.4.0 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Review refusals; confirm timezone.
+How: plan_install selects package/libraries/default binding in one INSTALL on clean owned core-2.4.0 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Binding v1/v2 uses confirmed typed timezone/language settings.
 
 #### Plain HTTP self links
 
