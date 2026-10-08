@@ -1,0 +1,16 @@
+{
+  "tag": "packages/tg-channels/v0.1.0",
+  "commit": "b325ebca46888b133d5ba8d35015ab557e171bf6",
+  "source_sha256": {
+    "README.md": "3793bb3779558ab59bbbc972730a680a85219af6ae1441b447319e6191431060",
+    "binding.yaml": "c3aba85750840c4563f484b82bf591b707a84d6672349b6bb8266c4639b45dfd",
+    "manifest.yaml": "06d10eba57d552608ed62fc4c9515a1823fde4a000be6fd96164d5d0483402e4",
+    "openapi.json": "94bcd6959faa6761059f9a507b1b466d1185427c850eedc6e0eafcc038409276"
+  },
+  "projection": "API components and paths only; binding unchanged. Service identity is read from the live catalog manifest.",
+  "fixture_sha256": {
+    "openapi.json": "8104680abb3c47c02d4afee9b79935676eb0ab6c3a1d84d3eb0580c7373b6c51",
+    "binding.yaml": "c3aba85750840c4563f484b82bf591b707a84d6672349b6bb8266c4639b45dfd"
+  },
+  "tag_object": "22f061ee7f4ded6a99d7775db801398235f9bbca"
+}

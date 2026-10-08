@@ -1,0 +1,1048 @@
+{
+  "components": {
+    "schemas": {
+      "Channel": {
+        "properties": {
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "last_post_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Post At"
+          },
+          "last_post_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Post Id"
+          },
+          "posts_per_day": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Posts in the last 24 h",
+            "title": "Posts Per Day"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChannelStatus"
+          },
+          "subscribers": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Approximate",
+            "title": "Subscribers"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "tracked": {
+            "default": false,
+            "description": "A product holds a live lease",
+            "title": "Tracked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channel",
+          "status",
+          "checked_at"
+        ],
+        "title": "Channel",
+        "type": "object"
+      },
+      "ChannelState": {
+        "properties": {
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last upstream error class when `status` is `error`",
+            "title": "Error"
+          },
+          "last_polled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Polled At"
+          },
+          "last_post_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Post Id"
+          },
+          "next_poll_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Poll At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChannelStatus"
+          }
+        },
+        "required": [
+          "channel",
+          "status"
+        ],
+        "title": "ChannelState",
+        "type": "object"
+      },
+      "ChannelStatus": {
+        "description": "`ok`, `pending` (first fetch not done), `no_preview` (preview restricted or disabled),\n`not_found` (no such username, or a person), `not_a_channel` (a bot), `error` (upstream\nfailures; polling continues with backoff).",
+        "enum": [
+          "ok",
+          "pending",
+          "no_preview",
+          "not_found",
+          "not_a_channel",
+          "error"
+        ],
+        "title": "ChannelStatus",
+        "type": "string"
+      },
+      "ForwardedFrom": {
+        "properties": {
+          "channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel"
+          },
+          "post_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Post Url"
+          }
+        },
+        "title": "ForwardedFrom",
+        "type": "object"
+      },
+      "LinkPreview": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "site_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Name"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "LinkPreview",
+        "type": "object"
+      },
+      "Media": {
+        "properties": {
+          "count": {
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "photo",
+              "video",
+              "roundvideo",
+              "document",
+              "audio",
+              "voice",
+              "poll",
+              "sticker",
+              "location",
+              "link_preview",
+              "unsupported"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "count"
+        ],
+        "title": "Media",
+        "type": "object"
+      },
+      "Post": {
+        "properties": {
+          "channel": {
+            "description": "Canonical lower-case username",
+            "title": "Channel",
+            "type": "string"
+          },
+          "date": {
+            "description": "Publication time (UTC)",
+            "format": "date-time",
+            "title": "Date",
+            "type": "string"
+          },
+          "deleted": {
+            "description": "Tombstone: the post vanished upstream; content emptied",
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "edited": {
+            "title": "Edited",
+            "type": "boolean"
+          },
+          "fetched_at": {
+            "description": "When this version was stored",
+            "format": "date-time",
+            "title": "Fetched At",
+            "type": "string"
+          },
+          "forwarded_from": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForwardedFrom"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set only for a public channel origin; a person yields nulls, no name"
+          },
+          "hashtags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Hashtags",
+            "type": "array"
+          },
+          "id": {
+            "description": "Telegram message id within the channel",
+            "title": "Id",
+            "type": "integer"
+          },
+          "lang": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ru",
+                  "en",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Additive: script-based `ru`, `en` or `other`; null if empty",
+            "title": "Lang"
+          },
+          "link_preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "links": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Links",
+            "type": "array"
+          },
+          "media": {
+            "description": "Kinds and counts only, no media URLs",
+            "items": {
+              "$ref": "#/components/schemas/Media"
+            },
+            "title": "Media",
+            "type": "array"
+          },
+          "reply": {
+            "default": false,
+            "description": "Additive: the post replies to another",
+            "title": "Reply",
+            "type": "boolean"
+          },
+          "seq": {
+            "description": "Service-wide change sequence. A new value on every stored change.",
+            "format": "int64",
+            "title": "Seq",
+            "type": "integer"
+          },
+          "text": {
+            "description": "Plain text; empty for media-only posts and tombstones",
+            "title": "Text",
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "title": "Url",
+            "type": "string"
+          },
+          "views": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Approximate",
+            "title": "Views"
+          }
+        },
+        "required": [
+          "channel",
+          "id",
+          "url",
+          "seq",
+          "date",
+          "text",
+          "edited",
+          "deleted",
+          "links",
+          "media",
+          "fetched_at"
+        ],
+        "title": "Post",
+        "type": "object"
+      },
+      "PostPage": {
+        "properties": {
+          "channels": {
+            "description": "Every requested channel, request order",
+            "items": {
+              "$ref": "#/components/schemas/ChannelState"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "description": "More changes are already available",
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Post"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass it back unchanged with the same channel set",
+            "title": "Next Cursor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "channels"
+        ],
+        "title": "PostPage",
+        "type": "object"
+      },
+      "Problem": {
+        "description": "RFC 9457 problem document.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instance"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "format": "uri-reference",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status"
+        ],
+        "title": "Problem",
+        "type": "object"
+      },
+      "Quota": {
+        "properties": {
+          "backfill_pages": {
+            "default": 3,
+            "title": "Backfill Pages",
+            "type": "integer"
+          },
+          "channels_max": {
+            "default": 50,
+            "title": "Channels Max",
+            "type": "integer"
+          },
+          "requests_per_minute": {
+            "default": 60,
+            "title": "Requests Per Minute",
+            "type": "integer"
+          },
+          "resolve_per_day": {
+            "default": 200,
+            "title": "Resolve Per Day",
+            "type": "integer"
+          }
+        },
+        "title": "Quota",
+        "type": "object"
+      },
+      "Subscription": {
+        "properties": {
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "last_read_at + lease_ttl (7 days)",
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "last_read_at": {
+            "format": "date-time",
+            "title": "Last Read At",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ChannelState"
+          }
+        },
+        "required": [
+          "channel",
+          "created_at",
+          "last_read_at",
+          "expires_at",
+          "state"
+        ],
+        "title": "Subscription",
+        "type": "object"
+      },
+      "SubscriptionList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Subscription"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SubscriptionList",
+        "type": "object"
+      },
+      "Usage": {
+        "properties": {
+          "limits": {
+            "$ref": "#/components/schemas/Quota"
+          },
+          "product_id": {
+            "title": "Product Id",
+            "type": "string"
+          },
+          "used": {
+            "$ref": "#/components/schemas/UsageCounts"
+          }
+        },
+        "required": [
+          "product_id",
+          "limits",
+          "used"
+        ],
+        "title": "Usage",
+        "type": "object"
+      },
+      "UsageCounts": {
+        "properties": {
+          "channels": {
+            "title": "Channels",
+            "type": "integer"
+          },
+          "requests_this_minute": {
+            "title": "Requests This Minute",
+            "type": "integer"
+          },
+          "resolves_today": {
+            "title": "Resolves Today",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "channels",
+          "requests_this_minute",
+          "resolves_today"
+        ],
+        "title": "UsageCounts",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "productKey": {
+        "description": "Product key `cps_<key_id>_<secret>`, checked by the ingress, never by this service. The ingress passes X-Product-Id, X-Product-Scopes and X-Product-Quota.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "paths": {
+    "/v1/channels/{channel}": {
+      "get": {
+        "description": "Whether the channel can be read through the web preview, and its metadata. Served from cache when checked within the last hour; otherwise one upstream fetch and one unit of `resolve_per_day`. Does not subscribe the product.",
+        "operationId": "resolveChannel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{3,31}$",
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            },
+            "description": "Channel status. `status` other than `ok` is still a 200."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Error (RFC 9457)"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Product quota exceeded (RFC 9457 problem, `Retry-After` in seconds)",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Error (RFC 9457)"
+          }
+        },
+        "summary": "Resolve and validate a channel username",
+        "tags": [
+          "channels"
+        ]
+      }
+    },
+    "/v1/posts": {
+      "get": {
+        "description": "Post changes (new, edited, deletion tombstone) of the named channels in `seq` order. The first call passes `since` (or nothing); later calls pass the returned `next_cursor` with the same channel set, else 409. Unknown channels are leased lazily as `pending` and polled asynchronously; their posts arrive later with a higher `seq`. Reading renews the product's lease on every named channel. Counts one request against `requests_per_minute`; every newly leased channel counts against `channels_max`.",
+        "operationId": "listPosts",
+        "parameters": [
+          {
+            "description": "Comma-separated public channel usernames. Case-insensitive.",
+            "in": "query",
+            "name": "channels",
+            "required": true,
+            "schema": {
+              "description": "Comma-separated public channel usernames. Case-insensitive.",
+              "examples": [
+                "cyproplan,limassol_afisha,kino_na_kipre"
+              ],
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{3,31}(,[A-Za-z][A-Za-z0-9_]{3,31}){0,49}$",
+              "title": "Channels",
+              "type": "string"
+            }
+          },
+          {
+            "description": "First call only: posts dated at or after this instant. Default 72 h ago, earliest the 30-day retention horizon. Ignored with `cursor`.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "First call only: posts dated at or after this instant. Default 72 h ago, earliest the 30-day retention horizon. Ignored with `cursor`.",
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostPage"
+                }
+              }
+            },
+            "description": "A page of post changes",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Requests left in the current minute window",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Error (RFC 9457)"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Error (RFC 9457)"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Error (RFC 9457)"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Error (RFC 9457)"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Product quota exceeded (RFC 9457 problem, `Retry-After` in seconds)",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Posts of the given channels, incrementally by cursor",
+        "tags": [
+          "posts"
+        ]
+      }
+    },
+    "/v1/subscriptions": {
+      "get": {
+        "operationId": "listSubscriptions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionList"
+                }
+              }
+            },
+            "description": "Leases of the calling product"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Product quota exceeded (RFC 9457 problem, `Retry-After` in seconds)",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Channels this product holds a lease on",
+        "tags": [
+          "channels"
+        ]
+      }
+    },
+    "/v1/subscriptions/{channel}": {
+      "delete": {
+        "operationId": "unsubscribe",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{3,31}$",
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Lease dropped or absent"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Product quota exceeded (RFC 9457 problem, `Retry-After` in seconds)",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Drop the product's lease (idempotent)",
+        "tags": [
+          "channels"
+        ]
+      },
+      "put": {
+        "description": "Starts polling at once if nobody polls the channel yet. A channel whose status is not `ok` is still recorded and retried at the slowest interval. A new lease counts against `channels_max`.",
+        "operationId": "subscribe",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{3,31}$",
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            },
+            "description": "Lease renewed"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            },
+            "description": "Lease created"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Error (RFC 9457)"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Product quota exceeded (RFC 9457 problem, `Retry-After` in seconds)",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Take or renew a lease on a channel (idempotent)",
+        "tags": [
+          "channels"
+        ]
+      }
+    },
+    "/v1/usage": {
+      "get": {
+        "description": "Does not count against `requests_per_minute`, so a limited product can read it.",
+        "operationId": "getUsage",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usage"
+                }
+              }
+            },
+            "description": "Usage"
+          }
+        },
+        "summary": "The product's quota limits and current usage",
+        "tags": [
+          "usage"
+        ]
+      }
+    }
+  }
+}

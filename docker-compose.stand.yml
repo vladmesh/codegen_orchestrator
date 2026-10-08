@@ -71,6 +71,12 @@ services:
     environment:
       CLAUDE_CODE_OAUTH_TOKEN: ${STAND_CLAUDE_CODE_OAUTH_TOKEN:-}
 
+  qa-worker:
+    environment:
+      STAND_CONVERSATION_DIR: /stand-conversations
+    volumes:
+      - ./infra/stand-conversations:/stand-conversations:ro
+
   architect:
     environment:
       CLAUDE_CODE_OAUTH_TOKEN: ${STAND_CLAUDE_CODE_OAUTH_TOKEN:-}

@@ -11,6 +11,34 @@ from src.clients.api import LanggraphAPIClient
 from tests.unit.test_catalog_install import snapshot
 
 
+def test_capability_selection_is_unique_and_requires_platform_declarations():
+    from dataclasses import replace
+
+    catalog = snapshot()
+    original = catalog.packages[0]
+    selected = replace(
+        original,
+        package=replace(
+            original.package, name="opaque-module", capabilities=("read public Telegram channels",)
+        ),
+    )
+    declaration = (
+        "environment:\n  - name: KEY\n    source: {kind: platform_key}\n"
+        "  - name: URL\n    source: {kind: platform_base_url}\n"
+    )
+    catalog = replace(catalog, packages=(selected,), manifests={selected.name: declaration})
+    assert harness.select_capability(catalog, "read public Telegram channels") == selected.name
+    with pytest.raises(ValueError, match="exactly one"):
+        harness.select_capability(
+            replace(catalog, packages=(selected, selected)), "read public Telegram channels"
+        )
+    with pytest.raises(ValueError, match="platform"):
+        harness.select_capability(
+            replace(catalog, manifests={selected.name: "environment: []"}),
+            "read public Telegram channels",
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("active,owned", [(False, True), (True, False)])
 async def test_transferred_claim_refuses_stale_or_foreign_attempt(monkeypatch, active, owned):

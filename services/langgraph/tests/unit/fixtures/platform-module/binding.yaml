@@ -1,0 +1,70 @@
+binding_version: 2
+package: tg-channels
+language: {key: language, scope: product, values: [ru, en]}
+commands:
+  - kind: text_create
+    command: channel
+    help: {ru: 'Добавить канал: /channel @name', en: 'Add a channel: /channel @name'}
+    action: tg-channels.add
+    args: {text: $text}
+    reply:
+      parts:
+        - {ru: 'Добавлен канал: @', en: 'Channel added: @'}
+        - {source: $result.channel}
+    on_empty: {ru: Введите имя публичного канала., en: Enter a public channel username.}
+    on_invalid_text: {ru: Неверное имя канала., en: Invalid channel username.}
+    on_error:
+      invalid_username: {ru: Неверное имя канала., en: Invalid channel username.}
+      pending: {ru: Канал добавлен. Проверяем доступность., en: Channel added. Checking availability.}
+      not_found: {ru: Канал не найден., en: Channel not found.}
+      not_a_channel: {ru: Это не публичный канал., en: This is not a public channel.}
+      no_preview: {ru: У канала нет публичного предпросмотра., en: This channel has no public preview.}
+      try_later: {ru: Попробуйте позже., en: Try again later.}
+      not_configured: {ru: Сервис не настроен., en: Service is not configured.}
+  - kind: list
+    command: channels
+    help: {ru: Список каналов и удаление., en: List and remove channels.}
+    action: tg-channels.list
+    args: {}
+    reply_each:
+      parts:
+        - {ru: '@', en: '@'}
+        - {source: $item.channel}
+    on_none: {ru: Список каналов пуст., en: Your channel list is empty.}
+    buttons:
+      - label: {ru: Удалить, en: Remove}
+        action: tg-channels.remove
+        args: {id: $item.id}
+        reply:
+          parts:
+            - {ru: 'Удалён канал: @', en: 'Channel removed: @'}
+            - {source: $result.channel}
+  - kind: show
+    command: digest
+    help: {ru: Последние публикации ваших каналов., en: Latest posts from your channels.}
+    action: tg-channels.digest
+    args: {}
+    reply_each: &post
+      parts:
+        - {ru: '@', en: '@'}
+        - {source: $item.channel}
+        - {ru: "\n", en: "\n"}
+        - {source: $item.date}
+        - {ru: "\n", en: "\n"}
+        - {source: $item.text}
+        - {ru: "\n", en: "\n"}
+        - {source: $item.url}
+    on_none: {ru: Пока нет публикаций., en: No posts yet.}
+events:
+  - event: tg-channels.post
+    to: $event.user_ref
+    reply:
+      parts:
+        - {ru: 'Новая публикация: @', en: 'New post: @'}
+        - {source: $event.channel}
+        - {ru: "\n", en: "\n"}
+        - {source: $event.date}
+        - {ru: "\n", en: "\n"}
+        - {source: $event.text}
+        - {ru: "\n", en: "\n"}
+        - {source: $event.url}

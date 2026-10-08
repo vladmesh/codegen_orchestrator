@@ -107,6 +107,39 @@ async def test_fixed_probe_stays_inside_grant_and_retains_only_safe_identity(mon
     assert result.probe_runs is None
 
 
+async def test_data_conversation_uses_same_native_grant_and_runtime_settings_secret(monkeypatch):
+    from src.consumers import stand_conversation
+
+    msg = message()
+    native = grant(msg)
+    api = SimpleNamespace(
+        get_temporary_access_grant=AsyncMock(return_value=native), patch=AsyncMock()
+    )
+
+    async def probe(**kwargs):
+        assert kwargs["stored"]["SETTINGS_WRITE_CAPABILITY"] == "runtime-only-setting-secret"
+        kwargs["evidence"].update(
+            status="passed", phase="completed", languages={"ru": True, "en": True}
+        )
+
+    monkeypatch.setattr(qa, "api_client", api)
+    monkeypatch.setattr(stand_conversation, "run_probe", probe)
+    result = await qa._run_mechanical_qa(
+        msg,
+        ("conversation", "platform-module"),
+        {
+            "USER_IDENTITY_CAPABILITY": "runtime-only-identity",
+            "SETTINGS_WRITE_CAPABILITY": "runtime-only-setting-secret",
+        },
+        QAResult(passed=True),
+        QARunRedaction(["runtime-only-identity", "runtime-only-setting-secret"]),
+    )
+    assert result.passed
+    assert api.get_temporary_access_grant.await_count == 2
+    assert json.loads(result.report)["languages"] == {"ru": True, "en": True}
+    assert "runtime-only" not in result.report
+
+
 async def test_bot_refusal_has_a_named_phase(monkeypatch):
     bot = SimpleNamespace(id=42)
     refused = SimpleNamespace(

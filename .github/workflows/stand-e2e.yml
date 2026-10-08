@@ -636,7 +636,7 @@ jobs:
           HOST_GID: ${{ steps.identity.outputs.runtime_gid }}
           GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
           LIVE_CONTOUR: stand
-          STAND_PLATFORM_FIXTURE_FILE: ${{ vars.STAND_PLATFORM_FIXTURE_FILE || 'empty.json' }}
+          STAND_PLATFORM_FIXTURE_FILE: platform-module.json
           DEFAULT_AGENT_TYPE: claude
           TELEGRAM_MAX_CONCURRENT_UPDATES: '8'
           # The QA account's Telethon credentials, for qa-worker alone.

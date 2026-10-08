@@ -50,7 +50,7 @@ JUnit metadata, logs, and run directories always record the canonical name.
 
 | Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `mega-noop` | `tests/live/test_full_pipeline.py::TestMechanicalInstall` | 0; one lifecycle assertion, two scripted engineering Tasks in the first Story and one native INSTALL in the second | 1 | registered owner and promo admission; one backend,tg_bot product; confirmed notes brief under an owned planning claim; persistent notes save/list through the QA Telegram account; separate explicit reminders brief and one transferred claim; live catalog planner, native coverage/admission, scheduler/scaffolder install, App publication, PR/CI/merge/deploy; explicit Etc/UTC setting; actual scheduling receipt and timer arrival, preset scheduling and Cancel callback; notes retained across deployment; zero install-story engineering and suite-wide model observations | native grant revocation, explicit undeploy and manifest-owned residue proof | 196 min | request-to-deployed seconds and comparison to the 600-second guideline retained separately from total suite time; no live acceptance claimed before dispatcher run |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestMechanicalInstall` | 0; one lifecycle assertion, two scripted engineering Tasks in the first Story and native INSTALLs in the second and third | 1 | registered owner and promo admission; one backend,tg_bot product; confirmed notes brief under an owned planning claim; persistent notes save/list through the QA Telegram account; separate explicit reminders brief and one transferred claim; live catalog planner, native coverage/admission, scheduler/scaffolder install, App publication, PR/CI/merge/deploy; explicit Etc/UTC setting; actual scheduling receipt and timer arrival, preset scheduling and Cancel callback; notes retained across deployment; third confirmed RU/EN public-channel brief, capability-selected platform-backed module, internal fake-platform product/grant/key and environment-source proof, fixture-driven add/list/digest, unsolicited timer post and visible removal, language write and EN reply; zero install-story engineering and suite-wide model observations | native grant revocation, explicit undeploy and manifest-owned residue proof | 278 min | request-to-deployed seconds and comparison to the 600-second guideline retained separately from total suite time; no live acceptance claimed before dispatcher run |
 | `mega-live` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 42 engineering lifecycle tests; three developer attempts (plus any retry) by the selected model, and one QA executor turn per story | 1 selected `--worker` / `--qa` pair | level 2: the ordinary engineering lifecycle — registration door, constant brief, harness-admitted plans, two stories on one project, both deploy paths, settings seed, notifications, undeploy — except that a real developer (`claude` or `codex`) writes the product code from the contract its task descriptions state in prose, and a real QA executor judges each deployed story against the repository criteria its plan admission wrote; the first story also carries a live-only bot behaviour — it answers a native Telegram location with its coordinates rounded to 4 decimals — which that executor must prove as the QA account with a probe it runs in its sandbox (the `telegram/location` library seed or its own script): `test_qa_passed` requires the location check in `passed_checks`, not in `unverified_checks` (the one exception: an executor's own out-of-range location check reported not applicable, accepted only on the seed probe's own argument refusal of the value it names, recorded as `qa.location_refusals_accepted`), and a retained `telegram` probe that exited 0, sent a native geo point and shows the bot's reply, and the evidence artifact's QA Run record carries those probe records; every engineering Run is decided for the requested developer, carries a provider-reported cost and settles its reservation under the run owner's promo policy; each story's QA Run is decided for the requested executor, records provider-reported QA spend and settles its owner reservation | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 265 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 50 min + 10 min grace | the fixture's own productive deadline, then the runner's hard stop; no baseline measurement yet |
 | `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 65 min + 15 min grace | a longer productive window than `mega-brief`, because the kit install is inside its engineering budget; no baseline measurement yet |
@@ -168,16 +168,19 @@ throughout a redeploy — the Run is the fact, not the status; the application's
 once that Run has settled; the health probe; QA; completed-story and PO delivery. **Teardown**
 spends 10m: undeploy Run, terminal application and port-allocation release. The whole `mega-noop`
 path — 45m provisioning, 10m pre-provisioning reserve, preflight, readiness, the executor switch,
-its mechanical cap, the sweep and the job reserve — comes to 275 of the workflow's 360 job-minutes.
+its mechanical cap, the sweep and the job reserve — comes to 357 of the workflow's 360 job-minutes.
 
 The preceding `NOOP_LIFECYCLE_WAITS` ledger remains the ordinary focused engineering
 fixture's budget. Registered `mega-noop` selects `TestMechanicalInstall`, whose
-`MECHANICAL_LIFECYCLE_WAITS` sum to 10910 seconds: first-story waits with 600-second QA,
-native planner/install/deploy/chat/notification/revocation waits, three fixed readbacks,
-provenance/model observation and undeploy. Its cap is 196 minutes (11760 seconds),
+`MECHANICAL_LIFECYCLE_WAITS` sum to 15830 seconds: first-story waits with 600-second QA,
+two native planner/install/deploy/chat/notification/revocation lifecycles, readbacks,
+provenance/model observation and undeploy. Its cap is 278 minutes (16680 seconds),
 leaving 700 seconds for cleanup and 150 seconds for polling/diagnostics. The probe itself
 is bounded at 280 seconds, plus a 30-second session disconnect. Notes never enter
 the install's engineering scope; real due arrival uses the released relay and timer.
+The third conversation waits up to 150 seconds for an unsolicited post, covering the
+60-second package timer and stand latency; its full session has a 300-second bound
+plus 30 seconds to disconnect. The service fixture uses fresh `{now}` post dates.
 
 `mega-live` is the same lifecycle with its two forks, and its ledger (`LIVE_LIFECYCLE_WAITS`) is the
 noop ledger with exactly two kinds of entry replaced: each developer Task is waited on for
@@ -223,7 +226,7 @@ would have no bound at all: pytest-timeout drops an item's timer whenever its se
 
 | Items | Body bound | Teardown bound |
 |---|---|---|
-| `TestMechanicalInstall` under `mega-noop` | 10910 s: `MECHANICAL_LIFECYCLE_WAITS` | 700 s (the teardown reserve) |
+| `TestMechanicalInstall` under `mega-noop` | 15830 s: `MECHANICAL_LIFECYCLE_WAITS` | 700 s (the teardown reserve) |
 | The first focused scripted `TestFullPipeline` item | 8440 s: `NOOP_LIFECYCLE_WAITS` | 700 s |
 | The first `TestFullPipeline` item under `mega-live` | 14980 s: `LIVE_LIFECYCLE_WAITS` | 700 s |
 | Every other `TestFullPipeline` item (they only assert on the fixture's context) | 1800 s | 700 s |
@@ -233,7 +236,7 @@ would have no bound at all: pytest-timeout drops an item's timer whenever its se
 A hang is reported in this order: the **test timeout**, then `stand_run`'s **suite backstop** (SIGINT
 to the process group, then a kill after the termination grace), then the workflow's **job limit**.
 For `mega-noop` and `mega-live`, the ledger checks at import that any single item's bound plus the
-teardown reserve is less than the suite cap (10910 + 700 < 11760 and 14980 + 700 < 15900). When a hang
+teardown reserve is less than the suite cap (15830 + 700 < 16680 and 14980 + 700 < 15900). When a hang
 fails the lifecycle item, `-x` stops the session and pytest tears the module down at session end,
 outside any item. The margin the cap leaves then still covers the cleanup, so pytest reports the hang
 before the backstop can fire. An ordinary live test is checked the same way against the 2700-second

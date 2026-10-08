@@ -273,6 +273,13 @@ Telegram grant, observes receipt, due arrival and preset cancellation in the rea
 chat, and leaves revocation to the existing owner. Its redacted
 `mechanical-install-<run_id>.json` records partial phases, native operation/publication,
 deployed registry digests, protected notes, timezone, accounting and chat correlation.
+Its third confirmed brief selects an install by catalog capability and proves the deployed
+manifest's platform sources against the internal stand fake's product, grant and key readback.
+The stand-only `Stand conversation: <fixture>` checklist line selects finite chat test data
+mounted into QA; admission and QA share its selector, and ordinary production admission
+does not treat it as deterministic. The runner supports sends, visible callbacks and passive
+message waits, writes language through the existing settings client and retains redacted RU/EN
+results inside the same native QA grant. The reminders probe remains unchanged.
 Only dispatcher-owned final-main stand evidence can establish live acceptance.
 The persisted planning Python value is a compatibility baseline, not an observed product
 interpreter; native preflight validates the actual product interpreter before mutation.

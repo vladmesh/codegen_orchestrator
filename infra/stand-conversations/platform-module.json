@@ -1,0 +1,77 @@
+{
+  "capability": "read public Telegram channels",
+  "initial_setting": {
+    "key": "language",
+    "value": "ru"
+  },
+  "steps": [
+    {
+      "action": "send",
+      "language": "ru",
+      "text": "/channel @stand_public",
+      "expect": {
+        "exact": "Добавлен канал: @stand_public"
+      }
+    },
+    {
+      "action": "send",
+      "language": "ru",
+      "text": "/channels",
+      "expect": {
+        "exact": "@stand_public"
+      }
+    },
+    {
+      "action": "send",
+      "language": "ru",
+      "text": "/digest",
+      "expect": {
+        "prefix": "@stand_public\n",
+        "contains": [
+          "Stand public post: привет / hello",
+          "https://t.me/stand_public/101"
+        ]
+      }
+    },
+    {
+      "action": "wait",
+      "language": "ru",
+      "timeout": 150,
+      "expect": {
+        "prefix": "Новая публикация: @stand_public\n",
+        "contains": [
+          "Stand public post: привет / hello",
+          "https://t.me/stand_public/101"
+        ]
+      }
+    },
+    {
+      "action": "press",
+      "language": "ru",
+      "message_step": 1,
+      "button": "Удалить",
+      "expect": {
+        "exact": "Удалён канал: @stand_public"
+      }
+    },
+    {
+      "action": "setting",
+      "key": "language",
+      "value": "en"
+    },
+    {
+      "action": "send",
+      "language": "en",
+      "text": "/channel @stand_public",
+      "expect": {
+        "exact": "Channel added: @stand_public"
+      }
+    }
+  ],
+  "release": {
+    "version": "0.1.0",
+    "tag": "packages/tg-channels/v0.1.0",
+    "binding_sha256": "c3aba85750840c4563f484b82bf591b707a84d6672349b6bb8266c4639b45dfd",
+    "manifest_sha256": "06d10eba57d552608ed62fc4c9515a1823fde4a000be6fd96164d5d0483402e4"
+  }
+}

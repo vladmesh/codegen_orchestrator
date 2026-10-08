@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- The no-model stand adds a capability-selected platform install, key-issuance readback and
+  fixture-driven RU/EN chat delivery on the same product, without an engineering Run.
+
 - Stand has an authenticated fixture platform and internal key administration; declared URLs
   can redirect to its TLS ingress only on stand, keeping production isolated.
 
