@@ -41,8 +41,8 @@ qa container_logs CONTAINER [TAIL]  — tail one container's log
 qa container_inspect CONTAINER      — one container's state
 qa fire_job NAME                    — invoke one named scheduled behaviour
 qa job_evidence NAME                — read back this run's record of that fire
-qa telegram_probe MESSAGE           — send a message to the bot under test
-qa telegram_click_button ID DATA    — invoke a visible inline bot button
+qa telegram_probe [--wait-seconds N] MESSAGE — send a message to the bot under test
+qa telegram_click_button [--wait-seconds N] ID DATA — invoke a visible inline bot button
 qa telegram_identity                — write the QA Telegram account's Telethon
                                       credentials and proxy to ~/.qa/telegram_identity.json
                                       for your own client; never print that file
@@ -158,14 +158,22 @@ def build_call(argv):
         if len(rest) != 1:
             fail("usage: qa job_evidence NAME")
         return "job_evidence", {"name": rest[0]}
+    wait_args = {}
+    if command in ("telegram_probe", "telegram_click_button") and rest[:1] == ["--wait-seconds"]:
+        if len(rest) < 2:
+            fail("--wait-seconds requires an integer")
+        wait_args = {"wait_seconds": int(rest[1])}
+        rest = rest[2:]
     if command == "telegram_probe":
         if not rest:
             fail("usage: qa telegram_probe MESSAGE")
-        return "telegram_probe", {"message": " ".join(rest)}
+        return "telegram_probe", {"message": " ".join(rest), **wait_args}
     if command == "telegram_click_button":
         if len(rest) != 2 or not rest[0].isdigit():
             fail("usage: qa telegram_click_button MESSAGE_ID CALLBACK_DATA")
-        return "telegram_click_button", {"message_id": int(rest[0]), "callback_data": rest[1]}
+        return "telegram_click_button", {
+            "message_id": int(rest[0]), "callback_data": rest[1], **wait_args,
+        }
     if command == "telegram_identity":
         if rest:
             fail("usage: qa telegram_identity")

@@ -188,7 +188,7 @@ class TestEstablishedFactsKeepTheContract:
             assert '"pass": true/false' in prompt
             assert '{"name": "passed check", "pass": true, "detail": "one-line summary"}' in prompt
             assert '{"name": "failed check", "pass": false, "detail": "one-line summary",' in prompt
-            assert '"cause": "product" | "qa_capability" | "qa_access"}' in prompt
+            assert '"cause": "product" | "qa_capability" | "qa_access" | "qa_tooling"}' in prompt
             assert '"summary": "brief summary"' in prompt
             assert "qa report <file>" in prompt
 

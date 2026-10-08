@@ -1,7 +1,8 @@
 """What a QA run could not check, and where that is kept.
 
 A check QA has no tool for — cause `qa_capability`
-(`shared.contracts.qa_capabilities`) — is not a failure and not a pass. The QA
+(`shared.contracts.qa_capabilities`) — or cannot trust because of `qa_tooling`
+is not a failure and not a pass. The QA
 runner records it as **unverified** (`QAUnverifiedCheck`) and decides the
 verdict from the checks it did run. The settling owner event carries the
 unverified checks next to the names of the checks that passed
@@ -27,7 +28,7 @@ from shared.contracts.dto.base import BaseDTO
 class QAUnverifiedOrigin(StrEnum):
     """Where in the QA runner an unverified check came from."""
 
-    #: The executor reported the check failed with cause `qa_capability`.
+    #: An executor check settled as `qa_capability` or `qa_tooling`.
     EXECUTOR = "executor"
     #: The executor reported the check not applicable, and this run recorded no
     #: transport refusal that grounds it.

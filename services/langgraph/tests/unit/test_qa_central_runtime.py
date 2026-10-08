@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 
+from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.qa_ssh_grant import QASshGrantState
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.queues.worker import WorkerOwnership
@@ -376,6 +377,7 @@ def central_run(tmp_path):
         unavailable=None,
         runtime=RUNTIME,
         redaction=None,
+        brief=None,
     ):
         connection = conn or FakeConn()
         factory = _executor_factory(behaviour, unavailable=unavailable)
@@ -402,6 +404,7 @@ def central_run(tmp_path):
                 provisioning_journal=provisioning_record,
                 established_facts=[],
                 redaction=redaction,
+                brief=brief,
             )
         return result, connection, factory, record
 
@@ -410,6 +413,73 @@ def central_run(tmp_path):
 
 async def _no_executor(harness):
     raise AssertionError("a harness blocker must be decided before any executor starts")
+
+
+@pytest.mark.parametrize("text,passed", [("/history", True), ("/reading", False)])
+async def test_central_runner_grounds_failed_inputs_in_confirmed_brief(central_run, text, passed):
+    brief = ProductBriefContent(
+        summary="Readings",
+        must_requirements=[{"id": "reading", "text": "Produce readings"}],
+        usage_examples=[
+            {
+                "requirement_id": "reading",
+                "user_sends": "/reading",
+                "product_answers": "An answer",
+            }
+        ],
+    )
+
+    async def behaviour(harness):
+        answer = await harness.tools["telegram_probe"].ainvoke(
+            {"message": text, "wait_seconds": 60}
+        )
+        return json.dumps(
+            {
+                "pass": False,
+                "summary": "fixture",
+                "checks": [
+                    {
+                        "name": text,
+                        "pass": False,
+                        "detail": "No reply",
+                        "cause": "product",
+                        "telegram_step": answer["telegram_step"],
+                    }
+                ],
+            }
+        )
+
+    async def probe(script, *, env, timeout):
+        assert timeout == 90
+        return SimpleNamespace(
+            stdout="telegram_probe_result:"
+            + json.dumps(
+                {
+                    "action": "message",
+                    "attempted": f"send {text}",
+                    "sent": text,
+                    "delivered": True,
+                    "message_id": 10,
+                    "replies": [],
+                }
+            ),
+            stderr="",
+            exit_status=0,
+        )
+
+    runtime = replace(RUNTIME, telethon_env={"TELETHON_SESSION": "fixture"})
+    with patch("src.agents.qa.tools.run_probe_script", probe):
+        result, _, factory, _ = await central_run(
+            behaviour=behaviour,
+            runtime=runtime,
+            brief=brief,
+            target=replace(TARGET, bot_username="test_bot"),
+        )
+    assert result.blocker is None
+    assert result.passed is passed
+    assert bool(result.unverified_checks) is passed
+    assert "Produce readings" in factory.prompt
+    assert len(result.telegram_probe_evidence) == 1
 
 
 class _HarnessConn(FakeConn):

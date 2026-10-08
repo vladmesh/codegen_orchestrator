@@ -45,13 +45,15 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
     QATelegramProbeEvidence,
+    QATelegramWaitRefusal,
 )
 from shared.telegram_access_probe import ProbeRun, run_probe_script
 from shared.telegram_bot_probe import (
-    TELEGRAM_PROBE_PROCESS_TIMEOUT,
+    TELEGRAM_REPLY_TIMEOUT,
     build_bot_callback_script,
     build_bot_message_script,
     parse_bot_probe_result,
+    telegram_probe_process_timeout,
 )
 
 from ...clients.product_jobs import (
@@ -254,6 +256,7 @@ class _TelegramCapability:
             # The bot answered: what it sent is the product's own output.
             self._workspace.record_observation(tool, f"@{self._bot_username}")
         serialized = evidence.model_dump(mode="json")
+        serialized["telegram_step"] = len(self._workspace.telegram_probe_evidence)
         self._workspace.record(tool, evidence.attempted, repr(serialized))
         return {"error": evidence.error, **serialized} if blocker else serialized
 
@@ -320,7 +323,20 @@ class _TelegramCapability:
         self._remember_visible_callbacks(evidence)
         return self._record_evidence(tool, evidence)
 
-    async def telegram_probe(self, message: str) -> dict:
+    @staticmethod
+    def _wait_refusal(wait_seconds: int) -> dict | None:
+        try:
+            telegram_probe_process_timeout(wait_seconds)
+        except ValueError as exc:
+            return {"refusal": QATelegramWaitRefusal(detail=str(exc)).model_dump(mode="json")}
+        return None
+
+    async def telegram_probe(
+        self, message: str, wait_seconds: int = TELEGRAM_REPLY_TIMEOUT
+    ) -> dict:
+        refusal = self._wait_refusal(wait_seconds)
+        if refusal is not None:
+            return refusal
         # Telegram cannot carry an empty or whitespace-only message: the API
         # rejects it before it reaches the product, so the attempt says nothing
         # about the bot. Refusing here, with no error on the evidence, keeps the
@@ -361,9 +377,9 @@ class _TelegramCapability:
                 sent=message,
             )
         run: ProbeRun = await self._run_probe(
-            build_bot_message_script(self._bot_username, message),
+            build_bot_message_script(self._bot_username, message, wait_seconds=wait_seconds),
             env=self._telethon_env,
-            timeout=TELEGRAM_PROBE_PROCESS_TIMEOUT,
+            timeout=telegram_probe_process_timeout(wait_seconds),
         )
         return self._parse_result(
             run,
@@ -373,8 +389,13 @@ class _TelegramCapability:
             tool="telegram_probe",
         )
 
-    async def telegram_click_button(self, message_id: int, callback_data: str) -> dict:
+    async def telegram_click_button(
+        self, message_id: int, callback_data: str, wait_seconds: int = TELEGRAM_REPLY_TIMEOUT
+    ) -> dict:
         """Invoke exactly one inline button a prior reply made visible in this run."""
+        refusal = self._wait_refusal(wait_seconds)
+        if refusal is not None:
+            return refusal
         button_text = self._visible_callbacks.get((message_id, callback_data))
         sent = f"message_id={message_id} callback_data={callback_data}"
         if not self._telethon_env:
@@ -403,9 +424,10 @@ class _TelegramCapability:
                 message_id,
                 callback_data,
                 button_text=button_text,
+                wait_seconds=wait_seconds,
             ),
             env=self._telethon_env,
-            timeout=TELEGRAM_PROBE_PROCESS_TIMEOUT,
+            timeout=telegram_probe_process_timeout(wait_seconds),
         )
         return self._parse_result(
             run,

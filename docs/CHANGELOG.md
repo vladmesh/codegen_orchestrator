@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- QA Telegram probes accept waits up to 60 seconds; invented inputs and server-confirmed missed replies
+  settle as unverified QA tooling checks instead of product failures.
+
 - Production deploy-worker reaches platform auth over its external link; deploy validates admin secrets,
   Promtail collects platform logs, and the runbook documents token rotation and verification.
 

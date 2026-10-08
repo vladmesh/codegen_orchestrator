@@ -20,6 +20,7 @@ import json
 
 # Overall deadline for collecting the bot's final visible state after a probe.
 TELEGRAM_REPLY_TIMEOUT = 15
+TELEGRAM_MAX_REPLY_TIMEOUT = 60
 # Bound polling against the shared QA account while still reading exactly at the
 # collection deadline.
 TELEGRAM_POLL_INTERVAL = 2
@@ -28,6 +29,13 @@ MAX_REPLIES = 10
 # deadline. Keep this larger than TELEGRAM_REPLY_TIMEOUT.
 TELEGRAM_PROBE_PROCESS_TIMEOUT = TELEGRAM_REPLY_TIMEOUT + 30
 PROBE_RESULT_MARKER = "telegram_probe_result:"
+
+
+def telegram_probe_process_timeout(wait_seconds: int) -> int:
+    """Validate the collection deadline and give the child connection/teardown room."""
+    if type(wait_seconds) is not int or not 1 <= wait_seconds <= TELEGRAM_MAX_REPLY_TIMEOUT:
+        raise ValueError(f"wait_seconds must be an integer from 1 to {TELEGRAM_MAX_REPLY_TIMEOUT}")
+    return wait_seconds + 30
 
 
 def _script_helpers() -> str:
@@ -100,6 +108,7 @@ def build_bot_message_script(
     caller can prevent an undelivered test operation from becoming a product
     failure. Silence remains an empty reply list and is a test result.
     """
+    telegram_probe_process_timeout(wait_seconds)
     return (
         "import base64\n"
         "import json\n"
@@ -127,6 +136,7 @@ def build_bot_message_script(
         f"    bot = client.get_entity({json.dumps('@' + bot_username.lstrip('@'))})\n"
         f"    sent = client.send_message(bot, {json.dumps(message)})\n"
         "    result['delivered'] = True\n"
+        "    result['message_id'] = sent.id\n"
         f"    deadline = time.monotonic() + {wait_seconds}\n"
         "    last_replies = []\n"
         "    while True:\n"
@@ -165,6 +175,7 @@ def build_bot_callback_script(
     the button before submitting the callback to the same bot.
     """
     bot = "@" + bot_username.lstrip("@")
+    telegram_probe_process_timeout(wait_seconds)
     sent = f"message_id={message_id} callback_data={callback_data}"
     return (
         "import base64\n"
@@ -208,6 +219,7 @@ def build_bot_callback_script(
         "        peer=bot, msg_id=message.id, data=base64.b64decode(callback_data)\n"
         "    ))\n"
         "    result['delivered'] = True\n"
+        "    result['message_id'] = message.id\n"
         "    result['callback'] = {\n"
         "        'text': getattr(answer, 'message', None),\n"
         "        'alert': bool(getattr(answer, 'alert', False)),\n"

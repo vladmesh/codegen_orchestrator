@@ -35,6 +35,21 @@ class _Response:
     ("argv", "answer", "expected_exit", "expected_call"),
     [
         (
+            ["telegram_probe", "--wait-seconds", "60", "/reading", "today"],
+            {"delivered": True, "error": None},
+            0,
+            {"tool": "telegram_probe", "args": {"message": "/reading today", "wait_seconds": 60}},
+        ),
+        (
+            ["telegram_click_button", "--wait-seconds", "60", "7", "Y2FyZWVy"],
+            {"delivered": True, "error": None},
+            0,
+            {
+                "tool": "telegram_click_button",
+                "args": {"message_id": 7, "callback_data": "Y2FyZWVy", "wait_seconds": 60},
+            },
+        ),
+        (
             ["telegram_probe", "/start"],
             {"tool": "telegram_probe", "delivered": True, "error": None},
             0,
