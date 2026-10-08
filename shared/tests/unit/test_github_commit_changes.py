@@ -33,3 +33,13 @@ async def test_only_a_commit_ahead_with_a_file_change_adds_changes(comparison, a
     assert await client.commit_adds_changes("org", "repo", "base-sha", "head-sha") is adds
     url = client._make_request.await_args.args[1]
     assert url == "https://api.github.com/repos/org/repo/compare/base-sha...head-sha"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["ahead", "identical", "behind", "diverged"])
+async def test_compare_status_is_githubs_answer_for_head_against_base(status):
+    client = _client({"status": status, "ahead_by": 0, "files": []})
+
+    assert await client.compare_commits_status("org", "repo", "base-sha", "head-sha") == status
+    url = client._make_request.await_args.args[1]
+    assert url == "https://api.github.com/repos/org/repo/compare/base-sha...head-sha"

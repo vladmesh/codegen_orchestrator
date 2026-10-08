@@ -460,6 +460,13 @@ and the story goes to `waiting_human_review`. This is why
 still mean "deploy.yml + smoke", while the suite's wait for the Run to *appear*
 (`DEPLOY_RUN_TIMEOUT`) is the one that spans the project's CI.
 
+The only way out of that refusal is an operator approval. After someone repairs
+the product's CI on `main`, an administrator approves the repaired head with
+`POST /api/stories/{id}/deploy-repaired-head`. The story returns to `pr_review`,
+and the poller deploys the approved commit instead of the merge commit. It waits
+up to 15 minutes from the approval
+(runbook [deploy-repaired-head.md](runbooks/deploy-repaired-head.md)).
+
 Inside the deploy, before any external effect, the deployer reads the registry
 once for exactly the references it resolved. Only the registry's `404` is an
 answer about the image: an absent image is `DeployOutcome.IMAGES_NOT_PUBLISHED`,

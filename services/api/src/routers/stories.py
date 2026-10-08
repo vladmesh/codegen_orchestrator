@@ -19,6 +19,10 @@ from shared.contracts.dto.owner_notification import (
 from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.qa_verification import QAVerificationFacts
+from shared.contracts.dto.repaired_head_deploy import (
+    REPAIRED_HEAD_APPROVAL_KEY,
+    RepairedHeadDeployCommand,
+)
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QARunResult
 from shared.contracts.dto.story import (
@@ -30,7 +34,7 @@ from shared.contracts.dto.story_planning import dispatch_owed_record
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
-from shared.models import WorkAdmissionAudit
+from shared.models import User, WorkAdmissionAudit
 from shared.models.application import Application
 from shared.models.product_brief import ProductBrief
 from shared.models.repository import Repository
@@ -46,6 +50,7 @@ from ..dependencies import (
     get_internal_or_admin_actor,
     get_redis_client,
     is_internal_service,
+    require_bearer_admin,
     require_internal_or_admin,
     resolve_actor,
 )
@@ -331,13 +336,16 @@ async def update_story(
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> StoryRead:
     timeline = body.generated_product_timeline
-    if isinstance(timeline, dict) and "deploy_observation" in timeline:
+    if isinstance(timeline, dict) and (
+        "deploy_observation" in timeline or REPAIRED_HEAD_APPROVAL_KEY in timeline
+    ):
         actor = await resolve_actor(
             is_internal=_is_internal, telegram_id=x_telegram_id, credentials=credentials, db=db
         )
         if actor is not None:
             raise HTTPException(
-                status_code=403, detail="merged deploy observations require the internal producer"
+                status_code=403,
+                detail="merged deploy observations and approvals require the internal producer",
             )
     update_data = body.model_dump(exclude_unset=True)
     if "quarantine_reason" in update_data:
@@ -1114,6 +1122,25 @@ async def recheck_story_qa(
         run_id=run_id,
         application_id=application.id,
     )
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+@router.post("/{story_id}/deploy-repaired-head", response_model=StoryRead)
+async def deploy_story_repaired_head(
+    story_id: str,
+    body: RepairedHeadDeployCommand,
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(require_bearer_admin),
+) -> StoryRead:
+    """Approve deploying a repaired default-branch head for an images_not_published park.
+
+    The story returns to `pr_review` with the approval recorded; the merged-PR
+    poller deploys the approved commit through its ordinary path.
+    """
+    from ..repaired_head_deploy import deploy_repaired_head
+
+    story = await deploy_repaired_head(story_id, body, f"user:{admin.id}", db)
+    await db.refresh(story)
     return StoryRead.model_validate(story, from_attributes=True)
 
 

@@ -88,6 +88,9 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
     },
     StoryStatus.WAITING_HUMAN_REVIEW: {
         StoryStatus.IN_PROGRESS,
+        # An approved repaired head of an `images_not_published` park goes back
+        # to the merged-PR poller, which alone turns a merged story into a deploy.
+        StoryStatus.PR_REVIEW,
         StoryStatus.DEPLOYING,
         StoryStatus.COMPLETED,
         StoryStatus.FAILED,

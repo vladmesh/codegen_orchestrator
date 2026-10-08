@@ -400,3 +400,35 @@ async def test_other_kinds_retain_their_existing_policy_increase_behavior(monkey
     )
     assert disposition is GrantIntentLifecycleDisposition.DISPATCHED
     assert run is not None and intent.attempts == 4 and intent.retry_history == []
+
+
+def _repaired_head_approval(*, pr_number=42, approved="d" * 40):
+    return {
+        "actor": "user:7",
+        "approved_at": datetime.now(UTC).isoformat(),
+        "pr_number": pr_number,
+        "head_sha": "a" * 40,
+        "merge_commit_sha": "b" * 40,
+        "approved_commit_sha": approved,
+        "superseded_commit_sha": "b" * 40,
+        "quarantine_reason": {"deploy_outcome": "images_not_published"},
+    }
+
+
+def test_source_binds_the_approved_repaired_head_of_exactly_that_merge():
+    """After an approved repaired head, that commit is what the merged story built."""
+    project, intent, run, story = _evidence()
+    run.run_metadata["deployed_commit_sha"] = "d" * 40
+    assert not access._source_matches(project, intent, run, story)
+
+    story.generated_product_timeline["repaired_head_deploy_approval"] = _repaired_head_approval()
+    assert access._source_matches(project, intent, run, story)
+    run.run_metadata["deployed_commit_sha"] = "b" * 40
+    assert not access._source_matches(project, intent, run, story)
+
+    story.generated_product_timeline["repaired_head_deploy_approval"] = _repaired_head_approval(
+        pr_number=41
+    )
+    assert access._source_matches(project, intent, run, story)
+    story.generated_product_timeline["repaired_head_deploy_approval"] = {"actor": "forged"}
+    assert not access._source_matches(project, intent, run, story)

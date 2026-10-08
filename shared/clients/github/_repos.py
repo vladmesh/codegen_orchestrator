@@ -132,6 +132,27 @@ class ReposMixin:
         # mean sha is not an ancestor of the branch.
         return resp.json().get("status") in ("identical", "ahead")
 
+    async def compare_commits_status(
+        self, owner: str, repo: str, base_sha: str, head_sha: str
+    ) -> str:
+        """GitHub's comparison of ``head_sha`` against ``base_sha``.
+
+        ``ahead`` means ``head_sha`` strictly descends from ``base_sha``; the other
+        answers are ``identical``, ``behind`` and ``diverged``.
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/compare/"
+            f"{quote(base_sha, safe='')}...{quote(head_sha, safe='')}",
+            headers=headers,
+        )
+        return resp.json()["status"]
+
     async def commit_adds_changes(
         self, owner: str, repo: str, base_sha: str, head_sha: str
     ) -> bool:

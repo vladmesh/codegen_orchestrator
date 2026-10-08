@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -12,6 +13,10 @@ import structlog
 
 from shared.clients.github import GitHubAppClient, RegistrySecretsNotRefreshedError
 from shared.contracts.dto.pr_conflict_repair import PRConflictRepairCommand
+from shared.contracts.dto.repaired_head_deploy import (
+    REPAIRED_HEAD_APPROVAL_KEY,
+    approval_for_merge,
+)
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.users_grant import (
@@ -140,6 +145,7 @@ async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, ea
     project_id: str,
     head_sha: str,
     deployed_commit_sha: str,
+    waiting_since: datetime | None,
     pull_request: dict,
     existing_timeline: object,
     log: structlog.stdlib.BoundLogger,
@@ -150,13 +156,15 @@ async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, ea
     with the story left exactly where it was, so the next tick asks again and no
     deploy Run has been created to sit there spending a budget on somebody
     else's CI. Never coming means the story is refused, typed and durably, here.
+    ``waiting_since`` is when the wait for this commit legitimately started: the
+    merge, or the operator's approval of a repaired head.
     """
     verdict = await image_publication_for_commit(
         github,
         owner,
         repo_name,
         deployed_commit_sha,
-        waiting_since=_parse_github_timestamp(pull_request.get("merged_at")),
+        waiting_since=waiting_since,
         failure_log_excerpt_lines=_ci_failure_log_excerpt_lines(),
         diagnostic_secrets=tuple(secret_env_values(dict(os.environ))),
     )
@@ -385,12 +393,17 @@ def _updated_generated_product_timeline(
                 "details_unavailable_reason": current_run["details_unavailable_reason"],
             }
         )
-    return {
+    timeline = {
         "pull_request": pr_observation,
         "ci_runs": runs,
         "latest_ci_observation": latest_ci_observation,
         "missed_captures": list(dict.fromkeys(missed)),
     }
+    # The operator's approval is not an observation of this poll; it stays as
+    # the API recorded it.
+    if isinstance(existing, dict) and REPAIRED_HEAD_APPROVAL_KEY in existing:
+        timeline[REPAIRED_HEAD_APPROVAL_KEY] = existing[REPAIRED_HEAD_APPROVAL_KEY]
+    return timeline
 
 
 def _has_usable_failed_job_evidence(run: object) -> bool:
@@ -874,6 +887,72 @@ async def _current_pull_request(
     )
 
 
+@dataclass(frozen=True)
+class _DeployTarget:
+    """Which commit a merged story deploys, since when it waits, and its Run."""
+
+    deployed_commit_sha: str
+    waiting_since: datetime | None
+    run_id: str
+    run_metadata: dict
+
+
+def _deploy_target(
+    story: object,
+    merged_pr: dict,
+    head_sha: str,
+    merge_commit_sha: str,
+    log: structlog.stdlib.BoundLogger,
+) -> _DeployTarget:
+    """The merge commit, waited for since the merge — or an approved repaired head.
+
+    The one exception to the merge commit: its images were refused, the
+    product's CI was repaired on the default branch, and an administrator
+    approved that later commit for exactly this merge. Its images are what get
+    deployed, its wait starts at the approval, and its Run is its own.
+    """
+    story_id = story.id
+    approval = approval_for_merge(
+        getattr(story, "generated_product_timeline", None),
+        pr_number=story.pr_number,
+        merge_commit_sha=merge_commit_sha,
+    )
+    if approval is None:
+        return _DeployTarget(
+            deployed_commit_sha=merge_commit_sha,
+            waiting_since=_parse_github_timestamp(merged_pr.get("merged_at")),
+            run_id=deploy_run_id("deploy-poll", story_id, merge_commit_sha),
+            run_metadata={
+                "triggered_by": "pr_poll",
+                "head_sha": head_sha,
+                "deployed_commit_sha": merge_commit_sha,
+            },
+        )
+    approved = approval.approved_commit_sha
+    log.info(
+        "poll_merged_repaired_head_approved",
+        deployed_commit_sha=approved,
+        merge_commit_sha=merge_commit_sha,
+        approved_by=approval.actor,
+    )
+    return _DeployTarget(
+        deployed_commit_sha=approved,
+        waiting_since=approval.approved_at,
+        run_id=deploy_run_id(
+            "deploy-approved", story_id, approved, approval.approved_at.isoformat()
+        ),
+        run_metadata={
+            "triggered_by": "pr_poll",
+            "head_sha": head_sha,
+            "deployed_commit_sha": approved,
+            "merge_commit_sha": merge_commit_sha,
+            REPAIRED_HEAD_APPROVAL_KEY: approval.model_dump(
+                mode="json", exclude={"quarantine_reason"}
+            ),
+        },
+    )
+
+
 async def poll_merged_prs(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -936,25 +1015,28 @@ async def poll_merged_prs(
                 # commits. No merge method makes the branch's new HEAD equal the pull
                 # request head — a merge creates a commit, squash and rebase rewrite
                 # one — and the project's CI publishes images from the branch, so the
-                # deployed commit is the merge commit and nothing else.
-                deployed_commit_sha = merged_pr.get("merge_commit_sha") or ""
+                # deployed commit is the merge commit, or the repaired head of the
+                # branch an administrator approved for it (`_deploy_target`).
+                merge_commit_sha = merged_pr.get("merge_commit_sha") or ""
                 log.info(
                     "poll_merged_pr_found",
                     pr_number=merged_pr["number"],
                     merged_at=merged_pr["merged_at"],
-                    deployed_commit_sha=deployed_commit_sha,
+                    deployed_commit_sha=merge_commit_sha,
                 )
-                if not deployed_commit_sha:
+                if not merge_commit_sha:
                     # Fail closed rather than deploying the pull request head: its
                     # images are never published, so the deploy would pull nothing or,
                     # worse, something else.
                     log.error("poll_merged_no_merge_commit_sha", pr_number=merged_pr["number"])
                     continue
 
+                target = _deploy_target(story, merged_pr, head_sha, merge_commit_sha, log)
+
                 # Nothing is created until this commit's images exist. The story stays in
                 # PR_REVIEW while the project's CI is still building, so the next tick
-                # asks again; the bound is measured from the merge, so it cannot be
-                # restarted by asking.
+                # asks again; the bound is measured from the merge (or the approval), so
+                # it cannot be restarted by asking.
                 if not await _images_ready_for_deploy(
                     api_client,
                     github,
@@ -965,7 +1047,8 @@ async def poll_merged_prs(
                     story_id=story_id,
                     project_id=project_id,
                     head_sha=head_sha,
-                    deployed_commit_sha=deployed_commit_sha,
+                    deployed_commit_sha=target.deployed_commit_sha,
+                    waiting_since=target.waiting_since,
                     pull_request=merged_pr,
                     existing_timeline=getattr(story, "generated_product_timeline", None),
                     log=log,
@@ -991,7 +1074,7 @@ async def poll_merged_prs(
                             project_id,
                             story_id=story_id,
                             head_sha=head_sha,
-                            deployed_commit_sha=deployed_commit_sha,
+                            deployed_commit_sha=target.deployed_commit_sha,
                             merged_pr_number=story.pr_number,
                         )
                     )
@@ -1037,28 +1120,23 @@ async def poll_merged_prs(
                 # Persist the immutable attempt before moving the Story. If Run
                 # creation fails, PR_REVIEW remains the retry surface; a repeat uses
                 # the same id instead of manufacturing a second deploy attempt.
-                run_id = deploy_run_id("deploy-poll", story_id, deployed_commit_sha)
                 await dispatch_deploy(
                     api_client,
                     redis_client,
                     DeployHandoff(
-                        run_id=run_id,
+                        run_id=target.run_id,
                         project_id=str(project_id),
                         story_id=story_id,
                         recipient=recipient,
                         action=action,
                         head_sha=head_sha,
-                        deployed_commit_sha=deployed_commit_sha,
-                        run_metadata={
-                            "triggered_by": "pr_poll",
-                            "head_sha": head_sha,
-                            "deployed_commit_sha": deployed_commit_sha,
-                        },
+                        deployed_commit_sha=target.deployed_commit_sha,
+                        run_metadata=target.run_metadata,
                         transition_action="deploy",
                     ),
                 )
 
-                log.info("poll_merged_deploy_triggered", run_id=run_id)
+                log.info("poll_merged_deploy_triggered", run_id=target.run_id)
                 deployed += 1
 
             except Exception:

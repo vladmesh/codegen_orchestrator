@@ -15,6 +15,7 @@ import structlog
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deployment import DeploymentResult
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.repaired_head_deploy import approval_for_merge
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.story import StoryStatus
@@ -259,6 +260,24 @@ def _exhaustion_failure(intent: UsersGrantIntent, decision: GrantIntentExhaustio
     )
 
 
+def _merged_built_sha(story: Story, pr: dict) -> object:
+    """The commit a merged story's deploy builds from.
+
+    The merge commit, unless an administrator approved a repaired default-branch
+    head for exactly that merge after its images were never published; then that
+    approved commit. A malformed approval matches nothing.
+    """
+    try:
+        approval = approval_for_merge(
+            story.generated_product_timeline,
+            pr_number=story.pr_number,
+            merge_commit_sha=pr.get("merge_commit_sha"),
+        )
+    except ValidationError:
+        return None
+    return pr.get("merge_commit_sha") if approval is None else approval.approved_commit_sha
+
+
 def _source_matches(
     project: Project,
     intent: UsersGrantIntent,
@@ -298,7 +317,7 @@ def _source_matches(
             and run.story_id == story.id
             and metadata.get(USERS_GRANT_INTENT_KEY) == intent.id
             and metadata.get("head_sha") == intent.target_sha == pr.get("head_sha")
-            and built == pr.get("merge_commit_sha")
+            and built == _merged_built_sha(story, pr)
             and pr.get("state") == "closed"
             and type(story.pr_number) is int
             and story.pr_number == pr.get("number")
@@ -598,7 +617,7 @@ async def _require_current_merged_target(
         and story.pr_number == pr_number == pr.get("number")
         and pr.get("state") == "closed"
         and pr.get("head_sha") == head_sha
-        and pr.get("merge_commit_sha") == built_sha
+        and _merged_built_sha(story, pr) == built_sha
         and observation.get("story_id") == story.id
         and observation.get("project_id") == str(project.id)
         and repo is not None

@@ -79,6 +79,7 @@ class TestStoryTransitions:
         assert StoryStatus.DEPLOYING in allowed  # QA recheck returns through deploy
         assert StoryStatus.FAILED in allowed  # admin gives up
         assert StoryStatus.COMPLETED in allowed  # accepted result ships directly
+        assert StoryStatus.PR_REVIEW in allowed  # approved repaired head redeploys via the poller
 
     def test_invalid_transition_created_to_completed(self):
         assert StoryStatus.COMPLETED not in VALID_TRANSITIONS[StoryStatus.CREATED]

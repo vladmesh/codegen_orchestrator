@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- `POST /api/stories/{id}/deploy-repaired-head` lets an administrator deploy a story parked for
+  `images_not_published` at its repaired default-branch head, through the ordinary poller path.
+
 - The Architect plans a replanned catalog install itself against the current catalog and waits
   for an unreachable catalog instead of planning without it; `replan` discards a misplanned cycle.
 

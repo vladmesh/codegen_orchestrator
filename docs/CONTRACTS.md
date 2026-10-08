@@ -321,7 +321,17 @@ This changes no DTO, stream, schema, key format or released-worker upgrade proto
    refusal creates no Run, so its typed reason lands on the
    story (`quarantine_reason.deploy_outcome = images_not_published`, with the
    commits, CI run, failed jobs and steps, and redacted bounded log evidence)
-   before `POST /api/stories/{id}/human-review` parks it for human review.
+   before `POST /api/stories/{id}/human-review` parks it for human review. The
+   one way back is an operator approval: once the product's CI is repaired on
+   the default branch, `POST /api/stories/{id}/deploy-repaired-head` (bearer
+   admin) approves a commit there that strictly descends from the refused one,
+   releases the stop and returns the story to `pr_review`. The approval lives in
+   `generated_product_timeline.repaired_head_deploy_approval`, which a story
+   PATCH accepts only from an internal service, and is bound to the PR and merge
+   commit. The poller then deploys the approved commit as `deployed_commit_sha`
+   (the PR head stays `head_sha`) on its ordinary path, with the bound measured
+   from the approval and a Run id of its own; a second refusal names the
+   approved commit. See `docs/runbooks/deploy-repaired-head.md`.
 3. A durable deploy Run is created once that is true, before `DeployMessage`
    publication. Inside the deploy, before any external effect, the deployer reads
    the registry once for exactly the `*_IMAGE` references it resolved: absent
