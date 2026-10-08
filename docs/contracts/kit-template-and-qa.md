@@ -48,13 +48,16 @@ The retained fixture was rendered in [CI run 37753179032](https://github.com/vla
 [producer hashes](../evidence/catalog-install-fixture.json) cover every tracked file and the saved answers.
 
 Failed Actions evidence keeps the earliest root diagnostic and final error in at most
-`scheduler.ci_failure_log_excerpt_lines` data lines (40), plus one omission separator.
+`scheduler.ci_failure_log_excerpt_lines` data lines (40), plus at most two omission separators.
 Root diagnostics include pytest assertion lines, Python exceptions, explicit error annotations
 and lint findings; teardown `make` errors and pytest `FAILED` lines are final diagnostics.
+Run-step boundaries restrict diagnostics to the last failing step. A pytest window starts
+at its preceding test header in the FAILURES section; a header too distant from the
+assertion uses a separate window, with a separator before the assertion context.
 Runner exit-code wrappers and structured retry noise do not displace a cause. A one-line
 budget retains the cause; output without diagnostics retains the tail. Lines are clipped
 to 2048 characters; the data budget is reduced when needed to keep the total within
-131072 characters, including newlines and the separator.
+131072 characters, including newlines and separators.
 
 `shared/contracts/env_contract.py` mirrors the pinned tooling model, including strict service,
 scope and quota validation and the Python-only credential check for platform URLs. Schema

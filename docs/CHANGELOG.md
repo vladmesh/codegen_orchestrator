@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- CI failure excerpts retain close final errors and pytest headers across long tracebacks;
+  step boundaries prevent earlier successful commands from supplying the cause.
+
 - Pin kit release 0.10.1 and its rendered fixture to repair bound-product integration generation;
   retain the first CI cause and final error in bounded failure evidence.
 

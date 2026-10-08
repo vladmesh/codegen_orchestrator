@@ -23,13 +23,16 @@ _ROOT_DIAGNOSTIC_LOG_LINE = re.compile(
     r"(?i:error:|fatal:|panic:|::error\b|##\[error\]))"
 )
 _RUNNER_WRAPPER_LOG_LINE = re.compile(
-    r"\b(?:error:\s*)?process completed with exit code \d+\.?\s*$",
+    r"\b(?:error:\s*)?process completed with exit code (\d+)\.?\s*$",
     re.IGNORECASE,
 )
 _FINAL_DIAGNOSTIC_LOG_LINE = re.compile(r"^(?:make(?:\[\d+\])?: \*\*\*|FAILED\s)")
+_PYTEST_SECTION_LOG_LINE = re.compile(r"^=+\s+(.+?)\s+=+\s*$")
+_PYTEST_TEST_HEADER_LOG_LINE = re.compile(r"^_{3,}\s+.+\s+_{3,}\s*$")
 _EXCERPT_LINE_CHARS = 2048
 _EXCERPT_MAX_CHARS = 131_072
 _EXCERPT_SEPARATOR = "... omitted log lines ..."
+_EXCERPT_MAX_SEPARATORS = 2
 
 # Every status GitHub reports for a run it has not finished. Asked one at a time
 # they answer "what can still act" directly, instead of paging through a history
@@ -52,29 +55,57 @@ class WorkflowRunListingIncompleteError(RuntimeError):
     """The set of runs that can still act could not be enumerated in full."""
 
 
-def _failure_log_excerpt(log: str, line_limit: int) -> str:
-    """Keep the first cause and final diagnostic, with one omission separator at most.
+def _failure_step_bounds(lines: list[str]) -> tuple[int, int]:
+    """Select the last Run step with a failure, excluding subsequent cleanup steps."""
+    step_start = None
+    failed_step = None
+    for index, line in enumerate(lines):
+        if "##[group]Run " in line:
+            if _LOG_PREFIX.sub("", line).startswith("##[group]Run "):
+                step_start = index
+        elif step_start is not None and (
+            "exit code" in line.lower() or "make" in line or "FAILED " in line
+        ):
+            message = _LOG_PREFIX.sub("", line).lstrip()
+            wrapper = _RUNNER_WRAPPER_LOG_LINE.search(message)
+            if (wrapper and int(wrapper.group(1)) != 0) or _FINAL_DIAGNOSTIC_LOG_LINE.search(
+                message
+            ):
+                failed_step = (step_start, index + 1)
+    if failed_step is not None:
+        return failed_step
+    return (step_start if step_start is not None else 0), len(lines)
 
-    Data lines never exceed line_limit; each is clipped to 2048 characters and
-    the whole excerpt to 131072 characters by reducing the data-line budget.
-    With a one-line budget the first cause wins. Runner exit-code wrappers and
-    structured retry logs are not causes; without diagnostics we retain the tail.
-    """
-    budget = min(
-        line_limit, (_EXCERPT_MAX_CHARS - len(_EXCERPT_SEPARATOR) - 1) // (_EXCERPT_LINE_CHARS + 1)
-    )
-    if budget < 1:
-        return ""
-    lines = [line[:_EXCERPT_LINE_CHARS] for line in log.splitlines()]
+
+def _failure_log_diagnostics(lines: list[str]) -> tuple[int | None, int | None, int | None]:
+    """Find the first cause, its pytest header, and the final diagnostic in one step."""
     root = None
     final = None
+    root_header = None
+    header = None
     in_traceback = False
+    in_failures = False
     for index, line in enumerate(lines):
         # Ordinary progress lines need no regex work, even in multi-megabyte logs.
-        if not in_traceback and ":" not in line and "E " not in line and "FAILED " not in line:
+        if (
+            not in_traceback
+            and not in_failures
+            and ":" not in line
+            and "E " not in line
+            and "FAILED " not in line
+            and "FAILURES" not in line
+        ):
             continue
         raw_message = _LOG_PREFIX.sub("", line)
         message = raw_message.lstrip()
+        section = _PYTEST_SECTION_LOG_LINE.fullmatch(message)
+        if section:
+            in_failures = section.group(1) == "FAILURES"
+            header = None
+            continue
+        if in_failures and _PYTEST_TEST_HEADER_LOG_LINE.fullmatch(message):
+            header = index
+            continue
         if message == "Traceback (most recent call last):":
             in_traceback = True
             continue
@@ -88,28 +119,75 @@ def _failure_log_excerpt(log: str, line_limit: int) -> str:
         if traceback_exception or _ROOT_DIAGNOSTIC_LOG_LINE.search(message):
             if root is None:
                 root = index
+                root_header = header if message.startswith(("E ", "E\t")) else None
             final = index
             in_traceback = False
         elif _FINAL_DIAGNOSTIC_LOG_LINE.search(message):
             final = index
+    return root, final, root_header
+
+
+def _failure_log_windows(
+    root: int, final: int, header: int | None, budget: int
+) -> list[tuple[int, int]]:
+    if header is None and final - root < budget:
+        start = max(root - budget // 3, final - budget + 1, 0)
+        return [(start, start + budget)]
+    if header is not None and final - header < budget:
+        return [(header, header + budget)]
+
+    final_budget = max(1, budget // 3) if budget > 1 and final != root else 0
+    root_budget = budget - final_budget
+    if header is not None and root - header < budget - bool(final_budget):
+        root_budget = max(root_budget, root - header + 1)
+        final_budget = budget - root_budget
+    if header is None or root_budget <= 1:
+        start = max(root - root_budget // 3, 0)
+        windows = [(start, start + root_budget)]
+    elif root - header < root_budget:
+        windows = [(header, header + root_budget)]
+    else:
+        windows = [(header, header + 1), (root - root_budget + 2, root + 1)]
+    if final_budget:
+        windows.append((final - final_budget + 1, final + 1))
+    return windows
+
+
+def _failure_log_excerpt(log: str, line_limit: int) -> str:
+    """Keep the first cause, pytest header and final error, with at most two separators.
+
+    Data lines never exceed line_limit; each is clipped to 2048 characters and
+    the whole excerpt to 131072 characters by reducing the data-line budget.
+    With a one-line budget the first cause wins. Runner exit-code wrappers and
+    structured retry logs are not causes; without diagnostics we retain the tail.
+    Run boundaries restrict diagnostics to the failing step. A distant pytest
+    header uses a separate window when it cannot fit beside the assertion.
+    """
+    budget = min(
+        line_limit,
+        (_EXCERPT_MAX_CHARS - _EXCERPT_MAX_SEPARATORS * (len(_EXCERPT_SEPARATOR) + 1))
+        // (_EXCERPT_LINE_CHARS + 1),
+    )
+    if budget < 1:
+        return ""
+    lines = [line[:_EXCERPT_LINE_CHARS] for line in log.splitlines()]
+    step_start, step_end = _failure_step_bounds(lines)
+    step_lines = lines[step_start:step_end]
+    root, final, header = _failure_log_diagnostics(step_lines)
     if root is None:
         root = final
     if root is None:
         return "\n".join(lines[-budget:])
-    if final - root < budget:
-        start = max(root - budget // 3, 0)
-        start = max(min(start, final - budget + 1), 0)
-        return "\n".join(lines[start : start + budget])
 
-    final_budget = max(1, budget // 3) if budget > 1 else 0
-    root_budget = budget - final_budget
-    start = max(root - root_budget // 3, 0)
-    head = lines[start : start + root_budget]
-    if not final_budget:
-        return "\n".join(head)
-    end = final + 1
-    tail_start = end - final_budget
-    return "\n".join([*head, _EXCERPT_SEPARATOR, *lines[tail_start:end]])
+    lines = step_lines
+    excerpt = []
+    previous_end = 0
+    for start, end in sorted(_failure_log_windows(root, final, header, budget)):
+        if excerpt and start > previous_end:
+            excerpt.append(_EXCERPT_SEPARATOR)
+        excerpt.extend(lines[max(start, previous_end) : end])
+        previous_end = max(previous_end, end)
+    return "\n".join(excerpt)
 
 
 class ActionsMixin:
