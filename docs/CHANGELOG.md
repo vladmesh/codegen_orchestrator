@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Public channel content is planned via platform-backed catalog modules only; product scraping is forbidden.
+  Bot briefs default to RU/EN; new bots stage module installation after the base story.
+
 - Catalog-install capability text derives its core version from the pinned kit tooling,
   so the Architect's static install rule matches catalog admission and product preflight.
 

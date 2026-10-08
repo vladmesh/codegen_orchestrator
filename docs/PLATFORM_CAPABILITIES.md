@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 16, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 17, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -13,10 +13,11 @@ What a product built by this orchestrator can have and what it cannot, with the 
 - **Add a catalog capability.** An existing bot can add a released catalog capability while retaining its own features.
 - **Plain HTTP self links.** The bot can include plain HTTP self links; their address can change when the product moves.
 - **Telegram bot.** A Telegram bot people chat with, using commands, buttons and menus.
+- **Read public Telegram channels.** Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Plan it now; deployment awaits platform key issuance.
 - **The bot remembers data.** The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
 - **Actions on a schedule or later.** The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
 - **Settings without a new version.** The owner later changes settings, such as the list of languages or the texts, without a new version of the bot.
-- **Connecting to other services.** The bot connects to other online services, such as AI, weather or spreadsheets, with a key the user provides; AI in the bot runs on the user's own key.
+- **Connecting to other services.** The bot connects to other online services, such as AI, weather or spreadsheets, with a key the user provides; AI in the bot runs on the user's own key. Exception: Telegram channel content is read only through a platform-backed catalog module.
 - **Who can use the bot.** At first only the customer can use the bot; everyone else is ignored. The customer can give permanent access to specific Telegram users, and it starts working once the running bot confirms it. The customer can also hand the bot over to another Telegram user. Taking access back and opening the bot to everyone are not available yet. The owner or admin can retry exhausted initial deployment only when the platform offers a retry action for a failed attempt.
 
 ### Cannot
@@ -61,43 +62,47 @@ How: plan_install selects package/libraries/default binding in one INSTALL on ow
 
 #### Plain HTTP self links
 
-How: PUBLIC_BASE_URL derives from one backend allocation; IPv6 is bracketed. Missing, ambiguous, loopback, unspecified or multicast addresses refuse. IPv6 deploy requires released executable transport at the built commit; unverified workflow or .rej refuses with DEPLOY_HOST. Existing products need reviewed kit update and reconciled merge. No domain/TLS/frontend/webhook capability is added.
+How: PUBLIC_BASE_URL uses one backend allocation (IPv6 bracketed); missing/ambiguous, loopback/unspecified/multicast refuse. IPv6 needs released executable transport at the built commit; unverified workflow/.rej refuses with DEPLOY_HOST. Existing products need reviewed kit update/reconciled merge. No domain/TLS/frontend/webhook.
 
 #### Telegram bot
 
-How: Kit tg_bot (python-telegram-bot 21.4, run_polling) needs no web address. PO includes backend (FastAPI) in every product. Its allocated http://{server_ip}:{port} is the sole public port; no domain or https.
+How: Kit tg_bot uses python-telegram-bot 21.4 run_polling. Every product includes FastAPI backend; its allocated http://{server_ip}:{port} is the sole public port. No domain/https.
+
+#### Read public Telegram channels
+
+How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module selected by live catalog capabilities. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves; only the platform service reaches t.me through the platform egress proxy. Plan it now; deployment refuses with platform_service_unconfigured until platform key issuance and service configuration exist.
 
 #### The bot remembers data
 
-How: Product postgres:16 at db:5432 uses persistent db_data. Product redis:7-alpine at redis:6379 carries queues, caches and Redis Streams without persistent storage. Both are private to product containers.
+How: Private postgres:16 at db:5432 persists in db_data; private redis:7-alpine at redis:6379 carries queues/caches/Redis Streams without persistence.
 
 #### Actions on a schedule or later
 
-How: The kit core timer loop fires each timer an installed package declares, in production with no caller: reminders `reminders.tick` every 60 s. Other schedules need a timer loop in the product's own bot or backend; `POST /jobs/fire` only records and dispatches a declared job. The bot's library has no job-queue extra.
+How: The kit core timer loop fires each timer an installed package declares, in production with no caller: reminders `reminders.tick` every 60 s. Other schedules need a timer in the product bot/backend; `POST /jobs/fire` only records/dispatches declared jobs. No bot job-queue extra.
 
 #### Settings without a new version
 
-How: Kit core settings v1 (`POST /settings/get`, `POST /settings/set`) for keys declared in the backend's `manifest.yaml`; the platform holds the write capability and writes the values.
+How: Kit settings v1 (`POST /settings/get`, `POST /settings/set`): backend `manifest.yaml` declares keys; platform holds write capability and writes values.
 
 #### Connecting to other services
 
-How: Product servers allow all outgoing traffic (ufw default allow outgoing). The key is a `user_secret` the PO asks the user for and stores with `set_project_secret`.
+How: ufw allows outgoing traffic. PO collects keys as `user_secret` via `set_project_secret`. Exception: Telegram channel content is read only through a platform-backed catalog module; outbound traffic permission does not authorize product-side channel fetching or scraping.
 
 #### Who can use the bot
 
-How: Kit core `users` resolves Telegram identities; only backend-confirmed `active` users enter the bot. The platform tracks durable `initial_owner` (first deploy), `add_user` (PO grant) and `incoming_owner` (PO transfer) intents, applied and checked by the worker. No PO revoke or public/mode-switch tool. Only an admitted terminal Run permits bounded owner/admin retry; zero admissions do not.
+How: Kit `users` resolves Telegram identities; only backend-confirmed `active` users enter. Worker applies/proves durable intents: `initial_owner` (first deploy), `add_user` (PO grant), `incoming_owner` (PO transfer). No PO revoke/public/mode-switch. Bounded owner/admin retry requires an admitted terminal Run; zero admissions refuse.
 
 ### Why each limitation holds
 
 #### A website or web pages
 
-Why: The deployer hands out only `http://{server_ip}:{port}` of the backend; a product's compose has no TLS proxy and nothing allocates or verifies a domain. Derived `PUBLIC_BASE_URL` is that allocated backend HTTP address, with brackets for IPv6, for plain self links; it promises no frontend, TLS or webhook availability. A Mini App needs an https URL. A product may request only the `backend` and `tg_bot` modules; `frontend` remains only for old records.
+Why: Only backend `http://{server_ip}:{port}` is public; compose has no TLS proxy or domain allocation/verification. `PUBLIC_BASE_URL` is that HTTP address (IPv6 bracketed), for self links only. Mini Apps require https. Only `backend` and `tg_bot` are requestable; `frontend` is historical. No frontend, TLS or webhook availability.
 
 Merges the former ids `https_domain`, `custom_domain`, `telegram_mini_app`, `web_frontend`.
 
 #### Receiving events other services send
 
-Why: Providers require an https URL, and the product only has plain http on an IP and port that can change when it moves server; derived `PUBLIC_BASE_URL` is only that HTTP address. Poll the provider's API from a timer loop; the Telegram bot already works this way (long polling).
+Why: Providers require https; `PUBLIC_BASE_URL` is plain HTTP on an IP/port that can change on relocation. Poll provider APIs from a timer; the Telegram bot uses long polling.
 
 #### Accepting payments
 
@@ -105,19 +110,19 @@ Why: No kit module or package handles payments, and a payment provider's confirm
 
 #### Signing in with Google and the like
 
-Why: An OAuth web redirect needs an https redirect URL on a stable domain. Use a Google service account the user shares with, a device-code or desktop flow where the provider supports one, or a personal API token stored as a user secret.
+Why: OAuth web redirects need stable-domain https. Use a shared Google service account, provider-supported device-code/desktop flow, or a personal API token as a user secret.
 
 #### Sending email by itself
 
-Why: The kit has no mail module and the platform provisions no mail server or SMTP relay; a third-party email API is an ordinary outbound call with a `user_secret` key.
+Why: No kit mail module or platform mail server/SMTP relay. Third-party email APIs use ordinary outbound calls with a `user_secret` key.
 
 #### Keeping uploaded files
 
-Why: The only persistent volume is Postgres's `db_data`; the backend and bot containers have no volume and are replaced on every deploy, and the kit has no object-storage module. Keep Telegram files by their Telegram file id; small files may go into the database.
+Why: Only Postgres `db_data` persists; backend/bot have no volumes and are replaced on deploy. No object-storage module. Keep Telegram file ids; small files may go in the database.
 
 #### Direct access to the bot's data store
 
-Why: Postgres and Redis get host ports allocated, but production compose publishes only the backend's port and the firewall opens only that one. Expose data through bot commands or backend endpoints.
+Why: Postgres/Redis host ports are allocated but unpublished; compose/firewall expose only backend. Expose data through bot commands or backend endpoints.
 
 #### Backups of the data
 

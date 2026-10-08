@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 16
+version: 17
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -58,47 +58,60 @@ can:
     name: Plain HTTP self links
     plain: The bot can include plain HTTP self links; their address can change when the product moves.
     how: >-
-      PUBLIC_BASE_URL derives from one backend allocation; IPv6 is bracketed. Missing,
-      ambiguous, loopback, unspecified or multicast addresses refuse. IPv6 deploy requires
-      released executable transport at the built commit; unverified workflow or .rej refuses
-      with DEPLOY_HOST. Existing products need reviewed kit update and reconciled merge.
-      No domain/TLS/frontend/webhook capability is added.
+      PUBLIC_BASE_URL uses one backend allocation (IPv6 bracketed); missing/ambiguous,
+      loopback/unspecified/multicast refuse. IPv6 needs released executable transport at the
+      built commit; unverified workflow/.rej refuses with DEPLOY_HOST. Existing products need
+      reviewed kit update/reconciled merge. No domain/TLS/frontend/webhook.
   - id: telegram_bot
     name: Telegram bot
     plain: A Telegram bot people chat with, using commands, buttons and menus.
     how: >-
-      Kit tg_bot (python-telegram-bot 21.4, run_polling) needs no web address. PO includes
-      backend (FastAPI) in every product. Its allocated http://{server_ip}:{port} is the
-      sole public port; no domain or https.
+      Kit tg_bot uses python-telegram-bot 21.4 run_polling. Every product includes FastAPI
+      backend; its allocated http://{server_ip}:{port} is the sole public port. No domain/https.
+  - id: public_telegram_channels
+    name: Read public Telegram channels
+    plain: >-
+      Read public Telegram channels for posts, digests and new-post delivery only through a
+      platform-backed catalog module. Private channels and groups are not supported.
+      Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for
+      channel content themselves. Plan it now; deployment awaits platform key issuance.
+    how: >-
+      Read public Telegram channels for posts, digests and new-post delivery only through a
+      platform-backed catalog module selected by live catalog capabilities. Private channels
+      and groups are not supported. Products must not fetch or scrape t.me, Telegram web
+      previews or Telegram APIs for channel content themselves; only the platform service
+      reaches t.me through the platform egress proxy. Plan it now; deployment refuses with
+      platform_service_unconfigured until platform key issuance and service configuration exist.
   - id: stored_data
     name: The bot remembers data
     plain: The bot remembers data such as records, lists and history, and keeps it when the bot is updated.
     how: >-
-      Product postgres:16 at db:5432 uses persistent db_data. Product redis:7-alpine at
-      redis:6379 carries queues, caches and Redis Streams without persistent storage.
-      Both are private to product containers.
+      Private postgres:16 at db:5432 persists in db_data; private redis:7-alpine at redis:6379
+      carries queues/caches/Redis Streams without persistence.
   - id: scheduled_work
     name: Actions on a schedule or later
     plain: The bot does things on a schedule or later, such as a daily message or a reminder in an hour.
     how: >-
       The kit core timer loop fires each timer an installed package declares, in production
       with no caller: reminders `reminders.tick` every 60 s. Other schedules need a timer
-      loop in the product's own bot or backend; `POST /jobs/fire` only records and dispatches a
-      declared job. The bot's library has no job-queue extra.
+      in the product bot/backend; `POST /jobs/fire` only records/dispatches declared jobs.
+      No bot job-queue extra.
   - id: user_settings
     name: Settings without a new version
     plain: The owner later changes settings, such as the list of languages or the texts, without a new version of the bot.
     how: >-
-      Kit core settings v1 (`POST /settings/get`, `POST /settings/set`) for keys declared in the
-      backend's `manifest.yaml`; the platform holds the write capability and writes the values.
+      Kit settings v1 (`POST /settings/get`, `POST /settings/set`): backend `manifest.yaml`
+      declares keys; platform holds write capability and writes values.
   - id: outbound_apis
     name: Connecting to other services
     plain: >-
       The bot connects to other online services, such as AI, weather or spreadsheets, with a key
       the user provides; AI in the bot runs on the user's own key.
+      Exception: Telegram channel content is read only through a platform-backed catalog module.
     how: >-
-      Product servers allow all outgoing traffic (ufw default allow outgoing). The key is a
-      `user_secret` the PO asks the user for and stores with `set_project_secret`.
+      ufw allows outgoing traffic. PO collects keys as `user_secret` via `set_project_secret`.
+      Exception: Telegram channel content is read only through a platform-backed catalog module;
+      outbound traffic permission does not authorize product-side channel fetching or scraping.
   - id: bot_access
     name: Who can use the bot
     plain: >-
@@ -108,11 +121,10 @@ can:
       access back and opening the bot to everyone are not available yet. The owner or admin can
       retry exhausted initial deployment only when the platform offers a retry action for a failed attempt.
     how: >-
-      Kit core `users` resolves Telegram identities; only backend-confirmed `active` users
-      enter the bot. The platform tracks durable `initial_owner` (first deploy), `add_user`
-      (PO grant) and `incoming_owner` (PO transfer) intents, applied and checked by the worker.
-      No PO revoke or public/mode-switch tool. Only an admitted terminal Run permits bounded
-      owner/admin retry; zero admissions do not.
+      Kit `users` resolves Telegram identities; only backend-confirmed `active` users enter.
+      Worker applies/proves durable intents: `initial_owner` (first deploy), `add_user` (PO
+      grant), `incoming_owner` (PO transfer). No PO revoke/public/mode-switch. Bounded owner/admin
+      retry requires an admitted terminal Run; zero admissions refuse.
 
 cannot:
   - id: web_presence
@@ -163,11 +175,10 @@ cannot:
     why: The product lives entirely inside the Telegram chat.
     workaround: Everything happens in the chat with buttons.
     technical: >-
-      The deployer hands out only `http://{server_ip}:{port}` of the backend; a product's compose
-      has no TLS proxy and nothing allocates or verifies a domain. Derived `PUBLIC_BASE_URL`
-      is that allocated backend HTTP address, with brackets for IPv6, for plain self links;
-      it promises no frontend, TLS or webhook availability. A Mini App needs an https URL. A product may request only the
-      `backend` and `tg_bot` modules; `frontend` remains only for old records.
+      Only backend `http://{server_ip}:{port}` is public; compose has no TLS proxy or domain
+      allocation/verification. `PUBLIC_BASE_URL` is that HTTP address (IPv6 bracketed), for self
+      links only. Mini Apps require https. Only `backend` and `tg_bot` are requestable;
+      `frontend` is historical. No frontend, TLS or webhook availability.
   - id: inbound_webhooks
     detect:
       - inbound webhook
@@ -188,9 +199,8 @@ cannot:
     why: Other services have nowhere to send such events to.
     workaround: The bot checks the service itself from time to time, if the service allows that.
     technical: >-
-      Providers require an https URL, and the product only has plain http on an IP and port that
-      can change when it moves server; derived `PUBLIC_BASE_URL` is only that HTTP address. Poll the
-      provider's API from a timer loop; the Telegram bot already works this way (long polling).
+      Providers require https; `PUBLIC_BASE_URL` is plain HTTP on an IP/port that can change
+      on relocation. Poll provider APIs from a timer; the Telegram bot uses long polling.
   - id: payments
     # A bare word ("payment", "оплата", "платёж") is a weak term: an expense tracker records
     # payments without accepting any, so it trips unless the requirement is about recording.
@@ -238,9 +248,8 @@ cannot:
       The user shares their spreadsheet or calendar with the bot's Google service account, or
       pastes a personal token.
     technical: >-
-      An OAuth web redirect needs an https redirect URL on a stable domain. Use a Google service
-      account the user shares with, a device-code or desktop flow where the provider supports
-      one, or a personal API token stored as a user secret.
+      OAuth web redirects need stable-domain https. Use a shared Google service account,
+      provider-supported device-code/desktop flow, or a personal API token as a user secret.
   - id: send_email
     detect: [send email, sends email, sending email, send an email, send e-mail, email notification, email newsletter, smtp, mail server, отправлять письма, отправляет письма, отправка писем, отправлять email, рассылка на почту, рассылку на почту, уведомления на почту, уведомления по email, письмо на почту]
     name: Sending email by itself
@@ -248,8 +257,8 @@ cannot:
     why: The bot has no mail service of its own.
     workaround: Send through an email service with a key the user provides, or send the message in Telegram.
     technical: >-
-      The kit has no mail module and the platform provisions no mail server or SMTP relay; a
-      third-party email API is an ordinary outbound call with a `user_secret` key.
+      No kit mail module or platform mail server/SMTP relay. Third-party email APIs use
+      ordinary outbound calls with a `user_secret` key.
   - id: file_storage
     detect:
       - file storage
@@ -281,9 +290,8 @@ cannot:
       Photos and documents stay in Telegram and the bot remembers them; large files go to an
       external storage service with a key the user provides.
     technical: >-
-      The only persistent volume is Postgres's `db_data`; the backend and bot containers have no
-      volume and are replaced on every deploy, and the kit has no object-storage module. Keep
-      Telegram files by their Telegram file id; small files may go into the database.
+      Only Postgres `db_data` persists; backend/bot have no volumes and are replaced on deploy.
+      No object-storage module. Keep Telegram file ids; small files may go in the database.
   - id: external_database_access
     detect: [external database access, direct database access, public postgres, внешний доступ к базе, прямой доступ к базе, публичный postgres]
     name: Direct access to the bot's data store
@@ -291,9 +299,8 @@ cannot:
     why: The data is reachable only through the bot.
     workaround: The bot hands out the data needed through a command, such as an export or a report.
     technical: >-
-      Postgres and Redis get host ports allocated, but production compose publishes only the
-      backend's port and the firewall opens only that one. Expose data through bot commands or
-      backend endpoints.
+      Postgres/Redis host ports are allocated but unpublished; compose/firewall expose only
+      backend. Expose data through bot commands or backend endpoints.
   - id: backups
     detect: [backup, backups, data recovery, бэкап, резервная копия, резервные копии, резервное копирование, резервную копию]
     name: Backups of the data
