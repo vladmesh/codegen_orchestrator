@@ -6,7 +6,8 @@ the executor receives and out of everything the run keeps:
 * the product's generated capabilities, read from the project's own encrypted
   secrets on the management host — the caller-identity capability `http_get`
   presents, the users-grant capability the preflight presents, the jobs-fire
-  capability `fire_job` presents. A product can reflect one back in a body, a
+  capability `fire_job` presents, the settings-write capability the stand
+  language write presents. A product can reflect one back in a body, a
   log line or an error;
 * the QA Telegram credentials the sandbox is handed once this run proved them,
   which an agent with a shell can print;
@@ -44,7 +45,13 @@ from pydantic import BaseModel
 USER_IDENTITY_CAPABILITY = "USER_IDENTITY_CAPABILITY"
 USERS_GRANT_CAPABILITY = "USERS_GRANT_CAPABILITY"
 JOBS_FIRE_CAPABILITY = "JOBS_FIRE_CAPABILITY"  # noqa: S105 — a name, not a value
-RUN_CAPABILITIES = (USER_IDENTITY_CAPABILITY, USERS_GRANT_CAPABILITY, JOBS_FIRE_CAPABILITY)
+SETTINGS_WRITE_CAPABILITY = "SETTINGS_WRITE_CAPABILITY"
+RUN_CAPABILITIES = (
+    USER_IDENTITY_CAPABILITY,
+    USERS_GRANT_CAPABILITY,
+    JOBS_FIRE_CAPABILITY,
+    SETTINGS_WRITE_CAPABILITY,
+)
 
 #: What replaces a value, by kind, so a reader of the evidence knows what was there.
 REDACTED = "[redacted: QA run capability]"

@@ -275,6 +275,8 @@ chat, and leaves revocation to the existing owner. Its redacted
 deployed registry digests, protected notes, timezone, accounting and chat correlation.
 Its third confirmed brief selects an install by catalog capability and proves the deployed
 manifest's platform sources against the internal stand fake's product, grant and key readback.
+Readback collects every backend `*env.contract.yaml` fragment, including the generated packages
+fragment, and validates and merges them with the same shared helper as deploy.
 The stand-only `Stand conversation: <fixture>` checklist line selects finite chat test data
 mounted into QA; admission and QA share its selector, and ordinary production admission
 does not treat it as deterministic. The runner supports sends, visible callbacks and passive
@@ -402,7 +404,8 @@ product can still reflect a capability back, in a body, a log line or an error, 
 can print the Telegram credentials or the run token it holds. So the run keeps **one** runtime-only
 redaction set (`QARunRedaction`, `services/langgraph/src/consumers/_qa_redaction.py`) of every
 secret its runtime handles. Each secret enters it once, where it enters the run:
-`USER_IDENTITY_CAPABILITY`, `USERS_GRANT_CAPABILITY` and `JOBS_FIRE_CAPABILITY` where `consumers/qa.py`
+`USER_IDENTITY_CAPABILITY`, `USERS_GRANT_CAPABILITY`, `JOBS_FIRE_CAPABILITY` and
+`SETTINGS_WRITE_CAPABILITY` where `consumers/qa.py`
 reads the project's secrets; the handed-over QA Telegram credentials where the runtime enters
 `run_qa_centrally`; the endpoint's run token (`QA_CAPABILITY_TOKEN`) where `QACapabilityService`
 mints it; and any value a call presents where `build_qa_callables` builds the calls. Every scrub

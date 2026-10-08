@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Stand issuance readback merges deployed backend contract fragments with deploy's validator;
+  QA redacts the language-write capability so reflected replies cannot retain it.
+
 - Stand QA keeps session isolation and conversation fixtures in one Compose service;
   host unit tests reject duplicate Compose mapping keys before native CI renders.
 

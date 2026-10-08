@@ -11,6 +11,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.clients.registry import DockerRegistryClient, parse_image_reference
+from shared.contracts.env_contract import merge_env_contract_fragments
 from shared.live_harness_cleanup import _file_contents_at, _resolve_ssh_targets, _run_over_ssh
 from shared.log_config import setup_logging
 from src.clients.api import api_client
@@ -62,8 +63,11 @@ if (root / 'services/backend/src/main.py').is_file():
     manifest_bytes = files(component['module']).joinpath('package.yaml').read_bytes()
     result['component']['manifest_sha256'] = hashlib.sha256(manifest_bytes).hexdigest()
     result['component']['manifest'] = yaml.safe_load(manifest_bytes)
-    result['component']['contract'] = yaml.safe_load(
-        (root / 'services/backend/env.contract.yaml').read_text())
+    contract_paths = sorted((root / 'services/backend').rglob('*env.contract.yaml'))
+    if not contract_paths:
+        raise RuntimeError('deployed backend environment contract is missing')
+    result['component']['contract_fragments'] = [
+        yaml.safe_load(path.read_text()) for path in contract_paths]
 """
 
 
@@ -164,13 +168,20 @@ async def read_deployment(project_name, server_handle, *, component=None):
         )
         if image.returncode or read.returncode:
             raise RuntimeError(f"{service} fixed artifact read failed")
+        artifacts = json.loads(read.stdout)
+        if component is not None and service == "backend":
+            selected = artifacts["component"]
+            # Use the same validation and merge as the deploy contract loader.
+            selected["contract"] = merge_env_contract_fragments(
+                selected.pop("contract_fragments")
+            ).model_dump(mode="json")
         result[service] = {
             "container_id": container_id,
             "image_id": image_id,
             "reference": reference,
             "registry_digest": registry_digest,
             "digests": json.loads(image.stdout),
-            **json.loads(read.stdout),
+            **artifacts,
         }
     return result
 

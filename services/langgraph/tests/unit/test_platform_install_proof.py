@@ -1,14 +1,134 @@
 """Issuance evidence is accepted only for the deployed contract's declared grant."""
 
 import builtins
+from contextlib import redirect_stdout
 from copy import deepcopy
 import hashlib
+from io import StringIO
+from pathlib import Path
+import shlex
+import shutil
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from framework.generators.package_environment import PackageEnvironmentGenerator
+from framework.spec.events import EventsSpec
+from framework.spec.loader import AllSpecs
+from framework.spec.models import ModelsSpec
+from framework.spec.package_resolution import ActivePackage
+from framework.spec.packages import parse_package_manifest
 import pytest
+import yaml
 
+from shared.contracts.env_contract import EnvContractMergeError
 from shared.live_harness_platform import issuance_proof
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+async def test_backend_probe_merges_generated_package_fragment(tmp_path, monkeypatch, conflict):
+    from shared import live_harness_mechanical_readback as readback
+
+    fixture = (
+        Path(__file__).resolve().parents[4] / "shared/tests/fixtures/codegen-product-kit-0.10.0"
+    )
+    product = tmp_path / "product"
+    shutil.copytree(fixture, product)
+    bot = tmp_path / "bot"
+    shutil.copytree(product / "services/tg_bot", bot / "services/tg_bot")
+    manifest, _, admin = facts()
+    manifest.update(
+        protocol_version=1,
+        name="fictional-module",
+        version="1.0.0",
+        requires_core=">=2.4,<3",
+        http={"prefix": "/fictional"},
+    )
+    site = tmp_path / "site"
+    module = site / "fictional_module"
+    module.mkdir(parents=True)
+    (module / "__init__.py").write_text("")
+    (module / "package.yaml").write_text(yaml.safe_dump(manifest))
+    metadata = site / "fictional_dist-1.0.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Name: fictional-dist\nVersion: 1.0.0\n")
+    active = ActivePackage(
+        name=manifest["name"],
+        manifest=parse_package_manifest(manifest),
+        package_root=module,
+        manifest_sha256=hashlib.sha256((module / "package.yaml").read_bytes()).hexdigest(),
+    )
+    specs = AllSpecs(models=ModelsSpec(models={}), events=EventsSpec(), packages=[active])
+    PackageEnvironmentGenerator(specs, product).generate()
+    if conflict:
+        fragment = yaml.safe_load(
+            (product / "services/backend/packages/env.contract.yaml").read_text()
+        )
+        fragment["owner"] = "another-owner"
+        fragment["entries"]["KEY"]["scopes"] = ["foreign"]
+        (product / "services/backend/another.env.contract.yaml").write_text(
+            yaml.safe_dump(fragment)
+        )
+    identity = {key: manifest[key] for key in ("name", "version")}
+    identity["manifest_sha256"] = active.manifest_sha256
+    (product / "codegen_kit/_active_packages.py").write_text(f"ACTIVE_PACKAGES = {[identity]!r}\n")
+    monkeypatch.syspath_prepend(str(site))
+    monkeypatch.syspath_prepend(str(product))
+    # Record each prior module so monkeypatch also cleans up the fixture imports.
+    for name in (
+        "codegen_kit",
+        "codegen_kit.packages",
+        "codegen_kit._active_packages",
+        "fictional_module",
+    ):
+        monkeypatch.setitem(sys.modules, name, None)
+        del sys.modules[name]
+
+    def ssh(_destination, _key, command, _stdin, **kwargs):
+        argv = shlex.split(command)
+        if argv[1] == "ps":
+            service = next(arg.rsplit("=", 1)[1] for arg in argv if "compose.service=" in arg)
+            stdout = service
+        elif argv[1] == "inspect":
+            stdout = '"image-id" "ghcr.io/owner/product:release"'
+        elif argv[1:3] == ["image", "inspect"]:
+            stdout = '["ghcr.io/owner/product@sha256:abc"]'
+        else:
+            assert argv[:2] == ["docker", "exec"]
+            root = product if argv[2] == "backend" else bot
+            script = argv[-1].replace("Path('/app')", f"Path({str(root)!r})")
+            output = StringIO()
+            with redirect_stdout(output):
+                exec(script, {})  # noqa: S102 - run the actual container probe on fixture files
+            stdout = output.getvalue()
+        return SimpleNamespace(returncode=0, stdout=stdout)
+
+    monkeypatch.setattr(readback, "_run_over_ssh", ssh)
+    monkeypatch.setattr(
+        readback, "_resolve_ssh_targets", AsyncMock(return_value=[("host", "key", None)])
+    )
+    monkeypatch.setattr(
+        readback,
+        "DockerRegistryClient",
+        lambda: SimpleNamespace(manifest_digest=AsyncMock(return_value="abc")),
+    )
+    component = {
+        "name": manifest["name"],
+        "module": "fictional_module",
+        "distribution": "fictional-dist",
+    }
+    if conflict:
+        with pytest.raises(EnvContractMergeError, match="KEY"):
+            await readback.read_deployment("product", "target", component=component)
+        return
+    deployed = await readback.read_deployment("product", "target", component=component)
+    backend = deployed["backend"]["component"]
+    proof = issuance_proof("project", backend["manifest"], backend["contract"], admin)
+    assert proof["key_ids"] == ["safe-id"]
+    assert backend["active"] == identity
+    assert backend["version"] == "1.0.0"
+    assert backend["contract"]["entries"]["APP_NAME"]["source"] == "derived"
+    assert backend["contract"]["entries"]["KEY"]["source"] == "platform_key"
 
 
 def test_bot_binding_readback_runs_without_backend_yaml_dependency(tmp_path, monkeypatch):
