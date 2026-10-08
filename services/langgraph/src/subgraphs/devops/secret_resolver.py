@@ -343,7 +343,9 @@ class SecretResolverNode(FunctionalNode):
             case PlatformKeyEntry():
                 pass  # Async issuance persists before it registers any key.
             case PlatformBaseUrlEntry():
-                resolved.store(key, entry.url, entry.sensitive)
+                template = get_settings().platform_base_url_override
+                value = template.format(service=entry.service) if template else entry.url
+                resolved.store(key, value, entry.sensitive)
             case _:
                 raise TypedSecretResolutionError(
                     DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,

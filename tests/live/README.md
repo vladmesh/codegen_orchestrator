@@ -857,6 +857,37 @@ Offline coverage for both, kind by kind, is in `tests/live/test_run_residue.py`,
 `tests/live` are in `shared/tests/test_run_residue_probes.py` and
 `services/worker-manager/tests/unit/test_compose_residue.py`.
 
+## Stand fixture platform
+
+The stand overlay starts `stand-fake-platform` from the released API image. Its
+in-memory admin API is internal at `http://stand-fake-platform:8000`; deploy writes
+the stand's own internal API credential as its admin Bearer token. Caddy exposes
+only the service side at `https://<stand-host>/platform-fake/<service>/...` and
+refuses `/platform-fake/admin/*`. Production and development mount no fixture route
+and start no fake process.
+The dynamic stand workflow renders the same settings from its hostname and internal
+credential before bring-up, including runs that bypass `deploy.yml`.
+
+`PLATFORM_BASE_URL_OVERRIDE` is an HTTPS template with exactly one `{service}` in
+its path. Deploy writes it only for stand, and resolver settings refuse it unless
+`LIVE_CONTOUR=stand`. Production deploy also refuses a configured override.
+Product contracts retain their declared HTTPS URLs.
+
+Fixtures live under `infra/stand-platform-fixtures/`; the stand environment variable
+`STAND_PLATFORM_FIXTURE_FILE` selects a file there. The empty fixture is used until
+a harness story provides data. The process reads `STAND_PLATFORM_FIXTURE_PATH` at
+startup. A JSON fixture has a `routes` array whose entries declare `method`, `path`,
+`status` and `body`. Path slots such as `{item}` match one non-empty path segment;
+query strings do not change the match. `{now}` in body strings renders one UTC
+timestamp per response, including nested lists and objects. Requests need a
+registered, unrevoked Bearer key and a grant for the first path segment: unknown
+or revoked keys get 401; missing grants or disabled products get 403. Products,
+grants and keys reset when the fake process restarts.
+
+The offline resolver tests exercise registration and rotation through ASGI, using
+the same admin contract table as the issuance unit fake. Native Compose and Caddy
+render checks run in CI. This wiring launches no stand acceptance run.
+
 ## Bot access revocation
 
 `tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a

@@ -42,6 +42,8 @@ class FakeAdmin:
         self.product = None
         self.grants = {}
         self.keys = {}
+        self.products = {}
+        self.key_owners = {}
         self.events = []
         self.persisted = {}
         self.fail = None
@@ -53,35 +55,47 @@ class FakeAdmin:
 
     def request(self, request):
         self.events.append(request.method + " " + request.url.path)
-        assert request.headers["Authorization"] == "Bearer admin-private-value"
+        if request.headers.get("Authorization") != "Bearer admin-private-value":
+            return httpx.Response(401)
         if self.fail is not None:
             if isinstance(self.fail, Exception):
                 raise self.fail
             return httpx.Response(self.fail, text="admin-private-value " + str(self.persisted))
+        product_id = request.url.path.split("/")[4]
+        product = self.products.get(product_id)
         if request.method == "GET":
-            if self.product is None:
+            if product is None:
                 return httpx.Response(404)
-            return httpx.Response(200, json={**self.product, "keys": list(self.keys.values())})
+            return httpx.Response(200, json={**product, "keys": list(product["keys"].values())})
         body = json.loads(request.content)
         if "/keys/" in request.url.path:
             assert body["key"] in self.persisted.values(), "registration precedes storage"
             key_id = request.url.path.rsplit("/", 1)[1]
-            if key_id not in self.keys:
-                self.keys[key_id] = {"key_id": key_id, "revoked_at": None}
+            if key_id in self.key_owners and self.key_owners[key_id] != product_id:
+                return httpx.Response(409)
+            keys = product["keys"]
+            if key_id not in keys:
+                keys[key_id] = {"key_id": key_id, "label": body["label"], "revoked_at": None}
+                self.key_owners[key_id] = product_id
             if self.revoke_on_register:
-                self.keys[key_id]["revoked_at"] = "2026-10-08T00:00:00Z"
+                keys[key_id]["revoked_at"] = "2026-10-08T00:00:00Z"
                 self.revoke_on_register = False
-            return httpx.Response(200, json=self.keys[key_id])
+            return httpx.Response(200, json=keys[key_id])
         assert request.headers["If-None-Match"] == "*", "full replacement is forbidden"
         if "/grants/" in request.url.path:
             service = request.url.path.rsplit("/", 1)[1]
-            if service in self.grants:
+            if service in product["grants"]:
                 return httpx.Response(412)
-            self.grants[service] = body
+            product["grants"][service] = body
         else:
-            if self.product is not None:
+            if product is not None:
                 return httpx.Response(412)
-            self.product = body
+            product = {**body, "grants": {}, "keys": {}}
+            self.products[product_id] = product
+            if self.product is None:
+                self.product = product
+                self.grants = product["grants"]
+                self.keys = product["keys"]
         return httpx.Response(201)
 
 

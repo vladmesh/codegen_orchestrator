@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 19, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 20, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -70,7 +70,7 @@ How: Kit tg_bot uses python-telegram-bot 21.4 run_polling. Every product include
 
 #### Read public Telegram channels
 
-How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module selected by live catalog capabilities. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves; only the platform service reaches t.me through the platform egress proxy. Plan it now; deployment handles platform key issuance and the declared base URL; no user key is needed. Auth admin configuration is required; unavailable auth retries.
+How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module selected by live catalog capabilities. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Platform uses its egress proxy. Plan it now; deployment handles key issuance; no user key is needed. Auth admin required; unavailable auth retries. Only stand can override declared HTTPS URLs with its fixture ingress.
 
 #### The bot remembers data
 

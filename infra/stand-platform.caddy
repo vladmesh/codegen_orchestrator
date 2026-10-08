@@ -1,0 +1,6 @@
+# Service ingress only: admin paths can never enter the internal admin handler.
+handle_path /platform-fake/* {
+    @admin path /admin /admin/*
+    respond @admin 404
+    reverse_proxy stand-fake-platform:8000
+}

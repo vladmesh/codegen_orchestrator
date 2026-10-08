@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Stand has an authenticated fixture platform and internal key administration; declared URLs
+  can redirect to its TLS ingress only on stand, keeping production isolated.
+
 - QA settlement preserves every executor-declared product failure; invented-input classification
   is executor guidance, and QA tooling judgements retain cited evidence as unverified.
 

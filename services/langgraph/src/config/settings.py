@@ -5,8 +5,9 @@ PO consumer additionally requires CHECKPOINT_DATABASE_URL for durable conversati
 """
 
 from functools import lru_cache
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 
 from shared.allocation_freshness import ALLOCATION_METRICS_FRESHNESS_SECONDS
 from shared.config import (
@@ -29,6 +30,33 @@ class Settings(BaseSettings):
     # deploy with platform_service_unconfigured; it supplies no substitute URL/token.
     platform_auth_admin_url: str | None = Field(default=None, repr=False)
     platform_auth_admin_token: SecretStr | None = Field(default=None, repr=False)
+
+    # Optional contour metadata; required to opt into the stand fixture boundary.
+    live_contour: str | None = None
+    platform_base_url_override: str | None = None
+
+    @model_validator(mode="after")
+    def validate_platform_override(self):
+        template = self.platform_base_url_override
+        if not template:
+            return self
+        if self.live_contour != "stand":
+            raise ValueError("platform base URL override is permitted only on stand")
+        parsed = urlsplit(template)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or template.count("{service}") != 1
+            or "{service}" not in parsed.path
+            or "{" in template.replace("{service}", "")
+            or "}" in template.replace("{service}", "")
+        ):
+            raise ValueError("platform override requires an https URL with one {service} path slot")
+        return self
 
     # Worker configuration
     default_agent_type: AgentType = default_agent_type_field()

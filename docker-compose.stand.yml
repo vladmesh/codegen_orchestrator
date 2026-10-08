@@ -15,9 +15,36 @@ networks: !override
     internal: true
 
 services:
+  # Shares the API release image, but starts only the fixture app, with its own
+  # minimal environment and no production env_file or published port.
+  stand-fake-platform:
+    image: codegen-orchestrator/api:local
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    command: ["python", "-m", "shared.stand_fake_platform"]
+    environment:
+      STAND_PLATFORM_ADMIN_TOKEN: ${PLATFORM_AUTH_ADMIN_TOKEN:-}
+      STAND_PLATFORM_FIXTURE_PATH: /fixtures/${STAND_PLATFORM_FIXTURE_FILE:-empty.json}
+    volumes:
+      - ./infra/stand-platform-fixtures:/fixtures:ro
+    networks:
+      - internal
+    restart: unless-stopped
+    mem_limit: 128m
+
+  caddy:
+    volumes:
+      - ./infra/stand-platform.caddy:/etc/caddy/contour/stand.caddy:ro
+
   deploy-worker:
     networks: !override
       - internal
+    depends_on:
+      stand-fake-platform:
+        condition: service_started
 
   worker-manager:
     # Claude keeps its short-lived token. Codex receives a dedicated, file-backed
