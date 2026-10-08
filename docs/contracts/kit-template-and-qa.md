@@ -48,12 +48,28 @@ was rendered in [CI run 37703070130](https://github.com/vladmesh/codegen_orchest
 
 `shared/contracts/env_contract.py` mirrors the pinned tooling model, including strict service,
 scope and quota validation and the Python-only credential check for platform URLs. Schema
-equality and a validation corpus test both copies. Production `platform_key` and
-`platform_base_url` entries raise `TypedSecretResolutionError` with the existing
-`DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED` and a `platform_service_unconfigured` diagnostic
-naming the service and env key. They produce no missing user secret and cannot reach deployment;
-the scheduler's existing environment-resolution failure route stops the Story. Key issuance
-and service configuration remain separate work.
+equality and a validation corpus test both copies. Production `platform_base_url` resolves
+the declaration's URL. Production `platform_key` issues a `cps_<id>_<secret>` credential
+(12 lowercase base32 characters, 32 random bytes as unpadded base64url) through the generic
+auth admin client. The product id is `orch-` plus the first 58 hexadecimal characters of
+SHA-256 over the UTF-8 orchestrator project id: stable across title/slug changes, 63 characters,
+and valid for auth's product-id pattern.
+
+The resolver obtains/reuses keys, persists newly generated values through the existing
+encrypted project-secrets merge under the deploy fence, then registers product, grants and
+keys. Each admin write rechecks the fence. Every product/grant PUT sends `If-None-Match: *`;
+412 succeeds without replacing operator-disabled status, scopes or quotas. Keys register
+idempotently. A stored key revoked in GET, or revoked in the registration response, is
+replaced and persisted before registration; repeated revocation returns a retry.
+
+`PLATFORM_AUTH_ADMIN_URL` and `PLATFORM_AUTH_ADMIN_TOKEN` are read from LangGraph settings
+and required at issuance. Missing configuration gives `ENVIRONMENT_RESOLUTION_FAILED` with
+`platform_service_unconfigured`; 401/403 gives the same outcome with
+`platform_auth_unauthorized`. Other request/response refusals are configuration failures.
+Transport errors, timeouts, 429 and 5xx give `DeployOutcome.RETRY` with
+`platform_auth_unavailable`, which the existing supervisor redeploys under its retry bound.
+None of these failures asks for a user secret. Diagnostics exclude response bodies, plaintext
+keys and tokens. Production network/env wiring remains separate work.
 
 Historical core `2.1.0` introduced by `0.7.0` added these product behaviors;
 `0.7.1` fixed lifespan tests with installed packages:

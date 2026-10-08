@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-08
 
+- Deploy issues and persists platform keys before create-only auth registration, preserving operator grants;
+  revoked keys rotate and unavailable auth retries without asking the user.
+
 - Public channel content is planned via platform-backed catalog modules only; product scraping is forbidden.
   Bot briefs default to RU/EN; new bots stage module installation after the base story.
 

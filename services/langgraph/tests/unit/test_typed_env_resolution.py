@@ -122,22 +122,18 @@ async def test_contract_missing_user_secret_is_a_typed_waiting_outcome():
     assert result["resolution_outcome"] == "waiting_for_user_secret"
 
 
-@pytest.mark.parametrize("source", ["platform_key", "platform_base_url"])
 @pytest.mark.parametrize("required", [True, False])
 @patch("src.subgraphs.devops.secret_resolver.api_client")
-async def test_platform_service_refuses_deploy_without_asking_user(api_client, source, required):
+async def test_platform_service_refuses_deploy_without_asking_user(api_client, required):
     api_client.merge_secrets = AsyncMock()
     entry = {
-        "source": source,
+        "source": "platform_key",
         "environments": ["production"],
         "required": required,
         "service": "fictional-service",
+        "scopes": ["read"],
+        "quota": {"requests": 100},
     }
-    entry.update(
-        {"scopes": ["read"], "quota": {"requests": 100}}
-        if source == "platform_key"
-        else {"url": "https://fictional.example.invalid"}
-    )
     state = _state(
         {
             "MISSING": {
@@ -154,7 +150,7 @@ async def test_platform_service_refuses_deploy_without_asking_user(api_client, s
     result = await resolve_secrets(state)
 
     assert result["resolution_outcome"] is DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED
-    assert "platform_service_unconfigured: fictional-service" in result["errors"][0]
+    assert "platform_service_unconfigured" in result["errors"][0]
     assert result.get("missing_user_secrets", []) == []
     api_client.merge_secrets.assert_not_awaited()
 
