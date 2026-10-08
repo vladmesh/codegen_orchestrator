@@ -17,11 +17,12 @@ from dataclasses import dataclass
 import itertools
 from unittest.mock import patch
 
+from framework.catalog import parse_catalog
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 import pytest
 
 from src.agents.architect.tools import reset_task_chain
-from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
+from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable, installable
 from tests.unit.architect_kit_catalog import (
     PREVIOUS_CRITERIA,
     SHOPPING_ADD,
@@ -154,6 +155,52 @@ _SHOPPING_LIST = _Task(
     '- Telegram: sending "/add milk" replies "Added: milk"\n'
     '- Telegram: sending "/list" replies "Your list: milk"',
 )
+
+
+@pytest.mark.asyncio
+async def test_channel_module_and_scraping_policy_reach_the_architect(kit_catalog_off_github):
+    catalog = installable(
+        parse_catalog(
+            """format_version: 1
+packages:
+  - name: fictional-bulletins
+    distribution: fictional-bulletins
+    path: packages/fictional-bulletins
+    summary: Public channel content through a platform service.
+    capabilities: [read public Telegram channels, читать публичные Telegram каналы]
+    settings: []
+    environment:
+      - name: BULLETINS_KEY
+        required: true
+        summary: Platform-issued key for fictional-feed-service (platform_key).
+      - name: BULLETINS_URL
+        required: true
+        summary: Platform endpoint for fictional-feed-service (platform_base_url).
+    versions:
+      - version: 1.0.0
+        tag: packages/fictional-bulletins/v1.0.0
+        requires_core: ">=2.4,<3"
+""",
+            "https://kit.invalid/catalog.yaml",
+        ),
+        "https://kit.invalid/catalog.yaml",
+    )
+    kit_catalog_off_github.read.return_value = catalog
+    _, result, seen = await _run(shopping_list_brief(), [_SHOPPING_LIST])
+
+    assert result["status"] == "success", result
+    briefing = seen[0][-1].content
+    section = briefing.split("Kit package catalog (read live from", 1)[1]
+    assert "- fictional-bulletins (installs 1.0.0)" in section
+    assert (
+        "capabilities: read public Telegram channels; читать публичные Telegram каналы" in section
+    )
+    assert "fictional-feed-service" in section
+    system = seen[0][0].content
+    assert (
+        "Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs" in system
+    )
+    assert "for channel content themselves" in system
 
 
 @pytest.mark.asyncio
