@@ -111,17 +111,24 @@ async def test_owned_seed_key_identifies_package_without_a_declaration(catalog):
     assert [item["key"] for item in result["settings"]] == ["language"]
 
 
-async def test_invalid_binding_does_not_break_ordinary_or_other_package_confirmation(catalog):
+@pytest.mark.parametrize("declares_other", [False, True], ids=["ordinary", "other-package"])
+async def test_invalid_binding_does_not_break_ordinary_or_other_package_confirmation(
+    catalog, declares_other
+):
     current, package = catalog
     broken = replace(current, bindings={**current.bindings, package: "binding_version: 99"})
-    for declared in ([], [next(item.name for item in current.packages if item.name != package)]):
-        answer, api = await confirm(
-            broken,
-            declared,
-            [{"key": "timezone", "value": "Europe/Nicosia", "description": "Local time"}],
-        )
-        assert "confirmed and frozen" in answer
-        assert api.briefs[BRIEF_ID]["confirmed_at"]
+    declared = (
+        [next(item.name for item in current.packages if item.name != package)]
+        if declares_other
+        else []
+    )
+    answer, api = await confirm(
+        broken,
+        declared,
+        [{"key": "timezone", "value": "Europe/Nicosia", "description": "Local time"}],
+    )
+    assert "confirmed and frozen" in answer
+    assert api.briefs[BRIEF_ID]["confirmed_at"]
 
 
 async def test_declared_invalid_binding_gets_a_typed_refusal(catalog):

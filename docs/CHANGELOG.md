@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-09
+
+- `python -m shared -- <selector>...` runs chosen tests inside the host profile and refuses a
+  ci_only-only selector by marker; CI fast-checks now applies the 0.5 s per-test budget too.
+
 ## 2026-10-08
 
 - The Architect plans a replanned catalog install itself against the current catalog and waits
