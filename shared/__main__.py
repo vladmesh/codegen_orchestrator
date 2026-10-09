@@ -1,4 +1,10 @@
-"""Canonical broad unit suite entry point for the in-tree shared package."""
+"""Canonical broad unit suite entry point for the in-tree shared package.
+
+``python -m shared`` runs the whole host profile. ``python -m shared -- <selector>...``
+(node id, file or directory, from the checkout root) runs only those selectors inside the
+same profile: fixture env, ``-m "not ci_only"`` and per-test budget. A selector that
+reaches only ci_only-family tests fails naming the marker (scripts/test-unit-local.sh).
+"""
 
 from __future__ import annotations
 

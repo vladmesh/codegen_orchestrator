@@ -13,6 +13,9 @@
 #   ./scripts/test-unit-local.sh                # every suite at once (CI, make test-unit)
 #   ./scripts/test-unit-local.sh --host         # the light host profile (python -m shared)
 #   ./scripts/test-unit-local.sh --serial       # sequential (verbose output)
+#   ./scripts/test-unit-local.sh --host -- <selector>...
+#                                               # only these pytest selectors (node id,
+#                                               # file or directory, from the repo root)
 #
 # The host profile is what a weak control host runs: at most UNIT_JOBS suites at a
 # time (default 2), `-m "not ci_only"` on every suite, and no live-offline suite.
@@ -20,18 +23,28 @@
 # in CI only, and every other host-profile test must finish within 0.5 s. CI runs this
 # script without --host, so its coverage does not shrink. Budget for the whole
 # profile: 300 s or less and 1.5 GB or less peak RSS at 2 jobs (docs/TESTING.md).
+# The 0.5 s budget applies in the full profile too, to the same tests: CI fails a heavy
+# unmarked test instead of leaving it to the next host run.
+#
+# Selectors after `--` run in the suite whose test directory holds them, with that
+# suite's environment, markers and budget; a selector outside every suite is refused.
+# In the host profile a selector that reaches only ci_only-family tests, or a suite the
+# host profile leaves to CI, fails naming why instead of passing with 0 collected.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODE="parallel"
 HOST_PROFILE=0
-for arg in "$@"; do
-    case "$arg" in
+SELECTORS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
         --host) HOST_PROFILE=1 ;;
         --serial) MODE="--serial" ;;
-        *) echo "unknown argument: $arg" >&2; exit 2 ;;
+        --) shift; SELECTORS=("$@"); break ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
+    shift
 done
 UNIT_JOBS="${UNIT_JOBS:-2}"
 
@@ -83,13 +96,16 @@ TIMEOUT_ARGS=(
 )
 # The markers plugin makes every sub-marker (docker, ansible, privileged, kit_gate,
 # subprocess, slow) imply ci_only, so the host profile deselects the whole family with
-# one expression. The budget plugin (scripts/unit_test_budget.py) fails a host-profile
-# test that takes longer than UNIT_TEST_BUDGET_SECONDS (setup+call+teardown).
+# one expression. The budget plugin (scripts/unit_test_budget.py) fails a test outside
+# that family that takes longer than UNIT_TEST_BUDGET_SECONDS (setup+call+teardown), in
+# every suite the host profile runs, in both profiles.
 UNIT_TEST_BUDGET_SECONDS=0.5
 MARKER_ARGS=(-p scripts.ci_only_markers -p scripts.unit_test_budget)
 if [ "$HOST_PROFILE" = "1" ]; then
     MARKER_ARGS+=(-m "not ci_only")
-    MARKER_ARGS+=(--unit-test-budget="$UNIT_TEST_BUDGET_SECONDS")
+    if [ ${#SELECTORS[@]} -gt 0 ]; then
+        MARKER_ARGS+=(--refuse-ci-only-selection)
+    fi
 fi
 
 # Per-suite evidence, both optional and both named after the suite label:
@@ -102,10 +118,11 @@ if [ -n "$UNIT_REPORT_DIR" ]; then
 fi
 
 # pytest exits 5 when it collected no test. In the host profile that is a suite whose
-# every test is in the ci_only family, which is a pass; in CI it stays a failure.
+# every test is in the ci_only family, which is a pass; in CI, and for a caller's
+# selectors, it stays a failure.
 host_rc() {
     local rc="$1"
-    if [ "$HOST_PROFILE" = "1" ] && [ "$rc" = "5" ]; then
+    if [ "$HOST_PROFILE" = "1" ] && [ ${#SELECTORS[@]} -eq 0 ] && [ "$rc" = "5" ]; then
         rc=0
     fi
     echo "$rc"
@@ -114,12 +131,32 @@ host_rc() {
 suite_report_args() {
     local label="$1"
     REPORT_ARGS=()
+    if [[ " ${HOST_EXCLUDED_SUITES[*]} " != *" $label "* ]]; then
+        REPORT_ARGS+=(--unit-test-budget="$UNIT_TEST_BUDGET_SECONDS")
+    fi
     if [ -n "$UNIT_CPU_DIR" ]; then
         REPORT_ARGS+=(--suite-cpu-file="$UNIT_CPU_DIR/$label.json")
     fi
     if [ -n "$UNIT_REPORT_DIR" ]; then
         REPORT_ARGS+=(--junitxml="$UNIT_REPORT_DIR/$label.xml" --durations=50)
     fi
+}
+
+# The suite's own test directory, or the caller's selectors routed to it.
+suite_targets() {
+    local label="$1"
+    local test_dir="$2"
+    TARGETS=()
+    if [ ${#SELECTORS[@]} -eq 0 ]; then
+        TARGETS=("$ROOT/$test_dir")
+        return
+    fi
+    local entry
+    while IFS= read -r entry; do
+        if [ -n "$entry" ]; then
+            TARGETS+=("$ROOT/$entry")
+        fi
+    done <<< "${SUITE_SELECTORS[$label]}"
 }
 
 # --- Serial mode (original behavior, verbose) ---
@@ -144,9 +181,10 @@ run_tests_serial() {
     suite_report_args "$label"
     local log="${UNIT_REPORT_DIR:+$UNIT_REPORT_DIR/$label.log}"
     local rc=0
+    suite_targets "$label" "$test_dir"
     (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${REPORT_ARGS[@]}" "${extra_args[@]}") 2>&1 \
+       python -m pytest "${TARGETS[@]}" -v --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${REPORT_ARGS[@]}" "${extra_args[@]}") 2>&1 \
        | tee "${log:-/dev/null}" || rc=$?
     if [ "$(host_rc "$rc")" = "0" ]; then
         PASSED+=("$label")
@@ -177,9 +215,10 @@ run_tests_parallel() {
     local workdir="${pythonpath:-$ROOT}"
     local rc=0
     suite_report_args "$label"
+    suite_targets "$label" "$test_dir"
     (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
-       python -m pytest "$ROOT/$test_dir" --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${REPORT_ARGS[@]}" "${extra_args[@]}") \
+       python -m pytest "${TARGETS[@]}" --tb=short -q "${TIMEOUT_ARGS[@]}" "${MARKER_ARGS[@]}" "${REPORT_ARGS[@]}" "${extra_args[@]}") \
        > "$LOGDIR/$label.log" 2>&1 || rc=$?
     host_rc "$rc" > "$LOGDIR/$label.rc"
     if [ -n "$UNIT_REPORT_DIR" ]; then
@@ -220,9 +259,59 @@ ALL_SUITES=(
 # list too: the guard test scans every file of every other suite.
 HOST_EXCLUDED_SUITES=(live-offline)
 
+# A selector belongs to the suite whose test directory holds it (that directory's
+# own tests), or names a directory above whole suites; a selector routed to no suite
+# is refused. SUITE_SELECTORS holds each suite's selectors, one per line.
+declare -A SUITE_SELECTORS=()
+for selector in "${SELECTORS[@]}"; do
+    case "$selector" in
+        -*) echo "a selector is a node id, file or directory, not an option: $selector" >&2; exit 2 ;;
+    esac
+    path="${selector%%::*}"
+    path="${path#"$ROOT"/}"
+    path="${path#./}"
+    path="${path%/}"
+    node=""
+    if [[ "$selector" == *::* ]]; then
+        node="::${selector#*::}"
+    fi
+    routed=0
+    ci_suite=""
+    for suite in "${ALL_SUITES[@]}"; do
+        IFS='|' read -r label test_dir _ <<< "$suite"
+        if [ "$path" = "$test_dir" ] || [[ "$path" == "$test_dir"/* ]]; then
+            entry="$path$node"
+        elif [[ "$test_dir" == "$path"/* ]] || [ "$path" = "." ]; then
+            entry="$test_dir"
+        else
+            continue
+        fi
+        if [ "$HOST_PROFILE" = "1" ] && [[ " ${HOST_EXCLUDED_SUITES[*]} " == *" $label "* ]]; then
+            ci_suite="$label"
+            continue
+        fi
+        SUITE_SELECTORS[$label]+="$entry"$'\n'
+        routed=1
+    done
+    if [ "$routed" = "0" ] && [ -n "$ci_suite" ]; then
+        echo "$selector is in suite $ci_suite, which runs in CI, not in the host profile" >&2
+        exit 1
+    fi
+    if [ "$routed" = "0" ]; then
+        echo "$selector is in no unit suite (scripts/test-unit-local.sh ALL_SUITES)" >&2
+        exit 2
+    fi
+done
+
 SUITES=()
 for suite in "${ALL_SUITES[@]}"; do
     label="${suite%%|*}"
+    if [ ${#SELECTORS[@]} -gt 0 ]; then
+        if [ -n "${SUITE_SELECTORS[$label]:-}" ]; then
+            SUITES+=("$suite")
+        fi
+        continue
+    fi
     if [ "$HOST_PROFILE" = "1" ] && [[ " ${HOST_EXCLUDED_SUITES[*]} " == *" $label "* ]]; then
         echo "⏭  $label — CI only, not in the host profile"
         continue
@@ -262,6 +351,10 @@ else
         rc=$(cat "$LOGDIR/$label.rc" 2>/dev/null || echo 1)
         if [ "$rc" = "0" ]; then
             PASSED+=("$label")
+            # A caller's selectors are few: show what ran, not only the verdict.
+            if [ ${#SELECTORS[@]} -gt 0 ]; then
+                cat "$LOGDIR/$label.log" 2>/dev/null || true
+            fi
         else
             FAILED+=("$label")
             echo "❌ $label"

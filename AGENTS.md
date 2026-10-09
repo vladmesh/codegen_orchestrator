@@ -43,16 +43,20 @@ Red → Green → Refactor. No exceptions.
 1. **Context**: read the card spec, the `docs/CONTRACTS.md` index, and only the relevant `docs/contracts/*` guide for the boundary you change
 2. **Red**: write a test in `services/<service>/tests/{unit,integration}/`, make sure it fails
 3. **Green**: the minimal code to make the test pass
-4. **Gate**: `make test-unit` + `make lint`, plus a CHANGELOG entry.
+4. **Gate**: the host profile through the Ummanu wrapper (below) + `make lint`, plus a CHANGELOG
+   entry. CI runs the full unit profile (`docs/TESTING.md`); do not run it on the control host.
 
-**Broad check under Ummanu (one canonical form):** run the broad check exactly as the Ummanu
-worker packet prints it (`ummanu check broad --reuse --module shared`) — the light host profile of
-`make test-unit` (`python -m shared` runs the tree's `scripts/test-unit-local.sh --host`, fixture env
-included; `ci_only`-marked tests run in CI only, see `docs/TESTING.md`).
-Order: focused tests while editing → this broad check once, after the last edit, on the dirty tree →
+**Checks under Ummanu:** run them through the `ummanu check` wrapper exactly as the worker packet
+prints it, never through a bare pytest. The broad form (`ummanu check broad --reuse --module shared`)
+is the host profile of the unit suite: `python -m shared` runs the tree's
+`scripts/test-unit-local.sh --host`, fixture env included; `ci_only`-family tests run in CI only, see
+`docs/TESTING.md`. Focused tests go through the wrapper's granular form (one module or one test; the
+packet prints the command), which runs `python -m shared -- <selector>...` in the same profile.
+Only the broad form leaves a receipt that proves the gate.
+Order: focused tests while editing → the broad check once, after the last edit, on the dirty tree →
 commit. The receipt is keyed by the content tree, so committing the same content keeps it: after the
-commit quote `check show --module shared`, do not run the suite again. Do not wrap `make test-unit`
-in `--command`, that receipt is never reusable, and do not substitute a narrower `--module pytest ...`.
+commit quote `check show --module shared`, do not run the suite again. Do not wrap the unit runner
+in `--command`: that receipt is never reusable.
 
 **Review Trigger**: a change to `shared/contracts/` or the DB schema that is not described in the plan → **STOP**, ask the user.
 
@@ -162,7 +166,6 @@ make up / down / build       # Docker lifecycle
 make migrate                 # Run DB migrations
 make lint                    # Ruff linter
 make format                  # Ruff formatter
-make test-unit               # Unit tests (fast, no deps)
 make test-integration        # Integration tests (require DB/Redis)
 make test-service SERVICE=api # Per-service integration test
 ```

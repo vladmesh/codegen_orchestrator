@@ -26,6 +26,17 @@ def test_command_runs_the_host_profile_and_forwards_caller_flags() -> None:
     assert entry.build_command([]) == ["bash", script, "--host"]
 
 
+def test_selectors_after_a_double_dash_reach_the_runner_unchanged() -> None:
+    selector = "services/api/tests/unit/test_x.py::test_y[a b]"
+    assert entry.build_command(["--", selector]) == [
+        "bash",
+        str(entry.UNIT_SCRIPT),
+        "--host",
+        "--",
+        selector,
+    ]
+
+
 def test_env_puts_interpreter_dir_first_on_path(tmp_path: Path) -> None:
     venv_bin = tmp_path / ".venv" / "bin"
     venv_bin.mkdir(parents=True)

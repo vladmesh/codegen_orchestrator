@@ -156,6 +156,9 @@ uv run bash scripts/test-unit-local.sh --serial
 # The host profile as one module entry point (what Ummanu's `check broad --module shared` runs)
 uv run python -m shared            # = test-unit-local.sh --host; accepts e.g. `--serial`
 
+# Only some tests, inside the host profile (what Ummanu's granular check form runs)
+uv run python -m shared -- services/api/tests/unit/test_x.py::test_y shared/tests/
+
 # Privileged regressions: sudo useradd, ansible-playbook with become (CI runner only)
 make test-privileged
 
@@ -271,12 +274,21 @@ Both must pass.
 
 `scripts/test-unit-local.sh` has two profiles over the same `ALL_SUITES` table:
 
-- **Full** (no flag; `make test-unit`, CI `fast-checks`): every suite at once, every test.
+- **Full** (no flag; `make test-unit`, CI `fast-checks`): every suite at once, every test, the 0.5 s
+  per-test budget outside the `ci_only` family.
 - **Host** (`--host`; `python -m shared`, the Ummanu broad check on the control host): at most
   `UNIT_JOBS` suites at a time (default 2), `-m "not ci_only"` on every suite, a 0.5 s budget per
   test, and none of `HOST_EXCLUDED_SUITES` (the `live-offline` suite). It prints its total wall
   time; `python -m shared` also prints the CPU time of each suite and of the whole run. A suite whose every
   test is in the `ci_only` family collects nothing there (pytest exit 5), which counts as passed.
+
+**Selectors.** Both profiles take pytest selectors after `--` (node id, file or directory, from the
+checkout root, several at once): `python -m shared -- <selector>...`. Each selector runs in the suite
+whose test directory holds it, with that suite's fixture env, markers and budget; a directory above
+suites runs those suites whole. A selector in no `ALL_SUITES` directory, or an option after `--`, is
+refused (exit 2). In the host profile a selector that reaches only `ci_only`-family tests fails with
+one line naming the marker (`--refuse-ci-only-selection` in `scripts/ci_only_markers.py`), a selector
+in a `HOST_EXCLUDED_SUITES` suite fails naming the suite, and 0 collected never counts as passed.
 
 **Budgets for the host profile** on the control host, at 2 jobs:
 
@@ -291,8 +303,10 @@ The CPU budget is the measured host profile plus about 30 %; the per-suite CPU i
 from each suite's pytest (`--suite-cpu-file`). The per-test budget leaves out what belongs to the
 suite rather than to the test that happens to run first: setting up session-, module- or
 class-scoped fixtures, and first-time imports. A change that breaks a budget moves tests to CI (a
-`ci_only`-family marker) rather than raising the budget. The full profile in CI has no per-test or
-CPU budget; the 90 s `pytest-timeout` stays the hang guard everywhere.
+`ci_only`-family marker) rather than raising the budget. The full profile in CI applies the same
+0.5 s per-test budget to the same tests (outside the `ci_only` family, in every suite but
+`HOST_EXCLUDED_SUITES`), so a heavy unmarked test fails `fast-checks` by name instead of the next host
+run; it has no CPU budget, and the 90 s `pytest-timeout` stays the hang guard everywhere.
 
 CI's `fast-checks` sets `UNIT_REPORT_DIR`, so every suite writes `<suite>.xml` (`--junitxml`) and
 `<suite>.log` with `--durations=50`; the job uploads them as the `unit-reports-<sha>` artifact,
