@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-10
 
+- `python -m src.synthetic_buyer` orders a fresh channel bot through the actual Codegen bot as the
+  QA account, checks the live product, keeps redacted resumable evidence and tears its project down.
 - Kit 7b547c69 (core 2.5.0) is the scaffold, tooling and catalog pin; one activated catalog snapshot
   replaces the live HEAD reader, and installs name and add from its exact commit.
 - The PO previews capabilities through the Architect before a brief; the API stores the derived

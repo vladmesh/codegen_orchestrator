@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "operation_id": "s1487-buyer-001",
+  "codegen_bot": {"username": "<codegen_bot_username>", "user_id": 1},
+  "buyer": {"telegram_id": 8202532144},
+  "scenario": {
+    "public_channels": ["@<busy_public_channel>", "@<second_public_channel>"],
+    "product_language": "ru",
+    "switch_language": "en"
+  },
+  "model": {"chain": [{"channel": "openrouter", "model": "<openrouter_model_id>"}]},
+  "deadlines": {
+    "reply_seconds": 300,
+    "settle_seconds": 20,
+    "conversation_turns": 20,
+    "order_seconds": 3600,
+    "build_seconds": 21600,
+    "qa_quiet_seconds": 3600,
+    "probe_reply_seconds": 60,
+    "post_delivery_seconds": 7200,
+    "teardown_seconds": 1800,
+    "poll_seconds": 60,
+    "send_attempts": 2
+  },
+  "evidence_dir": "/buyer/evidence",
+  "api": {"base_url": "http://api:8000"},
+  "telegram": {
+    "api_id": {"env": "TELETHON_API_ID"},
+    "api_hash": {"env": "TELETHON_API_HASH"},
+    "session": {"env": "TELETHON_SESSION"}
+  },
+  "registration": {"credits_microusd": 20000000, "attempt_reservation_microusd": 2000000},
+  "product_token": {
+    "mode": "botfather",
+    "botfather_username": "BotFather",
+    "bot_display_name": "Каналы для синтетического покупателя"
+  },
+  "platform": {
+    "auth_admin_url": {"env": "PLATFORM_AUTH_ADMIN_URL"},
+    "auth_admin_token": {"env": "PLATFORM_AUTH_ADMIN_TOKEN"},
+    "reader_base_url": "<tg_reader_base_url_from_the_environment_contract>"
+  }
+}

@@ -857,6 +857,23 @@ credentials then reach qa-worker alone, through its own env file. `mega-noop` re
 proven session for fixed probes while bypassing model sessions. `scripts/make_stand_session.py`
 authorizes a new stand session.
 
+### Synthetic buyer: what its tests prove, and what they do not
+
+The production acceptance of a fresh order is an operation, not a suite: `python -m
+src.synthetic_buyer` orders through the actual Codegen bot as the QA account and is run by an
+operator ([runbook](runbooks/synthetic-buyer.md)); no workflow or service starts it. Its tests in
+`services/langgraph/tests/unit/synthetic_buyer/` run the real controller over an in-process world
+(`fakes.py`): a Codegen bot answering the PO's scenario, the API's records, the product bot, the
+platform facts and a clock that moves only when the controller sleeps. They cover the whole
+conversation-to-teardown path, identity and bot mismatch, stale/unrelated/duplicate messages,
+rollout-before-preview and confirmation gating, secret handoff and redaction, stalled/stopped/timed
+out work, the shared session around QA, wrong project or run correlation, absent post/auth/reader/
+language facts, resume without a second order, and cleanup failure. The adapters run against
+controlled transports (`httpx.MockTransport`, Telethon-shaped objects, a scripted chat model). All
+of it is host-profile unit work under the 0.5 s budget, with no process, socket or real wait.
+These tests prove the driver's behavior only; a live acceptance verdict exists only in an
+operation's own evidence.
+
 ## Integration Test Architecture
 
 `make test-backup-db` runs `tests/integration/backup/test_verified_database_backup.py` on the host,
