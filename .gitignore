@@ -66,3 +66,6 @@ docs/e2e_results/
 
 # Historical admission source exported by the API CI regression fixture
 services/api/tests/service/_qa_admission_base.py
+
+# The runner proof job checks the kit and platform out here (.github/workflows/ci.yml).
+.runner/

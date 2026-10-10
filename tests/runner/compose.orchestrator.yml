@@ -1,0 +1,58 @@
+# The orchestrator API of this checkout, with its own database and Redis, for the runner
+# proof's production planning path (tests/runner/production_plan.py). The API image is the
+# production Dockerfile; its entrypoint migrates the database and seeds the system configs,
+# exactly as a deployment does. Only the loopback port is published.
+name: runner-orchestrator
+
+services:
+  api:
+    image: codegen-orchestrator/api:runner-proof
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    command: ["/entrypoint.sh"]
+    environment:
+      - DEFAULT_AGENT_TYPE=claude
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - WORKER_MANAGER_URL=http://worker-manager.invalid:8000
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=test
+      - SEED_SYSTEM_CONFIGS_ON_START=true
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - LK_JWT_SECRET=runner-proof-lk-jwt-secret
+      - INTERNAL_API_KEY=${RUNNER_INTERNAL_API_KEY:?}
+    ports:
+      - "127.0.0.1:${RUNNER_API_PORT:?}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  db:
+    image: pgvector/pgvector:0.8.6-pg16
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4.10-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

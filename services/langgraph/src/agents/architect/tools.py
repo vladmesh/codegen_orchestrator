@@ -42,6 +42,7 @@ from langgraph.prebuilt import InjectedState
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.catalog_install import CatalogInstall
 from shared.contracts.dto.product_brief import RequirementCoverageCreate
 from shared.contracts.dto.task import TaskCreate, TaskStatus, TaskType
 
@@ -236,6 +237,40 @@ async def plan_install(
     """
     if kit_install_snapshot is None:
         return {"error": "catalog_unavailable"}
+    try:
+        snapshot = replace(
+            installable(
+                parse_catalog(kit_install_snapshot["catalog"]),
+                kit_install_snapshot["source"],
+                kit_install_snapshot["core_version"],
+            ),
+            bindings=kit_install_snapshot["bindings"],
+            manifests=kit_install_snapshot["manifests"],
+            repository=kit_install_snapshot["repository"],
+            commit=kit_install_snapshot["commit"],
+            catalog_sha256=kit_install_snapshot["catalog_sha256"],
+        )
+        payload = plan_install_payload(snapshot, name, INSTALL_PYTHON_VERSION)
+    except (InstallRefusal, ValueError) as error:
+        return {"error": str(error)}
+    return await create_install_task(
+        payload, story_id=story_id, project_id=project_id, planning_attempt_id=planning_attempt_id
+    )
+
+
+async def create_install_task(
+    payload: CatalogInstall,
+    *,
+    story_id: str,
+    project_id: str,
+    planning_attempt_id: str | None,
+) -> dict:
+    """One mechanical INSTALL task for a resolved closure, chained after the story's last task.
+
+    The closure is taken as given — from `plan_install`'s selection or from a confirmed
+    brief's stored capability plan — and is not resolved again here.
+    """
+    name = payload.package.name
     project = await api_client.get_project(project_id)
     repository = await api_client.get_primary_repository(project_id)
     modules = None if project is None else project.config.get("modules")
@@ -248,16 +283,6 @@ async def plan_install(
     ):
         return {"error": "product_incompatible: requires an existing backend,tg_bot product"}
     try:
-        snapshot = replace(
-            installable(
-                parse_catalog(kit_install_snapshot["catalog"]),
-                kit_install_snapshot["source"],
-                kit_install_snapshot["core_version"],
-            ),
-            bindings=kit_install_snapshot["bindings"],
-            manifests=kit_install_snapshot["manifests"],
-        )
-        payload = plan_install_payload(snapshot, name, INSTALL_PYTHON_VERSION)
         body = TaskCreate(
             title=f"Install catalog package {name}",
             type=TaskType.INSTALL,
@@ -273,7 +298,7 @@ async def plan_install(
             acceptance_criteria="The selected package, recommended libraries and default binding "
             "are installed, regenerated and validated in the product.",
         )
-    except (InstallRefusal, ValueError) as error:
+    except ValueError as error:
         return {"error": str(error)}
     result = await api_client.create_task(body.model_dump(mode="json"))
     _last_task_id[story_id] = result.id

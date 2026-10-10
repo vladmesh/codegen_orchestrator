@@ -13,6 +13,7 @@ import uuid
 import pytest
 from structlog.testing import capture_logs
 
+from shared.contracts.dto.capability_preview import CapabilityPlan
 from shared.contracts.dto.product_brief import (
     InitialSetting,
     ProductBriefContent,
@@ -160,7 +161,88 @@ def mock_api():
         yield api
 
 
+def _capability_brief() -> ProductBriefRead:
+    """A capability-backed brief: its answers live in the plan stored beside it."""
+    capabilities = {
+        "preview_id": "preview-" + "a" * 24,
+        "capabilities": [
+            {
+                "request_id": "channels",
+                "capability_id": "cap-5de1cd8d9a7c",
+                "route": "module",
+                "requirement_ids": ["req-1"],
+            }
+        ],
+        "answers": [
+            {
+                "question_id": "product_language",
+                "kind": "product_language",
+                "value": "ru",
+                "description": "Русский",
+            }
+        ],
+    }
+    brief = _brief([InitialSetting(key="alerts.hour", value=9)])
+    content = brief.content.model_dump(mode="json") | {"capabilities": capabilities}
+    return brief.model_copy(update={"content": ProductBriefContent.model_validate(content)})
+
+
+def _capability_plan() -> CapabilityPlan:
+    from shared.catalog_activation import CATALOG_ACTIVATION
+
+    return CapabilityPlan.model_validate(
+        {
+            "preview_id": "preview-" + "a" * 24,
+            "activation": CATALOG_ACTIVATION.model_dump(),
+            "capabilities": [
+                {
+                    "request_id": "notes",
+                    "route": "from_scratch",
+                    "requirement_ids": ["req-1"],
+                }
+            ],
+            "settings": [
+                {"question_id": "product_language", "key": "language", "value": "ru"},
+                {
+                    "question_id": "channels.q1",
+                    "key": "tg_channels.starting_channels",
+                    "value": ["durov"],
+                },
+            ],
+        }
+    )
+
+
 class TestSeedingWhatTheUserConfirmed:
+    @pytest.mark.asyncio
+    async def test_capability_answers_are_written_by_their_planned_keys(
+        self, mock_api, fake_settings_client
+    ):
+        """The PO wrote no technical key; the stored plan maps each answer to its key."""
+        mock_api.get_product_brief_by_story.return_value = _capability_brief()
+        mock_api.get_capability_plan = AsyncMock(return_value=_capability_plan())
+
+        result = await _deploy(mock_api)
+
+        assert result["status"] == "success"
+        mock_api.get_capability_plan.assert_awaited_once_with("brief-1")
+        assert _FakeSettingsClient.instances[0].calls == [
+            ("alerts.hour", SettingScope.PRODUCT, None, 9),
+            ("language", SettingScope.PRODUCT, None, "ru"),
+            ("tg_channels.starting_channels", SettingScope.PRODUCT, None, ["durov"]),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_capability_brief_without_its_plan_is_not_seeded_partially(
+        self, mock_api, fake_settings_client
+    ):
+        mock_api.get_product_brief_by_story.return_value = _capability_brief()
+        mock_api.get_capability_plan = AsyncMock(return_value=None)
+
+        with pytest.raises(RuntimeError, match="names capabilities but has no plan"):
+            await _deploy(mock_api)
+        assert _FakeSettingsClient.instances == []
+
     @pytest.mark.asyncio
     async def test_binding_language_is_written_as_a_product_setting_after_deploy(
         self, mock_api, fake_settings_client

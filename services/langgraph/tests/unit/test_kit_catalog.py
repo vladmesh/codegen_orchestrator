@@ -1,4 +1,4 @@
-"""The live kit catalog reader: one fetch, the kit's own loader, and a typed failure.
+"""The kit catalog reader: one fetch, the kit's own loader, and a typed failure.
 
 The HTTP boundary is `respx`; everything past it is real — `parse_catalog` from the
 pinned kit tooling, `CatalogPackage.select` against the pinned `CORE_VERSION`, and the
@@ -9,21 +9,29 @@ old or hard-coded stands in.
 
 from __future__ import annotations
 
+import hashlib
+
+from framework.catalog import parse_catalog
 from framework.spec.package_resolution import CORE_VERSION
 import httpx
 import pytest
 import respx
 import yaml
 
+from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.contracts.dto.catalog_install import CatalogActivation
 from src.kit_catalog import (
     CATALOG_TIMEOUT_SECONDS,
     CATALOG_TRANSPORT_BACKOFF_SECONDS,
+    TERMINAL_CATALOG_FAILURES,
     KitCatalog,
     KitCatalogFailure,
     KitCatalogReader,
     KitCatalogUnavailable,
+    catalog_digest,
     catalog_url,
     get_kit_catalog_reader,
+    installed_tooling_commit,
 )
 
 URL = "https://raw.example.invalid/kit/HEAD/packages/catalog.yaml"
@@ -302,34 +310,74 @@ def test_the_url_is_the_kit_catalog_path_at_the_ref():
     )
 
 
-def test_the_process_reader_reads_the_configured_source_and_ref(monkeypatch):
-    monkeypatch.setenv("KIT_CATALOG_SOURCE", "https://raw.example/fork")
-    monkeypatch.setenv("KIT_CATALOG_REF", "packages-preview")
-    from src.config.settings import get_settings
-
-    get_settings.cache_clear()
+def test_the_process_reader_reads_only_the_activated_commit():
+    """No environment or default moves the catalog: the activated commit is the only source."""
     get_kit_catalog_reader.cache_clear()
     try:
-        assert get_kit_catalog_reader().url == (
-            "https://raw.example/fork/packages-preview/packages/catalog.yaml"
-        )
+        reader = get_kit_catalog_reader()
     finally:
-        get_settings.cache_clear()
         get_kit_catalog_reader.cache_clear()
 
+    assert reader.activation == CATALOG_ACTIVATION
+    assert reader.url == (
+        f"{CATALOG_ACTIVATION.raw_source}/{CATALOG_ACTIVATION.commit}/packages/catalog.yaml"
+    )
+    assert reader.component_source == CATALOG_ACTIVATION.raw_source
 
-def test_by_default_the_reader_reads_the_kit_default_branch(monkeypatch):
-    monkeypatch.delenv("KIT_CATALOG_SOURCE", raising=False)
-    monkeypatch.delenv("KIT_CATALOG_REF", raising=False)
-    from src.config.settings import get_settings
 
-    get_settings.cache_clear()
-    get_kit_catalog_reader.cache_clear()
-    try:
-        assert get_kit_catalog_reader().url == (
-            "https://raw.githubusercontent.com/vladmesh/codegen-product-kit/HEAD/"
-            "packages/catalog.yaml"
-        )
-    finally:
-        get_settings.cache_clear()
-        get_kit_catalog_reader.cache_clear()
+def _activation(**changes) -> CatalogActivation:
+    """An activation of `CATALOG` for this host, as `shared/catalog_activation.yaml` records."""
+    fields = {
+        "repository": CATALOG_ACTIVATION.repository,
+        "raw_source": CATALOG_ACTIVATION.raw_source,
+        "commit": "e" * 40,
+        "catalog_sha256": hashlib.sha256(CATALOG.encode()).hexdigest(),
+        "catalog_digest": catalog_digest(parse_catalog(CATALOG)),
+        "core_version": CORE_VERSION,
+        "tooling_commit": installed_tooling_commit(),
+    }
+    return CatalogActivation(**(fields | changes))
+
+
+@pytest.mark.asyncio
+async def test_the_activated_bytes_are_read_with_their_pinned_commit():
+    activation = _activation()
+    with respx.mock(assert_all_called=True) as http:
+        http.get(URL).mock(return_value=httpx.Response(200, text=CATALOG))
+        answer = await KitCatalogReader(URL, activation=activation, sleep=_Sleep()).read()
+
+    assert isinstance(answer, KitCatalog)
+    assert (answer.repository, answer.commit) == (activation.repository, activation.commit)
+    assert answer.catalog_sha256 == activation.catalog_sha256
+    assert answer.digest == activation.catalog_digest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["catalog_sha256", "catalog_digest"])
+async def test_other_bytes_than_the_activated_snapshot_are_a_provenance_failure(field):
+    """A moved or rewritten source never becomes the catalog a plan is made from."""
+    sleep = _Sleep()
+    reader = KitCatalogReader(URL, activation=_activation(**{field: "f" * 64}), sleep=sleep)
+    with respx.mock(assert_all_called=True) as http:
+        route = http.get(URL).mock(return_value=httpx.Response(200, text=CATALOG))
+        answer = await reader.read()
+
+    assert isinstance(answer, KitCatalogUnavailable)
+    assert answer.failure is KitCatalogFailure.PROVENANCE
+    assert answer.failure in TERMINAL_CATALOG_FAILURES
+    assert route.call_count == 1 and sleep.waits == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes", [{"core_version": "9.9.9"}, {"tooling_commit": "1" * 40}], ids=["core", "tooling"]
+)
+async def test_an_activation_for_another_host_is_inactive_without_a_fetch(changes):
+    reader = KitCatalogReader(URL, activation=_activation(**changes), sleep=_Sleep())
+    with respx.mock(assert_all_called=False) as http:
+        route = http.get(URL).mock(return_value=httpx.Response(200, text=CATALOG))
+        answer = await reader.read()
+
+    assert isinstance(answer, KitCatalogUnavailable)
+    assert answer.failure is KitCatalogFailure.INACTIVE
+    assert route.call_count == 0

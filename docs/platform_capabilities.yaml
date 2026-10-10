@@ -10,17 +10,17 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 22
+version: 24
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
 derived_from:
   kit:
     source: gh:vladmesh/codegen-product-kit
-    # The commit the pinned release resolves to. The release tag itself is written down only
-    # in `scripts/system_configs.yaml` (`scheduler.service_template_ref`); a test ties this
-    # commit to the vendored render of that pin, so moving the pin fails until it is updated.
-    commit: f7de8f96b18f79b94dcd0546905771674cf11cfa
+    # The commit the vendored render of the pin resolves its tooling to. The pin itself is
+    # written down only in `scripts/system_configs.yaml` (`scheduler.service_template_ref`); a
+    # test ties this commit to that render, so moving the pin fails until it is updated.
+    commit: 7b547c69e508d8e49d2cbab54efcab1df7fc2270
     note: >-
       The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is
       still an admitted Copier source, but no new product is scaffolded from it.
@@ -51,9 +51,9 @@ can:
     name: Add a catalog capability
     plain: An existing bot can add a released catalog capability while retaining its own features.
     how: >-
-      plan_install selects package/libraries/default binding in one INSTALL on clean owned
-      core-{core_version} backend,tg_bot. Scaffolder preserves/validates files; hands exact head to
-      PR/CI/deploy without engineering. Binding v1/v2 uses confirmed typed timezone/language settings.
+      One INSTALL of a stored brief plan or plan_install closure, on clean owned
+      core-{core_version} backend,tg_bot. Scaffolder runs kit add at the payload's catalog commit,
+      validates and hands the exact head to PR/CI/deploy. Glue needs a task after the INSTALL.
   - id: http_self_address
     name: Plain HTTP self links
     plain: The bot can include plain HTTP self links; their address can change when the product moves.
@@ -78,7 +78,8 @@ can:
       no user key is needed.
     how: >-
       Read public Telegram channels for posts, digests and new-post delivery only through a
-      platform-backed catalog module selected by live catalog capabilities. Private channels
+      platform-backed catalog module of a stored brief plan; outside the module rollout
+      allowlist it is impossible. Private channels
       and groups are not supported. Products must not fetch or scrape t.me, Telegram web
       previews or Telegram APIs for channel content themselves. Platform uses its egress proxy.
       Plan it now; deployment handles key issuance; no user key is needed. Auth admin required;
@@ -331,15 +332,13 @@ kit:
         `<channel>:<external_id>`.
     - name: events v1
       plain: Durable product events on Redis Streams, each handled once per consuming service.
-  # Packages are not listed here: the Architect reads them live from the kit's catalog at
-  # planning time (services/langgraph/src/kit_catalog.py), so a package release needs no
-  # change to this manifest or to the orchestrator.
+  # Packages are not listed here: the Architect reads them from the activated catalog snapshot
+  # (shared/catalog_activation.yaml, read by services/langgraph/src/kit_catalog.py).
   catalog: >-
     the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings;
-    it is read live from the kit's default branch at planning time and the planning
-    instructions list admitted packages, libraries, recommendations and default bindings;
-    explicit selection uses plan_install and scaffolder mode=install; a new package
-    release needs no orchestrator change.
+    it is read only from the one activated immutable catalog snapshot, never from a live
+    branch; a confirmed brief stores the selected closure and settings; explicit selection
+    uses plan_install and scaffolder mode=install.
 
 deploy_targets:
   - service: backend

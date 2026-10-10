@@ -2025,7 +2025,7 @@ class TestNoteToAdmins:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 29
+        expected_count = 30
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -2042,6 +2042,7 @@ class TestGetAllTools:
             "transfer_project_ownership",
             "validate_telegram_token",
             "teardown_project",
+            "preview_capabilities",
             "present_product_brief",
             "confirm_product_brief",
             "show_full_brief",

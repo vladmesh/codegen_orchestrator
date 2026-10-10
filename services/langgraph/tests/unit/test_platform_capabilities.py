@@ -215,7 +215,7 @@ class TestTheManifestIsVersionedAndReviewed:
     def test_it_carries_a_version_and_the_owner_review_marker(self):
         manifest = load_manifest()
 
-        assert manifest.version == 22
+        assert manifest.version == 24
         assert manifest.status == "owner-reviewed"
         assert manifest.review == "product list agreed by the owner 2026-09-28"
 
@@ -335,15 +335,15 @@ class TestTheArchitectBlock:
         assert "explicit selection uses plan_install and scaffolder mode=install" in block
 
     def test_it_lists_no_package_of_its_own(self):
-        """Packages come from the kit's live catalog at planning time, not from here.
+        """Packages come from the one activated catalog snapshot, not from here.
 
-        A static list would make a package release wait for an orchestrator edit, and
-        would go on offering a version the kit no longer releases.
+        A static list would go on offering a version the activated catalog no longer
+        lists; a live branch would let a remote push change what a saved plan installs.
         """
         block = " ".join(ARCHITECT_PLATFORM_CAPABILITIES_PROMPT.split())
 
-        assert "read live from the kit's default branch at planning time" in block
-        assert "a new package release needs no orchestrator change" in block
+        assert "read only from the one activated immutable catalog snapshot" in block
+        assert "never from a live branch" in block
         assert "reminders 0.4.0" not in block
 
 

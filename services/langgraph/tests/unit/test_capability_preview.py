@@ -1,0 +1,422 @@
+"""The Architect's capability preview over the activated catalog, from genuine bytes.
+
+`resolve_preview` is pure: the catalog (`activated_kit_catalog`, the activated commit's
+catalog and the published tg-channels 0.1.2 / reminders 0.5.0 resources), the project's
+shape and the rollout decision go in, and a preview the API stores comes out, or a typed
+refusal. Nothing here mocks the resolver, the kit loaders or the closure selection.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+import uuid
+
+import pytest
+
+from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.contracts.dto.capability_preview import (
+    BriefCapabilities,
+    CapabilityPlanRefusedError,
+    CapabilityRefusalCode,
+    CapabilityRequest,
+    CapabilityRoute,
+    PreviewRefusalCode,
+    QuestionKind,
+    RouteReason,
+    derive_capability_plan,
+)
+from src.capability_feasibility import platform_cannot
+from src.capability_preview import PreviewRefused, capability_id, capability_offers, resolve_preview
+from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
+
+PROJECT = uuid.UUID("7e1b5b1e-2a51-4e0e-9a59-16b39c6c3f01")
+CHANNELS = capability_id("tg-channels")
+REMINDERS = capability_id("reminders")
+BOT = {"backend", "tg_bot"}
+
+
+def _requests(*items: dict) -> list[CapabilityRequest]:
+    return [CapabilityRequest.model_validate(item) for item in items]
+
+
+def _preview(catalog, requests, *, modules=BOT, admits=True):
+    return resolve_preview(
+        project_id=PROJECT,
+        requests=requests,
+        catalog=catalog,
+        activation=CATALOG_ACTIVATION,
+        project_modules=set(modules),
+        rollout_admits=admits,
+        platform_cannot=platform_cannot,
+    )
+
+
+CHANNEL_REQUEST = {"request_id": "channels", "capability_id": CHANNELS, "wording": "Кипр каналы"}
+
+
+def test_offers_are_user_level_capabilities_with_opaque_ids(activated_kit_catalog):
+    offers = capability_offers(activated_kit_catalog)
+
+    assert [offer.capability_id for offer in offers] == [REMINDERS, CHANNELS]
+    channels = offers[1]
+    assert "read public Telegram channels" in channels.phrases
+    assert "читать публичные Telegram-каналы" in channels.phrases
+    rendered = " ".join(offer.model_dump_json() for offer in offers)
+    for technical in ("tg-channels", "0.1.2", "0.5.0", "packages/", "codegen-kit", "textparse"):
+        assert technical not in rendered
+
+
+def test_a_public_channel_capability_resolves_to_the_published_closure(activated_kit_catalog):
+    preview = _preview(activated_kit_catalog, _requests(CHANNEL_REQUEST))
+
+    [route] = preview.product.routes
+    assert (route.route, route.reason) == (CapabilityRoute.MODULE, RouteReason.OFFERED)
+    [module] = preview.technical.modules
+    install = module.install
+    assert (install.package.name, install.package.version, install.package.tag) == (
+        "tg-channels",
+        "0.1.2",
+        "packages/tg-channels/v0.1.2",
+    )
+    assert install.libraries == []
+    assert install.binding.resource == "codegen_kit_tg_channels:bindings/default.yaml"
+    assert install.catalog == CATALOG_ACTIVATION.source()
+    assert install.catalog_digest == CATALOG_ACTIVATION.catalog_digest
+    assert install.core_version == CATALOG_ACTIVATION.core_version == "2.5.0"
+    assert preview.technical.activation == CATALOG_ACTIVATION
+
+
+def test_its_questions_are_an_explicit_language_and_starting_channels(activated_kit_catalog):
+    preview = _preview(activated_kit_catalog, _requests(CHANNEL_REQUEST))
+
+    language, channels = preview.product.questions
+    assert (language.question_id, language.kind, language.required, language.choices) == (
+        "product_language",
+        QuestionKind.PRODUCT_LANGUAGE,
+        True,
+        ["ru", "en"],
+    )
+    assert (channels.kind, channels.required, channels.max_items) == (
+        QuestionKind.TEXT_LIST,
+        False,
+        50,
+    )
+    targets = {target.question_id: target for target in preview.technical.targets}
+    assert (targets["product_language"].key, targets["product_language"].scope) == (
+        "language",
+        "product",
+    )
+    assert targets[channels.question_id].key == "tg_channels.starting_channels"
+    assert targets[channels.question_id].unique_items is True
+
+
+def test_its_limitations_are_the_platform_quota(activated_kit_catalog):
+    preview = _preview(activated_kit_catalog, _requests(CHANNEL_REQUEST))
+
+    assert {(item.name, item.value) for item in preview.product.limitations} == {
+        ("channels_max", 50),
+        ("requests_per_minute", 60),
+        ("resolve_per_day", 200),
+    }
+
+
+def test_the_product_projection_carries_no_technical_fact(activated_kit_catalog):
+    preview = _preview(
+        activated_kit_catalog,
+        _requests(
+            CHANNEL_REQUEST,
+            {"request_id": "remind", "capability_id": REMINDERS, "wording": "remind me"},
+        ),
+    )
+    text = preview.product.model_dump_json()
+    for technical in (
+        "tg-channels",
+        "tg_channels",
+        "codegen",
+        "0.1.2",
+        "0.5.0",
+        "textparse",
+        "packages/",
+        "binding",
+        CATALOG_ACTIVATION.commit,
+    ):
+        assert technical not in text
+
+
+def test_more_than_the_offer_is_a_module_with_glue(activated_kit_catalog):
+    request = CHANNEL_REQUEST | {"beyond": "translate every post to Greek"}
+    [route] = _preview(activated_kit_catalog, _requests(request)).product.routes
+    assert (route.route, route.reason) == (
+        CapabilityRoute.MODULE_WITH_GLUE,
+        RouteReason.BEYOND_OFFER,
+    )
+
+
+def test_a_reminder_module_asks_for_its_product_timezone(activated_kit_catalog):
+    preview = _preview(
+        activated_kit_catalog,
+        _requests({"request_id": "remind", "capability_id": REMINDERS, "wording": "remind me"}),
+    )
+    [timezone] = preview.product.questions
+    assert (timezone.question_id, timezone.kind, timezone.required) == (
+        "product_timezone",
+        QuestionKind.TIMEZONE,
+        True,
+    )
+    [module] = preview.technical.modules
+    assert [library.name for library in module.install.libraries] == ["textparse"]
+
+
+@pytest.mark.parametrize(
+    "capability,route",
+    [(CHANNELS, CapabilityRoute.IMPOSSIBLE), (REMINDERS, CapabilityRoute.FROM_SCRATCH)],
+    ids=["platform-sourced", "programmable"],
+)
+def test_outside_the_rollout_the_route_is_honest(activated_kit_catalog, capability, route):
+    """No module is installed; only what the platform alone supplies becomes impossible."""
+    request = {"request_id": "x", "capability_id": capability, "wording": "wanted"}
+    preview = _preview(activated_kit_catalog, _requests(request), admits=False)
+
+    [decided] = preview.product.routes
+    assert (decided.route, decided.reason) == (route, RouteReason.ROLLOUT_NOT_ENABLED)
+    assert preview.technical.modules == [] and preview.product.questions == []
+
+
+def test_a_project_that_is_not_a_bot_gets_no_module(activated_kit_catalog):
+    preview = _preview(activated_kit_catalog, _requests(CHANNEL_REQUEST), modules={"backend"})
+    [route] = preview.product.routes
+    assert (route.route, route.reason) == (CapabilityRoute.IMPOSSIBLE, RouteReason.PRODUCT_SHAPE)
+
+
+def test_requests_beyond_the_catalog_are_programmable_unless_the_platform_cannot(
+    activated_kit_catalog,
+):
+    preview = _preview(
+        activated_kit_catalog,
+        _requests(
+            {"request_id": "notes", "wording": "keep a list of my notes"},
+            {"request_id": "pay", "wording": "accept card payments for orders"},
+        ),
+    )
+    routes = {route.request_id: (route.route, route.reason) for route in preview.product.routes}
+    assert routes == {
+        "notes": (CapabilityRoute.FROM_SCRATCH, RouteReason.NOT_OFFERED),
+        "pay": (CapabilityRoute.IMPOSSIBLE, RouteReason.PLATFORM_CANNOT),
+    }
+
+
+def test_the_same_inputs_give_the_same_preview(activated_kit_catalog):
+    requests = _requests(CHANNEL_REQUEST)
+    first = _preview(activated_kit_catalog, requests).model_dump(mode="json", by_alias=True)
+    second = _preview(activated_kit_catalog, requests).model_dump(mode="json", by_alias=True)
+    assert first == second
+
+
+def test_an_id_the_catalog_does_not_offer_is_refused(activated_kit_catalog):
+    request = CHANNEL_REQUEST | {"capability_id": "cap-000000000000"}
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(activated_kit_catalog, _requests(request))
+    assert refused.value.refusal.code is PreviewRefusalCode.UNKNOWN_CAPABILITY
+    assert refused.value.refusal.request_ids == ["channels"]
+
+
+@pytest.mark.parametrize(
+    "failure,code",
+    [
+        (KitCatalogFailure.TRANSPORT, PreviewRefusalCode.CATALOG_UNAVAILABLE),
+        (KitCatalogFailure.PROVENANCE, PreviewRefusalCode.CATALOG_INACTIVE),
+        (KitCatalogFailure.INACTIVE, PreviewRefusalCode.CATALOG_INACTIVE),
+    ],
+)
+def test_without_the_activated_catalog_no_module_is_promised(failure, code):
+    unavailable = KitCatalogUnavailable("https://kit.invalid", failure, "detail")
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(unavailable, _requests(CHANNEL_REQUEST))
+    assert refused.value.refusal.code is code
+
+
+def test_without_the_catalog_a_request_without_an_id_is_not_routed_either():
+    """Its words may name an offered module: an outage never makes that programmable."""
+    unavailable = KitCatalogUnavailable("https://kit.invalid", KitCatalogFailure.TRANSPORT, "")
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(unavailable, _requests({"request_id": "notes", "wording": "notes"}))
+    assert refused.value.refusal.code is PreviewRefusalCode.CATALOG_UNAVAILABLE
+    assert refused.value.refusal.request_ids == ["notes"]
+
+
+def test_a_module_that_no_longer_installs_is_refused_before_the_user_is_asked(
+    activated_kit_catalog,
+):
+    broken = replace(activated_kit_catalog, bindings={})
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(broken, _requests(CHANNEL_REQUEST))
+    assert refused.value.refusal.code is PreviewRefusalCode.CAPABILITY_UNRESOLVABLE
+
+
+def test_a_required_setting_the_preview_cannot_ask_is_refused(activated_kit_catalog):
+    manifest = activated_kit_catalog.manifests["tg-channels"].replace(
+        "setting_seeds:\n  - key: starting_channels\n    scope: product\n", "setting_seeds: []\n"
+    )
+    manifest = manifest.replace(
+        "    starting_channels:\n      type: array",
+        "    starting_channels:\n      minItems: 1\n      type: array",
+    )
+    broken = replace(
+        activated_kit_catalog,
+        manifests=activated_kit_catalog.manifests | {"tg-channels": manifest},
+    )
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(broken, _requests(CHANNEL_REQUEST))
+    assert refused.value.refusal.code is PreviewRefusalCode.UNSUPPORTED_QUESTION
+
+
+def _twice_selected_capabilities(first: list[str], second: list[str]) -> BriefCapabilities:
+    return BriefCapabilities.model_validate(
+        {
+            "preview_id": "preview-" + "a" * 24,
+            "capabilities": [
+                {
+                    "request_id": rid,
+                    "capability_id": CHANNELS,
+                    "route": "module",
+                    "requirement_ids": ["r1"],
+                }
+                for rid in ("first", "second")
+            ],
+            "answers": [
+                {
+                    "question_id": "product_language",
+                    "kind": "product_language",
+                    "value": "en",
+                    "description": "English",
+                },
+                {
+                    "question_id": "first.q1",
+                    "kind": "text_list",
+                    "value": first,
+                    "description": "Start",
+                },
+                {
+                    "question_id": "second.q1",
+                    "kind": "text_list",
+                    "value": second,
+                    "description": "Start",
+                },
+            ],
+        }
+    )
+
+
+def _derive_twice_selected(catalog, capabilities: BriefCapabilities):
+    requests = _requests(
+        *(
+            {"request_id": rid, "capability_id": CHANNELS, "wording": "Initial channels"}
+            for rid in ("first", "second")
+        )
+    )
+    preview = _preview(catalog, requests)
+    return derive_capability_plan(
+        preview_id=capabilities.preview_id,
+        product=preview.product,
+        technical=preview.technical,
+        capabilities=capabilities,
+        must_requirement_ids={"r1"},
+        initial_setting_keys=set(),
+        activation=CATALOG_ACTIVATION,
+    )
+
+
+def test_two_selections_of_one_capability_cannot_write_two_starting_lists(activated_kit_catalog):
+    """Reviewer reproduction (1588): durov from one request, telegram from the other."""
+    with pytest.raises(CapabilityPlanRefusedError) as refused:
+        _derive_twice_selected(
+            activated_kit_catalog, _twice_selected_capabilities(["durov"], ["telegram"])
+        )
+    assert (refused.value.refusal.code, refused.value.refusal.question_ids) == (
+        CapabilityRefusalCode.SETTING_CONFLICT,
+        ["first.q1", "second.q1"],
+    )
+
+
+def test_two_selections_answering_alike_plan_one_starting_list(activated_kit_catalog):
+    plan = _derive_twice_selected(
+        activated_kit_catalog, _twice_selected_capabilities(["durov"], ["durov"])
+    )
+    values = [
+        setting.value for setting in plan.settings if setting.key == "tg_channels.starting_channels"
+    ]
+    assert values == [["durov"]]
+
+
+#: The reviewer's wording (1588): the catalog phrase "read public Telegram channels" in it.
+UNNAMED_CHANNELS = {
+    "request_id": "channels",
+    "wording": "Read public Telegram channels and deliver new posts",
+}
+
+
+def test_an_unnamed_request_outside_the_rollout_is_as_impossible_as_the_named_one(
+    activated_kit_catalog,
+):
+    unnamed = _preview(activated_kit_catalog, _requests(UNNAMED_CHANNELS), admits=False)
+    named = _preview(
+        activated_kit_catalog,
+        _requests(UNNAMED_CHANNELS | {"capability_id": CHANNELS}),
+        admits=False,
+    )
+
+    [route] = unnamed.product.routes
+    assert (route.route, route.reason, route.capability_id) == (
+        CapabilityRoute.IMPOSSIBLE,
+        RouteReason.ROLLOUT_NOT_ENABLED,
+        CHANNELS,
+    )
+    assert unnamed.product == named.product and unnamed.technical == named.technical
+
+
+def test_an_unnamed_request_inside_the_rollout_resolves_to_the_offered_closure(
+    activated_kit_catalog,
+):
+    unnamed = _preview(activated_kit_catalog, _requests(UNNAMED_CHANNELS))
+    named = _preview(
+        activated_kit_catalog, _requests(UNNAMED_CHANNELS | {"capability_id": CHANNELS})
+    )
+
+    [route] = unnamed.product.routes
+    assert (route.route, route.capability_id) == (CapabilityRoute.MODULE, CHANNELS)
+    assert unnamed.technical == named.technical
+    assert [q.question_id for q in unnamed.product.questions] == [
+        q.question_id for q in named.product.questions
+    ]
+
+
+def test_an_unnamed_russian_phrase_resolves_the_same_capability(activated_kit_catalog):
+    request = {"request_id": "ru", "wording": "Хочу читать публичные Telegram-каналы Кипра"}
+    [route] = _preview(activated_kit_catalog, _requests(request), admits=False).product.routes
+    assert (route.route, route.capability_id) == (CapabilityRoute.IMPOSSIBLE, CHANNELS)
+
+
+def test_words_naming_two_offered_capabilities_are_refused(activated_kit_catalog):
+    request = {
+        "request_id": "both",
+        "wording": "read public Telegram channels and remind me at a time",
+    }
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(activated_kit_catalog, _requests(request))
+    assert refused.value.refusal.code is PreviewRefusalCode.AMBIGUOUS_CAPABILITY
+    assert refused.value.refusal.request_ids == ["both"]
+
+
+@pytest.mark.parametrize(
+    "request_item", [UNNAMED_CHANNELS, CHANNEL_REQUEST], ids=["unnamed", "named"]
+)
+def test_an_unreadable_rollout_routes_no_module_intent(activated_kit_catalog, request_item):
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(activated_kit_catalog, _requests(request_item), admits=None)
+    assert refused.value.refusal.code is PreviewRefusalCode.ROLLOUT_UNAVAILABLE
+
+
+def test_an_unreadable_rollout_still_routes_ordinary_requests(activated_kit_catalog):
+    request = {"request_id": "notes", "wording": "keep a list of my notes"}
+    [route] = _preview(activated_kit_catalog, _requests(request), admits=None).product.routes
+    assert (route.route, route.capability_id) == (CapabilityRoute.FROM_SCRATCH, None)

@@ -11,7 +11,7 @@ from shared.log_config import setup_logging
 
 from .agents.architect.tools import plan_install, record_requirement_coverage, reset_task_chain
 from .clients.api import api_client
-from .kit_catalog import KitCatalog, get_kit_catalog_reader
+from .kit_catalog import KitCatalog, get_kit_catalog_reader, install_snapshot
 
 
 def select_capability(catalog: KitCatalog, capability: str) -> str:
@@ -75,13 +75,7 @@ async def _owned_plan(catalog, brief, attempt, project_id, story_id, package, re
         story_id=story_id,
         project_id=project_id,
         planning_attempt_id=attempt,
-        kit_install_snapshot={
-            "catalog": catalog.raw,
-            "bindings": catalog.bindings,
-            "manifests": catalog.manifests,
-            "source": catalog.source,
-            "core_version": catalog.core_version,
-        },
+        kit_install_snapshot=install_snapshot(catalog),
     )
     if "error" in result:
         return result

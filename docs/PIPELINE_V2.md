@@ -38,6 +38,13 @@ first story of a new project and every later feature alike. For all of it the
 requirement becomes durable typed data before there is anything to plan, and it
 is the PO that produces it:
 
+0. When the user wants a ready capability or an outside integration,
+   `preview_capabilities` asks the Architect's deterministic preview what it means
+   for this project (route, questions, limitations) and the platform stores it;
+   the PO asks the questions explicitly and the brief carries the preview id, the
+   capabilities and the answers. The API stores the technical plan they resolve
+   to beside the revision (docs/contracts/product-brief.md, "Capability preview
+   and the stored plan").
 1. `present_product_brief` opens a revision through `POST /api/product-briefs/`
    and returns the one message the user is shown — the summary, every
    must-requirement with the id the architect will dispose of it by and either

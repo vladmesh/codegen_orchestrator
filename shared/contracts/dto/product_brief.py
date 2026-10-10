@@ -47,6 +47,7 @@ from pydantic import (
     model_validator,
 )
 
+from shared.contracts.dto.capability_preview import BriefCapabilities
 from shared.contracts.dto.story_planning import PlanningChannels
 
 #: How long an architect's claim survives without a heartbeat. A claim whose
@@ -351,8 +352,8 @@ class ProductBriefContent(BaseModel):
 
     The read shape — what `ProductBriefRead` parses out of the JSON column.
     Every field added after the first release defaults — `initial_settings`,
-    `language`, `usage_examples`, `limitations`, `variant_choices` — so a document stored before
-    it existed still parses as the same brief.
+    `language`, `usage_examples`, `limitations`, `variant_choices`, `capabilities` — so a
+    document stored before it existed still parses as the same brief.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -372,6 +373,13 @@ class ProductBriefContent(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     #: Build the chosen variant; the alternative is recorded for a later order.
     variant_choices: list[VariantChoice] = Field(default_factory=list)
+    #: The capabilities this brief relies on, as one stored preview routed them, with the
+    #: user's answers. Product-only: the technical plan they resolve to is stored beside the
+    #: revision, never in it. Absent (and so not serialized, keeping older documents' bytes)
+    #: on a brief that relies on no previewed capability.
+    capabilities: BriefCapabilities | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("limitations")
     @classmethod
@@ -422,6 +430,30 @@ class ProposedProductBriefContent(ProductBriefContent):
     variant_choices: list[ProposedVariantChoice] = Field(
         default_factory=list, max_length=MAX_VARIANT_CHOICES
     )
+
+    @model_validator(mode="after")
+    def _capabilities_serve_known_requirements(self) -> ProposedProductBriefContent:
+        if self.capabilities is None:
+            return self
+        if len(self.initial_settings) + len(self.capabilities.answers) > MAX_INITIAL_SETTINGS:
+            raise ValueError(
+                f"initial settings and capability answers together are at most "
+                f"{MAX_INITIAL_SETTINGS}"
+            )
+        known = {requirement.id for requirement in self.must_requirements}
+        unknown = sorted(
+            {
+                requirement_id
+                for capability in self.capabilities.capabilities
+                for requirement_id in capability.requirement_ids
+            }
+            - known
+        )
+        if unknown:
+            raise ValueError(
+                f"capabilities name unknown must-requirement ids: {', '.join(unknown)}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _variant_features_are_unique(self) -> ProposedProductBriefContent:

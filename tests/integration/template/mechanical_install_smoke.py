@@ -35,11 +35,11 @@ def select_payload():
     code = """
 import asyncio, sys
 from pathlib import Path
-from src.kit_catalog import KitCatalogReader, catalog_url
+from src.kit_catalog import get_kit_catalog_reader
 from src.catalog_install import plan_install_payload
 async def main():
-    source='https://raw.githubusercontent.com/vladmesh/codegen-product-kit'
-    snapshot=await KitCatalogReader(catalog_url(source, 'HEAD'), component_source=source).read()
+    # The production reader: the activated snapshot's commit, verified against its digests.
+    snapshot=await get_kit_catalog_reader().read()
     payload=plan_install_payload(snapshot, 'reminders', '3.12.0')
     Path(sys.argv[1]).write_text(payload.model_dump_json())
 asyncio.run(main())
@@ -54,8 +54,11 @@ asyncio.run(main())
         return json.loads(destination.read_text())
 
 
-def customize_notes(product):
-    """Retain notes commands registered in the owned bot application."""
+def customize_notes(product, python=None):
+    """Retain notes commands declared in the owned bot application, registry regenerated.
+
+    `python` runs the kit generator; the product's own tooling interpreter by default.
+    """
     notes = product / "services/tg_bot/src/handlers/notes.py"
     notes.parent.mkdir(parents=True)
     notes.write_text(
@@ -72,18 +75,27 @@ def customize_notes(product):
         "    if update.message:\n"
         '        await update.message.reply_text("\\n".join(NOTES))\n'
     )
-    main = product / "services/tg_bot/src/main.py"
-    source = main.read_text()
-    registration = "    bindings.register(application, BackendClient)"
-    assert source.count(registration) == 1
-    main.write_text(
+    # The released core registers commands only through its registry: product commands
+    # are declared in the owned commands module and the registry is regenerated from it.
+    commands = product / "services/tg_bot/src/commands.py"
+    source = commands.read_text()
+    product_import = "from services.tg_bot.src.generated.commands import ProductCommand\n"
+    declaration = "COMMANDS: tuple[ProductCommand, ...] = ()"
+    assert source.count(product_import) == 1 and source.count(declaration) == 1
+    commands.write_text(
         source.replace(
-            registration,
-            "    from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n"
-            '    application.add_handler(CommandHandler("note", handle_note))\n'
-            '    application.add_handler(CommandHandler("notes", handle_notes))\n' + registration,
+            product_import,
+            product_import
+            + "from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n",
+        ).replace(
+            declaration,
+            "COMMANDS: tuple[ProductCommand, ...] = (\n"
+            '    ProductCommand("note", handle_note),\n'
+            '    ProductCommand("notes", handle_notes),\n'
+            ")",
         )
     )
+    run([python or str(product / ".venv/bin/python"), "-m", "framework.generate"], product)
     test = product / "services/tg_bot/tests/unit/test_retained_notes.py"
     test.write_text(
         '"""The owned application registers and executes its retained notes commands."""\n'

@@ -4,10 +4,11 @@ from dataclasses import replace
 
 from level1_change_set import (
     BACKEND_ROUTER,
-    BOT_MAIN,
+    BOT_COMMANDS,
+    LEVEL1_COMMAND,
     Operation,
     _backend_router,
-    _bot_main,
+    _bot_commands,
     _fixture_text,
     _substitute,
     backend_operations,
@@ -117,22 +118,33 @@ def notes_operations(marker):
             ),
         )
     )
-    bot = [one for one in bot_operations(marker) if one.path != BOT_MAIN]
+    # The kit registers bot commands only through its registry: the notes commands are
+    # declared beside the level-1 command, and `make setup` regenerates the registry.
+    level1 = (
+        "COMMANDS: tuple[ProductCommand, ...] = "
+        f'(ProductCommand("{LEVEL1_COMMAND}", handle_level1),)\n'
+    )
+    menu_import = "from services.tg_bot.src.menu import handle_level1\n"
+    commands = _substitute(
+        _bot_commands(),
+        menu_import,
+        "from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n" + menu_import,
+        where="notes bot command import",
+    )
+    commands = _substitute(
+        commands,
+        level1,
+        "COMMANDS: tuple[ProductCommand, ...] = (\n"
+        f'    ProductCommand("{LEVEL1_COMMAND}", handle_level1),\n'
+        '    ProductCommand("note", handle_note),\n'
+        '    ProductCommand("notes", handle_notes),\n'
+        ")\n",
+        where="notes bot command declarations",
+    )
+    bot = [one for one in bot_operations(marker) if one.path != BOT_COMMANDS]
     bot += [
         Operation("create", NOTES_HANDLERS, BOT_NOTES),
-        Operation(
-            "replace",
-            BOT_MAIN,
-            _substitute(
-                _bot_main(),
-                "    bindings.register(application, BackendClient)",
-                "    from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n"
-                '    application.add_handler(CommandHandler("note", handle_note))\n'
-                '    application.add_handler(CommandHandler("notes", handle_notes))\n'
-                "    bindings.register(application, BackendClient)",
-                where="notes bot handler registration",
-            ),
-        ),
+        Operation("replace", BOT_COMMANDS, commands),
     ]
     return backend, bot
 

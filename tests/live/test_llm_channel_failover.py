@@ -351,7 +351,7 @@ class FailoverRun:
                 raise AssertionError(f"the PO presented no brief: {presented}")
             record["brief_id"] = brief_match.group(1)
             confirmed = await po["confirm_product_brief"].ainvoke(
-                {"project_id": project_id, "brief_id": record["brief_id"], "catalog_packages": []},
+                {"project_id": project_id, "brief_id": record["brief_id"]},
                 config=config,
             )
             if "confirmed and frozen" not in confirmed:

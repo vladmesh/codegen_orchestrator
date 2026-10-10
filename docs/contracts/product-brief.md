@@ -186,26 +186,12 @@ manifest or add a product DB trigger, startup poller, or product-owned seed.
 Ordinary service-owned settings retain the service manifest and generated
 registry requirements above.
 
-PO receives installable package capabilities and product settings from the live
-catalog snapshot for its turn. Binding schemas use the same kit helper as the
-Architect; package settings and product-scope seeds use the snapshot's manifest.
-Keys are transcribed exactly, including the package prefix. Required binding
-values without a default need an explicit user choice, including a v2 binding's
-product language; the conversation language supplies no such choice. A package
-seed or schema default makes that setting optional; named items still use the
-declared seed key. `confirm_product_brief` requires a `catalog_packages` tool
-argument listing every catalog package the brief relies on, or `[]` for an
-ordinary brief. The turn snapshot validates the declaration; an unknown name
-returns a typed `unknown_catalog_packages` answer. This declaration is not stored
-in the shared DTO or database. Only a declared package or one of its owned,
-prefixed manifest keys identifies reliance; generic binding keys and prose do
-not. Confirmation refuses missing required product-scope keys
-or values outside their schemas with a typed `package_settings_required` tool
-answer, naming the keys and choices to ask for before a new revision. A package
-whose binding or manifest the kit refuses does not block unrelated briefs;
-reliance on that package returns `package_settings_unavailable`. An unavailable
-catalog adds no package block and leaves ordinary brief confirmation available;
-declared reliance then returns `package_catalog_unavailable` until it can be checked.
+A capability a catalog module provides never reaches the brief as a package or a key:
+the PO previews it first (see "Capability preview and the stored plan" below), and the
+brief carries the preview id, the capabilities with their requirements and the user's
+explicit answers. The API derives the exact settings from those answers and stores
+them in the plan beside the revision, so `initial_settings` holds only ordinary
+service-owned values, and one that writes a key an answer owns is refused.
 
 *As a value.* After a successful deploy of a brief-backed story, the deploy
 result handler reads the brief through `GET /api/product-briefs/by-story/{story_id}`
@@ -448,11 +434,89 @@ debug route. Missing Redis data is `degraded` or unavailable, never a fabricated
 zero. Legacy or invalid executor decisions remain labelled as such and are not
 reconstructed from current configuration.
 
+## Capability preview and the stored plan
+
+One decision, two projections, kept apart by type
+(`shared/contracts/dto/capability_preview.py`):
+
+* *Product* — what the PO prompt, its tools, their results and the brief show: opaque
+  capability ids with the catalog's user-level summary and phrases, a route per request
+  (`module`, `module_with_glue`, `from_scratch`, `impossible`) with its reason, questions
+  (`question_id`, kind, required, choices, list limits) and limitations (platform quota).
+  No package, module name, version, catalog entry, install recipe or settings key.
+* *Technical* — the activated catalog snapshot, the install closure of each module route
+  and the exact settings key, scope and constraints of each question. Read only by Python.
+
+*Activation and rollout.* The Architect reads the catalog only at the activated snapshot
+(`shared/catalog_activation.yaml`: repository, commit, raw and semantic digest, host core
+and tooling); changing it is a reviewed orchestrator change, and no reader falls back to
+a live branch. `capabilities.module_rollout` (operator-owned system config, seeded empty)
+lists the projects module routes are enabled for. Outside it, an offered capability is
+`from_scratch`, or `impossible` when the module needs a platform-only source (a
+`platform_key` or `platform_base_url` environment source). A project that is not `backend,tg_bot` gets no module either. The catalog
+is not a feature whitelist: requests no module offers are `from_scratch` unless the
+platform manifest's detection says the platform cannot (`impossible`). A request without
+a `capability_id` whose words contain an offered package's own catalog phrase (its
+`capabilities`, normalised as the manifest floor does) is that capability, routed exactly as
+the named id would be and naming it in its route; words matching two offers refuse
+(`ambiguous_capability`). Leaving the optional id out never turns an offered module's intent
+into programmable work, so every request needs the activated catalog, and an unreadable
+rollout refuses the requests with module intent only.
+
+*Preview.* `preview_capabilities(project_id, requests)` runs the Architect's
+deterministic resolver (`services/langgraph/src/capability_preview.py`), no model. An
+offered capability is one released ordinary catalog package with a default binding; a
+module route is resolved to the exact closure `plan_install_payload` selects (package,
+version, tag, recommended libraries, default binding, pinned catalog) before the user is
+asked anything. Questions come from metadata only: a v2 binding's language becomes
+`product_language` with choices from `ru`/`en`, a timezone becomes `product_timezone`,
+and package-owned manifest settings become `text_list` or `choice` questions when their
+schema shape can be checked exactly; a required setting of another shape refuses the
+preview (`unsupported_question`). An unknown id, an unreadable or inactive catalog, an
+unreadable rollout or a closure that does not install are typed refusals with request ids
+only. The platform stores the preview (`POST /api/capability-previews/`, service actor
+only); users read its product projection.
+
+*Brief and plan.* `ProductBriefContent.capabilities` (absent, and not serialized, on every
+other brief) names the preview, each routed request that is not impossible with the
+must-requirements it serves, and the answers with a description in the user's language.
+Answers share the six-setting cap. On creation the API derives the `CapabilityPlan` from
+the stored preview (`derive_capability_plan`) and stores it in
+`product_briefs.capability_plan`, beside the immutable content; the plan is read only by the
+platform (`GET /api/product-briefs/{id}/capability-plan`). A forged or foreign preview, a
+preview from another activation, a capability set or route that differs from the preview,
+an impossible capability, an unknown question, a missing required answer, an answer of
+the wrong kind or form, an initial setting in an answer's namespace, or two answers giving
+one setting key and scope different values (two requests selecting the same capability) is
+refused with a product-safe `capability_refusal` (code, request and question ids) and opens
+nothing. Identical answers to one target are one planned setting: a plan holds one value
+per key and scope.
+Confirmation derives the plan again under the current activation: a stale preview or any
+drift refuses (409) and nothing is frozen; a replay returns the confirmed revision with its
+plan unchanged. A corrected answer is a new revision with its own plan.
+
+*Planning.* The Architect's first attempt of a capability-backed brief reads the stored
+plan, checks its activation, reads the activated catalog and checks each stored closure
+resolves identically, then creates one INSTALL task per stored closure (two selections of one
+capability share it) and covers a `module` route's requirements with it. With nothing else
+left it asks no model; glue and from-scratch capabilities go to the model as ordinary work,
+with no package selectable. A `module_with_glue` requirement is never covered by the
+install: the coverage write and `admit` (`glue_coverage_gaps`) count it only when returned or
+covered by an ordinary task whose `blocked_by` chain reaches that module's INSTALL, so a turn
+that plans no glue task is admitted as incomplete. A
+missing plan, another activation, provenance or inactive catalog, or a drifted closure is a
+terminal planning failure with no task; an unreachable catalog is the retriable one. Deploy
+seeding writes the plan's settings after the brief's own `initial_settings`. Installing the
+module into the draft product right after scaffold, kit check-install glue handoff and
+per-operation workspaces belong to the next execution card.
+
 ## Explicit catalog selections
 
-plan_install uses the attempt's injected catalog/resources to persist one typed
-INSTALL task with the same planning_attempt_id, story/repository ownership and
-sequential predecessor as ordinary planning. Coverage refers to this task; it
+plan_install uses the attempt's injected catalog/resources, read at the activated
+snapshot's commit, to persist one typed INSTALL task naming that commit, with the same
+planning_attempt_id, story/repository ownership and sequential predecessor as ordinary
+planning. A brief with a stored capability plan injects no catalog: its installs come
+from the plan. Coverage refers to this task; it
 remains unadmitted until the existing complete-coverage transaction releases it.
 The scripted_install_plan harness calls the same tool and coverage API without a
 model. Missing or incompatible catalog/dependencies returns a named refusal and

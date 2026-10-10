@@ -1,0 +1,260 @@
+"""Focused contract tests for manifest-backed product settings."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator, Generator
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
+
+from fastapi import FastAPI, status
+from httpx import AsyncClient
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from services.backend.src.app.models.setting import Setting
+from services.backend.src.core.db import get_async_db
+from services.backend.src.core.settings import get_settings
+from services.backend.src.generated.settings_schemas import (
+    SETTINGS_SCHEMA_SCOPES,
+    SETTINGS_SCHEMAS,
+)
+
+SETTINGS_CAPABILITY_HEADER = "X-Settings-Capability"
+FIRST_SUBJECT_VALUE = 2
+SECOND_SUBJECT_VALUE = 3
+
+
+@pytest.fixture(autouse=True)
+def declared_settings() -> Generator[None, None, None]:
+    """Give the generated core one representative manifest declaration."""
+    SETTINGS_SCHEMAS.clear()
+    SETTINGS_SCHEMAS.update(
+        {
+            "languages": {"type": "array", "items": {"type": "string"}},
+            "digest_size": {"type": "integer", "minimum": 1, "maximum": 10},
+            "seeded.owner": {"type": "string", "minLength": 1},
+        }
+    )
+    yield
+    SETTINGS_SCHEMAS.clear()
+
+
+def _headers(capability: str | None = None) -> dict[str, str]:
+    return {
+        SETTINGS_CAPABILITY_HEADER: capability or get_settings().settings_write_capability,
+    }
+
+
+async def _set(client: AsyncClient, payload: dict[str, Any]) -> dict[str, Any]:
+    response = await client.post("/settings/set", headers=_headers(), json=payload)
+    assert response.status_code == status.HTTP_200_OK
+    return cast(dict[str, Any], response.json())
+
+
+@pytest.mark.asyncio
+async def test_settings_write_rejects_missing_duplicate_and_invalid_capabilities_before_mutation(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    payload = {"key": "languages", "value": ["ru", "en"]}
+
+    missing = await client.post("/settings/set", json=payload)
+    wrong = await client.post("/settings/set", headers=_headers("wrong"), json=payload)
+    duplicate = await client.post(
+        "/settings/set",
+        headers=[(SETTINGS_CAPABILITY_HEADER, _headers()[SETTINGS_CAPABILITY_HEADER])] * 2,
+        json=payload,
+    )
+    non_ascii = await client.post(
+        "/settings/set",
+        headers=[(SETTINGS_CAPABILITY_HEADER.encode(), b"\xff")],
+        json=payload,
+    )
+
+    assert [response.status_code for response in (missing, wrong, duplicate, non_ascii)] == [
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_403_FORBIDDEN,
+    ]
+    assert (await db_session.execute(select(Setting))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_settings_schema_rejects_unknown_keys_and_invalid_values(client: AsyncClient) -> None:
+    unknown = await client.post(
+        "/settings/set", headers=_headers(), json={"key": "unknown", "value": "value"}
+    )
+    invalid = await client.post(
+        "/settings/set", headers=_headers(), json={"key": "digest_size", "value": 11}
+    )
+
+    assert unknown.status_code == status.HTTP_404_NOT_FOUND
+    assert invalid.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert "11" not in invalid.text
+
+
+@pytest.mark.asyncio
+async def test_settings_round_trip_is_idempotent_for_same_effective_value(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    payload = {"key": "languages", "value": ["ru", "en"]}
+
+    first = await _set(client, payload)
+    second = await _set(client, payload)
+    fetched = await client.post("/settings/get", json={"key": "languages"})
+
+    assert (
+        first
+        == second
+        == {
+            "contract_version": 1,
+            "key": "languages",
+            "scope": "product",
+            "subject_id": None,
+            "value": ["ru", "en"],
+        }
+    )
+    assert fetched.status_code == status.HTTP_200_OK
+    assert fetched.json() == first
+    assert len((await db_session.execute(select(Setting))).scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_user_scoped_settings_are_isolated_by_subject(client: AsyncClient) -> None:
+    first = await _set(
+        client,
+        {
+            "key": "digest_size",
+            "scope": "user",
+            "subject_id": 1,
+            "value": FIRST_SUBJECT_VALUE,
+        },
+    )
+    second = await _set(
+        client,
+        {
+            "key": "digest_size",
+            "scope": "user",
+            "subject_id": 2,
+            "value": SECOND_SUBJECT_VALUE,
+        },
+    )
+    first_read = await client.post(
+        "/settings/get", json={"key": "digest_size", "scope": "user", "subject_id": 1}
+    )
+    invalid_scope = await client.post(
+        "/settings/get", json={"key": "digest_size", "scope": "product", "subject_id": 1}
+    )
+
+    assert first["value"] == FIRST_SUBJECT_VALUE
+    assert second["value"] == SECOND_SUBJECT_VALUE
+    assert first_read.json() == first
+    assert invalid_scope.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_core_language_exists_only_in_its_canonical_product_scope(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    assert SETTINGS_SCHEMA_SCOPES == {"language": "product"}
+    SETTINGS_SCHEMAS["language"] = {"type": "string", "enum": ["ru", "en"]}
+    user = {"key": "language", "scope": "user", "subject_id": 7}
+
+    refused = await client.post("/settings/set", headers=_headers(), json={**user, "value": "ru"})
+    unread = await client.post("/settings/get", json=user)
+
+    assert refused.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert unread.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert (await db_session.execute(select(Setting))).scalars().all() == []
+    for value in ("ru", "en"):
+        written = await _set(client, {"key": "language", "scope": "product", "value": value})
+        fetched = await client.post("/settings/get", json={"key": "language", "scope": "product"})
+        assert written["value"] == value
+        assert fetched.json() == written
+    other = await _set(
+        client, {"key": "languages", "scope": "user", "subject_id": 7, "value": ["ru"]}
+    )
+    assert other["scope"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_product_setting_seed_routes_only_exact_declared_key_and_scope(
+    app: FastAPI, client: AsyncClient, db_session: AsyncSession
+) -> None:
+    callback = AsyncMock()
+    app.state.codegen_packages.append(
+        SimpleNamespace(
+            manifest=SimpleNamespace(
+                name="seeded",
+                setting_seeds=(("product", "owner"),),
+            ),
+            runtime=SimpleNamespace(seed_setting=callback),
+        )
+    )
+
+    await _set(client, {"key": "seeded.owner", "value": "product-owner"})
+    await _set(client, {"key": "languages", "value": ["en"]})
+    await _set(
+        client,
+        {"key": "seeded.owner", "scope": "user", "subject_id": 7, "value": "user-owner"},
+    )
+
+    callback.assert_awaited_once_with(db_session, "seeded.owner", "product-owner")
+
+
+@pytest.mark.asyncio
+async def test_setting_seed_failure_rolls_back_core_and_package_writes(
+    app: FastAPI, client: AsyncClient, db_session: AsyncSession
+) -> None:
+    class FailingSeed:
+        async def seed_setting(self, session: AsyncSession, key: str, value: Any) -> None:
+            session.add(Setting(key="package.marker", scope="product", subject_id=0, value=value))
+            await session.flush()
+            raise RuntimeError("seed failed")
+
+    app.state.codegen_packages.append(
+        SimpleNamespace(
+            manifest=SimpleNamespace(
+                name="seeded",
+                setting_seeds=(("product", "owner"),),
+            ),
+            runtime=FailingSeed(),
+        )
+    )
+
+    async def transactional_session() -> AsyncGenerator[AsyncSession, None]:
+        try:
+            yield db_session
+            await db_session.commit()
+        except Exception:
+            await db_session.rollback()
+            raise
+
+    app.dependency_overrides[get_async_db] = transactional_session
+
+    response = await client.post(
+        "/settings/set",
+        headers=_headers(),
+        json={"key": "seeded.owner", "value": "owner"},
+    )
+
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert (await db_session.execute(select(Setting))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_package_without_setting_seeds_keeps_settings_write_as_noop_extension(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    app.state.codegen_packages.append(
+        SimpleNamespace(
+            manifest=SimpleNamespace(name="plain", setting_seeds=()),
+            runtime=SimpleNamespace(),
+        )
+    )
+
+    written = await _set(client, {"key": "languages", "value": ["en"]})
+
+    assert written["value"] == ["en"]

@@ -34,7 +34,7 @@ class CapabilityLimit(BaseModel):
         if any(_term_matches(term, text) for term in self.detect):
             return True
         return any(_term_matches(term, text) for term in self.detect_weak) and not any(
-            _normalise(phrase) in text for phrase in self.weak_unless
+            normalise(phrase) in text for phrase in self.weak_unless
         )
 
 
@@ -68,12 +68,13 @@ class CapabilityConflict:
         )
 
 
-def _normalise(text: str) -> str:
+def normalise(text: str) -> str:
+    """The one phrase normalisation: case-folded, "ё" as "е", single spaces."""
     return " ".join(text.casefold().replace("ё", "е").split())
 
 
 def _term_matches(term: str, text: str) -> bool:
-    return all(_normalise(part) in text for part in term.split(" + "))
+    return all(normalise(part) in text for part in term.split(" + "))
 
 
 def capability_conflicts(brief_content: ProductBriefContent) -> list[CapabilityConflict]:
@@ -84,7 +85,7 @@ def capability_conflicts(brief_content: ProductBriefContent) -> list[CapabilityC
     accepted = {choice.capability for choice in brief_content.variant_choices}
     conflicts = []
     for requirement in brief_content.must_requirements:
-        text = _normalise(f"{requirement.text} {requirement.user_wording or ''}")
+        text = normalise(f"{requirement.text} {requirement.user_wording or ''}")
         for item in CAPABILITY_LIMITS.values():
             waived = not accepted.isdisjoint({item.id, *item.aliases})
             if not waived and item.trips(text):
@@ -105,3 +106,9 @@ def capability_refusal(content: ProductBriefContent) -> str | None:
         "with capability set to that id. If they insist on the unsupported capability, "
         "use pass_capability_request; create no story."
     )
+
+
+def platform_cannot(text: str) -> CapabilityLimit | None:
+    """The manifest limitation a capability request's own words trip, if any."""
+    normalised = normalise(text)
+    return next((item for item in CAPABILITY_LIMITS.values() if item.trips(normalised)), None)

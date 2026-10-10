@@ -97,9 +97,12 @@ async def test_fixed_closure_preserves_notes_and_publishes_verified_exact_head(p
     assert git(root, "status", "--porcelain") == ""
     assert (root / "services/tg_bot/src/handlers/notes.py").read_bytes() == notes
     kit = str(root / ".venv/bin/kit")
+    # Every component is added from the payload's pinned catalog commit, never the default.
+    pinned = ["--catalog-source", "https://github.com/vladmesh/codegen-product-kit.git"]
+    pinned += ["--catalog-ref", "d" * 40]
     assert [args for args in calls if args[0] == kit] == [
-        [kit, "add", "reminders"],
-        [kit, "add", "textparse"],
+        [kit, "add", "reminders", *pinned],
+        [kit, "add", "textparse", *pinned],
         [kit, "bind", "reminders", "--default"],
     ]
     assert [args for args in calls if args[0] == "make"] == [

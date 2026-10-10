@@ -817,6 +817,7 @@ GATE_NEEDS = [
     "template-compatibility",
     "web-checks",
     "test-backend-dind-integration",
+    "runner-proof",
 ]
 
 
@@ -937,6 +938,18 @@ def test_the_gate_fails_a_skipped_dind_suite_on_main(runner):
 
     assert result.returncode == 1
     assert "test-backend-dind-integration: skipped" in result.stdout
+
+
+@pytest.mark.parametrize("result", ["skipped", "failure", "cancelled"])
+def test_the_gate_fails_a_runner_proof_that_did_not_pass(runner, result):
+    """No plan, path filter or event skips the runner proof: anything but success is red."""
+    result_of = {"runner-proof": result, "web-checks": "skipped"}
+    result_of["test-backend-dind-integration"] = "skipped"
+
+    gate = _run_gate(runner, result_of)
+
+    assert gate.returncode == 1
+    assert f"runner-proof: {result}" in gate.stdout
 
 
 def test_the_gate_fails_on_a_lint_failure(runner):

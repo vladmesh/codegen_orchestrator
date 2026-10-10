@@ -328,11 +328,10 @@ is never passed into coding-worker containers.
 | `ARCHITECT_LLM_API_KEY` | Architect agent LLM API key |
 | `SUMMARIZATION_MODEL` | Summarization model name (`anthropic/claude-haiku-4-5`) |
 
-The Architect reads the kit's live package catalog at planning time from
-`KIT_CATALOG_SOURCE` (a raw-file base, default
-`https://raw.githubusercontent.com/vladmesh/codegen-product-kit`) at `KIT_CATALOG_REF` (default
-`HEAD`, the kit's default branch). Neither is a secret and both are optional; the architect
-container needs outbound HTTPS to that host. See
+The PO and the Architect read the kit's package catalog only at the activated snapshot in
+`shared/catalog_activation.yaml` (commit, raw and semantic digests, kit core and tooling);
+there is no environment override and no live-branch default. The langgraph containers need
+outbound HTTPS to `raw.githubusercontent.com`. See
 [contracts/kit-template-and-qa.md](contracts/kit-template-and-qa.md).
 
 Numeric PO summarization tuning is not environment or secret configuration. Production reads

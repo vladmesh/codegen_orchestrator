@@ -35,6 +35,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.capability_preview import (
+    CapabilityPlan,
+    CapabilityRefusalCode,
+    PlanTask,
+    glue_coverage_gaps,
+)
 from shared.contracts.dto.product_brief import (
     ProductBriefAdmissionCommand,
     ProductBriefAdmissionOutcome,
@@ -47,6 +53,7 @@ from shared.contracts.dto.product_brief import (
     ProductBriefPlanningAttemptRead,
     ProductBriefRead,
     ProductBriefStoryBind,
+    ProposedProductBriefContent,
     RequirementCoverageCreate,
     RequirementCoverageRead,
 )
@@ -61,7 +68,7 @@ from shared.models import ProductBrief, Project, RequirementCoverage, Story, Tas
 from shared.product_brief_text import render_full_brief_sections
 
 from ..database import get_async_session
-from ..dependencies import _optional_bearer_scheme, is_internal_service
+from ..dependencies import _optional_bearer_scheme, is_internal_service, require_service_actor
 from ._product_brief_helpers import (
     attempt_heartbeat_is_fresh,
     load_brief_for_update,
@@ -69,6 +76,7 @@ from ._product_brief_helpers import (
     returned_plan_failure,
     void_superseded_plan,
 )
+from .capability_previews import capability_refusal, plan_for_content
 from .projects_guards import check_project_access
 
 logger = structlog.get_logger()
@@ -135,6 +143,28 @@ def _must_requirement_ids(brief: ProductBrief) -> set[str]:
     return {requirement["id"] for requirement in brief.content["must_requirements"]}
 
 
+def _glue_gaps(
+    brief: ProductBrief, covering: dict[str, str | None], tasks: list[Task]
+) -> list[str]:
+    """Glue requirements of the stored plan that `covering` leaves without product work.
+
+    A `module_with_glue` requirement is not covered by the module's INSTALL: only an
+    ordinary task planned after that install (or an explicit return) disposes of it.
+    """
+    if brief.capability_plan is None:
+        return []
+    plan = CapabilityPlan.model_validate(brief.capability_plan)
+    if not plan.glue_requirement_ids & covering.keys():
+        return []
+    planned = {
+        task.id: PlanTask(
+            task_id=task.id, install=task.install, blocked_by_task_id=task.blocked_by_task_id
+        )
+        for task in tasks
+    }
+    return glue_coverage_gaps(plan, covering, planned)
+
+
 def _task_is_in_plan(task: Task, brief: ProductBrief, story_id: str) -> bool:
     """Is this task still a member of the plan the brief is being admitted for?
 
@@ -193,6 +223,10 @@ async def create_product_brief(
         )
         or 0
     ) + 1
+    preview_id, plan = None, None
+    if body.content.capabilities is not None:
+        # The plan is derived from the stored preview, never taken from the caller.
+        preview_id, plan = await plan_for_content(body.project_id, body.content, db)
     brief = ProductBrief(
         id=f"brief-{secrets.token_hex(12)}",
         project_id=body.project_id,
@@ -200,6 +234,8 @@ async def create_product_brief(
         title=body.title,
         content=content,
         request_id=body.request_id,
+        capability_preview_id=preview_id,
+        capability_plan=None if plan is None else plan.model_dump(mode="json"),
     )
     db.add(brief)
     try:
@@ -242,7 +278,9 @@ async def confirm_product_brief(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Product Brief is already confirmed",
             )
+        # A replay: the plan stored beside the revision is the confirmed one, unchanged.
         return ProductBriefRead.model_validate(brief, from_attributes=True)
+    await _require_current_capability_plan(brief, body.content, db)
     brief.confirmed_at = datetime.now(UTC)
     brief.confirmation_request_id = body.request_id
     await db.commit()
@@ -324,11 +362,11 @@ async def get_project_initial_settings_brief(
     internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> ProductBriefRead:
-    """The project's latest confirmed brief that carries `initial_settings`.
+    """The project's latest confirmed brief that carries settings to seed.
 
     A deploy that names no story still owes the product its confirmed settings:
-    newest confirmation first, the latest revision on a tie, and a brief with no
-    settings is skipped rather than chosen.
+    newest confirmation first, the latest revision on a tie, and a brief with
+    neither `initial_settings` nor planned capability answers is skipped.
     """
     await _authorize(project_id, x_telegram_id, db, internal, credentials)
     briefs = (
@@ -347,7 +385,8 @@ async def get_project_initial_settings_brief(
     )
     for brief in briefs:
         read = ProductBriefRead.model_validate(brief, from_attributes=True)
-        if read.content.initial_settings:
+        planned = (brief.capability_plan or {}).get("settings")
+        if read.content.initial_settings or planned:
             return read
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -391,6 +430,47 @@ async def get_product_brief_full_text(
         language=read.content.language,
         sections=render_full_brief_sections(read.title, read.content),
     )
+
+
+async def _require_current_capability_plan(
+    brief: ProductBrief, content: ProposedProductBriefContent, db: AsyncSession
+) -> None:
+    """A capability-backed revision is confirmed only with the plan it was opened with.
+
+    The plan is derived again from the stored preview under the activated snapshot of
+    this deployment: a preview made under another snapshot, or a plan that no longer
+    matches what was stored, refuses confirmation instead of freezing a stale plan.
+    """
+    if content.capabilities is None:
+        return
+    if brief.capability_plan is None or brief.capability_preview_id is None:
+        raise capability_refusal(CapabilityRefusalCode.PLAN_MISSING, status.HTTP_409_CONFLICT)
+    preview_id, plan = await plan_for_content(
+        brief.project_id, content, db, status_code=status.HTTP_409_CONFLICT
+    )
+    stored = CapabilityPlan.model_validate(brief.capability_plan)
+    if preview_id != brief.capability_preview_id or plan != stored:
+        raise capability_refusal(CapabilityRefusalCode.PLAN_DRIFT, status.HTTP_409_CONFLICT)
+
+
+@router.get(
+    "/{brief_id}/capability-plan",
+    response_model=CapabilityPlan,
+    dependencies=[Depends(require_service_actor)],
+)
+async def get_product_brief_capability_plan(
+    brief_id: str, db: AsyncSession = Depends(get_async_session)
+) -> CapabilityPlan:
+    """The technical plan stored beside a revision. The platform only."""
+    brief = (
+        await db.execute(select(ProductBrief).where(ProductBrief.id == brief_id))
+    ).scalar_one_or_none()
+    if brief is None or brief.capability_plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Product Brief {brief_id} has no capability plan",
+        )
+    return CapabilityPlan.model_validate(brief.capability_plan)
 
 
 # --- one live architect per incomplete plan -----------------------------------
@@ -548,6 +628,23 @@ async def record_requirement_coverage(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="a covering task must be planned under this planning attempt",
             )
+        planned = (
+            await db.scalars(
+                select(Task).where(
+                    Task.story_id == story_id,
+                    Task.planning_attempt_id == body.planning_attempt_id,
+                )
+            )
+        ).all()
+        if _glue_gaps(brief, {requirement_id: body.task_id}, list(planned)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "this requirement needs product work beyond its installed module: cover "
+                    "it with a feature task planned after that module's install task, not "
+                    "with the install itself"
+                ),
+            )
     coverage = (
         await db.execute(
             select(RequirementCoverage)
@@ -695,6 +792,16 @@ async def admit_product_brief_coverage(
                 "Product Brief coverage names tasks that are no longer part of this plan: "
                 + ", ".join(stale)
             ),
+        )
+    # A glue requirement covered only by its module's install, or by work outside the
+    # install's chain, is still undisposed: the install does not build what lies beyond it.
+    glue = _glue_gaps(brief, {row.requirement_id: row.task_id for row in dispositions}, tasks)
+    if glue:
+        return ProductBriefAdmissionRead(
+            brief_id=brief.id,
+            story_id=story_id,
+            outcome=ProductBriefAdmissionOutcome.INCOMPLETE,
+            missing_requirement_ids=glue,
         )
 
     released = [task.id for task in tasks if not task.dispatch_admitted]

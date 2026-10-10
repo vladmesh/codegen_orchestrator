@@ -255,8 +255,10 @@ async def test_a_live_run_asks_its_developer_and_its_qa_for_the_location_behavio
 #: are pinned by `tests/unit/test_level1_change_set.py` against the kit render.
 #: Re-pinned by codegen-orchestrator-1486, which added the reminders catalog
 #: install to the extension story's brief, contract and criteria on purpose; the
-#: live-only location behaviour is still absent from it.
-NOOP_RENDERING_DIGEST = "ff4b40f9b7321e0f61b9f2a8fd59157b4f5140fcbd60996197a66ef92b5f3f6f"
+#: live-only location behaviour is still absent from it. Re-pinned by
+#: codegen-orchestrator-1588: kit core 2.5.0 registers bot commands only through its
+#: registry, so the bot contract declares the command instead of wiring a handler.
+NOOP_RENDERING_DIGEST = "ffbb7c148028c3e4aef7fc354bb41d1d6652d7e764bcb61bfa715856184f3371"
 
 
 def _noop_rendering(marker: str, extension_marker: str) -> dict:

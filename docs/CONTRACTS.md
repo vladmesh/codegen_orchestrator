@@ -31,7 +31,7 @@ Feature-specific invariants live in focused guides. Read this index first, then 
 | Story PR conflict repair | [PR conflict repair contracts](contracts/pr-conflict-repair.md) |
 | Generated-service user grants and deploy redaction | [Generated-service grants and deploy redaction](contracts/generated-service-grants.md) |
 | Engineering attempts, work admission, and budgets | [Work admission and engineering attempts](contracts/work-admission.md) |
-| Product Brief coverage and dispatch | [Product Brief contract](contracts/product-brief.md) |
+| Product Brief coverage, capability preview, stored plan and dispatch | [Product Brief contract](contracts/product-brief.md) |
 | Project/repository and Story/Task/Run REST surfaces | [REST story, task, run, and policy surfaces](contracts/story-task-run-surfaces.md) |
 | Engineering publication refusal, stop and recovery | [Commit publication and engineering stop](contracts/commit-publication-and-stop.md) |
 | Generated-product template/package installation and QA | [Generated product kit and QA contracts](contracts/kit-template-and-qa.md) |
@@ -431,6 +431,7 @@ Runtime lifecycle and security invariants are split by boundary:
 | shared Redis topology and client semantics | `shared/queues.py`, `shared/redis/client.py` |
 | shared run, recipient, worker, and env invariants | `shared/contracts/` |
 | what central QA can check, and never does | `shared/contracts/qa_capabilities.py` |
+| the activated kit catalog snapshot | `shared/catalog_activation.yaml` (`shared/catalog_activation.py`) |
 | API-only request/response composition | `services/api/src/schemas/` |
 | REST route ownership | `services/api/src/routers/` |
 | LangGraph consumers | `services/langgraph/src/consumers/` |

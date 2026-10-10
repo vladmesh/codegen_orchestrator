@@ -161,6 +161,7 @@ EXPECTED_GATE_NEEDS = {
     "template-compatibility",
     "web-checks",
     "test-backend-dind-integration",
+    "runner-proof",
 }
 # job -> (the gate's env variable holding the plan, the value that means "nothing planned")
 GATE_PLANNED_SKIPS = {
@@ -343,6 +344,7 @@ INFRA_MARKER_JOBS: dict[str, str | None] = {
     "test-integration": "suite",
     "template-compatibility": "entry",
     "test-backend-dind-integration": None,
+    "runner-proof": "leg",
     # Downstream of merge-gate: the gate cannot repeat this marker, so it stays on the
     # job's own annotations, summary and output (docs/TESTING.md).
     "publish-worker-images": None,
@@ -438,6 +440,7 @@ BOUNDED_DOCKER_STEPS = {
         "Run candidate compatibility smoke",
     ],
     "test-backend-dind-integration": ["Run integration tests"],
+    "runner-proof": ["Run the runner proof through the activated snapshot and the stored plan"],
     "build-worker-images": ["Build and push the worker image candidates"],
     "publish-worker-images": ["Verify the tested candidates and publish the worker release marker"],
     "build-service-images": ["Build and push the service image candidates"],

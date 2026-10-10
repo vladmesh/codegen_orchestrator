@@ -3,6 +3,17 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-10
+
+- Kit 7b547c69 (core 2.5.0) is the scaffold, tooling and catalog pin; one activated catalog snapshot
+  replaces the live HEAD reader, and installs name and add from its exact commit.
+- The PO previews capabilities through the Architect before a brief; the API stores the derived
+  technical plan beside the revision, and first planning installs it as stored, without a model.
+- A required runner proof plans a fresh product through the stored plan and the API image, then
+  proves it end to end with the kit's pinned harness.
+- A module_with_glue requirement stays outstanding until a task after its install covers it; two
+  answers for one setting refuse the plan; an unnamed request naming an offered capability routes as it.
+
 ## 2026-10-09
 
 - `python -m shared -- <selector>...` runs chosen tests inside the host profile and refuses a

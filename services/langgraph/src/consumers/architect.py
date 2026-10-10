@@ -16,6 +16,8 @@ import uuid
 import httpx
 import structlog
 
+from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.contracts.dto.capability_preview import CapabilityPlan, CapabilityRoute
 from shared.contracts.dto.catalog_install import is_replan_note, replan_reopened
 from shared.contracts.dto.llm_channel import LLMChannelConfig
 from shared.contracts.dto.product_brief import (
@@ -52,17 +54,24 @@ from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
-from ..agents.architect.tools import plan_install, record_requirement_coverage, reset_task_chain
+from ..agents.architect.tools import (
+    create_install_task,
+    plan_install,
+    record_requirement_coverage,
+    reset_task_chain,
+)
 from ..capability_feasibility import capability_conflicts
 from ..catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, plan_install_payload
 from ..catalog_product_settings import catalog_binding_settings
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
 from ..kit_catalog import (
+    TERMINAL_CATALOG_FAILURES,
     KitCatalog,
     KitCatalogAnswer,
     KitCatalogUnavailable,
     get_kit_catalog_reader,
+    install_snapshot,
 )
 from ..llm import (
     InvalidChannelChainError,
@@ -672,19 +681,24 @@ def _planning_state(attempt: _PlanningAttempt | None) -> dict:
     }
 
 
-def _requirements_briefing(attempt: _PlanningAttempt | None) -> str:
+def _requirements_briefing(
+    attempt: _PlanningAttempt | None, covered: dict[str, str] | None = None
+) -> str:
     """The requirement ids the run must dispose of, in the words the user confirmed.
 
     Empty for a run that is not planning under a brief: there is nothing to
     dispose of, and the instructions say nothing about a boundary that is not
-    there.
+    there. Requirements the stored capability plan already covered (`covered`,
+    requirement id to task id) are named as disposed and left out of the list.
     """
     if attempt is None:
         return ""
+    covered = covered or {}
     listed = "\n".join(
         f"- {r.id}: {r.text}"
         + ("" if r.user_facing else " (not user-facing: the user sends nothing for it)")
         for r in attempt.must_requirements
+        if r.id not in covered
     )
     language = f" (user's language: {attempt.language})" if attempt.language else ""
     briefing = (
@@ -695,6 +709,10 @@ def _requirements_briefing(attempt: _PlanningAttempt | None) -> str:
         "record_requirement_coverage — the task that covers it, or the reason it is "
         "returned. Nothing you plan is dispatched until all of them are recorded."
     )
+    if covered:
+        briefing += "\nAlready disposed by the capability plan (record nothing for them): " + (
+            ", ".join(f"{key} (task {task})" for key, task in covered.items())
+        )
     conflicts = capability_conflicts(attempt.brief.content)
     if conflicts:
         briefing += (
@@ -851,8 +869,8 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
         "the requirement."
     )
     heading = (
-        f"\n\n{KIT_CATALOG_HEADING} (read live from {catalog.source}; versions that "
-        f"admit kit core {catalog.core_version}):\n"
+        f"\n\n{KIT_CATALOG_HEADING} (read from the activated snapshot {catalog.source}; "
+        f"versions that admit kit core {catalog.core_version}):\n"
     )
     if not catalog.packages:
         return heading + "No package the pinned kit core can install is listed.\n" + rule
@@ -904,6 +922,44 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
             "plan_install(name). It creates one typed INSTALL task with recommended libraries "
             "and the default binding. Do not create separate parser/backend/handler coding tasks."
         )
+    )
+
+
+def _capability_plan_briefing(plan: CapabilityPlan, installs: dict[str, str]) -> str:
+    """What the confirmed brief's stored capability plan already decided.
+
+    The selection is the Architect preview's, frozen at confirmation: this run neither
+    chooses another package or version nor installs anything itself. Module routes are
+    installed by the INSTALL tasks created before this run; glue and from-scratch
+    capabilities are ordinary product work.
+    """
+    lines = []
+    for item in plan.capabilities:
+        requirements = ", ".join(item.requirement_ids)
+        installed = f"a ready module, installed by task {installs.get(item.request_id)}"
+        if item.route is CapabilityRoute.MODULE:
+            lines.append(
+                f"- {item.request_id}: {installed}; it covers {requirements}. "
+                "Plan no code that re-implements it."
+            )
+        elif item.route is CapabilityRoute.MODULE_WITH_GLUE:
+            lines.append(
+                f"- {item.request_id}: {installed}. The install does NOT cover {requirements}: "
+                "plan ordinary feature tasks, after the install, for the product behaviour "
+                "these requirements ask for beyond the installed module, and record each "
+                "requirement as covered by such a task. Never record it against the install "
+                "task; the plan is not admitted until that work exists."
+            )
+        else:
+            lines.append(
+                f"- {item.request_id}: built from scratch for {requirements}; plan it as "
+                "ordinary product code without a catalog module."
+            )
+    return (
+        "\n\nCapability plan of the confirmed brief (decided before this run; do not change "
+        "it):\n" + "\n".join(lines) + "\nNo package can be selected or installed in this "
+        "run: create no task that runs `kit add`, and never call plan_install. The modules' "
+        "settings the user chose are written by the platform after deploy."
     )
 
 
@@ -1108,9 +1164,8 @@ def _catalog_dependent(tasks: list[TaskDTO]) -> bool:
 
     A story that has had an INSTALL task is a catalog story: planned without the
     catalog it can only be planned as something else, as story-360b14d9 was (a fix
-    task in place of its install). The PO's `catalog_packages` declaration is
-    checked against its turn's catalog at confirmation and is not stored
-    (docs/contracts/product-brief.md), so a brief carries nothing to read here.
+    task in place of its install). A brief with a stored capability plan is one
+    from its first attempt; `_plan` reads that plan before it asks this.
     """
     return any(task.type == TaskType.INSTALL for task in tasks)
 
@@ -1141,17 +1196,6 @@ async def _replanned_install_packages(story: StoryDTO, tasks: list[TaskDTO]) -> 
         ):
             packages.append(task.install.package.name)
     return list(dict.fromkeys(packages))
-
-
-def _install_snapshot(catalog: KitCatalog) -> dict:
-    """The catalog read `plan_install` resolves a package against."""
-    return {
-        "catalog": catalog.raw,
-        "bindings": catalog.bindings,
-        "manifests": catalog.manifests,
-        "source": catalog.source,
-        "core_version": catalog.core_version,
-    }
 
 
 async def _delay_for_catalog(
@@ -1216,7 +1260,7 @@ async def _plan_replanned_install(  # noqa: PLR0913 — one replanned cycle's wh
         except InstallRefusal as refusal:
             return await _refuse_replanned_install(msg, f"{name}: {refusal}", planning, usage, log)
     reset_task_chain()
-    snapshot = _install_snapshot(catalog)
+    snapshot = install_snapshot(catalog)
     created = []
     for name in packages:
         result = await plan_install.coroutine(
@@ -1291,7 +1335,26 @@ async def _plan(  # noqa: PLR0913 — one planning run's inputs
             return early_result
 
         tasks = await api_client.get_tasks_by_story(msg.story_id)
+        capability_plan = None
+        if planning is not None and planning.brief.content.capabilities is not None:
+            capability_plan = await api_client.get_capability_plan(planning.brief_id)
+            if capability_plan is None:
+                return await _refuse_capability_plan(
+                    msg, "capability_plan_missing", planning, usage, log
+                )
+            if capability_plan.activation != CATALOG_ACTIVATION:
+                return await _refuse_capability_plan(
+                    msg, "catalog_provenance_mismatch", planning, usage, log
+                )
         catalog = await get_kit_catalog_reader().read()
+        if not isinstance(catalog, KitCatalog) and capability_plan is not None:
+            # A stored plan is planned from its own activated snapshot or not at all:
+            # never from a remembered catalog, and never as agent programming instead.
+            if catalog.failure in TERMINAL_CATALOG_FAILURES:
+                return await _refuse_capability_plan(
+                    msg, f"catalog_{catalog.failure.value}", planning, usage, log
+                )
+            return await _delay_for_catalog(msg, catalog, planning, usage, log)
         if not isinstance(catalog, KitCatalog) and _catalog_dependent(tasks):
             return await _delay_for_catalog(msg, catalog, planning, usage, log)
         replanned = await _replanned_install_packages(story, tasks)
@@ -1313,6 +1376,21 @@ async def _plan(  # noqa: PLR0913 — one planning run's inputs
             return live_work_settled({"status": "success", "replanned_install": replanned})
 
         reset_task_chain()
+        installs: dict[str, str] = {}
+        covered: dict[str, str] = {}
+        if capability_plan is not None:
+            heartbeat = _planning_heartbeat(planning, log)
+            async with heartbeat:
+                planned = await _plan_capabilities(
+                    msg, capability_plan, catalog, planning, usage, log
+                )
+            if isinstance(planned, dict) and "status" in planned:
+                return planned
+            installs, covered = planned
+            if not _needs_model(capability_plan, planning, covered):
+                # Every requirement is a module the stored plan installs: nothing is left
+                # for a model to decide, so none is asked.
+                return await _finish_plan(msg, story_status, usage, planning, redis, log)
         alerts = LLMAlerts.from_settings(settings, redis=redis.redis)
         graph = create_architect_graph(
             build_agent_llm(LLMAgent.ARCHITECT, channels, settings, alerts=alerts)
@@ -1340,8 +1418,13 @@ async def _plan(  # noqa: PLR0913 — one planning run's inputs
                 f"Decompose story {msg.story_id} for project {msg.project_id}. "
                 f"Start by calling get_story and get_project_spec."
             )
-        user_content += _requirements_briefing(planning)
-        user_content += _kit_catalog_briefing(catalog)
+        user_content += _requirements_briefing(planning, covered)
+        user_content += (
+            _capability_plan_briefing(capability_plan, installs)
+            if capability_plan is not None
+            else _kit_catalog_briefing(catalog)
+        )
+        selectable = capability_plan is None and isinstance(catalog, KitCatalog)
 
         initial_state = {
             "messages": [{"role": "user", "content": user_content}],
@@ -1349,11 +1432,9 @@ async def _plan(  # noqa: PLR0913 — one planning run's inputs
             "project_id": msg.project_id,
             "telegram_chat_id": msg.telegram_chat_id,
             **_planning_state(planning),
-            "kit_install_snapshot": (
-                _install_snapshot(catalog) if isinstance(catalog, KitCatalog) else None
-            ),
+            "kit_install_snapshot": install_snapshot(catalog) if selectable else None,
             "kit_catalog_packages": (
-                sorted(catalog.names) if isinstance(catalog, KitCatalog) else None
+                sorted(catalog.names) if selectable else [] if capability_plan else None
             ),
         }
 
@@ -1364,36 +1445,15 @@ async def _plan(  # noqa: PLR0913 — one planning run's inputs
         async with heartbeat:
             result = await graph.ainvoke(initial_state, config=config)
 
-        if planning is not None:
-            refusal = await _admit_plan(planning, msg, usage, log)
-            if refusal is not None:
-                # An incomplete plan is a failed attempt like any other: the
-                # next run may dispose of what this one left undisposed.
-                await _report_planning_failure(
-                    msg,
-                    f"ProductBriefCoverageIncomplete: {refusal['error']}",
-                    retriable=True,
-                    usage=usage,
-                    planning=planning,
-                    log=log,
-                )
-                return refusal
-
-        await _start_reopened_story(msg, story_status, log)
-
-        await _report_planning_success(msg, usage, planning, log)
-
-        # Last, after the story moved on: a failure here is replayed, and the
-        # replay must not find a plan that is still waiting to start.
-        await _notify_returned_requirements_of_plan(planning, msg, redis, log)
-
-        log.info(
-            "architect_job_success",
+        return await _finish_plan(
+            msg,
+            story_status,
+            usage,
+            planning,
+            redis,
+            log,
             message_count=len(result.get("messages", [])),
-            llm_channels=usage.channels(),
-            llm_channel_failures=_channel_failures(usage),
         )
-        return live_work_settled({"status": "success"})
 
     except (ReturnedRequirementsNoticeError, PlanningFailureUnrecordedError):
         # The plan is admitted and nothing is released again; only the notice is
@@ -1416,6 +1476,154 @@ async def _plan(  # noqa: PLR0913 — one planning run's inputs
             msg, e, retriable=not retry_cannot_fix(e), usage=usage, planning=planning, log=log
         )
         return _failed_result(str(e), recorded)
+
+
+async def _finish_plan(  # noqa: PLR0913 — one planning run's outcome
+    msg: ArchitectMessage,
+    story_status: StoryStatus,
+    usage: ChannelUsage,
+    planning: _PlanningAttempt | None,
+    redis: RedisStreamClient,
+    log,
+    *,
+    message_count: int = 0,
+) -> dict:
+    """Admit the owned plan, start a reopened story, and report the outcome."""
+    if planning is not None:
+        refusal = await _admit_plan(planning, msg, usage, log)
+        if refusal is not None:
+            # An incomplete plan is a failed attempt like any other: the
+            # next run may dispose of what this one left undisposed.
+            await _report_planning_failure(
+                msg,
+                f"ProductBriefCoverageIncomplete: {refusal['error']}",
+                retriable=True,
+                usage=usage,
+                planning=planning,
+                log=log,
+            )
+            return refusal
+
+    await _start_reopened_story(msg, story_status, log)
+
+    await _report_planning_success(msg, usage, planning, log)
+
+    # Last, after the story moved on: a failure here is replayed, and the
+    # replay must not find a plan that is still waiting to start.
+    await _notify_returned_requirements_of_plan(planning, msg, redis, log)
+
+    log.info(
+        "architect_job_success",
+        message_count=message_count,
+        llm_channels=usage.channels(),
+        llm_channel_failures=_channel_failures(usage),
+    )
+    return live_work_settled({"status": "success"})
+
+
+async def _refuse_capability_plan(
+    msg: ArchitectMessage, refusal: str, planning: _PlanningAttempt | None, usage, log
+) -> dict:
+    """A stored capability plan that cannot be planned as stored: terminal, no task, no graph.
+
+    Missing, from another activated snapshot, or no longer resolving to the same closure:
+    a person decides, because planning it any other way would change what the user
+    confirmed.
+    """
+    error = f"CapabilityPlanRefused: {refusal}"
+    log.error("architect_capability_plan_refused", refusal=refusal)
+    if planning is not None:
+        await _release_planning_attempt(planning, log)
+    recorded = await _report_planning_failure(
+        msg, error, retriable=False, usage=usage, planning=planning, log=log
+    )
+    return _failed_result(error, recorded)
+
+
+async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consumption
+    msg: ArchitectMessage,
+    plan: CapabilityPlan,
+    catalog: KitCatalog,
+    planning: _PlanningAttempt,
+    usage: ChannelUsage,
+    log,
+) -> tuple[dict[str, str], dict[str, str]] | dict:
+    """Create the INSTALL tasks the confirmed brief's stored plan selected.
+
+    The plan's closures are checked against the activated snapshot read now — the same
+    commit and digests, and the same closure `plan_install_payload` resolves — before
+    any task exists, and then installed exactly as stored. Each module's requirements
+    are covered by its install task, except a `module_with_glue` route's: those stay
+    outstanding for feature tasks planned after the install, and admission refuses the
+    plan until such a task covers them. Returns `(install task per request, covering task
+    per requirement)`, or the recorded refusal.
+    """
+    if (catalog.commit, catalog.digest) != (plan.activation.commit, plan.activation.catalog_digest):
+        return await _refuse_capability_plan(
+            msg, "catalog_provenance_mismatch", planning, usage, log
+        )
+    for item in plan.modules:
+        try:
+            current = plan_install_payload(
+                catalog, item.install.package.name, item.install.python_version
+            )
+        except InstallRefusal as refusal:
+            log.error("architect_capability_plan_unresolvable", detail=str(refusal))
+            return await _refuse_capability_plan(
+                msg, f"plan_drift: {item.request_id}", planning, usage, log
+            )
+        if current != item.install:
+            return await _refuse_capability_plan(
+                msg, f"plan_drift: {item.request_id}", planning, usage, log
+            )
+    installs: dict[str, str] = {}
+    covered: dict[str, str] = {}
+    # One INSTALL per closure: two requests selecting the same capability share it. The
+    # check above made every stored closure the one this snapshot resolves for its package.
+    by_package: dict[str, str] = {}
+    for item in plan.modules:
+        task_id = by_package.get(item.install.package.name)
+        if task_id is None:
+            result = await create_install_task(
+                item.install,
+                story_id=msg.story_id,
+                project_id=msg.project_id,
+                planning_attempt_id=planning.planning_attempt_id,
+            )
+            if "error" in result:
+                return await _refuse_capability_plan(
+                    msg, f"{item.request_id}: {result['error']}", planning, usage, log
+                )
+            task_id = by_package[item.install.package.name] = result["id"]
+        installs[item.request_id] = task_id
+        log.info(
+            "architect_capability_install_planned",
+            request_id=item.request_id,
+            task_id=task_id,
+            version=item.install.package.version,
+        )
+        for requirement_id in item.requirement_ids:
+            # A glue requirement stays outstanding: the install does not build what the
+            # user wants beyond the module, so a feature task after it must cover it.
+            if requirement_id in covered or requirement_id in plan.glue_requirement_ids:
+                continue
+            coverage = await record_requirement_coverage.coroutine(
+                requirement_id=requirement_id,
+                task_id=task_id,
+                brief_id=planning.brief_id,
+                planning_attempt_id=planning.planning_attempt_id,
+            )
+            if "error" in coverage:
+                raise RuntimeError(f"capability install coverage refused: {coverage['error']}")
+            covered[requirement_id] = task_id
+    return installs, covered
+
+
+def _needs_model(plan: CapabilityPlan, planning: _PlanningAttempt, covered: dict) -> bool:
+    """Whether anything is left for the model: an uncovered requirement or a glue route."""
+    if any(item.route is not CapabilityRoute.MODULE for item in plan.capabilities):
+        return True
+    return any(requirement.id not in covered for requirement in planning.must_requirements)
 
 
 async def _start_reopened_story(msg: ArchitectMessage, story_status: StoryStatus, log) -> None:

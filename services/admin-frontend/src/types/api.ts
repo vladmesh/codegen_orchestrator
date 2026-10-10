@@ -102,6 +102,12 @@ export interface DefaultBinding {
   functions: string[]
 }
 
+export interface CatalogSource {
+  repository: 'https://github.com/vladmesh/codegen-product-kit.git'
+  commit: string
+  catalog_sha256: string
+}
+
 export interface CatalogInstall {
   package: InstallComponent
   libraries: InstallComponent[]
@@ -110,6 +116,7 @@ export interface CatalogInstall {
   python_version: string
   catalog_digest: string
   tooling_commit: string
+  catalog?: CatalogSource | null
 }
 
 export interface InstallVerification {

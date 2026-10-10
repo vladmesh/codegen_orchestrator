@@ -1,8 +1,6 @@
 """One catalog selection, one typed install task; no prose classification."""
 
 import hashlib
-from importlib.metadata import distribution
-import json
 from pathlib import Path
 import tempfile
 
@@ -12,9 +10,14 @@ from framework.catalog import Catalog, CatalogError
 from framework.spec.packages import PackageManifest
 import yaml
 
-from shared.contracts.dto.catalog_install import CatalogInstall, DefaultBinding, InstallComponent
+from shared.contracts.dto.catalog_install import (
+    CatalogInstall,
+    CatalogSource,
+    DefaultBinding,
+    InstallComponent,
+)
 
-from .kit_catalog import KitCatalog, KitCatalogAnswer
+from .kit_catalog import KitCatalog, KitCatalogAnswer, installed_tooling_commit
 
 #: The product Python every install is resolved for: the generated product's runtime.
 INSTALL_PYTHON_VERSION = "3.12.0"
@@ -40,6 +43,9 @@ def plan_install_payload(
 ) -> CatalogInstall:
     if not isinstance(snapshot, KitCatalog):
         raise InstallRefusal("catalog_unavailable: no install task can be created")
+    if snapshot.commit is None or snapshot.repository is None or not snapshot.catalog_sha256:
+        # A read at a moving ref names no catalog `kit add` could be held to.
+        raise InstallRefusal("catalog_unpinned: an install is planned only from a pinned commit")
     selected = next((item for item in snapshot.packages if item.name == name), None)
     if selected is None:
         raise InstallRefusal(f"unknown_package: {name} is absent or incompatible with this core")
@@ -122,7 +128,10 @@ def plan_install_payload(
         core_version=snapshot.core_version,
         python_version=python_version,
         catalog_digest=snapshot.digest,
-        tooling_commit=json.loads(distribution("codegen-kit-tooling").read_text("direct_url.json"))[
-            "vcs_info"
-        ]["commit_id"],
+        tooling_commit=installed_tooling_commit(),
+        catalog=CatalogSource(
+            repository=snapshot.repository,
+            commit=snapshot.commit,
+            catalog_sha256=snapshot.catalog_sha256,
+        ),
     )

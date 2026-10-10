@@ -58,6 +58,7 @@ from langchain_core.tools import tool
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.capability_preview import CapabilityRefusal, CapabilityRefusalCode
 from shared.contracts.dto.product_brief import (
     ProductBriefConfirm,
     ProductBriefCreate,
@@ -74,7 +75,6 @@ from shared.product_brief_text import (
 )
 
 from ...capability_feasibility import capability_refusal
-from ...catalog_product_settings import package_settings_refusal, turn_catalog
 from ...prompts.qa_capabilities import render_brief_capabilities
 from .tools_shared import _get_api, _user_headers
 
@@ -270,6 +270,7 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
     variant_choices: list[dict] | None = None,
     corrects_brief_id: str | None = None,
     *,
+    capabilities: dict | None = None,
     config: RunnableConfig,
 ) -> str:
     """Open the Product Brief revision the user is asked to confirm, and show it.
@@ -327,14 +328,9 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
               "value": "USD", "description": "Amounts are shown in US dollars"}`.
             The user sees only `description`, so it is required and says in
             the user's language what the setting and its chosen value mean.
-            When a catalog package covers the requirement, use its exact product
-            keys and schemas from this turn's catalog block. Put named items in
-            its seeded key. Ask for every required value without a default,
-            showing allowed values in the user's language; never infer its product
-            language from the conversation language or invent a generic key.
-            Leave empty when the user chose none. NEVER put a token, password,
-            API key or any other secret here — secrets go to
-            `set_project_secret`.
+            Never repeat what a capability answer already covers. Leave empty
+            when the user chose none. NEVER put a token, password, API key or
+            any other secret here — secrets go to `set_project_secret`.
         variant_choices: Chosen free or simplified variants with a noticeable quality gap.
             For an accepted platform workaround, add `capability` with its manifest cannot id.
             Set it only after the user explicitly accepts that workaround.
@@ -344,6 +340,14 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
             brief. The alternative is recorded for later, never promised as built.
         corrects_brief_id: The brief id the user corrected, when re-presenting
             after a correction. Leave unset the first time.
+        capabilities: Only after `preview_capabilities`:
+            `{"preview_id": "preview-...", "capabilities": [{"request_id": "channels",
+              "capability_id": "cap-...", "route": "module", "requirement_ids": ["r1"]}],
+              "answers": [{"question_id": "product_language", "kind": "product_language",
+              "value": "en", "description": "The bot speaks English"}]}`.
+            List every previewed request that is not impossible, with the
+            must-requirements it serves, and the user's explicit answers. Leave
+            unset for a brief that relies on no previewed capability.
     """
     try:
         project_uuid = uuid.UUID(project_id)
@@ -362,6 +366,7 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
                 "usage_examples": usage_examples or [],
                 "limitations": limitations or [],
                 "variant_choices": variant_choices or [],
+                **({"capabilities": capabilities} if capabilities is not None else {}),
             }
         )
         first = ProductBriefCreate(
@@ -408,6 +413,8 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
         response = await api.post_raw(
             "product-briefs/", json=creation.model_dump(mode="json"), headers=headers
         )
+        if (refusal := _capability_refusal(response)) is not None:
+            return "No Product Brief was presented and nothing was changed: " + refusal
         if response.status_code == HTTPStatus.CONFLICT:
             # Two presentations raced for the same next revision number. Nothing
             # was opened and nothing was lost; the same call made again wins or
@@ -498,10 +505,64 @@ async def _refuse_settings_that_are_secrets(
     return None
 
 
+#: What the PO does about each capability refusal, in product terms only.
+_CAPABILITY_NEXT_STEP = {
+    CapabilityRefusalCode.PREVIEW_UNKNOWN: (
+        "The preview id is unknown. Call preview_capabilities again."
+    ),
+    CapabilityRefusalCode.PREVIEW_FOREIGN: (
+        "The preview belongs to another project. Call preview_capabilities for this project."
+    ),
+    CapabilityRefusalCode.PREVIEW_STALE: (
+        "The ready capabilities changed since the preview. Call preview_capabilities again, "
+        "re-ask any changed question, and present a corrected brief."
+    ),
+    CapabilityRefusalCode.CAPABILITIES_MISMATCH: (
+        "List exactly the previewed requests that are not impossible, with their routes; "
+        "for another set of capabilities, preview again first."
+    ),
+    CapabilityRefusalCode.IMPOSSIBLE_CAPABILITY: (
+        "A capability the preview marked impossible cannot be in the brief. Tell the user "
+        "it is not possible now and leave it out."
+    ),
+    CapabilityRefusalCode.UNKNOWN_REQUIREMENT: (
+        "Each capability must name must-requirement ids of this brief."
+    ),
+    CapabilityRefusalCode.UNKNOWN_QUESTION: "Answer only the questions the preview asked.",
+    CapabilityRefusalCode.MISSING_ANSWER: (
+        "Ask the user each listed required question explicitly, then present again."
+    ),
+    CapabilityRefusalCode.INVALID_ANSWER: (
+        "The listed answers do not fit the question's choices or form. Ask the user again."
+    ),
+    CapabilityRefusalCode.SETTING_CONFLICT: (
+        "Remove the initial settings that repeat what the listed answers decide."
+    ),
+    CapabilityRefusalCode.PLAN_MISSING: "Present the brief again before confirming it.",
+    CapabilityRefusalCode.PLAN_DRIFT: "Present the brief again before confirming it.",
+}
+
+
+def _capability_refusal(response) -> str | None:
+    """A typed capability refusal from the API, rendered without any technical detail."""
+    if response.status_code not in {HTTPStatus.UNPROCESSABLE_ENTITY, HTTPStatus.CONFLICT}:
+        return None
+    detail = response.json().get("detail")
+    if not isinstance(detail, dict) or "capability_refusal" not in detail:
+        return None
+    refusal = CapabilityRefusal.model_validate(detail["capability_refusal"])
+    return json.dumps(
+        {
+            "status": "capability_refused",
+            **refusal.model_dump(mode="json"),
+            "instruction": _CAPABILITY_NEXT_STEP[refusal.code],
+        },
+        ensure_ascii=False,
+    )
+
+
 @tool
-async def confirm_product_brief(
-    project_id: str, brief_id: str, catalog_packages: list[str], *, config: RunnableConfig
-) -> str:
+async def confirm_product_brief(project_id: str, brief_id: str, *, config: RunnableConfig) -> str:
     """Freeze the presented Product Brief after the user answered yes.
 
     Call this only once the user confirmed the exact message
@@ -513,11 +574,6 @@ async def confirm_product_brief(
     Args:
         project_id: Project ID (UUID).
         brief_id: The brief id `present_product_brief` returned.
-        catalog_packages: Required declaration of exact catalog names this brief
-            relies on. Use [] for an ordinary brief. Declare every package needed
-            for a catalog capability, regardless of how the user worded it.
-            Generic language/timezone keys do not select a package. No declaration
-            is stored in the brief; the turn snapshot validates it before confirmation.
     """
     api = _get_api()
     headers = _user_headers(config)
@@ -546,10 +602,6 @@ async def confirm_product_brief(
             f"carry:\n{outdated}\nPresent it again with corrects_brief_id='{brief.id}', "
             "adding what is missing, before asking the user anything."
         )
-    if refusal := package_settings_refusal(
-        content, await turn_catalog(config), brief.id, catalog_packages
-    ):
-        return refusal.model_dump_json(by_alias=True)
     confirmation = ProductBriefConfirm(
         request_id=_confirmation_request_id(brief.id),
         content=content,
@@ -559,6 +611,11 @@ async def confirm_product_brief(
         json=confirmation.model_dump(mode="json"),
         headers=headers,
     )
+    if (refusal := _capability_refusal(response)) is not None:
+        return (
+            f"Product Brief {brief.id} was not confirmed. {refusal} "
+            f"Present a corrected brief with corrects_brief_id='{brief.id}'."
+        )
     if response.status_code == HTTPStatus.CONFLICT:
         return (
             f"Product Brief {brief.id} was not confirmed: {response.json().get('detail')}. "

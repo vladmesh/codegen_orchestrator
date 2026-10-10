@@ -122,6 +122,11 @@ def message():
             "python_version": "3.12.0",
             "catalog_digest": "b" * 64,
             "tooling_commit": "c" * 40,
+            "catalog": {
+                "repository": "https://github.com/vladmesh/codegen-product-kit.git",
+                "commit": "d" * 40,
+                "catalog_sha256": "e" * 64,
+            },
         },
     )
 
@@ -304,3 +309,48 @@ async def test_timed_out_product_command_refuses_with_its_argv(tmp_path, monkeyp
         )
     assert refused.value.stage == "validate"
     assert str(refused.value) == "timeout: make validate-specs ran over 600 s"
+
+
+@pytest.mark.asyncio
+async def test_every_component_is_added_from_the_payloads_pinned_catalog(tmp_path, monkeypatch):
+    """`kit add` never falls back to the kit's moving default branch."""
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: (2, "stop\n", "") if args[:1] == ["make"] else None
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError):
+        await run_install(
+            message(),
+            SimpleNamespace(workspace_base_path=str(tmp_path)),
+            "https://github.com/owner/notes",
+            "fake-token",
+            AsyncMock(),
+        )
+    adds = [args[1:] for args in calls if args[0].endswith("/.venv/bin/kit") and args[1] == "add"]
+    pinned = [
+        "--catalog-source",
+        "https://github.com/vladmesh/codegen-product-kit.git",
+        "--catalog-ref",
+        "d" * 40,
+    ]
+    assert adds == [["add", "reminders", *pinned], ["add", "textparse", *pinned]]
+
+
+@pytest.mark.asyncio
+async def test_a_payload_without_a_catalog_commit_runs_nothing(tmp_path, monkeypatch):
+    """A payload stored before installs named their catalog is refused before any command."""
+    (tmp_path / "repo-1/.git").mkdir(parents=True)
+    command = AsyncMock()
+    monkeypatch.setattr("src.install._run_cmd", command)
+    unpinned = message()
+    unpinned.install.catalog = None
+    with pytest.raises(InstallExecutionError, match="catalog_unpinned") as refused:
+        await run_install(
+            unpinned,
+            SimpleNamespace(workspace_base_path=str(tmp_path)),
+            "https://github.com/owner/notes",
+            "fake-token",
+            AsyncMock(),
+        )
+    assert refused.value.stage == "preflight"
+    command.assert_not_awaited()

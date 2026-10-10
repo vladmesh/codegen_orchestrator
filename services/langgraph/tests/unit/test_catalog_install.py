@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,6 +11,7 @@ import uuid
 from framework.catalog import parse_catalog
 import pytest
 
+from shared.contracts.dto.catalog_install import KIT_REPOSITORY
 from shared.contracts.dto.project import ProjectDTO
 from src.agents.architect import tools
 from src.catalog_install import InstallRefusal, plan_install_payload
@@ -18,13 +20,20 @@ from src.kit_catalog import installable
 DATA = Path(__file__).parent / "fixtures" / "catalog-install"
 
 
+COMMIT = "c" * 40
+
+
 def snapshot():
-    catalog = installable(parse_catalog((DATA / "catalog.yaml").read_text()), "test")
+    raw = (DATA / "catalog.yaml").read_text()
+    catalog = installable(parse_catalog(raw), "test")
     return replace(
         catalog,
         bindings={"reminders": (DATA / "default.yaml").read_text()},
         manifests={"reminders": (DATA / "package.yaml").read_text()},
-        raw=(DATA / "catalog.yaml").read_text(),
+        raw=raw,
+        repository=KIT_REPOSITORY,
+        commit=COMMIT,
+        catalog_sha256=hashlib.sha256(raw.encode()).hexdigest(),
     )
 
 
@@ -62,12 +71,20 @@ async def test_install_reads_product_modules_from_the_real_api_shape(monkeypatch
                 "manifests": catalog.manifests,
                 "source": catalog.source,
                 "core_version": catalog.core_version,
+                "repository": catalog.repository,
+                "commit": catalog.commit,
+                "catalog_sha256": catalog.catalog_sha256,
             },
         )
         assert result == {"id": "task-install"}
         body = api.create_task.call_args.args[0]
         assert body["type"] == "install" and body["repository_id"] == "repo-notes"
         assert body["install"]["package"]["version"] == "0.5.0"
+        assert body["install"]["catalog"] == {
+            "repository": KIT_REPOSITORY,
+            "commit": COMMIT,
+            "catalog_sha256": catalog.catalog_sha256,
+        }
     finally:
         tools.reset_task_chain()
 
@@ -91,6 +108,14 @@ def test_closes_reminders_library_and_default_binding_as_one_payload():
 def test_refuses_unknown_or_incompatible_before_creating_task(name, python, reason):
     with pytest.raises(InstallRefusal, match=reason):
         plan_install_payload(snapshot(), name, python)
+
+
+@pytest.mark.parametrize("unpinned", [{"commit": None}, {"repository": None}])
+def test_a_catalog_read_at_a_moving_ref_installs_nothing(unpinned):
+    """`kit add` would follow the ref; only a full commit names what is installed."""
+    floating = replace(snapshot(), **unpinned)
+    with pytest.raises(InstallRefusal, match="catalog_unpinned"):
+        plan_install_payload(floating, "reminders", "3.12.0")
 
 
 def test_missing_required_binding_resource_is_a_named_refusal():

@@ -83,7 +83,7 @@ async def test_calendar_with_accepted_workaround_presents_and_confirms():
     assert WORKAROUND["chosen"] in result
     assert api.briefs[BRIEF_ID]["content"]["variant_choices"] == [WORKAROUND]
     await confirm_product_brief.ainvoke(
-        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []}, config=_config()
+        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
     )
     assert api.briefs[BRIEF_ID]["confirmed_at"] is not None
 
@@ -107,7 +107,7 @@ async def test_stored_conflicting_brief_cannot_be_confirmed_or_presented(confirm
     )
     _install(api, AsyncMock())
     result = await confirm_product_brief.ainvoke(
-        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID, "catalog_packages": []}, config=_config()
+        {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
     )
     assert "oauth_web_redirect" in result and "not possible now" in result
     result = await _present()

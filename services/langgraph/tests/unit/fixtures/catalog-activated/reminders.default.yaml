@@ -1,0 +1,65 @@
+# Declarative data for the later kit bind generator. No handlers are shipped here.
+binding_version: 1
+package: reminders
+timezone: {key: timezone, scope: product, required: true, format: x-iana-tz}
+commands:
+  - kind: parsed_create
+    command: remind
+    help: 'Schedule a reminder: /remind Buy Milk in 5 minutes'
+    action: reminders.create
+    parse: {function: textparse.when, text: $text, lang: en, now: $clock, tz: $timezone}
+    args: {text: $parsed.rest, remind_at: $parsed.at}
+    nonempty_text: true
+    on_invalid_text: Please enter reminder text.
+    reply: &scheduled
+      parts:
+        - 'Scheduled for '
+        - {source: $result.remind_at, format: month_word}
+        - ': '
+        - {source: $result.text}
+    on_empty:
+      text: 'Choose a time for your reminder:'
+      context: original_text
+      presets:
+        - label: In 5 minutes
+          time: {kind: offset, seconds: 300}
+          action: reminders.create
+          args: {text: $text, remind_at: $preset.at}
+          reply: *scheduled
+        - label: In 1 hour
+          time: {kind: offset, seconds: 3600}
+          action: reminders.create
+          args: {text: $text, remind_at: $preset.at}
+          reply: *scheduled
+        - label: Tomorrow at 09:00
+          time: {kind: wall_time, days: 1, time: '09:00'}
+          action: reminders.create
+          args: {text: $text, remind_at: $preset.at}
+          reply: *scheduled
+  - kind: list
+    command: reminders
+    help: List your scheduled reminders and cancel one.
+    action: reminders.list
+    args: {}
+    filter: {field: state, equals: scheduled}
+    reply_each:
+      parts:
+        - {source: $item.remind_at, format: month_word}
+        - ': '
+        - {source: $item.text}
+    on_none: You have no scheduled reminders.
+    buttons:
+      - label: Cancel
+        action: reminders.cancel
+        args: {reminder_id: $item.id}
+        reply:
+          parts:
+            - 'Cancelled: '
+            - {source: $result.text}
+events:
+  - event: reminders.due
+    to: $event.user_ref
+    reply:
+      parts:
+        - 'Reminder: '
+        - {source: $event.text}

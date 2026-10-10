@@ -39,6 +39,8 @@ def _brief(brief_id: str, settings: list[InitialSetting]) -> SimpleNamespace:
         planning_attempt_id=None,
         planning_attempt_active=False,
         planning_attempt_heartbeat_at=None,
+        capability_preview_id=None,
+        capability_plan=None,
     )
 
 

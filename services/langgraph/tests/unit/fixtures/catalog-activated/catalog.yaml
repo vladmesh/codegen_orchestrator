@@ -1,0 +1,371 @@
+# Package catalog: every kit package and its released versions.
+#
+# `kit add <name>` reads this file live from the kit repository's default branch, so a new
+# package release needs no kit core tag. Format and release procedure: docs/CONTRACTS.md,
+# "Package catalog and releases". A release PR bumps the package version and pins the release in
+# packages/pending-releases.yaml; the annotated tag `packages/<name>/v<version>` is published at
+# the merge commit by a separate PO operation, and only then does a following change append the
+# entry under `versions`. Every entry here names a tag that exists.
+format_version: 1
+libraries:
+  - name: textparse
+    distribution: codegen-kit-textparse
+    path: packages/codegen-kit-textparse
+    module: codegen_kit_textparse
+    summary: Three deterministic English reminder-time forms with an explicit clock and zone.
+    functions:
+      - name: when
+        input:
+          type: object
+          properties:
+            text: {type: string}
+            lang: {type: string, const: en}
+            now: {type: string, format: date-time}
+            tz: {type: string, format: x-iana-tz}
+          required: [text, lang, now, tz]
+          additionalProperties: false
+        output:
+          type: [object, 'null']
+          properties:
+            at: {type: string, format: date-time}
+            rest: {type: string}
+          required: [at, rest]
+          additionalProperties: false
+        value: at
+    versions:
+      - {version: 0.1.0, tag: packages/textparse/v0.1.0, requires_python: '>=3.11'}
+extensions: []
+packages:
+  - name: reminders
+    distribution: codegen-kit-reminders
+    path: packages/codegen-kit-reminders
+    summary: One-time text reminders that a product user schedules, lists and cancels.
+    capabilities:
+      - remind me at a time
+      - schedule a one-time text reminder
+      - list my upcoming reminders
+      - cancel a reminder
+      - notify the product when a reminder is due
+    recommended_with:
+      - {library: textparse, why: Parses an English time phrase for a one-time reminder.}
+    settings:
+      - name: reminder_owner_ref
+        summary: Owner of the seeded first-deploy reminder, in the canonical caller form telegram:<id>.
+    environment:
+      - name: REDIS_URL
+        required: true
+        summary: Redis broker that delivers job_fired and publishes reminders.due.
+    actions:
+    - name: create
+      summary: Schedule a one-time reminder for the verified caller.
+      operation:
+        method: POST
+        path: ''
+      input:
+        properties:
+          text:
+            type: string
+            minLength: 1
+          remind_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+        type: object
+        required:
+        - remind_at
+        - text
+      output:
+        properties:
+          id:
+            type: string
+            format: uuid
+          user_ref:
+            type: string
+          text:
+            type: string
+          remind_at:
+            type: string
+            format: date-time
+          state:
+            type: string
+            enum:
+            - scheduled
+            - cancelled
+            - due
+            - emitted
+          created_at:
+            type: string
+            format: date-time
+          cancelled_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          due_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          emitted_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        type: object
+        required:
+        - created_at
+        - id
+        - remind_at
+        - state
+        - text
+        - user_ref
+    - name: list
+      summary: List reminders owned by the verified caller.
+      operation:
+        method: GET
+        path: ''
+      input:
+        type: object
+        properties: {}
+        additionalProperties: false
+      output:
+        items:
+          properties:
+            id:
+              type: string
+              format: uuid
+            user_ref:
+              type: string
+            text:
+              type: string
+            remind_at:
+              type: string
+              format: date-time
+            state:
+              type: string
+              enum:
+              - scheduled
+              - cancelled
+              - due
+              - emitted
+            created_at:
+              type: string
+              format: date-time
+            cancelled_at:
+              anyOf:
+              - type: string
+                format: date-time
+              - type: 'null'
+            due_at:
+              anyOf:
+              - type: string
+                format: date-time
+              - type: 'null'
+            emitted_at:
+              anyOf:
+              - type: string
+                format: date-time
+              - type: 'null'
+          type: object
+          required:
+          - created_at
+          - id
+          - remind_at
+          - state
+          - text
+          - user_ref
+        type: array
+    - name: cancel
+      summary: Cancel a scheduled reminder owned by the verified caller.
+      operation:
+        method: DELETE
+        path: /{reminder_id}
+      input:
+        type: object
+        properties:
+          reminder_id:
+            type: string
+            format: uuid
+        additionalProperties: false
+        required:
+        - reminder_id
+      output:
+        properties:
+          id:
+            type: string
+            format: uuid
+          user_ref:
+            type: string
+          text:
+            type: string
+          remind_at:
+            type: string
+            format: date-time
+          state:
+            type: string
+            enum:
+            - scheduled
+            - cancelled
+            - due
+            - emitted
+          created_at:
+            type: string
+            format: date-time
+          cancelled_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          due_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          emitted_at:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        type: object
+        required:
+        - created_at
+        - id
+        - remind_at
+        - state
+        - text
+        - user_ref
+    default_binding: codegen_kit_reminders:bindings/default.yaml
+    versions:
+      - version: 0.3.0
+        tag: packages/reminders/v0.3.0
+        requires_core: ">=2,<3"
+      - version: 0.4.0
+        tag: packages/reminders/v0.4.0
+        requires_core: ">=2.1,<3"
+      - version: 0.5.0
+        tag: packages/reminders/v0.5.0
+        requires_core: ">=2.2,<3"
+  - name: tg-channels
+    distribution: codegen-kit-tg-channels
+    path: packages/codegen-kit-tg-channels
+    summary: Public Telegram channel lists, digests and timed new-post delivery in RU
+      and EN.
+    capabilities:
+    - читать публичные Telegram-каналы
+    - добавить канал по имени и проверить доступность
+    - дайджест каналов Кипра и новые публикации по таймеру
+    - read public Telegram channels
+    - add, list and remove public channels
+    - deliver new channel posts on a timer
+    - show a channel digest with dates and Telegram links
+    settings:
+    - name: starting_channels
+      summary: Starting list copied once per user; product scope, populated through
+        setting seeds.
+    environment:
+    - name: REDIS_URL
+      required: true
+      summary: Redis timer and recipient event transport.
+    - name: PLATFORM_KEY
+      required: true
+      summary: Declared platform credential.
+    - name: PLATFORM_BASE_URL
+      required: true
+      summary: Declared platform API base URL.
+    actions:
+    - name: add
+      summary: Resolve and add a public channel for the verified caller.
+      operation:
+        method: POST
+        path: ''
+      input:
+        type: object
+        properties:
+          text:
+            type: string
+            minLength: 1
+        required:
+        - text
+        additionalProperties: false
+      output: &id001
+        type: object
+        properties:
+          id:
+            type: string
+          channel:
+            type: string
+        required:
+        - id
+        - channel
+      errors:
+      - invalid_username
+      - pending
+      - not_found
+      - not_a_channel
+      - no_preview
+      - try_later
+      - not_configured
+    - name: list
+      summary: List the verified caller's channels.
+      operation:
+        method: GET
+        path: ''
+      input:
+        type: object
+        properties: {}
+        additionalProperties: false
+      output:
+        type: array
+        items: *id001
+    - name: remove
+      summary: Remove a channel only from the verified caller's list.
+      operation:
+        method: DELETE
+        path: /{id}
+      input:
+        type: object
+        properties:
+          id:
+            type: string
+        required:
+        - id
+        additionalProperties: false
+      output: *id001
+    - name: digest
+      summary: Latest public posts from the verified caller's channels.
+      operation:
+        method: GET
+        path: /digest
+      input:
+        type: object
+        properties: {}
+        additionalProperties: false
+      output:
+        type: array
+        items:
+          type: object
+          properties:
+            channel:
+              type: string
+            date:
+              type: string
+            text:
+              type: string
+            url:
+              type: string
+          required:
+          - channel
+          - date
+          - text
+          - url
+    default_binding: codegen_kit_tg_channels:bindings/default.yaml
+    versions:
+    - version: 0.1.0
+      tag: packages/tg-channels/v0.1.0
+      requires_core: '>=2.4,<3'
+    - version: 0.1.1
+      tag: packages/tg-channels/v0.1.1
+      requires_core: '>=2.4,<3'
+    - version: 0.1.2
+      tag: packages/tg-channels/v0.1.2
+      requires_core: '>=2.4,<3'

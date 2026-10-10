@@ -21,6 +21,7 @@ from shared.contracts.env_usage import (
     extract_env_references,
     main,
 )
+from shared.contracts.template import recorded_template_commit_matches
 
 REPO_ROOT = Path(__file__).parents[3]
 FIXTURES_DIR = Path(__file__).parents[1] / "fixtures"
@@ -344,9 +345,9 @@ def test_template_fixture_tracks_the_pinned_template_ref():
     assert not stale, f"fixtures left behind for unpinned template revisions: {stale}"
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    # The pin is the kit's release tag, and the tag is reachable in Copier's clone, so
-    # what Copier records is the pinned ref itself.
-    assert answers["_commit"] == pinned_template_ref()
+    # The pin is an immutable kit commit; Copier records it, or its `git describe` form
+    # when a tag is reachable from it.
+    assert recorded_template_commit_matches(answers["_commit"], pinned_template_ref())
 
 
 def test_template_fixture_pins_verified_uv_bootstrap():
@@ -382,8 +383,8 @@ def test_template_fixture_content_matches_its_pinned_render():
     fixture = template_fixture()
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
 
+    assert recorded_template_commit_matches(answers.pop("_commit"), TEMPLATE_PIN.ref)
     assert answers == {
-        "_commit": TEMPLATE_PIN.ref,
         "_src_path": TEMPLATE_PIN.source,
         "author_email": "dev@example.com",
         "author_name": "Developer",
@@ -399,7 +400,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     assert not (fixture / "TASK.md").exists()
     assert (
         fixture_tree_digest(fixture)
-        == "7d3d624480a87ab3ffdad6518ba2a9526cd7af278362ede0117e3a8e71204abd"
+        == "20cfda14d96351759e3181859592d1430d7fbe545654340ac5e88974686c57e2"
     )
 
 
@@ -410,7 +411,7 @@ def test_template_fixture_contains_the_released_core_runtime_boundaries():
     migrations = (fixture / "codegen_kit/migrations.py").read_text()
     settings = (fixture / "services/backend/src/controllers/settings.py").read_text()
 
-    assert 'CORE_VERSION = "2.4.0"' in packages
+    assert 'CORE_VERSION = "2.5.0"' in packages
     assert "await package.runtime.startup(application)" in packages
     assert "class SettingSeedPackage(Protocol):" in packages
     assert "def owned_package_database(caller_path: Path)" in database
@@ -453,6 +454,20 @@ def test_template_fixture_has_known_contract_gaps(tmp_path: Path):
     assert undeclared == set()
     assert result.warnings == (
         "required environment contract key BACKEND_API_URL was not observed",
+    )
+
+
+def test_a_shell_loop_variable_is_not_an_environment_key(tmp_path: Path):
+    """`for env in "$@"` binds env in the script, as `prepare-env.sh` of the kit render does."""
+    (tmp_path / "prepare.sh").write_text(
+        '#!/bin/sh\nfor env in "$@"; do\n  echo "$env $MISSING_KEY"\ndone\n'
+    )
+    write_fragment(tmp_path, {})
+
+    result = check_env_contract_usage(tmp_path)
+
+    assert result.warnings == (
+        "undeclared environment key MISSING_KEY used at prepare.sh:3 (shell)",
     )
 
 

@@ -686,6 +686,8 @@ def test_the_tracked_set_covers_the_images_that_bake_shared_and_are_reused():
         "codegen-orchestrator/telegram_bot:test",
         "codegen-orchestrator/infra-service:test",
         "codegen-orchestrator/integration-test-runner:test",
+        # The runner proof's orchestrator API (tests/runner/compose.orchestrator.yml).
+        "codegen-orchestrator/api:runner-proof",
     }
 
 

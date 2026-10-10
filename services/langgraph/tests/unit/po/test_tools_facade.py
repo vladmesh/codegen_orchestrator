@@ -5,7 +5,14 @@ That callers import a tool from its owner module is a lint rule (ruff TID251, ru
 
 
 def test_get_all_tools_preserves_tool_identity_and_order() -> None:
-    from src.agents.po import tools, tools_briefs, tools_notices, tools_projects, tools_stories
+    from src.agents.po import (
+        tools,
+        tools_briefs,
+        tools_capabilities,
+        tools_notices,
+        tools_projects,
+        tools_stories,
+    )
 
     assert tools.get_all_tools() == [
         tools_projects.create_project,
@@ -18,6 +25,7 @@ def test_get_all_tools_preserves_tool_identity_and_order() -> None:
         tools_projects.transfer_project_ownership,
         tools_projects.teardown_project,
         tools_projects.validate_telegram_token,
+        tools_capabilities.preview_capabilities,
         tools_briefs.present_product_brief,
         tools_briefs.confirm_product_brief,
         tools_briefs.show_full_brief,

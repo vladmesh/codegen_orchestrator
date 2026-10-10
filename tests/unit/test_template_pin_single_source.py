@@ -7,7 +7,9 @@ that fixture — now read `scripts.template_pin`, and these tests hold that shap
 literal in the tree, and a changed definition arriving at every derived site.
 """
 
+from importlib.metadata import distribution
 import importlib.util
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -18,6 +20,7 @@ import pytest
 import yaml
 
 from scripts import template_pin
+from shared.contracts.template import recorded_template_commit_matches
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIVE_DIR = REPO_ROOT / "tests" / "live"
@@ -32,6 +35,15 @@ LITERAL_ALLOWED = {
     "docs/contracts/kit-template-and-qa.md",
     "docs/CHANGELOG.md",
     "docs/evidence/catalog-install-fixture.json",
+    # The pin is an immutable kit commit, and the same commit is also the kit tooling the
+    # services install and the activated catalog snapshot. These files carry that commit in
+    # those other roles, which no template-pin reader derives from: the uv sources and the
+    # LangGraph requirement, the activation record and the capability manifest's provenance.
+    "pyproject.toml",
+    "services/langgraph/pyproject.toml",
+    "shared/catalog_activation.yaml",
+    "docs/platform_capabilities.yaml",
+    "docs/PLATFORM_CAPABILITIES.md",
 }
 FIXTURE_TREE = "shared/tests/fixtures/"
 # Dependency manifests are written by a package resolver and hold third-party versions.
@@ -89,9 +101,13 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
     assert carriers == [], f"the template ref is repeated outside its definition: {carriers}"
 
 
-def test_production_pin_is_the_immutable_kit_release() -> None:
+def test_production_pin_is_the_immutable_kit_commit_of_the_installed_tooling() -> None:
+    """The scaffold pin is a full commit, the same one the services' kit tooling resolves."""
+    installed = json.loads(distribution("codegen-kit-tooling").read_text("direct_url.json"))
+
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 10, 1)
+    assert re.fullmatch(r"[0-9a-f]{40}", template_pin.TEMPLATE_PIN.ref)
+    assert installed["vcs_info"]["commit_id"] == template_pin.TEMPLATE_PIN.ref
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -100,9 +116,10 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    corrected_commit = "f7de8f96b18f79b94dcd0546905771674cf11cfa"
+    # Rendered at a commit, the template resolves its tooling at that same commit.
+    corrected_commit = template_pin.TEMPLATE_PIN.ref
 
-    assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
+    assert recorded_template_commit_matches(answers["_commit"], template_pin.TEMPLATE_PIN.ref)
     assert answers["_src_path"] == template_pin.TEMPLATE_PIN.source
     assert answers["modules"] == "backend,tg_bot"
     assert f"codegen-product-kit.git@{corrected_commit}" in project
@@ -117,12 +134,15 @@ def test_pinned_fixture_syncs_both_locked_environments_before_generation() -> No
     workflow = (
         template_pin.TEMPLATE_PIN.fixture_path() / ".github" / "workflows" / "ci.yml"
     ).read_text()
-    root_sync = workflow.index("uv sync --frozen")
-    backend_sync = workflow.index("uv sync --project services/backend --frozen", root_sync + 1)
-    generation = workflow.index("make generate-from-spec", backend_sync + 1)
+    prepare = (template_pin.TEMPLATE_PIN.fixture_path() / "scripts" / "prepare-env.sh").read_text()
+    # The image job prepares the root tooling and both service environments, each a frozen
+    # sync from its own lock, before it generates and builds.
+    sync = workflow.index("sh scripts/prepare-env.sh root backend tg_bot")
+    generation = workflow.index("make generate-from-spec", sync + 1)
     image_build = workflow.index("docker/build-push-action", generation + 1)
 
-    assert root_sync < backend_sync < generation < image_build
+    assert sync < generation < image_build
+    assert 'flags="--frozen"' in prepare and "uv sync $flags" in prepare
 
 
 def test_released_render_retains_bigint_migration_orm_and_token_logging() -> None:

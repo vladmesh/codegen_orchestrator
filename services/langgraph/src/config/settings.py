@@ -99,14 +99,6 @@ class Settings(BaseSettings):
     architect_llm_base_url: str | None = None
     architect_llm_api_key: str | None = None
 
-    # Where the Architect reads the kit's live package catalog (src/kit_catalog.py is the
-    # only reader): the raw-file base of the kit repository and the ref on it. `HEAD` is
-    # the repository's default branch, the ref `kit add` itself reads the catalog at
-    # (`framework.package_source.DEFAULT_CATALOG_REF`), so a package release becomes
-    # plannable with no orchestrator change.
-    kit_catalog_source: str = "https://raw.githubusercontent.com/vladmesh/codegen-product-kit"
-    kit_catalog_ref: str = "HEAD"
-
     # Who performs exploratory QA. Codex on the management host's isolated
     # subscription session by default; Claude Code remains an explicit override. The
     # type is the narrow one on purpose: `factory` would run QA on a provider

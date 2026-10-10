@@ -2,6 +2,7 @@
 
 import pytest
 
+from src.catalog_product_settings import render_po_capabilities
 from src.prompts.platform_capabilities import (
     ARCHITECT_PLATFORM_CAPABILITIES_PROMPT,
     PLATFORM_CAPABILITIES_PROMPT,
@@ -26,13 +27,19 @@ def test_explicit_single_language_overrides_the_bilingual_default():
     assert "use that language for the bot and its product setting" in prompt
 
 
-def test_new_product_catalog_install_is_two_ordered_stories():
+def test_a_new_product_previews_a_ready_capability_before_its_first_brief(bundled_kit_catalog):
+    """A capability-backed first brief: the preview comes before presenting, in one story."""
     prompt = " ".join(SYSTEM_PROMPT.split())
-    assert "catalog module that cannot be installed into a draft product" in prompt
-    assert "plan two stories" in prompt
-    assert "first the base bot, then a second story to add the module" in prompt
-    assert "Tell the user this sequence before the first brief" in prompt
-    assert "confirm the module's own brief only after the base bot is ready" in prompt
+    block = " ".join(render_po_capabilities(bundled_kit_catalog).split())
+
+    assert "plan two stories" not in prompt
+    assert "Unless a capability preview asks the product language" in prompt
+    assert (
+        "call `preview_capabilities(project_id, requests)` after `create_project` and before "
+        "`present_product_brief`" in block
+    )
+    assert "Product language is the user's explicit choice: never infer it" in block
+    assert "Never mention packages, modules by name, versions or settings keys" in block
 
 
 @pytest.mark.parametrize(

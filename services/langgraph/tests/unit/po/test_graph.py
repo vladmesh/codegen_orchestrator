@@ -216,7 +216,7 @@ class TestTheSnapshotIsNotStored:
     async def test_a_system_event_turn_saves_the_event_but_not_its_snapshot(
         self, po, client, bundled_kit_catalog
     ):
-        from src.catalog_product_settings import render_po_packages
+        from src.catalog_product_settings import render_po_capabilities
 
         graph, model = po
         event = POSystemEvent(
@@ -251,6 +251,6 @@ class TestTheSnapshotIsNotStored:
         )
         user_turn_input = model.inputs[-1]
         assert user_turn_input[0] == SystemMessage(
-            content=f"{MODEL_PROMPT}\n\n{render_po_packages(bundled_kit_catalog)}"
+            content=f"{MODEL_PROMPT}\n\n{render_po_capabilities(bundled_kit_catalog)}"
         )
         assert not any(SNAPSHOT_HEADING in str(message.content) for message in user_turn_input)

@@ -55,6 +55,47 @@ class DefaultBinding(Strict):
     functions: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_]*$")]]
 
 
+#: The one kit repository the catalog, its package tags and the kit tooling come from.
+KIT_REPOSITORY = "https://github.com/vladmesh/codegen-product-kit.git"
+#: Its raw-file base, from which the Architect reads catalog, bindings and manifests.
+KIT_RAW_SOURCE = "https://raw.githubusercontent.com/vladmesh/codegen-product-kit"
+
+
+class CatalogSource(Strict):
+    """The exact catalog an install resolves and installs from: never a moving branch.
+
+    `kit add`, the fixed install probe and the planner all read the catalog at `commit`
+    of `repository`; `catalog_sha256` is the raw `packages/catalog.yaml` they must find.
+    """
+
+    repository: Literal["https://github.com/vladmesh/codegen-product-kit.git"]
+    commit: SHA
+    catalog_sha256: Digest
+
+
+class CatalogActivation(Strict):
+    """The one activated, verified kit catalog snapshot the Architect plans from.
+
+    Written down once (`shared/catalog_activation.yaml`) and changed only by a reviewed
+    orchestrator change; no reader falls back to a live branch. `catalog_digest` is the
+    semantic digest of the parsed catalog (`framework.catalog.parse_catalog`), and
+    `core_version`/`tooling_commit` the kit host this snapshot was verified against.
+    """
+
+    repository: Literal["https://github.com/vladmesh/codegen-product-kit.git"]
+    raw_source: Literal["https://raw.githubusercontent.com/vladmesh/codegen-product-kit"]
+    commit: SHA
+    catalog_sha256: Digest
+    catalog_digest: Digest
+    core_version: Version
+    tooling_commit: SHA
+
+    def source(self) -> CatalogSource:
+        return CatalogSource(
+            repository=self.repository, commit=self.commit, catalog_sha256=self.catalog_sha256
+        )
+
+
 class CatalogInstall(Strict):
     package: InstallComponent
     libraries: list[InstallComponent] = Field(max_length=16)
@@ -63,6 +104,9 @@ class CatalogInstall(Strict):
     python_version: Version
     catalog_digest: Digest
     tooling_commit: SHA
+    #: Where `kit add` and the probe read the catalog. Every payload a planner writes now
+    #: names it; a stored payload from before it is read, and refused at admission.
+    catalog: CatalogSource | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def closure(self):

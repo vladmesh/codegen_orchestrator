@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 22, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 24, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -33,7 +33,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ## Technical detail
 
-Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `f7de8f96b18f79b94dcd0546905771674cf11cfa`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
+Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `7b547c69e508d8e49d2cbab54efcab1df7fc2270`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
 
 Code it was read from:
 
@@ -58,7 +58,7 @@ Code it was read from:
 
 #### Add a catalog capability
 
-How: plan_install selects package/libraries/default binding in one INSTALL on clean owned core-2.4.0 backend,tg_bot. Scaffolder preserves/validates files; hands exact head to PR/CI/deploy without engineering. Binding v1/v2 uses confirmed typed timezone/language settings.
+How: One INSTALL of a stored brief plan or plan_install closure, on clean owned core-2.5.0 backend,tg_bot. Scaffolder runs kit add at the payload's catalog commit, validates and hands the exact head to PR/CI/deploy. Glue needs a task after the INSTALL.
 
 #### Plain HTTP self links
 
@@ -70,7 +70,7 @@ How: Kit tg_bot uses python-telegram-bot 21.4 run_polling. Every product include
 
 #### Read public Telegram channels
 
-How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module selected by live catalog capabilities. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Platform uses its egress proxy. Plan it now; deployment handles key issuance; no user key is needed. Auth admin required; unavailable auth retries. Only stand can override declared HTTPS URLs with its fixture ingress.
+How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module of a stored brief plan; outside the module rollout allowlist it is impossible. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Platform uses its egress proxy. Plan it now; deployment handles key issuance; no user key is needed. Auth admin required; unavailable auth retries. Only stand can override declared HTTPS URLs with its fixture ingress.
 
 #### The bot remembers data
 
@@ -128,7 +128,7 @@ Why: Postgres/Redis host ports are allocated but unpublished; compose/firewall e
 
 Why: Nothing snapshots or copies the `db_data` volume; it lives only on the product's server.
 
-### Kit at f7de8f96b18f
+### Kit at 7b547c69e508
 
 Modules:
 
@@ -143,7 +143,7 @@ Core contracts every backend carries:
 - caller identity v1: Package routes serve only the caller verified by `X-Identity-Capability` (`USER_IDENTITY_CAPABILITY`), `X-User-Channel`, `X-User-External-Id`; `user_ref` is `<channel>:<external_id>`.
 - events v1: Durable product events on Redis Streams, each handled once per consuming service.
 
-Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings; it is read live from the kit's default branch at planning time and the planning instructions list admitted packages, libraries, recommendations and default bindings; explicit selection uses plan_install and scaffolder mode=install; a new package release needs no orchestrator change.
+Packages, from the catalog: the kit's `packages/catalog.yaml` lists each package's name, capabilities and settings; it is read only from the one activated immutable catalog snapshot, never from a live branch; a confirmed brief stores the selected closure and settings; explicit selection uses plan_install and scaffolder mode=install.
 
 ### Deploy targets
 

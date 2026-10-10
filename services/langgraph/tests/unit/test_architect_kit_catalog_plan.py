@@ -190,7 +190,7 @@ packages:
 
     assert result["status"] == "success", result
     briefing = seen[0][-1].content
-    section = briefing.split("Kit package catalog (read live from", 1)[1]
+    section = briefing.split("Kit package catalog (read from the activated snapshot", 1)[1]
     assert "- fictional-bulletins (installs 1.0.0)" in section
     assert (
         "capabilities: read public Telegram channels; читать публичные Telegram каналы" in section
@@ -213,7 +213,10 @@ async def test_a_reminders_brief_installs_the_catalog_package():
     assert_plan_installs_reminders_from_the_catalog(api)
     # The planner was shown the catalog the double read, package by package.
     briefing = seen[0][-1].content
-    assert f"Kit package catalog (read live from {BUNDLED_KIT_CATALOG_SOURCE}" in briefing
+    assert (
+        f"Kit package catalog (read from the activated snapshot {BUNDLED_KIT_CATALOG_SOURCE}"
+        in briefing
+    )
     assert "- reminders (installs 0.5.0): One-time text reminders" in briefing
     assert "  capabilities: remind me at a time; schedule a one-time text reminder" in briefing
     assert "  settings it asks for: reminder_owner_ref: Owner of the seeded" in briefing
