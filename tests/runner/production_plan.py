@@ -5,13 +5,19 @@ orchestrator's environment (`PYTHONPATH=services/langgraph:.`), against the orch
 API built from this checkout and its database (`tests/runner/compose.orchestrator.yml`)
 and the real activated catalog snapshot. Nothing here is a fake of the orchestrator:
 
-1. the PO's `preview_capabilities` tool runs the Architect's resolver over the activated
+1. the PO's `create_project` tool opens a new order: a draft backend,tg_bot project and
+   its pending repository, exactly as a first conversation does; nothing is scaffolded;
+2. the PO's `preview_capabilities` tool runs the Architect's resolver over the activated
    snapshot the production reader verifies, and the platform stores the preview;
-2. the PO's `present_product_brief` and `confirm_product_brief` tools open and freeze a
-   brief with the user's explicit answers, and the API derives and stores its plan;
-3. the Architect consumer's planning body plans the confirmed brief's first attempt from
-   that stored plan: INSTALL tasks through the API, coverage and the one admission;
-4. the INSTALL tasks are read back from the API, and their typed payloads are what the
+3. the PO's `present_product_brief` and `confirm_product_brief` tools open and freeze a
+   brief with the user's explicit answers — the language and a nonempty list of initial
+   channels — and the API derives and stores its plan;
+4. the Architect consumer's planning body plans the confirmed brief's first attempt from
+   that stored plan on the draft: INSTALL tasks through the API, coverage and the one
+   admission, with no model and no in-process wait for the scaffold;
+5. install admission refuses the first INSTALL while the project is a draft
+   (`workspace_not_ready`): the durable wait the scaffold ends;
+6. the INSTALL tasks are read back from the API, and their typed payloads are what the
    kit's runner installs, so the closure installed is the one the database persisted.
 
 The output JSON names every identity on that path for the runner's evidence.
@@ -34,6 +40,7 @@ from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.queues.architect import ArchitectMessage
 from src.agents.po.tools_briefs import confirm_product_brief, present_product_brief
 from src.agents.po.tools_capabilities import MODULE_ROLLOUT_CONFIG_KEY, preview_capabilities
+from src.agents.po.tools_projects import create_project
 from src.agents.po.tools_shared import init_po_clients
 from src.capability_preview import capability_id
 from src.catalog_product_settings import PO_CATALOG_CONFIG_KEY
@@ -43,8 +50,11 @@ from src.consumers.architect import _plan
 from src.kit_catalog import KitCatalog, get_kit_catalog_reader
 from src.llm import channel_usage
 
-#: The explicit answers a user gives to each kind of required question.
-ANSWERS = {"product_language": "en", "product_timezone": "UTC"}
+#: The explicit answers a user gives to each kind of required question. The language is the
+#: one the harness's own scenario does not start from, so the bot's first reply proves it.
+ANSWERS = {"product_language": "ru", "product_timezone": "UTC"}
+#: The capability whose initial channels the user lists.
+CHANNELS_PACKAGE = "tg-channels"
 
 
 class ProductionPathError(RuntimeError):
@@ -56,34 +66,33 @@ def _check(condition: bool, what: str) -> None:
         raise ProductionPathError(what)
 
 
-async def _setup(api: InternalAPIClient) -> tuple[int, str]:
+async def _setup(api: InternalAPIClient) -> tuple[int, str, dict]:
+    """A new owner's first order: the PO creates a draft project and its pending repository."""
     telegram_id = 424242000 + uuid.uuid4().int % 1000
     user = await api.post_raw(
         "users/", json={"telegram_id": telegram_id, "username": f"runner{telegram_id}"}
     )
     _check(user.status_code == 201, f"user: {user.status_code} {user.text}")
-    project_id = str(uuid.uuid4())
-    project = await api.post_raw(
-        "projects/",
-        headers={"X-Telegram-ID": str(telegram_id)},
-        json={
-            "id": project_id,
+    created = await create_project.ainvoke(
+        {
             "title": "Runner proof",
-            "initiating_run_id": f"runner-{uuid.uuid4().hex}",
-            "status": "active",
-            "config": {"workspace_ready": True, "modules": ["backend", "tg_bot"]},
+            "modules": "backend,tg_bot",
+            "description": "A bot with the ready capabilities the runner proves.",
         },
+        config={"configurable": {"telegram_chat_id": str(telegram_id)}},
     )
-    _check(project.status_code == 201, f"project: {project.status_code} {project.text}")
-    repository = await api.post_raw(
-        "repositories/",
-        json={
-            "project_id": project_id,
-            "name": "runner-product",
-            "git_url": "https://github.com/ci/runner-product",
-        },
+    found = re.search(r"ID: ([0-9a-f-]{36})", created)
+    _check(found is not None, f"no project created: {created}")
+    project_id = found.group(1)
+    project = (await api.get_raw(f"projects/{project_id}")).json()
+    _check(
+        project["status"] == "draft" and not project["config"].get("workspace_ready"),
+        f"the new order is not a draft: {project}",
     )
-    _check(repository.status_code == 201, f"repository: {repository.text}")
+    repositories = (await api.get_raw("repositories/", params={"project_id": project_id})).json()
+    _check(len(repositories) == 1, f"repositories: {repositories}")
+    repository = repositories[0]
+    _check(repository["git_url"].startswith("pending://"), f"repository: {repository}")
     # The operator's review step: this project is enabled for module-backed routes.
     rollout = await api.post_raw(
         "system-configs/",
@@ -94,14 +103,43 @@ async def _setup(api: InternalAPIClient) -> tuple[int, str]:
         },
     )
     _check(rollout.status_code in {200, 201}, f"rollout: {rollout.text}")
-    return telegram_id, project_id
+    return telegram_id, project_id, repository
 
 
-async def run(packages: list[str]) -> dict:  # noqa: PLR0915 - one ordered production path
+async def _confirmation_replay(api: InternalAPIClient, project_id: str, brief_id: str, config):
+    """Confirming the same revision again, through the PO tool and the API, changes nothing."""
+    before = (await api.get_raw(f"product-briefs/{brief_id}")).json()
+    tool = await confirm_product_brief.ainvoke(
+        {"project_id": project_id, "brief_id": brief_id}, config=config
+    )
+    _check("already confirmed" in tool, f"tool replay: {tool}")
+    again = await api.post_raw(
+        f"product-briefs/{brief_id}/confirm",
+        json={"request_id": f"po-brief-confirm:{brief_id}", "content": before["content"]},
+    )
+    _check(again.status_code == 200, f"API replay: {again.status_code} {again.text}")
+    after = again.json()
+    for key in ("id", "revision", "confirmed_at", "content"):
+        _check(after[key] == before[key], f"API replay changed {key}")
+    return {"brief_id": brief_id, "revision": after["revision"], "tool": tool[:200]}
+
+
+def _answer(question: dict, channels: list[str], request_package: dict[str, str]) -> object:
+    """The user's explicit answer: the fixed required values, and the initial channels."""
+    if question["kind"] == "text_list" and any(
+        request_package[request] == CHANNELS_PACKAGE for request in question["request_ids"]
+    ):
+        return channels
+    if question["required"]:
+        return ANSWERS[question["question_id"]]
+    return None
+
+
+async def run(packages: list[str], channels: list[str]) -> dict:  # noqa: C901, PLR0915 - one ordered production path
     log = structlog.get_logger("runner_production_plan")
     api = InternalAPIClient(get_settings().api_base_url)
     init_po_clients(api, None)
-    telegram_id, project_id = await _setup(api)
+    telegram_id, project_id, repository = await _setup(api)
     catalog = await get_kit_catalog_reader().read()
     _check(isinstance(catalog, KitCatalog), f"activated catalog unavailable: {catalog}")
     config = {
@@ -138,10 +176,13 @@ async def run(packages: list[str]) -> dict:  # noqa: PLR0915 - one ordered produ
         f"a route names another capability: {preview['routes']}",
     )
     answers = []
+    request_package = {
+        request["request_id"]: name for request, name in zip(requests, packages, strict=True)
+    }
     for question in preview["questions"]:
-        if not question["required"]:
+        value = _answer(question, channels, request_package)
+        if value is None:
             continue
-        value = ANSWERS[question["question_id"]]
         _check(not question["choices"] or value in question["choices"], f"{question} {value}")
         answers.append(
             {
@@ -200,6 +241,8 @@ async def run(packages: list[str]) -> dict:  # noqa: PLR0915 - one ordered produ
     _check("confirmed and frozen" in confirmed, f"not confirmed: {confirmed}")
     plan = await api_client.get_capability_plan(brief_id)
     _check(plan is not None, "the confirmed brief has no stored plan")
+    replay = await _confirmation_replay(api, project_id, brief_id, config)
+    _check(await api_client.get_capability_plan(brief_id) == plan, "replay changed the plan")
     story = await api.post_raw("stories/", json={"project_id": project_id, "title": "Runner"})
     _check(story.status_code == 201, f"story: {story.text}")
     story_id = story.json()["id"]
@@ -218,20 +261,43 @@ async def run(packages: list[str]) -> dict:  # noqa: PLR0915 - one ordered produ
             get_settings(),
             usage,
             log.bind(story_id=story_id),
+            scaffold_deferred=True,
         )
     _check(planned.get("status") == "success", f"architect planning: {planned}")
     _check(usage.channels() == [], f"a model was asked: {usage.channels()}")
     tasks = await api_client.get_tasks_by_story(story_id)
     installs = {task.install.package.name: task for task in tasks if task.install is not None}
     _check(sorted(installs) == sorted(packages), f"install tasks {sorted(installs)}")
+    _check(len(tasks) == len(installs), f"a task other than the installs: {tasks}")
     stored = {item.install.package.name: item.install for item in plan.modules}
     for name, task in installs.items():
         _check(task.install == stored[name], f"{name}: the task is not the stored closure")
         _check(task.dispatch_admitted, f"{name}: the install task was not released")
+        _check(task.repository_id == repository["id"], f"{name}: another repository")
+    project = (await api.get_raw(f"projects/{project_id}")).json()
+    _check(project["status"] == "draft", f"planning changed the draft: {project['status']}")
+    # The INSTALL waits at admission for the scaffold, durably: nothing is queued.
+    first = next(task for task in tasks if task.install is not None and not task.blocked_by_task_id)
+    waiting = (
+        await api.post_raw(f"tasks/{first.id}/catalog-install", json={"action": "admit"})
+    ).json()
+    _check(
+        waiting["outcome"] == "refused" and waiting["reason"] == "workspace_not_ready",
+        f"admission before the scaffold: {waiting}",
+    )
     await api.close()
     await api_client.close()
     return {
         "project_id": project_id,
+        "project_status_at_planning": project["status"],
+        "repository": {"id": repository["id"], "git_url": repository["git_url"]},
+        "admission_before_scaffold": {
+            "task_id": first.id,
+            "outcome": waiting["outcome"],
+            "reason": waiting["reason"],
+        },
+        "initial_channels": channels,
+        "confirmation_replay": replay,
         "preview": {key: preview[key] for key in ("preview_id", "routes", "questions")},
         "brief_id": brief_id,
         "story_id": story_id,
@@ -255,8 +321,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--packages", required=True, help="catalog names, install order")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--initial-channels", required=True, help="the channels the user answers, comma-separated"
+    )
     args = parser.parse_args()
-    result = asyncio.run(run(args.packages.split(",")))
+    result = asyncio.run(run(args.packages.split(","), args.initial_channels.split(",")))
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return 0
 

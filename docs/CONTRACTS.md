@@ -361,6 +361,7 @@ invariants are in [REST story, task, run, and policy surfaces](contracts/story-t
 |---|---|---|---|---|
 | `ScaffoldMessage` | `queues/scaffold.py` | scheduler-pipeline | scaffolder | full/ensure use project scaffold ownership; install claims the API-owned task/repository/cycle operation before work |
 | `CatalogInstall`, `InstallCommand`, `InstallDecision` | `dto/catalog_install.py` | Architect, scheduler-pipeline, scaffolder | task API, scaffolder | deterministic closure and exclusive durable install settlement; no engineering Run; see [kit contracts](contracts/kit-template-and-qa.md) |
+| `InstallPreflight` | `dto/catalog_install.py` | scaffolder (kit `check-install --json`) | task API, glue handoff | the kit's typed read-only answer for one attempt checkout, kept on its operation; product glue becomes one repair task; see [kit contracts](contracts/kit-template-and-qa.md) |
 | `ArchitectMessage` | `queues/architect.py` | PO/API and scheduler-pipeline | architect consumer | story identity, not conversational state, drives decomposition |
 | `EngineeringMessage` | `queues/engineering.py` | scheduler-pipeline | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
 | `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler-pipeline/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |

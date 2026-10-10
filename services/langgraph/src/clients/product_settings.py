@@ -71,13 +71,20 @@ class GeneratedServiceSettingsClient:
             if self._owns_transport:
                 await self._transport.aclose()  # type: ignore[attr-defined]
 
+    async def read_back(self, settings: Sequence[InitialSetting]) -> list[SettingSeedProof]:
+        """Read every confirmed value back through the ordinary settings API, writing none.
+
+        QA's check of the deployed product against the confirmed revision: one proof per
+        setting, positionally; `written` means the product holds exactly that value now.
+        """
+        try:
+            return [await self._resolve(setting, _identity(setting)) for setting in settings]
+        finally:
+            if self._owns_transport:
+                await self._transport.aclose()  # type: ignore[attr-defined]
+
     async def _seed_one(self, setting: InitialSetting, *, capability: str) -> SettingSeedProof:
-        identity: dict[str, Any] = {
-            "contract_version": _CONTRACT_VERSION,
-            "key": setting.key,
-            "scope": setting.scope.value,
-            "subject_id": setting.subject_id,
-        }
+        identity = _identity(setting)
         try:
             written = await self._transport.request(
                 "POST",
@@ -127,6 +134,15 @@ class GeneratedServiceSettingsClient:
                 written=False, failure=SettingsSeedFailureKind.READBACK_MISMATCH
             )
         return SettingSeedProof(written=True)
+
+
+def _identity(setting: InitialSetting) -> dict[str, Any]:
+    return {
+        "contract_version": _CONTRACT_VERSION,
+        "key": setting.key,
+        "scope": setting.scope.value,
+        "subject_id": setting.subject_id,
+    }
 
 
 def _set_refusal(response: httpx.Response) -> SettingsSeedFailureKind:

@@ -203,6 +203,48 @@ def _skip_deployed_url_preflight():
         yield
 
 
+class _ProductHolding:
+    """The deployed product's settings API, read back by QA: holds what it is told to."""
+
+    held: dict[str, object] | None = None
+    reads: list[list[InitialSetting]] = []
+
+    def __init__(self, deployed_url):
+        self.deployed_url = deployed_url
+
+    async def read_back(self, settings):
+        from shared.contracts.dto.settings_seed import SettingsSeedFailureKind
+        from src.clients.product_settings import SettingSeedProof
+
+        type(self).reads.append(list(settings))
+        held = type(self).held
+        proofs = []
+        for setting in settings:
+            if held is None or held.get(setting.key) == setting.value:
+                proofs.append(SettingSeedProof(written=True))
+            elif setting.key not in held:
+                proofs.append(
+                    SettingSeedProof(
+                        written=False, failure=SettingsSeedFailureKind.READBACK_REJECTED
+                    )
+                )
+            else:
+                proofs.append(
+                    SettingSeedProof(
+                        written=False, failure=SettingsSeedFailureKind.READBACK_MISMATCH
+                    )
+                )
+        return proofs
+
+
+@pytest.fixture(autouse=True)
+def _product_holds_the_confirmed_settings():
+    """By default the deployed product holds every confirmed value it is asked for."""
+    _ProductHolding.held, _ProductHolding.reads = None, []
+    with patch("src.consumers.qa.GeneratedServiceSettingsClient", _ProductHolding):
+        yield _ProductHolding
+
+
 @pytest.fixture
 def qa_message_data():
     return {
@@ -1303,6 +1345,136 @@ class TestTheConfirmedBriefsSettingsTravelIntoTheRunAsData:
             await process_qa_job(qa_message_data, mock_redis)
 
         assert mock_run.call_args.kwargs["established_facts"] == []
+
+
+class TestTheProductHoldsTheConfirmedRevisionBeforeAnyVerdict:
+    """AC6 — QA reads the frozen answers back from the deployed product first."""
+
+    @staticmethod
+    def _capability_brief(mock_api_client):
+        from shared.catalog_activation import CATALOG_ACTIVATION
+        from shared.contracts.dto.capability_preview import CapabilityPlan
+
+        brief = _confirmed_brief(InitialSetting(key="alerts.hour", value=9))
+        content = brief.content.model_copy(
+            update={
+                "capabilities": {
+                    "preview_id": "preview-" + "a" * 24,
+                    "capabilities": [
+                        {
+                            "request_id": "notes",
+                            "route": "from_scratch",
+                            "requirement_ids": ["r1"],
+                        }
+                    ],
+                    "answers": [],
+                }
+            }
+        )
+        mock_api_client.get_product_brief_by_story = AsyncMock(
+            return_value=brief.model_copy(update={"content": content})
+        )
+        mock_api_client.get_capability_plan = AsyncMock(
+            return_value=CapabilityPlan.model_validate(
+                {
+                    "preview_id": "preview-" + "a" * 24,
+                    "activation": CATALOG_ACTIVATION.model_dump(),
+                    "capabilities": [
+                        {
+                            "request_id": "notes",
+                            "route": "from_scratch",
+                            "requirement_ids": ["r1"],
+                        }
+                    ],
+                    "settings": [
+                        {"question_id": "product_language", "key": "language", "value": "ru"},
+                        {
+                            "question_id": "channels.q1",
+                            "key": "tg_channels.starting_channels",
+                            "value": ["durov", "cyprusnews"],
+                        },
+                    ],
+                }
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_stored_plans_answers_are_read_back_and_reach_the_facts(
+        self, mock_api_client, mock_redis, qa_message_data, _product_holds_the_confirmed_settings
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        self._capability_brief(mock_api_client)
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        expected = [
+            ("alerts.hour", 9),
+            ("language", "ru"),
+            ("tg_channels.starting_channels", ["durov", "cyprusnews"]),
+        ]
+        [read] = _product_holds_the_confirmed_settings.reads
+        assert [(item.key, item.value) for item in read] == expected
+        facts = "\n".join(mock_run.call_args.kwargs["established_facts"])
+        assert '["durov", "cyprusnews"]' in facts and 'language (scope product) = "ru"' in facts
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("held", "reported"),
+        [
+            (
+                {"alerts.hour": 9, "language": "en", "tg_channels.starting_channels": ["durov"]},
+                "language (product): readback_mismatch; "
+                "tg_channels.starting_channels (product): readback_mismatch",
+            ),
+            (
+                {"alerts.hour": 9, "language": "ru"},
+                "tg_channels.starting_channels (product): readback_rejected",
+            ),
+        ],
+    )
+    async def test_a_missing_or_different_value_blocks_before_any_judgement(
+        self,
+        mock_api_client,
+        mock_redis,
+        qa_message_data,
+        _product_holds_the_confirmed_settings,
+        held,
+        reported,
+    ):
+        self._capability_brief(mock_api_client)
+        _product_holds_the_confirmed_settings.held = held
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        mock_run.assert_not_called()
+        blocker = mock_api_client.patch.call_args[1]["json"]["result"]["blocker"]
+        assert blocker["category"] == "unknown"
+        assert blocker["received"] == f"confirmed settings not held by the product: {reported}"
+        assert "tg_channels.starting_channels" in blocker["sent"]
+
+    @pytest.mark.asyncio
+    async def test_an_unconfirmed_brief_reads_nothing_back(
+        self, mock_api_client, mock_redis, qa_message_data, _product_holds_the_confirmed_settings
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        brief = _confirmed_brief(InitialSetting(key="settings.languages", value=["ru"]))
+        mock_api_client.get_product_brief_by_story = AsyncMock(
+            return_value=brief.model_copy(update={"confirmed_at": None})
+        )
+        _product_holds_the_confirmed_settings.held = {}
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        assert _product_holds_the_confirmed_settings.reads == []
+        mock_run.assert_awaited_once()
 
 
 class TestTheJobsCapabilityIsResolvedOnTheManagementHost:

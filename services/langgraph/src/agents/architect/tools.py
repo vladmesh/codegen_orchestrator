@@ -268,7 +268,10 @@ async def create_install_task(
     """One mechanical INSTALL task for a resolved closure, chained after the story's last task.
 
     The closure is taken as given — from `plan_install`'s selection or from a confirmed
-    brief's stored capability plan — and is not resolved again here.
+    brief's stored capability plan — and is not resolved again here. A draft project
+    ordered as backend,tg_bot is a product too: its task is created now, and install
+    admission waits, durably, until the scaffolder has made its repository and workspace
+    ready (`workspace_not_ready`).
     """
     name = payload.package.name
     project = await api_client.get_project(project_id)
@@ -277,11 +280,10 @@ async def create_install_task(
     if (
         project is None
         or repository is None
-        or project.status == "draft"
         or not isinstance(modules, list)
         or not {"backend", "tg_bot"}.issubset(modules)
     ):
-        return {"error": "product_incompatible: requires an existing backend,tg_bot product"}
+        return {"error": "product_incompatible: requires a backend,tg_bot product"}
     try:
         body = TaskCreate(
             title=f"Install catalog package {name}",

@@ -506,9 +506,19 @@ covered by an ordinary task whose `blocked_by` chain reaches that module's INSTA
 that plans no glue task is admitted as incomplete. A
 missing plan, another activation, provenance or inactive catalog, or a drifted closure is a
 terminal planning failure with no task; an unreachable catalog is the retriable one. Deploy
-seeding writes the plan's settings after the brief's own `initial_settings`. Installing the
-module into the draft product right after scaffold, kit check-install glue handoff and
-per-operation workspaces belong to the next execution card.
+seeding writes the plan's settings after the brief's own `initial_settings`, and QA reads
+the same list back before any verdict.
+
+A new order is planned on its draft project. When the story's confirmed brief carries a
+capability plan, the Architect does not wait for the scaffold: it creates the plan's
+INSTALL tasks on the draft (its pending repository is the primary one; the project must
+have been ordered as backend,tg_bot) and admits them, with no CREATE task and no model
+when every requirement is a module. Install admission then refuses `workspace_not_ready`
+until the scaffolder has recorded the real repository and workspace (ACTIVE,
+`workspace_ready`), so the install runs right after the scaffold, before the story's other
+work; a failed scaffold stops that story, because work that only waits at admission was
+never built. Anything a model plans after the installs waits for the scaffold first,
+under the planning claim; an ordinary order keeps waiting before it plans at all.
 
 ## Explicit catalog selections
 

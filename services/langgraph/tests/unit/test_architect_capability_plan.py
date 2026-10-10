@@ -31,7 +31,7 @@ from src.capability_feasibility import platform_cannot
 from src.capability_preview import capability_id, resolve_preview
 from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
 from tests.unit.architect_kit_catalog import CatalogBrief, CatalogPlanApi, plan_story
-from tests.unit.factories import make_admission
+from tests.unit.factories import make_admission, make_project, make_repository
 
 CHANNELS = capability_id("tg-channels")
 PREVIEW_ID = "preview-" + "c" * 24
@@ -485,3 +485,121 @@ async def test_glue_work_planned_after_the_install_covers_the_requirement(
     assert feature["blocked_by_task_id"] == "task-1"
     assert api.coverage == {"digest": ("plan-live", "task-2", None)}
     assert api.released == ["task-1", "task-2"]
+
+
+class _DraftPlanApi(_PlanApi):
+    """A fresh order: the PO's draft project and its pending repository, before the scaffold.
+
+    `scaffolded_after` project reads later, the scaffolder has made it active.
+    """
+
+    def __init__(self, brief, plan, *, scaffolded_after: int | None = None):
+        super().__init__(brief, plan)
+        self.project_reads = 0
+        self.scaffolded_after = scaffolded_after
+
+    async def get_project(self, project_id, **_kwargs):
+        self.project_reads += 1
+        active = self.scaffolded_after is not None and self.project_reads > self.scaffolded_after
+        return make_project(
+            status="active" if active else "draft",
+            config={"modules": ["backend", "tg_bot"]},
+        )
+
+    async def get_primary_repository(self, project_id):
+        return make_repository(git_url="pending://fresh-order")
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_draft_order_installs_its_stored_closure_before_any_scaffold(module_brief):
+    """No previously active product, no CREATE task: the INSTALL waits at admission."""
+    brief, plan = module_brief
+    api = _DraftPlanApi(brief, plan)
+    waited = AsyncMock(side_effect=AssertionError("a module-only plan never waits in-process"))
+
+    with patch("src.consumers.architect.asyncio.sleep", waited):
+        result = await _plan(api)
+
+    assert result["status"] == "success", result
+    [task] = api.task_payloads
+    assert task["type"] == "install" and task["repository_id"] == "repo-1"
+    assert task["install"] == plan.capabilities[0].install.model_dump(mode="json")
+    assert api.coverage == {"digest": ("plan-live", "task-1", None)}
+    assert api.admit_calls == 1 and api.released == ["task-1"]
+
+
+@pytest.mark.asyncio
+async def test_on_a_draft_the_model_plans_glue_only_after_the_scaffold_and_the_install(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, requests = _brief(with_scratch=True)
+    api = _DraftPlanApi(
+        brief, _stored_plan(activated_kit_catalog, brief, requests), scaffolded_after=2
+    )
+    seen: dict = {}
+
+    def graph(_llm):
+        async def ainvoke(state, config):
+            seen["project_reads"] = api.project_reads
+            seen["tasks_before_model"] = [task["type"] for task in api.task_payloads]
+            task = await api.create_task(
+                {
+                    "title": "Notes",
+                    "type": "feature",
+                    "story_id": state["story_id"],
+                    "planning_attempt_id": "plan-live",
+                }
+            )
+            coverage = MagicMock(requirement_id="notes", planning_attempt_id="plan-live")
+            coverage.task_id, coverage.returned_reason = task.id, None
+            await api.record_requirement_coverage(api.brief.id, coverage)
+            return {"messages": []}
+
+        return MagicMock(ainvoke=AsyncMock(side_effect=ainvoke))
+
+    with (
+        patch("src.consumers.architect.load_channel_chain", new=AsyncMock(return_value=[])),
+        patch("src.consumers.architect.unconfigured_channel_env", return_value=[]),
+        patch("src.consumers.architect.build_agent_llm"),
+        patch("src.consumers.architect.asyncio.sleep", AsyncMock()),
+    ):
+        result = await _plan(api, graph)
+
+    assert result["status"] == "success", result
+    # The install was planned on the draft; the model ran once the project was scaffolded.
+    assert seen["tasks_before_model"] == ["install"]
+    assert seen["project_reads"] > 2
+    assert set(api.coverage) == {"digest", "notes"}
+
+
+@pytest.mark.asyncio
+async def test_a_draft_whose_scaffold_failed_stops_before_any_model(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, requests = _brief(with_scratch=True)
+
+    class _FailedScaffold(_DraftPlanApi):
+        async def get_project(self, project_id, **_kwargs):
+            await super().get_project(project_id)
+            return make_project(
+                status="draft",
+                config={"modules": ["backend", "tg_bot"], "scaffold_error": "copier crashed"},
+            )
+
+    api = _FailedScaffold(brief, _stored_plan(activated_kit_catalog, brief, requests))
+    api.stop_story = AsyncMock()
+
+    with (
+        patch("src.consumers.architect.load_channel_chain", new=AsyncMock(return_value=[])),
+        patch("src.consumers.architect.unconfigured_channel_env", return_value=[]),
+        patch("src.consumers.architect.build_agent_llm"),
+    ):
+        result = await _plan(api)
+
+    assert result["status"] == "failed" and result["error"] == "scaffold failed"
+    assert [task["type"] for task in api.task_payloads] == ["install"]
+    assert api.admit_calls == 0 and api.released == []
+    action, failure = api.stop_story.await_args.args[1:3]
+    assert action == "fail" and failure.detail == "copier crashed"

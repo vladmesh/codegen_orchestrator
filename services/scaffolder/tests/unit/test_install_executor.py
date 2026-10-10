@@ -1,21 +1,21 @@
 """Fixed operation argv and refusal precede product mutation."""
 
 from datetime import UTC, datetime
-from pathlib import Path
+import json
 import subprocess
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from shared.contracts.queues.scaffold import ScaffoldMessage
+from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS
 from src.install import (
     InstallExecutionError,
+    attempt_checkout,
     install_environment,
     product_environment,
     protected_files,
-    reclaim_worker_venvs,
     run_install,
 )
 
@@ -146,19 +146,25 @@ async def test_missing_workspace_refuses_without_any_command(tmp_path, monkeypat
     command.assert_not_awaited()
 
 
+def test_an_attempt_checkout_is_derived_from_the_operation_never_supplied(tmp_path):
+    name, path = attempt_checkout(str(tmp_path), "repo-1", "install-1")
+    assert name == "repo-1/install-1"
+    assert path == tmp_path.resolve() / CATALOG_INSTALL_ATTEMPTS / "repo-1" / "install-1"
+    for repository, operation in (("repo-1", ".."), ("..", "install-1"), ("repo-1", "a/b")):
+        with pytest.raises(InstallExecutionError, match="attempt_unowned"):
+            attempt_checkout(str(tmp_path), repository, operation)
+
+
 @pytest.mark.asyncio
-async def test_dirty_checkout_is_retained_and_never_runs_kit(tmp_path, monkeypatch):
+async def test_a_retained_attempt_is_never_reused_by_its_operation(tmp_path, monkeypatch):
+    """A redelivered operation finds its own earlier checkout and runs nothing in it."""
     (tmp_path / "repo-1/.git").mkdir(parents=True)
-    calls = []
-
-    async def command(args, **kwargs):
-        calls.append(args)
-        if "status" in args and "--porcelain" in args:
-            return 0, " M notes.py\n", ""
-        return 0, "", ""
-
+    retained = tmp_path / CATALOG_INSTALL_ATTEMPTS / "repo-1/install-1"
+    retained.mkdir(parents=True)
+    (retained / "evidence.txt").write_text("failed attempt\n")
+    command = AsyncMock()
     monkeypatch.setattr("src.install._run_cmd", command)
-    with pytest.raises(InstallExecutionError, match="workspace_dirty"):
+    with pytest.raises(InstallExecutionError, match="attempt_exists") as refused:
         await run_install(
             message(),
             SimpleNamespace(workspace_base_path=str(tmp_path)),
@@ -166,7 +172,9 @@ async def test_dirty_checkout_is_retained_and_never_runs_kit(tmp_path, monkeypat
             "fake-token",
             AsyncMock(),
         )
-    assert all("kit" not in Path(args[0]).name for args in calls)
+    assert refused.value.stage == "prepare"
+    command.assert_not_awaited()
+    assert (retained / "evidence.txt").read_text() == "failed attempt\n"
 
 
 def foreign_owned_checkout(root):
@@ -186,7 +194,9 @@ async def test_install_git_trusts_the_worker_owned_workspace(tmp_path, monkeypat
         return await real_run_cmd(args, env=env | foreign, **kwargs)
 
     monkeypatch.setattr("src.install._run_cmd", as_root_on_worker_checkout)
-    with pytest.raises(InstallExecutionError, match="workspace_dirty"):
+    # Trusted, git reads the workspace and finds no owned origin; untrusted, it would
+    # refuse the repository as dubious before reading anything.
+    with pytest.raises(InstallExecutionError) as refused:
         await run_install(
             message(),
             SimpleNamespace(workspace_base_path=str(tmp_path)),
@@ -194,6 +204,7 @@ async def test_install_git_trusts_the_worker_owned_workspace(tmp_path, monkeypat
             "fake-token",
             AsyncMock(),
         )
+    assert "origin" in str(refused.value) and "dubious" not in str(refused.value)
 
 
 @pytest.mark.parametrize("build", ["product", "install"])
@@ -215,45 +226,51 @@ def test_product_tool_git_trusts_the_worker_owned_workspace(tmp_path, build):
     assert status.returncode == 0, status.stderr
 
 
-def worker_repointed_venv(root):
-    """A product venv after the worker wrapper repointed it at its /workspace mount."""
-    bin_dir = root / ".venv/bin"
-    site = root / ".venv/lib/python3.12/site-packages"
-    bin_dir.mkdir(parents=True)
-    site.mkdir(parents=True)
-    (bin_dir / "python").symlink_to(sys.executable)
-    kit = bin_dir / "kit"
-    kit.write_text("#!/workspace/.venv/bin/python\nprint('kit ran')\n")
-    kit.chmod(0o755)
-    (site / "_shared.pth").write_text("/workspace/shared\n")
-    (site / "tooling-1.dist-info").mkdir()
-    (site / "tooling-1.dist-info/direct_url.json").write_text('{"url": "file:///workspace/pkg"}')
-    (root / ".venv_paths_fixed").write_text("")
-    return kit
+def check_install(status="mechanical", glue=(), incompatible=None, **target):
+    """`kit check-install --json` as the pinned kit prints it for this message's closure."""
+    install = message().install
+    return {
+        "result_version": 1,
+        "package": install.package.name,
+        "status": status,
+        "product_core": install.core_version,
+        "target": None
+        if incompatible
+        else {
+            "route": "catalog",
+            "catalog_source": install.catalog.repository,
+            "catalog_ref": install.catalog.commit,
+            "tag": install.package.tag,
+            "version": install.package.version,
+            "requires_core": ">=2.2,<3",
+            "metadata_sha256": "f" * 64,
+        }
+        | target,
+        "glue": list(glue),
+        "incompatible": incompatible,
+    }
 
 
-@pytest.mark.subprocess
-def test_install_runs_venv_scripts_a_worker_repointed(tmp_path):
-    root = tmp_path / "repo-1"
-    kit = worker_repointed_venv(root)
-    with pytest.raises(FileNotFoundError):
-        subprocess.run([str(kit)], check=True)
-
-    reclaim_worker_venvs(root)
-
-    ran = subprocess.run([str(kit)], capture_output=True, text=True, check=True)
-    assert ran.stdout == "kit ran\n"
-    site = root / ".venv/lib/python3.12/site-packages"
-    assert (site / "_shared.pth").read_text() == f"{root}/shared\n"
-    assert f"file://{root}/pkg" in (site / "tooling-1.dist-info/direct_url.json").read_text()
-    # The next worker finds no sentinel and repoints the venv at its mount again.
-    assert not (root / ".venv_paths_fixed").exists()
+def glue_item(code, *, owner="product", symbol=None, path="services/tg_bot/src/commands.py"):
+    return {
+        "code": code,
+        "path": path,
+        "line": 12,
+        "owner": owner,
+        "symbol": symbol,
+        "key": None,
+        "command": "remind",
+        "conflict": f"{code} conflict",
+        "action": f"resolve {code}",
+        "other": None,
+    }
 
 
-def product_checkout_until(tmp_path, stop):
+def product_checkout_until(tmp_path, stop, preflight=None, preflight_rc=0):
     """A fake product checkout whose commands succeed until ``stop(argv)`` answers."""
     (tmp_path / "repo-1/.git").mkdir(parents=True)
     calls = []
+    answer_preflight = check_install() if preflight is None else preflight
 
     async def command(args, **kwargs):
         calls.append(args)
@@ -261,15 +278,209 @@ def product_checkout_until(tmp_path, stop):
             return answer
         if "get-url" in args:
             return 0, "https://github.com/owner/notes\n", ""
-        if "show-ref" in args:
-            return 1, "", ""
+        if "ls-remote" in args:
+            return 0, "", ""
         if "rev-parse" in args:
             return 0, "d" * 40 + "\n", ""
-        if "preflight" in args:
+        if "provenance" in args or "preflight" in args:
             return 0, "{}", ""
+        if "check-install" in args:
+            return preflight_rc, json.dumps(answer_preflight), ""
         return 0, "", ""
 
     return calls, command
+
+
+async def execute(tmp_path, fence=None):
+    return await run_install(
+        message(),
+        SimpleNamespace(workspace_base_path=str(tmp_path)),
+        "https://github.com/owner/notes",
+        "fake-token",
+        fence or AsyncMock(),
+    )
+
+
+def kit_calls(calls):
+    return [args[1:] for args in calls if args[0].endswith("/.venv/bin/kit")]
+
+
+@pytest.mark.asyncio
+async def test_the_attempt_checkout_starts_at_the_scaffold_base_and_is_prepared_by_the_kit(
+    tmp_path, monkeypatch
+):
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: (2, "stop\n", "") if args[:1] == ["make"] else None
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    fence = AsyncMock()
+    with pytest.raises(InstallExecutionError):
+        await execute(tmp_path, fence)
+    attempt = tmp_path.resolve() / CATALOG_INSTALL_ATTEMPTS / "repo-1/install-1"
+    git = ["git", "-c", "core.hooksPath=/dev/null"]
+    # No remote story branch yet: the scaffold base, never a local branch of the workspace.
+    assert [*git, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"] in calls
+    assert [*git, "worktree", "add", "--detach", str(attempt), "d" * 40] in calls
+    assert ["sh", "scripts/prepare-env.sh", "root", "backend", "tg_bot"] in calls
+    checkouts = {call.args[0].checkout for call in fence.await_args_list} - {None}
+    assert checkouts == {"repo-1/install-1"}
+
+
+@pytest.mark.asyncio
+async def test_an_existing_remote_story_head_is_the_attempt_base(tmp_path, monkeypatch):
+    head = "e" * 40
+
+    def remote(args):
+        if "ls-remote" in args:
+            return 0, f"{head}\trefs/heads/story/story-1\n", ""
+        if args[:1] == ["make"]:
+            return 2, "stop\n", ""
+        return None
+
+    calls, command = product_checkout_until(tmp_path, remote)
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError):
+        await execute(tmp_path)
+    assert [
+        "git",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "rev-parse",
+        "--verify",
+        f"{head}^{{commit}}",
+    ] in calls
+
+
+@pytest.mark.asyncio
+async def test_kit_preflight_runs_on_the_exact_saved_release_before_any_add(tmp_path, monkeypatch):
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: (2, "stop\n", "") if args[:1] == ["make"] else None
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    fence = AsyncMock()
+    with pytest.raises(InstallExecutionError):
+        await execute(tmp_path, fence)
+    attempt = tmp_path.resolve() / CATALOG_INSTALL_ATTEMPTS / "repo-1/install-1"
+    pinned = ["--catalog-source", "https://github.com/vladmesh/codegen-product-kit.git"]
+    pinned += ["--catalog-ref", "d" * 40]
+    assert kit_calls(calls)[0] == [
+        "check-install",
+        "reminders",
+        "--json",
+        *pinned,
+        "--version",
+        "0.5.0",
+        "--product-root",
+        str(attempt),
+    ]
+    assert kit_calls(calls)[1][:2] == ["add", "reminders"]
+    saved = [call.args[0].preflight for call in fence.await_args_list if call.args[0].preflight]
+    assert saved and saved[-1].status == "mechanical"
+
+
+@pytest.mark.asyncio
+async def test_the_closures_own_library_is_not_product_glue(tmp_path, monkeypatch):
+    """The kit asks for `kit add textparse` first; the fixed closure adds exactly that."""
+    preflight = check_install(
+        "glue", [glue_item("library_required", owner="package:reminders", symbol="textparse")]
+    )
+    calls, command = product_checkout_until(
+        tmp_path,
+        lambda args: (2, "stop\n", "") if args[:1] == ["make"] else None,
+        preflight,
+        preflight_rc=3,
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match="stop"):
+        await execute(tmp_path)
+    assert [args[:2] for args in kit_calls(calls)][1:] == [
+        ["add", "reminders"],
+        ["add", "textparse"],
+        ["bind", "reminders"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        glue_item("command_conflict", symbol="handle_remind"),
+        glue_item("language_owner", path="services/tg_bot/src/settings.py"),
+        glue_item("library_required", owner="package:reminders", symbol="dateparse"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_product_glue_refuses_before_any_mutation_with_the_kits_exact_items(
+    tmp_path, monkeypatch, item
+):
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: None, check_install("glue", [item]), preflight_rc=3
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError) as refused:
+        await execute(tmp_path)
+    assert refused.value.stage == "preflight"
+    assert str(refused.value).startswith("glue_required: ")
+    assert f"{item['code']} at {item['path']}:12: {item['action']}" in str(refused.value)
+    assert refused.value.preflight.glue[0].model_dump() == item
+    assert [args[0] for args in kit_calls(calls)] == ["check-install"]
+    assert not any(args[0] == "make" for args in calls)
+
+
+@pytest.mark.asyncio
+async def test_an_incompatible_release_is_a_typed_refusal(tmp_path, monkeypatch):
+    reason = {"code": "core_range", "explanation": "reminders 0.5.0 requires core >=3"}
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: None, check_install("incompatible", incompatible=reason), 4
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match="preflight_incompatible: core_range") as no:
+        await execute(tmp_path)
+    assert no.value.preflight.incompatible.code == "core_range"
+    assert [args[0] for args in kit_calls(calls)] == ["check-install"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "rc", "refusal"),
+    [
+        ("not json", 0, "preflight_malformed"),
+        (json.dumps({"result_version": 2}), 0, "preflight_malformed"),
+        (json.dumps(check_install("glue")), 3, "preflight_malformed"),
+        (json.dumps(check_install()), 3, "preflight_exit_mismatch"),
+        (json.dumps(check_install(tag="packages/reminders/v0.4.0")), 0, "target.tag"),
+        (json.dumps(check_install(catalog_ref="0" * 40)), 0, "target.catalog_ref"),
+        (json.dumps(check_install(version="0.4.0")), 0, "target.version"),
+        (json.dumps(check_install() | {"package": "tg-channels"}), 0, "package"),
+        (json.dumps(check_install() | {"product_core": "2.1.0"}), 0, "product_core"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_untrusted_preflight_refuses_before_any_write(
+    tmp_path, monkeypatch, answer, rc, refusal
+):
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: (rc, answer, "") if "check-install" in args else None
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match=refusal) as refused:
+        await execute(tmp_path)
+    assert refused.value.stage == "preflight"
+    assert [args[0] for args in kit_calls(calls)] == ["check-install"]
+
+
+@pytest.mark.asyncio
+async def test_a_preflight_that_wrote_to_the_product_is_refused(tmp_path, monkeypatch):
+    statuses = iter(["", " M uv.lock"])
+
+    def status(args):
+        if args[3:5] == ["status", "--porcelain"] and "--untracked-files=all" in args:
+            return 0, next(statuses), ""
+        return None
+
+    calls, command = product_checkout_until(tmp_path, status)
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match="preflight_not_read_only"):
+        await execute(tmp_path)
+    assert [args[0] for args in kit_calls(calls)] == ["check-install"]
 
 
 @pytest.mark.asyncio
@@ -354,3 +565,101 @@ async def test_a_payload_without_a_catalog_commit_runs_nothing(tmp_path, monkeyp
         )
     assert refused.value.stage == "preflight"
     command.assert_not_awaited()
+
+
+def probe_modes(calls):
+    return [args[3] for args in calls if len(args) > 3 and args[2].endswith("install_probe.py")]
+
+
+def order_of(calls):
+    """Probe modes, the kit's check and the first add, in the order they ran."""
+    steps = []
+    for args in calls:
+        if len(args) > 3 and args[2].endswith("install_probe.py"):
+            steps.append(f"probe {args[3]}")
+        elif args[0].endswith("/.venv/bin/kit"):
+            steps.append(args[1])
+    return steps
+
+
+@pytest.mark.asyncio
+async def test_provenance_precedes_the_kits_classifier_and_ownership_checks_follow_it(
+    tmp_path, monkeypatch
+):
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: (2, "stop\n", "") if args[:1] == ["make"] else None
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError):
+        await execute(tmp_path)
+    assert order_of(calls)[:4] == [
+        "probe provenance",
+        "check-install",
+        "probe preflight",
+        "add",
+    ]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        glue_item(
+            "binding_language_owner",
+            symbol="tg-channels",
+            path="services/tg_bot/bindings/reminders.yaml",
+        ),
+        glue_item("command_collision", symbol="handle_remind"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_product_conflict_reaches_the_typed_answer_not_a_probe_exit(
+    tmp_path, monkeypatch, item
+):
+    """The probe's own binding/command refusals cannot answer before the kit classifies."""
+
+    def owned_probe(args):
+        if len(args) > 3 and args[2].endswith("install_probe.py") and args[3] == "preflight":
+            return 1, "", "ValueError: binding_owned: existing product binding differs"
+        return None
+
+    calls, command = product_checkout_until(
+        tmp_path, owned_probe, check_install("glue", [item]), preflight_rc=3
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError) as refused:
+        await execute(tmp_path)
+    assert refused.value.preflight is not None
+    assert refused.value.preflight.glue[0].code == item["code"]
+    assert probe_modes(calls) == ["provenance"]
+
+
+@pytest.mark.asyncio
+async def test_a_provenance_failure_is_never_classified_as_glue(tmp_path, monkeypatch):
+    def tooling(args):
+        if len(args) > 3 and args[2].endswith("install_probe.py") and args[3] == "provenance":
+            return 1, "", "ValueError: tooling_incompatible: saved requirement differs"
+        return None
+
+    calls, command = product_checkout_until(tmp_path, tooling)
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match="tooling_incompatible") as refused:
+        await execute(tmp_path)
+    assert refused.value.preflight is None
+    assert not any(args[0].endswith("/.venv/bin/kit") for args in calls)
+
+
+@pytest.mark.asyncio
+async def test_a_mechanical_release_still_meets_the_probes_ownership_refusals(
+    tmp_path, monkeypatch
+):
+    def owned_probe(args):
+        if len(args) > 3 and args[2].endswith("install_probe.py") and args[3] == "preflight":
+            return 1, "", "ValueError: binding_conflict: command is already owned"
+        return None
+
+    calls, command = product_checkout_until(tmp_path, owned_probe)
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match="binding_conflict") as refused:
+        await execute(tmp_path)
+    assert refused.value.stage == "preflight"
+    assert [args[1] for args in calls if args[0].endswith("/.venv/bin/kit")] == ["check-install"]

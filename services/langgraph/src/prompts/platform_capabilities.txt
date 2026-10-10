@@ -1,7 +1,7 @@
-## Platform capabilities (manifest v24, owner-reviewed)
+## Platform capabilities (manifest v25, owner-reviewed)
 What a product built here can and cannot have. The product is a Telegram bot and has no web address.
 Can:
-- Add a catalog capability: An existing bot can add a released catalog capability while retaining its own features.
+- Add a catalog capability: A new bot gets its chosen catalog capabilities right after it is created, and an existing bot can add one while retaining its own features.
 - Plain HTTP self links: The bot can include plain HTTP self links; their address can change when the product moves.
 - Telegram bot: A Telegram bot people chat with, using commands, buttons and menus.
 - Read public Telegram channels: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Plan it now; deployment handles platform key issuance; no user key is needed.

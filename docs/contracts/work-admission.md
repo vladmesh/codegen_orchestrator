@@ -343,6 +343,9 @@ creation. An ordinary branch writer refuses catalog_install_in_flight while a
 project install is queued, running or requires recovery. Installation shares the
 Task/Story/Project lock ladder, coverage/stop/publication fences and current-cycle
 ownership. No paid reservation is created or released for a mechanical operation.
+A draft order's INSTALL waits at admission (`workspace_not_ready`) until its scaffold is
+recorded; the one `fix` Task a product-glue answer hands to engineering is an ordinary
+dispatch-admitted task that the same INSTALL waits behind.
 [Install settlement](kit-template-and-qa.md#installing-a-kit-package-into-a-generated-product)
 owns lease loss, exact-head recovery and explicit retry; engineering retry cannot
 replace retained work.

@@ -13,6 +13,22 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   proves it end to end with the kit's pinned harness.
 - A module_with_glue requirement stays outstanding until a task after its install covers it; two
   answers for one setting refuse the plan; an unnamed request naming an offered capability routes as it.
+- A new order's capability plan creates its INSTALL tasks on the draft; admission waits for the
+  scaffold, so the module installs right after it, before the story's other work.
+- Each catalog install runs in its own worktree of the exact remote story head, prepared by the
+  product's prepare-env, so a dirty or unpublished shared workspace no longer blocks or leaks into it.
+- The kit's read-only `check-install` admits each install first; its typed answer is saved on the
+  operation, and product glue becomes one repair task before the same INSTALL instead of a park.
+- A glue refusal creates its repair only while its owner holds a live lease and an unstopped
+  current story; a stopped or expired owner settles the typed answer and creates no work.
+- QA reads every confirmed setting, the stored plan's answers included, back from the product before
+  any verdict; a missing or different value is a named QA blocker.
+- The runner proof drives its draft order through the scheduler's scaffold and dispatch ticks and the
+  scaffolder entrypoint from Redis; GitHub is its one controlled edge.
+- The install probe checks provenance before the kit's check-install, so a product language or command
+  conflict reaches the typed glue handoff; its ownership refusals guard only admitted releases.
+- The runner proves a kit-classified product conflict handoff, the bot's behaviour from the saved
+  language and channels before the harness scenario, and QA refusing changed settings on the product.
 
 ## 2026-10-09
 

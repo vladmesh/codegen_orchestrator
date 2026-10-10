@@ -48,7 +48,7 @@ This commit carries core facade `2.5.0`, protocol `1` and tooling distribution `
 the core-owned product `language` setting, one authoritative bot command registry, and the
 typed `kit check-install` preflight, on top of generic platform environment sources and
 finite bilingual binding v2 (v1 unchanged).
-The retained fixture was rendered in [CI run 38012764349](https://github.com/vladmesh/codegen_orchestrator/actions/runs/38012764349);
+The retained fixture was rendered in [CI run 38025911432](https://github.com/vladmesh/codegen_orchestrator/actions/runs/38025911432);
 [producer hashes](../evidence/catalog-install-fixture.json) cover every tracked file and the saved answers.
 
 Failed Actions evidence keeps the earliest root diagnostic and final error in at most
@@ -219,13 +219,44 @@ an install is queued, running or requires recovery.
 
 Scaffolder owns its existing project execution/teardown lease and GitHub App client,
 a durable install heartbeat, and a nonblocking workspace lock. It requires the real
-owned repository and clean checkout, refuses rejection artifacts even when ignored,
-and switches or creates `story/<story_id>` without resetting unrelated content.
-Unpublished local or changed remote heads refuse. Before package mutation, a fixed
-read-only probe runs under the product's isolated interpreter and checks saved
-source/ref, root requirement/lock/installed tooling, actual core, required modules,
-independent tags, target Python, binding ownership and command/settings conflicts.
-Older cores require a reviewed native Copier update; no overwrite or automatic repair.
+owned repository workspace, but never runs in it: each operation gets one private
+attempt checkout, `.catalog-install-attempts/<repository id>/<operation id>` beside the
+workspaces, derived from the durable operation and never supplied. It is a `git worktree`
+of the workspace's repository, detached at the exact owned remote `story/<story_id>` head
+or, before one exists, `origin/main` (the scaffold base); a local branch is never read.
+Whatever the shared workspace holds — edits, ignored or tracked Copier rejections, an
+unpublished local story branch — is neither read, cleaned nor overwritten; a rejection
+artifact tracked at the attempt's base refuses (`update_unresolved`). An existing attempt
+checkout refuses (`attempt_exists`): a redelivery never reuses one. The attempt's
+environments are prepared by the product's own `sh scripts/prepare-env.sh root backend
+tg_bot` (frozen `uv sync` of each lock), so distinct operations share no checkout, venv,
+index or output.
+
+Before package mutation, read-only checks run on the prepared attempt in a fixed order.
+First the fixed probe, in `provenance` mode under the product's isolated interpreter,
+checks saved source/ref, root requirement/lock/installed tooling, actual core, required
+modules, independent tags, target Python and the published default binding; a failure here
+is a plain refusal, never glue. Then the kit's own `kit
+check-install <package> --json --catalog-source <repository> --catalog-ref <commit>
+--version <version> --product-root <attempt>` classifies the exact saved release on the
+actual product (`InstallPreflight`, result version 1): the exit code must be its status's
+(0 mechanical, 3 glue, 4 incompatible), status, glue list and reason must agree, and the
+target must be the catalog route at the payload's repository, commit, tag and version for
+the payload's core; anything else refuses (`preflight_malformed`, `preflight_exit_mismatch`,
+`preflight_provenance_mismatch`). Git status, protected bytes and every environment's
+installed distributions must be unchanged by both checks (`preflight_not_read_only`). The
+kit's `library_required` for a library of the closure is the installer's own next step;
+any other glue item refuses `glue_required` with the kit's files, lines and actions, and
+`incompatible` refuses with its stable code, so every product conflict — a retained
+binding's language owner, a command claim, a settings schema — reaches the kit's typed
+answer before anything else can refuse it. Only a release the kit admitted then meets the
+probe's `preflight` mode, whose ownership refusals (a differing retained binding, a claimed
+command, a conflicting settings schema) still protect product files from being overwritten.
+The typed answer is saved on the operation
+(`InstallOperation.preflight`), as is its checkout (`checkout`, refused unless derived from
+the operation), and publication requires an admitted, glue-free preflight
+(`preflight_unverified`). Older cores require a reviewed native Copier update; no
+overwrite or automatic repair.
 Infrastructure Git uses process-local `core.hooksPath=/dev/null`, preserving the
 product's local hook configuration. Only owned fetch, remote readback and push receive
 repository-scoped Git authorization. Product probes, kit/component fetches, generation,
@@ -247,7 +278,10 @@ v2 declares a language and optionally a timezone. Setting keys and schemas come 
 the binding through the kit's `binding_settings`, including probe conflict checks.
 Confirmed explicit values use Product Brief initial_settings or the capability answers of
 the brief's stored plan, through the existing seed/deploy path; missing confirmed values
-are returned, never guessed.
+are returned, never guessed. Before any verdict, QA reads every one of those same values
+back through the product's ordinary `POST /settings/get` (`confirmed_product_settings`,
+the list the seed writes); a missing, refused or different value is a QA blocker naming
+each key and failure, and no product judgement is made.
 Credentials, user IDs and timezone values never enter
 parser/generator code.
 
@@ -260,24 +294,46 @@ merge and deploy owners. Scaffolder never opens duplicate PRs, merges or deploys
 CI, conflict, deploy and QA coding failures park mechanical work for review instead
 of buying an engineering fallback.
 
-A refusal records its finite stage and redacted bounded diagnostic. Preflight refusal
-is `refused`; work after mutation, lease loss, cancellation or uncertain push is
+A refusal records its finite stage and redacted bounded diagnostic. A refusal while the
+attempt is prepared or preflighted is `refused`; work after mutation, lease loss, cancellation or uncertain push is
 `recovery_required`, retaining exact head and proof. Only its Story is parked;
 cancelled Tasks and unrelated/newer stops are preserved. Expired leases are observed
 by the scheduler, including cancelled running installs. Queue redelivery reads terminal
 operations and never executes or commits again. Owned subprocess groups, heartbeat,
 workspace lock, GitHub pool and project lease are released on all exits.
+A published attempt's checkout is removed (`git worktree remove`) after its last command
+returned and publication settled; every other ending retains it, with its exact head, as
+the operation's evidence. Workspace GC never sweeps `.catalog-install-attempts`, and a
+workspace with a registered attempt worktree counts as preserved work.
 Workspace GC takes the same nonblocking repository flock before preservation checks,
 deletion and API notification. A busy install is protected even without worker metadata.
 The `.catalog-install-locks` directory and lock files are never collected or unlinked:
 install releases after its subprocesses end; GC releases after cleanup notification.
 
+A glue answer whose outstanding items the kit assigns to the product (`owner: product`)
+is handed to engineering once, at the operation's owner, in the refusal's transaction,
+and only while that owner still holds work authority: its live execution lease, the
+current cycle's Story in progress with no stop (`_take_story_roster`), a dispatch-admitted
+Task and an eligible attempt disposition. A stopped, cancelled or expired owner settles
+only its typed refusal, head and checkout on the operation, creates no Task and rewrites
+no dependency. With authority,
+the operation settles `refused` at `preflight` with its typed answer kept in a settlement
+note, one `fix` Task (`created_by: catalog_install_glue`, dispatch-admitted, same story
+and repository, the INSTALL's former predecessor) carries the kit's exact files, lines,
+conflicts and actions with the release and catalog provenance, and the same INSTALL Task
+returns to `todo` behind it with no operation. Its coverage and the product work chained
+after it are unchanged, so the module still precedes the rest of the glue, and the next
+admission is a new operation in a new checkout that re-runs the kit on the repaired story
+head. A second glue answer behind such a repair, glue owned by a package, or a library
+outside the closure parks the Story for a person; no INSTALL or feature Task is created
+on replay.
+
 `POST /tasks/{id}/catalog-install/recovery` requires an authenticated bearer admin,
 selected current operation and matching stop/cause. `recover` requires the retained
 verified head already published on the exact story branch; it performs no kit commands
-or push. `retry` archives prior evidence and returns a reviewed repaired checkout's
-Task to TODO. The operator must first clean/reconcile retained files and align the
-local story branch with its reviewed remote; no executor reset is implicit. A cancelled
+or push. `retry` archives prior evidence and returns the Task to TODO; the next
+admission is a new operation, so it runs in a new attempt checkout of the reviewed remote
+story head, and the retained attempt is left as it was. A cancelled
 Task remains cancelled when retry releases its reviewed blocking operation. Wrong
 cycle/operation, unrelated stop or unpublished/unverified head refuses.
 

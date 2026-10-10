@@ -10,7 +10,7 @@
 # A pull request that changes a capability (the deployer, the secret resolver, allocations, the
 # kit pin, the modules a product may request) changes this file in the same pull request, bumps
 # `version` and re-renders. See AGENTS.md, "Platform capability manifest".
-version: 24
+version: 25
 status: owner-reviewed
 review: product list agreed by the owner 2026-09-28
 
@@ -49,11 +49,14 @@ derived_from:
 can:
   - id: catalog_install
     name: Add a catalog capability
-    plain: An existing bot can add a released catalog capability while retaining its own features.
+    plain: >-
+      A new bot gets its chosen catalog capabilities right after it is created, and an existing
+      bot can add one while retaining its own features.
     how: >-
-      One INSTALL of a stored brief plan or plan_install closure, on clean owned
-      core-{core_version} backend,tg_bot. Scaffolder runs kit add at the payload's catalog commit,
-      validates and hands the exact head to PR/CI/deploy. Glue needs a task after the INSTALL.
+      One INSTALL of a stored plan or plan_install closure on core-{core_version} backend,tg_bot,
+      a draft's after scaffold. Per attempt: own story-head checkout, kit check-install, kit add
+      at the catalog commit, validate, head to PR/CI/deploy. Kit-named product glue gets one
+      repair task first; other glue a task after.
   - id: http_self_address
     name: Plain HTTP self links
     plain: The bot can include plain HTTP self links; their address can change when the product moves.
