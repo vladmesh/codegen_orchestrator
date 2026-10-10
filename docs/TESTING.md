@@ -458,8 +458,13 @@ the activated commit, the draft order and its admission wait, the native scaffol
 transitions bound to the order's ids and stream entries, the kit-classified conflict handoff, one
 published operation per package with its own removed checkout and an admitted preflight of the
 exact release, every confirmed setting written, replayed and read back, the readback negatives,
-and the causal observation preceding the scenario. `tests/unit/test_runner_order_evidence.py`
-proves the verifier refuses forged transitions, an opaque conflict and an ineffective seed.
+and the causal observation preceding the scenario. Each published install's actual `run_install`
+stages, with its persisted typed preflight and admitted closure, also go to the final stand's own
+witness (`tests/live/install_witness.py`); the verifier reruns it on the retained inputs and
+requires acceptance, prepare and check-install exit 3 resolved by textparse for reminders, and
+exit 0 with no library stage for tg-channels. `tests/unit/test_runner_order_evidence.py`
+proves the verifier refuses forged transitions, an opaque conflict and an ineffective seed;
+`tests/unit/test_install_witness.py` that the witness and this gate refuse every unsafe trace.
 The kit's own reusable workflow at that commit cannot prove this
 candidate: its selection reads the catalog at `HEAD`, which this orchestrator refuses to plan an
 install from. The read-only `PLATFORM_SERVICES_DEPLOY_KEY` is used only for a same-repository pull
@@ -796,7 +801,8 @@ default binding under one planning claim held before Architect publication. The 
 through the real timer/relay, then schedules an untimed task with In 5 minutes and cancels it through
 the list's Cancel button. Notes survive the redeploy; the explicit product timezone is Etc/UTC.
 `mechanical-install-<run_id>.json` retains source/service/image digests, admission and operation,
-GitHub branch/base/head and CI/merge/deploy, scoped zero engineering and zero model evidence,
+the native publication's stages with the typed preflight and closure the witness judged, written
+before its verdict so a refusal keeps the observed stage and return code, GitHub branch/base/head and CI/merge/deploy, scoped zero engineering and zero model evidence,
 grant/revoke facts, timezone and message/row identities, timestamps, partial failing stage and
 request-to-deployed duration. The 600-second comparison is informational. The suite ends with
 native revocation, explicit undeploy and the two proofs the run

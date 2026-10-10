@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from framework.spec.package_resolution import CORE_VERSION
 from level1_brief import build_level1_brief
 from level1_change_set import _fixture_text
+import mechanical_install
 from mechanical_install import (
-    check_execution,
     check_readback,
     command_result,
     install_brief,
@@ -89,30 +89,106 @@ def test_notes_reuses_the_released_dependencies_and_registers_owned_handlers():
     assert "CommandHandler" not in main
 
 
-def test_native_git_proof_refuses_missing_stage_hooks_or_force():
+KIT = "https://github.com/vladmesh/codegen-product-kit.git"
+KIT_COMMIT = "7b547c69e508d8e49d2cbab54efcab1df7fc2270"
+
+
+def component(name, version):
+    return {
+        "name": name,
+        "distribution": f"codegen-kit-{name}",
+        "version": version,
+        "tag": f"packages/{name}/v{version}",
+    }
+
+
+def test_a_refused_publication_is_retained_in_the_artifact_before_the_phase_fails(monkeypatch):
+    """A refused publication still leaves its trace; run 38039163997 checked before writing it.
+
+    The stand writes the publication's stages, the operation's typed preflight and the admitted
+    closure into the artifact, then the witness's refusal naming what it observed, then fails.
+    """
     stages = [
-        {"stage": stage, "argv": ["kit", "validate"], "returncode": 0}
-        for stage in (
-            "preflight",
-            "package",
-            "library",
-            "bind",
-            "generate",
-            "validate",
-            "readback",
-            "commit",
-            "push",
-        )
+        {"stage": stage, "argv": ["make", stage], "returncode": 0}
+        for stage in ("preflight", "package", "library", "bind", "generate", "validate")
     ]
-    check_execution(stages)
-    stages[-1]["argv"] = ["git", "push", "origin"]
-    with pytest.raises(Level1PhaseFailed, match="hooks"):
-        check_execution(stages)
-    stages[-1]["argv"] = ["git", "-c", "core.hooksPath=/dev/null", "push", "--force"]
-    with pytest.raises(Level1PhaseFailed, match="forced"):
-        check_execution(stages)
+    operation = {
+        "id": "install-1",
+        "story_id": "story-1",
+        "token": "lease-token",
+        "checkout": "repo-1/install-1",
+        "base_sha": "b" * 40,
+        "head_sha": "h" * 40,
+        # The paid operation's typed answer: textparse requested by reminders itself.
+        "preflight": {
+            "result_version": 1,
+            "package": "reminders",
+            "status": "glue",
+            "product_core": "2.5.0",
+            "target": {
+                "route": "catalog",
+                "catalog_source": KIT,
+                "catalog_ref": KIT_COMMIT,
+                "tag": "packages/reminders/v0.5.0",
+                "version": "0.5.0",
+                "requires_core": ">=2.2,<3",
+                "metadata_sha256": "e" * 64,
+            },
+            "glue": [
+                {
+                    "code": "library_required",
+                    "path": "services/tg_bot/pyproject.toml",
+                    "line": None,
+                    "owner": "package:reminders",
+                    "symbol": "textparse",
+                    "key": None,
+                    "command": "remind",
+                    "conflict": "/remind parses with library 'textparse'",
+                    "action": "run `kit add textparse` before installing reminders",
+                    "other": None,
+                }
+            ],
+            "incompatible": None,
+        },
+    }
+    row = {
+        "event": "catalog_install_published",
+        "operation_id": "install-1",
+        "head_sha": "h" * 40,
+        "execution_stages": stages,
+    }
+    logs = f"scaffolder-1  | {json.dumps(row)}\nscaffolder-1  | not json\n"
+    monkeypatch.setattr(
+        mechanical_install.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=logs),
+    )
+    closure = {
+        "package": component("reminders", "0.5.0"),
+        "libraries": [component("textparse", "0.1.0")],
+        "binding": {
+            "package": "reminders",
+            "resource": "codegen_kit_reminders:bindings/default.yaml",
+            "sha256": "cacf7c5104d845f30674a17b271297dc4e630a516f59bf12791d66e256460149",
+            "functions": ["textparse.when"],
+        },
+        "core_version": "2.5.0",
+        "python_version": "3.12.0",
+        "catalog_digest": "d" * 64,
+        "tooling_commit": KIT_COMMIT,
+        "catalog": {"repository": KIT, "commit": KIT_COMMIT, "catalog_sha256": "a" * 64},
+    }
+    artifact = {}
     with pytest.raises(Level1PhaseFailed, match="every required stage"):
-        check_execution(stages[:-1])
+        mechanical_install.execution_readback(
+            {"mechanical_started_at": "2026-10-10T08:00:00Z"}, artifact, operation, closure
+        )
+    retained = artifact["execution"]
+    assert retained["stages"] == stages and retained["observations"] == 1
+    assert retained["preflight"] == operation["preflight"] and retained["closure"] == closure
+    assert retained["witness"]["accepted"] is False
+    assert "observed ['preflight', 'package', 'library'" in retained["witness"]["reason"]
+    assert "lease-token" not in json.dumps(artifact)
 
 
 def baseline():

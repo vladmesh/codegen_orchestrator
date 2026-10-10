@@ -271,9 +271,7 @@ async def native_third_story(api, api_internal, api_observer, ctx, *, debug_pref
             "publication",
             "third install is not based on reminders merge",
         )
-        artifact["execution_stages"] = m.execution_readback(
-            ctx, operation, libraries=bool(task["install"]["libraries"])
-        )
+        m.execution_readback(ctx, artifact, operation, task["install"])
         enter(artifact, "deploy")
         deployed = await h.wait_brief_deploy_run(api_internal, ctx, timeout=h.DEPLOY_RUN_TIMEOUT)
         m.require(deployed is not None, "deploy", ctx.get("deploy_run_error"))

@@ -29,6 +29,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   conflict reaches the typed glue handoff; its ownership refusals guard only admitted releases.
 - The runner proves a kit-classified product conflict handoff, the bot's behaviour from the saved
   language and channels before the harness scenario, and QA refusing changed settings on the product.
+- The stand's install witness checks the current prepare and typed check-install trace and keeps it
+  in the artifact before its verdict; the runner proof runs the same witness on its real installs.
 
 ## 2026-10-09
 
