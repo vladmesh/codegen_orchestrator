@@ -21,6 +21,7 @@ import pytest
 from redis.asyncio import Redis
 
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerOwnership
+from shared.contracts.worker_evidence import removed_worker_evidence_key
 from shared.queues import WORKER_RESPONSES
 from shared.redis import RedisStreamClient
 from src import qa_egress
@@ -42,6 +43,7 @@ async def _answer(redis: Redis, group: str, request_id: str) -> dict:
     raise AssertionError("worker-manager never answered the delete")
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("fault", [None, "executor", "proxy"])
 async def test_a_qa_executor_delete_succeeds_only_when_docker_shows_it_gone(fault):
     worker_id = f"qa-{secrets.token_hex(6)}"
@@ -105,6 +107,10 @@ async def test_a_qa_executor_delete_succeeds_only_when_docker_shows_it_gone(faul
                 pass
         daemon.close()
         await manager._unregister_broker_worker(worker_id)
-        await redis.delete(f"worker:meta:{worker_id}")
+        await redis.delete(
+            f"worker:meta:{worker_id}",
+            f"worker:status:{worker_id}",
+            removed_worker_evidence_key(ownership.run_id),
+        )
         await stream.close()
         await redis.aclose()
