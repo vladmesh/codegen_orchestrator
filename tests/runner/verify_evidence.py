@@ -142,6 +142,65 @@ def conflict_problems(evidence: dict, production: dict, packages: list[str]) -> 
     return problems
 
 
+#: The stand witness disposition each leg's real install must reach: reminders on a product
+#: without textparse answers kit check-install with its own `library_required` (exit 3) and
+#: adds the library; tg-channels installs mechanically with no library stage.
+WITNESS_PATHS = {
+    "reminders": {"status": "glue", "returncode": 3, "library": True},
+    "tg-channels": {"status": "mechanical", "returncode": 0, "library": False},
+}
+
+
+def stand_witness_problems(evidence: dict, packages: list[str]) -> list[str]:
+    """Why the final stand's witness did not accept each package's actual native install.
+
+    The adapter handed each `run_install` result to `tests/live/install_witness.py` and
+    retained its input stages and disposition. They must be the stages the harness recorded
+    for the same result; the witness, run again here on them with the operation's persisted
+    typed preflight and the installed closure, must accept them with the same disposition;
+    and each package must take its expected path through prepare, check-install and library.
+    """
+    from tests.live.install_witness import WitnessRefused, check_execution  # noqa: PLC0415
+
+    problems = []
+    for name in packages:
+        operation = evidence.get("operations", {}).get(name)
+        witness = (operation or {}).get("stand_witness")
+        if not witness or "disposition" not in witness:
+            problems.append(f"{name}: no stand witness evidence")
+            continue
+        if witness["stages"] != evidence.get("installs", {}).get(name, {}).get("stages"):
+            problems.append(f"{name}: the witnessed stages are not the executor's recorded stages")
+            continue
+        try:
+            again = check_execution(
+                witness["stages"],
+                preflight=operation["preflight"],
+                install=evidence["install_payloads"][name],
+                operation_id=operation["operation_id"],
+                story_id=operation["story_id"],
+                checkout=operation["checkout"],
+                base_sha=operation["base_sha"],
+            )
+        except WitnessRefused as refusal:
+            again = refusal.disposition()
+        if again != witness["disposition"] or again["accepted"] is not True:
+            problems.append(f"{name}: the stand witness refused: {again}")
+            continue
+        path = WITNESS_PATHS.get(name)
+        libraries = [item["name"] for item in evidence["install_payloads"][name]["libraries"]]
+        if path is None or (
+            again["stages"][0] != "prepare"
+            or again["preflight"]["status"] != path["status"]
+            or again["preflight"]["returncode"] != path["returncode"]
+            or ("library" in again["stages"]) != path["library"]
+            or bool(libraries) != path["library"]
+            or again["preflight"]["resolved_by_closure"] != (libraries if path["library"] else [])
+        ):
+            problems.append(f"{name}: the witnessed install did not take its leg's path: {again}")
+    return problems
+
+
 def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) -> dict:  # noqa: C901, PLR0912, PLR0915 - one ordered evidence contract
     pinned = {
         "kit": args.kit_sha,
@@ -282,6 +341,8 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
     )
     handoff = conflict_problems(evidence, production, args.packages.split(","))
     assert not handoff, handoff
+    witnessed = stand_witness_problems(evidence, packages)
+    assert not witnessed, witnessed
     assert evidence["matrix"]["packages"] == packages, evidence["matrix"]
     assert sorted(evidence["installs"]) == sorted(packages), sorted(evidence["installs"])
     assert evidence["module"]["version"] == release["version"] == args.package_version, release
@@ -348,6 +409,10 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
             | {"preflight": operation["preflight"]["status"]}
             for name, operation in operations.items()
         },
+        "stand_witness": {
+            name: operation["stand_witness"]["disposition"]
+            for name, operation in operations.items()
+        },
         "confirmed_settings": values,
         "delivered_post": scenario["delivered_post"],
         "access_acknowledgments": [
@@ -366,6 +431,8 @@ def main() -> int:
     parser.add_argument("--packages", required=True)
     parser.add_argument("--package-version", required=True)
     args = parser.parse_args()
+    # The orchestrator tree, for `shared` and the stand witness the evidence must satisfy.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     sys.path.insert(0, str(args.kit_dir / "tests/runner"))
     import support  # noqa: PLC0415 - the pinned kit's own evidence helpers
 

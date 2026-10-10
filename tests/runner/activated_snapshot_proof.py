@@ -432,10 +432,50 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
                 finally:
                     install._run_cmd = harness_transport
                 runner.evidence.setdefault("operations", {})[name] = record
+                runner.stand_witness(name, result, record)
                 runner.follow_story(record["story_id"], result.head_sha, install)
                 return result
 
             return owned
+
+        def stand_witness(self, name: str, result: Any, record: dict) -> None:
+            """The final stand's witness, run on this operation's actual `run_install` result.
+
+            Its inputs are retained first: the executor's stages (redacted as the harness
+            redacts its own copy), beside the operation's persisted typed preflight and the
+            admitted closure already in the evidence; then its disposition, so a refusal keeps
+            the observed stage, command and return code.
+            """
+            from tests.live.install_witness import (  # noqa: PLC0415 - on the harness path
+                WitnessRefused,
+                check_execution,
+            )
+
+            retained = record["stand_witness"] = {
+                "stages": [
+                    {
+                        "stage": item["stage"],
+                        "argv": [self.redact(str(arg)) for arg in item["argv"]],
+                        "returncode": item["returncode"],
+                    }
+                    for item in result.stages
+                ]
+            }
+            try:
+                retained["disposition"] = check_execution(
+                    retained["stages"],
+                    preflight=record["preflight"],
+                    install=self.production["install_tasks"][name]["install"],
+                    operation_id=record["operation_id"],
+                    story_id=record["story_id"],
+                    checkout=record["checkout"],
+                    base_sha=record["base_sha"],
+                )
+            except WitnessRefused as refusal:
+                retained["disposition"] = refusal.disposition()
+                raise fresh_product.ProofError(
+                    f"{name}: the stand witness refused the native install: {refusal}"
+                ) from refusal
 
         def delivered_install(self, name: str, install: Any, executor: Any, fence: Any):
             """One dispatch tick and its delivery; the executor result when it ran."""

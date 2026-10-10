@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import time
 
+from install_witness import WitnessRefused, witness_publication
 from level1_brief import Level1Brief
 import pipeline_helpers as h
 from run_evidence import evidence_output_directory
@@ -234,49 +235,8 @@ def model_observation(ctx):
     }
 
 
-def check_execution(stages, *, libraries=True):
-    require(
-        {row["stage"] for row in stages}
-        == (
-            {
-                "preflight",
-                "package",
-                "library",
-                "bind",
-                "generate",
-                "validate",
-                "readback",
-                "commit",
-                "push",
-            }
-            - (set() if libraries else {"library"})
-        ),
-        "execution",
-        "native executor did not retain every required stage",
-    )
-    for row in stages:
-        argv = row["argv"]
-        absent_local_branch = (
-            row["stage"] == "preflight"
-            and row["returncode"] == 1
-            and argv[:6]
-            == ["git", "-c", "core.hooksPath=/dev/null", "show-ref", "--quiet", "--verify"]
-        )
-        require(row["returncode"] == 0 or absent_local_branch, "execution", "native stage failed")
-        if argv[0] == "git":
-            require(
-                argv[1:3] == ["-c", "core.hooksPath=/dev/null"],
-                "execution",
-                "native Git did not bypass product hooks",
-            )
-            require(
-                not any(arg.startswith("--force") or arg == "-f" for arg in argv),
-                "execution",
-                "native Git unexpectedly forced publication",
-            )
-
-
-def execution_readback(ctx, operation, *, libraries=True):
+def execution_readback(ctx, artifact, operation, install):
+    """The operation's one native publication, retained in the artifact before it is witnessed."""
     result = subprocess.run(
         [
             "docker",
@@ -292,23 +252,19 @@ def execution_readback(ctx, operation, *, libraries=True):
         timeout=30,
     )
     require(result.returncode == 0, "execution", "native publication logs could not be read")
-    matches = []
+    rows = []
     for line in result.stdout.splitlines():
         _, separator, payload = line.partition("|")
         try:
             row = json.loads(payload if separator else line)
         except ValueError:
             continue
-        if (
-            row.get("event") == "catalog_install_published"
-            and row.get("operation_id") == operation["id"]
-        ):
-            matches.append(row)
-    require(len(matches) == 1, "execution", "expected one native publication observation")
-    require(matches[0]["head_sha"] == operation["head_sha"], "execution", "published head differs")
-    stages = matches[0]["execution_stages"]
-    check_execution(stages, libraries=libraries)
-    return stages
+        if isinstance(row, dict):
+            rows.append(row)
+    try:
+        return witness_publication(artifact, rows, operation, install)
+    except WitnessRefused as refusal:
+        raise h.Level1PhaseFailed("execution", str(refusal)) from refusal
 
 
 def qa_probe(ctx):
@@ -707,7 +663,7 @@ async def native_second_story(  # noqa: PLR0915 - native owners execute each acc
             "publication",
             "operation has no verified published head",
         )
-        artifact["execution_stages"] = execution_readback(ctx, operation)
+        execution_readback(ctx, artifact, operation, task["install"])
         require(
             operation["verification"]["binding_sha256"] == task["install"]["binding"]["sha256"]
             and operation["verification"]["tooling_commit"] == task["install"]["tooling_commit"],
