@@ -1,7 +1,8 @@
 # The orchestrator API of this checkout, with its own database and Redis, for the runner
-# proof's production planning path (tests/runner/production_plan.py). The API image is the
+# proof's production order path (tests/runner/production_plan.py and the scheduler and
+# scaffolder transitions of tests/runner/native_lifecycle.py). The API image is the
 # production Dockerfile; its entrypoint migrates the database and seeds the system configs,
-# exactly as a deployment does. Only the loopback port is published.
+# exactly as a deployment does. Only loopback ports are published.
 name: runner-orchestrator
 
 services:
@@ -51,6 +52,9 @@ services:
 
   redis:
     image: redis:7.4.10-alpine
+    # The scheduler ticks and the scaffolder's deliveries run on the runner host.
+    ports:
+      - "127.0.0.1:${RUNNER_REDIS_PORT:?}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

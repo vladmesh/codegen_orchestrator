@@ -50,8 +50,9 @@ from src.consumers.architect import _plan
 from src.kit_catalog import KitCatalog, get_kit_catalog_reader
 from src.llm import channel_usage
 
-#: The explicit answers a user gives to each kind of required question.
-ANSWERS = {"product_language": "en", "product_timezone": "UTC"}
+#: The explicit answers a user gives to each kind of required question. The language is the
+#: one the harness's own scenario does not start from, so the bot's first reply proves it.
+ANSWERS = {"product_language": "ru", "product_timezone": "UTC"}
 #: The capability whose initial channels the user lists.
 CHANNELS_PACKAGE = "tg-channels"
 
@@ -103,6 +104,24 @@ async def _setup(api: InternalAPIClient) -> tuple[int, str, dict]:
     )
     _check(rollout.status_code in {200, 201}, f"rollout: {rollout.text}")
     return telegram_id, project_id, repository
+
+
+async def _confirmation_replay(api: InternalAPIClient, project_id: str, brief_id: str, config):
+    """Confirming the same revision again, through the PO tool and the API, changes nothing."""
+    before = (await api.get_raw(f"product-briefs/{brief_id}")).json()
+    tool = await confirm_product_brief.ainvoke(
+        {"project_id": project_id, "brief_id": brief_id}, config=config
+    )
+    _check("already confirmed" in tool, f"tool replay: {tool}")
+    again = await api.post_raw(
+        f"product-briefs/{brief_id}/confirm",
+        json={"request_id": f"po-brief-confirm:{brief_id}", "content": before["content"]},
+    )
+    _check(again.status_code == 200, f"API replay: {again.status_code} {again.text}")
+    after = again.json()
+    for key in ("id", "revision", "confirmed_at", "content"):
+        _check(after[key] == before[key], f"API replay changed {key}")
+    return {"brief_id": brief_id, "revision": after["revision"], "tool": tool[:200]}
 
 
 def _answer(question: dict, channels: list[str], request_package: dict[str, str]) -> object:
@@ -222,6 +241,8 @@ async def run(packages: list[str], channels: list[str]) -> dict:  # noqa: C901, 
     _check("confirmed and frozen" in confirmed, f"not confirmed: {confirmed}")
     plan = await api_client.get_capability_plan(brief_id)
     _check(plan is not None, "the confirmed brief has no stored plan")
+    replay = await _confirmation_replay(api, project_id, brief_id, config)
+    _check(await api_client.get_capability_plan(brief_id) == plan, "replay changed the plan")
     story = await api.post_raw("stories/", json={"project_id": project_id, "title": "Runner"})
     _check(story.status_code == 201, f"story: {story.text}")
     story_id = story.json()["id"]
@@ -276,6 +297,7 @@ async def run(packages: list[str], channels: list[str]) -> dict:  # noqa: C901, 
             "reason": waiting["reason"],
         },
         "initial_channels": channels,
+        "confirmation_replay": replay,
         "preview": {key: preview[key] for key in ("preview_id", "routes", "questions")},
         "brief_id": brief_id,
         "story_id": story_id,

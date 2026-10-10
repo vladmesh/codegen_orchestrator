@@ -139,3 +139,4 @@ services:
       - ../../../services/langgraph/tests:/app/tests
       - ../../../shared:/app/shared
       - ../../../services/scheduler/src:/app/scheduler/src:ro
+      - ../../../services/scaffolder/src:/app/scaffolder/src:ro

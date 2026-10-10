@@ -430,22 +430,37 @@ before and after the installs, with the real default branch's HEAD recorded besi
 are the INSTALL tasks that `tests/runner/production_plan.py` persisted through the production path —
 a new owner's draft order from the PO's `create_project` tool (pending repository, nothing
 scaffolded), the PO's preview, brief and confirmation tools with the language and a nonempty list of
-initial channels answered, the API image and its database (`tests/runner/compose.orchestrator.yml`),
-the stored plan and the Architect's first planning attempt on that draft, with no model; its first
+initial channels answered (and the confirmation replayed through the tool and the API, changing
+nothing), the API image, its database and Redis (`tests/runner/compose.orchestrator.yml`), the
+stored plan and the Architect's first planning attempt on that draft, with no model; its first
 request names no capability id, so its catalog phrase alone must resolve the module, and install
-admission must refuse `workspace_not_ready` before the scaffold. Around the harness's unchanged
-stages the adapter records the harness's fresh scaffold through the scaffolder's own completion
-writer, admits and claims each install through the API and runs it through the scaffolder's install
-consumer in the operation's own attempt checkout under the kit's `check-install`, then follows the
-published head in the harness's checkout; before the scenario,
-`tests/runner/production_settings.py` writes the confirmed answers through the production settings
-client and reads them back with QA's own pre-judgement check. `tests/runner/verify_evidence.py`
+admission must refuse `workspace_not_ready` before the scaffold. The order lifecycle then runs in
+its production owners (`tests/runner/native_lifecycle.py`): one tick of the scheduler's
+`trigger_scaffolds` publishes the full scaffold, the scaffolder's consumer group reads it and its
+`process_scaffold_job` runs Copier, `make setup`, the push and the readiness record; each install
+the harness asks for is one tick of `dispatch_todo_tasks` and the delivery of that entry to the
+same entrypoint, which claims, fences and runs it in its own attempt checkout. GitHub is the one
+declared controlled edge: the scaffolder's GitHub App client is answered by the adapter and git
+reaches a local bare repository. Before the target package a fixture commit retains its binding
+with a product-owned language key and declares a product command it claims; the kit's
+check-install must classify both, the API must hand them to one repair task, a redelivery must run
+nothing, and after a deterministic revert a fresh operation installs. After deploy,
+`tests/runner/production_settings.py` seeds the confirmed answers through the production settings
+client, reads them back with QA's own pre-judgement check and replays the seed; an observer chat
+then sees the bot answer in the saved language and start with the saved channels (the module's
+own API confirms and removes that list) before the harness writes any setting or subscribes
+anybody; then QA's check must refuse a changed channel list and an undeclared key on the deployed
+product, and a seed replay restores the confirmed values. `tests/runner/verify_evidence.py`
 requires the passed, SHA-bound evidence: the kit's published-release checks, including the
 grant/revoke/grant access acknowledgment cycle, plus that every route names the capability its
 stored plan installs and that stored plan, persisted task and installed payload are one closure at
-the activated commit, the draft order and its admission wait, the scaffolder's completion record,
-one published operation per package with its own removed checkout and an admitted preflight of the
-exact release, and every confirmed setting written and read back, initial channels included. The kit's own reusable workflow at that commit cannot prove this
+the activated commit, the draft order and its admission wait, the native scaffold and install
+transitions bound to the order's ids and stream entries, the kit-classified conflict handoff, one
+published operation per package with its own removed checkout and an admitted preflight of the
+exact release, every confirmed setting written, replayed and read back, the readback negatives,
+and the causal observation preceding the scenario. `tests/unit/test_runner_order_evidence.py`
+proves the verifier refuses forged transitions, an opaque conflict and an ineffective seed.
+The kit's own reusable workflow at that commit cannot prove this
 candidate: its selection reads the catalog at `HEAD`, which this orchestrator refuses to plan an
 install from. The read-only `PLATFORM_SERVICES_DEPLOY_KEY` is used only for a same-repository pull
 request or a main push, and checkouts keep no credentials.

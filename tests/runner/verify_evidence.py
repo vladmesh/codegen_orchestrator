@@ -17,6 +17,131 @@ import sys
 import yaml
 
 
+def seed_causality_problems(observation: dict, replies: dict) -> list[str]:
+    """Why the observed bot behaviour was not caused by the saved language and channels.
+
+    The observer's first reply to `/channel` must be the empty-name answer in the saved
+    language, its first reply to `/channels` the first saved channel, the module's own list
+    for it exactly the saved channels, and nothing left subscribed afterwards. Each reply is
+    the observer chat's first after its own input, whatever it says: nothing is filtered.
+    """
+    problems = []
+    expected = observation["expected"]
+    observer = observation["observer"]
+    if observation["grant"]["status"] != 200:
+        problems.append(f"the observer was not granted: {observation['grant']}")
+    for kind, text in (
+        ("language", replies[expected["language"]]["channel"]),
+        ("channels", f"@{expected['channels'][0]}" if expected["channels"] else None),
+    ):
+        record = observation.get(kind)
+        reply = None if record is None else record.get("reply")
+        if not reply or reply.get("chat_id") != observer or reply["seq"] <= record["watermark"]:
+            problems.append(f"no {kind} reply in the observer chat after its input")
+        elif text is None or reply.get("text") != text:
+            problems.append(f"the first {kind} reply is {reply.get('text')!r}, not {text!r}")
+    listed = observation.get("module_list", {})
+    channels = sorted(item.get("channel") for item in listed.get("body") or [])
+    if listed.get("status") != 200 or channels != sorted(expected["channels"]):
+        problems.append(f"the module lists {listed} for a new user, not {expected['channels']}")
+    after = observation.get("cleanup", {}).get("after", {})
+    if after.get("status") != 200 or after.get("body") != []:
+        problems.append(f"the observer kept a subscription: {after}")
+    return problems
+
+
+def lifecycle_problems(evidence: dict, production: dict) -> list[str]:
+    """The native order transitions, bound to this order's own ids, or why they are missing.
+
+    One scheduler scaffold publication delivered to the scaffolder's entrypoint and recorded
+    ready, then one dispatch publication and delivery per installed operation; a step whose
+    stream entry, delivery or ids do not match is a forged or missing transition.
+    """
+    problems = []
+    steps = evidence.get("lifecycle", {}).get("steps", [])
+    scaffolds = [step for step in steps if step["kind"] == "full_scaffold"]
+    if len(scaffolds) != 1:
+        return [f"{len(scaffolds)} full scaffolds recorded"]
+    scaffold = scaffolds[0]
+    if (
+        scaffold["tick"]["entry_id"] != scaffold["delivery"]["entry_id"]
+        or scaffold["delivery"]["result"] != {"status": "success"}
+        or scaffold["message"]
+        != {
+            "project_id": production["project_id"],
+            "repository_id": production["repository"]["id"],
+            "mode": "full",
+        }
+        or scaffold["project"]["status"] != "active"
+        or scaffold["project"]["workspace_ready"] is not True
+        or scaffold["project"]["service_template"]["commit"] != str(evidence["template"]["commit"])
+        or not scaffold["repository"]["git_url"].startswith("https://github.com/")
+        or not any(call["call"] == "create_repo" for call in scaffold["github_calls"])
+    ):
+        problems.append(f"the full scaffold transition is not native: {scaffold}")
+    if steps.index(scaffold) != 0:
+        problems.append("a step preceded the full scaffold")
+    installs = [step for step in steps if step["kind"] == "install"]
+    for name, operation in evidence.get("operations", {}).items():
+        mine = [step for step in installs if step["package"] == name]
+        if len(mine) != 1:
+            problems.append(f"{name}: {len(mine)} install deliveries")
+            continue
+        step = mine[0]
+        if (
+            step["tick"]["entry_id"] != step["delivery"]["entry_id"]
+            or step["tick"]["entry_id"] != operation["dispatch_entry_id"]
+            or step["delivery"]["entry_id"] != operation["delivery_entry_id"]
+            or step["tick"]["operation_id"] != operation["operation_id"]
+            or step["delivery"]["result"].get("status") != "success"
+            or step["delivery"]["result"].get("operation_id") != operation["operation_id"]
+        ):
+            problems.append(f"{name}: the install delivery is not native: {step}")
+    return problems
+
+
+def conflict_problems(evidence: dict, production: dict, packages: list[str]) -> list[str]:
+    """The kit-classified product conflict, its typed handoff, replay and fresh install."""
+    problems = []
+    handoffs = evidence.get("conflict_handoff", {})
+    target = "tg-channels"
+    if target not in packages:
+        return problems
+    record = handoffs.get(target)
+    if record is None:
+        return [f"no conflict handoff for {target}"]
+    operation = record["operation"]
+    glue = operation["preflight"]["glue"]
+    codes = {item["code"] for item in glue}
+    final = evidence["operations"][target]
+    repair = record["repair_task"]
+    if (
+        record["executed"]
+        or record["delivery_result"].get("stage") != "preflight"
+        or operation["state"] != "refused"
+        or operation["stage"] != "preflight"
+        or operation["preflight"]["status"] != "glue"
+        or not {"binding_language_owner", "command_collision"} <= codes
+        or any(item["owner"] != "product" or not item["path"] for item in glue)
+        or operation["preflight"]["target"]["catalog_ref"]
+        != production["plan"]["activation"]["commit"]
+        or operation["base_sha"] != record["fixture_commit"]
+        or record["task_after"]["install_operation"] is not None
+        or record["task_after"]["blocked_by_task_id"] != repair["id"]
+        or repair["type"] != "fix"
+        or repair["created_by"] != "catalog_install_glue"
+        or repair["dispatch_admitted"] is not True
+        or repair["story_id"] != production["story_id"]
+        or not all(item["action"] in repair["description"] for item in glue)
+        or record["redelivery"]["result"].get("status") != "skipped"
+        or final["operation_id"] == operation["id"]
+        or final["base_sha"] != record["repair_commit"]
+        or final["checkout"] == operation.get("checkout")
+    ):
+        problems.append(f"the conflict handoff did not hold: {record} / {final}")
+    return problems
+
+
 def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) -> dict:  # noqa: C901, PLR0912, PLR0915 - one ordered evidence contract
     pinned = {
         "kit": args.kit_sha,
@@ -97,10 +222,11 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
     assert production["project_status_at_planning"] == "draft", production
     assert production["repository"]["git_url"].startswith("pending://"), production
     assert production["admission_before_scaffold"]["reason"] == "workspace_not_ready", production
-    scaffold = production["scaffold"]
-    assert scaffold["recorded_by"] == "scaffolder.src.consumer._update_project_on_success"
-    assert scaffold["project_status"] == "active" and scaffold["workspace_ready"] is True
-    assert scaffold["service_template"]["commit"] == str(evidence["template"]["commit"]), scaffold
+    replay = production["confirmation_replay"]
+    assert replay["brief_id"] == production["brief_id"], replay
+    assert "already confirmed" in replay["tool"], replay
+    steps = lifecycle_problems(evidence, production)
+    assert not steps, steps
     # Each install was an admitted, claimed operation in its own checkout, under the kit's
     # read-only preflight of the exact persisted release.
     operations = evidence["operations"]
@@ -108,6 +234,9 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
     for name in packages:
         operation = operations[name]
         assert operation["task_id"] == production["install_tasks"][name]["task_id"], name
+        assert operation["story_id"] == production["story_id"], operation
+        assert operation["project_id"] == production["project_id"], operation
+        assert operation["repository_id"] == production["repository"]["id"], operation
         assert operation["task_status"] == "done" and operation["state"] == "published", name
         assert operation["checkout"] == (
             f"{production['repository']['id']}/{operation['operation_id']}"
@@ -136,6 +265,23 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
     assert values.get("language") in support.LANGUAGES, values
     assert all(item["written"] for item in confirmed["seed"]), confirmed["seed"]
     assert confirmed["readback"] is None, confirmed["readback"]
+    assert all(item["written"] for item in confirmed["replay"]), confirmed["replay"]
+    assert confirmed["replay_readback"] is None, confirmed["replay_readback"]
+    assert confirmed["negatives"]["problems"] == [], confirmed["negatives"]
+    assert confirmed["negatives"]["mismatch"] and confirmed["negatives"]["undeclared"]
+    # Behaviour caused by the saved answers, observed before the harness writes or subscribes.
+    causality = seed_causality_problems(evidence["seed_causality"], support.LANGUAGE_REPLIES)
+    assert not causality, causality
+    assert evidence["seed_causality"]["expected"] == {
+        "language": values["language"],
+        "channels": values["tg_channels.starting_channels"],
+    }, evidence["seed_causality"]["expected"]
+    assert (
+        evidence["seed_causality"]["channels"]["reply"]["seq"]
+        < evidence["scenario"]["negative_unknown_key"]["reply"]["seq"]
+    )
+    handoff = conflict_problems(evidence, production, args.packages.split(","))
+    assert not handoff, handoff
     assert evidence["matrix"]["packages"] == packages, evidence["matrix"]
     assert sorted(evidence["installs"]) == sorted(packages), sorted(evidence["installs"])
     assert evidence["module"]["version"] == release["version"] == args.package_version, release

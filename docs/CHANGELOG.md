@@ -23,8 +23,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   current story; a stopped or expired owner settles the typed answer and creates no work.
 - QA reads every confirmed setting, the stored plan's answers included, back from the product before
   any verdict; a missing or different value is a named QA blocker.
-- The runner proof starts from a draft order and runs each install through API admission and the
-  scaffolder consumer, then seeds and reads back the confirmed answers, initial channels included.
+- The runner proof drives its draft order through the scheduler's scaffold and dispatch ticks and the
+  scaffolder entrypoint from Redis; GitHub is its one controlled edge.
+- The install probe checks provenance before the kit's check-install, so a product language or command
+  conflict reaches the typed glue handoff; its ownership refusals guard only admitted releases.
+- The runner proves a kit-classified product conflict handoff, the bot's behaviour from the saved
+  language and channels before the harness scenario, and QA refusing changed settings on the product.
 
 ## 2026-10-09
 
