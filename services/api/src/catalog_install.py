@@ -112,6 +112,34 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
             _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
         return await save("settled")
 
+    async def holds_work_authority():
+        """Whether this refusing owner may still create work, not only settle evidence.
+
+        New engineering work needs what admission needed: the live execution lease, the
+        current cycle's story in progress with no stop (`_take_story_roster`), a
+        dispatch-admitted task and an eligible attempt disposition. A stopped, cancelled
+        or expired owner keeps its typed refusal on the operation and nothing else.
+        """
+        if (
+            reason is not None
+            or story.status != StoryStatus.IN_PROGRESS.value
+            or not task.dispatch_admitted
+            or operation.heartbeat_at is None
+            or operation.heartbeat_at + INSTALL_LEASE < now
+        ):
+            return False
+        runs = list(
+            (
+                await db.scalars(
+                    select(Run)
+                    .where(Run.project_id == project.id, Run.type == RunType.ENGINEERING.value)
+                    .order_by(Run.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        return await locked_disposition(story, task, runs, db) is AttemptDisposition.ELIGIBLE
+
     async def hand_off_glue(description):
         """One concrete product repair, then this same INSTALL again, on the repaired head.
 
@@ -187,7 +215,7 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
                 operation.preflight = command.preflight
             stage = command.stage or operation.stage
             repair = _glue_repair(task, operation, stage, payload, locked, cycle)
-            if repair is not None:
+            if repair is not None and await holds_work_authority():
                 return await hand_off_glue(repair)
             return await park(
                 stage,

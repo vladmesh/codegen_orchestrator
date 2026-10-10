@@ -625,3 +625,81 @@ async def test_glue_the_product_cannot_write_parks_for_a_person(install_task, as
     assert install["install_operation"]["preflight"] == answer
     tasks = (await async_client.get(f"/api/tasks/?story_id={install_task['story_id']}")).json()
     assert [task["type"] for task in tasks] == ["install"]
+
+
+async def _graph(async_client, task):
+    """Every task of the INSTALL's story, with its operation and blocker, by id."""
+    tasks = (await async_client.get(f"/api/tasks/?story_id={task['story_id']}")).json()
+    return {
+        item["id"]: (
+            item["type"],
+            item["status"],
+            item["blocked_by_task_id"],
+            item["dispatch_admitted"],
+        )
+        for item in tasks
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost", ["stopped", "expired"])
+async def test_a_refusing_owner_without_work_authority_settles_glue_and_creates_no_work(
+    install_task, async_client, db_session, lost
+):
+    """A stopped story or an expired lease keeps its typed answer; no repair, no admission."""
+    identity = await claimed(async_client, install_task)
+    checkout = f"{install_task['repository_id']}/{identity['operation_id']}"
+    await command(async_client, install_task, "checkpoint", checkout=checkout, **identity)
+    if lost == "stopped":
+        # The native human-review stop lands while the preflight runs; INSTALL stays in_dev.
+        await post(async_client, f"/api/stories/{install_task['story_id']}/human-review")
+    else:
+        task = await db_session.get(Task, install_task["id"])
+        task.install_operation = {
+            **task.install_operation,
+            "heartbeat_at": (datetime.now(UTC) - timedelta(minutes=20)).isoformat(),
+        }
+        await db_session.commit()
+    before = await _graph(async_client, install_task)
+    answer = preflight("glue", [glue("command_conflict", symbol="handle_remind")])
+
+    settled = await refuse_with(async_client, install_task, identity, answer)
+
+    operation = settled["operation"]
+    assert settled["outcome"] == "settled"
+    assert operation["state"] == "refused" and operation["stage"] == "preflight"
+    assert operation["preflight"] == answer and operation["checkout"] == checkout
+    # No repair, no admission, no rewritten dependency, and the operation is retained.
+    graph = await _graph(async_client, install_task)
+    assert set(graph) == set(before)
+    assert graph[install_task["id"]][2] == before[install_task["id"]][2]
+    stored = (await async_client.get(f"/api/tasks/{install_task['id']}")).json()
+    assert stored["install_operation"] == operation
+    assert stored["status"] == "waiting_human_review"
+    events = (await async_client.get(f"/api/tasks/{install_task['id']}/events")).json()
+    assert not any("glue_repair_task_id" in event["details"] for event in events)
+
+    # A lost response replays the same refusal: settled once, nothing more created.
+    replay = await refuse_with(async_client, install_task, identity, answer)
+    assert replay["outcome"] == "settled" and replay["operation"] == operation
+    assert await _graph(async_client, install_task) == graph
+    assert (await async_client.get(f"/api/tasks/{install_task['id']}/events")).json() == events
+    readmitted = await command(async_client, install_task, "admit")
+    assert readmitted["outcome"] == "settled" and readmitted["operation"] == operation
+
+
+@pytest.mark.asyncio
+async def test_an_authorized_glue_handoff_replays_without_a_second_repair(
+    install_task, async_client
+):
+    identity = await claimed(async_client, install_task)
+    answer = preflight("glue", [glue("command_conflict", symbol="handle_remind")])
+    first = await refuse_with(async_client, install_task, identity, answer)
+    graph = await _graph(async_client, install_task)
+    assert sorted(kind for kind, *_ in graph.values()) == ["fix", "install"]
+
+    # The response was lost: the owner repeats the same refusal with the same token.
+    replay = await refuse_with(async_client, install_task, identity, answer)
+
+    assert replay["outcome"] == "refused" and first["outcome"] == "settled"
+    assert await _graph(async_client, install_task) == graph

@@ -305,7 +305,12 @@ The `.catalog-install-locks` directory and lock files are never collected or unl
 install releases after its subprocesses end; GC releases after cleanup notification.
 
 A glue answer whose outstanding items the kit assigns to the product (`owner: product`)
-is handed to engineering once, at the operation's owner, in the refusal's transaction:
+is handed to engineering once, at the operation's owner, in the refusal's transaction,
+and only while that owner still holds work authority: its live execution lease, the
+current cycle's Story in progress with no stop (`_take_story_roster`), a dispatch-admitted
+Task and an eligible attempt disposition. A stopped, cancelled or expired owner settles
+only its typed refusal, head and checkout on the operation, creates no Task and rewrites
+no dependency. With authority,
 the operation settles `refused` at `preflight` with its typed answer kept in a settlement
 note, one `fix` Task (`created_by: catalog_install_glue`, dispatch-admitted, same story
 and repository, the INSTALL's former predecessor) carries the kit's exact files, lines,

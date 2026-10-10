@@ -19,6 +19,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   product's prepare-env, so a dirty or unpublished shared workspace no longer blocks or leaks into it.
 - The kit's read-only `check-install` admits each install first; its typed answer is saved on the
   operation, and product glue becomes one repair task before the same INSTALL instead of a park.
+- A glue refusal creates its repair only while its owner holds a live lease and an unstopped
+  current story; a stopped or expired owner settles the typed answer and creates no work.
 - QA reads every confirmed setting, the stored plan's answers included, back from the product before
   any verdict; a missing or different value is a named QA blocker.
 - The runner proof starts from a draft order and runs each install through API admission and the
