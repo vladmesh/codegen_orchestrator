@@ -35,11 +35,11 @@ def select_payload():
     code = """
 import asyncio, sys
 from pathlib import Path
-from src.kit_catalog import KitCatalogReader, catalog_url
+from src.kit_catalog import get_kit_catalog_reader
 from src.catalog_install import plan_install_payload
 async def main():
-    source='https://raw.githubusercontent.com/vladmesh/codegen-product-kit'
-    snapshot=await KitCatalogReader(catalog_url(source, 'HEAD'), component_source=source).read()
+    # The production reader: the activated snapshot's commit, verified against its digests.
+    snapshot=await get_kit_catalog_reader().read()
     payload=plan_install_payload(snapshot, 'reminders', '3.12.0')
     Path(sys.argv[1]).write_text(payload.model_dump_json())
 asyncio.run(main())

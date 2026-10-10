@@ -37,6 +37,11 @@ def install_payload():
         "python_version": "3.12.0",
         "catalog_digest": "b" * 64,
         "tooling_commit": "c" * 40,
+        "catalog": {
+            "repository": "https://github.com/vladmesh/codegen-product-kit.git",
+            "commit": "d" * 40,
+            "catalog_sha256": "e" * 64,
+        },
     }
 
 

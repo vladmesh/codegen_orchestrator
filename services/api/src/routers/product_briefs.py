@@ -63,7 +63,7 @@ from shared.models import ProductBrief, Project, RequirementCoverage, Story, Tas
 from shared.product_brief_text import render_full_brief_sections
 
 from ..database import get_async_session
-from ..dependencies import _optional_bearer_scheme, is_internal_service
+from ..dependencies import _optional_bearer_scheme, is_internal_service, require_service_actor
 from ._product_brief_helpers import (
     attempt_heartbeat_is_fresh,
     load_brief_for_update,
@@ -426,18 +426,15 @@ async def _require_current_capability_plan(
         raise capability_refusal(CapabilityRefusalCode.PLAN_DRIFT, status.HTTP_409_CONFLICT)
 
 
-@router.get("/{brief_id}/capability-plan", response_model=CapabilityPlan)
+@router.get(
+    "/{brief_id}/capability-plan",
+    response_model=CapabilityPlan,
+    dependencies=[Depends(require_service_actor)],
+)
 async def get_product_brief_capability_plan(
-    brief_id: str,
-    db: AsyncSession = Depends(get_async_session),
-    internal: bool = Depends(is_internal_service),
+    brief_id: str, db: AsyncSession = Depends(get_async_session)
 ) -> CapabilityPlan:
-    """The technical plan stored beside a revision. Internal callers only."""
-    if not internal:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="the capability plan is read by the platform only",
-        )
+    """The technical plan stored beside a revision. The platform only."""
     brief = (
         await db.execute(select(ProductBrief).where(ProductBrief.id == brief_id))
     ).scalar_one_or_none()

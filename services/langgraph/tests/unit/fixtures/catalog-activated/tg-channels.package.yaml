@@ -1,0 +1,136 @@
+protocol_version: 1
+name: tg-channels
+version: 0.1.2
+requires_core: ">=2.4,<3"
+provides: []
+requires: []
+package_dependencies: [alembic, fastapi, faststream, httpx, pydantic, redis, sqlalchemy]
+http:
+  prefix: /tg-channels
+database:
+  schema: tg_channels
+  migrations: codegen_kit_tg_channels:migrations
+deployment:
+  modes: [in_process]
+events:
+  publishes: [tg-channels.post]
+  consumes: [job_fired]
+  messages:
+    tg-channels.post:
+      model: ChannelPost
+      recipient: user_ref
+      schema:
+        type: object
+        properties:
+          user_ref: {type: string}
+          channel: {type: string}
+          date: {type: string}
+          text: {type: string}
+          url: {type: string}
+        required: [user_ref, channel, date, text, url]
+        additionalProperties: false
+    job_fired:
+      model: JobFired
+      schema:
+        type: object
+        properties:
+          contract_version: {type: integer, minimum: 1, maximum: 1, default: 1}
+          command_id: {type: string}
+          name: {type: string}
+          arguments: {}
+          fired_by_product: {type: string}
+          fired_by_run: {type: string}
+          accepted_at: {type: string, format: date-time}
+        required: [command_id, name, arguments, fired_by_product, fired_by_run, accepted_at]
+        additionalProperties: false
+settings_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    starting_channels:
+      type: array
+      maxItems: 50
+      uniqueItems: true
+      items: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_]{3,31}$'}
+  additionalProperties: false
+setting_seeds:
+  - key: starting_channels
+    scope: product
+jobs_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    tick:
+      type: object
+      properties:
+        at: {type: string, format: date-time}
+      required: [at]
+      additionalProperties: false
+  additionalProperties: false
+timers:
+  - job: tick
+    every_seconds: 60
+environment:
+  - name: REDIS_URL
+    required: true
+  - name: PLATFORM_KEY
+    required: true
+    source:
+      kind: platform_key
+      service: tg-reader
+      scopes: [tg-reader:read]
+      quota: {channels_max: 50, requests_per_minute: 60, resolve_per_day: 200}
+  - name: PLATFORM_BASE_URL
+    required: true
+    source:
+      kind: platform_base_url
+      service: tg-reader
+      url: https://platform.vladmesh.dev/tg-reader
+resources: []
+actions:
+  - name: add
+    summary: Resolve and add a public channel for the verified caller.
+    operation: {method: POST, path: ''}
+    input:
+      type: object
+      properties:
+        text: {type: string, minLength: 1}
+      required: [text]
+      additionalProperties: false
+    output: &channel
+      type: object
+      properties:
+        id: {type: string}
+        channel: {type: string}
+      required: [id, channel]
+    errors: [invalid_username, pending, not_found, not_a_channel, no_preview, try_later, not_configured]
+  - name: list
+    summary: List the verified caller's channels.
+    operation: {method: GET, path: ''}
+    input: {type: object, properties: {}, additionalProperties: false}
+    output: {type: array, items: *channel}
+  - name: remove
+    summary: Remove a channel only from the verified caller's list.
+    operation: {method: DELETE, path: '/{id}'}
+    input:
+      type: object
+      properties:
+        id: {type: string}
+      required: [id]
+      additionalProperties: false
+    output: *channel
+  - name: digest
+    summary: Latest public posts from the verified caller's channels.
+    operation: {method: GET, path: /digest}
+    input: {type: object, properties: {}, additionalProperties: false}
+    output:
+      type: array
+      items:
+        type: object
+        properties:
+          channel: {type: string}
+          date: {type: string}
+          text: {type: string}
+          url: {type: string}
+        required: [channel, date, text, url]
+default_binding: codegen_kit_tg_channels:bindings/default.yaml

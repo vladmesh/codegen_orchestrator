@@ -272,7 +272,7 @@ async def test_any_other_reopen_of_an_install_story_is_planned_by_the_llm(llm_se
     graph.assert_called_once()
     prompt = graph.return_value.ainvoke.call_args.args[0]["messages"][0]["content"]
     assert "REOPEN of story story-replan" in prompt
-    assert "Kit package catalog (read live from" in prompt
+    assert "Kit package catalog (read from the activated snapshot" in prompt
 
 
 @pytest.mark.asyncio

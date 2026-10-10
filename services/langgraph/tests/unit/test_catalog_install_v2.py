@@ -9,11 +9,15 @@ from pathlib import Path
 from framework.catalog import parse_catalog
 import pytest
 
+from shared.contracts.dto.catalog_install import KIT_REPOSITORY
 from src.catalog_install import InstallRefusal, plan_install_payload
 from src.consumers.architect import _kit_catalog_briefing
 from src.kit_catalog import installable
 
 DATA = Path(__file__).parent / "fixtures/catalog-install-v2"
+
+
+COMMIT = "d" * 40
 
 
 def snapshot():
@@ -23,6 +27,9 @@ def snapshot():
         bindings={"notebook": (DATA / "default.yaml").read_text()},
         manifests={"notebook": (DATA / "package.yaml").read_text()},
         raw=raw,
+        repository=KIT_REPOSITORY,
+        commit=COMMIT,
+        catalog_sha256=hashlib.sha256(raw.encode()).hexdigest(),
     )
 
 
@@ -49,6 +56,11 @@ def test_v2_closure_keeps_catalog_identity_and_has_no_parser_functions():
         "tooling_commit": json.loads(
             distribution("codegen-kit-tooling").read_text("direct_url.json")
         )["vcs_info"]["commit_id"],
+        "catalog": {
+            "repository": KIT_REPOSITORY,
+            "commit": COMMIT,
+            "catalog_sha256": current.catalog_sha256,
+        },
     }
 
 

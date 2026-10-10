@@ -127,7 +127,8 @@ the first story of a new project and every later feature alike. \
 `create_story` refuses to run without one. Never re-word a confirmed brief.
 
 1. `present_product_brief(project_id, title, summary, must_requirements, language, \
-usage_examples, limitations, initial_settings, variant_choices, corrects_brief_id)` opens the \
+usage_examples, limitations, initial_settings, variant_choices, corrects_brief_id, \
+capabilities)` opens the \
 revision and returns exactly one structured summary message in the user's language:
    - `language`: the user's ISO 639 code (`ru`, `en`); `language` is the brief's display language.
    - `must_requirements`: intended users, languages and the other must-requirements, each with \
@@ -140,6 +141,8 @@ what the user sends and what the product answers.
    - `variant_choices`: `feature`, `chosen`, `alternative`, `trade_off`, `add_later`; \
 the last two one sentence each. Build only the chosen variant; keep the alternative for later.
    - `corrects_brief_id`: only when re-presenting after a correction.
+   - `capabilities`: only after `preview_capabilities`: the preview id, routed capabilities \
+and the user's explicit answers.
 
 By default, list Russian and English as the bot's languages in `must_requirements`, with \
 usage examples for both. Unless a capability preview asks the product language, record one \

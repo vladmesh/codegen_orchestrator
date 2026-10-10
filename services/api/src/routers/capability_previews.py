@@ -34,7 +34,7 @@ from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.models import CapabilityPreview, Project
 
 from ..database import get_async_session
-from ..dependencies import _optional_bearer_scheme, is_internal_service
+from ..dependencies import _optional_bearer_scheme, is_internal_service, require_service_actor
 from .projects_guards import check_project_access
 
 logger = structlog.get_logger()
@@ -118,21 +118,20 @@ async def _authorized_project(
     return project
 
 
-@router.post("/", response_model=CapabilityPreviewRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=CapabilityPreviewRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_service_actor)],
+)
 async def create_capability_preview(
     body: CapabilityPreviewCreate,
-    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
-    internal: bool = Depends(is_internal_service),
-    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> CapabilityPreviewRead:
-    """Store one preview. Internal callers only: a user cannot author a technical plan."""
-    if not internal:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="capability previews are created by the platform only",
-        )
-    await _authorized_project(body.project_id, x_telegram_id, db, internal, credentials)
+    """Store one preview. The platform only: a user cannot author a technical plan."""
+    project = await db.get(Project, body.project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     if body.technical.activation != CATALOG_ACTIVATION:
         raise capability_refusal(CapabilityRefusalCode.PREVIEW_STALE)
     preview = CapabilityPreview(

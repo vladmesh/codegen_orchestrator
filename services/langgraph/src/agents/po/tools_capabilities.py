@@ -168,8 +168,9 @@ async def preview_capabilities(
             request_ids=refused.refusal.request_ids,
         )
         return _refused(refused.refusal)
+    # Stored by the platform acting for itself: no user identity authors a technical plan.
     response = await api.post_raw(
-        "capability-previews/", json=body.model_dump(mode="json", by_alias=True), headers=headers
+        "capability-previews/", json=body.model_dump(mode="json", by_alias=True)
     )
     if response.status_code != HTTPStatus.CREATED:
         logger.warning("po_capability_preview_not_stored", status=response.status_code)

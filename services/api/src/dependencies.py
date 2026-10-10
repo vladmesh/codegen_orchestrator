@@ -140,6 +140,30 @@ async def require_internal_or_admin(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
 
+async def require_service_actor(
+    _is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+    db: AsyncSession = Depends(get_async_session),
+) -> None:
+    """Allow only a service acting for itself: platform data no user writes or reads.
+
+    A request that names a user is judged as that user, admin or not, so a technical
+    plan or a stored preview is never authored or read through anyone's identity.
+    """
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+    )
+    if actor is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the platform acting for itself may use this resource",
+        )
+
+
 async def get_internal_or_admin_actor(
     _is_internal: bool = Depends(is_internal_service),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),

@@ -545,7 +545,7 @@ _CAPABILITY_NEXT_STEP = {
 
 def _capability_refusal(response) -> str | None:
     """A typed capability refusal from the API, rendered without any technical detail."""
-    if response.status_code not in {HTTPStatus.UNPROCESSABLE_CONTENT, HTTPStatus.CONFLICT}:
+    if response.status_code not in {HTTPStatus.UNPROCESSABLE_ENTITY, HTTPStatus.CONFLICT}:
         return None
     detail = response.json().get("detail")
     if not isinstance(detail, dict) or "capability_refusal" not in detail:

@@ -96,18 +96,33 @@ def bundled_kit_catalog():
     by the real `installable`, so it lists what the live catalog listed at the pin.
     """
     from dataclasses import replace
+    from hashlib import sha256
 
     from framework.catalog import bundled_catalog
 
+    from shared.catalog_activation import CATALOG_ACTIVATION
     from src import kit_catalog
 
     data = Path(__file__).parent / "fixtures/catalog-install"
+    raw = (data / "catalog.yaml").read_text()
     return replace(
         kit_catalog.installable(bundled_catalog(), BUNDLED_KIT_CATALOG_SOURCE),
-        raw=(data / "catalog.yaml").read_text(),
+        raw=raw,
         bindings={"reminders": (data / "default.yaml").read_text()},
         manifests={"reminders": (data / "package.yaml").read_text()},
+        # Read at a full commit, as every planning read is: an install names it.
+        repository=CATALOG_ACTIVATION.repository,
+        commit=CATALOG_ACTIVATION.commit,
+        catalog_sha256=sha256(raw.encode()).hexdigest(),
     )
+
+
+@pytest.fixture(scope="session")
+def activated_kit_catalog():
+    """The activated snapshot from genuine bytes, parsed once (`tests.unit.activated_catalog`)."""
+    from tests.unit.activated_catalog import activated_catalog
+
+    return activated_catalog()
 
 
 @pytest.fixture(autouse=True)
