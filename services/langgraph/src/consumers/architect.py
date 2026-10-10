@@ -944,9 +944,11 @@ def _capability_plan_briefing(plan: CapabilityPlan, installs: dict[str, str]) ->
             )
         elif item.route is CapabilityRoute.MODULE_WITH_GLUE:
             lines.append(
-                f"- {item.request_id}: {installed}, covering {requirements}; plan as "
-                "ordinary feature tasks only the product "
-                "behaviour these requirements ask for beyond the installed module."
+                f"- {item.request_id}: {installed}. The install does NOT cover {requirements}: "
+                "plan ordinary feature tasks, after the install, for the product behaviour "
+                "these requirements ask for beyond the installed module, and record each "
+                "requirement as covered by such a task. Never record it against the install "
+                "task; the plan is not admitted until that work exists."
             )
         else:
             lines.append(
@@ -1551,7 +1553,9 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
     The plan's closures are checked against the activated snapshot read now — the same
     commit and digests, and the same closure `plan_install_payload` resolves — before
     any task exists, and then installed exactly as stored. Each module's requirements
-    are covered by its install task. Returns `(install task per request, covering task
+    are covered by its install task, except a `module_with_glue` route's: those stay
+    outstanding for feature tasks planned after the install, and admission refuses the
+    plan until such a task covers them. Returns `(install task per request, covering task
     per requirement)`, or the recorded refusal.
     """
     if (catalog.commit, catalog.digest) != (plan.activation.commit, plan.activation.catalog_digest):
@@ -1599,7 +1603,9 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
             version=item.install.package.version,
         )
         for requirement_id in item.requirement_ids:
-            if requirement_id in covered:
+            # A glue requirement stays outstanding: the install does not build what the
+            # user wants beyond the module, so a feature task after it must cover it.
+            if requirement_id in covered or requirement_id in plan.glue_requirement_ids:
                 continue
             coverage = await record_requirement_coverage.coroutine(
                 requirement_id=requirement_id,

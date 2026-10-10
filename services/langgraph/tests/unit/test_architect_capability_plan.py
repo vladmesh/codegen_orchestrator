@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
+import httpx
 import pytest
 
 from shared.catalog_activation import CATALOG_ACTIVATION
@@ -20,13 +21,17 @@ from shared.contracts.dto.capability_preview import (
     BriefCapabilities,
     CapabilityPlan,
     CapabilityRequest,
+    CapabilityRoute,
+    PlanTask,
     derive_capability_plan,
+    glue_coverage_gaps,
 )
-from shared.contracts.dto.product_brief import ProductBriefContent
+from shared.contracts.dto.product_brief import ProductBriefAdmissionOutcome, ProductBriefContent
 from src.capability_feasibility import platform_cannot
 from src.capability_preview import capability_id, resolve_preview
 from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
 from tests.unit.architect_kit_catalog import CatalogBrief, CatalogPlanApi, plan_story
+from tests.unit.factories import make_admission
 
 CHANNELS = capability_id("tg-channels")
 PREVIEW_ID = "preview-" + "c" * 24
@@ -107,12 +112,56 @@ def _stored_plan(catalog, brief: CatalogBrief, requests) -> CapabilityPlan:
 
 
 class _PlanApi(CatalogPlanApi):
+    """The brief boundary, plus the API's glue rule over the stored plan.
+
+    Coverage and admission apply `glue_coverage_gaps` to the tasks this attempt
+    created, as `routers/product_briefs.py` does over its rows.
+    """
+
     def __init__(self, brief: CatalogBrief, plan: CapabilityPlan | None):
         super().__init__(brief)
         self.plan = plan
+        self.planned: dict[str, PlanTask] = {}
 
     async def get_capability_plan(self, brief_id):
         return self.plan
+
+    async def create_task(self, task_data):
+        task = await super().create_task(task_data)
+        self.planned[task.id] = PlanTask(
+            task_id=task.id,
+            install=task_data.get("install"),
+            blocked_by_task_id=task_data.get("blocked_by_task_id"),
+        )
+        return task
+
+    def _glue_gaps(self, covering: dict) -> list[str]:
+        if self.plan is None:
+            return []
+        return glue_coverage_gaps(self.plan, covering, self.planned)
+
+    async def record_requirement_coverage(self, brief_id, coverage):
+        if coverage.task_id is not None and self._glue_gaps(
+            {coverage.requirement_id: coverage.task_id}
+        ):
+            raise httpx.HTTPStatusError(
+                "unprocessable",
+                request=httpx.Request("PUT", "http://api/coverage"),
+                response=httpx.Response(422, json={"detail": "needs product work beyond"}),
+            )
+        return await super().record_requirement_coverage(brief_id, coverage)
+
+    async def admit_product_brief_coverage(self, brief_id, planning_attempt_id, **channels):
+        gaps = self._glue_gaps({key: task for key, (_, task, _) in self.coverage.items()})
+        if gaps:
+            self.admit_calls += 1
+            return make_admission(
+                outcome=ProductBriefAdmissionOutcome.INCOMPLETE,
+                coverage_admitted_at=None,
+                released_task_ids=[],
+                missing_requirement_ids=gaps,
+            )
+        return await super().admit_product_brief_coverage(brief_id, planning_attempt_id, **channels)
 
 
 def _no_graph(*_args, **_kwargs):
@@ -315,3 +364,124 @@ async def test_two_selections_of_one_capability_share_one_install(
         "digest": ("plan-live", "task-1", None),
         "posts": ("plan-live", "task-1", None),
     }
+
+
+def _glue_brief(catalog) -> tuple[CatalogBrief, CapabilityPlan]:
+    """The reviewer's case (1588): custom scoring beyond the channel module."""
+    brief, requests = _brief(with_scratch=False)
+    requests[0] = requests[0].model_copy(update={"beyond": "Rank posts by my own scoring rules"})
+    content = brief.content.model_dump(mode="json")
+    content["capabilities"]["capabilities"][0]["route"] = "module_with_glue"
+    content["must_requirements"][0]["text"] = "Rank channel posts by my own scoring rules"
+    brief = CatalogBrief(
+        brief.title, brief.description, ProductBriefContent.model_validate(content)
+    )
+    plan = _stored_plan(catalog, brief, requests)
+    assert plan.capabilities[0].route is CapabilityRoute.MODULE_WITH_GLUE
+    return brief, plan
+
+
+def _glue_graph(api: _PlanApi, *, cover_with: str | None):
+    """A model turn: `None` plans nothing, `"install"` records the install, `"feature"` builds."""
+    from src.agents.architect.tools import create_task, record_requirement_coverage
+
+    seen: dict = {}
+
+    async def ainvoke(state, config=None):
+        seen.update(state)
+        if cover_with is None:
+            return {"messages": []}
+        task_id = "task-1"
+        if cover_with == "feature":
+            created = await create_task.ainvoke(
+                {
+                    "title": "Score posts",
+                    "description": "Rank delivered posts by the user's scoring rules",
+                    "type": "feature",
+                    "acceptance_criteria": "posts arrive ranked",
+                    "story_id": state["story_id"],
+                    "project_id": state["project_id"],
+                    "planning_attempt_id": state["planning_attempt_id"],
+                }
+            )
+            task_id = created["id"]
+        seen["coverage"] = await record_requirement_coverage.ainvoke(
+            {
+                "requirement_id": "digest",
+                "task_id": task_id,
+                "brief_id": state["product_brief_id"],
+                "planning_attempt_id": state["planning_attempt_id"],
+            }
+        )
+        return {"messages": []}
+
+    def graph(_llm):
+        return MagicMock(ainvoke=AsyncMock(side_effect=ainvoke))
+
+    return graph, seen
+
+
+async def _plan_glue(api: _PlanApi, graph) -> dict:
+    with (
+        patch("src.consumers.architect.load_channel_chain", new=AsyncMock(return_value=[])),
+        patch("src.consumers.architect.unconfigured_channel_env", return_value=[]),
+        patch("src.consumers.architect.build_agent_llm"),
+    ):
+        return await _plan(api, graph)
+
+
+@pytest.mark.asyncio
+async def test_a_glue_requirement_is_not_covered_by_its_install(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    """The reproduced turn: the model emits no glue task, so nothing is admitted."""
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, plan = _glue_brief(activated_kit_catalog)
+    api = _PlanApi(brief, plan)
+    graph, seen = _glue_graph(api, cover_with=None)
+
+    result = await _plan_glue(api, graph)
+
+    assert result["status"] == "incomplete", result
+    assert result["missing_requirement_ids"] == ["digest"]
+    [install] = api.task_payloads
+    assert install["type"] == "install" and api.coverage == {} and api.released == []
+    briefing = seen["messages"][0]["content"]
+    assert "The install does NOT cover digest" in briefing
+    assert "Already disposed by the capability plan" not in briefing
+    [report] = api.planning_reports
+    assert report.retriable is True and "ProductBriefCoverageIncomplete" in report.failure.detail
+
+
+@pytest.mark.asyncio
+async def test_a_model_cannot_record_a_glue_requirement_against_the_install(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, plan = _glue_brief(activated_kit_catalog)
+    api = _PlanApi(brief, plan)
+    graph, seen = _glue_graph(api, cover_with="install")
+
+    result = await _plan_glue(api, graph)
+
+    assert "error" in seen["coverage"], seen["coverage"]
+    assert result["status"] == "incomplete" and api.released == []
+
+
+@pytest.mark.asyncio
+async def test_glue_work_planned_after_the_install_covers_the_requirement(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, plan = _glue_brief(activated_kit_catalog)
+    api = _PlanApi(brief, plan)
+    graph, _seen = _glue_graph(api, cover_with="feature")
+
+    result = await _plan_glue(api, graph)
+
+    assert result["status"] == "success", result
+    install, feature = api.task_payloads
+    assert install["type"] == "install" and feature["type"] == "feature"
+    assert feature["blocked_by_task_id"] == "task-1"
+    assert api.coverage == {"digest": ("plan-live", "task-2", None)}
+    assert api.released == ["task-1", "task-2"]

@@ -35,7 +35,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.capability_preview import CapabilityPlan, CapabilityRefusalCode
+from shared.contracts.dto.capability_preview import (
+    CapabilityPlan,
+    CapabilityRefusalCode,
+    PlanTask,
+    glue_coverage_gaps,
+)
 from shared.contracts.dto.product_brief import (
     ProductBriefAdmissionCommand,
     ProductBriefAdmissionOutcome,
@@ -136,6 +141,28 @@ def _require_planning_subject(brief: ProductBrief) -> str:
 
 def _must_requirement_ids(brief: ProductBrief) -> set[str]:
     return {requirement["id"] for requirement in brief.content["must_requirements"]}
+
+
+def _glue_gaps(
+    brief: ProductBrief, covering: dict[str, str | None], tasks: list[Task]
+) -> list[str]:
+    """Glue requirements of the stored plan that `covering` leaves without product work.
+
+    A `module_with_glue` requirement is not covered by the module's INSTALL: only an
+    ordinary task planned after that install (or an explicit return) disposes of it.
+    """
+    if brief.capability_plan is None:
+        return []
+    plan = CapabilityPlan.model_validate(brief.capability_plan)
+    if not plan.glue_requirement_ids & covering.keys():
+        return []
+    planned = {
+        task.id: PlanTask(
+            task_id=task.id, install=task.install, blocked_by_task_id=task.blocked_by_task_id
+        )
+        for task in tasks
+    }
+    return glue_coverage_gaps(plan, covering, planned)
 
 
 def _task_is_in_plan(task: Task, brief: ProductBrief, story_id: str) -> bool:
@@ -601,6 +628,23 @@ async def record_requirement_coverage(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="a covering task must be planned under this planning attempt",
             )
+        planned = (
+            await db.scalars(
+                select(Task).where(
+                    Task.story_id == story_id,
+                    Task.planning_attempt_id == body.planning_attempt_id,
+                )
+            )
+        ).all()
+        if _glue_gaps(brief, {requirement_id: body.task_id}, list(planned)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "this requirement needs product work beyond its installed module: cover "
+                    "it with a feature task planned after that module's install task, not "
+                    "with the install itself"
+                ),
+            )
     coverage = (
         await db.execute(
             select(RequirementCoverage)
@@ -748,6 +792,16 @@ async def admit_product_brief_coverage(
                 "Product Brief coverage names tasks that are no longer part of this plan: "
                 + ", ".join(stale)
             ),
+        )
+    # A glue requirement covered only by its module's install, or by work outside the
+    # install's chain, is still undisposed: the install does not build what lies beyond it.
+    glue = _glue_gaps(brief, {row.requirement_id: row.task_id for row in dispositions}, tasks)
+    if glue:
+        return ProductBriefAdmissionRead(
+            brief_id=brief.id,
+            story_id=story_id,
+            outcome=ProductBriefAdmissionOutcome.INCOMPLETE,
+            missing_requirement_ids=glue,
         )
 
     released = [task.id for task in tasks if not task.dispatch_admitted]

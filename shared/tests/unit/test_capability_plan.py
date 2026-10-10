@@ -21,9 +21,11 @@ from shared.contracts.dto.capability_preview import (
     CapabilityPreviewProjection,
     CapabilityPreviewTechnical,
     CapabilityRefusalCode,
+    PlanTask,
     QuestionKind,
     answer_is_valid,
     derive_capability_plan,
+    glue_coverage_gaps,
 )
 from shared.contracts.dto.product_brief import ProposedProductBriefContent
 
@@ -471,3 +473,59 @@ def test_a_stored_plan_never_holds_two_values_for_one_target():
     plan["settings"].append({**plan["settings"][1], "question_id": "more.q1", "value": ["x"]})
     with pytest.raises(ValidationError, match="one value per setting key and scope"):
         type(_derive()).model_validate(plan)
+
+
+def _glue_plan():
+    capabilities = _capabilities().model_dump()
+    capabilities["capabilities"][0]["route"] = "module_with_glue"
+    preview = _preview().model_dump(mode="json", by_alias=True)
+    preview["product"]["routes"][0].update(route="module_with_glue", reason="beyond_offer")
+    return _derive(
+        BriefCapabilities.model_validate(capabilities),
+        CapabilityPreviewCreate.model_validate(preview),
+    )
+
+
+def _tasks(*chain: tuple[str, bool, str | None]) -> dict[str, PlanTask]:
+    install = _install()
+    return {
+        task_id: PlanTask(
+            task_id=task_id, install=install if is_install else None, blocked_by_task_id=after
+        )
+        for task_id, is_install, after in chain
+    }
+
+
+@pytest.mark.parametrize(
+    "covering,tasks,gaps",
+    [
+        ({"r1": "t1"}, _tasks(("t1", True, None)), ["r1"]),
+        ({"r1": "t2"}, _tasks(("t1", True, None), ("t2", False, "t1")), []),
+        ({"r1": "t3"}, _tasks(("t1", True, None), ("t2", False, "t1"), ("t3", False, "t2")), []),
+        ({"r1": "t2"}, _tasks(("t1", True, None), ("t2", False, None)), ["r1"]),
+        ({"r1": "t2"}, _tasks(("t2", False, "t3"), ("t3", False, "t2")), ["r1"]),
+        ({"r1": "gone"}, _tasks(("t1", True, None)), ["r1"]),
+        ({"r1": None}, {}, []),
+        ({}, {}, []),
+        ({"r2": "t9"}, {}, []),
+    ],
+    ids=[
+        "install-itself",
+        "after-install",
+        "later-in-chain",
+        "outside-chain",
+        "cycle",
+        "unknown-task",
+        "returned",
+        "undisposed-is-completeness",
+        "from-scratch-untouched",
+    ],
+)
+def test_a_glue_requirement_needs_product_work_after_its_install(covering, tasks, gaps):
+    assert glue_coverage_gaps(_glue_plan(), covering, tasks) == gaps
+
+
+def test_module_and_from_scratch_routes_have_no_glue_requirement():
+    assert _derive().glue_requirement_ids == set()
+    assert glue_coverage_gaps(_derive(), {"r1": "t1"}, _tasks(("t1", True, None))) == []
+    assert _glue_plan().glue_requirement_ids == {"r1"}

@@ -367,6 +367,63 @@ class CapabilityPlan(_Strict):
     def modules(self) -> list[PlannedCapability]:
         return [item for item in self.capabilities if item.install is not None]
 
+    @property
+    def glue_requirement_ids(self) -> set[str]:
+        """Requirements a module serves only with product work beyond it: no install covers them."""
+        return {
+            requirement_id
+            for item in self.capabilities
+            if item.route is CapabilityRoute.MODULE_WITH_GLUE
+            for requirement_id in item.requirement_ids
+        }
+
+
+class PlanTask(_Strict):
+    """What glue coverage reads of one task planned under the attempt being admitted."""
+
+    task_id: str
+    install: CatalogInstall | None = None
+    blocked_by_task_id: str | None = None
+
+
+def glue_coverage_gaps(
+    plan: CapabilityPlan, covering: dict[str, str | None], tasks: dict[str, PlanTask]
+) -> list[str]:
+    """Glue requirements whose recorded covering task is not product work after their install.
+
+    A `module_with_glue` requirement is covered by an ordinary task that runs after the
+    INSTALL of that module's stored closure (its `blocked_by` chain reaches it), or it is
+    explicitly returned (`covering[id] is None`). An INSTALL, or a task planned outside that
+    chain, is not glue work, so the requirement is still outstanding. Requirements with no
+    disposition at all are left to the completeness check.
+    """
+    gaps: set[str] = set()
+    for item in plan.capabilities:
+        if item.route is not CapabilityRoute.MODULE_WITH_GLUE:
+            continue
+        for requirement_id in item.requirement_ids:
+            if requirement_id not in covering or covering[requirement_id] is None:
+                continue
+            task = tasks.get(covering[requirement_id])
+            if (
+                task is None
+                or task.install is not None
+                or not _runs_after(task, item.install, tasks)
+            ):
+                gaps.add(requirement_id)
+    return sorted(gaps)
+
+
+def _runs_after(task: PlanTask, install: CatalogInstall | None, tasks: dict[str, PlanTask]) -> bool:
+    seen = {task.task_id}
+    current = tasks.get(task.blocked_by_task_id or "")
+    while current is not None and current.task_id not in seen:
+        if current.install is not None and current.install == install:
+            return True
+        seen.add(current.task_id)
+        current = tasks.get(current.blocked_by_task_id or "")
+    return False
+
 
 class CapabilityRefusalCode(StrEnum):
     """Why a capability-backed revision was not opened or confirmed. Product-safe codes."""

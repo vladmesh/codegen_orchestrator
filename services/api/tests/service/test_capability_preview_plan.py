@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.catalog_activation import CATALOG_ACTIVATION
-from shared.models import ProductBrief
+from shared.models import ProductBrief, RequirementCoverage, Task
 
 PREVIEWS = "/api/capability-previews/"
 BRIEFS = "/api/product-briefs"
@@ -522,3 +522,142 @@ async def test_two_selections_answering_one_setting_differently_open_nothing(
         confirmed = await async_client.post(f"{BRIEFS}/{brief_id}/confirm", json=confirm)
         assert confirmed.status_code == HTTPStatus.OK, confirmed.text
     assert await _plan(async_client, brief_id) == plan
+
+
+async def _glue_attempt(client: AsyncClient) -> tuple[str, str, str, str, str]:
+    """A confirmed glue brief, its story, a claimed attempt and the INSTALL it planned.
+
+    -> (project, brief, story, attempt, install task)
+    """
+    telegram_id = await _owner(client)
+    project_id = await _project(client, telegram_id)
+    body = _preview_body(project_id)
+    body["requests"][0]["beyond"] = "Rank posts by my own scoring rules"
+    body["product"]["routes"][0].update(route="module_with_glue", reason="beyond_offer")
+    stored = await client.post(PREVIEWS, json=body)
+    assert stored.status_code == HTTPStatus.CREATED, stored.text
+    content = _content(stored.json()["preview_id"])
+    content["capabilities"]["capabilities"][0]["route"] = "module_with_glue"
+    created = await _create(client, project_id, content)
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    brief_id = created.json()["id"]
+    confirmed = await client.post(
+        f"{BRIEFS}/{brief_id}/confirm",
+        json={"request_id": f"conf-{uuid.uuid4().hex}", "content": content},
+    )
+    assert confirmed.status_code == HTTPStatus.OK, confirmed.text
+    story = await client.post("/api/stories/", json={"project_id": project_id, "title": "Glue"})
+    story_id = story.json()["id"]
+    bound = await client.post(f"{BRIEFS}/{brief_id}/story", json={"story_id": story_id})
+    assert bound.status_code == HTTPStatus.OK, bound.text
+    claim = await client.post(f"{BRIEFS}/{brief_id}/planning-attempts/claim")
+    attempt = claim.json()["planning_attempt_id"]
+    repository = await client.post(
+        "/api/repositories/",
+        json={
+            "project_id": project_id,
+            "name": "Digests",
+            "git_url": f"https://github.com/synthetic/digests-{telegram_id}",
+        },
+    )
+    assert repository.status_code == HTTPStatus.CREATED, repository.text
+    plan = await _plan(client, brief_id)
+    install = await client.post(
+        "/api/tasks/",
+        json={
+            "project_id": project_id,
+            "repository_id": repository.json()["id"],
+            "story_id": story_id,
+            "type": "install",
+            "title": "Install the channel module",
+            "status": "todo",
+            "install": plan["capabilities"][0]["install"],
+            "planning_attempt_id": attempt,
+        },
+    )
+    assert install.status_code == HTTPStatus.CREATED, install.text
+    return project_id, brief_id, story_id, attempt, install.json()["id"]
+
+
+async def _glue_task(client: AsyncClient, project_id, story_id, attempt, after: str | None) -> str:
+    created = await client.post(
+        "/api/tasks/",
+        json={
+            "project_id": project_id,
+            "story_id": story_id,
+            "type": "feature",
+            "title": "Score posts",
+            "status": "todo",
+            "planning_attempt_id": attempt,
+            "blocked_by_task_id": after,
+        },
+    )
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    return created.json()["id"]
+
+
+async def _cover(client: AsyncClient, brief_id: str, attempt: str, task_id: str):
+    return await client.put(
+        f"{BRIEFS}/{brief_id}/coverage/digest",
+        json={"requirement_id": "digest", "planning_attempt_id": attempt, "task_id": task_id},
+    )
+
+
+async def _admit(client: AsyncClient, brief_id: str, attempt: str) -> dict:
+    admitted = await client.post(
+        f"{BRIEFS}/{brief_id}/admit", json={"planning_attempt_id": attempt}
+    )
+    assert admitted.status_code == HTTPStatus.OK, admitted.text
+    return admitted.json()
+
+
+@pytest.mark.asyncio
+async def test_a_glue_requirement_is_admitted_only_with_product_work_after_its_install(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    project_id, brief_id, story_id, attempt, install = await _glue_attempt(async_client)
+
+    # The install alone is not glue work: the disposition is refused and nothing is admitted.
+    refused = await _cover(async_client, brief_id, attempt, install)
+    assert refused.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, refused.text
+    incomplete = await _admit(async_client, brief_id, attempt)
+    assert (incomplete["outcome"], incomplete["missing_requirement_ids"]) == (
+        "incomplete",
+        ["digest"],
+    )
+    # Work outside the install's chain does not count either.
+    detached = await _glue_task(async_client, project_id, story_id, attempt, after=None)
+    assert (await _cover(async_client, brief_id, attempt, detached)).status_code == (
+        HTTPStatus.UNPROCESSABLE_ENTITY
+    )
+
+    glue = await _glue_task(async_client, project_id, story_id, attempt, after=install)
+    covered = await _cover(async_client, brief_id, attempt, glue)
+    assert covered.status_code == HTTPStatus.OK, covered.text
+    admitted = await _admit(async_client, brief_id, attempt)
+    assert admitted["outcome"] == "admitted"
+    assert set(admitted["released_task_ids"]) == {install, detached, glue}
+
+
+@pytest.mark.asyncio
+async def test_admission_refuses_a_glue_disposition_that_names_the_install(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """Fail closed: a row written past the coverage check still cannot release the plan."""
+    _, brief_id, _, attempt, install = await _glue_attempt(async_client)
+    db_session.add(
+        RequirementCoverage(
+            brief_id=brief_id, requirement_id="digest", planning_attempt_id=attempt, task_id=install
+        )
+    )
+    await db_session.commit()
+
+    incomplete = await _admit(async_client, brief_id, attempt)
+
+    assert (incomplete["outcome"], incomplete["missing_requirement_ids"]) == (
+        "incomplete",
+        ["digest"],
+    )
+    task = await db_session.get(Task, install)
+    await db_session.refresh(task)
+    assert task.dispatch_admitted is False
