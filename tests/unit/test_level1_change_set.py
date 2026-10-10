@@ -472,7 +472,7 @@ def test_the_endpoint_is_mounted_and_the_command_is_wired(applied_tree: Path, ch
     # The kit's core registry is the only registrar: the command is declared, not wired.
     assert "CommandHandler" not in bot_main
     commands = (applied_tree / module.BOT_COMMANDS).read_text(encoding="utf-8")
-    assert "ProductCommand(LEVEL1_COMMAND, handle_level1)" in commands
+    assert f'ProductCommand("{module.LEVEL1_COMMAND}", handle_level1)' in commands
     assert sets.marker in (applied_tree / module.BOT_MENU_MODULE).read_text(encoding="utf-8")
 
 
