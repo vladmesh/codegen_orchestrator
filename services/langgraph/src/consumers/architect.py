@@ -1574,22 +1574,28 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
             )
     installs: dict[str, str] = {}
     covered: dict[str, str] = {}
+    # One INSTALL per closure: two requests selecting the same capability share it. The
+    # check above made every stored closure the one this snapshot resolves for its package.
+    by_package: dict[str, str] = {}
     for item in plan.modules:
-        result = await create_install_task(
-            item.install,
-            story_id=msg.story_id,
-            project_id=msg.project_id,
-            planning_attempt_id=planning.planning_attempt_id,
-        )
-        if "error" in result:
-            return await _refuse_capability_plan(
-                msg, f"{item.request_id}: {result['error']}", planning, usage, log
+        task_id = by_package.get(item.install.package.name)
+        if task_id is None:
+            result = await create_install_task(
+                item.install,
+                story_id=msg.story_id,
+                project_id=msg.project_id,
+                planning_attempt_id=planning.planning_attempt_id,
             )
-        installs[item.request_id] = result["id"]
+            if "error" in result:
+                return await _refuse_capability_plan(
+                    msg, f"{item.request_id}: {result['error']}", planning, usage, log
+                )
+            task_id = by_package[item.install.package.name] = result["id"]
+        installs[item.request_id] = task_id
         log.info(
             "architect_capability_install_planned",
             request_id=item.request_id,
-            task_id=result["id"],
+            task_id=task_id,
             version=item.install.package.version,
         )
         for requirement_id in item.requirement_ids:
@@ -1597,13 +1603,13 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
                 continue
             coverage = await record_requirement_coverage.coroutine(
                 requirement_id=requirement_id,
-                task_id=result["id"],
+                task_id=task_id,
                 brief_id=planning.brief_id,
                 planning_attempt_id=planning.planning_attempt_id,
             )
             if "error" in coverage:
                 raise RuntimeError(f"capability install coverage refused: {coverage['error']}")
-            covered[requirement_id] = result["id"]
+            covered[requirement_id] = task_id
     return installs, covered
 
 

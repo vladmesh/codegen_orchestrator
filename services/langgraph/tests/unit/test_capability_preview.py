@@ -15,11 +15,15 @@ import pytest
 
 from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.contracts.dto.capability_preview import (
+    BriefCapabilities,
+    CapabilityPlanRefusedError,
+    CapabilityRefusalCode,
     CapabilityRequest,
     CapabilityRoute,
     PreviewRefusalCode,
     QuestionKind,
     RouteReason,
+    derive_capability_plan,
 )
 from src.capability_feasibility import platform_cannot
 from src.capability_preview import PreviewRefused, capability_id, capability_offers, resolve_preview
@@ -261,3 +265,81 @@ def test_a_required_setting_the_preview_cannot_ask_is_refused(activated_kit_cata
     with pytest.raises(PreviewRefused) as refused:
         _preview(broken, _requests(CHANNEL_REQUEST))
     assert refused.value.refusal.code is PreviewRefusalCode.UNSUPPORTED_QUESTION
+
+
+def _twice_selected_capabilities(first: list[str], second: list[str]) -> BriefCapabilities:
+    return BriefCapabilities.model_validate(
+        {
+            "preview_id": "preview-" + "a" * 24,
+            "capabilities": [
+                {
+                    "request_id": rid,
+                    "capability_id": CHANNELS,
+                    "route": "module",
+                    "requirement_ids": ["r1"],
+                }
+                for rid in ("first", "second")
+            ],
+            "answers": [
+                {
+                    "question_id": "product_language",
+                    "kind": "product_language",
+                    "value": "en",
+                    "description": "English",
+                },
+                {
+                    "question_id": "first.q1",
+                    "kind": "text_list",
+                    "value": first,
+                    "description": "Start",
+                },
+                {
+                    "question_id": "second.q1",
+                    "kind": "text_list",
+                    "value": second,
+                    "description": "Start",
+                },
+            ],
+        }
+    )
+
+
+def _derive_twice_selected(catalog, capabilities: BriefCapabilities):
+    requests = _requests(
+        *(
+            {"request_id": rid, "capability_id": CHANNELS, "wording": "Initial channels"}
+            for rid in ("first", "second")
+        )
+    )
+    preview = _preview(catalog, requests)
+    return derive_capability_plan(
+        preview_id=capabilities.preview_id,
+        product=preview.product,
+        technical=preview.technical,
+        capabilities=capabilities,
+        must_requirement_ids={"r1"},
+        initial_setting_keys=set(),
+        activation=CATALOG_ACTIVATION,
+    )
+
+
+def test_two_selections_of_one_capability_cannot_write_two_starting_lists(activated_kit_catalog):
+    """Reviewer reproduction (1588): durov from one request, telegram from the other."""
+    with pytest.raises(CapabilityPlanRefusedError) as refused:
+        _derive_twice_selected(
+            activated_kit_catalog, _twice_selected_capabilities(["durov"], ["telegram"])
+        )
+    assert (refused.value.refusal.code, refused.value.refusal.question_ids) == (
+        CapabilityRefusalCode.SETTING_CONFLICT,
+        ["first.q1", "second.q1"],
+    )
+
+
+def test_two_selections_answering_alike_plan_one_starting_list(activated_kit_catalog):
+    plan = _derive_twice_selected(
+        activated_kit_catalog, _twice_selected_capabilities(["durov"], ["durov"])
+    )
+    values = [
+        setting.value for setting in plan.settings if setting.key == "tg_channels.starting_channels"
+    ]
+    assert values == [["durov"]]

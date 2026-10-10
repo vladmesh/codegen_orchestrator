@@ -450,3 +450,75 @@ async def test_a_project_seeding_lookup_finds_a_brief_carrying_only_planned_answ
     found = await async_client.get(f"{BRIEFS}/by-project/{project_id}/initial-settings")
 
     assert found.status_code == HTTPStatus.OK and found.json()["id"] == created.json()["id"]
+
+
+def _twice_selected_body(project_id: str) -> dict:
+    """Two requests selecting the same capability, each asking its starting channels."""
+    body = _preview_body(project_id)
+    body["requests"].append(
+        {"request_id": "more", "capability_id": CHANNELS, "wording": "more channels"}
+    )
+    body["product"]["routes"].append(
+        {"request_id": "more", "capability_id": CHANNELS, "route": "module", "reason": "offered"}
+    )
+    question = {**body["product"]["questions"][1], "question_id": "more.q1"}
+    body["product"]["questions"].append(question | {"request_ids": ["more"]})
+    body["technical"]["targets"].append(
+        {**body["technical"]["targets"][1], "question_id": "more.q1"}
+    )
+    body["technical"]["modules"].append({**body["technical"]["modules"][0], "request_id": "more"})
+    return body
+
+
+def _twice_answered(preview_id: str, second: list[str]) -> dict:
+    content = _content(preview_id)
+    content["capabilities"]["capabilities"].append(
+        {
+            "request_id": "more",
+            "capability_id": CHANNELS,
+            "route": "module",
+            "requirement_ids": ["digest"],
+        }
+    )
+    content["capabilities"]["answers"].append(
+        {"question_id": "more.q1", "kind": "text_list", "value": second, "description": "More"}
+    )
+    return content
+
+
+@pytest.mark.asyncio
+async def test_two_selections_answering_one_setting_differently_open_nothing(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    telegram_id = await _owner(async_client)
+    project_id = await _project(async_client, telegram_id)
+    stored = await async_client.post(PREVIEWS, json=_twice_selected_body(project_id))
+    assert stored.status_code == HTTPStatus.CREATED, stored.text
+    preview_id = stored.json()["preview_id"]
+
+    refused = await _create(async_client, project_id, _twice_answered(preview_id, ["telegram"]))
+
+    assert refused.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, refused.text
+    assert _refusal(refused) == {
+        "code": "setting_conflict",
+        "request_ids": [],
+        "question_ids": ["channels.q1", "more.q1"],
+    }
+    assert "tg_channels" not in refused.text and "starting_channels" not in refused.text
+    assert await _brief_count(db_session, project_id) == 0
+
+    # The same answer twice is one setting; confirmation and its replay keep that plan.
+    content = _twice_answered(preview_id, ["durov"])
+    created = await _create(async_client, project_id, content)
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    brief_id = created.json()["id"]
+    plan = await _plan(async_client, brief_id)
+    assert [(s["key"], s["value"]) for s in plan["settings"]] == [
+        ("language", "en"),
+        ("tg_channels.starting_channels", ["durov"]),
+    ]
+    confirm = {"request_id": f"conf-{uuid.uuid4().hex}", "content": content}
+    for _ in range(2):
+        confirmed = await async_client.post(f"{BRIEFS}/{brief_id}/confirm", json=confirm)
+        assert confirmed.status_code == HTTPStatus.OK, confirmed.text
+    assert await _plan(async_client, brief_id) == plan

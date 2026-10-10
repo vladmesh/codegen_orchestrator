@@ -356,6 +356,13 @@ class CapabilityPlan(_Strict):
     capabilities: list[PlannedCapability] = Field(min_length=1)
     settings: list[PlannedSetting] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _one_value_per_target(self) -> CapabilityPlan:
+        targets = [(setting.key, setting.scope) for setting in self.settings]
+        if len(targets) != len(set(targets)):
+            raise ValueError("a capability plan holds one value per setting key and scope")
+        return self
+
     @property
     def modules(self) -> list[PlannedCapability]:
         return [item for item in self.capabilities if item.install is not None]
@@ -521,6 +528,7 @@ def derive_capability_plan(  # noqa: C901, PLR0912 - one ordered validation of o
     )
     if conflicts:
         raise _refuse(CapabilityRefusalCode.SETTING_CONFLICT, question_ids=conflicts)
+    settings = _coherent_settings(technical.targets, answers)
     modules = {module.request_id: module for module in technical.modules}
     return CapabilityPlan(
         preview_id=preview_id,
@@ -535,14 +543,39 @@ def derive_capability_plan(  # noqa: C901, PLR0912 - one ordered validation of o
             )
             for item in capabilities.capabilities
         ],
-        settings=[
-            PlannedSetting(
-                question_id=target.question_id,
-                key=target.key,
-                scope=target.scope,
-                value=answers[target.question_id],
-            )
-            for target in technical.targets
-            if target.question_id in answers
-        ],
+        settings=settings,
     )
+
+
+def _coherent_settings(
+    targets: list[AnswerTarget], answers: dict[str, str | list[str]]
+) -> list[PlannedSetting]:
+    """One planned value per concrete setting target, or a typed refusal.
+
+    Two answered questions can write the same key and scope — two requests selecting
+    the same capability each ask its settings. Identical answers are one setting, kept
+    under the first question in preview order; disagreeing answers refuse the plan
+    with `SETTING_CONFLICT` naming those questions, so nothing downstream picks a
+    winner by write order.
+    """
+    by_target: dict[tuple[str, str], list[AnswerTarget]] = {}
+    for target in targets:
+        if target.question_id in answers:
+            by_target.setdefault((target.key, target.scope), []).append(target)
+    disagreeing = sorted(
+        target.question_id
+        for group in by_target.values()
+        if any(answers[item.question_id] != answers[group[0].question_id] for item in group)
+        for target in group
+    )
+    if disagreeing:
+        raise _refuse(CapabilityRefusalCode.SETTING_CONFLICT, question_ids=disagreeing)
+    return [
+        PlannedSetting(
+            question_id=first.question_id,
+            key=first.key,
+            scope=first.scope,
+            value=answers[first.question_id],
+        )
+        for first, *_ in by_target.values()
+    ]

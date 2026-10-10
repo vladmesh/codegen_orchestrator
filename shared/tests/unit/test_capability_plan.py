@@ -395,3 +395,79 @@ def test_the_product_projection_is_what_the_po_reads():
     for technical in ("tg-channels", "0.1.2", "packages/", "tg_channels.", "binding"):
         assert technical not in text
     assert isinstance(_preview().technical, CapabilityPreviewTechnical)
+
+
+def _twice_selected() -> CapabilityPreviewCreate:
+    """Two requests selecting the same capability: each asks its own starting-channel list."""
+    preview = _preview().model_dump(mode="json", by_alias=True)
+    preview["requests"].append(
+        {"request_id": "more", "capability_id": CHANNELS, "wording": "more channels"}
+    )
+    preview["product"]["routes"].append(
+        {"request_id": "more", "capability_id": CHANNELS, "route": "module", "reason": "offered"}
+    )
+    question = {**preview["product"]["questions"][1], "question_id": "more.q1"}
+    preview["product"]["questions"].append(question | {"request_ids": ["more"]})
+    preview["technical"]["targets"].append(
+        {**preview["technical"]["targets"][1], "question_id": "more.q1"}
+    )
+    preview["technical"]["modules"].append(
+        {**preview["technical"]["modules"][0], "request_id": "more"}
+    )
+    return CapabilityPreviewCreate.model_validate(preview)
+
+
+def _twice_answered(first: list[str], second: list[str]) -> BriefCapabilities:
+    capabilities = _capabilities().model_dump()
+    capabilities["capabilities"].append(
+        {
+            "request_id": "more",
+            "capability_id": CHANNELS,
+            "route": "module",
+            "requirement_ids": ["r1"],
+        }
+    )
+    capabilities["answers"][1]["value"] = first
+    capabilities["answers"].append(
+        {"question_id": "more.q1", "kind": "text_list", "value": second, "description": "More"}
+    )
+    return BriefCapabilities.model_validate(capabilities)
+
+
+def test_disagreeing_answers_for_one_setting_target_refuse_the_plan():
+    """Durov from one request and telegram from the other: no last write wins."""
+    refused = _refusal(
+        capabilities=_twice_answered(["durov"], ["telegram"]), preview=_twice_selected()
+    ).refusal
+    assert (refused.code, refused.question_ids) == (
+        CapabilityRefusalCode.SETTING_CONFLICT,
+        ["channels.q1", "more.q1"],
+    )
+    assert "tg_channels" not in refused.model_dump_json()
+
+
+def test_identical_answers_for_one_setting_target_are_one_setting():
+    capabilities = _twice_answered(["durov"], ["durov"])
+    plan = _derive(capabilities, _twice_selected())
+    assert [(item.question_id, item.key, item.value) for item in plan.settings] == [
+        ("product_language", "language", "en"),
+        ("channels.q1", "tg_channels.starting_channels", ["durov"]),
+    ]
+    # Replay derives exactly the same plan.
+    assert plan == _derive(capabilities, _twice_selected())
+
+
+def test_a_corrected_answer_resolves_the_conflict():
+    corrected = _twice_answered(["durov"], ["durov"])
+    assert _derive(corrected, _twice_selected()).settings[1].value == ["durov"]
+    only_first = _twice_answered(["durov"], ["telegram"]).model_dump()
+    del only_first["answers"][2]
+    plan = _derive(BriefCapabilities.model_validate(only_first), _twice_selected())
+    assert [item.value for item in plan.settings] == ["en", ["durov"]]
+
+
+def test_a_stored_plan_never_holds_two_values_for_one_target():
+    plan = _derive().model_dump(mode="json")
+    plan["settings"].append({**plan["settings"][1], "question_id": "more.q1", "value": ["x"]})
+    with pytest.raises(ValidationError, match="one value per setting key and scope"):
+        type(_derive()).model_validate(plan)

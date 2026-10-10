@@ -276,3 +276,42 @@ async def test_a_stored_closure_that_drifted_from_the_snapshot_creates_nothing(m
     assert result["status"] == "failed" and api.task_payloads == []
     [report] = api.planning_reports
     assert report.retriable is False and "plan_drift: channels" in report.failure.detail
+
+
+@pytest.mark.asyncio
+async def test_two_selections_of_one_capability_share_one_install(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, requests = _brief(with_scratch=False)
+    requests.append(requests[0].model_copy(update={"request_id": "posts"}))
+    content = brief.content.model_dump(mode="json")
+    content["must_requirements"].append(
+        {"id": "posts", "text": "Delivers new posts", "user_wording": "new posts"}
+    )
+    content["usage_examples"].append(
+        {"requirement_id": "posts", "user_sends": "/digest", "product_answers": "New post"}
+    )
+    content["capabilities"]["capabilities"].append(
+        {
+            "request_id": "posts",
+            "capability_id": CHANNELS,
+            "route": "module",
+            "requirement_ids": ["posts"],
+        }
+    )
+    brief = CatalogBrief(
+        brief.title, brief.description, ProductBriefContent.model_validate(content)
+    )
+    plan = _stored_plan(activated_kit_catalog, brief, requests)
+    api = _PlanApi(brief, plan)
+
+    result = await _plan(api)
+
+    assert result["status"] == "success", result
+    [task] = api.task_payloads
+    assert task["install"] == plan.capabilities[0].install.model_dump(mode="json")
+    assert api.coverage == {
+        "digest": ("plan-live", "task-1", None),
+        "posts": ("plan-live", "task-1", None),
+    }
