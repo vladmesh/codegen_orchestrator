@@ -7,6 +7,7 @@ GitHub outage does. Everything after it is the scaffolder's own failure handling
 import asyncio
 import json
 import os
+from pathlib import Path
 
 import httpx
 
@@ -40,7 +41,8 @@ async def run():
         entry = os.environ["SCAFFOLD_ENTRY"]
         [(_, fields)] = await stream.redis.xrange(SCAFFOLD_QUEUE, min=entry, max=entry)
         result = await consumer.process_scaffold_job(json.loads(fields["data"]), stream)
-        print(json.dumps(result))
+        # Service loggers write to stdout; the result goes to its own file.
+        Path(os.environ["RESULT_FILE"]).write_text(json.dumps(result))
     finally:
         await stream.close()
 

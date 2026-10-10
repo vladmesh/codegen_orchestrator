@@ -26,21 +26,23 @@ from tests.unit.test_catalog_install import snapshot
 HERE = Path(__file__).parent
 
 
-def _service(script: str, **env: str) -> dict:
+def _service(script: str, result: Path, **env: str) -> dict:
     ran = subprocess.run(
         [sys.executable, "-P", str(HERE / script)],
-        env=os.environ | {"API_BASE_URL": os.environ["TEST_API_BASE_URL"], **env},
+        env=os.environ
+        | {"API_BASE_URL": os.environ["TEST_API_BASE_URL"], "RESULT_FILE": str(result), **env},
         capture_output=True,
         text=True,
         timeout=90,
     )
     assert ran.returncode == 0, ran.stdout + ran.stderr
-    return json.loads(ran.stdout.strip().splitlines()[-1])
+    return json.loads(result.read_text())
 
 
-def _tick(project: str, tasks: list[str]) -> dict:
+def _tick(project: str, tasks: list[str], result: Path) -> dict:
     return _service(
         "_draft_order_scheduler.py",
+        result,
         PYTHONPATH="/app/scheduler:/app",
         DRAFT_PROJECT=project,
         DRAFT_TASKS=",".join(tasks),
@@ -92,7 +94,7 @@ async def test_a_draft_orders_failed_scaffold_stops_only_its_capability_story(re
         )
         tasks = [install["id"], feature["id"]]
 
-        waiting = _tick(pid, tasks)
+        waiting = _tick(pid, tasks, tmp_path / "waiting.json")
 
         [full] = [item for item in waiting["published"] if item["message"]["project_id"] == pid]
         assert full["message"]["mode"] == "full" and waiting["dispatched"] == 0
@@ -102,6 +104,7 @@ async def test_a_draft_orders_failed_scaffold_stops_only_its_capability_story(re
 
         failed = _service(
             "_draft_order_scaffolder.py",
+            tmp_path / "scaffold.json",
             PYTHONPATH="/app/scaffolder:/app",
             SCAFFOLD_ENTRY=full["entry_id"],
             WORKSPACE_BASE_PATH=str(tmp_path),
@@ -119,7 +122,7 @@ async def test_a_draft_orders_failed_scaffold_stops_only_its_capability_story(re
         install_row = await api.get(f"tasks/{install['id']}")
         assert install_row["status"] == "todo" and install_row["install_operation"] is None
 
-        after = _tick(pid, tasks)
+        after = _tick(pid, tasks, tmp_path / "after.json")
 
         assert after["published"] == [] and after["scaffolds"] == 0 and after["dispatched"] == 0
         assert before == {queue: await real_redis.xlen(queue) for queue in before}

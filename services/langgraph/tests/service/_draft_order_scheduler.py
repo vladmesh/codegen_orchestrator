@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 
 from shared.queues import SCAFFOLD_QUEUE
 from shared.redis import RedisStreamClient
@@ -40,7 +41,8 @@ async def run():
         scaffolds = await trigger_scaffolds(api, stream)
         dispatched = await dispatch_todo_tasks(api, stream)
         entries = await stream.redis.xrange(SCAFFOLD_QUEUE, min=f"({after}")
-        print(
+        # Service loggers write to stdout; the result goes to its own file.
+        Path(os.environ["RESULT_FILE"]).write_text(
             json.dumps(
                 {
                     "scaffolds": scaffolds,
