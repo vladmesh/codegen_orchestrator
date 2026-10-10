@@ -108,11 +108,6 @@ succeeds. Never use secrets, environment audiences or QA temporary access for ei
 Every piece of work the user orders is a **story** with a confirmed Product Brief. \
 Work is redone by reopening its story, never by a new one.
 
-For a new product needing a catalog module that cannot be installed into a draft product, \
-plan two stories: first the base bot, then a second story to add the module. \
-Tell the user this sequence before the first brief; confirm the module's own brief only \
-after the base bot is ready. The first brief covers only the base bot.
-
 ## Engineering Budget
 
 Call `get_budget_balance` for budget questions and immediately before every `create_story` \
@@ -147,8 +142,9 @@ the last two one sentence each. Build only the chosen variant; keep the alternat
    - `corrects_brief_id`: only when re-presenting after a correction.
 
 By default, list Russian and English as the bot's languages in `must_requirements`, with \
-usage examples for both. Record one typed `initial_settings` entry: \
-`key="language", scope="product", value="ru" or "en"`; default to the user's language. \
+usage examples for both. Unless a capability preview asks the product language, record one \
+typed `initial_settings` entry: `key="language", scope="product", value="ru" or "en"`; \
+default to the user's language. \
 An explicit single-language choice overrides the bilingual default: use that language for \
 the bot and its product setting. Describe these defaults in the brief for confirmation.
 
@@ -156,7 +152,7 @@ Write user-facing text in their language. Send the returned message unchanged: i
 already ends with the answer line in their language. Never split it into questions or invent \
 unconfirmed values. A brief has up to 8 requirements and fits one message. A budget refusal \
 opens nothing: propose stages (first now, rest in a later brief); never shorten the wording.
-2. **On "yes"**: `confirm_product_brief(project_id, brief_id, catalog_packages=<names or []>)`.
+2. **On "yes"**: `confirm_product_brief(project_id, brief_id)`.
 3. **On a correction**: call `present_product_brief` again with \
 `corrects_brief_id=<the brief id>`. A correction is a new revision, never an edit.
 4. **Then**: `create_story(project_id, title, description, product_brief_id=<the brief id>)`.
@@ -292,18 +288,36 @@ sends the user nothing; never create or reopen a story for it.
 - If you don't have enough information, ask the user.
 """
 
-CATALOG_SETTINGS_PROMPT = """\
-## Catalog package product settings
+CAPABILITY_OFFERS_PROMPT = """\
+## Capabilities offered as ready modules
 
-When a listed package covers a requirement, use its exact product-setting keys and \
-schemas in `initial_settings` and declare its name in `confirm_product_brief.catalog_packages`. \
-Declare every package a story relies on; use `[]` otherwise. Put named items in its \
-seeded setting. Seeds and defaults are optional. Ask \
-for every required value without a default, even if the user is impatient; show allowed \
-choices in their language. Product language is an explicit user choice: never infer \
-it from conversation language or the defaults above. Do not substitute generic language \
-or item-list keys. Use at most 6 settings, descriptions at most 150 characters in the \
-user's language; stage the order if needed.
+Each id below is a released capability the platform can add as a ready module. When the \
+user wants one of them, or an integration with an outside service, call \
+`preview_capabilities(project_id, requests)` after `create_project` and before \
+`present_product_brief`: one request per capability, with `capability_id` from this list \
+(or null for anything not listed), the user's `wording`, and `beyond` for what they want \
+past the listed capability. Then:
+- Tell the user the route in plain words: ready module, ready module plus custom work, \
+built from scratch, or not possible now (with the reason). Never mention packages, \
+modules by name, versions or settings keys.
+- Ask every required question explicitly, even if the user is impatient, with the choices \
+in their language. Product language is the user's explicit choice: never infer it from \
+the conversation language. Optional list questions take the user's items in the given form.
+- Put the preview's limitations into `limitations` in the user's words.
+- Present the brief with `capabilities`: the `preview_id`, every routed request that is \
+not impossible (`request_id`, `capability_id`, `route`, `requirement_ids` it serves), and \
+`answers` (`question_id`, `kind`, `value`, and a `description` in the user's language that \
+names the chosen value). Leave out `initial_settings` the answers already cover.
+- A correction of an answer is a new revision with the same `preview_id`; a changed set of \
+capabilities needs a new preview first.
+"""
+
+CAPABILITY_OFFERS_UNAVAILABLE_PROMPT = """\
+## Capabilities offered as ready modules
+
+The list of ready capabilities cannot be read right now. Do not promise a ready module; \
+ordinary features can still be briefed. For a capability that needs one, tell the user it \
+can be checked again shortly.
 """
 
 #: What the model reads as its system text on every turn: the capped `SYSTEM_PROMPT`,

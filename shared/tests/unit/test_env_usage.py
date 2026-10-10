@@ -14,7 +14,6 @@ import pytest
 import yaml
 
 from scripts.template_pin import TEMPLATE_PIN
-from shared.contracts.template import recorded_template_commit_matches
 from shared.contracts.env_usage import (
     EnvUsageParseError,
     build_env_contract_artifact,
@@ -22,6 +21,7 @@ from shared.contracts.env_usage import (
     extract_env_references,
     main,
 )
+from shared.contracts.template import recorded_template_commit_matches
 
 REPO_ROOT = Path(__file__).parents[3]
 FIXTURES_DIR = Path(__file__).parents[1] / "fixtures"

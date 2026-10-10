@@ -1,20 +1,20 @@
-"""The kit's live package catalog, as the Architect plans packages from it.
+"""The kit's package catalog, as the PO previews and the Architect plans from it.
 
-The kit lists every released package in `packages/catalog.yaml` on its default branch,
-and `kit add <name>` installs from that file live. The Architect reads the same file at
-planning time, so a package release is plannable the moment the kit publishes it, with no
-orchestrator change. This module is the only reader: it fetches the file over HTTP with a
-bounded timeout, parses it with the kit's own loader (`framework.catalog.parse_catalog`),
-and keeps only the packages with a released version that admits the kit core the
-orchestrator pins (`framework.spec.package_resolution.CORE_VERSION`).
+The kit lists every released package in `packages/catalog.yaml`. The orchestrator reads it
+only at the one activated, verified commit (`shared/catalog_activation.yaml`): never at a
+live branch, so a push to the kit cannot change what a preview offered or what a stored
+plan installs. This module is the only reader: it fetches the file over HTTP with a bounded
+timeout, verifies the raw bytes and the parsed catalog against the activation's digests,
+parses it with the kit's own loader (`framework.catalog.parse_catalog`), and keeps only the
+packages with a released version that admits the kit core the orchestrator pins
+(`framework.spec.package_resolution.CORE_VERSION`).
 
-Any failure to read or parse is a typed `KitCatalogUnavailable` answer, never an exception
-into planning and never a stale or hard-coded list: a planner told that the catalog is
-unavailable plans no package this time, which is a correct plan, while one handed an old
-list could install what the kit no longer releases. A transport failure is retried a few
+Any failure is a typed `KitCatalogUnavailable` answer, never an exception into planning and
+never a stale or remembered list. `INACTIVE` means this host's kit core or tooling is not
+the one the snapshot was activated for, and `PROVENANCE` that the source served other bytes
+than the activated ones: both need an operator, while a transport failure is retried a few
 times first, about `sum(CATALOG_TRANSPORT_BACKOFF_SECONDS)` in all, because the commonest one
-is the network of a container the deploy has just restarted; a status or an invalid body is
-the source's answer and is not asked again.
+is the network of a container the deploy has just restarted.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
 import hashlib
+from importlib.metadata import distribution
 import json
 import time
 
@@ -42,7 +43,8 @@ from framework.spec.package_resolution import CORE_VERSION
 import httpx
 import structlog
 
-from .config.settings import get_settings
+from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.contracts.dto.catalog_install import CatalogActivation
 
 logger = structlog.get_logger(__name__)
 
@@ -64,6 +66,14 @@ class KitCatalogFailure(StrEnum):
     STATUS = "status"
     #: The body is not a catalog the kit's loader accepts: YAML or validation.
     INVALID = "invalid"
+    #: The source served other bytes than the activated snapshot's digests name.
+    PROVENANCE = "provenance"
+    #: This host's kit core or tooling is not the one the snapshot was activated for.
+    INACTIVE = "inactive"
+
+
+#: The failures a retry cannot clear: the configuration or the source must change first.
+TERMINAL_CATALOG_FAILURES = frozenset({KitCatalogFailure.PROVENANCE, KitCatalogFailure.INACTIVE})
 
 
 @dataclass(frozen=True)
@@ -90,6 +100,11 @@ class KitCatalog:
     manifests: dict[str, str] = field(default_factory=dict)
     digest: str = ""
     raw: str = ""
+    #: The git repository and full commit the catalog was read at; None for a read at a
+    #: moving ref, which no install may be planned from.
+    repository: str | None = None
+    commit: str | None = None
+    catalog_sha256: str = ""
 
     @property
     def names(self) -> frozenset[str]:
@@ -113,6 +128,30 @@ def catalog_url(source: str, ref: str) -> str:
     return f"{source.rstrip('/')}/{ref}/{CATALOG_PATH}"
 
 
+def catalog_digest(catalog: Catalog) -> str:
+    """The semantic digest of a parsed catalog: what the planner and the probes agree on."""
+    return hashlib.sha256(
+        json.dumps(
+            asdict(catalog), sort_keys=True, default=lambda value: value.model_dump(mode="json")
+        ).encode()
+    ).hexdigest()
+
+
+def installed_tooling_commit() -> str:
+    """The kit commit of this host's installed tooling."""
+    direct = json.loads(distribution("codegen-kit-tooling").read_text("direct_url.json"))
+    return direct["vcs_info"]["commit_id"]
+
+
+def activation_refusal(activation: CatalogActivation) -> str | None:
+    """Why this host cannot plan from `activation`, or None when it can."""
+    if activation.core_version != CORE_VERSION:
+        return f"host core {CORE_VERSION} is not the activated core {activation.core_version}"
+    if (tooling := installed_tooling_commit()) != activation.tooling_commit:
+        return f"host tooling {tooling} is not the activated tooling {activation.tooling_commit}"
+    return None
+
+
 def installable(catalog: Catalog, source: str, core_version: str = CORE_VERSION) -> KitCatalog:
     """Keep the packages with a released version that admits `core_version`.
 
@@ -133,12 +172,22 @@ def installable(catalog: Catalog, source: str, core_version: str = CORE_VERSION)
         core_version=core_version,
         packages=tuple(packages),
         libraries=catalog.libraries,
-        digest=hashlib.sha256(
-            json.dumps(
-                asdict(catalog), sort_keys=True, default=lambda value: value.model_dump(mode="json")
-            ).encode()
-        ).hexdigest(),
+        digest=catalog_digest(catalog),
     )
+
+
+def install_snapshot(catalog: KitCatalog) -> dict:
+    """The catalog read `plan_install` resolves a package against, with its pinned commit."""
+    return {
+        "catalog": catalog.raw,
+        "bindings": catalog.bindings,
+        "manifests": catalog.manifests,
+        "source": catalog.source,
+        "core_version": catalog.core_version,
+        "repository": catalog.repository,
+        "commit": catalog.commit,
+        "catalog_sha256": catalog.catalog_sha256,
+    }
 
 
 class KitCatalogReader:
@@ -158,9 +207,11 @@ class KitCatalogReader:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         component_source: str | None = None,
+        activation: CatalogActivation | None = None,
     ) -> None:
         self.url = url
         self.component_source = component_source
+        self.activation = activation
         self._timeout = timeout
         self._ttl = ttl
         self._clock = clock
@@ -168,6 +219,9 @@ class KitCatalogReader:
         self._kept: tuple[float, KitCatalog] | None = None
 
     async def read(self) -> KitCatalogAnswer:
+        if self.activation is not None and (refusal := activation_refusal(self.activation)):
+            logger.error("kit_catalog_inactive", source=self.url, detail=refusal)
+            return KitCatalogUnavailable(self.url, KitCatalogFailure.INACTIVE, refusal)
         if self._kept is not None:
             read_at, catalog = self._kept
             if self._clock() - read_at < self._ttl:
@@ -228,6 +282,23 @@ class KitCatalogReader:
         except CatalogError as error:
             return KitCatalogUnavailable(self.url, KitCatalogFailure.INVALID, str(error))
         answer = installable(catalog, self.url)
+        raw_sha256 = hashlib.sha256(response.text.encode()).hexdigest()
+        if self.activation is not None:
+            if (raw_sha256, answer.digest) != (
+                self.activation.catalog_sha256,
+                self.activation.catalog_digest,
+            ):
+                return KitCatalogUnavailable(
+                    self.url,
+                    KitCatalogFailure.PROVENANCE,
+                    f"served catalog {raw_sha256}/{answer.digest} is not the activated snapshot",
+                )
+            answer = replace(
+                answer,
+                repository=self.activation.repository,
+                commit=self.activation.commit,
+                catalog_sha256=raw_sha256,
+            )
         bindings = {}
         manifests = {}
         if self.component_source is not None:
@@ -264,9 +335,9 @@ class KitCatalogReader:
 
 @lru_cache
 def get_kit_catalog_reader() -> KitCatalogReader:
-    """The process's one reader, at the configured source and ref."""
-    settings = get_settings()
+    """The process's one reader, at the activated snapshot's commit and nowhere else."""
     return KitCatalogReader(
-        catalog_url(settings.kit_catalog_source, settings.kit_catalog_ref),
-        component_source=settings.kit_catalog_source,
+        catalog_url(CATALOG_ACTIVATION.raw_source, CATALOG_ACTIVATION.commit),
+        component_source=CATALOG_ACTIVATION.raw_source,
+        activation=CATALOG_ACTIVATION,
     )

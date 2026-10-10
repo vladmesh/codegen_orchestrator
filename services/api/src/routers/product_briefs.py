@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.capability_preview import CapabilityPlan, CapabilityRefusalCode
 from shared.contracts.dto.product_brief import (
     ProductBriefAdmissionCommand,
     ProductBriefAdmissionOutcome,
@@ -47,6 +48,7 @@ from shared.contracts.dto.product_brief import (
     ProductBriefPlanningAttemptRead,
     ProductBriefRead,
     ProductBriefStoryBind,
+    ProposedProductBriefContent,
     RequirementCoverageCreate,
     RequirementCoverageRead,
 )
@@ -69,6 +71,7 @@ from ._product_brief_helpers import (
     returned_plan_failure,
     void_superseded_plan,
 )
+from .capability_previews import capability_refusal, plan_for_content
 from .projects_guards import check_project_access
 
 logger = structlog.get_logger()
@@ -193,6 +196,10 @@ async def create_product_brief(
         )
         or 0
     ) + 1
+    preview_id, plan = None, None
+    if body.content.capabilities is not None:
+        # The plan is derived from the stored preview, never taken from the caller.
+        preview_id, plan = await plan_for_content(body.project_id, body.content, db)
     brief = ProductBrief(
         id=f"brief-{secrets.token_hex(12)}",
         project_id=body.project_id,
@@ -200,6 +207,8 @@ async def create_product_brief(
         title=body.title,
         content=content,
         request_id=body.request_id,
+        capability_preview_id=preview_id,
+        capability_plan=None if plan is None else plan.model_dump(mode="json"),
     )
     db.add(brief)
     try:
@@ -242,7 +251,9 @@ async def confirm_product_brief(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Product Brief is already confirmed",
             )
+        # A replay: the plan stored beside the revision is the confirmed one, unchanged.
         return ProductBriefRead.model_validate(brief, from_attributes=True)
+    await _require_current_capability_plan(brief, body.content, db)
     brief.confirmed_at = datetime.now(UTC)
     brief.confirmation_request_id = body.request_id
     await db.commit()
@@ -324,11 +335,11 @@ async def get_project_initial_settings_brief(
     internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> ProductBriefRead:
-    """The project's latest confirmed brief that carries `initial_settings`.
+    """The project's latest confirmed brief that carries settings to seed.
 
     A deploy that names no story still owes the product its confirmed settings:
-    newest confirmation first, the latest revision on a tie, and a brief with no
-    settings is skipped rather than chosen.
+    newest confirmation first, the latest revision on a tie, and a brief with
+    neither `initial_settings` nor planned capability answers is skipped.
     """
     await _authorize(project_id, x_telegram_id, db, internal, credentials)
     briefs = (
@@ -347,7 +358,8 @@ async def get_project_initial_settings_brief(
     )
     for brief in briefs:
         read = ProductBriefRead.model_validate(brief, from_attributes=True)
-        if read.content.initial_settings:
+        planned = (brief.capability_plan or {}).get("settings")
+        if read.content.initial_settings or planned:
             return read
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -391,6 +403,50 @@ async def get_product_brief_full_text(
         language=read.content.language,
         sections=render_full_brief_sections(read.title, read.content),
     )
+
+
+async def _require_current_capability_plan(
+    brief: ProductBrief, content: ProposedProductBriefContent, db: AsyncSession
+) -> None:
+    """A capability-backed revision is confirmed only with the plan it was opened with.
+
+    The plan is derived again from the stored preview under the activated snapshot of
+    this deployment: a preview made under another snapshot, or a plan that no longer
+    matches what was stored, refuses confirmation instead of freezing a stale plan.
+    """
+    if content.capabilities is None:
+        return
+    if brief.capability_plan is None or brief.capability_preview_id is None:
+        raise capability_refusal(CapabilityRefusalCode.PLAN_MISSING, status.HTTP_409_CONFLICT)
+    preview_id, plan = await plan_for_content(
+        brief.project_id, content, db, status_code=status.HTTP_409_CONFLICT
+    )
+    stored = CapabilityPlan.model_validate(brief.capability_plan)
+    if preview_id != brief.capability_preview_id or plan != stored:
+        raise capability_refusal(CapabilityRefusalCode.PLAN_DRIFT, status.HTTP_409_CONFLICT)
+
+
+@router.get("/{brief_id}/capability-plan", response_model=CapabilityPlan)
+async def get_product_brief_capability_plan(
+    brief_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    internal: bool = Depends(is_internal_service),
+) -> CapabilityPlan:
+    """The technical plan stored beside a revision. Internal callers only."""
+    if not internal:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="the capability plan is read by the platform only",
+        )
+    brief = (
+        await db.execute(select(ProductBrief).where(ProductBrief.id == brief_id))
+    ).scalar_one_or_none()
+    if brief is None or brief.capability_plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Product Brief {brief_id} has no capability plan",
+        )
+    return CapabilityPlan.model_validate(brief.capability_plan)
 
 
 # --- one live architect per incomplete plan -----------------------------------

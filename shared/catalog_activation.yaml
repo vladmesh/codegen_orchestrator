@@ -1,0 +1,18 @@
+# The one activated kit catalog snapshot (`shared.catalog_activation`).
+#
+# The PO's capability preview, the Architect's stored plan, `kit add` and the install probe all
+# read the kit catalog at exactly this commit; nothing reads a live branch. The raw and semantic
+# digests are the bytes and the parsed catalog verified for this commit (kit main 52e9107,
+# Runner 38010408741: catalog/planner/probe digest agreement), and the core and tooling are the
+# kit host it was verified against. A reader that fetches other bytes, or runs on another host
+# core or tooling, answers unavailable or inactive instead of planning.
+#
+# Activating another snapshot is a reviewed orchestrator change to this file: a package release
+# becomes plannable then, not when the kit's default branch moves.
+repository: https://github.com/vladmesh/codegen-product-kit.git
+raw_source: https://raw.githubusercontent.com/vladmesh/codegen-product-kit
+commit: 52e9107495949c9187f41cc0e50367ed8ed7a7a1
+catalog_sha256: a49295becf97dd616cd21e443149505eef44718a7fd251dde68aee15eeebe488
+catalog_digest: 697d3a9b6356670d3a59bef215a9819006cb61ac4015914695d165f879884be4
+core_version: 2.5.0
+tooling_commit: 52e9107495949c9187f41cc0e50367ed8ed7a7a1

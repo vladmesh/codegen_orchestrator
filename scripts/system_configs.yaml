@@ -17,6 +17,17 @@
   category: admission
   description: "Micro-USD held per engineering attempt for an invited user ($1)"
 
+# --- capabilities ---
+# The projects whose capability previews may route to a ready catalog module. Seeded empty
+# once and then owned by the operator (scripts/seed_system_configs.py): a project is added
+# through the system-configs API after review, and a deploy never resets the list. Outside
+# it a module-backed capability is previewed as from scratch or, when only a platform module
+# can provide it, as impossible.
+- key: capabilities.module_rollout
+  value: {project_ids: []}
+  category: capabilities
+  description: "Projects whose capability previews may route to ready catalog modules"
+
 # --- scheduler ---
 - key: work_admission.max_projects_per_user
   value: 3

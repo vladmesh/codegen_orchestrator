@@ -25,6 +25,7 @@ from __future__ import annotations
 import html
 import json
 
+from shared.contracts.dto.capability_preview import QuestionKind
 from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.queues.po import MESSAGE_BREAK
 from shared.telegram_text import utf16_length
@@ -51,6 +52,8 @@ LABELS: dict[str, dict[str, str]] = {
         "trade_off": "trade-off",
         "add_later": "add later",
         "settings": "Settings",
+        "locale_ru": "Russian",
+        "locale_en": "English",
         "you_send": "You send",
         "product_answers": "The product answers",
         "no_interaction": "works without anything sent by you",
@@ -71,6 +74,8 @@ LABELS: dict[str, dict[str, str]] = {
         "trade_off": "компромисс",
         "add_later": "можно добавить позже",
         "settings": "Настройки",
+        "locale_ru": "русский",
+        "locale_en": "английский",
         "you_send": "Вы отправляете",
         "product_answers": "Продукт отвечает",
         "no_interaction": "работает без ваших сообщений",
@@ -154,6 +159,24 @@ def _setting_lines(content: ProductBriefContent) -> list[str]:
     return lines
 
 
+def _answer_lines(content: ProductBriefContent, label: dict[str, str]) -> list[str]:
+    """Each capability answer by its description in the user's language, like a setting.
+
+    The product language is also named from the stored value itself, so the language the
+    user signs is the one stored, never only the model's paraphrase of it. Answers share
+    the settings' count and description caps, which keeps the full form under its ceiling.
+    """
+    if content.capabilities is None:
+        return []
+    lines = []
+    for answer in content.capabilities.answers:
+        line = f"• {_e(answer.description)}"
+        if answer.kind is QuestionKind.PRODUCT_LANGUAGE and isinstance(answer.value, str):
+            line += f" ({_e(label.get(f'locale_{answer.value}', answer.value))})"
+        lines.append(line)
+    return lines
+
+
 def _variant_lines(content: ProductBriefContent, label: dict[str, str]) -> list[str]:
     return [
         f"• {_e(' '.join(choice.feature.split()))}: "
@@ -173,7 +196,7 @@ def _sections(title: str, content: ProductBriefContent, *, full: bool) -> list[s
         _section(label["usage"], _usage_lines(content, label)),
         _section(label["limitations"], [f"• {_e(item)}" for item in content.limitations]),
         _section(label["variant_choices"], _variant_lines(content, label)),
-        _section(label["settings"], _setting_lines(content)),
+        _section(label["settings"], _setting_lines(content) + _answer_lines(content, label)),
     ]
     return [section for section in sections if section is not None]
 

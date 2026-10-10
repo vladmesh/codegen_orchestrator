@@ -133,7 +133,7 @@ def install_environment(token, root, git_url):
     return env
 
 
-async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  # noqa: C901, PLR0915  # fixed stages share a workspace lease and retained head
+async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  # noqa: C901, PLR0912, PLR0915  # fixed stages share a workspace lease and retained head
     root = _workspace_path(settings.workspace_base_path, msg.repository_id)
     if not (root / ".git").is_dir():
         raise InstallExecutionError(
@@ -142,6 +142,10 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
     if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", git_url):
         raise InstallExecutionError(
             "preflight", "repository_unowned: expected an owned GitHub HTTPS URL"
+        )
+    if msg.install.catalog is None:
+        raise InstallExecutionError(
+            "preflight", "catalog_unpinned: the install names no catalog commit; replan it"
         )
     env = product_environment(root)
     git_env = install_environment(token, root, git_url)
@@ -244,13 +248,17 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         _, preflight = await command([python, "-I", probe, "preflight", payload, msg.template_ref])
         json.loads(preflight)
         # Each argv is platform-owned. No command, artifact, source override or
-        # product path comes from task prose. The product CLI owns all mutation.
+        # product path comes from task prose. The product CLI owns all mutation, and
+        # it resolves every component from the payload's reviewed catalog commit, never
+        # from the kit's floating default branch.
         kit = str(root / ".venv/bin/kit")
+        catalog = ["--catalog-source", msg.install.catalog.repository]
+        catalog += ["--catalog-ref", msg.install.catalog.commit]
         stage = "package"
-        await command([kit, "add", msg.install.package.name])
+        await command([kit, "add", msg.install.package.name, *catalog])
         stage = "library"
         for library in msg.install.libraries:
-            await command([kit, "add", library.name])
+            await command([kit, "add", library.name, *catalog])
         stage = "bind"
         await command([kit, "bind", msg.install.package.name, "--default"])
         stage = "generate"

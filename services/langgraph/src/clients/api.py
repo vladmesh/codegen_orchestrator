@@ -10,6 +10,7 @@ import httpx
 from shared.clients.internal_api import InternalAPIClient
 from shared.clients.run_api import RunAPIClientMixin
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
+from shared.contracts.dto.capability_preview import CapabilityPlan
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
 from shared.contracts.dto.owner_notification import OwnerNotification
@@ -299,6 +300,20 @@ class LanggraphAPIClient(RunAPIClientMixin, InternalAPIClient):
                 return None
             raise
         return ProductBriefRead.model_validate(resp.json())
+
+    async def get_capability_plan(self, brief_id: str) -> CapabilityPlan | None:
+        """The technical plan stored beside a capability-backed revision, or None.
+
+        Internal only. None means the revision has no plan; for a brief whose content
+        names capabilities that is a broken invariant the caller refuses to plan around.
+        """
+        try:
+            resp = await self.request("GET", f"product-briefs/{brief_id}/capability-plan")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == HTTPStatus.NOT_FOUND:
+                return None
+            raise
+        return CapabilityPlan.model_validate(resp.json())
 
     async def get_project_initial_settings_brief(self, project_id: str) -> ProductBriefRead | None:
         """The project's latest confirmed brief carrying `initial_settings`, or None.

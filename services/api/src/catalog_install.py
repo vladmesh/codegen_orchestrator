@@ -168,6 +168,10 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
     if operation and operation.state == "running" and command.action == "admit":
         return refuse("operation_live")
     if command.action == "admit":
+        if payload.catalog is None:
+            # Stored before installs named their catalog commit: `kit add` would read the
+            # kit's moving default branch. An operator replans it against the snapshot.
+            return refuse("catalog_unpinned")
         if operation is None:
             operation = InstallOperation(
                 id=f"install-{uuid.uuid4().hex}",

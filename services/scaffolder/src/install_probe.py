@@ -27,15 +27,13 @@ from framework.binding_product import (
     validate_product_bindings,
 )
 from framework.bindings import load_binding, validate_binding
-from framework.package_source import (
-    DEFAULT_CATALOG_REF,
-    DEFAULT_CATALOG_SOURCE,
-    fetch_package_source,
-    read_catalog,
-)
+from framework.package_source import fetch_package_source, read_catalog
 from framework.spec.loader import load_specs
 from framework.spec.packages import load_package_manifest
 import yaml
+
+#: The one repository a catalog, its package tags and the kit tooling come from.
+KIT_REPOSITORY = "https://github.com/vladmesh/codegen-product-kit.git"
 
 
 def digest(data):
@@ -124,14 +122,23 @@ def probe(mode, payload, ref):  # noqa: C901, PLR0912, PLR0915  # cross-check ac
     if core != payload["core_version"]:
         raise ValueError("core_incompatible: reviewed native Copier upgrade required")
     require_binding_product(root)
-    catalog = read_catalog(DEFAULT_CATALOG_SOURCE, DEFAULT_CATALOG_REF)
+    # The catalog the payload was planned from, at its commit: never the floating default.
+    pinned = payload.get("catalog")
+    if not pinned:
+        raise ValueError("catalog_unpinned: the payload names no catalog commit")
+    if pinned["repository"] != KIT_REPOSITORY or not re.fullmatch(
+        r"[0-9a-f]{40}", pinned["commit"]
+    ):
+        raise ValueError("catalog_unowned: only a full commit of the published kit is admitted")
+    source = pinned["repository"]
+    catalog = read_catalog(source, pinned["commit"])
     catalog_digest = digest(
         json.dumps(
             asdict(catalog), sort_keys=True, default=lambda value: value.model_dump(mode="json")
         ).encode()
     )
     if catalog_digest != payload["catalog_digest"]:
-        raise ValueError("catalog_changed: replan against the current catalog")
+        raise ValueError("catalog_provenance_mismatch: the pinned commit holds another catalog")
     package = catalog.get(payload["package"]["name"])
     selected = package.select(core)
     if (
@@ -154,7 +161,7 @@ def probe(mode, payload, ref):  # noqa: C901, PLR0912, PLR0915  # cross-check ac
                 raise ValueError("component_identity_changed")
             workdir = Path(scratch) / expected["name"]
             workdir.mkdir()
-            source = fetch_package_source(DEFAULT_CATALOG_SOURCE, component, version, workdir)
+            exported = fetch_package_source(source, component, version, workdir)
             target = (
                 subprocess.check_output(
                     [git, "rev-parse", "FETCH_HEAD^{commit}"], cwd=workdir / "repository"
@@ -183,16 +190,18 @@ def probe(mode, payload, ref):  # noqa: C901, PLR0912, PLR0915  # cross-check ac
                     "tag_object": tag_object,
                     "tree": tree,
                     "target": target,
-                    "source": DEFAULT_CATALOG_SOURCE,
+                    "source": source,
                 }
             )
             if expected is payload["package"]:
                 module, resource = payload["binding"]["resource"].split(":", 1)
-                resource_path = source / module.replace(".", "/") / resource
+                resource_path = exported / module.replace(".", "/") / resource
                 content = resource_path.read_bytes()
                 if digest(content) != payload["binding"]["sha256"]:
                     raise ValueError("binding_resource_changed")
-                manifest = load_package_manifest(source / module.replace(".", "/") / "package.yaml")
+                manifest = load_package_manifest(
+                    exported / module.replace(".", "/") / "package.yaml"
+                )
                 binding = load_binding(resource_path)
                 validate_binding(binding, manifest, catalog)
                 existing = root / f"services/tg_bot/bindings/{package.name}.yaml"
@@ -218,6 +227,7 @@ def probe(mode, payload, ref):  # noqa: C901, PLR0912, PLR0915  # cross-check ac
         "prefix": sys.prefix,
         "core": core,
         "component_sources": component_sources,
+        "catalog": {"repository": source, "commit": pinned["commit"], "digest": catalog_digest},
     }
     if mode == "readback":
         specs = load_specs(root)

@@ -7,8 +7,8 @@ that fixture — now read `scripts.template_pin`, and these tests hold that shap
 literal in the tree, and a changed definition arriving at every derived site.
 """
 
-import importlib.util
 from importlib.metadata import distribution
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -142,7 +142,7 @@ def test_pinned_fixture_syncs_both_locked_environments_before_generation() -> No
     image_build = workflow.index("docker/build-push-action", generation + 1)
 
     assert sync < generation < image_build
-    assert 'flags="--frozen"' in prepare and 'uv sync $flags' in prepare
+    assert 'flags="--frozen"' in prepare and "uv sync $flags" in prepare
 
 
 def test_released_render_retains_bigint_migration_orm_and_token_logging() -> None:

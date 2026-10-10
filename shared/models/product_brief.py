@@ -21,6 +21,7 @@ import uuid
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -41,6 +42,10 @@ class ProductBrief(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "revision", name="uq_product_brief_revision"),
         UniqueConstraint("story_id"),
+        CheckConstraint(
+            "(capability_preview_id IS NULL) = (capability_plan IS NULL)",
+            name="ck_product_briefs_capability_plan",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -80,6 +85,37 @@ class ProductBrief(Base):
     planning_attempt_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: The stored capability preview a capability-backed revision was validated against.
+    capability_preview_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("capability_previews.id"), nullable=True, index=True
+    )
+    #: The technical `CapabilityPlan` derived when this revision was opened: the selected
+    #: closures and the concrete settings of the user's answers. Written once, beside the
+    #: immutable `content`, and never shown to the PO or the user.
+    capability_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class CapabilityPreview(Base):
+    """One Architect capability preview of one project, before any brief relies on it.
+
+    Created only by internal callers. Its `product` document is what the PO may show; its
+    `technical` document (activated catalog snapshot, closures, answer targets) is read
+    only by the API when it derives a revision's plan. Immutable once written.
+    """
+
+    __tablename__ = "capability_previews"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("projects.id"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The `CapabilityRequest` list the preview answered.
+    requests: Mapped[list] = mapped_column(JSON, nullable=False)
+    #: The `CapabilityPreviewProjection`.
+    product: Mapped[dict] = mapped_column(JSON, nullable=False)
+    #: The `CapabilityPreviewTechnical`.
+    technical: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class RequirementCoverage(Base):

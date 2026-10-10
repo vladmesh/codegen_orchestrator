@@ -174,6 +174,8 @@ class TaskCreate(BaseModel):
         if self.type is TaskType.INSTALL:
             if self.install is None or not self.story_id or not self.repository_id:
                 raise ValueError("INSTALL requires payload, story and repository ownership")
+            if self.install.catalog is None:
+                raise ValueError("a new INSTALL names the catalog commit it installs from")
         elif self.install is not None:
             raise ValueError("only INSTALL carries an install payload")
         return self

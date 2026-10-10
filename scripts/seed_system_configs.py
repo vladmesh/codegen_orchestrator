@@ -29,10 +29,11 @@ _WORK_ADMISSION_KEYS = {
     "work_admission.qa_executor_override",
 }
 # Keys the file seeds once and then leaves to the operator. An operator raises
-# engineering slots on a running installation after watching it; a deploy that
-# reset the value back to the file's would take capacity away silently, which is
-# exactly the kind of quiet divergence this contour is trying to stop.
-_OPERATOR_OWNED_KEYS = frozenset({"engineering.worker_slots"})
+# engineering slots on a running installation after watching it, and enables ready
+# capability modules project by project; a deploy that reset either back to the
+# file's value would undo that silently, which is exactly the kind of quiet
+# divergence this contour is trying to stop.
+_OPERATOR_OWNED_KEYS = frozenset({"engineering.worker_slots", "capabilities.module_rollout"})
 _PAID_WORK_CONTROL_FIELDS = {
     "work_admission.emergency_stop": "emergency_stop",
     "work_admission.max_concurrent_paid_runs": "max_concurrent_paid_runs",

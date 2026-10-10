@@ -105,3 +105,9 @@ def capability_refusal(content: ProductBriefContent) -> str | None:
         "with capability set to that id. If they insist on the unsupported capability, "
         "use pass_capability_request; create no story."
     )
+
+
+def platform_cannot(text: str) -> CapabilityLimit | None:
+    """The manifest limitation a capability request's own words trip, if any."""
+    normalised = _normalise(text)
+    return next((item for item in CAPABILITY_LIMITS.values() if item.trips(normalised)), None)

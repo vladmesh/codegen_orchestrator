@@ -22,9 +22,9 @@ from pydantic import ValidationError
 import structlog
 
 from ...catalog_product_settings import (
+    PO_CAPABILITIES_CONFIG_KEY,
     PO_CATALOG_CONFIG_KEY,
-    PO_PACKAGES_CONFIG_KEY,
-    render_po_packages,
+    render_po_capabilities,
 )
 from ...prompts.po import MODEL_PROMPT
 from .checkpoints import ProtectedPostgresSaver, ProtectedSerializer
@@ -50,14 +50,14 @@ def po_prompt(state: POState, config: RunnableConfig) -> list[AnyMessage]:
     """
     situation = config["configurable"].get(SITUATION_CONFIG_KEY)
     catalog = config["configurable"].get(PO_CATALOG_CONFIG_KEY)
-    packages = (
-        config["configurable"][PO_PACKAGES_CONFIG_KEY]
-        if PO_PACKAGES_CONFIG_KEY in config["configurable"]
-        else render_po_packages(catalog)
+    capabilities = (
+        config["configurable"][PO_CAPABILITIES_CONFIG_KEY]
+        if PO_CAPABILITIES_CONFIG_KEY in config["configurable"]
+        else render_po_capabilities(catalog)
         if catalog is not None
         else ""
     )
-    system = "\n\n".join(block for block in (MODEL_PROMPT, packages, situation) if block)
+    system = "\n\n".join(block for block in (MODEL_PROMPT, capabilities, situation) if block)
     return [SystemMessage(content=system), *state["messages"]]
 
 

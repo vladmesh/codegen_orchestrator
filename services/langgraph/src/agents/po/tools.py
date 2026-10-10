@@ -28,7 +28,14 @@ from shared.engineering_budget_display import format_microusd
 from shared.notifications import AdminDeliveryResult, AdminDeliveryStatus, deliver_to_admins
 
 from ...capability_feasibility import CAPABILITY_LIMITS, MANIFEST_VERSION
-from . import tools_briefs, tools_notices, tools_projects, tools_shared, tools_stories
+from . import (
+    tools_briefs,
+    tools_capabilities,
+    tools_notices,
+    tools_projects,
+    tools_shared,
+    tools_stories,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -266,6 +273,7 @@ def get_all_tools() -> list:
         tools_projects.transfer_project_ownership,
         tools_projects.teardown_project,
         tools_projects.validate_telegram_token,
+        tools_capabilities.preview_capabilities,
         tools_briefs.present_product_brief,
         tools_briefs.confirm_product_brief,
         tools_briefs.show_full_brief,
