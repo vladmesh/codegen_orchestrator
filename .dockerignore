@@ -83,3 +83,6 @@ Thumbs.db
 # uv
 uv.lock
 **/uv.lock
+
+# The runner proof job checks the kit and platform out here (.github/workflows/ci.yml).
+.runner/

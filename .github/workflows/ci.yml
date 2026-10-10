@@ -626,6 +626,194 @@ jobs:
         if: always() && hashFiles('scripts/ci-infra.sh') != ''
         run: bash scripts/ci-infra.sh expose --output infra-marker-${{ matrix.entry }}
 
+  # The free runner proof of the confirmation/planning contract (docs/TESTING.md, "Runner
+  # proof"): the kit's pinned harness proves a fresh backend,tg_bot product end to end, and
+  # tests/runner/activated_snapshot_proof.py plans it through this candidate's production
+  # path against the activated catalog snapshot and the orchestrator API image and database.
+  # Both legs run for every pull request and every main push, with no path filter: a skipped
+  # leg fails merge-gate. The read-only platform deploy key is used only for a main push or a
+  # same-repository pull request; anything else fails instead of skipping.
+  runner-proof:
+    name: Runner Proof (${{ matrix.leg }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: [lint, ci-contract]
+    if: needs.lint.result == 'success' && needs.ci-contract.result == 'success'
+    permissions:
+      contents: read
+    env:
+      CI_INFRA_JOB: runner-proof/${{ matrix.leg }}
+      DOCKER_BUILDKIT: "1"
+      ORCHESTRATOR_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # The pinned codegen-platform-services revision the proof deploys (sprint 1487).
+      PLATFORM_SHA: 070dfb359f9a121546d1362ae84c9d0856cabf64
+      PACKAGE_VERSION: "0.1.2"
+      PACKAGES: ${{ matrix.packages }}
+    outputs:
+      infra-marker-fresh: ${{ steps.infra.outputs['infra-marker-fresh'] }}
+      infra-marker-coexistence: ${{ steps.infra.outputs['infra-marker-coexistence'] }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: fresh
+            packages: tg-channels
+          - leg: coexistence
+            packages: reminders,tg-channels
+    steps:
+      - name: Require a trusted source and the platform deploy key
+        timeout-minutes: 1
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          HAS_PLATFORM_KEY: ${{ secrets.PLATFORM_SERVICES_DEPLOY_KEY != '' }}
+        run: |
+          if [ "$EVENT" = pull_request ] && [ "$HEAD_REPOSITORY" = "$REPOSITORY" ]; then
+            :
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then
+            :
+          else
+            echo "The runner proof runs only for main pushes and same-repository pull requests" \
+              "($EVENT $REF $HEAD_REPOSITORY); this required check fails." >&2
+            exit 1
+          fi
+          if [ "$HAS_PLATFORM_KEY" != true ]; then
+            echo "PLATFORM_SERVICES_DEPLOY_KEY is unavailable; the runner proof cannot pass." >&2
+            exit 1
+          fi
+          for git_config in --system --global; do
+            if git config "$git_config" --get-regexp '^url\..*\.insteadof$'; then
+              echo "A $git_config insteadOf rewrite could replace the SSH deploy key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Check out the exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+        with:
+          ref: ${{ env.ORCHESTRATOR_SHA }}
+          persist-credentials: false
+
+      - name: Read the activated kit commit
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          kit=$(python3 -c 'import yaml; print(yaml.safe_load(open("shared/catalog_activation.yaml"))["commit"])')
+          [[ "$kit" =~ ^[0-9a-f]{40}$ ]]
+          echo "KIT_SHA=$kit" >> "$GITHUB_ENV"
+
+      - name: Check out the activated kit commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+        with:
+          repository: vladmesh/codegen-product-kit
+          ref: ${{ env.KIT_SHA }}
+          path: .runner/kit
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the pinned platform with the read-only deploy key
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+        with:
+          repository: vladmesh/codegen-platform-services
+          ref: ${{ env.PLATFORM_SHA }}
+          path: .runner/platform
+          ssh-key: ${{ secrets.PLATFORM_SERVICES_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify fetched heads and the platform transport
+        timeout-minutes: 1
+        run: |
+          test "$(git rev-parse HEAD)" = "$ORCHESTRATOR_SHA"
+          test "$(git -C .runner/kit rev-parse HEAD)" = "$KIT_SHA"
+          test "$(git -C .runner/platform rev-parse HEAD)" = "$PLATFORM_SHA"
+          case "$(git -C .runner/platform remote get-url origin)" in
+            git@github.com:vladmesh/codegen-platform-services*) ;;
+            *) echo "Platform was not fetched over the SSH deploy key" >&2; exit 1 ;;
+          esac
+          if git -C .runner/platform config --get-regexp '^(http\..*extraheader|core\.sshcommand)$'; then
+            echo "Platform checkout kept credentials" >&2
+            exit 1
+          fi
+
+      - name: Free runner disk for product, platform and registry images
+        timeout-minutes: 3
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      # Docker Hub pulls go through the credential-free public mirror before any container
+      # starts; image references stay unchanged and the daemon falls back to Docker Hub.
+      - name: Pull Docker Hub images through the public mirror
+        timeout-minutes: 2
+        run: |
+          sudo python3 - https://mirror.gcr.io <<'EOF'
+          import json, pathlib, sys
+          path = pathlib.Path("/etc/docker/daemon.json")
+          text = path.read_text() if path.exists() else ""
+          config = json.loads(text) if text.strip() else {}
+          mirrors = [item for item in config.get("registry-mirrors", []) if item != sys.argv[1]]
+          config["registry-mirrors"] = [sys.argv[1], *mirrors]
+          path.write_text(json.dumps(config, indent=2) + "\n")
+          EOF
+          sudo systemctl restart docker
+          docker info --format '{{json .RegistryConfig.Mirrors}}' | grep -F mirror.gcr.io
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        timeout-minutes: 3
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv with retry
+        timeout-minutes: 3
+        uses: ./.github/actions/setup-uv-with-retry
+
+      - name: Prepare the candidate environment
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          uv sync --frozen
+          .venv/bin/python -c 'import json, sys; from importlib.metadata import distribution as d; c = json.loads(d("codegen-kit-tooling").read_text("direct_url.json"))["vcs_info"]["commit_id"]; sys.exit(c != sys.argv[1])' "$KIT_SHA"
+
+      - name: Run the runner proof through the activated snapshot and the stored plan
+        id: runner-proof
+        run: >-
+          bash scripts/ci-infra.sh bound --step runner-proof --timeout 30m --
+          .venv/bin/python tests/runner/activated_snapshot_proof.py
+          --kit-dir .runner/kit --kit-sha "$KIT_SHA"
+          --orchestrator-dir . --orchestrator-sha "$ORCHESTRATOR_SHA"
+          --platform-dir .runner/platform --platform-sha "$PLATFORM_SHA"
+          --package-version "$PACKAGE_VERSION" --packages "$PACKAGES"
+          --output-dir "$RUNNER_TEMP/runner-proof"
+
+      - name: Preserve runner proof evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-proof-${{ matrix.leg }}-${{ env.ORCHESTRATOR_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runner-proof
+          if-no-files-found: error
+
+      - name: Require passed SHA-bound evidence
+        timeout-minutes: 2
+        run: >-
+          .venv/bin/python tests/runner/verify_evidence.py
+          --evidence "$RUNNER_TEMP/runner-proof/runner-proof.json"
+          --kit-dir .runner/kit --activation shared/catalog_activation.yaml
+          --kit-sha "$KIT_SHA" --orchestrator-sha "$ORCHESTRATOR_SHA" --platform-sha "$PLATFORM_SHA"
+          --packages "$PACKAGES" --package-version "$PACKAGE_VERSION"
+
+      - name: Expose CI infrastructure failure
+        id: infra
+        if: always() && hashFiles('scripts/ci-infra.sh') != ''
+        run: bash scripts/ci-infra.sh expose --output infra-marker-${{ matrix.leg }}
+
   web-checks:
     name: Web Checks (${{ matrix.app }})
     runs-on: ubuntu-24.04
@@ -877,6 +1065,7 @@ jobs:
       - template-compatibility
       - web-checks
       - test-backend-dind-integration
+      - runner-proof
     if: always()
     steps:
       - name: Check required jobs
@@ -897,6 +1086,7 @@ jobs:
             ["template-compatibility"]="${{ needs.template-compatibility.result }}"
             ["web-checks"]="${{ needs.web-checks.result }}"
             ["test-backend-dind-integration"]="${{ needs.test-backend-dind-integration.result }}"
+            ["runner-proof"]="${{ needs.runner-proof.result }}"
           )
 
           # A skip passes only where it is the plan. web-checks runs only for frontend and
