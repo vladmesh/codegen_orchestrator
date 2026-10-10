@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.capability_preview import CapabilityPlan, CapabilityRoute
 from shared.contracts.dto.catalog_install import (
     PRODUCT_GLUE_OWNER,
@@ -29,7 +30,14 @@ from shared.contracts.queues.qa import QAOutcome
 
 from .codegen_api import typed_deploy_result, typed_qa_result
 from .evidence import ObservationStatus
-from .repository_evidence import CompareFacts, PullRequestFacts, WorkflowRunFacts
+from .repository_evidence import (
+    PUBLICATION_BRANCH,
+    PUBLICATION_WORKFLOW,
+    CompareFacts,
+    JobFacts,
+    PullRequestFacts,
+    WorkflowRunFacts,
+)
 
 MODULE_ROUTES = frozenset({CapabilityRoute.MODULE, CapabilityRoute.MODULE_WITH_GLUE})
 _TERMINAL_RUNS = frozenset({RunStatus.COMPLETED.value, RunStatus.FAILED.value})
@@ -37,6 +45,10 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _SHA = re.compile(r"[0-9a-f]{40}")
 #: GitHub's compare relations in which the head contains the base.
 _CONTAINS = frozenset({"ahead", "identical"})
+#: The workflow the deployer dispatches (`subgraphs/devops/deployer.DEPLOY_WORKFLOW`).
+DEPLOY_WORKFLOW = "deploy.yml"
+#: The `ci.yml` job that pushes the images (the kit template's product CI).
+PUBLISHING_JOB = "build-and-push"
 
 
 @dataclass(frozen=True)
@@ -335,10 +347,12 @@ def deploy_typed(project_id: str, story_id: str, runs: list[dict]) -> tuple[Find
         "deployed_url": None if result is None else result.deployed_url,
         "application_id": None if result is None else result.application_id,
         "bot_username": None if result is None else result.bot_username,
-        # The deployer's own record of what it placed: the publication run that built
-        # the images, the commit they are, the references the target pulled and the
-        # digests those references resolved to.
-        "publication_run_id": placed.get("run_id"),
+        # The deployer's own record of what it placed: the `deploy.yml` run it
+        # dispatched and waited for (`deployment_result.run_id`), the commit its
+        # images are, the references the target pulled and their digests. Which
+        # run *published* those images is not in it: that is the `ci.yml` run of
+        # the commit, observed separately.
+        "deploy_workflow_run_id": placed.get("run_id"),
         "deployed_commit_sha": placed.get("deployed_commit_sha"),
         "image_references": placed.get("image_references"),
         "image_digests": placed.get("image_digests"),
@@ -356,20 +370,90 @@ def deploy_typed(project_id: str, story_id: str, runs: list[dict]) -> tuple[Find
     return observed(detail), detail
 
 
-def deploy_provenance(  # noqa: PLR0911 - one chain, each link its own verdict
-    deploy: dict,
-    story: dict,
-    pull_request: PullRequestFacts | None,
-    publication: WorkflowRunFacts | None,
-) -> Finding:
-    """The chain PR head -> merged commit -> successful publication -> deployed digests."""
+def _run_view(run: WorkflowRunFacts | None) -> dict | None:
+    if run is None:
+        return None
+    return {
+        "id": run.id,
+        "path": run.path,
+        "head_sha": run.head_sha,
+        "head_branch": run.head_branch,
+        "event": run.event,
+        "status": run.status,
+        "conclusion": run.conclusion,
+    }
+
+
+def _is_workflow(run: WorkflowRunFacts, name: str) -> bool:
+    return (run.path or "").removeprefix("./") == f".github/workflows/{name}"
+
+
+def _publishing_jobs(jobs: list[JobFacts]) -> list[JobFacts]:
+    """The `build-and-push` job, one per image when it is a matrix."""
+    return [
+        job
+        for job in jobs
+        if job.name == PUBLISHING_JOB or job.name.startswith(f"{PUBLISHING_JOB} (")
+    ]
+
+
+def _timeline_publication(story: dict, commit: str) -> dict | None:
+    """The platform's own publication observation of *commit* on the default branch."""
     timeline = story.get("generated_product_timeline") or {}
-    recorded_head = (timeline.get("pull_request") or {}).get("head_sha")
+    for run in timeline.get("ci_runs") or []:
+        if (
+            isinstance(run, dict)
+            and run.get("branch") == PUBLICATION_BRANCH
+            and run.get("head_sha") == commit
+        ):
+            return run
+    return None
+
+
+def _image_contradiction(repository: str, commit: str, deploy: dict) -> str | None:
+    """Each deployed image is this repository's, tagged with the built commit, digested."""
     references = deploy.get("image_references") or {}
     digests = deploy.get("image_digests") or {}
+    if not isinstance(digests, dict) or set(digests) != set(references):
+        return "a deployed image without its digest"
+    tag = f":{sha_image_tag(commit)}"
+    namespace = f"/{repository.casefold()}-"
+    for key, reference in references.items():
+        text = str(reference)
+        if not text.endswith(tag) or namespace not in text.casefold():
+            return f"{key} is not this repository's image of the built commit"
+        if not _DIGEST.fullmatch(str(digests[key])):
+            return f"{key} carries no sha256 digest"
+    return None
+
+
+def deploy_provenance(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one chain, each link its own verdict
+    deploy: dict,
+    story: dict,
+    repository: str | None,
+    pull_request: PullRequestFacts | None,
+    deployment_run: WorkflowRunFacts | None,
+    publications: list[WorkflowRunFacts] | None,
+    publication_jobs: list[JobFacts] | None,
+) -> tuple[Finding, WorkflowRunFacts | None]:
+    """PR head -> merged commit -> its `ci.yml` publication -> a distinct `deploy.yml` run.
+
+    The deploy record names the `deploy.yml` run that placed the images; the
+    images were published by the commit's own `ci.yml` run on the default branch,
+    whose `build-and-push` job pushes them. Both are read from GitHub and must be
+    successful, distinct, of the deployed commit, and agree with the platform's
+    timeline. A green pull-request CI run, a successful `main.yml` or the deploy
+    run itself is never the publication. A fact GitHub would not give is unknown.
+    Returns the finding and the publication run it judged.
+    """
     commit = deploy.get("deployed_commit_sha")
-    chain = {
+    timeline_head = ((story.get("generated_product_timeline") or {}).get("pull_request") or {}).get(
+        "head_sha"
+    )
+    chosen: WorkflowRunFacts | None = None
+    chain: dict[str, Any] = {
         **deploy,
+        "repository": repository,
         "pull_request": None
         if pull_request is None
         else {
@@ -377,34 +461,73 @@ def deploy_provenance(  # noqa: PLR0911 - one chain, each link its own verdict
             "head_sha": pull_request.head_sha,
             "merge_commit_sha": pull_request.merge_commit_sha,
         },
-        "publication": None
-        if publication is None
-        else {
-            "id": publication.id,
-            "head_sha": publication.head_sha,
-            "conclusion": publication.conclusion,
-            "path": publication.path,
-        },
+        "deploy_workflow_run": _run_view(deployment_run),
+        "publication_candidates": None
+        if publications is None
+        else [_run_view(run) for run in publications],
+        "publication_jobs": None
+        if publication_jobs is None
+        else [{"name": job.name, "conclusion": job.conclusion} for job in publication_jobs],
+        "timeline_publication": None if not commit else _timeline_publication(story, commit),
     }
-    if not deploy.get("publication_run_id") or not commit or not references:
-        return unknown({**chain, "missing": "deployed commit, publication run and images"})
-    if not isinstance(digests, dict) or set(digests) != set(references):
-        return unknown({**chain, "missing": "a digest for every deployed image"})
-    if not _SHA.fullmatch(str(commit)) or any(
-        not _DIGEST.fullmatch(str(value)) for value in digests.values()
-    ):
-        return failed({**chain, "contradiction": "a commit or digest that is not one"})
-    if pull_request is None or publication is None:
-        return unknown({**chain, "missing": "the pull request and the publication run"})
-    if recorded_head and pull_request.head_sha != recorded_head:
-        return failed({**chain, "contradiction": "the merged head is not the recorded one"})
+    if not deploy.get("deploy_workflow_run_id") or not commit or not deploy.get("image_references"):
+        return unknown({**chain, "missing": "deploy run, deployed commit and images"}), None
+    if not _SHA.fullmatch(str(commit)):
+        return failed({**chain, "contradiction": "the deployed commit is not a commit"}), None
+    if repository is None:
+        return unknown({**chain, "missing": "the product repository"}), None
+    images = _image_contradiction(repository, commit, deploy)
+    if images is not None:
+        return failed({**chain, "contradiction": images}), None
+    if pull_request is None:
+        return unknown({**chain, "missing": "the pull request"}), None
+    if timeline_head and pull_request.head_sha != timeline_head:
+        return failed({**chain, "contradiction": "the merged head is not the recorded one"}), None
     if not pull_request.merged or not pull_request.merge_commit_sha:
-        return unknown({**chain, "missing": "the merge commit"})
-    if publication.head_sha != commit or publication.conclusion != "success":
-        return failed({**chain, "contradiction": "the publication did not build this commit"})
+        return unknown({**chain, "missing": "the merge commit"}), None
     if commit != pull_request.merge_commit_sha:
-        return failed({**chain, "contradiction": "the deployed commit is not the merge"})
-    return observed(chain)
+        return failed({**chain, "contradiction": "the deployed commit is not the merge"}), None
+    if publications is None:
+        return unknown({**chain, "missing": "the commit's ci.yml runs"}), None
+    of_commit = [
+        run
+        for run in publications
+        if _is_workflow(run, PUBLICATION_WORKFLOW)
+        and run.head_sha == commit
+        and run.head_branch == PUBLICATION_BRANCH
+    ]
+    if not of_commit:
+        return failed({**chain, "contradiction": "no ci.yml run published the commit"}), None
+    succeeded = [run for run in of_commit if run.conclusion == "success"]
+    if not succeeded:
+        return failed({**chain, "contradiction": "the commit's ci.yml run did not succeed"}), None
+    chosen = max(succeeded, key=lambda run: run.id)
+    chain["publication"] = _run_view(chosen)
+    timeline = chain["timeline_publication"]
+    if timeline is not None and (
+        timeline.get("id") != chosen.id or timeline.get("conclusion") != "success"
+    ):
+        return failed(
+            {**chain, "contradiction": "the platform observed another publication"}
+        ), chosen
+    if publication_jobs is None:
+        return unknown({**chain, "missing": "the publication's jobs"}), chosen
+    publishing = _publishing_jobs(publication_jobs)
+    if not publishing or any(job.conclusion != "success" for job in publishing):
+        return failed(
+            {**chain, "contradiction": "build-and-push did not publish the images"}
+        ), chosen
+    if deployment_run is None:
+        return unknown({**chain, "missing": "the deploy.yml run"}), chosen
+    if deployment_run.id == chosen.id or not _is_workflow(deployment_run, DEPLOY_WORKFLOW):
+        return failed(
+            {**chain, "contradiction": "the deploy run is not a distinct deploy.yml run"}
+        ), chosen
+    if deployment_run.conclusion != "success" or deployment_run.head_sha != commit:
+        return failed(
+            {**chain, "contradiction": "the deploy.yml run did not deploy this commit"}
+        ), chosen
+    return observed(chain), chosen
 
 
 def qa_passed(project_id: str, story_id: str, runs: list[dict], deploy: dict | None) -> Finding:

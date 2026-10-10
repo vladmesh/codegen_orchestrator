@@ -8,15 +8,20 @@ from src.synthetic_buyer import native, probe
 from src.synthetic_buyer.evidence import ObservationStatus
 from src.synthetic_buyer.repository_evidence import (
     CompareFacts,
+    JobFacts,
     PullRequestFacts,
     WorkflowRunFacts,
 )
 from src.synthetic_buyer.telegram import Message
 from tests.unit.synthetic_buyer.fakes import (
+    DEPLOY_WORKFLOW_RUN,
+    IMAGE,
     INSTALL_HEAD,
     MERGE,
     PR_HEAD,
     PROJECT,
+    PUBLICATION_RUN,
+    REPOSITORY,
     SCAFFOLD,
     START,
     install,
@@ -132,50 +137,121 @@ def test_engineering_after_the_install_is_judged_by_the_files_it_changed():
 def _deploy_run(**placed) -> dict:
     deployment = {
         "status": "success",
-        "run_id": 9001,
+        "run_id": DEPLOY_WORKFLOW_RUN,
         "deployed_commit_sha": MERGE,
-        "image_references": {"BACKEND_IMAGE": "registry/p:x"},
+        "image_references": {"BACKEND_IMAGE": IMAGE},
         "image_digests": {"BACKEND_IMAGE": "sha256:" + "c" * 64},
     } | placed
     return DEPLOY | {"result": DEPLOY["result"] | {"deployment_result": deployment}}
 
 
-STORY_RECORD = {"generated_product_timeline": {"pull_request": {"head_sha": PR_HEAD}}}
-PUBLICATION = WorkflowRunFacts(9001, MERGE, "completed", "success", "main.yml")
+STORY_RECORD = {
+    "generated_product_timeline": {
+        "pull_request": {"head_sha": PR_HEAD},
+        "ci_runs": [
+            {"id": PUBLICATION_RUN, "branch": "main", "head_sha": MERGE, "conclusion": "success"}
+        ],
+    }
+}
+PUBLICATION = WorkflowRunFacts(
+    PUBLICATION_RUN, MERGE, "completed", "success", ".github/workflows/ci.yml", "main", "push"
+)
+DEPLOYMENT = WorkflowRunFacts(
+    DEPLOY_WORKFLOW_RUN,
+    MERGE,
+    "completed",
+    "success",
+    ".github/workflows/deploy.yml",
+    "deploy-pin",
+    "workflow_dispatch",
+)
+JOBS = [
+    JobFacts(
+        "build-and-push (backend, ., services/backend/Dockerfile, backend)", "completed", "success"
+    )
+]
+
+
+def _provenance(deploy, story=STORY_RECORD, **facts):
+    chain = {
+        "pull_request": PULL,
+        "deployment_run": DEPLOYMENT,
+        "publications": [PUBLICATION],
+        "publication_jobs": JOBS,
+    } | facts
+    finding, _ = native.deploy_provenance(
+        deploy,
+        story,
+        REPOSITORY,
+        chain["pull_request"],
+        chain["deployment_run"],
+        chain["publications"],
+        chain["publication_jobs"],
+    )
+    return finding.status
 
 
 def test_a_typed_success_without_its_provenance_chain_is_not_an_observed_deploy():
     _, bare = native.deploy_typed(PROJECT, STORY, [DEPLOY])
     _, full = native.deploy_typed(PROJECT, STORY, [_deploy_run()])
-    _, undigested = native.deploy_typed(PROJECT, STORY, [_deploy_run(image_digests={})])
 
-    assert native.deploy_provenance(bare, STORY_RECORD, PULL, PUBLICATION).status is (
-        ObservationStatus.UNKNOWN
-    )
-    assert native.deploy_provenance(undigested, STORY_RECORD, PULL, PUBLICATION).status is (
-        ObservationStatus.UNKNOWN
-    )
-    assert native.deploy_provenance(full, STORY_RECORD, PULL, None).status is (
-        ObservationStatus.UNKNOWN
-    )
-    assert native.deploy_provenance(full, STORY_RECORD, PULL, PUBLICATION).status is (
-        ObservationStatus.OBSERVED
-    )
+    assert _provenance(bare) is ObservationStatus.UNKNOWN
+    assert _provenance(full, publications=None) is ObservationStatus.UNKNOWN
+    assert _provenance(full, publication_jobs=None) is ObservationStatus.UNKNOWN
+    assert _provenance(full, deployment_run=None) is ObservationStatus.UNKNOWN
+    assert _provenance(full, pull_request=None) is ObservationStatus.UNKNOWN
+    assert _provenance(full) is ObservationStatus.OBSERVED
 
 
 def test_inconsistent_deploy_provenance_fails():
     _, full = native.deploy_typed(PROJECT, STORY, [_deploy_run()])
+    _, undigested = native.deploy_typed(PROJECT, STORY, [_deploy_run(image_digests={})])
     other_head = {"generated_product_timeline": {"pull_request": {"head_sha": "7" * 40}}}
+    green_pr_ci = WorkflowRunFacts(
+        8, PR_HEAD, "completed", "success", ".github/workflows/ci.yml", "story-1", "pull_request"
+    )
+    main_yml = replace(PUBLICATION, path=".github/workflows/main.yml")
+    deploy_as_publication = replace(DEPLOYMENT, path=".github/workflows/ci.yml", head_branch="main")
 
-    for story, pull, publication in (
-        (other_head, PULL, PUBLICATION),
-        (STORY_RECORD, PULL, replace(PUBLICATION, conclusion="failure")),
-        (STORY_RECORD, PULL, replace(PUBLICATION, head_sha="9" * 40)),
-        (STORY_RECORD, replace(PULL, merge_commit_sha="6" * 40), PUBLICATION),
+    for deploy, story, facts in (
+        (undigested, STORY_RECORD, {}),
+        (full, other_head, {}),
+        (full, STORY_RECORD, {"publications": []}),
+        (full, STORY_RECORD, {"publications": [green_pr_ci]}),
+        (full, STORY_RECORD, {"publications": [main_yml]}),
+        (full, STORY_RECORD, {"publications": [replace(PUBLICATION, conclusion="failure")]}),
+        (full, STORY_RECORD, {"publications": [replace(PUBLICATION, head_sha="9" * 40)]}),
+        (full, STORY_RECORD, {"publications": [deploy_as_publication]}),
+        (
+            full,
+            STORY_RECORD,
+            {"publications": [deploy_as_publication], "deployment_run": deploy_as_publication},
+        ),
+        (full, STORY_RECORD, {"publication_jobs": []}),
+        (full, STORY_RECORD, {"publication_jobs": [replace(JOBS[0], conclusion="failure")]}),
+        (full, STORY_RECORD, {"deployment_run": PUBLICATION}),
+        (full, STORY_RECORD, {"deployment_run": replace(DEPLOYMENT, conclusion="failure")}),
+        (full, STORY_RECORD, {"deployment_run": replace(DEPLOYMENT, head_sha="9" * 40)}),
+        (full, STORY_RECORD, {"pull_request": replace(PULL, merge_commit_sha="6" * 40)}),
+        (
+            native.deploy_typed(
+                PROJECT, STORY, [_deploy_run(image_references={"BACKEND_IMAGE": "registry/p:x"})]
+            )[1],
+            STORY_RECORD,
+            {},
+        ),
+        (
+            full,
+            {
+                "generated_product_timeline": {
+                    "pull_request": {"head_sha": PR_HEAD},
+                    "ci_runs": [{"id": 9002, "branch": "main", "head_sha": MERGE}],
+                }
+            },
+            {},
+        ),
     ):
-        assert native.deploy_provenance(full, story, pull, publication).status is (
-            ObservationStatus.FAILED
-        )
+        assert _provenance(deploy, story, **facts) is ObservationStatus.FAILED, (story, facts)
 
 
 def test_qa_binds_to_the_storys_deploy_or_does_not_count():

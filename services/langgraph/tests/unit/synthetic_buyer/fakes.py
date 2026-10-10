@@ -6,19 +6,26 @@ the brief it points the project at, the accepted order) and records into the fak
 API, the project's secrets and the repository exactly what the real ones would
 expose. Judgment stays in the controller and its adapters; the world only holds
 facts. Time is a fake clock that moves only when the controller sleeps; native work,
-QA runs and channel posts happen on those sleeps. Nothing starts a process, opens a
-socket or really sleeps.
+QA runs and channel posts happen on those sleeps. Native QA's Telegram use takes
+the real `TelegramIdentityLease` over an in-memory Redis with Lua, the same one the
+buyer holds. Nothing starts a process, opens a socket or really sleeps.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+import inspect
 from typing import Any
 
+from fakeredis.aioredis import FakeRedis
+
 from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.capability_preview import CapabilityPlan
+from src.consumers._qa_telegram_lease import Holder, HolderKind, TelegramIdentityLease
 from src.synthetic_buyer.codegen_api import ApiRefused
 from src.synthetic_buyer.config import parse_config
 from src.synthetic_buyer.controller import Clock, SyntheticBuyer
@@ -27,6 +34,7 @@ from src.synthetic_buyer.persona import PersonaContext, PersonaDecision, Persona
 from src.synthetic_buyer.platform_evidence import AuthFacts, UsageFacts, platform_product_id
 from src.synthetic_buyer.repository_evidence import (
     CompareFacts,
+    JobFacts,
     PullRequestFacts,
     RepositoryFactUnavailable,
     WorkflowRunFacts,
@@ -59,13 +67,19 @@ SCAFFOLD = "0" * 39 + "1"
 INSTALL_HEAD = "0" * 39 + "2"
 PR_HEAD = "0" * 39 + "3"
 MERGE = "0" * 39 + "4"
+#: The commit's own `ci.yml` run on main (the scheduler's publication observation).
 PUBLICATION_RUN = 9001
+#: The `deploy.yml` run the deployer dispatched and stored as `deployment_result.run_id`.
+DEPLOY_WORKFLOW_RUN = 9100
+#: The PR's own CI run: green, but on the branch head, not the merged commit.
+PR_CI_RUN = 8
 DIGEST = "sha256:" + "c" * 64
+IMAGE = f"registry.example.test/{REPOSITORY}-backend:{sha_image_tag(MERGE)}"
 
 
 def config_data(**overrides: Any) -> dict:
     data = {
-        "schema_version": 1,
+        "schema_version": 2,
         "operation_id": "s1487-buyer-001",
         "codegen_bot": {"username": CODEGEN.username, "user_id": CODEGEN.id},
         "buyer": {"telegram_id": BUYER},
@@ -81,7 +95,7 @@ def config_data(**overrides: Any) -> dict:
             "conversation_turns": 8,
             "order_seconds": 3600,
             "build_seconds": 7200,
-            "qa_quiet_seconds": 600,
+            "identity_wait_seconds": 600,
             "probe_reply_seconds": 30,
             "post_delivery_seconds": 600,
             "teardown_seconds": 600,
@@ -96,6 +110,7 @@ def config_data(**overrides: Any) -> dict:
             "api_hash": {"env": "TELETHON_API_HASH"},
             "session": {"env": "TELETHON_SESSION"},
         },
+        "identity_lease": {"redis_url": {"env": "REDIS_URL"}},
         "registration": {"credits_microusd": 5_000_000, "attempt_reservation_microusd": 500_000},
         "product_token": {"mode": "handle", "handle": {"env": "BUYER_PRODUCT_BOT_TOKEN"}},
         "platform": {
@@ -114,6 +129,7 @@ ENVIRON = {
     "TELETHON_API_ID": "12345",
     "TELETHON_API_HASH": API_HASH,
     "TELETHON_SESSION": SESSION,
+    "REDIS_URL": "redis://:redis-password-value@redis:6379/0",
     "BUYER_PRODUCT_BOT_TOKEN": TOKEN,
     "PLATFORM_AUTH_ADMIN_URL": "http://auth:8000",
     "PLATFORM_AUTH_ADMIN_TOKEN": "admin-token-value-abcdef",
@@ -210,7 +226,7 @@ class ProcessDied(BaseException):  # noqa: N818 - the process, not an error, end
 @dataclass
 class FakeClock:
     now: datetime = START
-    hooks: list[Callable[[], None]] = field(default_factory=list)
+    hooks: list[Callable[[], Any]] = field(default_factory=list)
 
     def wall(self) -> datetime:
         return self.now
@@ -218,10 +234,66 @@ class FakeClock:
     async def sleep(self, seconds: float) -> None:
         self.now += timedelta(seconds=seconds)
         for hook in list(self.hooks):
-            hook()
+            result = hook()
+            if inspect.isawaitable(result):
+                await result
 
     def clock(self) -> Clock:
         return Clock(wall=self.wall, sleep=self.sleep)
+
+
+async def _never() -> None:
+    """A renewal that never comes due inside a test: the watchdog sleeps until cancelled."""
+    await asyncio.Event().wait()
+
+
+def identity_lease(redis: FakeRedis, clock: FakeClock) -> TelegramIdentityLease:
+    """The real lease over the world's Redis, timed by the fake clock."""
+    return TelegramIdentityLease(
+        redis,
+        BUYER,
+        wall=lambda: clock.now.timestamp(),
+        sleep=clock.sleep,
+        renew_wait=_never,
+        now=clock.wall,
+    )
+
+
+class NativeQA:
+    """Native QA's side of the shared identity: holds it exactly as the QA consumer does."""
+
+    def __init__(self, world: World) -> None:
+        self.world = world
+        self.token: str | None = None
+        self.denied = 0
+        self.spans: list[tuple[datetime, datetime | None]] = []
+
+    @property
+    def holding(self) -> bool:
+        return self.token is not None
+
+    async def start(self, reference: str = "qa-other", purpose: str = "exploratory") -> bool:
+        """Take the identity if it is free right now; a denial is counted, not waited."""
+        if self.token is not None:
+            return True
+        lease = identity_lease(self.world.redis, self.world.clock)
+        try:
+            self.token = await lease._acquire(  # noqa: SLF001 - the consumer's own admission
+                Holder(HolderKind.NATIVE_QA, reference, purpose), 0, 0
+            )
+        except Exception:  # noqa: BLE001 - IdentityBusy: the buyer holds it
+            self.denied += 1
+            return False
+        self.spans.append((self.world.clock.now, None))
+        return True
+
+    async def end(self) -> None:
+        if self.token is None:
+            return
+        await identity_lease(self.world.redis, self.world.clock).release(self.token)
+        self.token = None
+        started, _ = self.spans[-1]
+        self.spans[-1] = (started, self.world.clock.now)
 
 
 class World:
@@ -251,7 +323,9 @@ class World:
         self.plans: dict[str, CapabilityPlan] = {}
         self.tasks: list[dict] = []
         self.runs: list[dict] = []
-        self.busy_qa: list[dict] = []
+        self.redis = FakeRedis()
+        self.connected_at: list[datetime] = []
+        self.native = NativeQA(self)
         self.language = "ru"
         self.teardown = "completed"
         self.sends_while_qa_busy: list[str] = []
@@ -259,8 +333,11 @@ class World:
         self.reads_while_qa_busy = 0
         self.stage = "new"
         self.route = "module"
-        self.post_after_digest = True
+        #: The product delivers one post of a configured channel on its own,
+        #: in the `tg-channels.post` event's form, a while after `/channels`.
+        self.post_event = True
         self.build_ticks = 2
+        self.qa_phase = "waiting"
         self.story_final = "completed"
         self.auth = AuthFacts("orch-x", "abcdefghijk2", ("abcdefghijk2",), ())
         self.usage = UsageFacts(platform_product_id(PROJECT), 2, 1, 2)
@@ -271,19 +348,59 @@ class World:
             "deployed_url": "https://product.example.test",
             "application_id": 5,
             "bot_username": PRODUCT.username,
+            # The deployer's own shape: `run_id` is the deploy.yml run it dispatched.
             "deployment_result": {
                 "status": "success",
-                "run_id": PUBLICATION_RUN,
+                "run_id": DEPLOY_WORKFLOW_RUN,
                 "deployed_commit_sha": MERGE,
-                "image_references": {"BACKEND_IMAGE": "registry/p:" + MERGE},
+                "image_references": {"BACKEND_IMAGE": IMAGE},
                 "image_digests": {"BACKEND_IMAGE": DIGEST},
             },
         }
         self.operation = install_operation()
+        #: The run the scheduler recorded as the merged commit's publication.
+        self.timeline_publication_id = PUBLICATION_RUN
         self.engineering_files: tuple[str, ...] = ()
-        self.publication = WorkflowRunFacts(
-            PUBLICATION_RUN, MERGE, "completed", "success", ".github/workflows/main.yml"
-        )
+        #: GitHub's Actions runs of the product repository, by id.
+        self.workflow_runs: dict[int, WorkflowRunFacts] = {
+            PR_CI_RUN: WorkflowRunFacts(
+                PR_CI_RUN,
+                PR_HEAD,
+                "completed",
+                "success",
+                ".github/workflows/ci.yml",
+                "story-0001",
+                "pull_request",
+            ),
+            PUBLICATION_RUN: WorkflowRunFacts(
+                PUBLICATION_RUN,
+                MERGE,
+                "completed",
+                "success",
+                ".github/workflows/ci.yml",
+                "main",
+                "push",
+            ),
+            DEPLOY_WORKFLOW_RUN: WorkflowRunFacts(
+                DEPLOY_WORKFLOW_RUN,
+                MERGE,
+                "completed",
+                "success",
+                ".github/workflows/deploy.yml",
+                f"deploy-{MERGE[:12]}",
+                "workflow_dispatch",
+            ),
+        }
+        self.jobs: dict[int, list[JobFacts]] = {
+            PUBLICATION_RUN: [
+                JobFacts(
+                    "build-and-push (backend, ., services/backend/Dockerfile, backend)",
+                    "completed",
+                    "success",
+                ),
+            ],
+            PR_CI_RUN: [JobFacts("lint-and-test", "completed", "success")],
+        }
         self.channel_posts: dict[tuple[str, int], datetime] = {}
         self.botfather_state: str | None = None
         self.botfather_bots: list[str] = []
@@ -390,25 +507,27 @@ class World:
                 )
             ]
         if text == "/channels":
+            if self.post_event and not hasattr(self, "channels_at"):
+                self.channels_at = self.clock.now
+                self.clock.hooks.append(self.deliver_post)
             if ru:
                 return [(f"@{name}", ()) for name in CHANNELS]
             return [(f"Channel @{name}", ()) for name in CHANNELS]
         if text == "/digest":
-            if self.post_after_digest:
-                self.digest_at = self.clock.now
-                self.clock.hooks.append(self.deliver_post)
+            # The released `/digest` item: the post from the channel on, no prefix.
             url = "https://t.me/chan_one/100"
             self.channel_posts[("chan_one", 100)] = self.clock.now - timedelta(hours=5)
             return [(f"@chan_one\n2026-10-09\nСтарый пост\n{url}", (url,))]
         return []
 
     def deliver_post(self) -> None:
-        if self.clock.now < self.digest_at + timedelta(seconds=120):
+        """The product's own `tg-channels.post` event: its released form, unquoted."""
+        if self.clock.now < self.channels_at + timedelta(seconds=120):
             return
         self.clock.hooks.remove(self.deliver_post)
         url = "https://t.me/chan_two/201"
         self.channel_posts[("chan_two", 201)] = self.clock.now - timedelta(seconds=30)
-        self.append(PRODUCT, f"@chan_two\nНовый пост\n{url}", urls=(url,))
+        self.append(PRODUCT, post_event("chan_two", "Новый пост", url), urls=(url,))
 
     def botfather_answer(self, text: str) -> list[str]:
         if text == "/newbot":
@@ -436,10 +555,21 @@ class World:
 
     # --- native work ---------------------------------------------------------------
 
-    def build_tick(self) -> None:
+    async def build_tick(self) -> None:
+        """Native work, then the story's own QA holding the identity for one tick.
+
+        QA waits, tick by tick, while anyone else holds the identity.
+        """
         self.build_ticks -= 1
         if self.build_ticks > 0:
             return
+        if self.qa_phase == "waiting":
+            if await self.native.start(reference="qa-1"):
+                self.qa_phase = "holding"
+            return
+        if self.qa_phase == "holding":
+            await self.native.end()
+            self.qa_phase = "done"
         self.clock.hooks.remove(self.build_tick)
         story = self.stories[0]
         story["status"] = self.story_final
@@ -451,8 +581,24 @@ class World:
                 "head_sha": PR_HEAD,
                 "merge_commit_sha": MERGE,
             },
+            # The scheduler's observations: the PR's CI, then the merged commit's
+            # publication on main (`pr_poller._updated_generated_product_timeline`).
             "ci_runs": [
-                {"id": 8, "url": "https://ci/8", "conclusion": "success", "head_sha": PR_HEAD}
+                {
+                    "id": PR_CI_RUN,
+                    "url": f"https://ci/{PR_CI_RUN}",
+                    "conclusion": "success",
+                    "head_sha": PR_HEAD,
+                    "branch": "story-0001",
+                },
+                {
+                    "id": self.timeline_publication_id,
+                    "url": f"https://ci/{self.timeline_publication_id}",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_sha": MERGE,
+                    "branch": "main",
+                },
             ],
         }
         self.tasks[:] = [
@@ -518,6 +664,10 @@ class FakeTelegram:
         self.events: list[tuple] = []
         self.fail_next_sends = 0
         self.duplicate_reads = False
+        #: Sent texts whose receipt is lost and whose outgoing message reads do not
+        #: show until the test reveals them (Telegram's eventual consistency).
+        self.unconfirmed: set[str] = set()
+        self.hidden: set[str] = set()
 
     @property
     def connected(self) -> bool:
@@ -528,7 +678,8 @@ class FakeTelegram:
             raise TransportError("session", "not connected")
 
     async def connect(self) -> None:
-        if self.world.busy_qa:
+        self.world.connected_at.append(self.world.clock.now)
+        if self.world.native.holding:
             self.world.connects_while_qa_busy += 1
         self.events.append(("connect",))
         self.world.events.append(("connect",))
@@ -555,14 +706,18 @@ class FakeTelegram:
 
     async def messages_after(self, peer: Peer, after_id: int) -> list[Message]:
         self._require()
-        if self.world.busy_qa:
+        if self.world.native.holding:
             self.world.reads_while_qa_busy += 1
-        found = [m for m in self.world.dialogs[peer.id] if m.id > after_id]
+        found = [
+            m
+            for m in self.world.dialogs[peer.id]
+            if m.id > after_id and not (m.outgoing and m.text in self.hidden)
+        ]
         return found + found if self.duplicate_reads else found
 
     async def send(self, peer: Peer, text: str) -> Message:
         self._require()
-        if self.world.busy_qa:
+        if self.world.native.holding:
             self.world.sends_while_qa_busy.append(text)
         self.events.append(("send", peer.username, text))
         self.world.events.append(("send", peer.username, text))
@@ -579,6 +734,9 @@ class FakeTelegram:
         if self.fail_next_sends:
             self.fail_next_sends -= 1
             raise TransportError("send", "failed: RPCError")
+        if text in self.unconfirmed:
+            self.hidden.add(text)
+            raise TransportError("send", "did not answer in 30s")
         return sent
 
     async def press(self, peer: Peer, message_id: int, data: bytes) -> None:
@@ -679,8 +837,6 @@ class FakeApi:
 
     async def runs(self, *, story_id=None, run_type=None, status=None) -> list[dict]:
         self._call("runs")
-        if story_id is None:
-            return [r for r in self.world.busy_qa if r["status"] == status]
         return [
             r for r in self.world.runs if r["type"] == run_type.value and r["story_id"] == story_id
         ]
@@ -732,9 +888,24 @@ class FakeRepository:
 
     async def workflow_run(self, repository: str, run_id: int) -> WorkflowRunFacts:
         self._check("workflow_run")
-        if run_id != self.world.publication.id:
+        if run_id not in self.world.workflow_runs:
             raise RepositoryFactUnavailable("actions run: HTTP 404")
-        return self.world.publication
+        return self.world.workflow_runs[run_id]
+
+    async def publication_runs(self, repository: str, commit: str) -> list[WorkflowRunFacts]:
+        """GitHub's filter: `ci.yml` runs on main at the commit, whatever they concluded."""
+        self._check("publication_runs")
+        return [
+            run
+            for run in self.world.workflow_runs.values()
+            if run.path == ".github/workflows/ci.yml"
+            and run.head_branch == "main"
+            and run.head_sha == commit
+        ]
+
+    async def workflow_jobs(self, repository: str, run_id: int) -> list[JobFacts]:
+        self._check("workflow_jobs")
+        return list(self.world.jobs.get(run_id, []))
 
 
 class FakePlatform:
@@ -800,6 +971,7 @@ class Harness:
         return SyntheticBuyer(
             parse_config(config_data(**config_overrides)),
             telegram=self.telegram,
+            lease=identity_lease(self.world.redis, self.clock),
             api=self.api,
             persona=self.persona,
             platform=self.platform,
@@ -820,6 +992,11 @@ class Harness:
         return (self.store.directory / "evidence.json").read_text() + (
             self.store.directory / "report.md"
         ).read_text()
+
+
+def post_event(channel: str, text: str, url: str) -> str:
+    """The released `tg-channels.post` event's Russian form (kit 0.1.2 binding)."""
+    return f"Новая публикация: @{channel}\n2026-10-10\n{text}\n{url}"
 
 
 def harness(directory, *, me: int = BUYER) -> Harness:

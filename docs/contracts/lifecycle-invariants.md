@@ -275,6 +275,21 @@ proxy: their child scripts are platform-written with every input a JSON literal
 proven identity — without it each returns the `missing_telethon_credentials`
 blocker preflight uses and starts no child process.
 
+The QA Telegram account has one user at a time. Every use of it — a QA run's
+identity proof, access preflight, Telegram tools, mechanical probe and the
+executor sandbox served the session, and every synthetic-buyer connection — runs
+inside an exclusive hold on `qa:telegram-identity:<telegram id>` in the platform
+Redis (`consumers/_qa_telegram_lease.py`). It is taken before anything proves,
+connects or hands out the session, and released only once that use has ended:
+clients disconnected, probe children ended (a cancelled probe kills its child),
+and every sandbox served the session confirmed removed by worker-manager's answer
+to its delete command. A use that cannot show its end *retains* the hold, which
+has no TTL: nothing is admitted past it until an operator who checked the named
+holder releases it by token (`python -m src.synthetic_buyer identity`). A QA run
+that cannot take the hold within its bound, or loses it while in use, ends as the
+`qa_probe_unavailable` infrastructure blocker; queued/running Run rows are never
+admission authority.
+
 QA parses criteria before it resolves exploratory-only resources. Deterministic
 probe inability, unavailable target runtime, bot liveness failures, access
 denials, and product check failures retain distinct typed classifications.

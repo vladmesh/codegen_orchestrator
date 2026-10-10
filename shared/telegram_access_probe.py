@@ -134,6 +134,13 @@ async def run_probe_script(
         process.kill()
         await process.wait()
         return ProbeRun(exit_status=124, stdout="", stderr=f"probe timed out after {timeout}s")
+    except BaseException:
+        # Cancelled with the run: the child holds the QA session, and a probe that
+        # outlives its caller would keep using it after the caller's hold ended.
+        if process.returncode is None:
+            process.kill()
+            await asyncio.shield(process.wait())
+        raise
     return ProbeRun(
         exit_status=process.returncode or 0,
         stdout=stdout.decode(errors="replace"),

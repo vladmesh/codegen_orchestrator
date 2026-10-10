@@ -26,7 +26,7 @@ from shared.contracts.dto.llm_channel import LLMChannelChain
 from shared.diagnostics import safe_validation_errors
 
 #: The only config shape this revision reads; a later shape is a new number.
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 
 #: A public Telegram username, the way Telegram constrains it.
 TELEGRAM_USERNAME = r"^[A-Za-z][A-Za-z0-9_]{3,31}$"
@@ -145,8 +145,9 @@ class Deadlines(_Strict):
     order_seconds: int = Field(gt=0, le=4 * 3600)
     #: From the order until the story's deploy and QA are settled.
     build_seconds: int = Field(gt=0, le=48 * 3600)
-    #: How long to wait for every QA run to leave the shared account.
-    qa_quiet_seconds: int = Field(gt=0, le=6 * 3600)
+    #: How long one Telegram use waits for the shared identity's exclusive hold
+    #: while native QA (or anyone else) holds it, before the operation stops.
+    identity_wait_seconds: int = Field(gt=0, le=6 * 3600)
     #: How long one product probe waits for the bot's answer.
     probe_reply_seconds: int = Field(gt=0, le=600)
     #: How long to wait for an unsolicited post from a configured channel.
@@ -175,6 +176,16 @@ class ApiEndpoint(_Strict):
     @classmethod
     def _url(cls, value: str) -> str:
         return _http_url(value, "the API base URL")
+
+
+class IdentityLeaseStore(_Strict):
+    """Where the shared QA Telegram identity's exclusive hold is kept.
+
+    The same Redis native QA holds it in (`REDIS_URL` of the QA runtime), named by
+    a handle because a Redis URL may carry its password.
+    """
+
+    redis_url: SecretHandle
 
 
 class TelegramCredentials(_Strict):
@@ -245,7 +256,7 @@ class ModelConfig(_Strict):
 class BuyerConfig(_Strict):
     """One operation: who buys, from whom, what, under which bounds, kept where."""
 
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     operation_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{2,62}$")
     codegen_bot: CodegenBot
     buyer: BuyerIdentity
@@ -255,6 +266,7 @@ class BuyerConfig(_Strict):
     evidence_dir: str = Field(min_length=1, max_length=1024)
     api: ApiEndpoint
     telegram: TelegramCredentials
+    identity_lease: IdentityLeaseStore
     registration: PromoPolicy
     product_token: ProductToken
     platform: PlatformEvidence
@@ -265,6 +277,7 @@ class BuyerConfig(_Strict):
             "telegram.api_id": self.telegram.api_id,
             "telegram.api_hash": self.telegram.api_hash,
             "telegram.session": self.telegram.session,
+            "identity_lease.redis_url": self.identity_lease.redis_url,
             "platform.auth_admin_url": self.platform.auth_admin_url,
             "platform.auth_admin_token": self.platform.auth_admin_token,
         }

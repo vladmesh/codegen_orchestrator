@@ -13,21 +13,27 @@ import json
 
 import pytest
 
+from src.consumers._qa_telegram_lease import Holder, HolderKind
 from src.synthetic_buyer.controller import DEFERRAL, OPENING, botfather_username
 from src.synthetic_buyer.persona import PersonaDecision, PersonaTurn
 from src.synthetic_buyer.platform_evidence import AuthFacts, UsageFacts, platform_product_id
+from src.synthetic_buyer.repository_evidence import JobFacts
+from src.synthetic_buyer.telegram import TransportError
 from tests.unit.synthetic_buyer.fakes import (
     API_HASH,
     BRIEF,
     BUYER,
     CODEGEN,
+    DEPLOY_WORKFLOW_RUN,
     DIGEST,
+    IMAGE,
     INTERNAL_KEY,
     MERGE,
     PREVIEW,
     PRODUCT,
     PROJECT,
     PROMO,
+    PUBLICATION_RUN,
     SESSION,
     SIDE_PROJECT,
     START,
@@ -37,7 +43,9 @@ from tests.unit.synthetic_buyer.fakes import (
     USER_ID,
     ProcessDied,
     harness,
+    identity_lease,
     install_operation,
+    post_event,
 )
 
 
@@ -304,104 +312,216 @@ async def test_cleanup_refuses_a_project_whose_retained_proof_no_longer_holds(tm
     assert "request_teardown" not in h.api.calls
 
 
-# --- BLOCKER-qa-conversation-overlap ---------------------------------------------------
+# --- BLOCKER-qa-conversation-overlap: one hold on the shared identity ------------------
 
 
-async def test_a_qa_run_holding_the_account_before_registration_gets_no_buyer_message(tmp_path):
-    h = harness(tmp_path)
-    h.world.busy_qa.append({"id": "other-qa", "status": "running"})
-
-    await h.buyer().run()
-
-    assert [e for e in h.telegram.events if e[0] in {"send", "connect"}] == []
-    assert _verdict(h)["reason"] == "qa_never_quiet"
+def _telegram_uses(h) -> list[tuple]:
+    return [e for e in h.telegram.events if e[0] in {"connect", "send", "press"}]
 
 
-async def test_a_qa_run_starting_mid_order_makes_the_buyer_step_out_until_it_ends(tmp_path):
-    h = harness(tmp_path)
-    window = {}
-
-    def qa_starts_after_the_opening(text):
-        replies = type(h.world).codegen_answer(h.world, text)
-        if text == OPENING:
-            h.world.busy_qa.append({"id": "other-qa", "status": "running"})
-            window["started"] = h.clock.now
-        return replies
-
-    def qa_ends():
-        if window and h.clock.now >= window["started"] + timedelta(seconds=90):
-            h.world.busy_qa.clear()
-
-    h.world.codegen_answer = qa_starts_after_the_opening
-    h.clock.hooks.append(qa_ends)
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
+def _no_overlap(h) -> None:
     assert h.world.sends_while_qa_busy == []
     assert h.world.connects_while_qa_busy == 0
     assert h.world.reads_while_qa_busy == 0
-    assert any(d.get("event") == "qa_yielded" for d in _decisions(h))
 
 
-async def test_the_product_is_not_probed_while_a_qa_run_holds_the_account(tmp_path):
+async def test_native_qa_holding_the_identity_before_registration_gets_no_buyer_use(tmp_path):
     h = harness(tmp_path)
+    assert await h.world.native.start(reference="qa-before")
 
-    def qa_starts_when_story_completes():
-        if h.world.stories and h.world.stories[0]["status"] == "completed" and not h.world.busy_qa:
-            h.world.busy_qa.append({"id": "qa-other", "status": "running"})
-            h.clock.hooks.remove(qa_starts_when_story_completes)
+    outcome = await h.buyer().run()
+
+    assert _telegram_uses(h) == []
+    verdict = _verdict(h)
+    assert (verdict["failure_phase"], verdict["reason"]) == ("preflight", "identity_busy")
+    assert verdict["detail"]["holder"]["kind"] == "native_qa"
+    assert verdict["detail"]["holder"]["reference"] == "qa-before"
+    assert verdict["detail"]["waited_seconds"] >= 600
+    assert outcome.cleanup == "nothing_owned"
+
+
+async def test_qa_admitted_right_after_a_quiet_moment_still_excludes_the_buyer(tmp_path):
+    """The old guard read the runs API, then connected: a run admitted between overlapped."""
+    h = harness(tmp_path)
+    h.world.users[BUYER] = {"id": USER_ID}
+    admitted = {}
+    original = h.api.user_by_telegram
+
+    async def qa_admitted_after_the_read(telegram_id):
+        found = await original(telegram_id)
+        if "at" not in admitted and await h.world.native.start(reference="qa-late"):
+            admitted["at"] = h.clock.now
             h.clock.hooks.append(qa_ends)
+        return found
 
-    def qa_ends():
-        h.world.busy_qa.clear()
-        h.clock.hooks.remove(qa_ends)
+    async def qa_ends():
+        if h.clock.now >= admitted["at"] + timedelta(seconds=90):
+            h.clock.hooks.remove(qa_ends)
+            await h.world.native.end()
 
-    h.clock.hooks.append(qa_starts_when_story_completes)
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    assert h.world.sends_while_qa_busy == []
-    assert h.world.connects_while_qa_busy == 0
-
-
-async def test_a_qa_run_starting_before_the_language_reconnection_is_waited_out(tmp_path):
-    h = harness(tmp_path)
-    original = h.platform.switch_language
-
-    async def qa_starts_with_the_switch(project_id, deployed_url, language):
-        h.world.busy_qa.append({"id": "qa-language", "status": "queued"})
-        h.clock.hooks.append(h.world.busy_qa.clear)
-        return await original(project_id, deployed_url, language)
-
-    h.platform.switch_language = qa_starts_with_the_switch
+    h.api.user_by_telegram = qa_admitted_after_the_read
 
     outcome = await h.buyer().run()
 
     assert outcome.verdict == "passed", _verdict(h)
-    assert h.world.sends_while_qa_busy == []
-    assert h.world.connects_while_qa_busy == 0
-    assert any(d.get("event") == "qa_yielded" for d in _decisions(h))
+    _no_overlap(h)
+    # No connection while the run it admitted held the identity; the next one after it.
+    assert [at for at in h.world.connected_at if at >= admitted["at"] + timedelta(seconds=90)]
 
 
-async def test_a_qa_run_that_never_ends_is_a_bounded_failure_without_probes(tmp_path):
+async def test_queued_and_running_rows_are_not_admission_authority(tmp_path):
+    """A run still `queued` already holds the identity; its move to `running` changes nothing."""
+    h = harness(tmp_path)
+    row = {"id": "qa-moving", "type": "qa", "status": "queued", "story_id": "other"}
+    h.world.runs.append(row)
+    assert await h.world.native.start(reference="qa-moving")
+
+    async def the_run_moves_on():
+        if h.clock.now >= START + timedelta(seconds=30):
+            row["status"] = "running"
+        if h.clock.now >= START + timedelta(seconds=90) and h.world.native.holding:
+            row["status"] = "completed"
+            await h.world.native.end()
+
+    h.clock.hooks.append(the_run_moves_on)
+
+    outcome = await h.buyer().run()
+
+    assert outcome.verdict == "passed", _verdict(h)
+    _no_overlap(h)
+    assert min(h.world.connected_at) >= START + timedelta(seconds=90)
+
+
+async def test_qa_admitted_while_the_persona_thinks_holds_off_the_buyers_reply(tmp_path):
+    h = harness(tmp_path)
+    started = {}
+    original = h.persona.turn
+
+    async def qa_starts_during_the_model_call(context):
+        if not started and await h.world.native.start(reference="qa-during-model"):
+            started["at"] = h.clock.now
+            h.clock.hooks.append(qa_ends)
+        return await original(context)
+
+    async def qa_ends():
+        if h.clock.now >= started["at"] + timedelta(seconds=120):
+            h.clock.hooks.remove(qa_ends)
+            await h.world.native.end()
+
+    h.persona.turn = qa_starts_during_the_model_call
+
+    outcome = await h.buyer().run()
+
+    assert outcome.verdict == "passed", _verdict(h)
+    assert started, "the buyer held the identity across the persona's model call"
+    _no_overlap(h)
+    reply = next(e for e in h.store.record["conversation"]["codegen"] if e.get("kind") == "persona")
+    assert reply["date"] >= (started["at"] + timedelta(seconds=120)).isoformat()
+
+
+async def test_qa_admitted_during_api_reads_between_turns_is_waited_out(tmp_path):
+    h = harness(tmp_path)
+    window = {}
+    original = h.api.capability_plan
+
+    async def qa_starts_during_the_brief_read(brief_id):
+        if not window and await h.world.native.start(reference="qa-during-api"):
+            window["at"] = h.clock.now
+            h.clock.hooks.append(qa_ends)
+        return await original(brief_id)
+
+    async def qa_ends():
+        if h.clock.now >= window["at"] + timedelta(seconds=60):
+            h.clock.hooks.remove(qa_ends)
+            await h.world.native.end()
+
+    h.api.capability_plan = qa_starts_during_the_brief_read
+
+    outcome = await h.buyer().run()
+
+    assert outcome.verdict == "passed", _verdict(h)
+    assert window
+    _no_overlap(h)
+
+
+async def test_the_buyer_holds_nothing_while_native_work_and_its_qa_run(tmp_path):
     h = harness(tmp_path)
 
-    def qa_arrives_during_the_build():
-        if h.world.stage == "ordered":
-            h.world.busy_qa[:] = [{"id": "qa-stuck", "status": "queued"}]
+    outcome = await h.buyer().run()
 
-    h.clock.hooks.append(qa_arrives_during_the_build)
+    assert outcome.verdict == "passed", _verdict(h)
+    # The story's QA took the identity once the buyer had released it, and gave it back.
+    (span,) = h.world.native.spans
+    assert span[1] is not None
+    _no_overlap(h)
+    assert await identity_lease(h.world.redis, h.clock).holder() is None
+
+
+async def test_a_qa_run_that_keeps_the_identity_is_a_bounded_failure_without_probes(tmp_path):
+    h = harness(tmp_path)
+
+    original = h.api.bot_liveness
+
+    async def qa_admitted_as_the_story_settles(project_id):
+        await h.world.native.start(reference="qa-stuck")
+        return await original(project_id)
+
+    h.api.bot_liveness = qa_admitted_as_the_story_settles
+
+    outcome = await h.buyer().run()
+
+    verdict = _verdict(h)
+    assert (verdict["failure_phase"], verdict["reason"]) == ("product_probe", "identity_busy")
+    assert verdict["detail"]["holder"]["reference"] == "qa-stuck"
+    _no_overlap(h)
+    assert [e for e in h.telegram.events if e[0] == "send" and e[1] == PRODUCT.username] == []
+    assert outcome.cleanup == "completed"
+
+
+async def test_an_orphaned_hold_refuses_the_buyer_until_an_operator_releases_it(tmp_path):
+    """A buyer process killed while holding leaves the hold: time alone frees nothing."""
+    h = harness(tmp_path)
+    orphan = identity_lease(h.world.redis, h.clock)
+    token = await orphan._acquire(  # noqa: SLF001 - the killed process's admission
+        Holder(HolderKind.SYNTHETIC_BUYER, "s1487-buyer-001", "buyer:order"), 0, 0
+    )
+    h.clock.now += timedelta(hours=3)
+
+    first = await h.buyer().run()
+
+    assert _telegram_uses(h) == []
+    assert _verdict(h)["reason"] == "identity_busy"
+    assert first.cleanup == "nothing_owned"
+    holder = await orphan.holder()
+    assert holder["token"] == token
+    diagnostic = _verdict(h)["detail"]["diagnostic"]
+    assert "not renewed for" in diagnostic
+    assert token in diagnostic
+    assert await orphan.release(token)
+
+    second = await h.buyer().run()
+
+    assert (second.verdict, second.cleanup) == ("failed", "nothing_owned")
+    assert _telegram_uses(h) == []
+
+
+async def test_a_disconnect_that_fails_keeps_the_identity_retained(tmp_path):
+    h = harness(tmp_path)
+    h.world.users[BUYER] = {"id": USER_ID}
+    original = h.telegram.disconnect
+
+    async def disconnect_fails():
+        await original()
+        raise TransportError("disconnect", "did not answer in 30s")
+
+    h.telegram.disconnect = disconnect_fails
 
     await h.buyer().run()
 
-    assert (_verdict(h)["reason"], _verdict(h)["detail"]) == (
-        "qa_never_quiet",
-        {"qa_run_ids": ["qa-stuck"]},
-    )
-    assert h.world.sends_while_qa_busy == []
-    assert [e for e in h.telegram.events if e[0] == "send" and e[1] == PRODUCT.username] == []
+    holder = await identity_lease(h.world.redis, h.clock).holder()
+    assert holder["kind"] == "synthetic_buyer"
+    assert holder["retained"] == "the synthetic buyer's Telegram disconnect failed"
+    assert not await h.world.native.start(reference="qa-next")
 
 
 # --- BLOCKER-resume-duplicate-order and BLOCKER-resume-secret-redaction --------------
@@ -543,6 +663,130 @@ async def test_a_send_whose_receipt_is_lost_is_found_not_resent(tmp_path):
     assert any(d.get("event") == "send_receipt_lost" for d in _decisions(h))
 
 
+# --- BLOCKER-resume-cleanup-reconciliation: one authority path ----------------------
+
+CONFIRMATION = "Да, всё верно."
+
+
+async def _a_confirmation_accepted_but_unconfirmed(h) -> None:
+    """The confirmation reaches the PO, its receipt is lost and reads miss it for a while."""
+    h.telegram.unconfirmed.add(CONFIRMATION)
+    first = await h.buyer().run()
+    assert (first.verdict, first.cleanup) == ("failed", "refused")
+    verdict = _verdict(h)
+    assert (verdict["failure_phase"], verdict["reason"]) == ("order", "delivery_unknown")
+    assert h.store.record["cleanup"]["reason"] == "unresolved_action"
+    assert h.store.record["pending"]["kind"] == "persona"
+    assert "request_teardown" not in h.api.calls
+    # Telegram shows the outgoing message only after delivery checks gave up.
+    h.telegram.unconfirmed.clear()
+    h.telegram.hidden.clear()
+
+
+@pytest.mark.parametrize("entrypoint", ["resume", "cleanup"])
+async def test_a_later_visible_send_is_reconciled_and_the_failed_order_torn_down(
+    tmp_path, entrypoint
+):
+    h = harness(tmp_path)
+    await _a_confirmation_accepted_but_unconfirmed(h)
+    failed = dict(_verdict(h))
+    sends_before = len(_codegen_sends(h))
+    asked = len(h.persona.contexts)
+    h.resume(tmp_path)
+
+    if entrypoint == "resume":
+        outcome = await h.buyer().run()
+        verdict, cleanup = outcome.verdict, outcome.cleanup
+    else:
+        cleanup = await h.buyer().cleanup()
+        verdict = _verdict(h)["status"]
+
+    assert (verdict, cleanup) == ("failed", "completed")
+    assert _verdict(h) == failed
+    assert _codegen_sends(h).count(CONFIRMATION) == 1
+    assert len(_codegen_sends(h)) == sends_before
+    assert h.store.record["pending"] is None
+    reconciled = [d for d in _decisions(h) if d.get("event") == "intent_reconciled"]
+    assert reconciled == [{"event": "intent_reconciled", "kind": "persona", "verdict": "failed"}]
+    assert h.world.projects[PROJECT]["status"] == "archived"
+    assert len(h.persona.contexts) == asked
+    _no_overlap(h)
+
+
+@pytest.mark.parametrize("entrypoint", ["resume", "cleanup"])
+async def test_a_send_never_shown_keeps_every_entrypoint_refused(tmp_path, entrypoint):
+    h = harness(tmp_path)
+    h.telegram.unconfirmed.add(CONFIRMATION)
+    await h.buyer().run()
+    h.telegram.unconfirmed.clear()
+    h.resume(tmp_path)
+
+    if entrypoint == "resume":
+        cleanup = (await h.buyer().run()).cleanup
+    else:
+        cleanup = await h.buyer().cleanup()
+
+    assert cleanup == "refused"
+    assert h.store.record["cleanup"]["reason"] == "unresolved_action"
+    assert _verdict(h)["reason"] == "delivery_unknown"
+    assert _codegen_sends(h).count(CONFIRMATION) == 1
+    assert "request_teardown" not in h.api.calls
+
+
+async def test_a_reconciled_send_does_not_make_an_unowned_project_teardownable(tmp_path):
+    h = harness(tmp_path)
+    await _a_confirmation_accepted_but_unconfirmed(h)
+    h.world.secrets[PROJECT] = {"TELEGRAM_BOT_TOKEN": "someone-else"}
+    h.resume(tmp_path)
+
+    cleanup = await h.buyer().cleanup()
+
+    assert cleanup == "refused"
+    assert h.store.record["cleanup"]["reason"] == "ownership_unproven"
+    assert h.store.record["pending"] is None
+    assert "request_teardown" not in h.api.calls
+
+
+async def test_an_unproven_button_press_stays_pending_and_refuses_cleanup(tmp_path):
+    h = harness(tmp_path)
+    h.store.record["pending"] = {
+        "effect": "press",
+        "dialog": "codegen",
+        "kind": "press",
+        "message_id": 5,
+        "at": START.isoformat(),
+    }
+    h.store.record["ownership"] = {
+        "project_id": UNRELATED_PROJECT,
+        "initiating_run_id": "po-unrelated",
+        "token_sha256": "0" * 64,
+    }
+
+    cleanup = await h.buyer().cleanup()
+
+    assert cleanup == "refused"
+    assert h.store.record["cleanup"]["reason"] == "unresolved_action"
+    assert _verdict(h)["reason"] == "delivery_unknown"
+    assert _telegram_uses(h) == []
+    assert "request_teardown" not in h.api.calls
+
+
+async def test_a_cleanup_of_a_running_operation_can_never_be_accepted_afterwards(tmp_path):
+    h = harness(tmp_path)
+    h.persona.interrupt_on = "Описание заказа"
+    with pytest.raises(ProcessDied):
+        await h.buyer().run()
+    h.resume(tmp_path)
+    h.persona.interrupt_on = None
+
+    assert await h.buyer().cleanup() == "completed"
+    again = await h.buyer().run()
+
+    assert (again.verdict, again.cleanup) == ("failed", "completed")
+    assert _verdict(h)["reason"] == "cleanup_before_verdict"
+    assert CONFIRMATION not in _codegen_sends(h)
+
+
 # --- BLOCKER-deploy-provenance and BLOCKER-install-glue-proof --------------------------
 
 
@@ -551,25 +795,63 @@ async def test_a_send_whose_receipt_is_lost_is_found_not_resent(tmp_path):
     [
         ("deploy_without_provenance", "deploy_success", "unknown"),
         ("publication_failed", "deploy_success", "failed"),
+        ("no_publication_of_the_commit", "deploy_success", "failed"),
+        ("main_yml_mistaken_for_publication", "deploy_success", "failed"),
+        ("deploy_run_given_as_publication", "deploy_success", "failed"),
+        ("build_and_push_failed", "deploy_success", "failed"),
+        ("deploy_run_failed", "deploy_success", "failed"),
+        ("deploy_run_of_another_commit", "deploy_success", "failed"),
         ("deployed_another_commit", "deploy_success", "failed"),
+        ("image_of_another_commit", "deploy_success", "failed"),
+        ("timeline_names_another_publication", "deploy_success", "failed"),
+        ("actions_unreadable", "deploy_success", "unknown"),
         ("install_on_another_base", "install_after_scaffold", "failed"),
         ("install_without_verification", "install_after_scaffold", "unknown"),
         ("repository_unreadable", "install_after_scaffold", "unknown"),
         ("engineering_beyond_glue", "engineering_glue_only", "failed"),
     ],
 )
-async def test_uncorrelated_install_glue_and_deploy_evidence_never_passes(
+async def test_uncorrelated_install_glue_and_deploy_evidence_never_passes(  # noqa: C901, PLR0912
     tmp_path, change, observation, status
 ):
     h = harness(tmp_path)
     world = h.world
+    runs = world.workflow_runs
+    placed = world.deploy_result["deployment_result"]
     if change == "deploy_without_provenance":
         world.deploy_result = {**world.deploy_result, "deployment_result": None}
     elif change == "publication_failed":
-        world.publication = replace(world.publication, conclusion="failure")
+        runs[PUBLICATION_RUN] = replace(runs[PUBLICATION_RUN], conclusion="failure")
+    elif change == "no_publication_of_the_commit":
+        del runs[PUBLICATION_RUN]
+    elif change == "main_yml_mistaken_for_publication":
+        runs[PUBLICATION_RUN] = replace(runs[PUBLICATION_RUN], path=".github/workflows/main.yml")
+    elif change == "deploy_run_given_as_publication":
+        # The seed's mistake: the deploy.yml run id read as the publication run.
+        runs[DEPLOY_WORKFLOW_RUN] = replace(
+            runs[DEPLOY_WORKFLOW_RUN], path=".github/workflows/ci.yml", head_branch="main"
+        )
+        del runs[PUBLICATION_RUN]
+    elif change == "build_and_push_failed":
+        world.jobs[PUBLICATION_RUN] = [
+            JobFacts(
+                "build-and-push (backend, ., services/backend/Dockerfile, backend)",
+                "completed",
+                "failure",
+            ),
+        ]
+    elif change == "deploy_run_failed":
+        runs[DEPLOY_WORKFLOW_RUN] = replace(runs[DEPLOY_WORKFLOW_RUN], conclusion="failure")
+    elif change == "deploy_run_of_another_commit":
+        runs[DEPLOY_WORKFLOW_RUN] = replace(runs[DEPLOY_WORKFLOW_RUN], head_sha="9" * 40)
     elif change == "deployed_another_commit":
-        world.publication = replace(world.publication, head_sha="9" * 40)
-        world.deploy_result["deployment_result"]["deployed_commit_sha"] = "9" * 40
+        placed["deployed_commit_sha"] = "9" * 40
+    elif change == "image_of_another_commit":
+        placed["image_references"] = {"BACKEND_IMAGE": IMAGE.rsplit(":", 1)[0] + ":sha-9999999"}
+    elif change == "timeline_names_another_publication":
+        world.timeline_publication_id = 9002
+    elif change == "actions_unreadable":
+        h.repository.unavailable = {"publication_runs", "workflow_jobs"}
     elif change == "install_on_another_base":
         world.operation = install_operation(base_sha="8" * 40)
     elif change == "install_without_verification":
@@ -587,65 +869,165 @@ async def test_uncorrelated_install_glue_and_deploy_evidence_never_passes(
     assert outcome.cleanup == "completed"
 
 
+async def test_the_deploy_run_and_the_publication_are_distinct_runs_of_the_built_commit(tmp_path):
+    h = harness(tmp_path)
+
+    await h.buyer().run()
+
+    detail = h.store.record["observations"]["deploy_success"]["detail"]
+    assert detail["deploy_workflow_run_id"] == DEPLOY_WORKFLOW_RUN
+    assert detail["deploy_workflow_run"]["path"] == ".github/workflows/deploy.yml"
+    assert detail["publication"]["id"] == PUBLICATION_RUN
+    assert detail["publication"]["path"] == ".github/workflows/ci.yml"
+    assert detail["publication"]["head_sha"] == detail["deployed_commit_sha"] == MERGE
+    assert detail["timeline_publication"]["id"] == PUBLICATION_RUN
+    ids = h.store.record["ids"]
+    assert (ids["publication_run_id"], ids["deploy_workflow_run_id"]) == (
+        PUBLICATION_RUN,
+        DEPLOY_WORKFLOW_RUN,
+    )
+
+
 # --- BLOCKER-unsolicited-post-proof ------------------------------------------------------
 
 
-async def test_a_delayed_command_reply_linking_a_new_post_is_not_unsolicited(tmp_path):
+def _product_sends(h) -> list[str]:
+    return [e[2] for e in h.telegram.events if e[0] == "send" and e[1] == PRODUCT.username]
+
+
+async def test_an_independently_delivered_post_is_proven_before_digest_is_sent(tmp_path):
     h = harness(tmp_path)
-    h.world.post_after_digest = False
-    digest = {}
+
+    outcome = await h.buyer().run()
+
+    assert outcome.verdict == "passed", _verdict(h)
+    post = h.store.record["observations"]["post_delivered"]["detail"]
+    assert (post["channel"], post["post_id"], post["form"]) == (
+        "chan_two",
+        201,
+        "tg-channels.post (ru)",
+    )
+    assert post["source_published_at"] <= post["delivered_at"]
+    assert _product_sends(h) == ["/start", "/channels", "/digest", "/channels"]
+    digest_sent = next(
+        e for e in h.store.record["conversation"]["product"] if e.get("text") == "/digest"
+    )
+    assert digest_sent["id"] > post["message_id"]
+    assert _observation(h, "digest_answered") == "observed"
+
+
+async def test_a_delayed_unquoted_digest_item_linking_a_fresh_post_is_not_delivery(tmp_path):
+    """QA's own `/digest` earlier in the chat; its late item links a post made after it."""
+    h = harness(tmp_path)
+    h.world.post_event = False
+    asked = {}
+
+    async def qa_asks_for_a_digest():
+        if h.world.native.holding and "at" not in asked:
+            asked["at"] = h.clock.now
+            h.world.append(PRODUCT, "/digest", out=True)
 
     def remember(text):
-        if text == "/digest":
-            digest["at"] = h.clock.now
+        if text == "/channels" and "channels" not in asked:
+            asked["channels"] = h.clock.now
+            h.clock.hooks.append(late_item)
 
-    def delayed_digest_chunk():
-        if not digest or h.clock.now < digest["at"] + timedelta(seconds=60):
+    def late_item():
+        # Unquoted, far beyond the settle window, while the buyer waits for a post.
+        if h.clock.now < asked["channels"] + timedelta(minutes=4):
             return
-        h.clock.hooks.remove(delayed_digest_chunk)
+        h.clock.hooks.remove(late_item)
         url = "https://t.me/chan_two/150"
-        h.world.channel_posts[("chan_two", 150)] = digest["at"] + timedelta(seconds=1)
-        command = [m for m in h.world.dialogs[PRODUCT.id] if m.text == "/digest"][-1]
-        h.world.append(PRODUCT, "Подборка (продолжение): " + url, urls=(url,), reply_to=command.id)
+        h.world.channel_posts[("chan_two", 150)] = asked["at"] + timedelta(seconds=1)
+        h.world.append(PRODUCT, f"@chan_two\n2026-10-10\nСвежий пост\n{url}", urls=(url,))
 
+    h.clock.hooks.append(qa_asks_for_a_digest)
     _wrap_product(h, remember)
-    h.clock.hooks.append(delayed_digest_chunk)
 
     outcome = await h.buyer().run()
 
     observation = h.store.record["observations"]["post_delivered"]
     assert observation["status"] == "unknown"
-    assert observation["detail"]["unattributed"] == [
-        {"message_id": observation["detail"]["unattributed"][0]["message_id"], "reason": "a reply"}
+    assert [entry["reason"] for entry in observation["detail"]["unattributed"]] == [
+        "not the post event's form"
     ]
     assert outcome.verdict == "incomplete"
 
 
-async def test_a_late_message_linking_a_post_older_than_the_command_is_not_delivery(tmp_path):
+async def test_a_resumed_operation_with_an_uncertain_digest_cannot_prove_delivery(tmp_path):
+    """The `/digest` left before the process died; resuming re-reads, never forgets it."""
     h = harness(tmp_path)
-    h.world.post_after_digest = False
-    digest = {}
+    original = h.world.product_answer
+
+    def dies_on_digest(text):
+        if text == "/digest":
+            h.world.product_answer = original
+            raise ProcessDied
+        return original(text)
+
+    h.world.product_answer = dies_on_digest
+    h.world.post_event = False
+    with pytest.raises(ProcessDied):
+        await h.buyer().run()
+    assert h.store.record["pending"]["shown"] == "/digest"
+    h.resume(tmp_path)
+    h.world.post_event = True
+
+    outcome = await h.buyer().run()
+
+    observation = h.store.record["observations"]["post_delivered"]
+    assert observation["status"] == "unknown"
+    assert observation["detail"]["commands"] == ["/digest"]
+    assert any(d.get("event") == "intent_reconciled" for d in _decisions(h))
+    assert outcome.verdict == "incomplete"
+
+
+@pytest.mark.parametrize(
+    ("form", "reason"),
+    [
+        ("reply", "a reply"),
+        ("other_channel", "links a post of another channel than it names"),
+        ("dated_after_delivery", "the channel does not date the post before its delivery"),
+    ],
+)
+async def test_an_event_form_message_that_does_not_hold_together_is_not_delivery(
+    tmp_path, form, reason
+):
+    h = harness(tmp_path)
+    h.world.post_event = False
+    sent = {}
 
     def remember(text):
-        if text == "/digest":
-            digest["at"] = h.clock.now
+        if text == "/channels" and "at" not in sent:
+            sent["at"] = h.clock.now
+            h.clock.hooks.append(deliver)
 
-    def late_old_post():
-        if not digest or h.clock.now < digest["at"] + timedelta(seconds=120):
+    def deliver():
+        if h.clock.now < sent["at"] + timedelta(seconds=60):
             return
-        h.clock.hooks.remove(late_old_post)
-        url = "https://t.me/chan_two/120"
-        h.world.channel_posts[("chan_two", 120)] = digest["at"] - timedelta(hours=2)
-        h.world.append(PRODUCT, "@chan_two " + url, urls=(url,))
+        h.clock.hooks.remove(deliver)
+        url = "https://t.me/chan_two/300"
+        h.world.channel_posts[("chan_two", 300)] = (
+            h.clock.now + timedelta(minutes=5)
+            if form == "dated_after_delivery"
+            else h.clock.now - timedelta(seconds=10)
+        )
+        named = "chan_one" if form == "other_channel" else "chan_two"
+        command = [m for m in h.world.dialogs[PRODUCT.id] if m.text == "/channels"][-1]
+        h.world.append(
+            PRODUCT,
+            post_event(named, "Пост", url),
+            urls=(url,),
+            reply_to=command.id if form == "reply" else None,
+        )
 
     _wrap_product(h, remember)
-    h.clock.hooks.append(late_old_post)
 
     await h.buyer().run()
 
     observation = h.store.record["observations"]["post_delivered"]
     assert observation["status"] == "unknown"
-    assert observation["detail"]["unattributed"][0]["url"] == "https://t.me/chan_two/120"
+    assert [entry["reason"] for entry in observation["detail"]["unattributed"]] == [reason]
 
 
 # --- BLOCKER-reader-counters and the other live facts ----------------------------------
@@ -666,7 +1048,7 @@ async def test_a_missing_or_contradicted_live_fact_never_passes(
 ):
     h = harness(tmp_path)
     if change == "no_post":
-        h.world.post_after_digest = False
+        h.world.post_event = False
     elif change == "auth_revoked":
         h.world.auth = AuthFacts("orch-x", "abcdefghijk2", (), ("abcdefghijk2",))
     elif change == "no_reader_activity":

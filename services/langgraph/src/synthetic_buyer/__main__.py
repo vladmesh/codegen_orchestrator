@@ -5,13 +5,18 @@
     python -m src.synthetic_buyer resume  --config buyer.json --orchestrator-revision <sha>
     python -m src.synthetic_buyer cleanup --config buyer.json --orchestrator-revision <sha>
     python -m src.synthetic_buyer inspect --config buyer.json
+    python -m src.synthetic_buyer identity --config buyer.json [--release <token>]
 
 `check` and `inspect` are offline: they read the config, the presence of each
 secret handle (never its value) and the retained evidence, and connect to
-nothing. `run` starts a new operation and refuses one whose evidence exists;
-`resume` continues an interrupted one from its retained ids; `cleanup` only tears
-down the project the retained evidence names. Nothing here is triggered by CI.
-See docs/runbooks/synthetic-buyer.md.
+nothing — no Telegram, no API, no Redis — so neither can read or send a message.
+`run` starts a new operation and refuses one whose evidence exists; `resume`
+continues an interrupted one from its retained ids, and a failed one only as far
+as its teardown decision; `cleanup` only tears down the project the retained
+evidence names. All three pass the controller's one authority path. `identity`
+reads the shared QA Telegram identity's hold and, given the exact token an
+operator has verified, releases a retained or orphaned one; it touches nothing
+else. Nothing here is triggered by CI. See docs/runbooks/synthetic-buyer.md.
 """
 
 from __future__ import annotations
@@ -26,15 +31,19 @@ import sys
 
 import structlog
 
+from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.log_config import setup_logging
+from src.consumers._qa_telegram_lease import LEASE_KEY
 
 from .config import BuyerConfig, ConfigError, MissingSecret, load_config, resolve_secret
-from .evidence import EvidenceStore, new_record
+from .evidence import EvidenceStore, Redaction, UnsupportedEvidence, new_record
 from .live import (
     GITHUB_APP_ENV,
     INTERNAL_API_KEY_ENV,
     RUNTIME_KEY_ENV,
+    identity_lease,
     live_buyer,
+    live_clock,
     new_store,
 )
 
@@ -65,6 +74,8 @@ def check(config: BuyerConfig, environ: Mapping[str, str]) -> tuple[int, dict]:
         "operation_id": config.operation_id,
         "codegen_bot": f"@{config.codegen_bot.username}",
         "buyer_telegram_id": config.buyer.telegram_id,
+        "identity_lease_key": LEASE_KEY.format(telegram_id=config.buyer.telegram_id),
+        "shares_native_qa_identity": config.buyer.telegram_id == QA_TEST_TELEGRAM_ID,
         "public_channels": config.scenario.public_channels,
         "model_chain": [entry.model_dump(mode="json") for entry in config.model.chain],
         "handles": {role: handle.describe() for role, handle in config.secret_handles().items()},
@@ -73,11 +84,16 @@ def check(config: BuyerConfig, environ: Mapping[str, str]) -> tuple[int, dict]:
         "evidence_exists": store.exists(),
     }
     if store.exists():
-        record = store.load()
+        try:
+            record = store.load()
+        except UnsupportedEvidence as refused:
+            summary.update(evidence_refused=str(refused))
+            return 1, summary
         summary.update(
             phase=record["phase"],
             verdict=record["verdict"]["status"],
             cleanup=record["cleanup"]["status"],
+            pending=(record.get("pending") or {}).get("kind"),
         )
     return (0 if all(presence.values()) else 1), summary
 
@@ -113,7 +129,13 @@ async def operate(
         if not store.exists():
             logger.error("synthetic_buyer_refused", reason="no_retained_evidence")
             return EXIT_REFUSED
-        record = store.load()
+        try:
+            record = store.load()
+        except UnsupportedEvidence as refused:
+            logger.error(
+                "synthetic_buyer_refused", reason="evidence_unsupported", detail=str(refused)
+            )
+            return EXIT_REFUSED
         if record["operation_id"] != config.operation_id:
             logger.error("synthetic_buyer_refused", reason="operation_mismatch")
             return EXIT_REFUSED
@@ -145,17 +167,36 @@ def inspect(config: BuyerConfig) -> int:
     if not store.exists():
         logger.error("synthetic_buyer_refused", reason="no_retained_evidence")
         return EXIT_REFUSED
-    record = store.load()
+    try:
+        record = store.load()
+    except UnsupportedEvidence as refused:
+        logger.error("synthetic_buyer_refused", reason="evidence_unsupported", detail=str(refused))
+        return EXIT_REFUSED
     logger.info(
         "synthetic_buyer_inspect",
         phase=record["phase"],
         completed=record["completed_phases"],
         verdict=record["verdict"],
         cleanup=record["cleanup"],
+        pending=record.get("pending"),
+        ownership=record.get("ownership"),
         ids=record["ids"],
         report=str(store.directory / "report.md"),
     )
     return 0
+
+
+async def identity(config: BuyerConfig, environ: Mapping[str, str], release: str | None) -> int:
+    """Read the shared identity's hold; release it only by the exact token given."""
+    async with identity_lease(config, environ, Redaction(), live_clock()) as lease:
+        record = await lease.holder()
+        logger.info("synthetic_buyer_identity", key=lease.key, detail=lease.describe(record))
+        if release is None:
+            return 0
+        if record is None or record.get("token") != release:
+            logger.error("synthetic_buyer_refused", reason="identity_token_not_held")
+            return EXIT_REFUSED
+        return 0 if await lease.release(release) else EXIT_REFUSED
 
 
 def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None) -> int:
@@ -164,6 +205,9 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("check", "inspect"):
         commands.add_parser(name).add_argument("--config", type=Path, required=True)
+    held = commands.add_parser("identity")
+    held.add_argument("--config", type=Path, required=True)
+    held.add_argument("--release", metavar="TOKEN")
     for name in ("run", "resume", "cleanup"):
         sub = commands.add_parser(name)
         sub.add_argument("--config", type=Path, required=True)
@@ -182,6 +226,8 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
     if args.command == "inspect":
         return inspect(config)
     try:
+        if args.command == "identity":
+            return asyncio.run(identity(config, environ, args.release))
         return asyncio.run(operate(args.command, config, args.orchestrator_revision, environ))
     except MissingSecret as error:
         logger.error("synthetic_buyer_secret_missing", detail=str(error))

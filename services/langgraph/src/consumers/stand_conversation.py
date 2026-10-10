@@ -180,4 +180,11 @@ async def run_probe(*, marker, bot_username, deployed_url, evidence, redaction, 
                 await run_steps(client, bot, fixture["steps"], evidence=evidence, setting=setting)
             evidence.update(status="passed", phase="completed")
     finally:
-        await asyncio.wait_for(client.disconnect(), timeout=30)
+        # Recorded either way: a disconnect that failed leaves the run's hold on
+        # the QA identity retained (`qa._run_mechanical_qa`).
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=30)
+        except BaseException:
+            evidence["disconnect"] = "failed"
+            raise
+        evidence["disconnect"] = "completed"

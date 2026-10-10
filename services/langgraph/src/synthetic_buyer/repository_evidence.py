@@ -1,9 +1,10 @@
 """Read-only facts of the generated product's repository, through the existing GitHub App.
 
 Deploy and install provenance cannot be judged from a typed status alone: the
-pull request that merged, the workflow run that built and published the deployed
-commit, the commits an install published on top of the scaffold and the files
-engineering changed after it are facts of the repository. This adapter reads them
+pull request that merged, the `ci.yml` run whose `build-and-push` job published
+the deployed commit's images, the separate `deploy.yml` run that placed them, the
+commits an install published on top of the scaffold and the files engineering
+changed after it are facts of the repository. This adapter reads them
 with the platform's own `GitHubAppClient` installation token and GET requests
 only; it never writes, and an unreadable fact is the caller's `unknown`.
 """
@@ -44,6 +45,12 @@ class CompareFacts:
     files: tuple[str, ...]
 
 
+#: The generated product's publication workflow and the job that pushes its images
+#: (`image_publication` in the scheduler reads the same run).
+PUBLICATION_WORKFLOW = "ci.yml"
+PUBLICATION_BRANCH = "main"
+
+
 @dataclass(frozen=True)
 class WorkflowRunFacts:
     id: int
@@ -51,6 +58,15 @@ class WorkflowRunFacts:
     status: str | None
     conclusion: str | None
     path: str | None
+    head_branch: str | None = None
+    event: str | None = None
+
+
+@dataclass(frozen=True)
+class JobFacts:
+    name: str
+    status: str | None
+    conclusion: str | None
 
 
 class RepositoryFacts(Protocol):
@@ -59,6 +75,10 @@ class RepositoryFacts(Protocol):
     async def compare(self, repository: str, base: str, head: str) -> CompareFacts: ...
 
     async def workflow_run(self, repository: str, run_id: int) -> WorkflowRunFacts: ...
+
+    async def publication_runs(self, repository: str, commit: str) -> list[WorkflowRunFacts]: ...
+
+    async def workflow_jobs(self, repository: str, run_id: int) -> list[JobFacts]: ...
 
 
 def repository_name(git_url: str) -> str | None:
@@ -115,11 +135,36 @@ class GitHubRepositoryFacts:
         )
 
     async def workflow_run(self, repository: str, run_id: int) -> WorkflowRunFacts:
-        body = await self._get(repository, f"actions/runs/{run_id}")
-        return WorkflowRunFacts(
-            id=int(body["id"]),
-            head_sha=body.get("head_sha"),
-            status=body.get("status"),
-            conclusion=body.get("conclusion"),
-            path=body.get("path"),
+        return _run_facts(await self._get(repository, f"actions/runs/{run_id}"))
+
+    async def publication_runs(self, repository: str, commit: str) -> list[WorkflowRunFacts]:
+        """Every `ci.yml` run GitHub has for *commit* on the default branch."""
+        body = await self._get(
+            repository,
+            f"actions/workflows/{PUBLICATION_WORKFLOW}/runs"
+            f"?branch={PUBLICATION_BRANCH}&head_sha={commit}&per_page=20",
         )
+        return [_run_facts(run) for run in body.get("workflow_runs") or []]
+
+    async def workflow_jobs(self, repository: str, run_id: int) -> list[JobFacts]:
+        body = await self._get(repository, f"actions/runs/{run_id}/jobs?per_page=100")
+        return [
+            JobFacts(
+                name=str(job.get("name") or ""),
+                status=job.get("status"),
+                conclusion=job.get("conclusion"),
+            )
+            for job in body.get("jobs") or []
+        ]
+
+
+def _run_facts(body: dict) -> WorkflowRunFacts:
+    return WorkflowRunFacts(
+        id=int(body["id"]),
+        head_sha=body.get("head_sha"),
+        status=body.get("status"),
+        conclusion=body.get("conclusion"),
+        path=body.get("path"),
+        head_branch=body.get("head_branch"),
+        event=body.get("event"),
+    )

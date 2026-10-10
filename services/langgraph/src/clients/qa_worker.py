@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import uuid
 
@@ -56,6 +56,22 @@ logger = get_logger(__name__)
 # The agent submits its verdict and then exits; the two arrive over different
 # channels, so the faster one must not decide the run.
 VERDICT_GRACE_S = 15
+# How long worker-manager is given to confirm an executor's removal when the
+# caller needs to know the sandbox is gone (it held the shared Telegram identity).
+REMOVAL_CONFIRMATION_S = 120
+
+
+@dataclass
+class ExecutorRemovals:
+    """Which executors this run asked worker-manager to remove, and which it confirmed.
+
+    A sandbox served the QA Telegram session can use it until its container and
+    its egress proxy are gone, so whoever holds that identity for the run needs
+    worker-manager's own answer to the delete command, not only having sent it.
+    """
+
+    confirmed: list[str] = field(default_factory=list)
+    unconfirmed: dict[str, str] = field(default_factory=dict)
 
 
 class QAExecutorUnavailable(Exception):
@@ -139,6 +155,7 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
     timeout: int,
     on_create_published: Callable[[], None],
     probe_library: list[QAProbeLibraryFile] | None = None,
+    removals: ExecutorRemovals | None = None,
 ) -> QAExecutorRun:
     """Run one exploratory QA pass on a central ephemeral coding agent.
 
@@ -169,6 +186,9 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
             accepts the create command, even if any later operation fails.
         probe_library: the seed and project probes, and their index, that
             worker-manager writes under `QA_PROBE_LIBRARY_PATH` for this run.
+        removals: when given, worker-manager's answer to this executor's delete
+            command is awaited (bounded) and recorded there, so the caller can tell
+            a removed sandbox from one that may still be running.
 
     Raises:
         QAExecutorUnavailable: no executor ran at all.
@@ -293,6 +313,10 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
                 },
             )
             logger.info("qa_executor_deleted", worker_id=worker_id)
+            if removals is not None:
+                await _confirm_removal(
+                    redis_client, group_name, consumer_id, request_id, worker_id, removals
+                )
         output_stream = f"worker:{worker_id}:output"
         for stream in (WORKER_RESPONSES, output_stream):
             try:
@@ -304,6 +328,42 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
         except Exception as exc:  # noqa: BLE001 — worker removal may already have removed it
             logger.debug("qa_executor_output_cleanup_failed", stream=output_stream, error=str(exc))
         await redis_client.aclose()
+
+
+async def _confirm_removal(  # noqa: PLR0913 - one delete's whole context
+    redis_client: redis.Redis,
+    group_name: str,
+    consumer_id: str,
+    request_id: str,
+    worker_id: str,
+    removals: ExecutorRemovals,
+) -> None:
+    """Record whether worker-manager answered this executor's delete with success."""
+    try:
+        answer = await _wait_for_response(
+            redis_client,
+            group_name,
+            consumer_id,
+            f"cleanup-{request_id}",
+            REMOVAL_CONFIRMATION_S,
+            group_start_id="$",
+        )
+    except Exception as exc:  # noqa: BLE001 - an unread answer is an unconfirmed removal
+        removals.unconfirmed[worker_id] = (
+            f"the delete answer could not be read: {type(exc).__name__}"
+        )
+        return
+    if answer is None:
+        removals.unconfirmed[worker_id] = (
+            f"worker-manager did not answer the delete within {REMOVAL_CONFIRMATION_S}s"
+        )
+    elif not answer.get("success"):
+        removals.unconfirmed[worker_id] = (
+            f"worker-manager refused the delete: {str(answer.get('error') or 'no reason')[:300]}"
+        )
+    else:
+        removals.confirmed.append(worker_id)
+        logger.info("qa_executor_removal_confirmed", worker_id=worker_id)
 
 
 async def _await_verdict_or_exit(

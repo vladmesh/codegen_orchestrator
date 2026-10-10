@@ -870,14 +870,34 @@ rollout-before-preview and confirmation gating, secret handoff and redaction, st
 out work, the shared session around QA, wrong project or run correlation, absent post/auth/reader/
 language facts, resume without a second order, and cleanup failure. The adapters run against
 controlled transports (`httpx.MockTransport`, Telethon-shaped objects, a scripted chat model). The
-cases also cover the controller's single authority path: QA active before registration, mid-order
-and before a reconnection; an accepted send interrupted before its receipt; a promo echo after a
-new process; a same-owner project without this order's token; an affirmative model reply with no
-authority; uncorrelated install, glue and deploy provenance; and a delayed command reply linking a
-new post. All of it is host-profile unit work under the 0.5 s budget, with no process, socket or
-real wait.
-These tests prove the driver's behavior only; a live acceptance verdict exists only in an
-operation's own evidence.
+cases also cover the controller's single authority path: an accepted send interrupted before its
+receipt; a confirmation whose receipt stayed invisible until delivery checks ended, then
+reconciled by a failed `resume` and by `cleanup` with one send, owned teardown and the failed
+verdict kept, while an unprovable send, a press and unproven ownership stay refused; a promo echo
+after a new process; a same-owner project without this order's token; an affirmative model reply
+with no authority; deploy provenance with distinct `ci.yml` publication and `deploy.yml` runs
+(missing, failed, `main.yml`, deploy-as-publication, failed `build-and-push`, wrong commit or
+image tag, timeline disagreement, unreadable Actions); and unsolicited delivery proven before
+`/digest` against a delayed unquoted digest item linking a fresh post, a resumed uncertain
+`/digest`, event-form messages that do not hold together, and absent delivery.
+The shared QA identity's exclusion is the real `TelegramIdentityLease` over an in-memory Redis
+with Lua (fakeredis): native QA admitted before registration, right after a quiet moment, during
+the persona's model call and during API reads; queued/running Run rows changing nothing; QA
+keeping the identity through the probe; an orphaned hold refusing until released by token; a
+failed disconnect retaining the hold (`synthetic_buyer/test_controller.py`). The lease itself
+(`test_qa_telegram_lease.py`) covers one holder at a time, simultaneous admission, use ended
+before release on error and cancellation, retention, stale reporting without expiry and
+ownership loss stopping the use; the QA consumer (`test_qa_consumer.py`,
+`test_qa_identity_release.py`, `test_mechanical_qa.py`) holds it from the identity proof to the
+executor's removal, blocks as `qa_probe_unavailable` beside another holder, retains it on an
+unconfirmed sandbox removal or a failed proof disconnect, and kills a cancelled probe child.
+All of it is host-profile unit work under the 0.5 s budget, with no process, socket or real wait.
+The LangGraph service leg runs `tests/service/test_qa_telegram_identity_lease.py` against the
+real Redis: contended admission one at a time, a retained hold with no TTL yielding only to its
+token, ownership loss through the real watchdog, and executor-removal confirmation read off the
+real `worker:responses` stream. It is CI evidence only when executed.
+These tests prove the driver's and the coordination's behavior only; a live acceptance verdict
+exists only in an operation's own evidence.
 
 ## Integration Test Architecture
 

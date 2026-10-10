@@ -9,6 +9,14 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   QA account, checks the live product, keeps redacted resumable evidence and tears its project down.
 - The synthetic buyer runs every effect through one authority path: QA-guarded session, durable
   intents, token-proven project ownership, brief-route admission and provenance-chain judgments.
+- Native QA and the synthetic buyer hold the QA Telegram account through one Redis lease with no
+  TTL, released only after clients disconnect and served sandboxes are confirmed removed.
+- The synthetic buyer reconciles retained intents on every entrypoint, so a failed run's later
+  visible send allows owned teardown, and keeps the failed verdict.
+- The buyer's deploy evidence keeps `deployment_result.run_id` as the `deploy.yml` run and
+  proves the built commit's `ci.yml` build-and-push publication separately.
+- The buyer observes unsolicited `tg-channels.post` delivery before sending `/digest`, so a late
+  digest item can never be mistaken for it.
 - Kit 7b547c69 (core 2.5.0) is the scaffold, tooling and catalog pin; one activated catalog snapshot
   replaces the live HEAD reader, and installs name and add from its exact commit.
 - The PO previews capabilities through the Architect before a brief; the API stores the derived

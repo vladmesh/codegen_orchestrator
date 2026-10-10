@@ -29,6 +29,7 @@ from shared.telethon_identity import (
 
 if TYPE_CHECKING:
     from ._qa_runner import QARuntimeConfig
+    from ._qa_telegram_lease import IdentityHold
 
 logger = structlog.get_logger(__name__)
 
@@ -61,7 +62,9 @@ def _telethon_client(environment: Mapping[str, str]) -> Any:
 
 
 async def _prove(
-    environment: Mapping[str, str], client_factory: Callable[[Mapping[str, str]], Any]
+    environment: Mapping[str, str],
+    client_factory: Callable[[Mapping[str, str]], Any],
+    hold: IdentityHold | None = None,
 ) -> QATelegramIdentityRefusal | None:
     try:
         client = client_factory(environment)
@@ -78,6 +81,10 @@ async def _prove(
             await asyncio.wait_for(client.disconnect(), timeout=CALL_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001 — the verdict stands; the client is dropped
             logger.warning("qa_telegram_identity_disconnect_failed", error=type(exc).__name__)
+            # The proof's connection is not shown closed, so the run's hold on the
+            # identity is not released when it ends: nobody else is admitted past it.
+            if hold is not None:
+                hold.retain(f"the identity proof's disconnect failed: {type(exc).__name__}")
     return None
 
 
@@ -95,7 +102,7 @@ async def prove_sandbox_telegram_identity(
     """
     if not runtime.telethon_env:
         return runtime
-    refusal = await _prove(runtime.telethon_env, client_factory)
+    refusal = await _prove(runtime.telethon_env, client_factory, runtime.telegram_hold)
     if refusal is None:
         logger.info("qa_telegram_identity_proven")
         return replace(runtime, telegram_identity_proven=True)

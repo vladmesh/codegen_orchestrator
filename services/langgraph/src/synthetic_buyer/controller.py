@@ -1,8 +1,8 @@
 """One synthetic purchase, from the customer's first message to the project's teardown.
 
 The controller is deterministic and is the one authority over every effect. Every
-entrypoint — `run`, `resume` and `cleanup` — passes the same ordered path before
-anything reaches Telegram, the API or the project:
+entrypoint — `run` (which also resumes) and `cleanup` — passes the same ordered
+path before anything reaches Telegram, the API or the project:
 
 1. validate the run: the retained evidence is this operation's, for this buyer;
 2. rebuild the redaction set from protected handles and authenticated reads (the
@@ -10,27 +10,35 @@ anything reaches Telegram, the API or the project:
    operation minted read back through the internal promo API) before any dialog
    is read or the persona is asked;
 3. reconcile the one durable side-effect intent: a send whose receipt was lost is
-   looked for in the dialog, a promo mint is looked for in the promo API; an
-   unresolved intent stops the operation and outranks every retry and cleanup;
-4. prove ownership: the order's project is the new owner-visible project whose own
+   looked for in the dialog — under the identity hold, like every Telegram read —
+   and a promo mint in the promo API. A send found is recorded without being sent
+   again, whatever the verdict; one never found stays pending and outranks every
+   further action, cleanup included;
+4. keep the verdict: a failed operation is never continued and never turns green;
+   reconciliation only decides whether its proven project may be torn down;
+5. prove ownership: the order's project is the new owner-visible project whose own
    encrypted secrets hold exactly the product token this operation sent in its
    Telegram order, with its initiating run retained; nothing else is ever adopted,
    admitted to the rollout or torn down;
-5. acquire the shared session only through the QA handoff guard: no connection,
-   dialog read or send while the API shows a QA run queued or running;
-6. admit only the action the current state allows: before the project is proven
+6. use Telegram only inside an exclusive hold on the shared QA identity
+   (`consumers._qa_telegram_lease`), the same hold native QA takes before it
+   proves, connects or hands out the identity. The buyer connects and proves
+   `get_me` after admission and disconnects before releasing; it holds nothing
+   while it asks the persona, reads the API or waits for native work;
+7. admit only the action the current state allows: before the project is proven
    and admitted to the rollout the buyer sends only the controller's own opening,
    the token and fixed deferrals — never the persona's words; while the project
    holds an open brief revision, nothing is sent until that revision's stored
    capability plan routes a module and its preview postdates the rollout readback;
-7. persist the intent before the effect and record the receipt after it;
-8. judge correlated observations, freeze the verdict, then tear down only the
+8. persist the intent before the effect and record the receipt after it;
+9. judge correlated observations, freeze the verdict, then tear down only the
    proven project.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
@@ -39,6 +47,14 @@ from typing import Any
 
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.story import StoryStatus
+from src.consumers._qa_telegram_lease import (
+    Holder,
+    HolderKind,
+    IdentityBusy,
+    IdentityHold,
+    IdentityOwnershipLost,
+    TelegramIdentityLease,
+)
 
 from . import native, probe
 from .codegen_api import ApiRefused, CodegenApi, project_ids
@@ -140,6 +156,7 @@ class SyntheticBuyer:
         config: BuyerConfig,
         *,
         telegram: TelegramPort,
+        lease: TelegramIdentityLease,
         api: CodegenApi,
         persona: Persona,
         platform: PlatformFacts,
@@ -151,6 +168,7 @@ class SyntheticBuyer:
     ) -> None:
         self.config = config
         self.telegram = telegram
+        self.lease = lease
         self.api = api
         self.persona = persona
         self.platform = platform
@@ -161,6 +179,7 @@ class SyntheticBuyer:
         self.environ = environ
         self._token: str | None = None
         self._peers: dict[str, Peer] = {}
+        self._held: IdentityHold | None = None
 
     # --- evidence shorthands --------------------------------------------------
 
@@ -191,7 +210,6 @@ class SyntheticBuyer:
             (Phase.ORDER, self._order),
             (Phase.HANDOFF, self._handoff),
             (Phase.BUILD, self._build),
-            (Phase.QA_QUIET, self._wait_qa_quiet),
             (Phase.PRODUCT_PROBE, self._product_probe),
             (Phase.PLATFORM, self._platform),
             (Phase.LANGUAGE, self._language),
@@ -199,33 +217,79 @@ class SyntheticBuyer:
             (Phase.FREEZE, self._freeze),
         ]
 
-    async def run(self) -> Outcome:
-        """Run or resume the acceptance phases, then tear down what this operation owns."""
-        if self.store.record["verdict"]["status"] != VerdictStatus.FAILED.value:
-            phase = Phase(self.store.record["phase"])
-            try:
-                await self._authorize()
-                for phase, step in self._phases():
-                    if self.store.is_complete(phase):
-                        continue
-                    self.store.enter(phase)
-                    await step()
-                    self.store.complete(phase)
-            except Stop as stop:
-                self.store.fail(phase, stop.reason, self.store.redaction.value(stop.detail))
-            except (TransportError, ApiRefused, MissingSecret, PersonaInvalid) as error:
-                self.store.fail(phase, type(error).__name__, self.store.redaction.text(str(error)))
-            except Exception as error:  # noqa: BLE001 - the text may hold what it was handed
-                self.store.fail(phase, "unexpected_error", {"type": type(error).__name__})
-            finally:
-                await self._release_session()
-        return Outcome(self.store.record["verdict"]["status"], await self.cleanup())
+    def _running(self) -> bool:
+        return self.store.record["verdict"]["status"] == VerdictStatus.RUNNING.value
 
-    async def _authorize(self) -> None:
-        """Steps 1-3 of the authority order, before any dialog is read or effect admitted."""
-        self._validate_identity()
-        await self._rehydrate()
-        await self._reconcile()
+    async def run(self) -> Outcome:
+        """Run or resume the acceptance, then settle what this operation owns.
+
+        Authorization comes first whatever the verdict. A running operation goes on
+        only when it is authorized and nothing of it was torn down; a failed one is
+        never continued, and only reaches the teardown decision.
+        """
+        refusal = await self._authorize()
+        if self._running():
+            phase = Phase(self.store.record["phase"])
+            if refusal is not None:
+                self.store.fail(phase, refusal.reason, self.store.redaction.value(refusal.detail))
+            elif self.store.record["cleanup"]["status"] != CleanupStatus.NOT_STARTED.value:
+                self.store.fail(phase, "torn_down_before_acceptance")
+            else:
+                await self._accept()
+        return Outcome(self.store.record["verdict"]["status"], await self._settle_cleanup())
+
+    async def cleanup(self) -> str:
+        """Tear down only the proven project, through the same authority path as `run`.
+
+        An operation that had not concluded can never be accepted after its project
+        is gone, so a cleanup of a running one fails its verdict first.
+        """
+        refusal = await self._authorize()
+        if self._running():
+            phase = Phase(self.store.record["phase"])
+            if refusal is not None:
+                self.store.fail(phase, refusal.reason, self.store.redaction.value(refusal.detail))
+            else:
+                self.store.fail(phase, "cleanup_before_verdict")
+        return await self._settle_cleanup()
+
+    async def _accept(self) -> None:
+        phase = Phase(self.store.record["phase"])
+        try:
+            for phase, step in self._phases():
+                if self.store.is_complete(phase):
+                    continue
+                self.store.enter(phase)
+                await step()
+                self.store.complete(phase)
+        except Stop as stop:
+            self.store.fail(phase, stop.reason, self.store.redaction.value(stop.detail))
+        except (TransportError, ApiRefused, MissingSecret, PersonaInvalid) as error:
+            self.store.fail(phase, type(error).__name__, self.store.redaction.text(str(error)))
+        except Exception as error:  # noqa: BLE001 - the text may hold what it was handed
+            self.store.fail(phase, "unexpected_error", {"type": type(error).__name__})
+
+    async def _authorize(self) -> Stop | None:
+        """Steps 1-3 of the authority order, before any dialog is read or effect admitted.
+
+        Returns the refusal, or None. A refusal changes nothing by itself: `run`
+        records it on a running verdict, and the teardown decision refuses while
+        an intent stays unresolved.
+        """
+        try:
+            self._validate_identity()
+            await self._rehydrate()
+            await self._reconcile()
+        except Stop as stop:
+            self.store.decide({"event": "authorization_refused", "reason": stop.reason})
+            self.store.save()
+            return stop
+        except (TransportError, ApiRefused, MissingSecret) as error:
+            stop = Stop(type(error).__name__, self.store.redaction.text(str(error)))
+            self.store.decide({"event": "authorization_refused", "reason": stop.reason})
+            self.store.save()
+            return stop
+        return None
 
     def _validate_identity(self) -> None:
         record = self.store.record
@@ -242,6 +306,7 @@ class SyntheticBuyer:
         redaction.add(
             resolve_secret(telegram.session, self.environ),
             resolve_secret(telegram.api_hash, self.environ),
+            resolve_secret(self.config.identity_lease.redis_url, self.environ),
         )
         if self.config.product_token.handle is not None:
             redaction.add(resolve_secret(self.config.product_token.handle, self.environ))
@@ -254,7 +319,12 @@ class SyntheticBuyer:
             redaction.add(*(codes[code_id]["code"] for code_id in minted))
 
     async def _reconcile(self) -> None:
-        """Resolve the one retained intent before any new action is admitted."""
+        """Resolve the one retained intent before any new action is admitted.
+
+        A send is looked for in its dialog under the identity hold, never sent
+        again. A press has no outgoing message to find, so it stays unresolved.
+        Reconciling records the receipt and nothing else: the verdict is kept.
+        """
         pending = self.store.record.get("pending")
         if not pending:
             return
@@ -264,67 +334,97 @@ class SyntheticBuyer:
         public = {key: value for key, value in pending.items() if key != "digest"}
         if pending["effect"] != "send":
             raise Stop("delivery_unknown", public)
-        peer = await self._dialog_peer(pending["dialog"])
-        sent = await self._find_delivery(peer, pending)
+        async with self._telegram("reconcile"):
+            peer = await self._dialog_peer(pending["dialog"])
+            sent = await self._find_delivery(peer, pending)
         if sent is None:
             raise Stop("delivery_unknown", public)
         self._receipt(pending, sent)
-        self.store.decide({"event": "intent_reconciled", "kind": pending["kind"]})
+        self.store.decide(
+            {
+                "event": "intent_reconciled",
+                "kind": pending["kind"],
+                "verdict": self.store.record["verdict"]["status"],
+            }
+        )
+        self.store.save()
 
-    # --- the shared session: one QA handoff guard --------------------------------
+    # --- the shared identity: one exclusive hold ----------------------------------
 
-    async def _busy_qa(self) -> list[str]:
-        busy = []
-        for status in ("running", "queued"):
-            busy += [run["id"] for run in await self.api.runs(run_type=RunType.QA, status=status)]
-        return sorted(busy)
+    @property
+    def _tg(self) -> TelegramPort:
+        """The session, only while this operation holds the shared identity."""
+        if self._held is None:
+            raise RuntimeError("Telegram used outside the shared identity's hold")
+        return self.telegram
 
-    async def _wait_qa_quiet(self) -> None:
-        started = self.clock.wall()
-        while busy := await self._busy_qa():
-            if (
-                self.clock.wall() - started
-            ).total_seconds() >= self.config.deadlines.qa_quiet_seconds:
-                raise Stop("qa_never_quiet", {"qa_run_ids": busy})
-            await self.clock.sleep(self.config.deadlines.poll_seconds)
-        self.store.stamp("qa_quiet_at")
+    @asynccontextmanager
+    async def _telegram(self, purpose: str) -> AsyncIterator[None]:
+        """Hold the QA identity, connect and prove it; disconnect, then release.
 
-    async def _session(self) -> None:
-        """The one acquisition path: QA quiet first, then connect, then prove the buyer.
-
-        Called before every connection, dialog read and send. A QA run the API shows
-        queued or running makes the buyer step out, disconnected, until it ends. This
-        is a check before each action, not an atomic exclusion: a QA run admitted after
-        the check can overlap the action that follows it.
+        Re-entrant: a use inside a hold is part of it. The hold is the one native
+        QA takes, so neither side's Telegram use can overlap the other's. A
+        disconnect that cannot be shown complete keeps the hold retained, so no one
+        is admitted beside a session that may still be connected.
         """
-        busy = await self._busy_qa()
-        if busy:
-            self.store.decide({"event": "qa_yielded", "qa_run_ids": busy})
-            await self._release_session()
-            await self._wait_qa_quiet()
-        if not self.telegram.connected:
-            await self.telegram.connect()
-            self._section("session")["connected_at"] = self.store.now()
-        me = await self.telegram.me()
-        if me != self.buyer:
-            await self.telegram.disconnect()
-            raise Stop("identity_mismatch", {"expected": self.buyer, "actual": me})
-        self.ids["buyer_telegram_id"] = me
-
-    async def _release_session(self) -> None:
-        if self.telegram.connected:
-            try:
-                await self.telegram.disconnect()
-            except TransportError as error:
-                self.store.decide({"event": "disconnect_failed", "stage": error.stage})
-            self._section("session")["released_at"] = self.store.now()
+        if self._held is not None:
+            yield
+            return
+        deadlines = self.config.deadlines
+        holder = Holder(HolderKind.SYNTHETIC_BUYER, self.config.operation_id, f"buyer:{purpose}")
+        session = self._section("session")
+        try:
+            async with self.lease.hold(
+                holder,
+                wait_seconds=deadlines.identity_wait_seconds,
+                poll_seconds=deadlines.poll_seconds,
+            ) as held:
+                self._held = held
+                session["holds"] = session.get("holds", 0) + 1
+                session["admitted_at"] = self.store.now()
+                try:
+                    await self.telegram.connect()
+                    session["connected_at"] = self.store.now()
+                    me = await self.telegram.me()
+                    if me != self.buyer:
+                        raise Stop("identity_mismatch", {"expected": self.buyer, "actual": me})
+                    self.ids["buyer_telegram_id"] = me
+                    yield
+                finally:
+                    self._held = None
+                    if not await self._disconnect():
+                        held.retain("the synthetic buyer's Telegram disconnect failed")
+                session["released_at"] = self.store.now()
+        except IdentityBusy as busy:
+            raise Stop(
+                "identity_busy",
+                {
+                    "purpose": purpose,
+                    "holder": busy.record,
+                    "waited_seconds": int(busy.waited),
+                    "diagnostic": str(busy),
+                },
+            ) from None
+        except IdentityOwnershipLost:
+            raise Stop("identity_ownership_lost", {"purpose": purpose}) from None
+        finally:
             self.store.save()
 
+    async def _disconnect(self) -> bool:
+        if not self.telegram.connected:
+            return True
+        try:
+            await self.telegram.disconnect()
+        except TransportError as error:
+            self.store.decide({"event": "disconnect_failed", "stage": error.stage})
+            return False
+        return True
+
     async def _peer(self, role: str, username: str, *, user_id: int | None = None) -> Peer:
-        await self._session()
         if role in self._peers:
             return self._peers[role]
-        peer = await self.telegram.resolve(username)
+        async with self._telegram(f"resolve:{role}"):
+            peer = await self._tg.resolve(username)
         if (
             not peer.is_bot
             or peer.username.casefold() != username.casefold()
@@ -355,19 +455,20 @@ class SyntheticBuyer:
     async def _ensure_watermark(self, peer: Peer, dialog: str) -> None:
         marks = self.store.record["watermarks"]
         if dialog not in marks:
-            await self._session()
-            marks[dialog] = await self.telegram.latest_id(peer)
+            async with self._telegram(f"watermark:{dialog}"):
+                marks[dialog] = await self._tg.latest_id(peer)
             self.store.save()
 
     # --- reads and sends -------------------------------------------------------
 
     async def _read_new(self, peer: Peer, dialog: str) -> list[Message]:
         """Inbound messages from *peer* above the dialog's watermark, each read once."""
-        await self._session()
         marks = self.store.record["watermarks"]
         mark = marks[dialog]
         inbound = []
-        for message in await self.telegram.messages_after(peer, mark):
+        async with self._telegram(f"read:{dialog}"):
+            found = await self._tg.messages_after(peer, mark)
+        for message in found:
             if message.id <= mark:
                 continue
             mark = max(mark, message.id)
@@ -386,37 +487,43 @@ class SyntheticBuyer:
         return inbound
 
     async def _await_reply(self, peer: Peer, dialog: str, *, timeout: float) -> list[Message]:
-        """What *peer* answers: every message until it has been quiet for the settle time."""
+        """What *peer* answers: every message until it has been quiet for the settle time.
+
+        Waiting on a reply is Telegram use, so it is held as one.
+        """
         settle = self.config.deadlines.settle_seconds
-        started = self.clock.wall()
-        last_new = started
-        collected: list[Message] = []
-        while True:
-            new = await self._read_new(peer, dialog)
-            now = self.clock.wall()
-            if new:
-                collected += new
-                last_new = now
-            waited = (now - started).total_seconds()
-            if collected and ((now - last_new).total_seconds() >= settle or waited >= 2 * timeout):
-                return collected
-            if not collected and waited >= timeout:
-                return []
-            await self.clock.sleep(DIALOG_POLL_SECONDS)
+        async with self._telegram(f"reply:{dialog}"):
+            started = self.clock.wall()
+            last_new = started
+            collected: list[Message] = []
+            while True:
+                new = await self._read_new(peer, dialog)
+                now = self.clock.wall()
+                if new:
+                    collected += new
+                    last_new = now
+                waited = (now - started).total_seconds()
+                if collected and (
+                    (now - last_new).total_seconds() >= settle or waited >= 2 * timeout
+                ):
+                    return collected
+                if not collected and waited >= timeout:
+                    return []
+                await self.clock.sleep(DIALOG_POLL_SECONDS)
 
     async def _find_delivery(self, peer: Peer, intent: dict) -> Message | None:
         """The outgoing message an intent named, looked for a bounded number of times."""
-        for check in range(self.config.deadlines.delivery_checks):
-            if check:
-                await self.clock.sleep(DIALOG_POLL_SECONDS)
-            await self._session()
-            try:
-                recent = await self.telegram.messages_after(peer, intent["after"])
-            except TransportError:
-                continue
-            for message in recent:
-                if message.outgoing and digest(message.text) == intent["digest"]:
-                    return message
+        async with self._telegram(f"reconcile:{intent['dialog']}"):
+            for check in range(self.config.deadlines.delivery_checks):
+                if check:
+                    await self.clock.sleep(DIALOG_POLL_SECONDS)
+                try:
+                    recent = await self._tg.messages_after(peer, intent["after"])
+                except TransportError:
+                    continue
+                for message in recent:
+                    if message.outgoing and digest(message.text) == intent["digest"]:
+                        return message
         return None
 
     def _receipt(self, intent: dict, sent: Message) -> None:
@@ -438,35 +545,45 @@ class SyntheticBuyer:
     async def _send(
         self, peer: Peer, dialog: str, text: str, *, kind: str, shown: str | None = None
     ) -> Message:
-        """Persist the intent, send once under the QA guard, record the receipt.
+        """Persist the intent, send once inside the identity hold, record the receipt.
 
         A send whose receipt is lost is looked for in the dialog; one that cannot be
         found is an unknown delivery and stops the operation. It is never sent again.
         """
         if self.store.record.get("pending"):
             raise Stop("unresolved_action", {"kind": self.store.record["pending"]["kind"]})
-        await self._session()
-        intent = {
-            "effect": "send",
-            "dialog": dialog,
-            "kind": kind,
-            "digest": digest(text),
-            "shown": shown if shown is not None else self.store.redaction.text(text),
-            "after": self.store.record["watermarks"][dialog],
-            "at": self.store.now(),
-        }
-        self.store.record["pending"] = intent
-        self.store.save()
-        try:
-            sent = await self.telegram.send(peer, text)
-        except TransportError as error:
-            self.store.decide({"event": "send_receipt_lost", "kind": kind, "stage": error.stage})
-            found = await self._find_delivery(peer, intent)
-            if found is None:
-                raise Stop("delivery_unknown", {"dialog": dialog, "kind": kind}) from None
-            sent = found
-        self._receipt(intent, sent)
+        async with self._telegram(f"send:{dialog}"):
+            intent = {
+                "effect": "send",
+                "dialog": dialog,
+                "kind": kind,
+                "digest": digest(text),
+                "shown": shown if shown is not None else self.store.redaction.text(text),
+                "after": self.store.record["watermarks"][dialog],
+                "at": self.store.now(),
+            }
+            self.store.record["pending"] = intent
+            self.store.save()
+            try:
+                sent = await self._tg.send(peer, text)
+            except TransportError as error:
+                self.store.decide(
+                    {"event": "send_receipt_lost", "kind": kind, "stage": error.stage}
+                )
+                found = await self._find_delivery(peer, intent)
+                if found is None:
+                    raise Stop("delivery_unknown", {"dialog": dialog, "kind": kind}) from None
+                sent = found
+            self._receipt(intent, sent)
         return sent
+
+    async def _exchange(
+        self, peer: Peer, dialog: str, text: str, *, kind: str, timeout: float, **shown: str
+    ) -> tuple[Message, list[Message]]:
+        """One send and the answer to it, inside one hold."""
+        async with self._telegram(f"exchange:{dialog}"):
+            sent = await self._send(peer, dialog, text, kind=kind, **shown)
+            return sent, await self._await_reply(peer, dialog, timeout=timeout)
 
     # --- 1. preflight -----------------------------------------------------------
 
@@ -538,14 +655,16 @@ class SyntheticBuyer:
             return
         peer = await self._codegen()
         await self._ensure_watermark(peer, "codegen")
+        # Minted through the API before the hold: no Telegram use waits on it.
         promo = await self._promo()
-        if not self._sent("codegen", "promo_code"):
-            await self._send(
-                peer, "codegen", promo["code"], kind="promo_code", shown=SHOWN["promo_code"]
+        async with self._telegram("registration"):
+            if not self._sent("codegen", "promo_code"):
+                await self._send(
+                    peer, "codegen", promo["code"], kind="promo_code", shown=SHOWN["promo_code"]
+                )
+            replies = await self._await_reply(
+                peer, "codegen", timeout=self.config.deadlines.reply_seconds
             )
-        replies = await self._await_reply(
-            peer, "codegen", timeout=self.config.deadlines.reply_seconds
-        )
         user = await self.api.user_by_telegram(self.buyer)
         if user is None:
             raise Stop("registration_refused", {"replies": probe.texts(replies)})
@@ -580,10 +699,10 @@ class SyntheticBuyer:
         return token
 
     async def _botfather_exchange(self, peer: Peer, text: str) -> list[Message]:
-        await self._send(peer, "botfather", text, kind="botfather")
-        return await self._await_reply(
-            peer, "botfather", timeout=self.config.deadlines.reply_seconds
+        _, replies = await self._exchange(
+            peer, "botfather", text, kind="botfather", timeout=self.config.deadlines.reply_seconds
         )
+        return replies
 
     @staticmethod
     def _token_in(replies: list[Message]) -> str | None:
@@ -594,6 +713,11 @@ class SyntheticBuyer:
         return None
 
     async def _botfather_token(self) -> str:
+        """One bot of this operation's, made or read back in one held BotFather dialog."""
+        async with self._telegram("botfather"):
+            return await self._botfather_dialog()
+
+    async def _botfather_dialog(self) -> str:
         peer = await self._botfather()
         await self._ensure_watermark(peer, "botfather")
         state = self._section("botfather")
@@ -650,6 +774,8 @@ class SyntheticBuyer:
             self.store.save()
         # A resumed order first answers what the bot said before the interruption.
         latest = self._unanswered() + await self._read_new(peer, "codegen")
+        # From here every Telegram use is its own hold: the API reads, the persona
+        # and the waits between them hold nothing.
         entries = self._order_entries()
         expect_reply = not latest and bool(entries) and entries[-1]["direction"] == "out"
         while True:
@@ -726,16 +852,20 @@ class SyntheticBuyer:
         for message in reversed(latest):
             for button in message.buttons:
                 if button.text == label and button.data is not None:
-                    await self._session()
-                    self.store.record["pending"] = {
-                        "effect": "press",
-                        "dialog": "codegen",
-                        "kind": "press",
-                        "message_id": message.id,
-                        "at": self.store.now(),
-                    }
-                    self.store.save()
-                    await self.telegram.press(peer, message.id, button.data)
+                    if self.store.record.get("pending"):
+                        raise Stop(
+                            "unresolved_action", {"kind": self.store.record["pending"]["kind"]}
+                        )
+                    async with self._telegram("press"):
+                        self.store.record["pending"] = {
+                            "effect": "press",
+                            "dialog": "codegen",
+                            "kind": "press",
+                            "message_id": message.id,
+                            "at": self.store.now(),
+                        }
+                        self.store.save()
+                        await self._tg.press(peer, message.id, button.data)
                     self.store.message(
                         "codegen",
                         {
@@ -926,7 +1056,9 @@ class SyntheticBuyer:
     # --- 5. handoff and native work ----------------------------------------------
 
     async def _handoff(self) -> None:
-        await self._release_session()
+        """Native work and QA may use the identity from here: the buyer holds nothing."""
+        if self._held is not None or self.telegram.connected:
+            raise RuntimeError("the buyer still holds the shared identity at the handoff")
         self.store.stamp("session_handed_to_qa_at")
 
     async def _build(self) -> None:
@@ -1035,19 +1167,7 @@ class SyntheticBuyer:
         if deploy is None:
             self._record("deploy_success", typed, "GET /api/runs type=deploy typed result")
         else:
-            run_id = deploy.get("publication_run_id")
-            publication = (
-                await self._fact(
-                    self.repository.workflow_run(repository, int(run_id)), "publication"
-                )
-                if repository and isinstance(run_id, int)
-                else None
-            )
-            self._record(
-                "deploy_success",
-                native.deploy_provenance(deploy, story, pull_request, publication),
-                "typed deploy result + merged PR + publication run + image digests",
-            )
+            await self._observe_provenance(deploy, story, repository, pull_request)
         qa_runs = await self.api.runs(story_id=story_id, run_type=RunType.QA)
         qa = native.qa_passed(project_id, story_id, qa_runs, deploy)
         self._record("qa_passed", qa, "GET /api/runs type=qa typed result")
@@ -1075,17 +1195,70 @@ class SyntheticBuyer:
                 "native_acceptance_not_settled", {"statuses": [item.value for item in settled]}
             )
 
+    async def _observe_provenance(
+        self,
+        deploy: dict,
+        story: dict,
+        repository: str | None,
+        pull_request: Any,
+    ) -> None:
+        """The deploy run, the commit's own publication and its build-and-push jobs."""
+        workflow_id = deploy.get("deploy_workflow_run_id")
+        commit = deploy.get("deployed_commit_sha")
+        deployment_run = (
+            await self._fact(self.repository.workflow_run(repository, workflow_id), "deploy run")
+            if repository and isinstance(workflow_id, int)
+            else None
+        )
+        publications = (
+            await self._fact(self.repository.publication_runs(repository, commit), "publication")
+            if repository and isinstance(commit, str) and commit
+            else None
+        )
+        candidates = [
+            run
+            for run in publications or []
+            if run.conclusion == "success" and run.head_sha == commit
+        ]
+        latest = max(candidates, key=lambda run: run.id, default=None)
+        jobs = (
+            await self._fact(
+                self.repository.workflow_jobs(repository, latest.id), "publication jobs"
+            )
+            if repository and latest is not None
+            else None
+        )
+        finding, publication = native.deploy_provenance(
+            deploy, story, repository, pull_request, deployment_run, publications, jobs
+        )
+        if publication is not None:
+            self.ids["publication_run_id"] = publication.id
+        self.ids["deploy_workflow_run_id"] = workflow_id
+        self._record(
+            "deploy_success",
+            finding,
+            "typed deploy result + merged PR + ci.yml build-and-push publication + "
+            "distinct deploy.yml run + sha-tagged image digests",
+        )
+
     # --- 6. the live product -------------------------------------------------------
 
     async def _command(self, peer: Peer, command: str) -> tuple[Message, list[Message]]:
-        sent = await self._send(peer, "product", command, kind="probe")
-        replies = await self._await_reply(
-            peer, "product", timeout=self.config.deadlines.probe_reply_seconds
+        return await self._exchange(
+            peer,
+            "product",
+            command,
+            kind="probe",
+            timeout=self.config.deadlines.probe_reply_seconds,
         )
-        return sent, replies
 
     async def _product_probe(self) -> None:
-        await self._wait_qa_quiet()
+        """RU replies and `/channels`, then unsolicited delivery, then `/digest` on its own.
+
+        The unsolicited post is waited for before `/digest` is sent: `/digest` is the
+        released product's only command whose answer carries channel posts, and a
+        multipart answer to it can arrive late, unquoted and linking a fresh post.
+        """
         peer = await self._product()
         await self._ensure_watermark(peer, "product")
         channels = self.config.scenario.public_channels
@@ -1109,6 +1282,7 @@ class SyntheticBuyer:
             else native.observed(probe.texts(listed)),
             "product /channels",
         )
+        await self._await_post(peer)
         sent, digest_replies = await self._command(peer, "/digest")
         self._record(
             "digest_answered",
@@ -1122,60 +1296,83 @@ class SyntheticBuyer:
             else native.failed("no reply to /digest"),
             "product /digest",
         )
-        self._section("probe")["last_command_at"] = sent.date.isoformat()
-        await self._release_session()
-        await self._await_post(sent.date)
+        self._section("probe")["digest_sent_at"] = sent.date.isoformat()
 
-    async def _await_post(self, last_command: datetime) -> None:
-        """A post the product delivers on its own, attributed by its source post's time.
+    def _retained_inbound(self, dialog: str) -> list[Message]:
+        """Every inbound message of *dialog* this operation kept, as read."""
+        return [
+            Message(
+                id=entry["id"],
+                sender_id=entry["sender_id"],
+                outgoing=False,
+                date=datetime.fromisoformat(entry["date"]),
+                text=entry["text"],
+                urls=tuple(entry.get("urls") or ()),
+                reply_to=entry.get("reply_to"),
+            )
+            for entry in self.store.record["conversation"][dialog]
+            if entry["direction"] == "in"
+        ]
 
-        A delivery counts only when it replies to nothing and links a post of a
-        configured channel that the channel itself dates after the last command the
-        buyer sent: no command reply, delayed or split, can contain a post published
-        after the command was answered. The session is connected only for each read.
+    def _source_commands(self) -> list[str]:
+        """The buyer's product commands that can answer with channel posts, sent or pending.
+
+        From the retained record, not from a watermark: a resumed operation's earlier
+        `/digest`, delivered or still unresolved, stays in the history.
         """
+        sent = [
+            entry["text"]
+            for entry in self.store.record["conversation"]["product"]
+            if entry["direction"] == "out" and entry.get("text") not in probe.NON_SOURCE_COMMANDS
+        ]
+        pending = self.store.record.get("pending") or {}
+        if pending.get("dialog") == "product":
+            sent.append(pending.get("shown") or "")
+        return sent
+
+    async def _await_post(self, peer: Peer) -> None:
+        """A post the product delivers on its own, proven before any `/digest` is sent.
+
+        Counted only while this operation's product history holds no command that
+        can answer with posts, and only for a message in the released
+        `tg-channels.post` event's own form for the product's language, unquoted,
+        linking a post of the configured channel the form names, which that channel
+        itself dates no later than the delivery. Anything else stays unattributed;
+        unknown is the answer when nothing qualifies. Each read holds the identity
+        on its own; the waits between reads hold nothing.
+        """
+        provenance = "unsolicited tg-channels.post event before any /digest; post dated by channel"
+        prior = self._source_commands()
+        if prior:
+            self._record(
+                "post_delivered",
+                native.unknown(
+                    {"reason": "a command that answers with posts precedes", "commands": prior}
+                ),
+                provenance,
+            )
+            return
+        language = self.config.scenario.product_language
         channels = self.config.scenario.public_channels
         started = self.clock.wall()
+        judged: set[int] = set()
         unattributed: list[dict] = []
-        while (
-            self.clock.wall() - started
-        ).total_seconds() < self.config.deadlines.post_delivery_seconds:
-            peer = await self._product()
-            for message in await self._read_new(peer, "product"):
-                if message.reply_to is not None:
-                    unattributed.append({"message_id": message.id, "reason": "a reply"})
+        while True:
+            await self._read_new(peer, "product")
+            for message in self._retained_inbound("product"):
+                if message.id in judged:
                     continue
-                for channel, post_id, url in probe.channel_post_links(message, channels):
-                    published = await self.telegram.post_date(channel, post_id)
-                    if published is None or published <= last_command or message.date < published:
-                        unattributed.append(
-                            {
-                                "message_id": message.id,
-                                "url": url,
-                                "source_published_at": None
-                                if published is None
-                                else published.isoformat(),
-                            }
-                        )
-                        continue
-                    self._record(
-                        "post_delivered",
-                        native.observed(
-                            {
-                                "message_id": message.id,
-                                "delivered_at": message.date.isoformat(),
-                                "channel": channel,
-                                "post_id": post_id,
-                                "source_published_at": published.isoformat(),
-                                "last_command_at": last_command.isoformat(),
-                                "url": url,
-                            }
-                        ),
-                        "unsolicited product message; source post dated by its channel",
-                    )
-                    await self._release_session()
+                judged.add(message.id)
+                found, reason = await self._unsolicited_post(message, language, channels)
+                if found is not None:
+                    self._record("post_delivered", native.observed(found), provenance)
                     return
-            await self._release_session()
+                if reason is not None:
+                    unattributed.append({"message_id": message.id, "reason": reason})
+            if (
+                self.clock.wall() - started
+            ).total_seconds() >= self.config.deadlines.post_delivery_seconds:
+                break
             await self.clock.sleep(self.config.deadlines.poll_seconds)
         self._record(
             "post_delivered",
@@ -1185,8 +1382,39 @@ class SyntheticBuyer:
                     "unattributed": unattributed[-10:],
                 }
             ),
-            "unsolicited product message; source post dated by its channel",
+            provenance,
         )
+
+    async def _unsolicited_post(
+        self, message: Message, language: str, channels: list[str]
+    ) -> tuple[dict | None, str | None]:
+        """The delivered post *message* proves, or why it proves none (None: not a post)."""
+        links = probe.channel_post_links(message, channels)
+        if not links:
+            return None, None
+        if message.reply_to is not None:
+            return None, "a reply"
+        named = probe.event_channel(message, language)
+        if named is None:
+            return None, "not the post event's form"
+        for channel, post_id, url in links:
+            if channel != named:
+                continue
+            async with self._telegram("post-source"):
+                published = await self._tg.post_date(channel, post_id)
+            if published is None or message.date < published:
+                return None, "the channel does not date the post before its delivery"
+            return {
+                "message_id": message.id,
+                "delivered_at": message.date.isoformat(),
+                "channel": channel,
+                "post_id": post_id,
+                "source_published_at": published.isoformat(),
+                "url": url,
+                "form": f"tg-channels.post ({language})",
+                "prior_source_commands": [],
+            }, None
+        return None, "links a post of another channel than it names"
 
     async def _auth_finding(self) -> native.Finding:
         try:
@@ -1202,7 +1430,6 @@ class SyntheticBuyer:
         return native.observed(detail) if facts.stored_key_active else native.failed(detail)
 
     async def _platform(self) -> None:
-        await self._release_session()
         self._record(
             "auth_key_active", await self._auth_finding(), "platform auth admin product keys"
         )
@@ -1258,7 +1485,6 @@ class SyntheticBuyer:
             return
         peer = await self._product()
         _, replies = await self._command(peer, "/channels")
-        await self._release_session()
         self._record(
             "reply_en",
             native.observed(probe.texts(replies))
@@ -1273,32 +1499,43 @@ class SyntheticBuyer:
         )
 
     async def _freeze(self) -> None:
-        await self._release_session()
         self.store.conclude()
 
     # --- 7. cleanup -------------------------------------------------------------
 
-    async def cleanup(self) -> str:
-        """Tear down only the proven project, observe it archived, keep the verdict."""
+    async def _settle_cleanup(self) -> str:
+        """The teardown decision every entrypoint ends in, after the same reconciliation.
+
+        An intent still pending is reconciled once more, under the identity hold,
+        before anything is decided: a send that became visible is recorded, never
+        resent, and then lets the proven project be torn down; one still not found
+        refuses. The verdict is never touched here.
+        """
+        if self.store.record["cleanup"]["status"] == CleanupStatus.COMPLETED.value:
+            return CleanupStatus.COMPLETED.value
         ownership = self.store.record.get("ownership")
+        project_id = None if ownership is None else ownership["project_id"]
+        try:
+            self._validate_identity()
+            if self.store.record.get("pending"):
+                await self._reconcile()
+        except Stop as stop:
+            self.store.decide({"event": "reconciliation_refused", "reason": stop.reason})
+            if not self.store.record.get("pending"):
+                return self._refuse_cleanup(project_id, stop.reason)
+        except (TransportError, ApiRefused) as error:
+            self.store.decide({"event": "reconciliation_failed", "type": type(error).__name__})
+        if self.store.record.get("pending"):
+            return self._refuse_cleanup(project_id, "unresolved_action")
         if ownership is None:
             self.store.cleanup(
                 CleanupStatus.NOTHING_OWNED,
                 unproven_candidates=self._section("order").get("unproven_candidates", []),
             )
             return CleanupStatus.NOTHING_OWNED.value
-        if self.store.record["cleanup"]["status"] == CleanupStatus.COMPLETED.value:
-            return CleanupStatus.COMPLETED.value
-        project_id = ownership["project_id"]
         try:
-            self._validate_identity()
-            await self._rehydrate()
-            if self.store.record.get("pending"):
-                return self._refuse_cleanup(project_id, "unresolved_action")
             if not await self._still_owned(ownership):
                 return self._refuse_cleanup(project_id, "ownership_unproven")
-        except Stop as stop:
-            return self._refuse_cleanup(project_id, stop.reason)
         except ApiRefused as error:
             return self._refuse_cleanup(project_id, f"ownership_unreadable:{error.status}")
         except Exception as error:  # noqa: BLE001 - unproven ownership refuses, whatever the cause
@@ -1356,6 +1593,6 @@ class SyntheticBuyer:
         held = stored.get(TELEGRAM_TOKEN_KEY)
         return isinstance(held, str) and digest(held) == ownership["token_sha256"]
 
-    def _refuse_cleanup(self, project_id: str, reason: str) -> str:
+    def _refuse_cleanup(self, project_id: str | None, reason: str) -> str:
         self.store.cleanup(CleanupStatus.REFUSED, project_id=project_id, reason=reason)
         return CleanupStatus.REFUSED.value

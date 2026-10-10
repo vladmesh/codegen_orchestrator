@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from fakeredis.aioredis import FakeRedis
 import pytest
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
@@ -13,6 +14,12 @@ from shared.contracts.queues.qa import QAMessage
 from src.consumers import mechanical_telegram, qa
 from src.consumers._qa_redaction import QARunRedaction
 from src.consumers._qa_runner import QAResult
+from src.consumers._qa_telegram_lease import TelegramIdentityLease
+
+
+def free_lease():
+    """The QA account's identity lease, free: these cases are about the grant and probe."""
+    return TelegramIdentityLease(FakeRedis(), QA_TEST_TELEGRAM_ID)
 
 
 def message():
@@ -66,7 +73,7 @@ async def test_foreign_or_ended_native_grant_never_opens_a_session(monkeypatch, 
     monkeypatch.setattr(qa, "api_client", api)
     monkeypatch.setattr(mechanical_telegram, "run_fixed_probe", probe)
     result = await qa._run_mechanical_qa(
-        msg, ("notes", "unique"), {}, QAResult(passed=True), QARunRedaction()
+        msg, ("notes", "unique"), {}, QAResult(passed=True), QARunRedaction(), free_lease()
     )
     assert not result.passed
     assert json.loads(result.report)["phase"] == "grant"
@@ -98,6 +105,7 @@ async def test_fixed_probe_stays_inside_grant_and_retains_only_safe_identity(mon
         {"USER_IDENTITY_CAPABILITY": capability},
         QAResult(passed=True),
         QARunRedaction([capability]),
+        free_lease(),
     )
     assert result.passed
     assert api.get_temporary_access_grant.await_count == 2
@@ -133,6 +141,7 @@ async def test_data_conversation_uses_same_native_grant_and_runtime_settings_sec
         },
         QAResult(passed=True),
         QARunRedaction(["runtime-only-identity", "runtime-only-setting-secret"]),
+        free_lease(),
     )
     assert result.passed
     assert api.get_temporary_access_grant.await_count == 2
@@ -243,6 +252,7 @@ async def test_identity_refusal_keeps_its_class_and_reason_in_qa_evidence(monkey
         {"USER_IDENTITY_CAPABILITY": "cap"},
         QAResult(passed=True),
         QARunRedaction(),
+        free_lease(),
     )
 
     assert not result.passed

@@ -25,7 +25,7 @@ from typing import Any
 
 from src.consumers._qa_redaction import QARunRedaction
 
-EVIDENCE_SCHEMA_VERSION = 1
+EVIDENCE_SCHEMA_VERSION = 2
 EVIDENCE_FILE = "evidence.json"
 REPORT_FILE = "report.md"
 
@@ -50,7 +50,6 @@ class Phase(StrEnum):
     ORDER = "order"
     HANDOFF = "handoff"
     BUILD = "build"
-    QA_QUIET = "qa_quiet"
     PRODUCT_PROBE = "product_probe"
     PLATFORM = "platform"
     LANGUAGE = "language"
@@ -190,6 +189,17 @@ def new_record(*, operation_id: str, revision: str, handles: dict[str, str], now
     }
 
 
+class UnsupportedEvidence(ValueError):
+    """The retained record is of a schema this revision does not act on."""
+
+    def __init__(self, version: object) -> None:
+        super().__init__(
+            f"the retained evidence is schema version {version!r}; this revision acts only "
+            f"on version {EVIDENCE_SCHEMA_VERSION}"
+        )
+        self.version = version
+
+
 class EvidenceStore:
     """Atomic, redacted writes of one operation's record into its own directory."""
 
@@ -215,9 +225,15 @@ class EvidenceStore:
         return self.path.exists()
 
     def load(self) -> dict:
+        """The retained record; another schema version is refused and left untouched.
+
+        The driver keeps no reader for an earlier shape: such a record is refused
+        here, before anything acts on it, and stays on disk with every id it holds
+        for an operator to read.
+        """
         record = json.loads(self.path.read_text(encoding="utf-8"))
         if record.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
-            raise ValueError("the retained evidence has another schema version")
+            raise UnsupportedEvidence(record.get("schema_version"))
         self.record = record
         return record
 

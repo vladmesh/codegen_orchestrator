@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "operation_id": "s1487-buyer-001",
   "codegen_bot": {"username": "<codegen_bot_username>", "user_id": 1},
   "buyer": {"telegram_id": 8202532144},
@@ -15,7 +15,7 @@
     "conversation_turns": 20,
     "order_seconds": 3600,
     "build_seconds": 21600,
-    "qa_quiet_seconds": 3600,
+    "identity_wait_seconds": 3600,
     "probe_reply_seconds": 60,
     "post_delivery_seconds": 7200,
     "teardown_seconds": 1800,
@@ -30,6 +30,7 @@
     "api_hash": {"env": "TELETHON_API_HASH"},
     "session": {"env": "TELETHON_SESSION"}
   },
+  "identity_lease": {"redis_url": {"env": "REDIS_URL"}},
   "registration": {"credits_microusd": 20000000, "attempt_reservation_microusd": 2000000},
   "product_token": {
     "mode": "botfather",
