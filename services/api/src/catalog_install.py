@@ -7,18 +7,21 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from shared.contracts.dto.catalog_install import (
+    GLUE_REPAIR_AUTHOR,
+    SETTLEMENT_NOTE_KEY,
     CatalogInstall,
     InstallCommand,
     InstallDecision,
     InstallOperation,
+    product_glue_handoff,
 )
 from shared.contracts.dto.commit_publication import AttemptDisposition
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
-from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
 from shared.diagnostics import redact_diagnostic
-from shared.models import Repository, Run
+from shared.models import Repository, Run, Task, TaskEvent
 
 from .attempt_disposition import locked_disposition
 from .engineering_dispatch_admission import _lock_dispatch_tasks, _take_story_roster
@@ -26,9 +29,30 @@ from .engineering_dispatch_admission import _lock_dispatch_tasks, _take_story_ro
 INSTALL_LEASE = timedelta(minutes=15)
 
 
+def _glue_repair(task, operation, stage, payload, locked, cycle) -> str | None:  # noqa: PLR0913  # one locked refusal's rows
+    """The repair a glue refusal hands to engineering, once, or `None` to park it.
+
+    Only an untouched attempt of the current cycle whose answer is product glue is
+    repaired, and only once: a second glue answer after a repair is a person's.
+    """
+    preflight = operation.preflight
+    if (
+        preflight is None
+        or stage != "preflight"
+        or operation.head_sha is not None
+        or operation.cycle_started_at != cycle
+        or task.status != TaskStatus.IN_DEV.value
+    ):
+        return None
+    previous = locked.get(task.blocked_by_task_id) if task.blocked_by_task_id else None
+    if previous is not None and previous.created_by == GLUE_REPAIR_AUTHOR:
+        return None
+    return product_glue_handoff(preflight, payload)
+
+
 async def install_command(task_id, command: InstallCommand, db) -> InstallDecision:  # noqa: C901, PLR0911, PLR0912, PLR0915  # finite owned settlement under one lock ladder
     from .routers._story_helpers import _do_transition, _get_story_for_update, _record_story_failure
-    from .routers._task_helpers import create_status_event, validate_transition
+    from .routers._task_helpers import create_status_event, generate_id, validate_transition
     from .routers.projects_guards import load_locked_project
 
     task, locked, _, story_id = await _lock_dispatch_tasks(task_id, db)
@@ -88,6 +112,62 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
             _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
         return await save("settled")
 
+    async def hand_off_glue(description):
+        """One concrete product repair, then this same INSTALL again, on the repaired head.
+
+        Nothing was installed: the operation settles as refused at preflight, its typed
+        answer is kept as the task's settlement note, and the task waits behind the
+        repair. Its coverage and the work chained after it are unchanged, so the module
+        still precedes the rest of the product glue. The next admission is a new
+        operation in a new checkout, and the kit decides again.
+        """
+        operation.state, operation.stage = "refused", "preflight"
+        operation.detail = redact_diagnostic(command.detail or "glue_required")[:2000]
+        repair = Task(
+            id=generate_id(),
+            project_id=task.project_id,
+            type=TaskType.FIX.value,
+            title=f"Product glue before installing {payload.package.name}"[:255],
+            description=description,
+            status=TaskStatus.TODO.value,
+            priority=task.priority,
+            acceptance_criteria=(
+                "The kit's read-only check-install of the same release reports no product "
+                "conflict on the repaired story head."
+            ),
+            current_iteration=0,
+            max_iterations=3,
+            created_by=GLUE_REPAIR_AUTHOR,
+            repository_id=task.repository_id,
+            story_id=task.story_id,
+            blocked_by_task_id=task.blocked_by_task_id,
+            # The confirmed plan already admitted this install; its concrete repair is
+            # part of carrying it out, not new work to plan.
+            dispatch_admitted=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(repair)
+        # The repair row exists before the install points at it.
+        await db.flush()
+        db.add(
+            TaskEvent(
+                task_id=task.id,
+                event_type=TaskEventType.NOTE.value,
+                actor="catalog_install",
+                details={
+                    SETTLEMENT_NOTE_KEY: operation.model_dump(mode="json"),
+                    "glue_repair_task_id": repair.id,
+                },
+            )
+        )
+        for status in (TaskStatus.BLOCKED, TaskStatus.BACKLOG, TaskStatus.TODO):
+            await move(status)
+        task.blocked_by_task_id = repair.id
+        task.install_operation = None
+        await db.commit()
+        return InstallDecision(outcome="settled", operation=operation, install=payload)
+
     if operation is not None:
         if command.action != "admit" and command.operation_id != operation.id:
             return refuse("stale_operation")
@@ -101,12 +181,19 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
         ):
             if command.head_sha:
                 operation.head_sha = command.head_sha
+            if command.preflight is not None:
+                # The kit's typed answer — glue, incompatible or untrusted — stays with
+                # the operation it refused, for the handoff and the person who reviews it.
+                operation.preflight = command.preflight
+            stage = command.stage or operation.stage
+            repair = _glue_repair(task, operation, stage, payload, locked, cycle)
+            if repair is not None:
+                return await hand_off_glue(repair)
             return await park(
-                command.stage or operation.stage,
+                stage,
                 command.detail or "Install refused.",
                 "recovery_required"
-                if operation.head_sha
-                or (command.stage or operation.stage) not in {"preflight", "claimed"}
+                if operation.head_sha or stage not in {"claimed", "prepare", "preflight"}
                 else "refused",
                 park_story=operation.cycle_started_at == cycle,
             )
@@ -218,6 +305,17 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
         operation.verification = proof
     if command.action == "checkpoint":
         operation.stage = command.stage or operation.stage
+        if command.checkout:
+            # The one attempt checkout this operation may run in is derived from it.
+            if command.checkout != f"{operation.repository_id}/{operation.id}":
+                return refuse("checkout_unowned")
+            operation.checkout = command.checkout
+        if command.preflight is not None:
+            if operation.preflight is not None and operation.preflight != command.preflight:
+                return refuse("preflight_changed")
+            if command.preflight.provenance_mismatch(payload) is not None:
+                return refuse("preflight_provenance_mismatch")
+            operation.preflight = command.preflight
         if command.base_sha:
             if operation.base_sha and operation.base_sha != command.base_sha:
                 return refuse("base_changed")
@@ -233,6 +331,14 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
             or operation.verification is None
         ):
             return refuse("head_unverified")
+        if (
+            operation.preflight is None
+            or operation.preflight.status == "incompatible"
+            or operation.preflight.outstanding_glue(payload)
+        ):
+            # Only a release the kit admitted on this product, with no product glue
+            # outstanding, is an installation; anything else was never installed.
+            return refuse("preflight_unverified")
         operation.state, operation.stage = "published", "published"
         for status in (TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE):
             await move(status)

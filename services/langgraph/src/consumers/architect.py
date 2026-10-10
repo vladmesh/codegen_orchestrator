@@ -1063,6 +1063,36 @@ async def _await_scaffold_or_stop(
     return project, live_work_settled(result)
 
 
+async def _plans_stored_capabilities(story_id: str) -> bool:
+    """Whether the story's confirmed brief carries a capability plan to plan first."""
+    brief = await api_client.get_product_brief_by_story(story_id)
+    return (
+        brief is not None
+        and brief.confirmed_at is not None
+        and brief.content.capabilities is not None
+    )
+
+
+async def _await_scaffold_before_model(
+    msg: ArchitectMessage, planning: _PlanningAttempt | None, log
+) -> dict | None:
+    """A model plans product work on a scaffolded product only.
+
+    A capability plan on a draft project has planned its installs already; whatever a
+    model adds after them waits here for the scaffold, under the planning claim, exactly
+    as an ordinary story waits before planning. `None` means the product is scaffolded.
+    """
+    project = await api_client.get_project(msg.project_id)
+    if project is None or project.status != ProjectStatus.DRAFT:
+        return None
+    heartbeat = _planning_heartbeat(planning, log) if planning else nullcontext()
+    async with heartbeat:
+        _, result = await _await_scaffold_or_stop(msg, project, log)
+    if result is not None and planning is not None:
+        await _release_planning_attempt(planning, log)
+    return result
+
+
 async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single architect job by running the Architect ReAct agent.
 
@@ -1124,10 +1154,18 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         log.warning("architect_project_not_found", project_id=msg.project_id)
         return live_work_settled({"status": "skipped", "error": "project not found"})
 
-    # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
-    project, scaffold_result = await _await_scaffold_or_stop(msg, project, log)
-    if scaffold_result is not None:
-        return scaffold_result
+    # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing, unless the story
+    # plans a confirmed capability plan: its installs are planned on the draft now and
+    # wait for the scaffold durably, at install admission; `_plan` waits before any model.
+    scaffold_deferred = project.status == ProjectStatus.DRAFT and (
+        await _plans_stored_capabilities(msg.story_id)
+    )
+    if scaffold_deferred:
+        log.info("architect_capability_plan_on_draft")
+    else:
+        project, scaffold_result = await _await_scaffold_or_stop(msg, project, log)
+        if scaffold_result is not None:
+            return scaffold_result
 
     settings = get_settings()
 
@@ -1156,7 +1194,9 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             )
             return _failed_result(error, recorded)
 
-        return await _plan(msg, redis, story, channels, settings, usage, log)
+        return await _plan(
+            msg, redis, story, channels, settings, usage, log, scaffold_deferred=scaffold_deferred
+        )
 
 
 def _catalog_dependent(tasks: list[TaskDTO]) -> bool:
@@ -1312,7 +1352,7 @@ async def _plan_replanned_install(  # noqa: PLR0913 — one replanned cycle's wh
     return None
 
 
-async def _plan(  # noqa: PLR0913 — one planning run's inputs
+async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one planning run, in order
     msg: ArchitectMessage,
     redis: RedisStreamClient,
     story: StoryDTO,
@@ -1320,8 +1360,13 @@ async def _plan(  # noqa: PLR0913 — one planning run's inputs
     settings: Settings,
     usage: ChannelUsage,
     log,
+    *,
+    scaffold_deferred: bool = False,
 ) -> dict:
     """Plan the story; `usage` names the LLM channels it used.
+
+    `scaffold_deferred` says the project may still be a draft: its stored capability
+    plan is planned at once, and anything a model plans after it waits for the scaffold.
 
     What gets planned is decided here, once, before any graph runs: a catalog
     story whose catalog cannot be read is not planned now, and an operator-
@@ -1391,6 +1436,10 @@ async def _plan(  # noqa: PLR0913 — one planning run's inputs
                 # Every requirement is a module the stored plan installs: nothing is left
                 # for a model to decide, so none is asked.
                 return await _finish_plan(msg, story_status, usage, planning, redis, log)
+        if scaffold_deferred:
+            scaffold_result = await _await_scaffold_before_model(msg, planning, log)
+            if scaffold_result is not None:
+                return scaffold_result
         alerts = LLMAlerts.from_settings(settings, redis=redis.redis)
         graph = create_architect_graph(
             build_agent_llm(LLMAgent.ARCHITECT, channels, settings, alerts=alerts)

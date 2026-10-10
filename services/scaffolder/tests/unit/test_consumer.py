@@ -11,7 +11,7 @@ from structlog.testing import capture_logs
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.story_failure import StoryFailureCode
-from shared.contracts.dto.task import TaskDTO
+from shared.contracts.dto.task import TaskDTO, TaskType
 from src.consumer import _begin_scaffold_work, _finish_scaffold_work, process_scaffold_job
 from src.scaffold import ScaffoldResult
 
@@ -690,6 +690,28 @@ class TestScaffoldFailureBlastRadius:
         await _run_failed_scaffold(valid_job_data, mock_redis, mock_api, mock_github, "boom")
 
         assert [c.args[0] for c in mock_api.fail_story.await_args_list] == ["s-reopened"]
+
+    @pytest.mark.asyncio
+    async def test_a_draft_capability_plan_waiting_on_install_admission_is_stopped(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """INSTALL tasks planned on the draft never ran; an admitted operation did."""
+        mock_api.get_stories_by_project.return_value = [
+            _make_story("s-draft-plan", StoryStatus.IN_PROGRESS),
+            _make_story("s-install-admitted", StoryStatus.IN_PROGRESS),
+        ]
+        waiting = _make_task("t-install", "s-draft-plan").model_copy(
+            update={"type": TaskType.INSTALL}
+        )
+        admitted = _make_task("t-admitted", "s-install-admitted").model_copy(
+            update={"type": TaskType.INSTALL, "install_operation": MagicMock()}
+        )
+        tasks = {"s-draft-plan": [waiting], "s-install-admitted": [admitted]}
+        mock_api.get_tasks_by_story.side_effect = lambda story_id: tasks[story_id]
+
+        await _run_failed_scaffold(valid_job_data, mock_redis, mock_api, mock_github, "boom")
+
+        assert [c.args[0] for c in mock_api.fail_story.await_args_list] == ["s-draft-plan"]
 
     @pytest.mark.asyncio
     async def test_successful_scaffold_fails_no_story(

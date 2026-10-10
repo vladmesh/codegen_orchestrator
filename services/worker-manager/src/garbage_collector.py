@@ -20,6 +20,7 @@ from shared.worker_compose import (
     worker_id_of_compose_project,
 )
 from shared.workspace_preservation import (
+    CATALOG_INSTALL_ATTEMPTS,
     CATALOG_INSTALL_LOCKS,
     acquire_install_workspace_lock,
     has_preserved_work,
@@ -339,9 +340,11 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
             continue
 
         for entry in entries:
-            if entry in {".compose-plans", CATALOG_INSTALL_LOCKS} or entry.startswith(
-                workspace_mod.QA_WORKSPACE_PREFIX
-            ):
+            if entry in {
+                ".compose-plans",
+                CATALOG_INSTALL_LOCKS,
+                CATALOG_INSTALL_ATTEMPTS,
+            } or entry.startswith(workspace_mod.QA_WORKSPACE_PREFIX):
                 continue
             if entry in live_repo_ids:
                 continue

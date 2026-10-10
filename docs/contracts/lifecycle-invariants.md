@@ -511,7 +511,8 @@ the profile that was originally queued.
 ## Mechanical catalog operation
 
 Scaffolder install owns the existing project teardown/execution lease, one GitHub
-App client, a durable operation claim/heartbeat and a workspace lock. Concurrent
+App client, a durable operation claim/heartbeat and a workspace lock, and runs in the
+operation's own attempt checkout, never in the shared workspace. Concurrent
 deliveries cannot execute the same operation; published/refused/recovery records
 are terminal to queue replay. Every mutation checks the API's stop/current-cycle
 fence; cancellation kills owned subprocess groups and records retained work.

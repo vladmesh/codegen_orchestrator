@@ -23,6 +23,7 @@ from shared.clients.github import (
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode, in_work_cycle
+from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.diagnostics import redact_diagnostic, safe_validation_errors
 from shared.log_config import setup_logging
@@ -322,12 +323,30 @@ async def _fail_stories_waiting_on_scaffold(msg, error: str, api, log) -> None:
 
 
 async def _waits_only_on_scaffold(story, api) -> bool:
+    """A created story, or an in-progress one whose current cycle built nothing yet.
+
+    The INSTALL tasks a confirmed capability plan creates on the draft project wait for
+    this scaffold at install admission; never admitted, they are not built work, so a
+    failed scaffold stops their story instead of leaving them to wait forever.
+    """
     if story.status == StoryStatus.CREATED:
         return True
     if story.status != StoryStatus.IN_PROGRESS:
         return False
     tasks = await api.get_tasks_by_story(story.id)
-    return not any(in_work_cycle(task.created_at, story.reopened_at, task.status) for task in tasks)
+    return not any(
+        in_work_cycle(task.created_at, story.reopened_at, task.status)
+        and not _install_awaiting_scaffold(task)
+        for task in tasks
+    )
+
+
+def _install_awaiting_scaffold(task) -> bool:
+    return (
+        task.type == TaskType.INSTALL
+        and task.status == TaskStatus.TODO
+        and task.install_operation is None
+    )
 
 
 async def _verify_repo_auto_merge(msg, github, api, org, project_config, log) -> None:
@@ -478,6 +497,8 @@ async def _process_install_mode(msg, repo_full_name, github, github_token, api, 
             "catalog_install_published",
             operation_id=msg.operation_id,
             head_sha=result.head_sha,
+            checkout=result.checkout,
+            checkout_removed=result.checkout_removed,
             execution_stages=result.stages,
         )
         return {"status": "success", "head_sha": result.head_sha, "operation_id": msg.operation_id}
@@ -500,6 +521,7 @@ async def _process_install_mode(msg, repo_full_name, github, github_token, api, 
                 head_sha=error.head_sha,
                 base_sha=error.base_sha,
                 detail=str(error),
+                preflight=error.preflight,
             )
         )
         log.warning("catalog_install_refused", stage=error.stage, operation_id=msg.operation_id)

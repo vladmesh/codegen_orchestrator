@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.contracts.dto.catalog_install import InstallDecision, InstallOperation
+from shared.contracts.dto.catalog_install import (
+    InstallDecision,
+    InstallOperation,
+    InstallPreflight,
+)
 from src.consumer import _process_install_mode
 from tests.unit.test_install_executor import message
 
@@ -96,6 +100,8 @@ async def test_publication_retains_native_stages_for_redacted_stand_proof():
             return_value=SimpleNamespace(
                 head_sha="a" * 40,
                 stages=stages,
+                checkout="repo-1/install-1",
+                checkout_removed=True,
             )
         ),
     ):
@@ -104,4 +110,27 @@ async def test_publication_retains_native_stages_for_redacted_stand_proof():
         )
     assert result["status"] == "success"
     assert log.info.call_args.kwargs["execution_stages"] == stages
+    assert log.info.call_args.kwargs["checkout"] == "repo-1/install-1"
     assert "synthetic-github" not in str(log.info.call_args)
+
+
+@pytest.mark.asyncio
+async def test_a_glue_answer_is_saved_at_its_operation_as_a_typed_refusal():
+    from src.install import InstallExecutionError
+    from tests.unit.test_install_executor import check_install, glue_item
+
+    msg = message()
+    api = AsyncMock()
+    api.catalog_install_command.side_effect = [decision(msg), InstallDecision(outcome="settled")]
+    preflight = InstallPreflight.model_validate(
+        check_install("glue", [glue_item("command_conflict", symbol="handle_remind")])
+    )
+    refusal = InstallExecutionError(
+        "preflight", "glue_required: command_conflict", base_sha="b" * 40, preflight=preflight
+    )
+    with patch("src.install.run_install", AsyncMock(side_effect=refusal)):
+        result = await consume(msg, api)
+    assert result == {"status": "failed", "stage": "preflight", "operation_id": msg.operation_id}
+    refused = api.catalog_install_command.call_args.args[1]
+    assert refused.action == "refuse" and refused.stage == "preflight"
+    assert refused.preflight == preflight and refused.base_sha == "b" * 40

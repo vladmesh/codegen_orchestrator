@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 import structlog
 
-from shared.contracts.dto.product_brief import InitialSetting, ProductBriefRead, SettingScope
+from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
@@ -32,6 +32,7 @@ from shared.redis import RedisStreamClient
 from ..clients.api import api_client
 from ..clients.product_settings import GeneratedServiceSettingsClient
 from ..clients.users_grant import GeneratedServiceGrantClient
+from ..confirmed_settings import confirmed_product_settings
 from ..deploy_fence import DeployFence, DeployWrite
 from ._events import publish_callback_event
 from ._live_work import live_work_settled, live_work_unsettled
@@ -397,21 +398,6 @@ async def _apply_temporary_access_operation(
     return proof.failure.value if proof.failure is not None else "unverified"
 
 
-async def _confirmed_settings(brief: ProductBriefRead) -> list[InitialSetting]:
-    """The confirmed values a product starts with: the brief's own settings, then the
-    capability answers its stored plan maps to exact product keys."""
-    settings = list(brief.content.initial_settings)
-    if brief.content.capabilities is None:
-        return settings
-    plan = await api_client.get_capability_plan(brief.id)
-    if plan is None:
-        raise RuntimeError(f"Product Brief {brief.id} names capabilities but has no plan")
-    return settings + [
-        InitialSetting(key=item.key, scope=SettingScope.PRODUCT, value=item.value)
-        for item in plan.settings
-    ]
-
-
 async def _seed_initial_settings(
     *,
     task_id: str,
@@ -448,7 +434,9 @@ async def _seed_initial_settings(
         route = "project"
         brief = await api_client.get_project_initial_settings_brief(project_id)
     settings = (
-        [] if brief is None or brief.confirmed_at is None else await _confirmed_settings(brief)
+        []
+        if brief is None or brief.confirmed_at is None
+        else await confirmed_product_settings(brief, api_client)
     )
     if not settings:
         logger.info("deploy_settings_seed_nothing_to_seed", task_id=task_id, route=route)

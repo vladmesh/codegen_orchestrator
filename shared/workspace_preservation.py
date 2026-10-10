@@ -8,6 +8,9 @@ import subprocess
 from shared.git_snapshot import SnapshotRefusal, object_snapshot
 
 CATALOG_INSTALL_LOCKS = ".catalog-install-locks"
+#: `<repository id>/<operation id>`: one private checkout per catalog install attempt,
+#: registered as a worktree of its repository's workspace. The collector never sweeps it.
+CATALOG_INSTALL_ATTEMPTS = ".catalog-install-attempts"
 
 
 def acquire_install_workspace_lock(workspace: Path):
@@ -29,6 +32,10 @@ def acquire_install_workspace_lock(workspace: Path):
 def has_preserved_work(workspace: Path) -> bool:
     try:
         if workspace.lstat().st_uid != os.getuid():
+            return True
+        # A retained install attempt is a worktree of this repository; its evidence needs it.
+        worktrees = workspace / ".git" / "worktrees"
+        if worktrees.is_dir() and any(worktrees.iterdir()):
             return True
         with object_snapshot(workspace) as (clean, env, source):
             result = subprocess.run(  # noqa: S603

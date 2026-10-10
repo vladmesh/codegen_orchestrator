@@ -428,13 +428,24 @@ reader, timer post delivery, the coexistence reminder and the RU/EN causal probe
 catalog is the `shared/catalog_activation.yaml` commit, fetched by git and checked against its digests
 before and after the installs, with the real default branch's HEAD recorded beside it; the payloads
 are the INSTALL tasks that `tests/runner/production_plan.py` persisted through the production path —
-the PO's preview, brief and confirmation tools, the API image and its database
-(`tests/runner/compose.orchestrator.yml`), the stored plan and the Architect's first planning
-attempt, with no model; its first request names no capability id, so its catalog phrase alone must
-resolve the module. `tests/runner/verify_evidence.py` requires the passed, SHA-bound evidence:
-the kit's published-release checks, including the grant/revoke/grant access acknowledgment cycle,
-plus that every route names the capability its stored plan installs and that stored plan, persisted
-task and installed payload are one closure at the activated commit. The kit's own reusable workflow at that commit cannot prove this
+a new owner's draft order from the PO's `create_project` tool (pending repository, nothing
+scaffolded), the PO's preview, brief and confirmation tools with the language and a nonempty list of
+initial channels answered, the API image and its database (`tests/runner/compose.orchestrator.yml`),
+the stored plan and the Architect's first planning attempt on that draft, with no model; its first
+request names no capability id, so its catalog phrase alone must resolve the module, and install
+admission must refuse `workspace_not_ready` before the scaffold. Around the harness's unchanged
+stages the adapter records the harness's fresh scaffold through the scaffolder's own completion
+writer, admits and claims each install through the API and runs it through the scaffolder's install
+consumer in the operation's own attempt checkout under the kit's `check-install`, then follows the
+published head in the harness's checkout; before the scenario,
+`tests/runner/production_settings.py` writes the confirmed answers through the production settings
+client and reads them back with QA's own pre-judgement check. `tests/runner/verify_evidence.py`
+requires the passed, SHA-bound evidence: the kit's published-release checks, including the
+grant/revoke/grant access acknowledgment cycle, plus that every route names the capability its
+stored plan installs and that stored plan, persisted task and installed payload are one closure at
+the activated commit, the draft order and its admission wait, the scaffolder's completion record,
+one published operation per package with its own removed checkout and an admitted preflight of the
+exact release, and every confirmed setting written and read back, initial channels included. The kit's own reusable workflow at that commit cannot prove this
 candidate: its selection reads the catalog at `HEAD`, which this orchestrator refuses to plan an
 install from. The read-only `PLATFORM_SERVICES_DEPLOY_KEY` is used only for a same-repository pull
 request or a main push, and checkouts keep no credentials.

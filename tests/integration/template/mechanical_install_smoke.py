@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "services/scaffolder"))
 from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
 from shared.contracts.queues.scaffold import ScaffoldMessage  # noqa: E402
 from shared.diagnostics import redact_diagnostic  # noqa: E402
+from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS  # noqa: E402
 from src import install  # noqa: E402
 
 
@@ -268,6 +269,21 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
                 install._run_cmd = actual_command
             artifact["execution"] = asdict(result)
             artifact["selection"] = payload
+            # The executor ran in its own attempt checkout, admitted by the kit's preflight,
+            # and removed it once published; the workspace was never its working tree.
+            assert result.checkout == f"{product.name}/{message.operation_id}"
+            assert result.checkout_removed
+            assert not (base / CATALOG_INSTALL_ATTEMPTS / result.checkout).exists()
+            assert result.preflight["status"] in {"mechanical", "glue"}
+            assert result.preflight["target"]["catalog_ref"] == payload["catalog"]["commit"]
+            artifact["attempt"] = {
+                "checkout": result.checkout,
+                "removed_after_publication": result.checkout_removed,
+                "preflight": result.preflight,
+                "workspace_head_unchanged": run(["git", "rev-parse", "HEAD"], product)
+                == result.base_sha,
+            }
+            assert artifact["attempt"]["workspace_head_unchanged"]
             assert not canary_marker.exists()
             assert run(["git", "config", "--get", "core.hooksPath"], product) == ".githooks"
             artifact["product_hooks"] = {
@@ -292,6 +308,21 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
                 == result.head_sha
             )
             assert run(["git", "status", "--porcelain"], product) == ""
+            # This checkout observes the published story head with the product's own
+            # environment preparation, as any later reader of the story would.
+            run(
+                [
+                    "git",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "checkout",
+                    "-q",
+                    "--detach",
+                    result.head_sha,
+                ],
+                product,
+            )
+            run(["sh", "scripts/prepare-env.sh", "root", "backend", "tg_bot"], product, product_env)
             run(notes_test, product, product_env)
             artifact["retained_notes_scenarios"] = {"registered": True, "save": True, "list": True}
             # Reuse the released kit's fake-backend scenario corpus, unchanged,

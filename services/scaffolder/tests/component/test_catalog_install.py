@@ -9,9 +9,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS, has_preserved_work
 from src.install import InstallExecutionError, run_install
 from src.scaffold import _run_cmd
-from tests.unit.test_install_executor import message
+from tests.unit.test_install_executor import check_install, glue_item, message
 
 # Every test here starts processes: CI runs this file, the host profile skips it.
 pytestmark = pytest.mark.subprocess
@@ -62,10 +63,13 @@ def product(tmp_path, monkeypatch):
             return 0, "https://github.com/owner/notes", ""
         if Path(args[0]).name == "python":
             return 0, json.dumps(proof), ""
+        if Path(args[0]).name == "kit" and args[1] == "check-install":
+            return 0, json.dumps(check_install()), ""
         if Path(args[0]).name == "kit":
-            (root / "installed.txt").write_text("released closure\n")
+            with (Path(kwargs["cwd"]) / "installed.txt").open("a") as installed:
+                installed.write("released closure\n")
             return 0, "", ""
-        if args[0] == "make" or Path(args[0]).name == "mypy":
+        if args[0] in {"make", "sh"} or Path(args[0]).name == "mypy":
             return 0, "", ""
         return await _run_cmd(args, **kwargs)
 
@@ -77,14 +81,18 @@ def git_operation(args):
     return ["git", *args[3:]] if args[:3] == ["git", "-c", "core.hooksPath=/dev/null"] else args
 
 
-async def execute(product, tmp_path, fence=None):
+async def execute(product, tmp_path, fence=None, operation="install-1"):
     return await run_install(
-        message(),
+        message().model_copy(update={"operation_id": operation}),
         SimpleNamespace(workspace_base_path=str(tmp_path)),
         "https://github.com/owner/notes",
         "fake-token",
         fence or AsyncMock(),
     )
+
+
+def attempt(tmp_path, operation="install-1"):
+    return tmp_path / CATALOG_INSTALL_ATTEMPTS / "repo-1" / operation
 
 
 @pytest.mark.asyncio
@@ -94,13 +102,22 @@ async def test_fixed_closure_preserves_notes_and_publishes_verified_exact_head(p
     fence = AsyncMock()
     result = await execute(product, tmp_path, fence)
     assert git(remote, "rev-parse", "refs/heads/story/story-1") == result.head_sha
+    installed = git(remote, "show", f"{result.head_sha}:installed.txt")
+    assert installed.splitlines() == ["released closure"] * 3  # add, add, bind
     assert git(root, "status", "--porcelain") == ""
     assert (root / "services/tg_bot/src/handlers/notes.py").read_bytes() == notes
-    kit = str(root / ".venv/bin/kit")
+    # The published attempt's checkout is gone, after every command of it returned.
+    assert result.checkout == "repo-1/install-1" and result.checkout_removed
+    assert not attempt(tmp_path).exists()
+    assert "install-1" not in git(root, "worktree", "list")
+    checkout = attempt(tmp_path).resolve()
+    kit = str(checkout / ".venv/bin/kit")
     # Every component is added from the payload's pinned catalog commit, never the default.
     pinned = ["--catalog-source", "https://github.com/vladmesh/codegen-product-kit.git"]
     pinned += ["--catalog-ref", "d" * 40]
     assert [args for args in calls if args[0] == kit] == [
+        [kit, "check-install", "reminders", "--json", *pinned, "--version", "0.5.0"]
+        + ["--product-root", str(checkout)],
         [kit, "add", "reminders", *pinned],
         [kit, "add", "textparse", *pinned],
         [kit, "bind", "reminders", "--default"],
@@ -111,7 +128,7 @@ async def test_fixed_closure_preserves_notes_and_publishes_verified_exact_head(p
         ["make", "tests", "REDIS_URL=redis://redis.invalid:6379"],
     ]
     assert [args for args in calls if Path(args[0]).name == "mypy"] == [
-        [str(root / f"services/{service}/.venv/bin/mypy"), f"services/{service}"]
+        [str(checkout / f"services/{service}/.venv/bin/mypy"), f"services/{service}"]
         for service in ("backend", "tg_bot")
     ]
     published = fence.call_args.args[0]
@@ -132,7 +149,7 @@ async def test_lost_push_response_is_read_back_without_duplicate_commit(
     monkeypatch.setattr("src.install._run_cmd", lost)
     result = await execute(product, tmp_path)
     assert git(remote, "rev-parse", "refs/heads/story/story-1") == result.head_sha
-    assert git(root, "rev-list", "--count", "HEAD") == "2"
+    assert git(remote, "rev-list", "--count", "refs/heads/story/story-1") == "2"
 
 
 @pytest.mark.asyncio
@@ -147,9 +164,12 @@ async def test_unknown_push_retains_commit_for_operator_recovery(product, tmp_pa
     monkeypatch.setattr("src.install._run_cmd", failed)
     with pytest.raises(InstallExecutionError, match="push_outcome_unknown") as caught:
         await execute(product, tmp_path)
-    assert caught.value.head_sha == git(root, "rev-parse", "HEAD")
+    # The exact unpublished head stays in the operation's own checkout, for review.
+    assert caught.value.head_sha == git(attempt(tmp_path), "rev-parse", "HEAD")
     assert "fake-token" not in str(caught.value)
+    assert git(attempt(tmp_path), "status", "--porcelain") == ""
     assert git(root, "status", "--porcelain") == ""
+    assert has_preserved_work(root)
 
 
 @pytest.mark.asyncio
@@ -210,7 +230,8 @@ async def test_owned_bot_application_mutation_refuses_publication(
     async def mutate(args, **kwargs):
         result = await original(args, **kwargs)
         if args == ["make", "generate-from-spec"]:
-            (root / f"services/tg_bot/src/{filename}").write_text("overwritten = True\n")
+            checkout = Path(kwargs["cwd"])
+            (checkout / f"services/tg_bot/src/{filename}").write_text("overwritten = True\n")
         return result
 
     monkeypatch.setattr("src.install._run_cmd", mutate)
@@ -220,16 +241,128 @@ async def test_owned_bot_application_mutation_refuses_publication(
 
 
 @pytest.mark.asyncio
-async def test_ignored_copier_rejection_refuses_before_branch_or_product_mutation(
-    product, tmp_path
-):
-    root, _, calls, _ = product
+async def test_a_dirty_shared_workspace_is_neither_cleaned_nor_overwritten(product, tmp_path):
+    """Worker leftovers stay exactly as they are; the install runs in its own checkout."""
+    root, remote, calls, _ = product
     (root / "custom.py.rej").write_text("unresolved update\n")
-    base = git(root, "rev-parse", "HEAD")
+    (root / "services/tg_bot/src/menu.py").write_text("commands = ['edited']\n")
+    git(root, "switch", "-c", "story/story-1")
+    (root / "unpublished.py").write_text("work\n")
+    git(root, "add", "unpublished.py")
+    git(root, "commit", "-m", "Unpublished local story work")
+    git(root, "switch", "-q", "main")
+    (root / "services/tg_bot/src/menu.py").write_text("commands = ['edited']\n")
+    local = git(root, "rev-parse", "refs/heads/story/story-1")
+    before = {
+        path: (root / path).read_bytes()
+        for path in ("custom.py.rej", "services/tg_bot/src/menu.py")
+    }
+    result = await execute(product, tmp_path)
+    assert {path: (root / path).read_bytes() for path in before} == before
+    assert git(root, "rev-parse", "refs/heads/story/story-1") == local
+    # The published story starts at the owned remote base, not at the unpublished branch.
+    assert git(remote, "rev-parse", f"{result.head_sha}^") == git(remote, "rev-parse", "main")
+    assert result.base_sha == git(remote, "rev-parse", "main")
+
+
+@pytest.mark.asyncio
+async def test_a_tracked_copier_rejection_refuses_before_any_kit_command(product, tmp_path):
+    root, remote, calls, _ = product
+    (root / "custom.py.rej").write_text("unresolved update\n")
+    git(root, "add", "-f", "custom.py.rej")
+    git(root, "commit", "-m", "Rejection committed")
+    git(root, "push", "origin", "main")
     with pytest.raises(InstallExecutionError, match="update_unresolved"):
         await execute(product, tmp_path)
-    assert git(root, "rev-parse", "HEAD") == base
     assert not any(Path(args[0]).name == "kit" for args in calls)
+    assert git(remote, "ls-remote", str(remote), "refs/heads/story/story-1") == ""
+
+
+@pytest.mark.asyncio
+async def test_a_second_operation_starts_at_the_published_story_head_in_a_new_checkout(
+    product, tmp_path
+):
+    _, remote, _, _ = product
+    first = await execute(product, tmp_path, operation="install-1")
+    second = await execute(product, tmp_path, operation="install-2")
+    assert second.base_sha == first.head_sha
+    assert git(remote, "rev-parse", "refs/heads/story/story-1") == second.head_sha
+    assert second.checkout == "repo-1/install-2" != first.checkout
+
+
+@pytest.mark.asyncio
+async def test_glue_refusal_retains_the_untouched_attempt_and_a_new_attempt_is_fresh(
+    product, tmp_path, monkeypatch
+):
+    root, remote, calls, original = product
+    answer = check_install("glue", [glue_item("command_conflict", symbol="handle_remind")])
+
+    async def glue(args, **kwargs):
+        if Path(args[0]).name == "kit" and args[1] == "check-install":
+            return 3, json.dumps(answer), ""
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr("src.install._run_cmd", glue)
+    with pytest.raises(InstallExecutionError, match="glue_required") as refused:
+        await execute(product, tmp_path, operation="install-1")
+    assert refused.value.preflight.status == "glue"
+    retained = attempt(tmp_path, "install-1")
+    assert retained.is_dir() and git(retained, "status", "--porcelain") == ""
+    assert not any(Path(args[0]).name == "kit" and args[1] == "add" for args in calls)
+    # Redelivery of the same operation never runs in, or reuses, its retained checkout.
+    with pytest.raises(InstallExecutionError, match="attempt_exists"):
+        await execute(product, tmp_path, operation="install-1")
+    monkeypatch.setattr("src.install._run_cmd", original)
+    result = await execute(product, tmp_path, operation="install-2")
+    assert result.checkout == "repo-1/install-2"
+    assert retained.is_dir() and git(remote, "rev-parse", "refs/heads/story/story-1")
+
+
+@pytest.mark.asyncio
+async def test_cancellation_retains_the_attempt_and_releases_the_workspace(
+    product, tmp_path, monkeypatch
+):
+    root, _, _, original = product
+    started = asyncio.Event()
+
+    async def hang(args, **kwargs):
+        if args[:2] == ["make", "generate-from-spec"]:
+            started.set()
+            await asyncio.sleep(30)
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr("src.install._run_cmd", hang)
+    running = asyncio.create_task(execute(product, tmp_path))
+    await asyncio.wait_for(started.wait(), 10)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert (attempt(tmp_path) / "installed.txt").is_file()
+    assert has_preserved_work(root)
+    # The workspace lock is free again: another operation may claim the repository.
+    monkeypatch.setattr("src.install._run_cmd", original)
+    assert (await execute(product, tmp_path, operation="install-2")).checkout_removed
+
+
+@pytest.mark.asyncio
+async def test_concurrent_attempts_on_one_repository_have_one_writer(
+    product, tmp_path, monkeypatch
+):
+    _, _, _, original = product
+    gate = asyncio.Event()
+
+    async def slow(args, **kwargs):
+        if args[:2] == ["make", "generate-from-spec"]:
+            await gate.wait()
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr("src.install._run_cmd", slow)
+    first = asyncio.create_task(execute(product, tmp_path, operation="install-1"))
+    await asyncio.sleep(0.5)
+    with pytest.raises(InstallExecutionError, match="branch_writer_live"):
+        await execute(product, tmp_path, operation="install-2")
+    gate.set()
+    assert (await first).checkout == "repo-1/install-1"
 
 
 @pytest.mark.asyncio

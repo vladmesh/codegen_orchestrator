@@ -25,7 +25,7 @@ from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentCreate, IncidentType
-from shared.contracts.dto.product_brief import ProductBriefContent
+from shared.contracts.dto.product_brief import InitialSetting, ProductBriefRead
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
 from shared.contracts.dto.qa_verification import QAUnverifiedCheck
 from shared.contracts.dto.run import RunStatus, RunType
@@ -63,7 +63,9 @@ from ..agents.qa.caller_identity import (
 )
 from ..agents.qa.tools import QAJobsCapability
 from ..clients.api import api_client, bot_liveness_path
+from ..clients.product_settings import GeneratedServiceSettingsClient
 from ..config.settings import get_settings
+from ..confirmed_settings import confirmed_product_settings
 from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
 from ._live_work import live_work_settled
@@ -424,8 +426,8 @@ def _stale_target_profile_blocker(server_info: QAServerInfo) -> QABlocker | None
     )
 
 
-async def _confirmed_qa_brief(story_id: str | None) -> ProductBriefContent | None:
-    """The confirmed settings and input contract for this story, or nothing.
+async def _confirmed_qa_brief(story_id: str | None) -> ProductBriefRead | None:
+    """The confirmed brief of this story — its settings and input contract — or nothing.
 
     Read through the released brief endpoint, exactly as the deploy path reads
     them before writing them into the product. A story with no brief, or a
@@ -436,7 +438,48 @@ async def _confirmed_qa_brief(story_id: str | None) -> ProductBriefContent | Non
     brief = await api_client.get_product_brief_by_story(story_id)
     if brief is None or brief.confirmed_at is None:
         return None
-    return brief.content
+    return brief
+
+
+async def _before_judgement_blocker(msg: QAMessage) -> QABlocker | None:
+    """A product QA cannot judge yet: unreachable, or not holding its confirmed values."""
+    if blocker := await check_deployed_url_reachable(msg.deployed_url):
+        return blocker
+    brief = await _confirmed_qa_brief(msg.story_id)
+    if brief is None:
+        return None
+    return await _settings_readback_blocker(
+        msg.deployed_url, await confirmed_product_settings(brief, api_client)
+    )
+
+
+async def _settings_readback_blocker(
+    deployed_url: str, settings: list[InitialSetting]
+) -> QABlocker | None:
+    """The deployed product must hold every confirmed value before QA may judge it.
+
+    The values are the confirmed revision's: the brief's own settings and the answers
+    its stored capability plan maps to product keys, the same list the deploy seed
+    wrote. Each is read back through the product's ordinary settings API; a missing,
+    refused or different value is named, and no product judgement is made over it.
+    """
+    if not settings:
+        return None
+    proofs = await GeneratedServiceSettingsClient(deployed_url).read_back(settings)
+    failed = [
+        f"{setting.key} ({setting.scope.value}): {proof.failure.value}"
+        for setting, proof in zip(settings, proofs, strict=True)
+        if not proof.written
+    ]
+    if not failed:
+        return None
+    logger.warning("qa_confirmed_settings_readback_failed", failures=failed)
+    return QABlocker(
+        category=QABlockerCategory.UNKNOWN,
+        attempted="read the confirmed product settings back from the deployed product",
+        sent="POST /settings/get for " + ", ".join(setting.key for setting in settings),
+        received="confirmed settings not held by the product: " + "; ".join(failed),
+    )
 
 
 async def _stored_secrets(project_id: str) -> dict:
@@ -714,8 +757,9 @@ async def _run_exploratory_qa(
         ownership=ownership,
         stored=stored,
     )
-    confirmed_brief = await _confirmed_qa_brief(msg.story_id)
-    confirmed_settings = list(confirmed_brief.initial_settings) if confirmed_brief else []
+    brief = await _confirmed_qa_brief(msg.story_id)
+    confirmed_brief = brief.content if brief else None
+    confirmed_settings = await confirmed_product_settings(brief, api_client) if brief else []
     established_facts: list[str] = [
         *scheduled_behaviour_facts(behaviours, fireable=jobs is not None),
         *confirmed_settings_facts(confirmed_settings),
@@ -892,7 +936,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         acceptance_criteria = msg.acceptance_criteria
         mechanical, health_checks = _qa_criteria(acceptance_criteria)
 
-        blocker = await check_deployed_url_reachable(msg.deployed_url)
+        blocker = await _before_judgement_blocker(msg)
         if blocker:
             return await _handle_qa_blocked(run_id=run_id, blocker=blocker, attempts=attempts)
 

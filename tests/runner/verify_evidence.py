@@ -42,6 +42,8 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
         "scenario",
         "catalog",
         "production_plan",
+        "operations",
+        "confirmed_settings",
     ):
         assert evidence.get(key), f"missing evidence section {key}"
     release, catalog, production = (
@@ -91,6 +93,49 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
             "commit": activation["commit"],
             "catalog_sha256": activation["catalog_sha256"],
         }, installed[name]["catalog"]
+    # A new owner's draft order: planned before any scaffold, released by the scaffold.
+    assert production["project_status_at_planning"] == "draft", production
+    assert production["repository"]["git_url"].startswith("pending://"), production
+    assert production["admission_before_scaffold"]["reason"] == "workspace_not_ready", production
+    scaffold = production["scaffold"]
+    assert scaffold["recorded_by"] == "scaffolder.src.consumer._update_project_on_success"
+    assert scaffold["project_status"] == "active" and scaffold["workspace_ready"] is True
+    assert scaffold["service_template"]["commit"] == str(evidence["template"]["commit"]), scaffold
+    # Each install was an admitted, claimed operation in its own checkout, under the kit's
+    # read-only preflight of the exact persisted release.
+    operations = evidence["operations"]
+    assert sorted(operations) == sorted(packages), sorted(operations)
+    for name in packages:
+        operation = operations[name]
+        assert operation["task_id"] == production["install_tasks"][name]["task_id"], name
+        assert operation["task_status"] == "done" and operation["state"] == "published", name
+        assert operation["checkout"] == (
+            f"{production['repository']['id']}/{operation['operation_id']}"
+        ), operation
+        assert operation["checkout_removed"] is True, operation
+        assert operation["head_sha"] == evidence["installs"][name]["head_sha"], name
+        preflight = operation["preflight"]
+        assert preflight["result_version"] == 1 and preflight["status"] in {"mechanical", "glue"}
+        assert preflight["target"]["route"] == "catalog", preflight
+        assert preflight["target"]["catalog_ref"] == activation["commit"], preflight
+        assert preflight["target"]["tag"] == installed[name]["package"]["tag"], preflight
+        assert preflight["target"]["version"] == installed[name]["package"]["version"]
+        closure = {item["name"] for item in installed[name]["libraries"]}
+        for item in preflight["glue"]:
+            # Only the closure's own library request; any product glue would have refused.
+            assert item["code"] == "library_required" and item["symbol"] in closure, item
+    assert len({operation["checkout"] for operation in operations.values()}) == len(packages)
+    # The confirmed answers, written and read back through the production boundary.
+    confirmed = evidence["confirmed_settings"]
+    assert confirmed["brief_id"] == production["brief_id"], confirmed
+    values = {item["key"]: item["value"] for item in confirmed["settings"]}
+    planned = {item["key"]: item["value"] for item in production["plan"]["settings"]}
+    assert all(values[key] == value for key, value in planned.items()), (values, planned)
+    assert values["tg_channels.starting_channels"] == production["initial_channels"], values
+    assert production["initial_channels"], production
+    assert values.get("language") in support.LANGUAGES, values
+    assert all(item["written"] for item in confirmed["seed"]), confirmed["seed"]
+    assert confirmed["readback"] is None, confirmed["readback"]
     assert evidence["matrix"]["packages"] == packages, evidence["matrix"]
     assert sorted(evidence["installs"]) == sorted(packages), sorted(evidence["installs"])
     assert evidence["module"]["version"] == release["version"] == args.package_version, release
@@ -152,6 +197,12 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
         "install_tasks": {
             name: task["task_id"] for name, task in production["install_tasks"].items()
         },
+        "operations": {
+            name: {key: operation[key] for key in ("operation_id", "checkout", "head_sha")}
+            | {"preflight": operation["preflight"]["status"]}
+            for name, operation in operations.items()
+        },
+        "confirmed_settings": values,
         "delivered_post": scenario["delivered_post"],
         "access_acknowledgments": [
             (step["operation"], step["access"]["body"]["status"]) for step in cycle

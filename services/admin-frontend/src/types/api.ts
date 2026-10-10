@@ -128,6 +128,51 @@ export interface InstallVerification {
   protected_sha256: Record<string, string>
 }
 
+export interface PreflightOther {
+  owner: string
+  path: string | null
+  line: number | null
+  symbol: string | null
+}
+
+export interface PreflightGlue {
+  code: string
+  path: string | null
+  line: number | null
+  owner: string
+  symbol: string | null
+  key: string | null
+  command: string | null
+  conflict: string
+  action: string
+  other: PreflightOther | null
+}
+
+export interface PreflightTarget {
+  route: 'catalog'
+  catalog_source: string
+  catalog_ref: string
+  tag: string
+  version: string
+  requires_core: string
+  metadata_sha256: string
+}
+
+export interface PreflightIncompatible {
+  code: string
+  explanation: string
+}
+
+export interface InstallPreflight {
+  result_version: number
+  package: string
+  status: 'mechanical' | 'glue' | 'incompatible'
+  product_core: string | null
+  target: PreflightTarget | null
+  glue: PreflightGlue[]
+  incompatible: PreflightIncompatible | null
+}
+
 export interface InstallOperation {
   id: string
   project_id: string
@@ -136,13 +181,15 @@ export interface InstallOperation {
   repository_id: string
   cycle_started_at: string
   state: 'queued' | 'running' | 'published' | 'refused' | 'recovery_required'
-  stage: 'queued' | 'claimed' | 'preflight' | 'package' | 'library' | 'bind' | 'generate' | 'validate' | 'readback' | 'commit' | 'push' | 'published' | 'lease_lost' | 'cancelled'
+  stage: 'queued' | 'claimed' | 'prepare' | 'preflight' | 'package' | 'library' | 'bind' | 'generate' | 'validate' | 'readback' | 'commit' | 'push' | 'published' | 'lease_lost' | 'cancelled'
   token?: string | null
   heartbeat_at?: string | null
   head_sha?: string | null
   base_sha?: string | null
   detail?: string | null
   verification?: InstallVerification | null
+  checkout?: string | null
+  preflight?: InstallPreflight | null
 }
 
 export type StoryType = 'product' | 'technical'

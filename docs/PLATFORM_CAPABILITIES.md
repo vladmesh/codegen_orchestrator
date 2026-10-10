@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 24, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 25, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -10,7 +10,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ### Can
 
-- **Add a catalog capability.** An existing bot can add a released catalog capability while retaining its own features.
+- **Add a catalog capability.** A new bot gets its chosen catalog capabilities right after it is created, and an existing bot can add one while retaining its own features.
 - **Plain HTTP self links.** The bot can include plain HTTP self links; their address can change when the product moves.
 - **Telegram bot.** A Telegram bot people chat with, using commands, buttons and menus.
 - **Read public Telegram channels.** Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Plan it now; deployment handles platform key issuance; no user key is needed.
@@ -58,7 +58,7 @@ Code it was read from:
 
 #### Add a catalog capability
 
-How: One INSTALL of a stored brief plan or plan_install closure, on clean owned core-2.5.0 backend,tg_bot. Scaffolder runs kit add at the payload's catalog commit, validates and hands the exact head to PR/CI/deploy. Glue needs a task after the INSTALL.
+How: One INSTALL of a stored plan or plan_install closure on core-2.5.0 backend,tg_bot, a draft's after scaffold. Per attempt: own story-head checkout, kit check-install, kit add at the catalog commit, validate, head to PR/CI/deploy. Kit-named product glue gets one repair task first; other glue a task after.
 
 #### Plain HTTP self links
 

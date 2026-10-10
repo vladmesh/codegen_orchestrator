@@ -98,6 +98,43 @@ def payload():
     }
 
 
+def preflight(status, glue=()):
+    """`kit check-install --json` for `payload()` on its product."""
+    install = payload()
+    return {
+        "result_version": 1,
+        "package": "reminders",
+        "status": status,
+        "product_core": install["core_version"],
+        "target": {
+            "route": "catalog",
+            "catalog_source": install["catalog"]["repository"],
+            "catalog_ref": install["catalog"]["commit"],
+            "tag": install["package"]["tag"],
+            "version": install["package"]["version"],
+            "requires_core": ">=2.2,<3",
+            "metadata_sha256": "f" * 64,
+        },
+        "glue": list(glue),
+        "incompatible": None,
+    }
+
+
+def glue(code, owner="product", symbol=None):
+    return {
+        "code": code,
+        "path": "services/tg_bot/src/commands.py",
+        "line": 7,
+        "owner": owner,
+        "symbol": symbol,
+        "key": None,
+        "command": "remind",
+        "conflict": "/remind is already registered by the product",
+        "action": "rename the product command",
+        "other": None,
+    }
+
+
 async def post(client, path, body=None, status=200):
     result = await client.post(path, json=body)
     assert result.status_code == status, result.text
@@ -343,6 +380,18 @@ async def test_publish_requires_verified_closure_and_replays_without_status_even
         verification=verification,
         **identity,
     )
+    # A verified closure is not enough: the kit must have admitted the release first.
+    unadmitted = await command(async_client, install_task, "publish", head_sha="d" * 40, **identity)
+    assert unadmitted["reason"] == "preflight_unverified"
+    await command(
+        async_client,
+        install_task,
+        "checkpoint",
+        stage="preflight",
+        checkout=f"{install_task['repository_id']}/{identity['operation_id']}",
+        preflight=preflight("mechanical"),
+        **identity,
+    )
     published = await command(async_client, install_task, "publish", head_sha="d" * 40, **identity)
     assert published["operation"]["state"] == "published"
     assert (await async_client.get(f"/api/tasks/{install_task['id']}")).json()["status"] == "done"
@@ -462,3 +511,117 @@ async def test_admin_recovery_reads_exact_retained_head_and_never_buys_work(
     task = (await async_client.get(f"/api/tasks/{install_task['id']}")).json()
     assert task["status"] == ("done" if published else "waiting_human_review")
     assert task["install_operation"]["head_sha"] == "d" * 40
+
+
+async def claimed(async_client, task):
+    admitted = await command(async_client, task, "admit")
+    identity = {"operation_id": admitted["operation"]["id"], "token": "owner"}
+    await command(async_client, task, "claim", **identity)
+    return identity
+
+
+async def refuse_with(async_client, task, identity, answer):
+    return await command(
+        async_client,
+        task,
+        "refuse",
+        stage="preflight",
+        base_sha="b" * 40,
+        detail="glue_required: command_conflict at services/tg_bot/src/commands.py:7",
+        preflight=answer,
+        **identity,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_attempt_checkout_and_preflight_are_owned_by_their_operation(
+    install_task, async_client
+):
+    identity = await claimed(async_client, install_task)
+    foreign = await command(
+        async_client, install_task, "checkpoint", checkout="repo-other/install-x", **identity
+    )
+    assert foreign["reason"] == "checkout_unowned"
+    stale = preflight("mechanical")
+    stale["target"]["catalog_ref"] = "0" * 40
+    refused = await command(async_client, install_task, "checkpoint", preflight=stale, **identity)
+    assert refused["reason"] == "preflight_provenance_mismatch"
+    checkout = f"{install_task['repository_id']}/{identity['operation_id']}"
+    saved = await command(
+        async_client,
+        install_task,
+        "checkpoint",
+        checkout=checkout,
+        preflight=preflight("mechanical"),
+        **identity,
+    )
+    assert saved["operation"]["checkout"] == checkout
+    assert saved["operation"]["preflight"]["status"] == "mechanical"
+
+
+@pytest.mark.asyncio
+async def test_product_glue_hands_one_concrete_repair_before_the_same_install(
+    install_task, async_client, db_session
+):
+    identity = await claimed(async_client, install_task)
+    answer = preflight("glue", [glue("command_conflict", symbol="handle_remind")])
+    settled = await refuse_with(async_client, install_task, identity, answer)
+    assert settled["outcome"] == "settled"
+    assert settled["operation"]["state"] == "refused"
+    assert settled["operation"]["preflight"] == answer
+    install = (await async_client.get(f"/api/tasks/{install_task['id']}")).json()
+    # The same INSTALL waits behind its repair: no new install task, no installed state.
+    assert install["status"] == "todo" and install["install_operation"] is None
+    repair = (await async_client.get(f"/api/tasks/{install['blocked_by_task_id']}")).json()
+    assert repair["type"] == "fix" and repair["status"] == "todo"
+    assert repair["created_by"] == "catalog_install_glue" and repair["dispatch_admitted"]
+    assert repair["story_id"] == install_task["story_id"]
+    assert repair["blocked_by_task_id"] == install_task.get("blocked_by_task_id")
+    assert (
+        "command_conflict at services/tg_bot/src/commands.py:7 (handle_remind)"
+        in (repair["description"])
+    )
+    assert "Do: rename the product command" in repair["description"]
+    assert f"catalog {'d' * 40}" in repair["description"]
+    story = (await async_client.get(f"/api/stories/{install_task['story_id']}")).json()
+    assert story["status"] == "in_progress"
+    events = (await async_client.get(f"/api/tasks/{install_task['id']}/events")).json()
+    [note] = [event for event in events if "glue_repair_task_id" in event["details"]]
+    assert note["details"]["catalog_install_settlement"]["preflight"] == answer
+    # A redelivery of the settled operation executes nothing and creates nothing.
+    replay = await command(async_client, install_task, "claim", **identity)
+    assert replay["outcome"] == "refused"
+    blocked = await command(async_client, install_task, "admit")
+    assert blocked["outcome"] == "refused" and blocked["reason"] == "blocker_unresolved"
+    tasks = (await async_client.get(f"/api/tasks/?story_id={install_task['story_id']}")).json()
+    assert sorted(task["type"] for task in tasks) == ["fix", "install"]
+
+    # The repair is done: a new operation re-runs the kit on the repaired head. A second
+    # glue answer is a person's, not another repair.
+    stored = await db_session.get(Task, repair["id"])
+    stored.status = "done"
+    await db_session.commit()
+    second = await claimed(async_client, install_task)
+    assert second["operation_id"] != identity["operation_id"]
+    parked = await refuse_with(async_client, install_task, second, answer)
+    assert parked["operation"]["state"] == "refused"
+    install = (await async_client.get(f"/api/tasks/{install_task['id']}")).json()
+    assert install["status"] == "waiting_human_review"
+    story = (await async_client.get(f"/api/stories/{install_task['story_id']}")).json()
+    assert story["status"] == "waiting_human_review"
+    assert "glue_required: command_conflict" in story["quarantine_reason"]["detail"]
+
+
+@pytest.mark.asyncio
+async def test_glue_the_product_cannot_write_parks_for_a_person(install_task, async_client):
+    identity = await claimed(async_client, install_task)
+    answer = preflight(
+        "glue", [glue("library_required", owner="package:reminders", symbol="dateparse")]
+    )
+    settled = await refuse_with(async_client, install_task, identity, answer)
+    assert settled["operation"]["preflight"] == answer
+    install = (await async_client.get(f"/api/tasks/{install_task['id']}")).json()
+    assert install["status"] == "waiting_human_review"
+    assert install["install_operation"]["preflight"] == answer
+    tasks = (await async_client.get(f"/api/tasks/?story_id={install_task['story_id']}")).json()
+    assert [task["type"] for task in tasks] == ["install"]
