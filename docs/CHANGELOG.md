@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   technical plan beside the revision, and first planning installs it as stored, without a model.
 - A required runner proof plans a fresh product through the stored plan and the API image, then
   proves it end to end with the kit's pinned harness.
+- A module_with_glue requirement stays outstanding until a task after its install covers it; two
+  answers for one setting refuse the plan; an unnamed request naming an offered capability routes as it.
 
 ## 2026-10-09
 

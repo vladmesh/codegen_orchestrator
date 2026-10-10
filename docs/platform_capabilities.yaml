@@ -53,7 +53,7 @@ can:
     how: >-
       One INSTALL of a stored brief plan or plan_install closure, on clean owned
       core-{core_version} backend,tg_bot. Scaffolder runs kit add at the payload's catalog commit,
-      validates and hands the exact head to PR/CI/deploy.
+      validates and hands the exact head to PR/CI/deploy. Glue needs a task after the INSTALL.
   - id: http_self_address
     name: Plain HTTP self links
     plain: The bot can include plain HTTP self links; their address can change when the product moves.

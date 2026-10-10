@@ -430,9 +430,11 @@ before and after the installs, with the real default branch's HEAD recorded besi
 are the INSTALL tasks that `tests/runner/production_plan.py` persisted through the production path —
 the PO's preview, brief and confirmation tools, the API image and its database
 (`tests/runner/compose.orchestrator.yml`), the stored plan and the Architect's first planning
-attempt, with no model. `tests/runner/verify_evidence.py` requires the passed, SHA-bound evidence:
-the kit's published-release checks plus that stored plan, persisted task and installed payload are
-one closure at the activated commit. The kit's own reusable workflow at that commit cannot prove this
+attempt, with no model; its first request names no capability id, so its catalog phrase alone must
+resolve the module. `tests/runner/verify_evidence.py` requires the passed, SHA-bound evidence:
+the kit's published-release checks, including the grant/revoke/grant access acknowledgment cycle,
+plus that every route names the capability its stored plan installs and that stored plan, persisted
+task and installed payload are one closure at the activated commit. The kit's own reusable workflow at that commit cannot prove this
 candidate: its selection reads the catalog at `HEAD`, which this orchestrator refuses to plan an
 install from. The read-only `PLATFORM_SERVICES_DEPLOY_KEY` is used only for a same-repository pull
 request or a main push, and checkouts keep no credentials.

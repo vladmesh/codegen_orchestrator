@@ -58,7 +58,7 @@ Code it was read from:
 
 #### Add a catalog capability
 
-How: One INSTALL of a stored brief plan or plan_install closure, on clean owned core-2.5.0 backend,tg_bot. Scaffolder runs kit add at the payload's catalog commit, validates and hands the exact head to PR/CI/deploy.
+How: One INSTALL of a stored brief plan or plan_install closure, on clean owned core-2.5.0 backend,tg_bot. Scaffolder runs kit add at the payload's catalog commit, validates and hands the exact head to PR/CI/deploy. Glue needs a task after the INSTALL.
 
 #### Plain HTTP self links
 

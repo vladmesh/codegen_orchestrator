@@ -455,7 +455,13 @@ lists the projects module routes are enabled for. Outside it, an offered capabil
 `from_scratch`, or `impossible` when the module needs a platform-only source (a
 `platform_key` or `platform_base_url` environment source). A project that is not `backend,tg_bot` gets no module either. The catalog
 is not a feature whitelist: requests no module offers are `from_scratch` unless the
-platform manifest's detection says the platform cannot (`impossible`).
+platform manifest's detection says the platform cannot (`impossible`). A request without
+a `capability_id` whose words contain an offered package's own catalog phrase (its
+`capabilities`, normalised as the manifest floor does) is that capability, routed exactly as
+the named id would be and naming it in its route; words matching two offers refuse
+(`ambiguous_capability`). Leaving the optional id out never turns an offered module's intent
+into programmable work, so every request needs the activated catalog, and an unreadable
+rollout refuses the requests with module intent only.
 
 *Preview.* `preview_capabilities(project_id, requests)` runs the Architect's
 deterministic resolver (`services/langgraph/src/capability_preview.py`), no model. An
@@ -480,17 +486,24 @@ the stored preview (`derive_capability_plan`) and stores it in
 platform (`GET /api/product-briefs/{id}/capability-plan`). A forged or foreign preview, a
 preview from another activation, a capability set or route that differs from the preview,
 an impossible capability, an unknown question, a missing required answer, an answer of
-the wrong kind or form, or an initial setting in an answer's namespace is refused with a
-product-safe `capability_refusal` (code, request and question ids) and opens nothing.
+the wrong kind or form, an initial setting in an answer's namespace, or two answers giving
+one setting key and scope different values (two requests selecting the same capability) is
+refused with a product-safe `capability_refusal` (code, request and question ids) and opens
+nothing. Identical answers to one target are one planned setting: a plan holds one value
+per key and scope.
 Confirmation derives the plan again under the current activation: a stale preview or any
 drift refuses (409) and nothing is frozen; a replay returns the confirmed revision with its
 plan unchanged. A corrected answer is a new revision with its own plan.
 
 *Planning.* The Architect's first attempt of a capability-backed brief reads the stored
 plan, checks its activation, reads the activated catalog and checks each stored closure
-resolves identically, then creates one INSTALL task per module from the stored closure and
-covers its requirements with it. With nothing else left it asks no model; glue and
-from-scratch capabilities go to the model as ordinary work, with no package selectable. A
+resolves identically, then creates one INSTALL task per stored closure (two selections of one
+capability share it) and covers a `module` route's requirements with it. With nothing else
+left it asks no model; glue and from-scratch capabilities go to the model as ordinary work,
+with no package selectable. A `module_with_glue` requirement is never covered by the
+install: the coverage write and `admit` (`glue_coverage_gaps`) count it only when returned or
+covered by an ordinary task whose `blocked_by` chain reaches that module's INSTALL, so a turn
+that plans no glue task is admitted as incomplete. A
 missing plan, another activation, provenance or inactive catalog, or a drifted closure is a
 terminal planning failure with no task; an unreachable catalog is the retriable one. Deploy
 seeding writes the plan's settings after the brief's own `initial_settings`. Installing the
