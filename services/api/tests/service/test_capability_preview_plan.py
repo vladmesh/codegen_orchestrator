@@ -244,7 +244,7 @@ async def test_a_preview_from_another_activation_is_not_stored(async_client: Asy
 
     stored = await async_client.post(PREVIEWS, json=body)
 
-    assert stored.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert stored.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert _refusal(stored)["code"] == "preview_stale"
 
 
@@ -366,7 +366,7 @@ async def test_a_proposal_that_does_not_resolve_opens_nothing(
 
     created = await _create(async_client, project_id, content)
 
-    assert created.status_code == HTTPStatus.UNPROCESSABLE_CONTENT, created.text
+    assert created.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, created.text
     assert _refusal(created)["code"] == code
     assert await _brief_count(db_session, project_id) == 0
 
@@ -381,7 +381,7 @@ async def test_a_preview_of_another_project_is_refused(
 
     created = await _create(async_client, project_id, _content(foreign))
 
-    assert created.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert created.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert _refusal(created)["code"] == "preview_foreign"
     assert await _brief_count(db_session, project_id) == 0
 

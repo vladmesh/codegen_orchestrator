@@ -81,10 +81,12 @@ def test_notes_reuses_the_released_dependencies_and_registers_owned_handlers():
     assert (
         tomllib.loads(pyproject)["project"]["dependencies"] == released["project"]["dependencies"]
     )
+    # The kit's registry is the only registrar: the owned commands are declared for it.
+    commands = next(one.content for one in bot if one.path == "services/tg_bot/src/commands.py")
+    assert 'ProductCommand("note", handle_note)' in commands
+    assert 'ProductCommand("notes", handle_notes)' in commands
     main = next(one.content for one in bot if one.path == "services/tg_bot/src/main.py")
-    assert 'CommandHandler("note", handle_note)' in main
-    assert 'CommandHandler("notes", handle_notes)' in main
-    assert "bindings.register(application, BackendClient)" in main
+    assert "CommandHandler" not in main
 
 
 def test_native_git_proof_refuses_missing_stage_hooks_or_force():

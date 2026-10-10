@@ -79,12 +79,16 @@ def customize_notes(product, python=None):
     # are declared in the owned commands module and the registry is regenerated from it.
     commands = product / "services/tg_bot/src/commands.py"
     source = commands.read_text()
+    product_import = "from services.tg_bot.src.generated.commands import ProductCommand\n"
     declaration = "COMMANDS: tuple[ProductCommand, ...] = ()"
-    assert source.count(declaration) == 1
+    assert source.count(product_import) == 1 and source.count(declaration) == 1
     commands.write_text(
         source.replace(
+            product_import,
+            product_import
+            + "from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n",
+        ).replace(
             declaration,
-            "from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n\n"
             "COMMANDS: tuple[ProductCommand, ...] = (\n"
             '    ProductCommand("note", handle_note),\n'
             '    ProductCommand("notes", handle_notes),\n'

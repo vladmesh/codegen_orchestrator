@@ -626,11 +626,19 @@ def _bot_commands() -> str:
     The kit refuses direct handler registration; ``make setup`` regenerates the registry
     (``services/tg_bot/src/generated/commands.py``) from this declaration.
     """
-    return _substitute(
+    product_import = "from services.tg_bot.src.generated.commands import ProductCommand\n"
+    text = _substitute(
         _fixture_text(BOT_COMMANDS),
+        product_import,
+        product_import + "from services.tg_bot.src.menu import handle_level1\n",
+        where=BOT_COMMANDS,
+    )
+    # The kit admits only a literal command name in the one top-level tuple.
+    return _substitute(
+        text,
         "COMMANDS: tuple[ProductCommand, ...] = ()\n",
-        "from services.tg_bot.src.menu import LEVEL1_COMMAND, handle_level1\n\n"
-        "COMMANDS: tuple[ProductCommand, ...] = (ProductCommand(LEVEL1_COMMAND, handle_level1),)\n",
+        "COMMANDS: tuple[ProductCommand, ...] = "
+        f'(ProductCommand("{LEVEL1_COMMAND}", handle_level1),)\n',
         where=BOT_COMMANDS,
     )
 

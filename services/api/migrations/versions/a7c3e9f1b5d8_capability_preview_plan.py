@@ -19,8 +19,12 @@ def upgrade():
         "capability_previews",
         sa.Column("id", sa.String(length=64), primary_key=True),
         sa.Column("project_id", sa.Uuid(), sa.ForeignKey("projects.id"), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.Column("requests", sa.JSON(), nullable=False),
         sa.Column("product", sa.JSON(), nullable=False),
         sa.Column("technical", sa.JSON(), nullable=False),

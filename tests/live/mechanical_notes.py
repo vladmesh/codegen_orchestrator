@@ -5,6 +5,7 @@ from dataclasses import replace
 from level1_change_set import (
     BACKEND_ROUTER,
     BOT_COMMANDS,
+    LEVEL1_COMMAND,
     Operation,
     _backend_router,
     _bot_commands,
@@ -120,26 +121,30 @@ def notes_operations(marker):
     # The kit registers bot commands only through its registry: the notes commands are
     # declared beside the level-1 command, and `make setup` regenerates the registry.
     level1 = (
-        "COMMANDS: tuple[ProductCommand, ...] = (ProductCommand(LEVEL1_COMMAND, handle_level1),)\n"
+        "COMMANDS: tuple[ProductCommand, ...] = "
+        f'(ProductCommand("{LEVEL1_COMMAND}", handle_level1),)\n'
+    )
+    menu_import = "from services.tg_bot.src.menu import handle_level1\n"
+    commands = _substitute(
+        _bot_commands(),
+        menu_import,
+        "from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n" + menu_import,
+        where="notes bot command import",
+    )
+    commands = _substitute(
+        commands,
+        level1,
+        "COMMANDS: tuple[ProductCommand, ...] = (\n"
+        f'    ProductCommand("{LEVEL1_COMMAND}", handle_level1),\n'
+        '    ProductCommand("note", handle_note),\n'
+        '    ProductCommand("notes", handle_notes),\n'
+        ")\n",
+        where="notes bot command declarations",
     )
     bot = [one for one in bot_operations(marker) if one.path != BOT_COMMANDS]
     bot += [
         Operation("create", NOTES_HANDLERS, BOT_NOTES),
-        Operation(
-            "replace",
-            BOT_COMMANDS,
-            _substitute(
-                _bot_commands(),
-                level1,
-                "from services.tg_bot.src.handlers.notes import handle_note, handle_notes\n\n"
-                "COMMANDS: tuple[ProductCommand, ...] = (\n"
-                "    ProductCommand(LEVEL1_COMMAND, handle_level1),\n"
-                '    ProductCommand("note", handle_note),\n'
-                '    ProductCommand("notes", handle_notes),\n'
-                ")\n",
-                where="notes bot command declarations",
-            ),
-        ),
+        Operation("replace", BOT_COMMANDS, commands),
     ]
     return backend, bot
 

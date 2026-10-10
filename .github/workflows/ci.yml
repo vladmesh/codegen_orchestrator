@@ -769,9 +769,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up uv with retry
-        timeout-minutes: 3
-        uses: ./.github/actions/setup-uv-with-retry
+      # The generated product's own CI pins this uv, and the kit's harness checks the runner
+      # provides exactly it before it runs the product's jobs.
+      - name: Install the product toolchain's uv
+        run: >-
+          bash scripts/ci-infra.sh retry --step install-uv --cause uv-download
+          --attempt-timeout 60s -- pip install uv==0.11.29
 
       - name: Prepare the candidate environment
         timeout-minutes: 4
@@ -783,7 +786,7 @@ jobs:
       - name: Run the runner proof through the activated snapshot and the stored plan
         id: runner-proof
         run: >-
-          bash scripts/ci-infra.sh bound --step runner-proof --timeout 30m --
+          bash scripts/ci-infra.sh bound --step runner-proof --timeout 28m --
           .venv/bin/python tests/runner/activated_snapshot_proof.py
           --kit-dir .runner/kit --kit-sha "$KIT_SHA"
           --orchestrator-dir . --orchestrator-sha "$ORCHESTRATOR_SHA"
