@@ -1,10 +1,10 @@
 {
   "source": "gh:vladmesh/codegen-product-kit",
-  "ref": "52e9107495949c9187f41cc0e50367ed8ed7a7a1",
-  "candidate_sha": "58c47331c00ced9a876f4784329f1ac4f88bff33",
-  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: packages/tg-channels/v0.1.2-12-g52e9107\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
+  "ref": "7b547c69e508d8e49d2cbab54efcab1df7fc2270",
+  "candidate_sha": "3566023b8e84f0bd14d7940c2925f8959bda5a52",
+  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: packages/tg-channels/v0.1.2-14-g7b547c6\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
   "tracked_sha256": {
-    ".copier-answers.yml": "95e6d1f0ce8ac7d0f4612f52ad478357fe78308830c5ebfb5164e70e4c160a07",
+    ".copier-answers.yml": "511b229aa523cd8089d9ca08a5e75b2cd470745762a78960c6006d68e725a9a4",
     ".coveragerc": "e81eaf903c40f90b6e89ceaaf9d3def080db0265dca88d8955c1d702b91af016",
     ".dockerignore": "7b8eac7cd6e7aac256526e938f203a0c06357edf5c32343e44968430b4580a6a",
     ".env.example": "b9fd3997f087dc3386cbd4829ed965fa5ec1c3d6981ace5699559d2524b81943",
@@ -32,7 +32,7 @@
     "infra/compose.tests.integration.yml": "06e8545c170a2eed06b123ac7b691c8bb98e45cf754880a54b2b8d5a699f7394",
     "infra/env.contract.yaml": "b9052abeac9fea2e8e39a1b4e5d2a067c9df7dceec83912134dd22fa2ab928f1",
     "mypy.ini": "5262a519571da0963b5b9df960ea6393b9ba0291e8987b32326504d62b65b611",
-    "pyproject.toml": "aa8da49736af8982c9085d35d0a0b54cddd6ad2f230be3e215cc0cc55e6e5c33",
+    "pyproject.toml": "46e7c19cdabb7781af3430931aad364e539768afb56be53ae3676952a1ee3088",
     "pytest.ini": "44fbeef624539fbae76f55804299812bbd139d2a31b29bfd3615687cacb7b788",
     "ruff.toml": "755941b2ac3202f1044abf6a916eda298b03c6b9759be079e2e40ec700ed11f0",
     "scripts/prepare-env.sh": "d9ce9de05d5d7ab5871006e0182852fdf3130e66816bc36e5b85321effe75c21",
@@ -101,8 +101,8 @@
     "services/backend/src/generated/registry.py": "ef76787cad3e072c6c89d794e2219690afe29fa899758f7abf1d8567dee03151",
     "services/backend/src/generated/routers/__init__.py": "9bb73c979d2fdffe75e080ff68798313462ffb4e81798b8934839aa8ca7e8992",
     "services/backend/src/generated/routers/jobs.py": "f7f47422a965988b85a519d433f86e906e67a5a1cac14ab2c19fea1e270bb54f",
-    "services/backend/src/generated/routers/settings.py": "fa6d315973489223e84a516f35b25d72cc6d1c08de81486d708b0e1a4942852f",
-    "services/backend/src/generated/routers/users.py": "9a3517859c64ff1a17a32b269aa1e371f26f04b97aa3d500dbd5040aaeec8025",
+    "services/backend/src/generated/routers/settings.py": "663a92b7cd81e853df7eefc9b817ee0d3486283c846cb4f0be48768f32ba1858",
+    "services/backend/src/generated/routers/users.py": "07a358be7c6b34fdac488a3428132275f4778d534675a8b180344c33fa44bae3",
     "services/backend/src/generated/settings_schemas.py": "4f96faeae5fb2ff4b6b69441625bbae7771d5b29c61071d6992f2c8a4df02d48",
     "services/backend/src/main.py": "e61a4680633dc875c654e529b1cab3a1054118e21843334f8e0f5b9da067147b",
     "services/backend/tests/__init__.py": "c40f8303d01b15a0a4825c25e88b71c8b2bec84c34583a2c8a92de2f6aef7c42",
@@ -160,6 +160,6 @@
     "tests/integration/test_durable_events.py": "fb60fb0324f16ff929989e484475521524065022562d6f3a026afe2b2a440784",
     "tests/integration/test_example.py": "1a869093e2346d7b79775ab08c644352b8ea267f5de2437fe67d913424a26ca3",
     "tests/integration/test_user_identifiers.py": "bdfbb9160295da41b2861e2d507eff2574189a9074697df0451628cedd6d4a60",
-    "uv.lock": "f59b98a17bddda44f1eb8ee96fa849b825e00838ff91ef791572de59040181dc"
+    "uv.lock": "7e680599ea0fa3b4eae74f0a117aed1cd474672c78ae6a469c6f63e25b4c48a6"
   }
 }

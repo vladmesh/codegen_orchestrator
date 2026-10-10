@@ -5,7 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-10
 
-- Kit 52e9107 (core 2.5.0) is the scaffold, tooling and catalog pin; one activated catalog snapshot
+- Kit 7b547c69 (core 2.5.0) is the scaffold, tooling and catalog pin; one activated catalog snapshot
   replaces the live HEAD reader, and installs name and add from its exact commit.
 - The PO previews capabilities through the Architect before a brief; the API stores the derived
   technical plan beside the revision, and first planning installs it as stored, without a model.

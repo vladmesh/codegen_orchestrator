@@ -21,12 +21,13 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by an immutable
 commit of that repository and no longer from `service-template`.
-The production boundary is kit main commit `52e9107495949c9187f41cc0e50367ed8ed7a7a1`
-(kit card 54, merged-main Runner 38010408741 green on it). Rendered at a commit, Copier
-records `_commit` in `git describe` form (`packages/tg-channels/v0.1.2-12-g52e9107`);
+The production boundary is kit main commit `7b547c69e508d8e49d2cbab54efcab1df7fc2270`
+(kit card 57, merged-main Runner 38024429552 green on it; a generated users write commits
+before it acknowledges). Rendered at a commit, Copier
+records `_commit` in `git describe` form (`packages/tg-channels/v0.1.2-14-g7b547c6`);
 `shared.contracts.template.recorded_template_commit_matches` and the install probe accept
 exactly the pin itself or that form of it. The matching
-`shared/tests/fixtures/codegen-product-kit-52e9107495949c9187f41cc0e50367ed8ed7a7a1` tree is
+`shared/tests/fixtures/codegen-product-kit-7b547c69e508d8e49d2cbab54efcab1df7fc2270` tree is
 its `backend,tg_bot` Copier render. The root `codegen-kit-tooling` dependency, the LangGraph
 requirement and their locks resolve the same commit; the locks are the CI producer's output
 (`.github/workflows/template-fixture.yml`, job `locks`), never hand edits.

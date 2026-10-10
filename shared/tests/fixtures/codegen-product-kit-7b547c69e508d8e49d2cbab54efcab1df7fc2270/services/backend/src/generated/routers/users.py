@@ -52,6 +52,9 @@ def create_router(
             session=session,
             payload=payload,
         )
+        # A core write is stored before its event and its answer: the session dependency's
+        # own commit runs only after the response, so a caller could read the previous state.
+        await session.commit()
         await publish_event("user_granted", result)
         return result
 
@@ -69,6 +72,9 @@ def create_router(
             session=session,
             payload=payload,
         )
+        # A core write is stored before its event and its answer: the session dependency's
+        # own commit runs only after the response, so a caller could read the previous state.
+        await session.commit()
         return result
 
     @router.get(

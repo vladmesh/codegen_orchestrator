@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 from langchain_core.messages import SystemMessage
 import pytest
 
+from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.contracts.dto.capability_preview import CapabilityPreviewCreate
 from src.agents.po.graph import po_prompt
 from src.agents.po.tools_briefs import confirm_product_brief, present_product_brief
@@ -35,7 +36,7 @@ TECHNICAL = (
     "packages/",
     "starting_channels",
     "kit add",
-    "52e9107",
+    CATALOG_ACTIVATION.commit[:7],
 )
 
 

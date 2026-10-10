@@ -64,8 +64,8 @@ def create_router(
             session=session,
             payload=payload,
         )
-        # A core setting is stored when its answer is sent: the session dependency's own
-        # commit runs only after the response, so a caller could read the previous value.
+        # A core write is stored before its event and its answer: the session dependency's
+        # own commit runs only after the response, so a caller could read the previous state.
         await session.commit()
         return result
 
@@ -84,8 +84,8 @@ def create_router(
             session=session,
             payload=payload,
         )
-        # A core setting is stored when its answer is sent: the session dependency's own
-        # commit runs only after the response, so a caller could read the previous value.
+        # A core write is stored before its event and its answer: the session dependency's
+        # own commit runs only after the response, so a caller could read the previous state.
         await session.commit()
         return result
 

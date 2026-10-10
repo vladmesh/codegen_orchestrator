@@ -113,6 +113,17 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
     assert release["installed_distribution"]["version"] == args.package_version, release
     scenario = evidence["scenario"]
     assert scenario["delivered_post"]["text"] and scenario["delivered_post"]["chat_id"]
+    # Grant, revoke, grant again: each 200 is what the next ordinary access read returns.
+    cycle = scenario["access_acknowledgments"]["steps"]
+    assert [(step["operation"], step["expected"]) for step in cycle] == [
+        ("grant", "active"),
+        ("revoke", "inactive"),
+        ("grant", "active"),
+    ], cycle
+    for step in cycle:
+        assert step["write"]["status"] == step["access"]["status"] == 200, step
+        assert step["write"]["body"]["status"] == step["expected"], step
+        assert step["access"]["body"] == step["write"]["body"], step
     if "reminders" in packages:
         assert scenario["reminders"]["delivered"]["text"].startswith("Reminder: ")
     languages = scenario["languages"]
@@ -138,6 +149,9 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
             name: task["task_id"] for name, task in production["install_tasks"].items()
         },
         "delivered_post": scenario["delivered_post"],
+        "access_acknowledgments": [
+            (step["operation"], step["access"]["body"]["status"]) for step in cycle
+        ],
     }
 
 
