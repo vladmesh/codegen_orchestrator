@@ -127,6 +127,8 @@ class PreviewRefusalCode(StrEnum):
 
     #: A request named a capability id the activated catalog does not offer.
     UNKNOWN_CAPABILITY = "unknown_capability"
+    #: A request without an id whose words name more than one offered capability.
+    AMBIGUOUS_CAPABILITY = "ambiguous_capability"
     #: The activated catalog could not be read now; a retry may succeed.
     CATALOG_UNAVAILABLE = "catalog_unavailable"
     #: The activated catalog does not match this host or its digests; an operator must act.
@@ -151,6 +153,8 @@ class CapabilityRequest(_Strict):
 
     request_id: RequestId
     #: An id the PO's capability list offered, or None for anything else the user wants.
+    #: Optional only for the PO: words that contain an offered capability's catalog phrase
+    #: resolve to that capability anyway, and its route names it.
     capability_id: CapabilityId | None = None
     #: The user's words for it.
     wording: str = Field(min_length=1, max_length=MAX_CAPABILITY_WORDING_LENGTH)
@@ -260,7 +264,9 @@ class CapabilityPreviewCreate(_Strict):
         routes = {route.request_id: route for route in self.product.routes}
         if routes.keys() != requests.keys() or len(routes) != len(self.product.routes):
             raise ValueError("a preview routes every request exactly once")
-        if any(routes[key].capability_id != requests[key].capability_id for key in requests):
+        if any(
+            requests[key].capability_id not in (None, routes[key].capability_id) for key in requests
+        ):
             raise ValueError("a route names the capability its request named")
         modules = {module.request_id: module for module in self.technical.modules}
         expected = {key for key, route in routes.items() if route.route in MODULE_ROUTES}

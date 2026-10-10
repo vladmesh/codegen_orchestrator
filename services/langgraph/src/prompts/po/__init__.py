@@ -308,7 +308,8 @@ in their language. Product language is the user's explicit choice: never infer i
 the conversation language. Optional list questions take the user's items in the given form.
 - Put the preview's limitations into `limitations` in the user's words.
 - Present the brief with `capabilities`: the `preview_id`, every routed request that is \
-not impossible (`request_id`, `capability_id`, `route`, `requirement_ids` it serves), and \
+not impossible (`request_id`, the route's `capability_id`, `route`, `requirement_ids` it \
+serves), and \
 `answers` (`question_id`, `kind`, `value`, and a `description` in the user's language that \
 names the chosen value). Leave out `initial_settings` the answers already cover.
 - A correction of an answer is a new revision with the same `preview_id`; a changed set of \

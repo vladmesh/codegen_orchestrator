@@ -47,9 +47,14 @@ _NEXT_STEP = {
     PreviewRefusalCode.UNKNOWN_CAPABILITY: (
         "Use only capability ids from this turn's list, or null for anything else."
     ),
+    PreviewRefusalCode.AMBIGUOUS_CAPABILITY: (
+        "These words name more than one ready capability. Make one request per capability, "
+        "each with its id from this turn's list."
+    ),
     PreviewRefusalCode.CATALOG_UNAVAILABLE: (
-        "The ready capabilities cannot be checked right now. Tell the user and try again "
-        "in a later turn; do not present a brief that relies on them yet."
+        "The ready capabilities cannot be checked right now, so no request can be routed. "
+        "Tell the user and try again in a later turn; do not present a brief that relies "
+        "on these requests yet."
     ),
     PreviewRefusalCode.CATALOG_INACTIVE: (
         "Ready capabilities are switched off for maintenance. Tell the user they cannot be "
@@ -108,7 +113,8 @@ async def preview_capabilities(
     outside service. One request per capability:
     `{"request_id": "channels", "capability_id": "cap-...", "wording": "<the user's words>",
       "beyond": "<what they want past the listed capability, or omit>"}`.
-    Use `capability_id: null` for anything not on the list.
+    Use `capability_id: null` for anything not on the list. Words that describe a listed
+    capability are routed as that capability even without its id, and the route names it.
 
     Returns the preview: `preview_id`, a `route` per request (`module`, `module_with_glue`,
     `from_scratch`, `impossible`) with its `reason`, the `questions` to ask the user
@@ -143,13 +149,6 @@ async def preview_capabilities(
         return f"No preview was stored: project {project_id} cannot be read."
     modules = (project.json().get("config") or {}).get("modules")
     rollout = await _rollout()
-    if rollout is None and any(request.capability_id for request in parsed):
-        return _refused(
-            CapabilityPreviewRefusal(
-                code=PreviewRefusalCode.ROLLOUT_UNAVAILABLE,
-                request_ids=[r.request_id for r in parsed if r.capability_id],
-            )
-        )
     try:
         body = resolve_preview(
             project_id=project_uuid,
@@ -157,7 +156,7 @@ async def preview_capabilities(
             catalog=await turn_catalog(config),
             activation=CATALOG_ACTIVATION,
             project_modules=set(modules) if isinstance(modules, list) else set(),
-            rollout_admits=rollout is not None and rollout.admits(project_uuid),
+            rollout_admits=None if rollout is None else rollout.admits(project_uuid),
             platform_cannot=platform_cannot,
         )
     except PreviewRefused as refused:

@@ -177,6 +177,27 @@ async def test_outside_the_rollout_a_channel_capability_is_impossible(activated_
 
 
 @pytest.mark.asyncio
+async def test_leaving_out_the_id_does_not_make_a_channel_capability_programmable(
+    activated_kit_catalog,
+):
+    """Reviewer reproduction (1588): null id, the catalog's own phrase, outside the rollout."""
+    api = _API(rollout={"project_ids": []})
+    init_po_clients(api, AsyncMock())
+    request = {
+        "request_id": "channels",
+        "capability_id": None,
+        "wording": "Read public Telegram channels and deliver new posts",
+    }
+    answer = await _preview(activated_kit_catalog, request)
+    result = json.loads(answer)
+    assert [(r["route"], r["reason"], r["capability_id"]) for r in result["routes"]] == [
+        ("impossible", "rollout_not_enabled", CHANNELS)
+    ]
+    for technical in TECHNICAL:
+        assert technical not in answer
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_rollout_stores_no_preview(activated_kit_catalog):
     api = _API(rollout="unreadable")
     init_po_clients(api, AsyncMock())

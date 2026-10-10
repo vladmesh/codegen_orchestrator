@@ -235,10 +235,13 @@ def test_without_the_activated_catalog_no_module_is_promised(failure, code):
     assert refused.value.refusal.code is code
 
 
-def test_without_the_catalog_ordinary_requests_are_still_previewed():
+def test_without_the_catalog_a_request_without_an_id_is_not_routed_either():
+    """Its words may name an offered module: an outage never makes that programmable."""
     unavailable = KitCatalogUnavailable("https://kit.invalid", KitCatalogFailure.TRANSPORT, "")
-    preview = _preview(unavailable, _requests({"request_id": "notes", "wording": "notes"}))
-    assert preview.product.routes[0].route is CapabilityRoute.FROM_SCRATCH
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(unavailable, _requests({"request_id": "notes", "wording": "notes"}))
+    assert refused.value.refusal.code is PreviewRefusalCode.CATALOG_UNAVAILABLE
+    assert refused.value.refusal.request_ids == ["notes"]
 
 
 def test_a_module_that_no_longer_installs_is_refused_before_the_user_is_asked(
@@ -343,3 +346,77 @@ def test_two_selections_answering_alike_plan_one_starting_list(activated_kit_cat
         setting.value for setting in plan.settings if setting.key == "tg_channels.starting_channels"
     ]
     assert values == [["durov"]]
+
+
+#: The reviewer's wording (1588): the catalog phrase "read public Telegram channels" in it.
+UNNAMED_CHANNELS = {
+    "request_id": "channels",
+    "wording": "Read public Telegram channels and deliver new posts",
+}
+
+
+def test_an_unnamed_request_outside_the_rollout_is_as_impossible_as_the_named_one(
+    activated_kit_catalog,
+):
+    unnamed = _preview(activated_kit_catalog, _requests(UNNAMED_CHANNELS), admits=False)
+    named = _preview(
+        activated_kit_catalog,
+        _requests(UNNAMED_CHANNELS | {"capability_id": CHANNELS}),
+        admits=False,
+    )
+
+    [route] = unnamed.product.routes
+    assert (route.route, route.reason, route.capability_id) == (
+        CapabilityRoute.IMPOSSIBLE,
+        RouteReason.ROLLOUT_NOT_ENABLED,
+        CHANNELS,
+    )
+    assert unnamed.product == named.product and unnamed.technical == named.technical
+
+
+def test_an_unnamed_request_inside_the_rollout_resolves_to_the_offered_closure(
+    activated_kit_catalog,
+):
+    unnamed = _preview(activated_kit_catalog, _requests(UNNAMED_CHANNELS))
+    named = _preview(
+        activated_kit_catalog, _requests(UNNAMED_CHANNELS | {"capability_id": CHANNELS})
+    )
+
+    [route] = unnamed.product.routes
+    assert (route.route, route.capability_id) == (CapabilityRoute.MODULE, CHANNELS)
+    assert unnamed.technical == named.technical
+    assert [q.question_id for q in unnamed.product.questions] == [
+        q.question_id for q in named.product.questions
+    ]
+
+
+def test_an_unnamed_russian_phrase_resolves_the_same_capability(activated_kit_catalog):
+    request = {"request_id": "ru", "wording": "Хочу читать публичные Telegram-каналы Кипра"}
+    [route] = _preview(activated_kit_catalog, _requests(request), admits=False).product.routes
+    assert (route.route, route.capability_id) == (CapabilityRoute.IMPOSSIBLE, CHANNELS)
+
+
+def test_words_naming_two_offered_capabilities_are_refused(activated_kit_catalog):
+    request = {
+        "request_id": "both",
+        "wording": "read public Telegram channels and remind me at a time",
+    }
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(activated_kit_catalog, _requests(request))
+    assert refused.value.refusal.code is PreviewRefusalCode.AMBIGUOUS_CAPABILITY
+    assert refused.value.refusal.request_ids == ["both"]
+
+
+@pytest.mark.parametrize(
+    "request_item", [UNNAMED_CHANNELS, CHANNEL_REQUEST], ids=["unnamed", "named"]
+)
+def test_an_unreadable_rollout_routes_no_module_intent(activated_kit_catalog, request_item):
+    with pytest.raises(PreviewRefused) as refused:
+        _preview(activated_kit_catalog, _requests(request_item), admits=None)
+    assert refused.value.refusal.code is PreviewRefusalCode.ROLLOUT_UNAVAILABLE
+
+
+def test_an_unreadable_rollout_still_routes_ordinary_requests(activated_kit_catalog):
+    request = {"request_id": "notes", "wording": "keep a list of my notes"}
+    [route] = _preview(activated_kit_catalog, _requests(request), admits=None).product.routes
+    assert (route.route, route.capability_id) == (CapabilityRoute.FROM_SCRATCH, None)

@@ -49,6 +49,7 @@ from shared.contracts.dto.capability_preview import (
 )
 from shared.contracts.dto.catalog_install import CatalogActivation
 
+from .capability_feasibility import normalise
 from .catalog_install import (
     INSTALL_PYTHON_VERSION,
     InstallRefusal,
@@ -252,32 +253,43 @@ def resolve_preview(  # noqa: C901, PLR0912 - one route decision per request, in
     catalog: KitCatalogAnswer,
     activation: CatalogActivation,
     project_modules: set[str],
-    rollout_admits: bool,
+    rollout_admits: bool | None,
     platform_cannot: Callable[[str], object | None],
 ) -> CapabilityPreviewCreate:
     """The stored preview for these requests, or `PreviewRefused`.
 
     Deterministic: the same requests, project facts and snapshot give the same preview.
+    `rollout_admits` is None when the rollout policy could not be read.
+
+    A request's capability is the id it names or, when it names none, the one offered
+    capability whose catalog phrase its words contain (`offered_in_words`): leaving the
+    optional id out never turns an offered module's intent into programmable work. That
+    is why every request needs the activated catalog, named or not.
     """
+    if not isinstance(catalog, KitCatalog):
+        code = (
+            PreviewRefusalCode.CATALOG_INACTIVE
+            if catalog.failure in TERMINAL_CATALOG_FAILURES
+            else PreviewRefusalCode.CATALOG_UNAVAILABLE
+        )
+        raise PreviewRefused(code, [request.request_id for request in requests])
+    offered = {capability_id(item.name): item for item in catalog.packages if _offered(item)}
     named = [request for request in requests if request.capability_id is not None]
-    offered: dict[str, InstallablePackage] = {}
-    if named:
-        if not isinstance(catalog, KitCatalog):
-            code = (
-                PreviewRefusalCode.CATALOG_INACTIVE
-                if catalog.failure in TERMINAL_CATALOG_FAILURES
-                else PreviewRefusalCode.CATALOG_UNAVAILABLE
-            )
-            raise PreviewRefused(code, [request.request_id for request in named])
-        offered = {capability_id(item.name): item for item in catalog.packages if _offered(item)}
-        if unknown := [r.request_id for r in named if r.capability_id not in offered]:
-            raise PreviewRefused(PreviewRefusalCode.UNKNOWN_CAPABILITY, unknown)
+    if unknown := [r.request_id for r in named if r.capability_id not in offered]:
+        raise PreviewRefused(PreviewRefusalCode.UNKNOWN_CAPABILITY, unknown)
+    resolved = {
+        request.request_id: request.capability_id or _one_offer_in_words(request, offered)
+        for request in requests
+    }
+    if rollout_admits is None and (wanted := [key for key, cap in resolved.items() if cap]):
+        raise PreviewRefused(PreviewRefusalCode.ROLLOUT_UNAVAILABLE, wanted)
     routes: list[PreviewRoute] = []
     modules: list[PreviewModule] = []
     questions: dict[str, _Question] = {}
     limitations: list[PreviewLimitation] = []
     for request in requests:
-        if request.capability_id is None:
+        wanted_id = resolved[request.request_id]
+        if wanted_id is None:
             cannot = platform_cannot(f"{request.wording} {request.beyond or ''}")
             route, reason = (
                 (CapabilityRoute.IMPOSSIBLE, RouteReason.PLATFORM_CANNOT)
@@ -286,20 +298,19 @@ def resolve_preview(  # noqa: C901, PLR0912 - one route decision per request, in
             )
             routes.append(PreviewRoute(request_id=request.request_id, route=route, reason=reason))
             continue
-        assert isinstance(catalog, KitCatalog)
-        item = offered[request.capability_id]
+        item = offered[wanted_id]
         try:
             manifest = _manifest(catalog, item)
             outside = route_outside_rollout(
                 manifest,
                 shape_ok=MODULE_PRODUCT_SHAPE <= project_modules,
-                rollout_admits=rollout_admits,
+                rollout_admits=bool(rollout_admits),
             )
             if outside is not None:
                 routes.append(
                     PreviewRoute(
                         request_id=request.request_id,
-                        capability_id=request.capability_id,
+                        capability_id=wanted_id,
                         route=outside[0],
                         reason=outside[1],
                     )
@@ -328,7 +339,7 @@ def resolve_preview(  # noqa: C901, PLR0912 - one route decision per request, in
         routes.append(
             PreviewRoute(
                 request_id=request.request_id,
-                capability_id=request.capability_id,
+                capability_id=wanted_id,
                 route=CapabilityRoute.MODULE_WITH_GLUE if beyond else CapabilityRoute.MODULE,
                 reason=RouteReason.BEYOND_OFFER if beyond else RouteReason.OFFERED,
             )
@@ -336,7 +347,7 @@ def resolve_preview(  # noqa: C901, PLR0912 - one route decision per request, in
         modules.append(
             PreviewModule(
                 request_id=request.request_id,
-                capability_id=request.capability_id,
+                capability_id=wanted_id,
                 install=install,
             )
         )
@@ -354,6 +365,31 @@ def resolve_preview(  # noqa: C901, PLR0912 - one route decision per request, in
             targets=[item.target for item in questions.values()],
         ),
     )
+
+
+def offered_in_words(
+    request: CapabilityRequest, offered: dict[str, InstallablePackage]
+) -> list[str]:
+    """The offered capabilities whose own catalog phrase the request's words contain.
+
+    The phrases are the catalog package's `capabilities`, the same user-level words the
+    PO's capability list shows; matching is the manifest floor's normalised containment.
+    """
+    words = normalise(f"{request.wording} {request.beyond or ''}")
+    return [
+        key
+        for key, item in offered.items()
+        if any(normalise(phrase) in words for phrase in item.package.capabilities)
+    ]
+
+
+def _one_offer_in_words(
+    request: CapabilityRequest, offered: dict[str, InstallablePackage]
+) -> str | None:
+    matched = offered_in_words(request, offered)
+    if len(matched) > 1:
+        raise PreviewRefused(PreviewRefusalCode.AMBIGUOUS_CAPABILITY, [request.request_id])
+    return matched[0] if matched else None
 
 
 def route_outside_rollout(
