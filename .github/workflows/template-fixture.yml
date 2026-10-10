@@ -1,5 +1,9 @@
 name: Released template fixture
 
+# The CI producer of what a kit pin move commits: the genuine Copier render of the pinned
+# kit commit (tracked bytes and provenance) and the dependency locks resolved against the
+# pinned tooling. A pin change pushes the moved pins, takes these artifacts back and commits
+# them unchanged; nothing in the tree is a hand-made replica of a render or a lock.
 on:
   workflow_dispatch:
   push:
@@ -7,6 +11,9 @@ on:
     paths:
       - scripts/render_template_fixture.py
       - scripts/system_configs.yaml
+      - pyproject.toml
+      - services/langgraph/pyproject.toml
+      - .github/workflows/template-fixture.yml
 
 permissions:
   contents: read
@@ -28,4 +35,32 @@ jobs:
         with:
           name: released-template-fixture
           path: ${{ runner.temp }}/fixture
+          if-no-files-found: error
+
+  locks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+      - uses: ./.github/actions/setup-uv-with-retry
+        timeout-minutes: 3
+      # The resolver keeps every other pin of the committed locks (the workspace lock and the
+      # existing requirements file are its preferences); only what the pin move changes moves.
+      - name: Resolve the workspace and LangGraph image locks against the pinned tooling
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          uv lock
+          uv pip compile services/langgraph/pyproject.toml -o services/langgraph/requirements.lock
+          mkdir -p "$RUNNER_TEMP/locks/services/langgraph"
+          cp uv.lock "$RUNNER_TEMP/locks/uv.lock"
+          cp services/langgraph/requirements.lock "$RUNNER_TEMP/locks/services/langgraph/requirements.lock"
+          git diff --stat -- uv.lock services/langgraph/requirements.lock | tee "$RUNNER_TEMP/locks/diffstat.txt"
+          git rev-parse HEAD > "$RUNNER_TEMP/locks/candidate_sha.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        timeout-minutes: 1
+        with:
+          name: resolved-locks
+          path: ${{ runner.temp }}/locks
           if-no-files-found: error
