@@ -112,10 +112,12 @@ async def run(packages: list[str]) -> dict:  # noqa: PLR0915 - one ordered produ
         }
     }
     offered = {item.name: item for item in catalog.packages}
+    # The first request names no id, as the PO may send it: its words are the package's own
+    # catalog phrase, so the preview must still route it as that module.
     requests = [
         {
             "request_id": f"r{index}",
-            "capability_id": capability_id(name),
+            "capability_id": None if index == 1 else capability_id(name),
             "wording": offered[name].package.capabilities[0],
         }
         for index, name in enumerate(packages, start=1)
@@ -129,6 +131,11 @@ async def run(packages: list[str]) -> dict:  # noqa: PLR0915 - one ordered produ
     _check(
         [route["route"] for route in preview["routes"]] == ["module"] * len(packages),
         f"not every capability is a module route: {preview['routes']}",
+    )
+    _check(
+        [route["capability_id"] for route in preview["routes"]]
+        == [capability_id(name) for name in packages],
+        f"a route names another capability: {preview['routes']}",
     )
     answers = []
     for question in preview["questions"]:
@@ -156,12 +163,12 @@ async def run(packages: list[str]) -> dict:  # noqa: PLR0915 - one ordered produ
         "preview_id": preview["preview_id"],
         "capabilities": [
             {
-                "request_id": request["request_id"],
-                "capability_id": request["capability_id"],
+                "request_id": route["request_id"],
+                "capability_id": route["capability_id"],
                 "route": "module",
                 "requirement_ids": [requirement["id"]],
             }
-            for request, requirement in zip(requests, requirements, strict=True)
+            for route, requirement in zip(preview["routes"], requirements, strict=True)
         ],
         "answers": answers,
     }

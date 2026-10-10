@@ -68,6 +68,10 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
     assert [route["route"] for route in production["preview"]["routes"]] == ["module"] * len(
         packages
     )
+    # The first request named no id; its words alone resolved the module it installs.
+    assert [route["capability_id"] for route in production["preview"]["routes"]] == [
+        item["capability_id"] for item in production["plan"]["capabilities"]
+    ] and all(route["capability_id"] for route in production["preview"]["routes"])
     stored = {
         item["install"]["package"]["name"]: item["install"]
         for item in production["plan"]["capabilities"]
