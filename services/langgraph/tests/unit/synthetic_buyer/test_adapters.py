@@ -135,10 +135,10 @@ async def test_reader_usage_is_read_with_the_products_own_key_and_redacted():
         http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
-    usage = await facts.usage(PROJECT, "https://reader.example.test/tg-reader")
+    usage = await facts.usage(PROJECT, "https://reader.example.test/channels")
 
     assert (usage.status, usage.channels_used, usage.resolves_today) == (200, 2, 3)
-    assert seen[0].url == "https://reader.example.test/tg-reader/v1/usage"
+    assert seen[0].url == "https://reader.example.test/channels/v1/usage"
     assert seen[0].headers["Authorization"] == "Bearer " + key
     assert key not in redaction.text(f"echo {key}")
 

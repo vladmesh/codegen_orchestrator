@@ -38,6 +38,6 @@
   "platform": {
     "auth_admin_url": {"env": "PLATFORM_AUTH_ADMIN_URL"},
     "auth_admin_token": {"env": "PLATFORM_AUTH_ADMIN_TOKEN"},
-    "reader_base_url": "<tg_reader_base_url_from_the_environment_contract>"
+    "reader_base_url": "<channel_reader_base_url_from_the_environment_contract>"
   }
 }

@@ -88,7 +88,7 @@ def config_data(**overrides: Any) -> dict:
         "platform": {
             "auth_admin_url": {"env": "PLATFORM_AUTH_ADMIN_URL"},
             "auth_admin_token": {"env": "PLATFORM_AUTH_ADMIN_TOKEN"},
-            "reader_base_url": "https://reader.example.test/tg-reader",
+            "reader_base_url": "https://reader.example.test/channels",
         },
     }
     for key, value in overrides.items():
