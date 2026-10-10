@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from scripts.template_pin import TEMPLATE_PIN
 from tests.live.install_witness import (
     PUBLISHED_EVENT,
     WitnessRefused,
@@ -21,7 +22,8 @@ from tests.runner.verify_evidence import stand_witness_problems
 
 G = ["git", "-c", "core.hooksPath=/dev/null"]
 CATALOG = "https://github.com/vladmesh/codegen-product-kit.git"
-KIT_COMMIT = "7b547c69e508d8e49d2cbab54efcab1df7fc2270"
+# The admitted catalog and kit tooling are the same immutable commit the template pins.
+KIT_COMMIT = TEMPLATE_PIN.ref
 BASE = "c1cf3226e0edf07a5dc9e4e7b1a7f227c74e46ca"
 HEAD = "2e5e5f674ddfa52402338db14ceacbe8110334f3"
 OPERATION = "install-712031010ab1489b9371e9664ff06478"
