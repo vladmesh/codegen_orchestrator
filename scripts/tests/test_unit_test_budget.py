@@ -33,6 +33,12 @@ SAMPLE = textwrap.dedent(
 )
 
 
+#: Each of these runs a whole pytest session in-process (plugin load, collection,
+#: reporting): about half a second on CI runners, the size of the budget it tests.
+#: Heavy in-process work is the slow family's, as the budget's own message says.
+WHOLE_SESSION = pytest.mark.slow(reason="runs a whole pytest session in-process")
+
+
 def _run(pytester: pytest.Pytester, *args: str) -> pytest.RunResult:
     pytester.makepyfile(test_sample=SAMPLE)
     return pytester.runpytest_inprocess(
@@ -40,6 +46,7 @@ def _run(pytester: pytest.Pytester, *args: str) -> pytest.RunResult:
     )
 
 
+@WHOLE_SESSION
 def test_a_test_over_the_budget_fails_unless_it_is_ci_only(pytester: pytest.Pytester) -> None:
     result = _run(pytester, "--unit-test-budget=0")
     # The call passed; the budget fails its teardown, so pytest counts it as an error too.
@@ -49,21 +56,25 @@ def test_a_test_over_the_budget_fails_unless_it_is_ci_only(pytester: pytest.Pyte
     assert "test_already_red took" not in result.stdout.str()
 
 
+@WHOLE_SESSION
 def test_no_budget_option_changes_nothing(pytester: pytest.Pytester) -> None:
     _run(pytester).assert_outcomes(passed=3, failed=1)
 
 
+@WHOLE_SESSION
 def test_slow_and_subprocess_imply_ci_only(pytester: pytest.Pytester) -> None:
     result = _run(pytester, "-m", "not ci_only", "--unit-test-budget=60")
     result.assert_outcomes(passed=1, failed=1, deselected=2)
 
 
+@WHOLE_SESSION
 def test_slow_without_a_reason_is_a_usage_error(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(test_bare="import pytest\n\n@pytest.mark.slow\ndef test_x():\n    pass\n")
     result = pytester.runpytest_inprocess("-p", "scripts.ci_only_markers", "-q")
     assert result.ret == pytest.ExitCode.USAGE_ERROR
 
 
+@WHOLE_SESSION
 def test_the_suite_cpu_file_holds_the_session_cpu(pytester: pytest.Pytester) -> None:
     out = pytester.path / "suite.json"
     _run(pytester, f"--suite-cpu-file={out}")
