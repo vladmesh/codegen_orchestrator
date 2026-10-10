@@ -857,6 +857,40 @@ credentials then reach qa-worker alone, through its own env file. `mega-noop` re
 proven session for fixed probes while bypassing model sessions. `scripts/make_stand_session.py`
 authorizes a new stand session.
 
+### Synthetic buyer evidence
+
+`services/langgraph/tests/unit/synthetic_buyer/` exercises the fresh operator driver through
+in-process Telegram, API, repository, persona, platform and clock ports. Time advances only
+through the fake clock; no socket, server, process, container or real wait is used. Controlled
+HTTP transports and Telethon-shaped clients exercise the adapters. These tests run through
+`python -m shared` in the native host profile, with its 0.5 s per-test and 240 s CPU budgets.
+
+The complete working route covers registration or buyer reuse, protected token or bounded
+BotFather creation, token-attributed authenticated ownership, rollout readback before feature
+preview, frozen module-route admission before confirmation, immediate install and glue proof,
+distinct built-commit publication and deployment workflows, terminal typed QA, actual-post
+witness judgment before `/digest`, RU/EN replies, core language readback, product auth and
+attributed reader activity. Missing, contradictory or unreadable evidence cannot pass.
+Controller handoff tests hold back Story visibility after confirmation and require no Telegram
+use while waiting or during native work. Failed, blocked or invalid QA cannot start product probes.
+An unknown confirmation is sent once, stops the run and retains diagnostic intent and ownership.
+
+Cleanup cases prove the acceptance verdict is saved before completed teardown and archived
+readback, owner-authenticated DELETE 204, and owner GET 404. Foreign or replaced ownership,
+failed/refused/unknown/timed-out teardown, refused DELETE and unreadable or present readback
+cannot claim successful cleanup. Unrelated projects remain intact. Offline `check` and `inspect`
+connect to no port; another fresh run refuses existing evidence without modifying it.
+
+These are controller and adapter proofs, not delivered production events. The operator's later
+operation supplies live evidence, as described in the [runbook](runbooks/synthetic-buyer.md).
+Native QA and worker-manager keep released-main behavior. Independent same-account QA is
+excluded by operator sequencing during buyer Telegram phases; status observations establish
+no concurrency lock. Concurrent admission, orphan/cancellation accounting and interrupted-run
+reconciliation are deferred to `issue:c369b68e3d23896c2d6d`. Their prototype coordination tests,
+including unmarked socket tests, were removed with that layer. Retained real service boundaries
+run only in the existing CI service/integration shards; historical host network results supply
+no candidate evidence.
+
 ## Integration Test Architecture
 
 `make test-backup-db` runs `tests/integration/backup/test_verified_database_backup.py` on the host,
