@@ -11,11 +11,13 @@ import pytest
 import yaml
 
 from scripts.template_pin import TEMPLATE_PIN
+from shared.contracts.template import recorded_template_commit_matches
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = Path(".github/workflows/deploy.yml")
 PREVIOUS_REF = ".".join(map(str, (0, 6, 3)))
-RELEASE_SHA = "f7de8f96b18f79b94dcd0546905771674cf11cfa"
+# The pin is an immutable kit commit, and the render resolves its tooling at that commit.
+RELEASE_SHA = TEMPLATE_PIN.ref
 
 
 def run(command, cwd, **kwargs):
@@ -228,7 +230,7 @@ def test_published_update_retains_owned_bytes_and_requires_reconciliation(
     assert before == {name: (product / name).read_bytes() for name in owned}
     answers = yaml.safe_load((product / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    assert answers["_commit"] == TEMPLATE_PIN.ref
+    assert recorded_template_commit_matches(answers["_commit"], TEMPLATE_PIN.ref)
     assert answers["modules"] == "backend,tg_bot"
     assert f"codegen-product-kit.git@{RELEASE_SHA}" in (product / "pyproject.toml").read_text()
     assert f"rev={RELEASE_SHA}#{RELEASE_SHA}" in (product / "uv.lock").read_text()

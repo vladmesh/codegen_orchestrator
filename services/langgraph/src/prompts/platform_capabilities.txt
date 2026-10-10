@@ -1,4 +1,4 @@
-## Platform capabilities (manifest v22, owner-reviewed)
+## Platform capabilities (manifest v23, owner-reviewed)
 What a product built here can and cannot have. The product is a Telegram bot and has no web address.
 Can:
 - Add a catalog capability: An existing bot can add a released catalog capability while retaining its own features.

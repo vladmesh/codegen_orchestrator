@@ -10,6 +10,7 @@ import hashlib
 from importlib import metadata
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,18 @@ import yaml
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def recorded_template_commit_matches(recorded, ref):
+    """Copier records a commit pin as itself or in its `git describe` form.
+
+    The same rule as `shared.contracts.template`, repeated here because this probe runs
+    in the product's interpreter and imports nothing from the services.
+    """
+    if recorded == ref:
+        return True
+    described = re.fullmatch(r".+-\d+-g([0-9a-f]{7,40})", recorded)
+    return bool(re.fullmatch(r"[0-9a-f]{40}", ref) and described and ref.startswith(described[1]))
 
 
 def installed(root, service, distribution):
@@ -82,7 +95,9 @@ def probe(mode, payload, ref):  # noqa: C901, PLR0912, PLR0915  # cross-check ac
     ):
         raise ValueError("tooling_unowned: use the product's own tooling interpreter")
     answers = yaml.safe_load((root / ".copier-answers.yml").read_text())
-    if answers["_src_path"] != "gh:vladmesh/codegen-product-kit" or answers["_commit"] != ref:
+    if answers["_src_path"] != "gh:vladmesh/codegen-product-kit" or not (
+        recorded_template_commit_matches(str(answers["_commit"]), ref)
+    ):
         raise ValueError("template_incompatible: reviewed native Copier upgrade required")
     if set(answers["modules"].split(",")) != {"backend", "tg_bot"}:
         raise ValueError("modules_missing: backend,tg_bot required")

@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from scripts.template_pin import TEMPLATE_PIN
+from shared.contracts.template import recorded_template_commit_matches
 from shared.contracts.env_usage import (
     EnvUsageParseError,
     build_env_contract_artifact,
@@ -344,9 +345,9 @@ def test_template_fixture_tracks_the_pinned_template_ref():
     assert not stale, f"fixtures left behind for unpinned template revisions: {stale}"
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    # The pin is the kit's release tag, and the tag is reachable in Copier's clone, so
-    # what Copier records is the pinned ref itself.
-    assert answers["_commit"] == pinned_template_ref()
+    # The pin is an immutable kit commit; Copier records it, or its `git describe` form
+    # when a tag is reachable from it.
+    assert recorded_template_commit_matches(answers["_commit"], pinned_template_ref())
 
 
 def test_template_fixture_pins_verified_uv_bootstrap():
@@ -382,8 +383,8 @@ def test_template_fixture_content_matches_its_pinned_render():
     fixture = template_fixture()
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
 
+    assert recorded_template_commit_matches(answers.pop("_commit"), TEMPLATE_PIN.ref)
     assert answers == {
-        "_commit": TEMPLATE_PIN.ref,
         "_src_path": TEMPLATE_PIN.source,
         "author_email": "dev@example.com",
         "author_name": "Developer",
@@ -399,7 +400,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     assert not (fixture / "TASK.md").exists()
     assert (
         fixture_tree_digest(fixture)
-        == "7d3d624480a87ab3ffdad6518ba2a9526cd7af278362ede0117e3a8e71204abd"
+        == "17bb0a40f017e8b1d45dc8dcfaea82edb2650a431fef22af4f2158c8f17f1502"
     )
 
 
@@ -410,7 +411,7 @@ def test_template_fixture_contains_the_released_core_runtime_boundaries():
     migrations = (fixture / "codegen_kit/migrations.py").read_text()
     settings = (fixture / "services/backend/src/controllers/settings.py").read_text()
 
-    assert 'CORE_VERSION = "2.4.0"' in packages
+    assert 'CORE_VERSION = "2.5.0"' in packages
     assert "await package.runtime.startup(application)" in packages
     assert "class SettingSeedPackage(Protocol):" in packages
     assert "def owned_package_database(caller_path: Path)" in database
