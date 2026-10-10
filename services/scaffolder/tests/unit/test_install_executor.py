@@ -282,7 +282,7 @@ def product_checkout_until(tmp_path, stop, preflight=None, preflight_rc=0):
             return 0, "", ""
         if "rev-parse" in args:
             return 0, "d" * 40 + "\n", ""
-        if "preflight" in args:
+        if "provenance" in args or "preflight" in args:
             return 0, "{}", ""
         if "check-install" in args:
             return preflight_rc, json.dumps(answer_preflight), ""
@@ -565,3 +565,101 @@ async def test_a_payload_without_a_catalog_commit_runs_nothing(tmp_path, monkeyp
         )
     assert refused.value.stage == "preflight"
     command.assert_not_awaited()
+
+
+def probe_modes(calls):
+    return [args[3] for args in calls if len(args) > 3 and args[2].endswith("install_probe.py")]
+
+
+def order_of(calls):
+    """Probe modes, the kit's check and the first add, in the order they ran."""
+    steps = []
+    for args in calls:
+        if len(args) > 3 and args[2].endswith("install_probe.py"):
+            steps.append(f"probe {args[3]}")
+        elif args[0].endswith("/.venv/bin/kit"):
+            steps.append(args[1])
+    return steps
+
+
+@pytest.mark.asyncio
+async def test_provenance_precedes_the_kits_classifier_and_ownership_checks_follow_it(
+    tmp_path, monkeypatch
+):
+    calls, command = product_checkout_until(
+        tmp_path, lambda args: (2, "stop\n", "") if args[:1] == ["make"] else None
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError):
+        await execute(tmp_path)
+    assert order_of(calls)[:4] == [
+        "probe provenance",
+        "check-install",
+        "probe preflight",
+        "add",
+    ]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        glue_item(
+            "binding_language_owner",
+            symbol="tg-channels",
+            path="services/tg_bot/bindings/reminders.yaml",
+        ),
+        glue_item("command_collision", symbol="handle_remind"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_product_conflict_reaches_the_typed_answer_not_a_probe_exit(
+    tmp_path, monkeypatch, item
+):
+    """The probe's own binding/command refusals cannot answer before the kit classifies."""
+
+    def owned_probe(args):
+        if len(args) > 3 and args[2].endswith("install_probe.py") and args[3] == "preflight":
+            return 1, "", "ValueError: binding_owned: existing product binding differs"
+        return None
+
+    calls, command = product_checkout_until(
+        tmp_path, owned_probe, check_install("glue", [item]), preflight_rc=3
+    )
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError) as refused:
+        await execute(tmp_path)
+    assert refused.value.preflight is not None
+    assert refused.value.preflight.glue[0].code == item["code"]
+    assert probe_modes(calls) == ["provenance"]
+
+
+@pytest.mark.asyncio
+async def test_a_provenance_failure_is_never_classified_as_glue(tmp_path, monkeypatch):
+    def tooling(args):
+        if len(args) > 3 and args[2].endswith("install_probe.py") and args[3] == "provenance":
+            return 1, "", "ValueError: tooling_incompatible: saved requirement differs"
+        return None
+
+    calls, command = product_checkout_until(tmp_path, tooling)
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match="tooling_incompatible") as refused:
+        await execute(tmp_path)
+    assert refused.value.preflight is None
+    assert not any(args[0].endswith("/.venv/bin/kit") for args in calls)
+
+
+@pytest.mark.asyncio
+async def test_a_mechanical_release_still_meets_the_probes_ownership_refusals(
+    tmp_path, monkeypatch
+):
+    def owned_probe(args):
+        if len(args) > 3 and args[2].endswith("install_probe.py") and args[3] == "preflight":
+            return 1, "", "ValueError: binding_conflict: command is already owned"
+        return None
+
+    calls, command = product_checkout_until(tmp_path, owned_probe)
+    monkeypatch.setattr("src.install._run_cmd", command)
+    with pytest.raises(InstallExecutionError, match="binding_conflict") as refused:
+        await execute(tmp_path)
+    assert refused.value.stage == "preflight"
+    assert [args[1] for args in calls if args[0].endswith("/.venv/bin/kit")] == ["check-install"]

@@ -292,9 +292,11 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         probe = str(Path(__file__).with_name("install_probe.py"))
         python = str(root / ".venv/bin/python")
         kit = str(root / ".venv/bin/kit")
-        _, probed = await command([python, "-I", probe, "preflight", payload, msg.template_ref])
+        # Independent provenance first: saved source, core, tooling, tags, default binding.
+        _, probed = await command([python, "-I", probe, "provenance", payload, msg.template_ref])
         json.loads(probed)
-        # The kit's read-only admission of this exact release on this exact product.
+        # Then the kit's read-only classification of this exact release on this product owns
+        # every product conflict: language owners, command claims, settings.
         catalog = ["--catalog-source", msg.install.catalog.repository]
         catalog += ["--catalog-ref", msg.install.catalog.commit]
         rc, answer = await command(
@@ -331,6 +333,14 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
                 stage, glue_detail(result, msg.install), head, base, preflight=result
             )
         await checkpoint()
+        # A release the kit admitted still passes the probe's own ownership refusals: a
+        # retained binding, a claimed command or a settings schema is never overwritten.
+        _, probed = await command([python, "-I", probe, "preflight", payload, msg.template_ref])
+        json.loads(probed)
+        if await read_only_state() != before:
+            raise InstallExecutionError(
+                stage, "preflight_not_read_only: the product changed under preflight", head, base
+            )
         protected = before[1]
         # Each argv is platform-owned. No command, artifact, source override or
         # product path comes from task prose. The product CLI owns all mutation, and

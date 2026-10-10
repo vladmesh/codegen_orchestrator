@@ -232,10 +232,11 @@ environments are prepared by the product's own `sh scripts/prepare-env.sh root b
 tg_bot` (frozen `uv sync` of each lock), so distinct operations share no checkout, venv,
 index or output.
 
-Before package mutation, two read-only checks run on the prepared attempt. The fixed probe
-runs under the product's isolated interpreter and checks saved source/ref, root
-requirement/lock/installed tooling, actual core, required modules, independent tags, target
-Python, binding ownership and command/settings conflicts. Then the kit's own `kit
+Before package mutation, read-only checks run on the prepared attempt in a fixed order.
+First the fixed probe, in `provenance` mode under the product's isolated interpreter,
+checks saved source/ref, root requirement/lock/installed tooling, actual core, required
+modules, independent tags, target Python and the published default binding; a failure here
+is a plain refusal, never glue. Then the kit's own `kit
 check-install <package> --json --catalog-source <repository> --catalog-ref <commit>
 --version <version> --product-root <attempt>` classifies the exact saved release on the
 actual product (`InstallPreflight`, result version 1): the exit code must be its status's
@@ -246,7 +247,12 @@ the payload's core; anything else refuses (`preflight_malformed`, `preflight_exi
 installed distributions must be unchanged by both checks (`preflight_not_read_only`). The
 kit's `library_required` for a library of the closure is the installer's own next step;
 any other glue item refuses `glue_required` with the kit's files, lines and actions, and
-`incompatible` refuses with its stable code. The typed answer is saved on the operation
+`incompatible` refuses with its stable code, so every product conflict — a retained
+binding's language owner, a command claim, a settings schema — reaches the kit's typed
+answer before anything else can refuse it. Only a release the kit admitted then meets the
+probe's `preflight` mode, whose ownership refusals (a differing retained binding, a claimed
+command, a conflicting settings schema) still protect product files from being overwritten.
+The typed answer is saved on the operation
 (`InstallOperation.preflight`), as is its checkout (`checkout`, refused unless derived from
 the operation), and publication requires an admitted, glue-free preflight
 (`preflight_unverified`). Older cores require a reviewed native Copier update; no

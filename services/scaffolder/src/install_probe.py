@@ -1,5 +1,9 @@
 """Read-only fixed probe, executed by the product's isolated tooling interpreter.
 
+Modes: `provenance` checks the saved source, core, tooling, catalog, tags and default
+binding only; `preflight` adds the product-conflict refusals; `readback` verifies the
+installed closure.
+
 This file has no service imports. Every kit import comes from the product's own
 locked environment; nothing installs host tooling or patches application files.
 """
@@ -204,16 +208,19 @@ def probe(mode, payload, ref):  # noqa: C901, PLR0912, PLR0915  # cross-check ac
                 )
                 binding = load_binding(resource_path)
                 validate_binding(binding, manifest, catalog)
-                existing = root / f"services/tg_bot/bindings/{package.name}.yaml"
-                if existing.exists() and existing.read_bytes() != content:
-                    raise ValueError("binding_owned: existing product binding differs")
-                reserved = {"start", "command"}
-                for current in binding_files(root).values():
-                    if current.package != package.name:
-                        reserved.update(item.command for item in current.commands)
-                if reserved.intersection(item.command for item in binding.commands):
-                    raise ValueError("binding_conflict: command is already owned")
-                validate_binding_settings(root, binding)
+                if mode != "provenance":
+                    # Product conflicts are the kit's check-install to classify first; these
+                    # refusals guard only a release it admitted as mechanical.
+                    existing = root / f"services/tg_bot/bindings/{package.name}.yaml"
+                    if existing.exists() and existing.read_bytes() != content:
+                        raise ValueError("binding_owned: existing product binding differs")
+                    reserved = {"start", "command"}
+                    for current in binding_files(root).values():
+                        if current.package != package.name:
+                            reserved.update(item.command for item in current.commands)
+                    if reserved.intersection(item.command for item in binding.commands):
+                        raise ValueError("binding_conflict: command is already owned")
+                    validate_binding_settings(root, binding)
             else:
                 # Kit's native target-interpreter admission, never host Python.
                 from framework.cli import _library_python_version
