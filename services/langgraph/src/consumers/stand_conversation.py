@@ -16,6 +16,7 @@ from shared.telegram_access_probe import telethon_env
 from shared.telethon_identity import prove_qa_identity
 
 from ..clients.product_settings import GeneratedServiceSettingsClient
+from ._qa_telegram_lease import lifetime
 from .mechanical_telegram import ProbeFailure
 
 ConversationFailure = ProbeFailure
@@ -122,7 +123,9 @@ async def run_steps(  # noqa: C901, PLR0912, PLR0915 - finite sequential fixture
     }
 
 
-async def run_probe(*, marker, bot_username, deployed_url, evidence, redaction, stored, **kwargs):
+async def run_probe(  # noqa: PLR0913 - one probe's whole context
+    *, marker, bot_username, deployed_url, evidence, redaction, stored, identity_hold=None, **kwargs
+):
     from telethon import TelegramClient  # noqa: PLC0415
     from telethon.sessions import StringSession  # noqa: PLC0415
 
@@ -135,6 +138,7 @@ async def run_probe(*, marker, bot_username, deployed_url, evidence, redaction, 
     )
     credentials = telethon_env()
     redaction.add(credentials["TELETHON_SESSION"], credentials["TELETHON_API_HASH"])
+    used = lifetime(identity_hold, "client", "stand conversation")
     client = TelegramClient(
         StringSession(credentials["TELETHON_SESSION"]),
         int(credentials["TELETHON_API_ID"]),
@@ -180,11 +184,7 @@ async def run_probe(*, marker, bot_username, deployed_url, evidence, redaction, 
                 await run_steps(client, bot, fixture["steps"], evidence=evidence, setting=setting)
             evidence.update(status="passed", phase="completed")
     finally:
-        # Recorded either way: a disconnect that failed leaves the run's hold on
-        # the QA identity retained (`qa._run_mechanical_qa`).
-        try:
-            await asyncio.wait_for(client.disconnect(), timeout=30)
-        except BaseException:
-            evidence["disconnect"] = "failed"
-            raise
-        evidence["disconnect"] = "completed"
+        # Ended only once the disconnect returned: a failed or cancelled one leaves
+        # the run's hold on the QA identity retained.
+        await asyncio.wait_for(client.disconnect(), timeout=30)
+        used.end()

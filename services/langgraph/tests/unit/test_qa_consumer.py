@@ -7,6 +7,7 @@ Story lifecycle is managed by the dispatcher's supervise_testing_stories().
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 import json
@@ -2232,7 +2233,7 @@ class TestTheSharedTelegramIdentityIsHeldForTheWholeRun:
     }
 
     @pytest.fixture
-    def lease(self, monkeypatch):
+    async def lease(self, monkeypatch):
         from fakeredis.aioredis import FakeRedis
 
         from src.consumers._qa_telegram_lease import TelegramIdentityLease
@@ -2241,6 +2242,7 @@ class TestTheSharedTelegramIdentityIsHeldForTheWholeRun:
             monkeypatch.setenv(name, value)
         redis, seconds = FakeRedis(), [0.0]
         build_hooks = []
+        await TelegramIdentityLease(redis, QA_TEST_TELEGRAM_ID).initialize()
 
         async def sleep(delay):
             seconds[0] += delay
@@ -2284,7 +2286,7 @@ class TestTheSharedTelegramIdentityIsHeldForTheWholeRun:
         holder, hold = seen["executor"]
         assert holder["token"] == hold.token
         assert hold.released
-        assert await lease().holder() is None
+        assert (await lease().holder())["state"] == "idle"
 
     @pytest.mark.asyncio
     async def test_a_buyer_holding_the_identity_blocks_the_run_as_infrastructure(
@@ -2345,18 +2347,19 @@ class TestTheSharedTelegramIdentityIsHeldForTheWholeRun:
 
         assert result["status"] == "passed"
         assert proved_after == [True]
-        assert await lease().holder() is None
+        assert (await lease().holder())["state"] == "idle"
 
     @pytest.mark.asyncio
-    async def test_a_sandbox_not_confirmed_removed_keeps_the_identity_retained(
+    async def test_a_lifetime_still_open_when_the_run_ends_retains_the_identity(
         self, lease, mock_api_client, mock_redis, qa_message_data
     ):
+        """The runner registers each sandbox on the hold; one whose removal is unproven
+        is settled once, by the hold, as outstanding."""
         from src.consumers._qa_runner import QAResult
 
         async def run(**kwargs):
-            kwargs["runtime"].telegram_hold.retain(
-                "a sandbox served the QA Telegram session was not confirmed removed"
-            )
+            sandbox = kwargs["runtime"].telegram_hold.track("sandbox", "qa-0123")
+            sandbox.unproven("worker-manager did not prove the removal")
             return QAResult(passed=True, checks=[], summary="ok", raw="")
 
         with (
@@ -2367,9 +2370,38 @@ class TestTheSharedTelegramIdentityIsHeldForTheWholeRun:
             await process_qa_job(qa_message_data, mock_redis)
 
         record = await lease().holder()
-        assert record["retained"].endswith("was not confirmed removed")
+        assert record["state"] == "retained"
+        assert record["retained"] == (
+            "outstanding: sandbox qa-0123 (worker-manager did not prove the removal)"
+        )
         alert = notify.await_args.args[0]
         assert record["token"] in alert
+
+    @pytest.mark.asyncio
+    async def test_a_job_cancelled_mid_run_retains_what_it_had_not_ended(
+        self, lease, mock_api_client, mock_redis, qa_message_data
+    ):
+        started = asyncio.Event()
+
+        async def run(**kwargs):
+            kwargs["runtime"].telegram_hold.track("sandbox", "qa-0456")
+            started.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch("src.consumers.qa.prove_sandbox_telegram_identity", side_effect=lambda r: r),
+            patch("src.consumers.qa.run_qa_centrally", side_effect=run),
+            patch("src.consumers.qa.notify_admins_best_effort", new_callable=AsyncMock),
+        ):
+            job = asyncio.create_task(process_qa_job(qa_message_data, mock_redis))
+            await started.wait()
+            job.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await job
+
+        record = await lease().holder()
+        assert record["state"] == "retained"
+        assert "sandbox qa-0456" in record["retained"]
 
     @pytest.mark.asyncio
     async def test_a_run_without_telegram_credentials_takes_no_hold(

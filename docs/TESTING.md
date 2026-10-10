@@ -881,21 +881,32 @@ image tag, timeline disagreement, unreadable Actions); and unsolicited delivery 
 `/digest` against a delayed unquoted digest item linking a fresh post, a resumed uncertain
 `/digest`, event-form messages that do not hold together, and absent delivery.
 The shared QA identity's exclusion is the real `TelegramIdentityLease` over an in-memory Redis
-with Lua (fakeredis): native QA admitted before registration, right after a quiet moment, during
-the persona's model call and during API reads; queued/running Run rows changing nothing; QA
-keeping the identity through the probe; an orphaned hold refusing until released by token; a
-failed disconnect retaining the hold (`synthetic_buyer/test_controller.py`). The lease itself
-(`test_qa_telegram_lease.py`) covers one holder at a time, simultaneous admission, use ended
-before release on error and cancellation, retention, stale reporting without expiry and
-ownership loss stopping the use; the QA consumer (`test_qa_consumer.py`,
-`test_qa_identity_release.py`, `test_mechanical_qa.py`) holds it from the identity proof to the
-executor's removal, blocks as `qa_probe_unavailable` beside another holder, retains it on an
-unconfirmed sandbox removal or a failed proof disconnect, and kills a cancelled probe child.
-All of it is host-profile unit work under the 0.5 s budget, with no process, socket or real wait.
-The LangGraph service leg runs `tests/service/test_qa_telegram_identity_lease.py` against the
-real Redis: contended admission one at a time, a retained hold with no TTL yielding only to its
-token, ownership loss through the real watchdog, and executor-removal confirmation read off the
-real `worker:responses` stream. It is CI evidence only when executed.
+with Lua (fakeredis), starting from an operator-initialized `idle` record: native QA admitted
+before registration, right after a quiet moment, during the persona's model call and during API
+reads; queued/running Run rows changing nothing; QA keeping the identity through the probe; an
+orphaned hold refusing until released by token; a failed or cancelled buyer disconnect and a
+setup failure after connect (`synthetic_buyer/test_controller.py`, and the actual
+`TelethonPort` against a Telethon-shaped client in `test_adapters.py`). Failed resume and
+cleanup with the promo read unavailable or a retained code missing read no dialog and tear
+nothing down, then succeed once rehydration does. The lease itself (`test_qa_telegram_lease.py`)
+covers admission only from `idle`, a missing or malformed record refusing until initialized, a
+lost record refusing a second applicant while the first is still in use, simultaneous
+admission, release and retention from the lifetime account on error and cancellation, stale
+reporting without expiry and ownership loss. `test_qa_identity_release.py` drives the real
+runner, capability endpoint, executor client and lease together, faulting a refused or missing
+removal answer, a delete publish failure, cancellation at the removal answer and at endpoint
+stop, an endpoint stop failure, identity-proof disconnect failure or cancellation, and a probe
+child whose exit is not seen. Worker-manager units (`test_qa_worker.py`, `test_consumer.py`)
+show a Docker failure on the executor or its proxy is never a proven QA removal.
+All of it is host-profile unit work under the 0.5 s budget, with no process or real wait.
+CI-only service legs: LangGraph `tests/service/test_qa_telegram_identity_lease.py` runs the
+lease against the real Redis (contention, missing record and lost record with a live first
+holder, retention without TTL, ownership loss) and a native QA run over the real
+`worker:commands`/`worker:responses` streams whose sandbox is served the session, with proven,
+refused, unanswered and cancelled removal answers. Worker-manager
+`tests/service/test_qa_removal_answer.py` produces the answer with the real consumer and manager
+over real Redis and Docker containers, injecting a Docker removal failure on the executor or its
+proxy. They are CI evidence only when executed.
 These tests prove the driver's and the coordination's behavior only; a live acceptance verdict
 exists only in an operation's own evidence.
 

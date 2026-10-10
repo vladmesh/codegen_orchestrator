@@ -386,12 +386,18 @@ async def _await_proxy(docker, container_id: str, name: str) -> None:
     raise QAEgressError(f"the QA egress proxy {name} never accepted a connection: {logs}")
 
 
-async def tear_down(docker, worker_id: str) -> None:
-    """Remove the run's proxy. Called on every way out, including a failed start."""
+async def tear_down(docker, worker_id: str) -> bool:
+    """Remove the run's proxy. Called on every way out, including a failed start.
+
+    Returns whether the proxy is gone: `remove_container` returns only once Docker
+    reports the container absent. A failure is a warning here, not a crash, and the
+    executor's removal answer says the removal is unproven (`WorkerRemoval`).
+    """
     name = proxy_container_name(worker_id)
     try:
         await docker.remove_container(name, force=True)
     except Exception as exc:  # noqa: BLE001 — a proxy that outlives its run is a warning, not a crash
         logger.warning("qa_egress_proxy_removal_failed", worker_id=worker_id, error=str(exc))
-    else:
-        logger.info("qa_egress_proxy_removed", worker_id=worker_id)
+        return False
+    logger.info("qa_egress_proxy_removed", worker_id=worker_id)
+    return True

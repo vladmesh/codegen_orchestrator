@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 import json
@@ -70,12 +70,7 @@ from ..agents.qa.tools import (
     build_qa_callables,
     missing_telethon_credentials,
 )
-from ..clients.qa_worker import (
-    ExecutorRemovals,
-    QAExecutorRun,
-    QAExecutorUnavailable,
-    run_qa_executor,
-)
+from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
 from ..prompts.qa import build_qa_instructions, build_qa_prompt
 from ._qa_redaction import TELEGRAM_CREDENTIAL, QARunRedaction
 from ._qa_target import (
@@ -96,7 +91,7 @@ from ._qa_target import (
     qa_target_grant,
 )
 from ._qa_telegram_identity import QATelegramIdentityRefusal, handed_over_secrets
-from ._qa_telegram_lease import IdentityHold
+from ._qa_telegram_lease import IdentityHold, Lifetime, lifetime
 from ._qa_workspace import QAWorkspace, qa_workspace
 
 logger = structlog.get_logger(__name__)
@@ -1439,6 +1434,7 @@ async def preflight_bot_access(
     bot_username: str,
     telethon_env: dict[str, str] | None,
     identity_refusal: QATelegramIdentityRefusal | None = None,
+    hold: IdentityHold | None = None,
 ) -> QABlocker | None:
     """Check the platform's own prerequisites for testing a bot, without the LLM.
 
@@ -1455,6 +1451,7 @@ async def preflight_bot_access(
         build_access_probe_script(bot_username),
         env=telethon_env,
         timeout=ACCESS_PROBE_TIMEOUT,
+        lifetime=lifetime(hold, "probe", "bot access preflight"),
     )
     return classify_access_probe(
         exit_status=probe.exit_status,
@@ -1568,6 +1565,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         session=session,
         workspace=workspace,
         telethon_env=runtime.telethon_env,
+        identity_hold=runtime.telegram_hold,
         telegram_identity_refusal=(
             runtime.telegram_identity_refusal.describe()
             if runtime.telegram_identity_refusal
@@ -1608,10 +1606,13 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             qa_run_id=ownership.attempt_id,
             adjustments=[adjustment.as_log() for adjustment in prepared_criteria.adjustments],
         )
-    # Only a run holding the shared Telegram identity waits for worker-manager to
-    # confirm each executor's removal: its hold must not end while a sandbox that
-    # was served the session may still be running.
-    removals = ExecutorRemovals() if runtime.telegram_hold is not None else None
+    # A run holding the shared Telegram identity accounts for every sandbox and for
+    # this endpoint on that hold: each executor before its create is published, the
+    # endpoint before it starts. Each ends only on proof (a proven removal, a stop
+    # that returned), and anything still open when the hold ends retains it.
+    hold = runtime.telegram_hold
+    sandbox = None if hold is None else (lambda worker: hold.track("sandbox", worker))
+    endpoint_lifetime = lifetime(hold, "endpoint", "capability endpoint")
     endpoint = await service.start()
     try:
         executor_run, executor_failure, said = await _run_central_executor(
@@ -1628,7 +1629,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             probe_library=probe_library,
             redaction=redaction,
             brief=brief,
-            removals=removals,
+            sandbox=sandbox,
         )
         if executor_run is not None:
             return settle_unverified_checks(
@@ -1647,8 +1648,12 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
                 ),
             )
     finally:
-        await service.stop()
-        _account_for_served_identity(runtime, service, removals)
+        try:
+            await service.stop()
+        except Exception as exc:
+            endpoint_lifetime.unproven(f"the endpoint did not stop: {type(exc).__name__}")
+            raise
+        endpoint_lifetime.end()
 
     # QA has exactly one executor. When it does not run there is nothing to fall
     # back to, so the run ends here as infrastructure rather than as a verdict.
@@ -1676,25 +1681,6 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     )
 
 
-def _account_for_served_identity(
-    runtime: QARuntimeConfig, service: QACapabilityService, removals: ExecutorRemovals | None
-) -> None:
-    """Retain the identity hold when a sandbox that was served the session may still run.
-
-    The endpoint has stopped, so nothing can be served or called any more; what is
-    left is each executor container that already holds the session. Its removal
-    is the end of that use, and only worker-manager's answer proves it.
-    """
-    hold = runtime.telegram_hold
-    if hold is None or removals is None or not service.identity_served:
-        return
-    if removals.unconfirmed:
-        unconfirmed = "; ".join(f"{worker}: {why}" for worker, why in removals.unconfirmed.items())
-        hold.retain(
-            f"a sandbox served the QA Telegram session was not confirmed removed ({unconfirmed})"
-        )
-
-
 async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, each part named
     *,
     target: QATarget,
@@ -1710,7 +1696,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
     probe_library: Sequence[QAProbeLibraryFile] = (),
     redaction: QARunRedaction | None = None,
     brief: ProductBriefContent | None = None,
-    removals: ExecutorRemovals | None = None,
+    sandbox: Callable[[str], Lifetime] | None = None,
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
     """Retry only transient subscription-executor failures.
 
@@ -1752,7 +1738,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
                 timeout=timeout,
                 on_create_published=partial(said.record_start, attempt),
                 probe_library=list(probe_library),
-                **({"removals": removals} if removals is not None else {}),
+                **({"sandbox": sandbox} if sandbox is not None else {}),
             )
         except QAExecutorUnavailable as exc:
             # What the sandbox said is evidence, and it may have printed the

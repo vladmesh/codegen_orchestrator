@@ -5,7 +5,7 @@
     python -m src.synthetic_buyer resume  --config buyer.json --orchestrator-revision <sha>
     python -m src.synthetic_buyer cleanup --config buyer.json --orchestrator-revision <sha>
     python -m src.synthetic_buyer inspect --config buyer.json
-    python -m src.synthetic_buyer identity --config buyer.json [--release <token>]
+    python -m src.synthetic_buyer identity --config buyer.json [--release <token> | --initialize]
 
 `check` and `inspect` are offline: they read the config, the presence of each
 secret handle (never its value) and the retained evidence, and connect to
@@ -14,9 +14,11 @@ nothing — no Telegram, no API, no Redis — so neither can read or send a mess
 continues an interrupted one from its retained ids, and a failed one only as far
 as its teardown decision; `cleanup` only tears down the project the retained
 evidence names. All three pass the controller's one authority path. `identity`
-reads the shared QA Telegram identity's hold and, given the exact token an
-operator has verified, releases a retained or orphaned one; it touches nothing
-else. Nothing here is triggered by CI. See docs/runbooks/synthetic-buyer.md.
+reads the shared QA Telegram identity's admission record; given the exact token of
+a holder an operator has verified stopped, it releases that hold; `--initialize`
+writes the first `idle` over a missing or malformed record, after the operator has
+proven every user of the session stopped. It touches nothing else.
+Nothing here is triggered by CI. See docs/runbooks/synthetic-buyer.md.
 """
 
 from __future__ import annotations
@@ -186,11 +188,18 @@ def inspect(config: BuyerConfig) -> int:
     return 0
 
 
-async def identity(config: BuyerConfig, environ: Mapping[str, str], release: str | None) -> int:
-    """Read the shared identity's hold; release it only by the exact token given."""
+async def identity(
+    config: BuyerConfig, environ: Mapping[str, str], release: str | None, initialize: bool
+) -> int:
+    """Read the identity's admission record; release by exact token, or initialize it."""
     async with identity_lease(config, environ, Redaction(), live_clock()) as lease:
         record = await lease.holder()
         logger.info("synthetic_buyer_identity", key=lease.key, detail=lease.describe(record))
+        if initialize:
+            if not await lease.initialize():
+                logger.error("synthetic_buyer_refused", reason="identity_state_known")
+                return EXIT_REFUSED
+            return 0
         if release is None:
             return 0
         if record is None or record.get("token") != release:
@@ -207,7 +216,9 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
         commands.add_parser(name).add_argument("--config", type=Path, required=True)
     held = commands.add_parser("identity")
     held.add_argument("--config", type=Path, required=True)
-    held.add_argument("--release", metavar="TOKEN")
+    action = held.add_mutually_exclusive_group()
+    action.add_argument("--release", metavar="TOKEN")
+    action.add_argument("--initialize", action="store_true")
     for name in ("run", "resume", "cleanup"):
         sub = commands.add_parser(name)
         sub.add_argument("--config", type=Path, required=True)
@@ -227,7 +238,7 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
         return inspect(config)
     try:
         if args.command == "identity":
-            return asyncio.run(identity(config, environ, args.release))
+            return asyncio.run(identity(config, environ, args.release, args.initialize))
         return asyncio.run(operate(args.command, config, args.orchestrator_revision, environ))
     except MissingSecret as error:
         logger.error("synthetic_buyer_secret_missing", detail=str(error))

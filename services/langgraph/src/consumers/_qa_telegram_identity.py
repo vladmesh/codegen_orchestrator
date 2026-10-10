@@ -27,6 +27,8 @@ from shared.telethon_identity import (
     prove_qa_identity,
 )
 
+from ._qa_telegram_lease import lifetime
+
 if TYPE_CHECKING:
     from ._qa_runner import QARuntimeConfig
     from ._qa_telegram_lease import IdentityHold
@@ -66,9 +68,14 @@ async def _prove(
     client_factory: Callable[[Mapping[str, str]], Any],
     hold: IdentityHold | None = None,
 ) -> QATelegramIdentityRefusal | None:
+    # Registered on the run's identity hold before the client exists, and ended
+    # only when its disconnect returned: a failed or cancelled disconnect leaves
+    # it open, and the hold is retained rather than released past it.
+    used = lifetime(hold, "client", "identity proof")
     try:
         client = client_factory(environment)
     except Exception as exc:  # noqa: BLE001 — a session string Telethon cannot load
+        used.end()  # no client exists, so nothing can be connected
         return QATelegramIdentityRefusal(
             SESSION_UNAUTHORIZED, f"the session could not be loaded: {type(exc).__name__}"
         )
@@ -79,12 +86,11 @@ async def _prove(
     finally:
         try:
             await asyncio.wait_for(client.disconnect(), timeout=CALL_TIMEOUT_SECONDS)
-        except Exception as exc:  # noqa: BLE001 — the verdict stands; the client is dropped
+        except Exception as exc:  # noqa: BLE001 — the verdict stands; the client is not shown closed
             logger.warning("qa_telegram_identity_disconnect_failed", error=type(exc).__name__)
-            # The proof's connection is not shown closed, so the run's hold on the
-            # identity is not released when it ends: nobody else is admitted past it.
-            if hold is not None:
-                hold.retain(f"the identity proof's disconnect failed: {type(exc).__name__}")
+            used.unproven(f"its disconnect failed: {type(exc).__name__}")
+        else:
+            used.end()
     return None
 
 

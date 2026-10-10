@@ -64,6 +64,7 @@ from ...clients.product_jobs import (
 )
 from ...consumers._qa_redaction import QARunRedaction
 from ...consumers._qa_target import QATargetError, QATargetSession, loopback_http_status
+from ...consumers._qa_telegram_lease import IdentityHold
 from ...consumers._qa_workspace import QAWorkspace
 from .caller_identity import QACallerIdentity
 
@@ -229,13 +230,21 @@ class _TelegramCapability:
         telethon_env: dict[str, str] | None,
         identity_refusal: str | None = None,
         probe_runner: Callable[..., object],
+        identity_hold: IdentityHold | None = None,
     ) -> None:
+        self._identity_hold = identity_hold
         self._bot_username = bot_username
         self._workspace = workspace
         self._telethon_env = telethon_env
         self._identity_refusal = identity_refusal
         self._run_probe = probe_runner
         self._visible_callbacks: dict[tuple[int, str], str] = {}
+
+    def _lifetime(self, tool: str) -> dict:
+        """The probe child's lifetime on the run's identity hold, registered before it starts."""
+        if self._identity_hold is None:
+            return {}
+        return {"lifetime": self._identity_hold.track("probe", tool)}
 
     def _without_identity(self, tool: str, *, action: str, attempted: str, sent: str) -> dict:
         """No proven identity: the refusal, recorded as this run's blocker, and nothing run."""
@@ -380,6 +389,7 @@ class _TelegramCapability:
             build_bot_message_script(self._bot_username, message, wait_seconds=wait_seconds),
             env=self._telethon_env,
             timeout=telegram_probe_process_timeout(wait_seconds),
+            **self._lifetime("telegram_probe"),
         )
         return self._parse_result(
             run,
@@ -428,6 +438,7 @@ class _TelegramCapability:
             ),
             env=self._telethon_env,
             timeout=telegram_probe_process_timeout(wait_seconds),
+            **self._lifetime("telegram_click_button"),
         )
         return self._parse_result(
             run,
@@ -603,7 +614,7 @@ class _JobsCapability:
         return answer
 
 
-def build_qa_callables(
+def build_qa_callables(  # noqa: PLR0913 - one run's whole reach, each part named
     *,
     session: QATargetSession,
     workspace: QAWorkspace,
@@ -615,6 +626,7 @@ def build_qa_callables(
     caller_identity: QACallerIdentity | None = None,
     redaction: QARunRedaction | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
+    identity_hold: IdentityHold | None = None,
 ) -> dict[str, Callable]:
     """Build the whole reach of exactly one QA run, keyed by call name.
 
@@ -703,6 +715,7 @@ def build_qa_callables(
             telethon_env=telethon_env,
             identity_refusal=telegram_identity_refusal,
             probe_runner=probe_runner or run_probe_script,
+            identity_hold=identity_hold,
         )
         callables["telegram_probe"] = telegram.telegram_probe
         callables["telegram_click_button"] = telegram.telegram_click_button

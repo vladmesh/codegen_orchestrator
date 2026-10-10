@@ -121,6 +121,8 @@ class TelethonPort:
 
     @property
     def connected(self) -> bool:
+        """Whether a client exists that may hold a connection: from its creation until
+        a disconnect returned, setup failures and cancellations included."""
         return self._client is not None
 
     async def _call(self, awaitable: Awaitable[Any], stage: str) -> Any:
@@ -149,16 +151,19 @@ class TelethonPort:
             )
         except Exception as exc:  # noqa: BLE001 - a session string Telethon cannot load
             raise TransportError("connect", f"session refused: {type(exc).__name__}") from None
+        # Kept from here, before any await could open a connection: whatever fails
+        # in setup, the caller's disconnect still reaches this client.
+        self._client = client
         await self._call(client.connect(), "connect")
         if not await self._call(client.is_user_authorized(), "authorization"):
-            await self._call(client.disconnect(), "disconnect")
             raise TransportError("authorization", "the session is not authorized")
-        self._client = client
 
     async def disconnect(self) -> None:
-        client, self._client = self._client, None
+        """Disconnect; the client is dropped only once its disconnect has returned."""
+        client = self._client
         if client is not None:
             await self._call(client.disconnect(), "disconnect")
+            self._client = None
 
     def _require(self) -> Any:
         if self._client is None:

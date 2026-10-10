@@ -154,12 +154,14 @@ def _identity_blocker(refused: IdentityBusy | IdentityOwnershipLost) -> QABlocke
 
 
 async def _report_retained_identity(msg: QAMessage, held: IdentityHold) -> None:
-    """A run that could not show its Telegram use ended left the identity held: say so."""
-    if held.retained is None:
+    """A run that could not show its Telegram use ended keeps the identity held: say so."""
+    outstanding = held.outstanding()
+    if not outstanding:
         return
+    named = "; ".join(used.describe() for used in outstanding)
     await notify_admins_best_effort(
-        "The QA Telegram identity stays held after a QA run: "
-        f"{held.retained}. Nothing else may use the account until an operator who has "
+        "The QA Telegram identity stays held after a QA run, outstanding: "
+        f"{named}. Nothing else may use the account until an operator who has "
         f"checked that the named use ended releases token {held.token}.\n"
         f"story: {msg.story_id or '(none)'}\nrun: {msg.run_id or '(none)'}",
         level="error",
@@ -653,12 +655,11 @@ async def _run_mechanical_qa(msg, selected, stored, result, redaction, lease):  
                     headers=identity.headers(),
                     evidence=evidence,
                     redaction=redaction,
+                    identity_hold=held,
                     **probe_arguments,
                 )
             finally:
-                if evidence.get("disconnect") == "failed":
-                    held.retain("the mechanical probe's Telegram disconnect failed")
-                    await _report_retained_identity(msg, held)
+                await _report_retained_identity(msg, held)
         final_grant = await api_client.get_temporary_access_grant(grant.id)
         if final_grant.status != TemporaryAccessStatus.GRANTED:
             raise ProbeFailure("grant", "native grant ended before probe completion")
@@ -879,6 +880,7 @@ async def _exploratory_run(  # noqa: PLR0913 — one run's whole context, each p
             bot_username=msg.bot_username,
             telethon_env=runtime.telethon_env,
             identity_refusal=runtime.telegram_identity_refusal,
+            hold=runtime.telegram_hold,
         )
         if access_blocker:
             return None, access_blocker

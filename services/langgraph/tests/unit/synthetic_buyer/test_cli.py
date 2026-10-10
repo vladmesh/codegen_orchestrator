@@ -129,7 +129,9 @@ def test_evidence_of_another_schema_is_refused_and_left_as_it_is(tmp_path, comma
     assert store.path.read_text() == before
 
 
-def test_the_identity_command_releases_only_the_exact_held_token(tmp_path, monkeypatch):
+def test_the_identity_command_initializes_once_and_releases_only_the_exact_token(
+    tmp_path, monkeypatch
+):
     from contextlib import asynccontextmanager
 
     from fakeredis.aioredis import FakeRedis
@@ -154,9 +156,12 @@ def test_the_identity_command_releases_only_the_exact_held_token(tmp_path, monke
 
     import asyncio
 
-    token = asyncio.run(orphan())
-
     assert main(["identity", "--config", config], ENVIRON) == 0
+    # A missing record admits no one until the operator initializes it, once.
+    assert main(["identity", "--config", config, "--initialize"], ENVIRON) == 0
+    assert main(["identity", "--config", config, "--initialize"], ENVIRON) == EXIT_REFUSED
+    token = asyncio.run(orphan())
+    assert main(["identity", "--config", config, "--initialize"], ENVIRON) == EXIT_REFUSED
     assert main(["identity", "--config", config, "--release", "wrong"], ENVIRON) == EXIT_REFUSED
     assert main(["identity", "--config", config, "--release", token], ENVIRON) == 0
     assert main(["identity", "--config", config, "--release", token], ENVIRON) == EXIT_REFUSED

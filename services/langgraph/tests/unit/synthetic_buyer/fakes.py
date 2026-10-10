@@ -20,12 +20,13 @@ from datetime import UTC, datetime, timedelta
 import inspect
 from typing import Any
 
+import fakeredis
 from fakeredis.aioredis import FakeRedis
 
 from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.capability_preview import CapabilityPlan
-from src.consumers._qa_telegram_lease import Holder, HolderKind, TelegramIdentityLease
+from src.consumers._qa_telegram_lease import LEASE_KEY, Holder, HolderKind, TelegramIdentityLease
 from src.synthetic_buyer.codegen_api import ApiRefused
 from src.synthetic_buyer.config import parse_config
 from src.synthetic_buyer.controller import Clock, SyntheticBuyer
@@ -247,6 +248,15 @@ async def _never() -> None:
     await asyncio.Event().wait()
 
 
+def initialized_redis() -> FakeRedis:
+    """A Redis whose QA identity record an operator initialized to idle."""
+    server = fakeredis.FakeServer()
+    fakeredis.FakeStrictRedis(server=server).hset(
+        LEASE_KEY.format(telegram_id=BUYER), mapping={"state": "idle"}
+    )
+    return FakeRedis(server=server)
+
+
 def identity_lease(redis: FakeRedis, clock: FakeClock) -> TelegramIdentityLease:
     """The real lease over the world's Redis, timed by the fake clock."""
     return TelegramIdentityLease(
@@ -305,6 +315,8 @@ class World:
         self.next_id = 500
         self.users: dict[int, dict] = {}
         self.promos: list[dict] = []
+        #: The promo API answers without this operation's retained codes.
+        self.promos_withheld = False
         self.projects: dict[str, dict] = {
             UNRELATED_PROJECT: {
                 "id": UNRELATED_PROJECT,
@@ -323,7 +335,7 @@ class World:
         self.plans: dict[str, CapabilityPlan] = {}
         self.tasks: list[dict] = []
         self.runs: list[dict] = []
-        self.redis = FakeRedis()
+        self.redis = initialized_redis()
         self.connected_at: list[datetime] = []
         self.native = NativeQA(self)
         self.language = "ru"
@@ -779,6 +791,8 @@ class FakeApi:
 
     async def promo_codes(self) -> list[dict]:
         self._call("promo_codes")
+        if self.world.promos_withheld:
+            return []
         return [dict(code) for code in self.world.promos]
 
     async def owned_projects(self, telegram_id: int) -> list[dict]:

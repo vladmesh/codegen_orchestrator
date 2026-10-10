@@ -22,6 +22,7 @@ from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSE
 from shared.redis import RedisStreamClient
 from src.consumer import WorkerCommandConsumer, resolve_local_auth_mode
 from src.manager import WorkerManager
+from src.worker_removal import RemovalOutcome
 
 
 @pytest.fixture
@@ -148,6 +149,34 @@ async def test_consume_delete_worker_command(redis_client, stream_client, mock_w
     assert await redis_client.xlen(WORKER_RESPONSES) > 0
     pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
     assert pending["pending"] == 0
+
+
+@pytest.mark.parametrize(
+    ("outcome", "success"),
+    [
+        (RemovalOutcome(removed=False, qa_executor=True, egress_removed=True), False),
+        (RemovalOutcome(removed=True, qa_executor=True, egress_removed=False), False),
+        (RemovalOutcome(removed=True, qa_executor=True, egress_removed=True), True),
+        # Other workers' answers are unchanged: the durable stop owner retries them.
+        (RemovalOutcome(removed=False), True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_qa_executor_delete_answers_success_only_on_proven_removal(
+    redis_client, stream_client, mock_worker_manager, outcome, success
+):
+    mock_worker_manager.delete_worker = AsyncMock(return_value=outcome)
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    command = DeleteWorkerCommand(request_id="cleanup-1", worker_id="qa-1")
+    await stream_client.publish(WORKER_COMMANDS, command.model_dump(mode="json"))
+    await _drain_once(consumer)
+
+    ((_, fields),) = await redis_client.xrange(WORKER_RESPONSES)
+    answer = json.loads(fields["data"])
+    assert (answer["request_id"], answer["success"]) == ("cleanup-1", success)
+    if not success:
+        assert answer["error"].startswith("QA executor removal not proven")
 
 
 @pytest.mark.asyncio

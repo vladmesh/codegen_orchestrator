@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import os
+from typing import Any
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
@@ -110,6 +111,7 @@ async def run_probe_script(
     env: dict[str, str],
     timeout: int,
     python_bin: str | None = None,
+    lifetime: Any = None,
 ) -> ProbeRun:
     """Run a Telethon probe script in a child process of the QA runtime.
 
@@ -117,22 +119,34 @@ async def run_probe_script(
     consumer's event loop, and what makes the probe's own timeout enforceable:
     a hung MTProto connection is killed with the process rather than left
     holding the run.
+
+    `lifetime` (the QA identity hold's record of this child, registered by the
+    caller before this starts it) is ended only once the child has exited: on
+    completion, after a timeout's kill, or after a cancellation's kill whose exit
+    was awaited. A child that may still be running leaves it open.
     """
     import sys
 
-    process = await asyncio.create_subprocess_exec(
-        python_bin or sys.executable,
-        "-c",
-        script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp"), **env},  # noqa: S108
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            python_bin or sys.executable,
+            "-c",
+            script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp"), **env},  # noqa: S108
+        )
+    except OSError:
+        # Nothing was started, so nothing can hold the session.
+        if lifetime is not None:
+            lifetime.end()
+        raise
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except TimeoutError:
         process.kill()
         await process.wait()
+        _exited(process, lifetime)
         return ProbeRun(exit_status=124, stdout="", stderr=f"probe timed out after {timeout}s")
     except BaseException:
         # Cancelled with the run: the child holds the QA session, and a probe that
@@ -140,12 +154,19 @@ async def run_probe_script(
         if process.returncode is None:
             process.kill()
             await asyncio.shield(process.wait())
+        _exited(process, lifetime)
         raise
+    _exited(process, lifetime)
     return ProbeRun(
         exit_status=process.returncode or 0,
         stdout=stdout.decode(errors="replace"),
         stderr=stderr.decode(errors="replace"),
     )
+
+
+def _exited(process: Any, lifetime: Any) -> None:
+    if lifetime is not None and process.returncode is not None:
+        lifetime.end()
 
 
 def classify_access_probe(

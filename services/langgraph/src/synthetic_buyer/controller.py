@@ -53,6 +53,7 @@ from src.consumers._qa_telegram_lease import (
     IdentityBusy,
     IdentityHold,
     IdentityOwnershipLost,
+    Lifetime,
     TelegramIdentityLease,
 )
 
@@ -126,6 +127,18 @@ class Clock:
 
     wall: Callable[[], datetime]
     sleep: Callable[[float], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class Authority:
+    """The authority path's one result: authorized, or the refusal and its evidence."""
+
+    reason: str | None = None
+    detail: Any = None
+
+    @property
+    def authorized(self) -> bool:
+        return self.reason is None
 
 
 @dataclass(frozen=True)
@@ -223,20 +236,28 @@ class SyntheticBuyer:
     async def run(self) -> Outcome:
         """Run or resume the acceptance, then settle what this operation owns.
 
-        Authorization comes first whatever the verdict. A running operation goes on
-        only when it is authorized and nothing of it was torn down; a failed one is
-        never continued, and only reaches the teardown decision.
+        The authority result comes first whatever the verdict. A running operation
+        goes on only when it is authorized and nothing of it was torn down; a failed
+        one is never continued. The teardown decision consumes an authority result:
+        the first one for a failed or refused operation, and for one that just ran
+        its phases a fresh pass of the whole path (rehydration first), because those
+        phases may have left a new intent.
         """
-        refusal = await self._authorize()
+        authority = await self._authorize()
         if self._running():
             phase = Phase(self.store.record["phase"])
-            if refusal is not None:
-                self.store.fail(phase, refusal.reason, self.store.redaction.value(refusal.detail))
+            if not authority.authorized:
+                self.store.fail(
+                    phase, authority.reason, self.store.redaction.value(authority.detail)
+                )
             elif self.store.record["cleanup"]["status"] != CleanupStatus.NOT_STARTED.value:
                 self.store.fail(phase, "torn_down_before_acceptance")
             else:
                 await self._accept()
-        return Outcome(self.store.record["verdict"]["status"], await self._settle_cleanup())
+                authority = await self._authorize()
+        return Outcome(
+            self.store.record["verdict"]["status"], await self._settle_cleanup(authority)
+        )
 
     async def cleanup(self) -> str:
         """Tear down only the proven project, through the same authority path as `run`.
@@ -244,14 +265,16 @@ class SyntheticBuyer:
         An operation that had not concluded can never be accepted after its project
         is gone, so a cleanup of a running one fails its verdict first.
         """
-        refusal = await self._authorize()
+        authority = await self._authorize()
         if self._running():
             phase = Phase(self.store.record["phase"])
-            if refusal is not None:
-                self.store.fail(phase, refusal.reason, self.store.redaction.value(refusal.detail))
+            if not authority.authorized:
+                self.store.fail(
+                    phase, authority.reason, self.store.redaction.value(authority.detail)
+                )
             else:
                 self.store.fail(phase, "cleanup_before_verdict")
-        return await self._settle_cleanup()
+        return await self._settle_cleanup(authority)
 
     async def _accept(self) -> None:
         phase = Phase(self.store.record["phase"])
@@ -269,27 +292,29 @@ class SyntheticBuyer:
         except Exception as error:  # noqa: BLE001 - the text may hold what it was handed
             self.store.fail(phase, "unexpected_error", {"type": type(error).__name__})
 
-    async def _authorize(self) -> Stop | None:
-        """Steps 1-3 of the authority order, before any dialog is read or effect admitted.
+    async def _authorize(self) -> Authority:
+        """The whole authority path, in order, as one explicit result.
 
-        Returns the refusal, or None. A refusal changes nothing by itself: `run`
-        records it on a running verdict, and the teardown decision refuses while
-        an intent stays unresolved.
+        Validate the operation, rehydrate every protected input, then reconcile the
+        retained intent inside the identity hold. A refusal at any step stops the
+        path there: a failed rehydration reads no dialog. Nothing else reconciles;
+        a later attempt is a new call of this whole path.
         """
         try:
             self._validate_identity()
             await self._rehydrate()
             await self._reconcile()
         except Stop as stop:
-            self.store.decide({"event": "authorization_refused", "reason": stop.reason})
-            self.store.save()
-            return stop
+            refusal = Authority(stop.reason, stop.detail)
         except (TransportError, ApiRefused, MissingSecret) as error:
-            stop = Stop(type(error).__name__, self.store.redaction.text(str(error)))
-            self.store.decide({"event": "authorization_refused", "reason": stop.reason})
-            self.store.save()
-            return stop
-        return None
+            refusal = Authority(type(error).__name__, self.store.redaction.text(str(error)))
+        except Exception as error:  # noqa: BLE001 - an unproven prerequisite refuses
+            refusal = Authority("authorization_failed", {"type": type(error).__name__})
+        else:
+            return Authority()
+        self.store.decide({"event": "authorization_refused", "reason": refusal.reason})
+        self.store.save()
+        return refusal
 
     def _validate_identity(self) -> None:
         record = self.store.record
@@ -382,6 +407,8 @@ class SyntheticBuyer:
                 self._held = held
                 session["holds"] = session.get("holds", 0) + 1
                 session["admitted_at"] = self.store.now()
+                # On the hold before connect: ended only once a disconnect returned.
+                used = held.track("client", f"buyer session ({purpose})")
                 try:
                     await self.telegram.connect()
                     session["connected_at"] = self.store.now()
@@ -392,8 +419,7 @@ class SyntheticBuyer:
                     yield
                 finally:
                     self._held = None
-                    if not await self._disconnect():
-                        held.retain("the synthetic buyer's Telegram disconnect failed")
+                    await self._disconnect(used)
                 session["released_at"] = self.store.now()
         except IdentityBusy as busy:
             raise Stop(
@@ -410,15 +436,22 @@ class SyntheticBuyer:
         finally:
             self.store.save()
 
-    async def _disconnect(self) -> bool:
+    async def _disconnect(self, used: Lifetime) -> None:
+        """End the session's lifetime only on a disconnect that returned.
+
+        A failed disconnect keeps it open; a cancelled one raises past it. Either way
+        the hold settles it as outstanding and is retained, not released.
+        """
         if not self.telegram.connected:
-            return True
+            used.end()
+            return
         try:
             await self.telegram.disconnect()
         except TransportError as error:
             self.store.decide({"event": "disconnect_failed", "stage": error.stage})
-            return False
-        return True
+            used.unproven(f"its disconnect failed at {error.stage}")
+            return
+        used.end()
 
     async def _peer(self, role: str, username: str, *, user_id: int | None = None) -> Peer:
         if role in self._peers:
@@ -1503,28 +1536,23 @@ class SyntheticBuyer:
 
     # --- 7. cleanup -------------------------------------------------------------
 
-    async def _settle_cleanup(self) -> str:
-        """The teardown decision every entrypoint ends in, after the same reconciliation.
+    async def _settle_cleanup(self, authority: Authority) -> str:
+        """The teardown decision every entrypoint ends in, on its authority result.
 
-        An intent still pending is reconciled once more, under the identity hold,
-        before anything is decided: a send that became visible is recorded, never
-        resent, and then lets the proven project be torn down; one still not found
-        refuses. The verdict is never touched here.
+        It reconciles nothing itself. A refused authority forbids teardown and is
+        kept as the refusal's reason; an intent still pending refuses. Only an
+        authorized operation's proven project is torn down. The verdict is never
+        touched here.
         """
         if self.store.record["cleanup"]["status"] == CleanupStatus.COMPLETED.value:
             return CleanupStatus.COMPLETED.value
         ownership = self.store.record.get("ownership")
         project_id = None if ownership is None else ownership["project_id"]
-        try:
-            self._validate_identity()
-            if self.store.record.get("pending"):
-                await self._reconcile()
-        except Stop as stop:
-            self.store.decide({"event": "reconciliation_refused", "reason": stop.reason})
-            if not self.store.record.get("pending"):
-                return self._refuse_cleanup(project_id, stop.reason)
-        except (TransportError, ApiRefused) as error:
-            self.store.decide({"event": "reconciliation_failed", "type": type(error).__name__})
+        if not authority.authorized:
+            reason = (
+                "unresolved_action" if authority.reason == "delivery_unknown" else authority.reason
+            )
+            return self._refuse_cleanup(project_id, reason, authority=authority.reason)
         if self.store.record.get("pending"):
             return self._refuse_cleanup(project_id, "unresolved_action")
         if ownership is None:
@@ -1593,6 +1621,6 @@ class SyntheticBuyer:
         held = stored.get(TELEGRAM_TOKEN_KEY)
         return isinstance(held, str) and digest(held) == ownership["token_sha256"]
 
-    def _refuse_cleanup(self, project_id: str | None, reason: str) -> str:
-        self.store.cleanup(CleanupStatus.REFUSED, project_id=project_id, reason=reason)
+    def _refuse_cleanup(self, project_id: str | None, reason: str, **facts: Any) -> str:
+        self.store.cleanup(CleanupStatus.REFUSED, project_id=project_id, reason=reason, **facts)
         return CleanupStatus.REFUSED.value

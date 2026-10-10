@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -443,3 +444,78 @@ async def test_a_channel_post_is_dated_by_the_channel_itself():
     port._client = Client()
 
     assert await port.post_date("chan_two", 201) == datetime(2026, 10, 10, 12, 5, tzinfo=UTC)
+
+
+class _SetupClient:
+    """Telethon's client as `TelethonPort.connect` builds it, under the test's control."""
+
+    built: list = []
+    authorization = None
+
+    def __init__(self, session, api_id, api_hash, *, receive_updates):
+        self.connected = False
+        self.disconnect_hangs = False
+        type(self).built.append(self)
+
+    async def connect(self):
+        self.connected = True
+
+    async def is_user_authorized(self):
+        if type(self).authorization is not None:
+            return await type(self).authorization()
+        return True
+
+    async def disconnect(self):
+        if self.disconnect_hangs:
+            await asyncio.Event().wait()
+        self.connected = False
+
+
+@pytest.fixture
+def setup_client(monkeypatch):
+    import telethon
+
+    _SetupClient.built = []
+    _SetupClient.authorization = None
+    monkeypatch.setattr(telethon, "TelegramClient", _SetupClient)
+    monkeypatch.setattr("telethon.sessions.StringSession", lambda value: value)
+    return _SetupClient
+
+
+@pytest.mark.parametrize("failure", ["raises", "not_authorized"])
+async def test_a_connection_whose_authorization_fails_is_kept_until_disconnected(
+    setup_client, failure
+):
+    async def refuse():
+        if failure == "raises":
+            raise TimeoutError
+        return False
+
+    setup_client.authorization = staticmethod(refuse)
+    port = TelethonPort(CONFIG.telegram, ENVIRON, Redaction())
+
+    with pytest.raises(TransportError) as refused:
+        await port.connect()
+
+    (client,) = setup_client.built
+    assert refused.value.stage == "authorization"
+    assert client.connected and port.connected
+    await port.disconnect()
+    assert not client.connected and not port.connected
+
+
+async def test_a_cancelled_disconnect_keeps_the_client_for_the_hold_to_account_for(setup_client):
+    port = TelethonPort(CONFIG.telegram, ENVIRON, Redaction())
+    await port.connect()
+    (client,) = setup_client.built
+    client.disconnect_hangs = True
+
+    disconnecting = asyncio.create_task(port.disconnect())
+    for _ in range(3):
+        await asyncio.sleep(0)
+    disconnecting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await disconnecting
+
+    assert port.connected
+    assert client.connected

@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import fakeredis
 from fakeredis.aioredis import FakeRedis
 import pytest
 
@@ -14,12 +15,16 @@ from shared.contracts.queues.qa import QAMessage
 from src.consumers import mechanical_telegram, qa
 from src.consumers._qa_redaction import QARunRedaction
 from src.consumers._qa_runner import QAResult
-from src.consumers._qa_telegram_lease import TelegramIdentityLease
+from src.consumers._qa_telegram_lease import LEASE_KEY, TelegramIdentityLease
 
 
 def free_lease():
-    """The QA account's identity lease, free: these cases are about the grant and probe."""
-    return TelegramIdentityLease(FakeRedis(), QA_TEST_TELEGRAM_ID)
+    """The QA account's identity lease, idle: these cases are about the grant and probe."""
+    server = fakeredis.FakeServer()
+    fakeredis.FakeStrictRedis(server=server).hset(
+        LEASE_KEY.format(telegram_id=QA_TEST_TELEGRAM_ID), mapping={"state": "idle"}
+    )
+    return TelegramIdentityLease(FakeRedis(server=server), QA_TEST_TELEGRAM_ID)
 
 
 def message():

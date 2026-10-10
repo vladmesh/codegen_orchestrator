@@ -7,6 +7,7 @@ what it changed through the API and what its retained evidence says.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import timedelta
 import json
@@ -454,7 +455,7 @@ async def test_the_buyer_holds_nothing_while_native_work_and_its_qa_run(tmp_path
     (span,) = h.world.native.spans
     assert span[1] is not None
     _no_overlap(h)
-    assert await identity_lease(h.world.redis, h.clock).holder() is None
+    assert (await identity_lease(h.world.redis, h.clock).holder())["state"] == "idle"
 
 
 async def test_a_qa_run_that_keeps_the_identity_is_a_bounded_failure_without_probes(tmp_path):
@@ -519,8 +520,50 @@ async def test_a_disconnect_that_fails_keeps_the_identity_retained(tmp_path):
     await h.buyer().run()
 
     holder = await identity_lease(h.world.redis, h.clock).holder()
-    assert holder["kind"] == "synthetic_buyer"
-    assert holder["retained"] == "the synthetic buyer's Telegram disconnect failed"
+    assert (holder["state"], holder["kind"]) == ("retained", "synthetic_buyer")
+    assert holder["retained"].startswith("outstanding: client buyer session")
+    assert holder["retained"].endswith("(its disconnect failed at disconnect)")
+    assert not await h.world.native.start(reference="qa-next")
+
+
+async def test_a_session_whose_setup_fails_after_connect_is_still_disconnected(tmp_path):
+    h = harness(tmp_path)
+    original = h.telegram.connect
+
+    async def connected_then_refused():
+        await original()
+        raise TransportError("authorization", "did not answer in 30s")
+
+    h.telegram.connect = connected_then_refused
+
+    outcome = await h.buyer().run()
+
+    assert _verdict(h)["reason"] == "TransportError"
+    assert not h.telegram.connected
+    assert [e for e in h.telegram.events if e[0] == "disconnect"]
+    assert outcome.cleanup == "nothing_owned"
+    assert (await identity_lease(h.world.redis, h.clock).holder())["state"] == "idle"
+
+
+async def test_a_buyer_cancelled_at_its_disconnect_leaves_the_identity_retained(tmp_path):
+    h = harness(tmp_path)
+    reached = asyncio.Event()
+
+    async def disconnect_hangs():
+        reached.set()
+        await asyncio.Event().wait()
+
+    h.telegram.disconnect = disconnect_hangs
+    run = asyncio.create_task(h.buyer().run())
+    await reached.wait()
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+
+    holder = await identity_lease(h.world.redis, h.clock).holder()
+    assert holder["state"] == "retained"
+    assert holder["retained"].startswith("outstanding: client buyer session")
+    assert h.telegram.connected
     assert not await h.world.native.start(reference="qa-next")
 
 
@@ -711,6 +754,54 @@ async def test_a_later_visible_send_is_reconciled_and_the_failed_order_torn_down
     assert h.world.projects[PROJECT]["status"] == "archived"
     assert len(h.persona.contexts) == asked
     _no_overlap(h)
+
+
+async def _enter(h, entrypoint: str) -> str:
+    if entrypoint == "resume":
+        return (await h.buyer().run()).cleanup
+    return await h.buyer().cleanup()
+
+
+@pytest.mark.parametrize("entrypoint", ["resume", "cleanup"])
+@pytest.mark.parametrize(
+    ("refusal", "reason"), [("unavailable", "ApiRefused"), ("missing", "promo_unreadable")]
+)
+async def test_a_refused_rehydration_forbids_reconciliation_and_teardown_until_it_succeeds(
+    tmp_path, entrypoint, refusal, reason
+):
+    h = harness(tmp_path)
+    await _a_confirmation_accepted_but_unconfirmed(h)
+    failed = dict(_verdict(h))
+    uses_before = len(_telegram_uses(h))
+    reads_before = h.api.calls.count("promo_codes")
+    h.resume(tmp_path)
+    if refusal == "unavailable":
+        h.api.refuse.add("promo_codes")
+    else:
+        h.world.promos_withheld = True
+
+    refused = await _enter(h, entrypoint)
+
+    assert h.api.calls.count("promo_codes") > reads_before
+    assert refused == "refused"
+    assert h.store.record["cleanup"]["reason"] == reason
+    assert len(_telegram_uses(h)) == uses_before  # no connect, read or send at all
+    assert h.store.record["pending"]["kind"] == "persona"
+    assert "request_teardown" not in h.api.calls
+    assert _verdict(h) == failed
+
+    # The prerequisite returns: the whole path runs again, rehydration first.
+    h.api.refuse.clear()
+    h.world.promos_withheld = False
+    h.resume(tmp_path)
+
+    assert await _enter(h, entrypoint) == "completed"
+    assert _verdict(h) == failed
+    assert _codegen_sends(h).count(CONFIRMATION) == 1
+    assert h.store.record["pending"] is None
+    assert h.world.projects[PROJECT]["status"] == "archived"
+    refusals = [d for d in _decisions(h) if d.get("event") == "authorization_refused"]
+    assert refusals[-1]["reason"] == reason
 
 
 @pytest.mark.parametrize("entrypoint", ["resume", "cleanup"])

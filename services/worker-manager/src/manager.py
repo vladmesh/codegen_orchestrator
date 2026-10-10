@@ -42,7 +42,7 @@ from .creation_failure import mark_worker_creation_step, worker_creation_failure
 from .docker_ops import DockerClientWrapper
 from .executor_diagnostics import ExecutorDiagnostics
 from .image_builder import WORKER_SOURCE_HASH_LABEL, ImageBuilder, get_base_image
-from .worker_removal import QA_WORKER_TYPE, WorkerRemoval
+from .worker_removal import QA_WORKER_TYPE, RemovalOutcome, WorkerRemoval
 
 logger = structlog.get_logger()
 
@@ -103,9 +103,9 @@ class WorkerManager:
         """Publish one complete short-lived, credential-safe diagnostic snapshot."""
         return await self._executor_diagnostics.publish()
 
-    async def delete_worker(self, worker_id: str, reason: str | None = None) -> None:
+    async def delete_worker(self, worker_id: str, reason: str | None = None) -> RemovalOutcome:
         """Stop and remove a worker, its dev network, workspace, and Redis keys."""
-        await self._worker_removal.delete_worker(worker_id, reason)
+        return await self._worker_removal.delete_worker(worker_id, reason)
 
     async def _register_broker_worker(self, worker_id: str, token: str, worker_type: str) -> None:
         """Register a worker-scoped credential before its container is started.

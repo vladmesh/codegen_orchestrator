@@ -9,10 +9,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   QA account, checks the live product, keeps redacted resumable evidence and tears its project down.
 - The synthetic buyer runs every effect through one authority path: QA-guarded session, durable
   intents, token-proven project ownership, brief-route admission and provenance-chain judgments.
-- Native QA and the synthetic buyer hold the QA Telegram account through one Redis lease with no
-  TTL, released only after clients disconnect and served sandboxes are confirmed removed.
-- The synthetic buyer reconciles retained intents on every entrypoint, so a failed run's later
-  visible send allows owned teardown, and keeps the failed verdict.
+- Native QA and the synthetic buyer hold the QA Telegram account through one Redis record with
+  explicit idle/held/retained state; a missing record admits no one until an operator initializes it.
+- The identity hold releases only when every client, probe, endpoint and sandbox it registered is
+  proven ended; a QA executor's delete answers success only when Docker shows it and its proxy gone.
+- The synthetic buyer's run, resume and cleanup consume one authority result; a refused
+  rehydration reads no dialog and tears nothing down, and a later visible send keeps the failure.
 - The buyer's deploy evidence keeps `deployment_result.run_id` as the `deploy.yml` run and
   proves the built commit's `ci.yml` build-and-push publication separately.
 - The buyer observes unsolicited `tg-channels.post` delivery before sending `/digest`, so a late

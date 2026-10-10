@@ -27,18 +27,24 @@ Every entrypoint (`run`, `resume`, `cleanup`) and every effect passes the same o
    never sent again; one that is not stays pending (`delivery_unknown`) and refuses every
    further action, cleanup included. A callback press has no visible outgoing message and so
    stays pending.
-4. **The verdict is kept.** A failed operation is never continued: `resume` of a failed
+4. **One authority result.** Steps 1-3 run as one path that returns *authorized* or a
+   refusal; `run`, a failed `resume` and `cleanup` all consume that result. A refused step
+   stops the path there — a failed rehydration (the promo read unavailable, or a retained
+   promo code missing from it) reads no dialog and reconciles nothing — and the teardown
+   decision refuses with the refusal's reason. Nothing reconciles outside this path; a later
+   attempt is a new run of the whole path, rehydration first.
+5. **The verdict is kept.** A failed operation is never continued: `resume` of a failed
    operation reconciles and then only reaches the teardown decision, and nothing turns a
    failure green. A send that becomes visible after the operation failed as `delivery_unknown`
    is reconciled by `resume` or `cleanup`, after which the proven project is torn down and the
    verdict stays failed. A `cleanup` of an operation that had not concluded fails its verdict
    (`cleanup_before_verdict`) because it can never be accepted afterwards.
-5. **Ownership proof.** The order's project is the new owner-visible project whose own
+6. **Ownership proof.** The order's project is the new owner-visible project whose own
    encrypted secrets hold exactly the product token this operation sent in its Telegram order
    (compared by SHA-256), with owner, creation time and `initiating_run_id` read back. Only a
    proven project is admitted to the rollout and torn down; a same-owner project without the
    token is listed as an unproven candidate and never touched.
-6. **One holder of the QA identity.** Every Telegram use — connection, `get_me`, dialog read,
+7. **One holder of the QA identity.** Every Telegram use — connection, `get_me`, dialog read,
    send, callback, channel-post read and reconciliation — runs inside an exclusive hold on
    `qa:telegram-identity:<buyer.telegram_id>` in the platform Redis, the same hold native QA
    takes before its identity proof, preflight, Telegram tools, mechanical probe and executor
@@ -47,31 +53,50 @@ Every entrypoint (`run`, `resume`, `cleanup`) and every effect passes the same o
    reads the API, or waits for native work, deploy and QA, so native QA is admitted between
    its turns; the buyer's next use waits (bounded by `identity_wait_seconds`) until QA's run,
    its sandbox included, has ended. Queued or running Run rows are never admission authority.
-7. **Admitted actions only.** Before the project is proven and admitted to the rollout, the
+8. **Admitted actions only.** Before the project is proven and admitted to the rollout, the
    buyer sends only the controller's own opening, the token (when the bot asks for it) and at
    most `deferrals` fixed deferrals; the persona is not asked. After admission the persona
    speaks, but while the project's config points at an open brief revision
    (`product_brief_id`) nothing is sent until that revision's stored capability plan routes a
    module with its install and its preview postdates the rollout readback. Model output carries
    no authority flags; a schema-valid affirmative is held at this boundary like any reply.
-8. **Judged observations, frozen verdict, owned teardown.**
+9. **Judged observations, frozen verdict, owned teardown.**
 
 ## The shared QA identity's hold
 
-The hold is one Redis hash with no TTL, changed only by compare-and-act scripts keyed on the
-holder's token. A holder renews it while in use; if the record stops naming it (an operator
-released it, or Redis lost it) the holder's use is cancelled and it reports the loss instead of
-carrying on beside a new holder. A holder that cannot show its use ended — a Telegram
-disconnect that failed, a QA executor served the session whose removal worker-manager did not
-confirm — leaves the hold *retained*, naming why. Time never releases a hold: a process killed
-while holding leaves it, and every later user is refused with a diagnostic naming the holder,
-when it last renewed and its token.
+The hold is one Redis hash with no TTL and an explicit state — `idle`, `held` or `retained` —
+changed only by compare-and-act scripts keyed on the holder's token. Only a record that
+positively says `idle` admits anyone. A missing, unknown or malformed record admits no one:
+an earlier user may still have the session, so neither an acquire, elapsed time nor an empty
+read ever creates `idle`. Release writes `idle` back by token and never deletes the record.
 
-To recover, verify that the named holder's use has ended — its process is gone, and for a
-native QA run its executor container (`qa-…` worker) and egress proxy are removed — then:
+Each hold owns an account of everything that can use the session — the buyer's or a probe's
+Telegram client, a probe child process, native QA's capability endpoint and each executor
+sandbox — registered before the await that could open it and ended only on proof (a
+disconnect that returned, a child seen to exit, an endpoint stop that returned, worker-manager's
+success answer to that executor's delete, which it gives only when Docker showed the executor
+and its egress proxy gone). On every exit, cancellation included, the hold settles that
+account: anything still open leaves it *retained*, naming what is outstanding. A holder whose
+record stops naming it (an operator release, lost data) stops its use and reports
+`IdentityOwnershipLost`; since a lost record admits no one, no second user runs beside it.
+
+**Prerequisite before the first run on a released revision.** The record does not exist until
+an operator creates it. Until then every native QA run that uses Telegram ends as the
+`qa_probe_unavailable` infrastructure blocker and the buyer stops as `identity_busy`. The
+scoped operation that releases this revision initializes it once, after proving that no
+Telegram user of the QA account is running (no qa-worker job in flight, no `qa-…` executor or
+egress proxy container, no buyer process):
 
 ```bash
-"${RUN[@]}" identity --config /buyer/buyer.json                    # who holds it, since when
+"${RUN[@]}" identity --config /buyer/buyer.json --initialize      # only over a missing/malformed record
+```
+
+The same command recovers from a lost record, under the same proof. To recover a held or
+retained record, verify that the named holder's use has ended — its process is gone, and for a
+native QA run its executor container and egress proxy are removed — then:
+
+```bash
+"${RUN[@]}" identity --config /buyer/buyer.json                    # state, holder, outstanding uses
 "${RUN[@]}" identity --config /buyer/buyer.json --release <token>  # only that exact token
 ```
 
@@ -254,5 +279,6 @@ that carried a secret appear as a placeholder.
    (`deploy.yml` run, deployed commit, image references and digests) as the released deployer
    writes it. A product deployed before those fields existed, or a repository the App cannot
    read, leaves those observations `unknown` and the verdict `incomplete`.
-7. Before the first run, `identity` shows the hold free. A hold left by an earlier killed
-   process is released only as described above, never by deleting the key by hand.
+7. Before the first run, `identity` shows the record `idle`. On a freshly released revision it
+   is missing until the release operation initializes it (above). A hold left by an earlier
+   killed process is released only as described above, never by editing the key by hand.
