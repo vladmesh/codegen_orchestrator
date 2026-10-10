@@ -1,4 +1,4 @@
-"""The live ports: built only by the `run`, `resume` and `cleanup` commands.
+"""The live ports: built only by the `run` command.
 
 Nothing here runs on import. Each port resolves its own credentials from their
 handles when it is built or used, and adds every resolved value to the
@@ -13,13 +13,10 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-import redis.asyncio as aioredis
-
 from shared.crypto import decrypt_dict
-from src.consumers._qa_telegram_lease import TelegramIdentityLease
 
 from .codegen_api import CodegenApi
-from .config import BuyerConfig, ModelConfig, resolve_secret
+from .config import BuyerConfig, ModelConfig
 from .controller import Clock, SyntheticBuyer
 from .evidence import EvidenceStore, Redaction
 from .persona import ModelPersona
@@ -55,26 +52,6 @@ async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
-@asynccontextmanager
-async def identity_lease(
-    config: BuyerConfig, environ: Mapping[str, str], redaction: Redaction, clock: Clock
-):
-    """The shared QA identity's exclusive hold, in the Redis native QA holds it in."""
-    url = resolve_secret(config.identity_lease.redis_url, environ)
-    redaction.add(url)
-    redis = aioredis.from_url(url)
-    try:
-        yield TelegramIdentityLease(
-            redis,
-            config.buyer.telegram_id,
-            wall=lambda: clock.wall().timestamp(),
-            sleep=clock.sleep,
-            now=clock.wall,
-        )
-    finally:
-        await redis.aclose()
-
-
 def live_clock() -> Clock:
     return Clock(wall=lambda: datetime.now(UTC), sleep=_sleep)
 
@@ -96,22 +73,20 @@ async def live_buyer(config: BuyerConfig, store: EvidenceStore, environ: Mapping
         return values
 
     try:
-        async with identity_lease(config, environ, redaction, clock) as lease:
-            yield SyntheticBuyer(
-                config,
-                telegram=TelethonPort(config.telegram, environ, redaction),
-                lease=lease,
-                api=api,
-                persona=ModelPersona(persona_model(config.model), config.scenario),
-                platform=LivePlatformFacts(
-                    config.platform, environ, redaction, stored_secrets=stored_secrets
-                ),
-                repository=GitHubRepositoryFacts(),
-                stored_secrets=stored_secrets,
-                store=store,
-                clock=clock,
-                environ=environ,
-            )
+        yield SyntheticBuyer(
+            config,
+            telegram=TelethonPort(config.telegram, environ, redaction),
+            api=api,
+            persona=ModelPersona(persona_model(config.model), config.scenario),
+            platform=LivePlatformFacts(
+                config.platform, environ, redaction, stored_secrets=stored_secrets
+            ),
+            repository=GitHubRepositoryFacts(),
+            stored_secrets=stored_secrets,
+            store=store,
+            clock=clock,
+            environ=environ,
+        )
     finally:
         await api.aclose()
 

@@ -275,28 +275,6 @@ proxy: their child scripts are platform-written with every input a JSON literal
 proven identity — without it each returns the `missing_telethon_credentials`
 blocker preflight uses and starts no child process.
 
-The QA Telegram account has one user at a time. Every use of it — a QA run's
-identity proof, access preflight, Telegram tools, mechanical probe and the
-executor sandbox served the session, and every synthetic-buyer connection — runs
-inside an exclusive hold on `qa:telegram-identity:<telegram id>` in the platform
-Redis (`consumers/_qa_telegram_lease.py`). The record has no TTL and an explicit
-state, `idle`, `held` or `retained`; only a known `idle` admits a holder. A
-missing, unknown or malformed record admits no one, and nothing but an operator's
-`identity --initialize` (after proving every user stopped) creates `idle`; release
-writes `idle` back by token and never deletes the record. The hold owns an account
-of every lifetime that can use the session — each client, probe child, the
-capability endpoint and each executor sandbox — registered before the await that
-could open it and ended only on proof: a disconnect that returned, a child seen
-exited, an endpoint stop that returned, worker-manager's success answer to that
-executor's delete. Worker-manager answers a QA executor's delete with success only
-when Docker showed both the executor container and its egress proxy absent; other
-workers' answers are unchanged. Every exit of the hold, cancellation included,
-settles the account once: anything still open *retains* the record, naming what,
-until an operator who checked it releases it by token (`python -m
-src.synthetic_buyer identity`). A QA run that cannot take the hold within its
-bound, or loses it while in use, ends as the `qa_probe_unavailable`
-infrastructure blocker; queued/running Run rows are never admission authority.
-
 QA parses criteria before it resolves exploratory-only resources. Deterministic
 probe inability, unavailable target runtime, bot liveness failures, access
 denials, and product check failures retain distinct typed classifications.

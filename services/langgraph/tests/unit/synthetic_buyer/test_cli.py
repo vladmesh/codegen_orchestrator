@@ -42,20 +42,12 @@ def test_run_refuses_an_operation_whose_evidence_exists(tmp_path):
         operation_id="s1487-buyer-001", revision=REVISION, handles={}, now="x"
     )
     store.save()
+    before = store.path.read_text()
 
     code = main(["run", "--config", config, "--orchestrator-revision", REVISION], ENVIRON)
 
     assert code == EXIT_REFUSED
-
-
-@pytest.mark.parametrize("command", ["resume", "cleanup"])
-def test_resume_and_cleanup_need_retained_evidence(tmp_path, command):
-    code = main(
-        [command, "--config", _config(tmp_path), "--orchestrator-revision", REVISION], ENVIRON
-    )
-
-    assert code == EXIT_REFUSED
-    assert not (tmp_path / "evidence").exists()
+    assert store.path.read_text() == before
 
 
 def test_a_live_command_with_a_missing_handle_writes_no_evidence(tmp_path):
@@ -97,14 +89,13 @@ def _retained(tmp_path, **record) -> EvidenceStore:
 
 @pytest.mark.parametrize("command", ["check", "inspect"])
 def test_offline_commands_touch_no_port_even_with_a_pending_send(tmp_path, monkeypatch, command):
-    """`check` and `inspect` read files only: no Telegram, API or identity lease is built."""
+    """`check` and `inspect` read files only: no Telegram or API port is built."""
     from src.synthetic_buyer import __main__ as cli
 
     def refuse(*_args, **_kwargs):
         raise AssertionError("an offline command built a live port")
 
     monkeypatch.setattr(cli, "live_buyer", refuse)
-    monkeypatch.setattr(cli, "identity_lease", refuse)
     config = _config(tmp_path)
     store = _retained(
         tmp_path,
@@ -116,7 +107,7 @@ def test_offline_commands_touch_no_port_even_with_a_pending_send(tmp_path, monke
     assert store.path.read_text() == before
 
 
-@pytest.mark.parametrize("command", ["check", "inspect", "resume", "cleanup"])
+@pytest.mark.parametrize("command", ["check", "inspect"])
 def test_evidence_of_another_schema_is_refused_and_left_as_it_is(tmp_path, command):
     config = _config(tmp_path)
     store = _retained(tmp_path, schema_version=1)
@@ -127,41 +118,3 @@ def test_evidence_of_another_schema_is_refused_and_left_as_it_is(tmp_path, comma
 
     assert code == (1 if command == "check" else EXIT_REFUSED)
     assert store.path.read_text() == before
-
-
-def test_the_identity_command_initializes_once_and_releases_only_the_exact_token(
-    tmp_path, monkeypatch
-):
-    from contextlib import asynccontextmanager
-
-    from fakeredis.aioredis import FakeRedis
-
-    from src.consumers._qa_telegram_lease import Holder, HolderKind, TelegramIdentityLease
-    from src.synthetic_buyer import __main__ as cli
-
-    redis = FakeRedis()
-
-    @asynccontextmanager
-    async def lease(config, environ, redaction, clock):
-        yield TelegramIdentityLease(redis, config.buyer.telegram_id)
-
-    monkeypatch.setattr(cli, "identity_lease", lease)
-    config = _config(tmp_path)
-
-    async def orphan() -> str:
-        held = TelegramIdentityLease(redis, 8202532144)
-        return await held._acquire(  # noqa: SLF001 - a process killed while holding
-            Holder(HolderKind.NATIVE_QA, "qa-run-9", "exploratory"), 0, 0
-        )
-
-    import asyncio
-
-    assert main(["identity", "--config", config], ENVIRON) == 0
-    # A missing record admits no one until the operator initializes it, once.
-    assert main(["identity", "--config", config, "--initialize"], ENVIRON) == 0
-    assert main(["identity", "--config", config, "--initialize"], ENVIRON) == EXIT_REFUSED
-    token = asyncio.run(orphan())
-    assert main(["identity", "--config", config, "--initialize"], ENVIRON) == EXIT_REFUSED
-    assert main(["identity", "--config", config, "--release", "wrong"], ENVIRON) == EXIT_REFUSED
-    assert main(["identity", "--config", config, "--release", token], ENVIRON) == 0
-    assert main(["identity", "--config", config, "--release", token], ENVIRON) == EXIT_REFUSED

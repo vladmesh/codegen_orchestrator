@@ -47,7 +47,6 @@ from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
 
 from ..config.settings import get_settings
-from ..consumers._qa_telegram_lease import Lifetime
 from .worker_spawner import CREATION_TIMEOUT, _wait_for_response, _wait_until_ready
 from .worker_turns import ensure_worker_output_group, publish_worker_turn
 
@@ -57,9 +56,6 @@ logger = get_logger(__name__)
 # The agent submits its verdict and then exits; the two arrive over different
 # channels, so the faster one must not decide the run.
 VERDICT_GRACE_S = 15
-# How long worker-manager is given to confirm an executor's removal when the
-# caller needs to know the sandbox is gone (it held the shared Telegram identity).
-REMOVAL_CONFIRMATION_S = 120
 
 
 class QAExecutorUnavailable(Exception):
@@ -143,7 +139,6 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
     timeout: int,
     on_create_published: Callable[[], None],
     probe_library: list[QAProbeLibraryFile] | None = None,
-    sandbox: Callable[[str], Lifetime] | None = None,
 ) -> QAExecutorRun:
     """Run one exploratory QA pass on a central ephemeral coding agent.
 
@@ -174,11 +169,6 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
             accepts the create command, even if any later operation fails.
         probe_library: the seed and project probes, and their index, that
             worker-manager writes under `QA_PROBE_LIBRARY_PATH` for this run.
-        sandbox: when given (the run holds the QA Telegram identity), registers
-            this executor's lifetime on the hold *before* its create command is
-            published, and ends it only when worker-manager answers this exact
-            delete command with its proven removal. A failed or cancelled delete
-            or confirmation leaves the lifetime open, and the hold retained.
 
     Raises:
         QAExecutorUnavailable: no executor ran at all.
@@ -190,9 +180,6 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
     consumer_id = f"qa-{request_id[:8]}"
     redis_client = redis.from_url(settings.redis_url)
     created = False
-    # Registered before anything could create the container: from here until a
-    # proven removal, this sandbox may be served the QA session.
-    lifetime = sandbox(worker_id) if sandbox is not None else None
 
     try:
         # `$` is deliberate: this group exists before the create command below is
@@ -232,10 +219,8 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
             ),
             context={"source": "qa-worker"},
         )
-        # A create whose publication raised may still have reached the stream, so
-        # it is deleted (and, under a hold, its removal proven) like a sent one.
-        created = True
         await redis_client.xadd(WORKER_COMMANDS, {"data": create_cmd.model_dump_json()})
+        created = True
         on_create_published()
         logger.info("qa_executor_requested", worker_id=worker_id, agent_type=agent_type.value)
 
@@ -297,12 +282,17 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
         )
     finally:
         if created:
-            await _delete_executor(
-                redis_client, group_name, consumer_id, request_id, worker_id, lifetime
+            await redis_client.xadd(
+                WORKER_COMMANDS,
+                {
+                    "data": DeleteWorkerCommand(
+                        request_id=f"cleanup-{request_id}",
+                        worker_id=worker_id,
+                        reason="completed",
+                    ).model_dump_json()
+                },
             )
-        elif lifetime is not None:
-            # No create was ever sent: no container exists to hold the session.
-            lifetime.end()
+            logger.info("qa_executor_deleted", worker_id=worker_id)
         output_stream = f"worker:{worker_id}:output"
         for stream in (WORKER_RESPONSES, output_stream):
             try:
@@ -314,57 +304,6 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
         except Exception as exc:  # noqa: BLE001 — worker removal may already have removed it
             logger.debug("qa_executor_output_cleanup_failed", stream=output_stream, error=str(exc))
         await redis_client.aclose()
-
-
-async def _delete_executor(  # noqa: PLR0913 - one delete's whole context
-    redis_client: redis.Redis,
-    group_name: str,
-    consumer_id: str,
-    request_id: str,
-    worker_id: str,
-    lifetime: Lifetime | None,
-) -> None:
-    """Ask worker-manager to remove the executor; with a lifetime, wait for its proof.
-
-    The lifetime ends only on worker-manager's success answer to this exact delete,
-    which it gives for a QA executor only when Docker showed the container and its
-    egress proxy absent. A publish that failed, an answer that refused or never
-    came, or a cancellation anywhere here leaves it open.
-    """
-    delete = DeleteWorkerCommand(
-        request_id=f"cleanup-{request_id}", worker_id=worker_id, reason="completed"
-    )
-    try:
-        await redis_client.xadd(WORKER_COMMANDS, {"data": delete.model_dump_json()})
-    except Exception as exc:
-        if lifetime is not None:
-            lifetime.unproven(f"the delete could not be published: {type(exc).__name__}")
-        raise
-    logger.info("qa_executor_deleted", worker_id=worker_id)
-    if lifetime is None:
-        return
-    try:
-        answer = await _wait_for_response(
-            redis_client,
-            group_name,
-            consumer_id,
-            delete.request_id,
-            REMOVAL_CONFIRMATION_S,
-            group_start_id="$",
-        )
-    except Exception as exc:  # noqa: BLE001 - an unread answer is an unproven removal
-        lifetime.unproven(f"the delete answer could not be read: {type(exc).__name__}")
-        return
-    if answer is None:
-        lifetime.unproven(
-            f"worker-manager did not answer the delete within {REMOVAL_CONFIRMATION_S}s"
-        )
-    elif not answer.get("success"):
-        refusal = str(answer.get("error") or "no reason")[:300]
-        lifetime.unproven(f"worker-manager did not prove the removal: {refusal}")
-    else:
-        lifetime.end()
-        logger.info("qa_executor_removal_proven", worker_id=worker_id)
 
 
 async def _await_verdict_or_exit(

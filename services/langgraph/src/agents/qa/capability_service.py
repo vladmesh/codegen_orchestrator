@@ -76,9 +76,6 @@ class QACapabilityService:
         self.verdict_received = asyncio.Event()
         # Distinguishes an executor failure from a run with no verdict.
         self.calls_served = 0
-        # How many times the QA Telegram session left this process for a sandbox.
-        # A sandbox that was served it can use it until the sandbox is removed.
-        self.identity_served = 0
 
     @property
     def token(self) -> str:
@@ -211,7 +208,6 @@ class QACapabilityService:
                 "this run has no proven QA Telegram identity: "
                 + (self._telegram_identity_refusal or "the QA runtime has no Telethon credentials")
             )
-        self.identity_served += 1
         logger.info("qa_capability_telegram_identity_served")
         return {
             "tool": TELEGRAM_IDENTITY_CALL,

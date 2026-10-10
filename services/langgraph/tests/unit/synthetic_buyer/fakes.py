@@ -6,27 +6,21 @@ the brief it points the project at, the accepted order) and records into the fak
 API, the project's secrets and the repository exactly what the real ones would
 expose. Judgment stays in the controller and its adapters; the world only holds
 facts. Time is a fake clock that moves only when the controller sleeps; native work,
-QA runs and channel posts happen on those sleeps. Native QA's Telegram use takes
-the real `TelegramIdentityLease` over an in-memory Redis with Lua, the same one the
-buyer holds. Nothing starts a process, opens a socket or really sleeps.
+QA and channel posts happen on those sleeps. QA activity is a deterministic phase
+observation. Nothing starts a process, opens a socket or really sleeps.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import inspect
 from typing import Any
 
-import fakeredis
-from fakeredis.aioredis import FakeRedis
-
 from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.capability_preview import CapabilityPlan
-from src.consumers._qa_telegram_lease import LEASE_KEY, Holder, HolderKind, TelegramIdentityLease
 from src.synthetic_buyer.codegen_api import ApiRefused
 from src.synthetic_buyer.config import parse_config
 from src.synthetic_buyer.controller import Clock, SyntheticBuyer
@@ -96,7 +90,6 @@ def config_data(**overrides: Any) -> dict:
             "conversation_turns": 8,
             "order_seconds": 3600,
             "build_seconds": 7200,
-            "identity_wait_seconds": 600,
             "probe_reply_seconds": 30,
             "post_delivery_seconds": 600,
             "teardown_seconds": 600,
@@ -111,7 +104,6 @@ def config_data(**overrides: Any) -> dict:
             "api_hash": {"env": "TELETHON_API_HASH"},
             "session": {"env": "TELETHON_SESSION"},
         },
-        "identity_lease": {"redis_url": {"env": "REDIS_URL"}},
         "registration": {"credits_microusd": 5_000_000, "attempt_reservation_microusd": 500_000},
         "product_token": {"mode": "handle", "handle": {"env": "BUYER_PRODUCT_BOT_TOKEN"}},
         "platform": {
@@ -220,10 +212,6 @@ def plan(route: str = "module") -> CapabilityPlan:
     )
 
 
-class ProcessDied(BaseException):  # noqa: N818 - the process, not an error, ended
-    """The operator's process died mid-operation: nothing in it may catch this."""
-
-
 @dataclass
 class FakeClock:
     now: datetime = START
@@ -243,69 +231,6 @@ class FakeClock:
         return Clock(wall=self.wall, sleep=self.sleep)
 
 
-async def _never() -> None:
-    """A renewal that never comes due inside a test: the watchdog sleeps until cancelled."""
-    await asyncio.Event().wait()
-
-
-def initialized_redis() -> FakeRedis:
-    """A Redis whose QA identity record an operator initialized to idle."""
-    server = fakeredis.FakeServer()
-    fakeredis.FakeStrictRedis(server=server).hset(
-        LEASE_KEY.format(telegram_id=BUYER), mapping={"state": "idle"}
-    )
-    return FakeRedis(server=server)
-
-
-def identity_lease(redis: FakeRedis, clock: FakeClock) -> TelegramIdentityLease:
-    """The real lease over the world's Redis, timed by the fake clock."""
-    return TelegramIdentityLease(
-        redis,
-        BUYER,
-        wall=lambda: clock.now.timestamp(),
-        sleep=clock.sleep,
-        renew_wait=_never,
-        now=clock.wall,
-    )
-
-
-class NativeQA:
-    """Native QA's side of the shared identity: holds it exactly as the QA consumer does."""
-
-    def __init__(self, world: World) -> None:
-        self.world = world
-        self.token: str | None = None
-        self.denied = 0
-        self.spans: list[tuple[datetime, datetime | None]] = []
-
-    @property
-    def holding(self) -> bool:
-        return self.token is not None
-
-    async def start(self, reference: str = "qa-other", purpose: str = "exploratory") -> bool:
-        """Take the identity if it is free right now; a denial is counted, not waited."""
-        if self.token is not None:
-            return True
-        lease = identity_lease(self.world.redis, self.world.clock)
-        try:
-            self.token = await lease._acquire(  # noqa: SLF001 - the consumer's own admission
-                Holder(HolderKind.NATIVE_QA, reference, purpose), 0, 0
-            )
-        except Exception:  # noqa: BLE001 - IdentityBusy: the buyer holds it
-            self.denied += 1
-            return False
-        self.spans.append((self.world.clock.now, None))
-        return True
-
-    async def end(self) -> None:
-        if self.token is None:
-            return
-        await identity_lease(self.world.redis, self.world.clock).release(self.token)
-        self.token = None
-        started, _ = self.spans[-1]
-        self.spans[-1] = (started, self.world.clock.now)
-
-
 class World:
     """Both sides of every boundary the controller crosses, in one consistent state."""
 
@@ -315,8 +240,6 @@ class World:
         self.next_id = 500
         self.users: dict[int, dict] = {}
         self.promos: list[dict] = []
-        #: The promo API answers without this operation's retained codes.
-        self.promos_withheld = False
         self.projects: dict[str, dict] = {
             UNRELATED_PROJECT: {
                 "id": UNRELATED_PROJECT,
@@ -335,11 +258,12 @@ class World:
         self.plans: dict[str, CapabilityPlan] = {}
         self.tasks: list[dict] = []
         self.runs: list[dict] = []
-        self.redis = initialized_redis()
         self.connected_at: list[datetime] = []
-        self.native = NativeQA(self)
         self.language = "ru"
         self.teardown = "completed"
+        self.delete_status = 204
+        self.deleted_visible = False
+        self.cleanup_witnesses: list[dict] = []
         self.sends_while_qa_busy: list[str] = []
         self.connects_while_qa_busy = 0
         self.reads_while_qa_busy = 0
@@ -416,7 +340,6 @@ class World:
         self.channel_posts: dict[tuple[str, int], datetime] = {}
         self.botfather_state: str | None = None
         self.botfather_bots: list[str] = []
-        self.botfather_dies_after_creation = False
         self.events: list[tuple] = []
 
     # --- Telegram side ---------------------------------------------------------
@@ -551,36 +474,20 @@ class World:
         if self.botfather_state == "username":
             self.botfather_state = None
             self.botfather_bots.append(text)
-            if self.botfather_dies_after_creation:
-                self.botfather_dies_after_creation = False
-                raise ProcessDied
             return [f"Done! Use this token to access the HTTP API:\n{TOKEN}"]
-        if text == "/token":
-            self.botfather_state = "choose"
-            return ["Choose a bot to generate a new token."]
-        if self.botfather_state == "choose":
-            self.botfather_state = None
-            if text.removeprefix("@") in self.botfather_bots:
-                return [f"You can use this token to access HTTP API:\n{TOKEN}"]
-            return ["Invalid bot selected."]
         return ["Unrecognized command."]
 
     # --- native work ---------------------------------------------------------------
 
     async def build_tick(self) -> None:
-        """Native work, then the story's own QA holding the identity for one tick.
-
-        QA waits, tick by tick, while anyone else holds the identity.
-        """
+        """Observe native work, then the story's own QA for one fake-clock tick."""
         self.build_ticks -= 1
         if self.build_ticks > 0:
             return
         if self.qa_phase == "waiting":
-            if await self.native.start(reference="qa-1"):
-                self.qa_phase = "holding"
+            self.qa_phase = "holding"
             return
         if self.qa_phase == "holding":
-            await self.native.end()
             self.qa_phase = "done"
         self.clock.hooks.remove(self.build_tick)
         story = self.stories[0]
@@ -691,7 +598,7 @@ class FakeTelegram:
 
     async def connect(self) -> None:
         self.world.connected_at.append(self.world.clock.now)
-        if self.world.native.holding:
+        if self.world.qa_phase == "holding":
             self.world.connects_while_qa_busy += 1
         self.events.append(("connect",))
         self.world.events.append(("connect",))
@@ -718,7 +625,7 @@ class FakeTelegram:
 
     async def messages_after(self, peer: Peer, after_id: int) -> list[Message]:
         self._require()
-        if self.world.native.holding:
+        if self.world.qa_phase == "holding":
             self.world.reads_while_qa_busy += 1
         found = [
             m
@@ -729,7 +636,7 @@ class FakeTelegram:
 
     async def send(self, peer: Peer, text: str) -> Message:
         self._require()
-        if self.world.native.holding:
+        if self.world.qa_phase == "holding":
             self.world.sends_while_qa_busy.append(text)
         self.events.append(("send", peer.username, text))
         self.world.events.append(("send", peer.username, text))
@@ -789,12 +696,6 @@ class FakeApi:
         self.world.promos.append(promo)
         return dict(promo)
 
-    async def promo_codes(self) -> list[dict]:
-        self._call("promo_codes")
-        if self.world.promos_withheld:
-            return []
-        return [dict(code) for code in self.world.promos]
-
     async def owned_projects(self, telegram_id: int) -> list[dict]:
         self._call("owned_projects")
         user = self.world.users[telegram_id]
@@ -802,7 +703,11 @@ class FakeApi:
 
     async def project(self, project_id: str, *, as_user: int | None = None) -> dict:
         self._call("project")
-        project = self.world.projects[project_id]
+        project = self.world.projects.get(project_id)
+        if project is None:
+            raise ApiRefused(f"/api/projects/{project_id}", 404)
+        if as_user is not None and project["owner_id"] != self.world.users[as_user]["id"]:
+            raise ApiRefused(f"/api/projects/{project_id}", 403)
         return {**project, "config": dict(project["config"])}
 
     async def module_rollout(self) -> dict:
@@ -874,6 +779,33 @@ class FakeApi:
             }
         return {"status": "failed", "project_status": "active", "error": "undeploy failed"}
 
+    async def delete_project(self, project_id: str, telegram_id: int) -> int:
+        self._call("delete_project")
+        project = self.world.projects[project_id]
+        if project["owner_id"] != self.world.users[telegram_id]["id"]:
+            raise ApiRefused(f"/api/projects/{project_id}", 403)
+        self.world.cleanup_witnesses.append(
+            {
+                "project_status": project["status"],
+                "telegram_id": telegram_id,
+            }
+        )
+        if self.world.delete_status != 204:
+            raise ApiRefused(f"/api/projects/{project_id}", self.world.delete_status)
+        if not self.world.deleted_visible:
+            del self.world.projects[project_id]
+        return 204
+
+    async def deletion_confirmed(self, project_id: str, telegram_id: int) -> bool:
+        self._call("deletion_confirmed")
+        try:
+            await self.project(project_id, as_user=telegram_id)
+        except ApiRefused as error:
+            if error.status == 404:
+                return True
+            raise
+        return False
+
 
 class FakeRepository:
     """Read-only repository facts of the generated product."""
@@ -944,7 +876,6 @@ class ScriptedPersona:
 
     contexts: list[PersonaContext] = field(default_factory=list)
     overrides: dict[str, PersonaTurn] = field(default_factory=dict)
-    interrupt_on: str | None = None
 
     async def turn(self, context: PersonaContext) -> PersonaTurn:
         self.contexts.append(context)
@@ -952,8 +883,6 @@ class ScriptedPersona:
         for marker, turn in self.overrides.items():
             if marker in said:
                 return turn
-        if self.interrupt_on and self.interrupt_on in said:
-            raise ProcessDied
         if "Что должен делать бот" in said:
             return PersonaTurn(
                 decision=PersonaDecision.REPLY,
@@ -985,7 +914,6 @@ class Harness:
         return SyntheticBuyer(
             parse_config(config_data(**config_overrides)),
             telegram=self.telegram,
-            lease=identity_lease(self.world.redis, self.clock),
             api=self.api,
             persona=self.persona,
             platform=self.platform,
@@ -995,12 +923,6 @@ class Harness:
             clock=self.clock.clock(),
             environ=ENVIRON,
         )
-
-    def resume(self, directory) -> None:
-        """A new process: a fresh redaction set over the retained evidence."""
-        self.store = EvidenceStore(directory, Redaction(), clock=self.clock.wall)
-        self.store.load()
-        self.telegram._connected = False
 
     def evidence_text(self) -> str:
         return (self.store.directory / "evidence.json").read_text() + (

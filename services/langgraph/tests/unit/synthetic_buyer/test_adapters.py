@@ -95,6 +95,41 @@ async def test_an_owned_read_asks_as_the_buyer(api_routes):
     assert seen[0].url.path == "/api/projects/"
 
 
+async def test_delete_and_absence_read_use_the_owner_authentication(api_routes):
+    def handler(request):
+        return httpx.Response(204 if request.method == "DELETE" else 404)
+
+    api, seen = _api(api_routes, handler)
+
+    assert await api.delete_project(PROJECT, 8202532144) == 204
+    assert await api.deletion_confirmed(PROJECT, 8202532144)
+    assert [r.method for r in seen] == ["DELETE", "GET"]
+    assert all(r.url.path == f"/api/projects/{PROJECT}" for r in seen)
+    assert all(r.headers["X-Telegram-ID"] == "8202532144" for r in seen)
+    assert all(r.headers["X-Internal-Key"] == os.environ["INTERNAL_API_KEY"] for r in seen)
+
+
+@pytest.mark.parametrize("status", [200, 202, 403, 409, 500])
+async def test_delete_rejects_every_response_other_than_204(api_routes, status):
+    api, _ = _api(api_routes, lambda request: httpx.Response(status, text=TOKEN))
+
+    with pytest.raises(ApiRefused) as refused:
+        await api.delete_project(PROJECT, 8202532144)
+
+    assert refused.value.status == status
+    assert TOKEN not in str(refused.value)
+
+
+@pytest.mark.parametrize("status", [200, 403, 500])
+async def test_only_owner_get_404_proves_deletion(api_routes, status):
+    api, _ = _api(api_routes, lambda request: httpx.Response(status, text=TOKEN))
+    if status == 200:
+        assert not await api.deletion_confirmed(PROJECT, 8202532144)
+    else:
+        with pytest.raises(ApiRefused):
+            await api.deletion_confirmed(PROJECT, 8202532144)
+
+
 async def test_a_refusal_keeps_its_route_and_status_but_never_the_body(api_routes):
     api, _ = _api(
         api_routes, lambda request: httpx.Response(409, json={"detail": f"code {PROMO} taken"})

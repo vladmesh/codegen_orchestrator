@@ -15,8 +15,6 @@ from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.telegram_access_probe import telethon_env
 from shared.telethon_identity import IdentityNotProven, prove_qa_identity
 
-from ._qa_telegram_lease import lifetime
-
 TIMEZONE = "Etc/UTC"
 PROBE_TIMEOUT = 280
 REPLY_TIMEOUT = 30
@@ -350,17 +348,14 @@ async def run_conversation(  # noqa: C901, PLR0915 - sequential fixed chat and c
     evidence["notes_after"] = message_record(final)
 
 
-async def run_fixed_probe(  # noqa: PLR0913 - one probe's whole context
-    *, mode, marker, bot_username, deployed_url, headers, evidence, redaction, identity_hold=None
+async def run_fixed_probe(
+    *, mode, marker, bot_username, deployed_url, headers, evidence, redaction
 ):
     from telethon import TelegramClient  # noqa: PLC0415
     from telethon.sessions import StringSession  # noqa: PLC0415
 
     credentials = telethon_env()
     redaction.add(credentials["TELETHON_SESSION"], credentials["TELETHON_API_HASH"])
-    # On the run's identity hold before the client exists; ended only once its
-    # disconnect returned.
-    used = lifetime(identity_hold, "client", "mechanical probe")
     client = TelegramClient(
         StringSession(credentials["TELETHON_SESSION"]),
         int(credentials["TELETHON_API_ID"]),
@@ -413,10 +408,8 @@ async def run_fixed_probe(  # noqa: PLR0913 - one probe's whole context
                     status="failed", phase="disconnect", failure_type=type(exc).__name__
                 )
             evidence["disconnect"] = "failed"
-            used.unproven(f"its disconnect failed: {type(exc).__name__}")
             raise ProbeFailure(evidence["phase"], "session disconnect failed") from None
         evidence["disconnect"] = "completed"
-        used.end()
 
 
 def report(evidence):

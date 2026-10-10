@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from redis.asyncio import Redis
@@ -37,35 +36,6 @@ QA_WORKER_TYPE = "qa"
 
 UnregisterBrokerWorker = Callable[[str], Awaitable[None]]
 ReleaseWorkspaceLock = Callable[[str, str | None], Awaitable[None]]
-
-
-@dataclass(frozen=True)
-class RemovalOutcome:
-    """What one `delete_worker` call proved gone.
-
-    `removed` is Docker's own absence check of the worker container
-    (`DockerClientWrapper.remove_container` returns only once the container is
-    gone). For a QA executor, whose sandbox may hold the QA Telegram session,
-    `egress_removed` is the same check of its egress proxy.
-    """
-
-    removed: bool
-    qa_executor: bool = False
-    egress_removed: bool | None = None
-
-    def unproven_qa_removal(self) -> str | None:
-        """Why a QA executor's removal is not proven, or None when it is (or not QA)."""
-        if not self.qa_executor:
-            return None
-        missing = [
-            what
-            for what, gone in (
-                ("executor container", self.removed),
-                ("egress proxy", self.egress_removed),
-            )
-            if not gone
-        ]
-        return None if not missing else "QA executor removal not proven: " + ", ".join(missing)
 
 
 class WorkerRemoval:
@@ -352,14 +322,8 @@ class WorkerRemoval:
             return
         logger.info("story_worker_binding_cleared", worker_id=worker_id, story_id=story_id)
 
-    async def delete_worker(  # noqa: PLR0915 - one ordered teardown
-        self, worker_id: str, reason: str | None = None
-    ) -> RemovalOutcome:
-        """Stop and remove a worker, its dev network, workspace, and Redis keys.
-
-        Returns what was proven removed. Docker failures are still logged and
-        retried by the durable stop owner rather than raised.
-        """
+    async def delete_worker(self, worker_id: str, reason: str | None = None) -> None:
+        """Stop and remove a worker, its dev network, workspace, and Redis keys."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         logger.info("deleting_worker", worker_id=worker_id)
 
@@ -384,7 +348,6 @@ class WorkerRemoval:
         # for and nothing a leaked key could be attributed to.
         keep_meta = False
         removed = False
-        egress_removed: bool | None = None
         evidence: RemovedWorkerEvidence | None = None
         if ownership is None:
             logger.warning(
@@ -410,7 +373,7 @@ class WorkerRemoval:
                 # The run's egress proxy is as ephemeral as the run: it holds
                 # the second network leg the executor is not allowed to have, so
                 # it must not outlive the container it was opened for.
-                egress_removed = await qa_egress.tear_down(self.docker, worker_id)
+                await qa_egress.tear_down(self.docker, worker_id)
             elif stored_workspace:
                 try:
                     runner = ComposeRunner(settings.SCAFFOLDED_WORKSPACE_PATH)
@@ -480,16 +443,11 @@ class WorkerRemoval:
 
         except Exception as e:  # noqa: BLE001 — deletion returns collected evidence after any SDK failure
             logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
-        outcome = RemovalOutcome(
-            removed=removed,
-            qa_executor=is_qa_worker,
-            egress_removed=egress_removed if is_qa_worker else None,
-        )
         if not removed:
             # No evidence and no lock release: a failed Docker call is not a
             # teardown confirmation. The supervisor re-drives the durable stop
             # intent with capped backoff until this operation succeeds.
-            return outcome
+            return
         await self._unregister_broker_worker(worker_id)
         # Only the worker that took the workspace lock releases it, and the
         # holder fact is the only thing that says so.
@@ -530,4 +488,3 @@ class WorkerRemoval:
             )
         await self.redis.delete(*keys_to_delete)
         await delete_worker_output_receipts(self.redis, worker_id)
-        return outcome

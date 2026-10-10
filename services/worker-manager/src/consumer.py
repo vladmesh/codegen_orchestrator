@@ -172,19 +172,8 @@ class WorkerCommandConsumer:
             return None
 
     async def _handle_delete(self, cmd: DeleteWorkerCommand) -> DeleteWorkerResponse:
-        """Answer a delete; a QA executor's is a success only when its removal is proven.
-
-        A QA executor's sandbox may hold the QA Telegram session, and the QA
-        runtime keeps that identity held until this answer proves the sandbox
-        gone. Other workers' answers are unchanged.
-        """
         try:
-            outcome = await self.manager.delete_worker(cmd.worker_id, reason=cmd.reason)
-            unproven = outcome.unproven_qa_removal() if outcome is not None else None
-            if unproven is not None:
-                return DeleteWorkerResponse(
-                    request_id=cmd.request_id, success=False, error=unproven
-                )
+            await self.manager.delete_worker(cmd.worker_id, reason=cmd.reason)
             return DeleteWorkerResponse(request_id=cmd.request_id, success=True)
         except Exception as e:  # noqa: BLE001 — command boundary returns a typed error response
             return DeleteWorkerResponse(request_id=cmd.request_id, success=False, error=str(e))

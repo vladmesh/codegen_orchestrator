@@ -698,43 +698,6 @@ class TestNothingSurvivesTheRun:
 
         assert not workspace.exists()
 
-    @pytest.mark.parametrize(
-        ("failing", "unproven"),
-        [
-            ("worker-qa-1", "executor container"),
-            (qa_egress.proxy_container_name("qa-1"), "egress proxy"),
-        ],
-    )
-    async def test_a_failed_docker_removal_is_never_a_proven_qa_removal(
-        self, qa_worker, tmp_path, failing, unproven
-    ):
-        """The QA Telegram identity is held until this outcome proves the sandbox gone."""
-        wrapper, manager, _ = await qa_worker()
-
-        async def remove(name, **_kwargs):
-            if name == failing:
-                raise RuntimeError("Docker backend unavailable")
-
-        wrapper.remove_container = AsyncMock(side_effect=remove)
-        with patch("src.worker_removal.settings") as settings:
-            settings.WORKER_IMAGE_PREFIX = "worker"
-            settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
-            outcome = await manager.delete_worker("qa-1", reason="completed")
-
-        assert outcome.qa_executor
-        assert unproven in outcome.unproven_qa_removal()
-
-    async def test_a_removed_executor_and_proxy_are_a_proven_qa_removal(self, qa_worker, tmp_path):
-        _wrapper, manager, _ = await qa_worker()
-
-        with patch("src.worker_removal.settings") as settings:
-            settings.WORKER_IMAGE_PREFIX = "worker"
-            settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
-            outcome = await manager.delete_worker("qa-1", reason="completed")
-
-        assert (outcome.removed, outcome.egress_removed) == (True, True)
-        assert outcome.unproven_qa_removal() is None
-
     async def test_a_developer_workspace_is_still_preserved(self, tmp_path):
         """The QA branch must not start deleting the repositories workers share."""
         wrapper = _docker_mock()

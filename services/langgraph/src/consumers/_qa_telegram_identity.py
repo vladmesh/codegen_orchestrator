@@ -27,11 +27,8 @@ from shared.telethon_identity import (
     prove_qa_identity,
 )
 
-from ._qa_telegram_lease import lifetime
-
 if TYPE_CHECKING:
     from ._qa_runner import QARuntimeConfig
-    from ._qa_telegram_lease import IdentityHold
 
 logger = structlog.get_logger(__name__)
 
@@ -64,18 +61,11 @@ def _telethon_client(environment: Mapping[str, str]) -> Any:
 
 
 async def _prove(
-    environment: Mapping[str, str],
-    client_factory: Callable[[Mapping[str, str]], Any],
-    hold: IdentityHold | None = None,
+    environment: Mapping[str, str], client_factory: Callable[[Mapping[str, str]], Any]
 ) -> QATelegramIdentityRefusal | None:
-    # Registered on the run's identity hold before the client exists, and ended
-    # only when its disconnect returned: a failed or cancelled disconnect leaves
-    # it open, and the hold is retained rather than released past it.
-    used = lifetime(hold, "client", "identity proof")
     try:
         client = client_factory(environment)
     except Exception as exc:  # noqa: BLE001 — a session string Telethon cannot load
-        used.end()  # no client exists, so nothing can be connected
         return QATelegramIdentityRefusal(
             SESSION_UNAUTHORIZED, f"the session could not be loaded: {type(exc).__name__}"
         )
@@ -86,11 +76,8 @@ async def _prove(
     finally:
         try:
             await asyncio.wait_for(client.disconnect(), timeout=CALL_TIMEOUT_SECONDS)
-        except Exception as exc:  # noqa: BLE001 — the verdict stands; the client is not shown closed
+        except Exception as exc:  # noqa: BLE001 — the verdict stands; the client is dropped
             logger.warning("qa_telegram_identity_disconnect_failed", error=type(exc).__name__)
-            used.unproven(f"its disconnect failed: {type(exc).__name__}")
-        else:
-            used.end()
     return None
 
 
@@ -108,7 +95,7 @@ async def prove_sandbox_telegram_identity(
     """
     if not runtime.telethon_env:
         return runtime
-    refusal = await _prove(runtime.telethon_env, client_factory, runtime.telegram_hold)
+    refusal = await _prove(runtime.telethon_env, client_factory)
     if refusal is None:
         logger.info("qa_telegram_identity_proven")
         return replace(runtime, telegram_identity_proven=True)

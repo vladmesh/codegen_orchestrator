@@ -90,9 +90,6 @@ class CodegenApi(InternalAPIClient):
             raise ApiRefused("/api/promo-codes/batch", response.status_code, "not one code")
         return batch[0]
 
-    async def promo_codes(self) -> list[dict]:
-        return (await self._call("GET", "promo-codes")).json()
-
     # --- projects and the module rollout --------------------------------------
 
     async def owned_projects(self, telegram_id: int) -> list[dict]:
@@ -189,6 +186,18 @@ class CodegenApi(InternalAPIClient):
         return (
             await self._call("GET", f"projects/{project_id}/teardown", as_user=telegram_id)
         ).json()
+
+    async def delete_project(self, project_id: str, telegram_id: int) -> int:
+        response = await self._call(
+            "DELETE", f"projects/{project_id}", as_user=telegram_id, accept=frozenset({204})
+        )
+        return response.status_code
+
+    async def deletion_confirmed(self, project_id: str, telegram_id: int) -> bool:
+        response = await self._call(
+            "GET", f"projects/{project_id}", as_user=telegram_id, accept=frozenset({200, 404})
+        )
+        return response.status_code == httpx.codes.NOT_FOUND
 
 
 def typed_deploy_result(run: dict) -> DeployRunResult | None:

@@ -10,7 +10,6 @@ Run standalone: python -m src.consumers.qa
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import UTC, datetime
 
 import httpx
@@ -91,14 +90,6 @@ from ._qa_telegram_identity import (
     identity_record,
     prove_sandbox_telegram_identity,
 )
-from ._qa_telegram_lease import (
-    Holder,
-    HolderKind,
-    IdentityBusy,
-    IdentityHold,
-    IdentityOwnershipLost,
-    TelegramIdentityLease,
-)
 
 logger = structlog.get_logger(__name__)
 
@@ -123,52 +114,6 @@ BOT_LIVENESS_RETRY_DELAY = 5
 # is not waited out — the probe stops and reports the infrastructure outcome
 # with the number Telegram gave, which keeps the budget bounded either way.
 BOT_LIVENESS_MAX_RETRY_DELAY = 30
-# How long a QA run waits for the shared QA Telegram identity while another
-# holder (the synthetic buyer between its own waits, or a QA run of another
-# consumer) uses it, before it ends as QA infrastructure rather than overlap.
-QA_TELEGRAM_IDENTITY_WAIT_SECONDS = 900
-QA_TELEGRAM_IDENTITY_POLL_SECONDS = 5
-
-
-def _telegram_identity_lease(redis: RedisStreamClient) -> TelegramIdentityLease:
-    """The one exclusive hold on the QA account every Telegram use of a run takes."""
-    return TelegramIdentityLease(redis.redis, QA_TEST_TELEGRAM_ID)
-
-
-def _identity_hold(lease: TelegramIdentityLease, msg: QAMessage, purpose: str):
-    return lease.hold(
-        Holder(HolderKind.NATIVE_QA, msg.run_id or f"application:{msg.application_id}", purpose),
-        wait_seconds=QA_TELEGRAM_IDENTITY_WAIT_SECONDS,
-        poll_seconds=QA_TELEGRAM_IDENTITY_POLL_SECONDS,
-    )
-
-
-def _identity_blocker(refused: IdentityBusy | IdentityOwnershipLost) -> QABlocker:
-    """The run could not hold the QA Telegram identity: infrastructure, never a verdict."""
-    return QABlocker(
-        category=QABlockerCategory.QA_PROBE_UNAVAILABLE,
-        attempted="hold the shared QA Telegram identity for this run",
-        sent=f"an exclusive hold of Telegram account {QA_TEST_TELEGRAM_ID}",
-        received=str(refused),
-    )
-
-
-async def _report_retained_identity(msg: QAMessage, held: IdentityHold) -> None:
-    """A run that could not show its Telegram use ended keeps the identity held: say so."""
-    outstanding = held.outstanding()
-    if not outstanding:
-        return
-    named = "; ".join(used.describe() for used in outstanding)
-    await notify_admins_best_effort(
-        "The QA Telegram identity stays held after a QA run, outstanding: "
-        f"{named}. Nothing else may use the account until an operator who has "
-        f"checked that the named use ended releases token {held.token}.\n"
-        f"story: {msg.story_id or '(none)'}\nrun: {msg.run_id or '(none)'}",
-        level="error",
-        story_id=msg.story_id,
-        project_id=msg.project_id,
-        run_id=msg.run_id,
-    )
 
 
 async def _resolve_server_info(application_id: int, project_name: str) -> QAServerInfo | None:
@@ -592,14 +537,8 @@ async def _establish_caller_identity(
     return caller_identity, None
 
 
-async def _run_mechanical_qa(msg, selected, stored, result, redaction, lease):  # noqa: PLR0913
-    """Borrow only the identity/target the scheduler has already granted to this Run.
-
-    The probe's Telegram client runs inside the run's exclusive hold on the QA
-    account; a client whose disconnect failed leaves that hold retained.
-    `IdentityBusy` and `IdentityOwnershipLost` reach the caller, which settles
-    them as QA infrastructure rather than as a verdict.
-    """
+async def _run_mechanical_qa(msg, selected, stored, result, redaction):
+    """Borrow only the identity/target the scheduler has already granted to this Run."""
     from shared.contracts.dto.temporary_access import TemporaryAccessStatus  # noqa: PLC0415
 
     from .mechanical_telegram import (  # noqa: PLC0415
@@ -645,21 +584,16 @@ async def _run_mechanical_qa(msg, selected, stored, result, redaction, lease):  
 
             probe_runner = run_probe
             probe_arguments["stored"] = stored
-        async with _identity_hold(lease, msg, "mechanical") as held:
-            try:
-                await probe_runner(
-                    mode=selected[0],
-                    marker=selected[1],
-                    bot_username=msg.bot_username,
-                    deployed_url=msg.deployed_url,
-                    headers=identity.headers(),
-                    evidence=evidence,
-                    redaction=redaction,
-                    identity_hold=held,
-                    **probe_arguments,
-                )
-            finally:
-                await _report_retained_identity(msg, held)
+        await probe_runner(
+            mode=selected[0],
+            marker=selected[1],
+            bot_username=msg.bot_username,
+            deployed_url=msg.deployed_url,
+            headers=identity.headers(),
+            evidence=evidence,
+            redaction=redaction,
+            **probe_arguments,
+        )
         final_grant = await api_client.get_temporary_access_grant(grant.id)
         if final_grant.status != TemporaryAccessStatus.GRANTED:
             raise ProbeFailure("grant", "native grant ended before probe completion")
@@ -680,8 +614,6 @@ async def _run_mechanical_qa(msg, selected, stored, result, redaction, lease):  
                 "detail": "fixed real-chat conversation completed",
             }
         )
-    except (IdentityBusy, IdentityOwnershipLost):
-        raise
     except Exception as exc:
         # The probe already named what failed inside it (IdentityNotProven and its
         # reason, say); overwriting that with the wrapper's class loses the cause.
@@ -755,7 +687,6 @@ async def _run_exploratory_qa(
     server_info: QAServerInfo,
     acceptance_criteria: str,
     attempts: QAExecutorAttempts,
-    lease: TelegramIdentityLease,
 ) -> tuple[QAResult | None, QABlocker | None]:
     """Run the central QA executor against one deployment.
 
@@ -799,39 +730,6 @@ async def _run_exploratory_qa(
         return None, executor_decision
     runtime = _resolve_qa_runtime(executor_decision.agent_type)
     ownership = WorkerOwnership.for_qa(msg)
-    run = {
-        "msg": msg,
-        "server_info": server_info,
-        "acceptance_criteria": acceptance_criteria,
-        "attempts": attempts,
-        "ownership": ownership,
-    }
-    if not runtime.telethon_env:
-        return await _exploratory_run(runtime=runtime, **run)
-    # Everything from the identity proof to the removal of the last executor that
-    # may hold the session runs inside one exclusive hold on the QA account.
-    try:
-        async with _identity_hold(lease, msg, "exploratory") as held:
-            try:
-                return await _exploratory_run(runtime=replace(runtime, telegram_hold=held), **run)
-            finally:
-                await _report_retained_identity(msg, held)
-    except (IdentityBusy, IdentityOwnershipLost) as refused:
-        blocker = _identity_blocker(refused)
-        await _alert_admins_qa_infrastructure(msg=msg, blocker=blocker)
-        return None, blocker
-
-
-async def _exploratory_run(  # noqa: PLR0913 — one run's whole context, each part named
-    *,
-    msg: QAMessage,
-    server_info: QAServerInfo,
-    acceptance_criteria: str,
-    attempts: QAExecutorAttempts,
-    ownership: WorkerOwnership,
-    runtime: QARuntimeConfig,
-) -> tuple[QAResult | None, QABlocker | None]:
-    """The exploratory run proper, inside the run's hold on the QA Telegram identity."""
     # Proven for this run, or withdrawn for this run: the sandbox is handed the
     # QA Telegram identity only after this, and a refused session is treated
     # from here on exactly as a runtime without Telethon credentials.
@@ -880,7 +778,6 @@ async def _exploratory_run(  # noqa: PLR0913 — one run's whole context, each p
             bot_username=msg.bot_username,
             telethon_env=runtime.telethon_env,
             identity_refusal=runtime.telegram_identity_refusal,
-            hold=runtime.telegram_hold,
         )
         if access_blocker:
             return None, access_blocker
@@ -982,7 +879,7 @@ async def _health_caller_identity(msg, stored, mechanical):
     return await _establish_caller_identity(msg, stored, telegram_account_id=None)
 
 
-async def _run_deterministic_qa(msg, checks, mechanical, lease):
+async def _run_deterministic_qa(msg, checks, mechanical):
     stored, redaction = await _run_secrets(msg.project_id)
     identity, blocker = await _health_caller_identity(msg, stored, mechanical)
     if blocker:
@@ -991,12 +888,7 @@ async def _run_deterministic_qa(msg, checks, mechanical, lease):
         deployed_url=msg.deployed_url, checks=checks, caller_identity=identity, redaction=redaction
     )
     if mechanical:
-        try:
-            result = await _run_mechanical_qa(msg, mechanical, stored, result, redaction, lease)
-        except (IdentityBusy, IdentityOwnershipLost) as refused:
-            blocker = _identity_blocker(refused)
-            await _alert_admins_qa_infrastructure(msg=msg, blocker=blocker)
-            return None, blocker
+        result = await _run_mechanical_qa(msg, mechanical, stored, result, redaction)
     return result, None
 
 
@@ -1131,7 +1023,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             # route among the checks is read as the verified QA user, and what the
             # checks retain is scrubbed of every capability the run holds.
             qa_result, identity_blocker = await _run_deterministic_qa(
-                msg, health_checks, mechanical, _telegram_identity_lease(redis)
+                msg, health_checks, mechanical
             )
             if identity_blocker:
                 return await _handle_qa_blocked(
@@ -1143,7 +1035,6 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 server_info=server_info,
                 acceptance_criteria=acceptance_criteria,
                 attempts=attempts,
-                lease=_telegram_identity_lease(redis),
             )
             if exploratory_blocker:
                 return await _handle_qa_blocked(

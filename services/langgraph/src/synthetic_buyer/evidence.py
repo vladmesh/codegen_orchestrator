@@ -2,8 +2,8 @@
 
 The record is written at every phase boundary and before cleanup, so an operation
 interrupted anywhere leaves the ids it owns (user, project, story, runs, BotFather
-bot) and the facts it had observed. A resumed operation reads it back and goes on
-from there instead of ordering or creating anything twice.
+bot) and the facts it had observed. Interrupted evidence can be inspected; another
+fresh invocation of the same operation refuses.
 
 Nothing secret is written. Every value an adapter resolves is added to the
 operation's one redaction set the moment it is resolved, and every write passes
@@ -56,6 +56,7 @@ class Phase(StrEnum):
     AUTH_RECHECK = "auth_recheck"
     FREEZE = "freeze"
     TEARDOWN = "teardown"
+    DELETE = "delete"
 
 
 PHASE_ORDER = tuple(Phase)

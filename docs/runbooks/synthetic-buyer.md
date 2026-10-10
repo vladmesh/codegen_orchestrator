@@ -1,284 +1,131 @@
-# Synthetic buyer: autonomous production acceptance of a fresh order
+# Synthetic buyer: one fresh production order
 
-`python -m src.synthetic_buyer` (in the released `langgraph` image) is a product-only customer.
-It orders a fresh public-channel bot through the actual Codegen Telegram bot, waits for the
-native work, deploy and QA, checks the live product, writes redacted evidence and tears down
-its own project. It is an operator tool: nothing in CI or in the running services starts it,
-and importing it does nothing.
+`python -m src.synthetic_buyer` is an operator entrypoint in the released LangGraph image.
+It orders a channel bot through Codegen's real Telegram conversation, observes native
+engineering/deploy/QA, probes the product, saves redacted evidence, then tears down and
+deletes only the project authenticated as belonging to that order. Nothing starts on import,
+in a service or in CI. Production execution is a later scoped operation under standing consent.
 
-This runbook describes how a scoped production operation runs it. The code card that added it
-proved the driver's behavior only (in-process fakes, no Telegram, no model, no production);
-an actual production acceptance and its knowledge report need that later operation.
+## Operator sequencing
 
-## The one authority path
+Run one buyer operation at a time. Schedule no independent QA using this account during buyer
+Telegram phases: registration, BotFather, ordering and post-QA probes. Native QA and
+worker-manager retain released behavior. There is no shared-identity lock, bootstrap record or
+lifetime authority here. Run status observations establish no concurrency-lock claim.
 
-Every entrypoint (`run`, `resume`, `cleanup`) and every effect passes the same ordered path in
-`controller.py`; `check` and `inspect` read files only and cannot connect or send:
+Before Telegram use, including every send, the buyer connects and proves
+`get_me == buyer.telegram_id`. For sprint:1489 configure `8202532144`. After responding to an
+admitted brief it disconnects and polls authenticated APIs for Story creation, even if
+visibility is delayed. It sends nothing further while native work can start and remains
+disconnected throughout engineering/deploy/QA. Product probes reconnect only after correlated
+terminal deployment and typed QA passed. Failed, blocked, stopped or untyped QA cannot pass.
 
-1. **Run identity.** The retained evidence must be this `operation_id` and this buyer.
-2. **Redaction before dialogue.** The Telethon session and API hash, the Redis URL, the
-   product-token handle and every promo code this operation minted (read back through
-   `GET /api/promo-codes` by its retained ids) enter the redaction set before any dialog is
-   read or the persona is asked.
-3. **Durable intent, reconciled first.** Before every send, callback and promo mint the intent
-   is written to the evidence (`pending`); after it, the receipt. Every entrypoint first
-   reconciles a retained intent: a send is looked for in its dialog (`delivery_checks` reads,
-   inside the identity hold), a mint in the promo list. A send that is found is recorded and
-   never sent again; one that is not stays pending (`delivery_unknown`) and refuses every
-   further action, cleanup included. A callback press has no visible outgoing message and so
-   stays pending.
-4. **One authority result.** Steps 1-3 run as one path that returns *authorized* or a
-   refusal; `run`, a failed `resume` and `cleanup` all consume that result. A refused step
-   stops the path there — a failed rehydration (the promo read unavailable, or a retained
-   promo code missing from it) reads no dialog and reconciles nothing — and the teardown
-   decision refuses with the refusal's reason. Nothing reconciles outside this path; a later
-   attempt is a new run of the whole path, rehydration first.
-5. **The verdict is kept.** A failed operation is never continued: `resume` of a failed
-   operation reconciles and then only reaches the teardown decision, and nothing turns a
-   failure green. A send that becomes visible after the operation failed as `delivery_unknown`
-   is reconciled by `resume` or `cleanup`, after which the proven project is torn down and the
-   verdict stays failed. A `cleanup` of an operation that had not concluded fails its verdict
-   (`cleanup_before_verdict`) because it can never be accepted afterwards.
-6. **Ownership proof.** The order's project is the new owner-visible project whose own
-   encrypted secrets hold exactly the product token this operation sent in its Telegram order
-   (compared by SHA-256), with owner, creation time and `initiating_run_id` read back. Only a
-   proven project is admitted to the rollout and torn down; a same-owner project without the
-   token is listed as an unproven candidate and never touched.
-7. **One holder of the QA identity.** Every Telegram use — connection, `get_me`, dialog read,
-   send, callback, channel-post read and reconciliation — runs inside an exclusive hold on
-   `qa:telegram-identity:<buyer.telegram_id>` in the platform Redis, the same hold native QA
-   takes before its identity proof, preflight, Telegram tools, mechanical probe and executor
-   sandbox (`consumers/_qa_telegram_lease.py`). The buyer connects and proves `get_me` after
-   admission and disconnects before releasing. It holds nothing while it asks the persona,
-   reads the API, or waits for native work, deploy and QA, so native QA is admitted between
-   its turns; the buyer's next use waits (bounded by `identity_wait_seconds`) until QA's run,
-   its sandbox included, has ended. Queued or running Run rows are never admission authority.
-8. **Admitted actions only.** Before the project is proven and admitted to the rollout, the
-   buyer sends only the controller's own opening, the token (when the bot asks for it) and at
-   most `deferrals` fixed deferrals; the persona is not asked. After admission the persona
-   speaks, but while the project's config points at an open brief revision
-   (`product_brief_id`) nothing is sent until that revision's stored capability plan routes a
-   module with its install and its preview postdates the rollout readback. Model output carries
-   no authority flags; a schema-valid affirmative is held at this boundary like any reply.
-9. **Judged observations, frozen verdict, owned teardown.**
+Interrupted-run continuation, cleanup reconciliation, concurrent admission and generic
+orphan/cancellation recovery belong to `issue:c369b68e3d23896c2d6d`. Interrupted evidence
+remains inspectable. Another fresh run of the same operation refuses existing evidence and
+preserves it. Account for retained ownership and resources before scheduling a separate fresh
+operation; changing an operation id is not a recovery or cleanup mechanism.
 
-## The shared QA identity's hold
+## Configuration and commands
 
-The hold is one Redis hash with no TTL and an explicit state — `idle`, `held` or `retained` —
-changed only by compare-and-act scripts keyed on the holder's token. Only a record that
-positively says `idle` admits anyone. A missing, unknown or malformed record admits no one:
-an earlier user may still have the session, so neither an acquire, elapsed time nor an empty
-read ever creates `idle`. Release writes `idle` back by token and never deletes the record.
+Copy [the example](../examples/synthetic-buyer.example.json) to a protected operator location
+and replace every placeholder. Config schema 2 forbids unknown fields and requires explicit
+facts. Validation names fields without quoting values.
 
-Each hold owns an account of everything that can use the session — the buyer's or a probe's
-Telegram client, a probe child process, native QA's capability endpoint and each executor
-sandbox — registered before the await that could open it and ended only on proof (a
-disconnect that returned, a child seen to exit, an endpoint stop that returned, worker-manager's
-success answer to that executor's delete, which it gives only when Docker showed the executor
-and its egress proxy gone). On every exit, cancellation included, the hold settles that
-account: anything still open leaves it *retained*, naming what is outstanding. A holder whose
-record stops naming it (an operator release, lost data) stops its use and reports
-`IdentityOwnershipLost`; since a lost record admits no one, no second user runs beside it.
-
-**Prerequisite before the first run on a released revision.** The record does not exist until
-an operator creates it. Until then every native QA run that uses Telegram ends as the
-`qa_probe_unavailable` infrastructure blocker and the buyer stops as `identity_busy`. The
-scoped operation that releases this revision initializes it once, after proving that no
-Telegram user of the QA account is running (no qa-worker job in flight, no `qa-…` executor or
-egress proxy container, no buyer process):
-
-```bash
-"${RUN[@]}" identity --config /buyer/buyer.json --initialize      # only over a missing/malformed record
-```
-
-The same command recovers from a lost record, under the same proof. To recover a held or
-retained record, verify that the named holder's use has ended — its process is gone, and for a
-native QA run its executor container and egress proxy are removed — then:
-
-```bash
-"${RUN[@]}" identity --config /buyer/buyer.json                    # state, holder, outstanding uses
-"${RUN[@]}" identity --config /buyer/buyer.json --release <token>  # only that exact token
-```
-
-A native QA run that cannot take the hold within 15 minutes, or loses it while in use, ends as
-the `qa_probe_unavailable` infrastructure blocker with an administrator alert, never as a
-product verdict; a retained hold after a QA run also alerts the administrators.
-
-## What one operation does
-
-Phases run in this order and are recorded in `evidence.json` as they complete:
-
-| Phase | What happens | Session |
-|---|---|---|
-| `preflight` | Connect, `get_me` must equal `buyer.telegram_id`; the Codegen bot must resolve to `codegen_bot.username` **and** `codegen_bot.user_id`. Nothing is sent before this holds. | held |
-| `registration` | If `GET /api/users/by-telegram/{id}` knows the buyer, it is reused. Otherwise one code is minted by `POST /api/promo-codes/batch` (outside the hold) and redeemed by sending it to the Codegen bot (the customer door), then read back. | held per exchange |
-| `product_token` | The product bot token: a protected handle, or one bot created in BotFather for this operation (`sb<sha256(operation_id)[:12]>_bot`); an interrupted creation is read back with `/token`. | held for the BotFather dialog |
-| `order` | Opening, token, deferrals until the project is proven and admitted (see above); then the persona describes the channel feature and answers; the brief is answered only after its route is admitted. The order is accepted when the project has a story backed by a confirmed brief. Persona and API calls hold nothing. | held per send / reply wait |
-| `handoff` | The buyer holds nothing and is disconnected. | free |
-| `build` | API reads until the story is `completed` (or stops). Observations: frozen brief and module plan; preview after the rollout; each install's typed operation starting on the pull request's base (the scaffold), with its admitted preflight, matching verification and published commits read from the repository, and the story head containing it; the files engineering changed after the install against the kit's admitted glue files; the deploy provenance below; QA typed `passed` on the deployed URL after the deploy; the bound bot alive. | free |
-| `product_probe` | `/start` (Russian) and `/channels` (every scenario channel); then a bounded wait for an unsolicited delivery **before** `/digest` is sent (below); then `/digest` on its own. | held per exchange / per read |
-| `platform` | Platform auth: the stored `PLATFORM_KEY` id is a registered, non-revoked key of `orch-<sha256(project)[:58]>`. Reader: `GET <reader>/v1/usage` with the product's own key; `product_id` must be this product's and `used.channels` with `used.requests_this_minute` or `used.resolves_today` must show activity (up to three reads). | released |
-| `language` | `language=en` written and read back through core settings, then `/channels` in English. | per command |
-| `auth_recheck` | The key is checked again while the product is still live. | released |
-| `freeze` | The verdict is computed and written. | released |
-| `teardown` | Only after the retained ownership proof still holds (same `initiating_run_id`, same token): `POST /api/projects/{id}/teardown` as the owner, polled until `completed`, project read back `archived`. | released |
-
-**Deploy provenance.** `deployment_result.run_id` is the `deploy.yml` run the deployer
-dispatched and waited for; it is not the publication. The images are published by the
-deployed commit's own `ci.yml` run on `main`, whose `build-and-push` job pushes them (the run
-the scheduler records in the story timeline). The observation reads both from GitHub with the
-platform's App and requires: the deployed commit is the pull request's merge commit; a
-successful `ci.yml` run on `main` at that commit whose `build-and-push` job(s) all succeeded,
-agreeing with the timeline's record when it has one; a distinct successful `deploy.yml` run of
-that commit; and every deployed image reference this repository's, tagged `sha-<commit[:7]>`,
-with a `sha256` digest. Missing, failed or unrelated publication — a `main.yml` run, the deploy
-run itself, a green pull-request run — fails it; an unreadable fact leaves it `unknown`.
-
-**Unsolicited delivery.** `/digest` is the released product's only command whose answers
-carry channel posts, and a multipart `/digest` answer can arrive late, unquoted, linking a post
-newer than the command. So delivery is observed before `/digest` is sent, and only while this
-operation's product history (its retained conversation and pending intent, never a watermark)
-holds no such command. It counts a product message in the released `tg-channels.post` event's
-own form for the product language (`Новая публикация: @<channel>` / `New post: @<channel>`,
-codegen-kit-tg-channels 0.1.2), not a reply, linking a post of the channel it names that the
-channel itself dates no later than the delivery. Anything else stays unattributed and the
-observation `unknown`; a resumed operation whose `/digest` was already sent or is unresolved
-cannot observe it at all.
-
-The verdict is `passed` only when every required observation is `observed`; a missing fact is
-`unknown` and makes it `incomplete`; any contradiction or stop is `failed` with its phase and
-reason. Cleanup (`completed`, `failed`, `refused`, `nothing_owned`) is recorded beside the
-verdict and never changes it. The exit code is 0 only for `passed` with cleanup `completed`.
-
-## Where it runs
-
-Run it as a one-off container of the released production `deploy-worker` service. That service
-already has the API on `internal`, the platform auth admin API on `codegen-orch-link`, the
-GitHub App key the repository provenance reads use, and the runtime environment from the
-production `.env`. On h01o, as `vlad`:
-
-```bash
-export DOCKER_HOST=unix:///run/user/1001/docker.sock
-cd /home/vlad/codegen_orchestrator
-COMPOSE=(docker compose -p codegen_orchestrator
-  -f docker-compose.yml -f docker-compose.prod.yml
-  -f /home/vlad/codegen-h01o.override.yml -f deployed-service-images.compose.yml)
-RUN=("${COMPOSE[@]}" run --rm --no-deps
-  -v /home/vlad/synthetic-buyer/buyer.json:/buyer/buyer.json:ro
-  -v /home/vlad/synthetic-buyer/evidence:/buyer/evidence
-  deploy-worker python -m src.synthetic_buyer)
-"${RUN[@]}" check --config /buyer/buyer.json
-```
-
-`--orchestrator-revision` is the 40-hex commit of the released revision the production deploy
-recorded (the same revision the `deployed-service-images.compose.yml` digests were built from).
-It is required for `run`, `resume` and `cleanup`, and written into the evidence.
-
-## Configuration
-
-One JSON file, validated before anything connects; an unknown or missing field is a refusal
-naming the field, never its value. `docs/examples/synthetic-buyer.example.json` is a complete
-example with placeholders. There are no defaults for identities, credentials, endpoints, the
-model or deadlines.
-
-| Field | Meaning |
+| Field | Required fact |
 |---|---|
-| `operation_id` | This operation's identity; the evidence directory is `<evidence_dir>/<operation_id>`. A new operation needs a new id. |
-| `codegen_bot.username`, `codegen_bot.user_id` | The actual Codegen bot. Both must match what Telegram resolves. |
-| `buyer.telegram_id` | The QA account the session must prove (`8202532144` in production). |
-| `scenario.public_channels` | 1–5 public channels the customer asks for. Choose channels that publish often: the unsolicited-post observation waits only `post_delivery_seconds`. |
-| `scenario.product_language`, `switch_language` | `ru` and `en`; the only supported pair. |
-| `model.chain` | The persona's explicit channel chain (`shared.contracts.dto.llm_channel`), built with the existing channel adapters under the PO summarizer identity. |
-| `deadlines.*` | Reply, settle, turn, order, build, identity-wait, probe, post, teardown and poll bounds; `delivery_checks` (reads that look for a send whose receipt was lost) and `deferrals` (fixed deferrals before the project is proven). `identity_wait_seconds` bounds each wait for the shared identity's hold; keep `reply_seconds` well under native QA's own 15-minute wait. |
-| `api.base_url` | The internal API (`http://api:8000` inside the stack). Calls use the shared internal API transport, which authenticates with the runtime's `INTERNAL_API_KEY`. |
-| `telegram.api_id`, `api_hash`, `session` | Handles of the QA account's Telethon credentials. |
-| `identity_lease.redis_url` | Handle of the platform Redis URL native QA holds the identity in (`REDIS_URL` of the stack). |
-| `registration` | Credits and attempt reservation armed by a newly minted promo code. Unused when the buyer is already registered. |
-| `product_token` | `{"mode": "handle", "handle": …}` or `{"mode": "botfather", "botfather_username": "BotFather", "bot_display_name": …}`. |
-| `platform.auth_admin_url`, `auth_admin_token` | Handles of `PLATFORM_AUTH_ADMIN_URL` and `PLATFORM_AUTH_ADMIN_TOKEN`. |
-| `platform.reader_base_url` | The reader base URL the tg-channels environment contract names. |
+| `operation_id`, `evidence_dir` | Fresh operation id and persistent destination; evidence lives under `<evidence_dir>/<operation_id>`. |
+| `codegen_bot`, `buyer` | Codegen username/id, both verified, and the expected authenticated Telethon user id. |
+| `scenario` | Named public channels, initial `ru` and switch to `en`. |
+| `model.chain` | Explicit persona channel/model chain using existing LLM adapters. |
+| `deadlines` | Reply, settle, conversation turns, order, build, probe, post, teardown and poll bounds; bounded within-run delivery reads and fixed pre-project deferrals. |
+| `api`, `telegram` | Actual Codegen API URL and protected handles for Telethon API id/hash/session. |
+| `registration` | Promo credits and attempt reservation if registration is needed. |
+| `product_token` | Protected token handle, or BotFather username/display name for one deterministic operation-owned bot. |
+| `platform` | Protected auth-admin URL/token handles and reader URL from the environment contract. |
 
-A secret handle is `{"env": "NAME"}` or `{"file": "/path"}`. Values are resolved only by the
-adapter that uses them and are added to the operation's redaction set at once. Two runtime
-credentials are read the way every service reads them, not through a handle: `INTERNAL_API_KEY`
-(the shared internal API transport), `SECRETS_ENCRYPTION_KEY` (the project-secret cipher) and
-`GITHUB_APP_ID` with `GITHUB_APP_PRIVATE_KEY_PATH` (read-only repository provenance through the
-platform's GitHub App); `check` reports all of them. Project secrets
-(`PLATFORM_KEY`, `SETTINGS_WRITE_CAPABILITY`) are decrypted in the process with the runtime's
-`SECRETS_ENCRYPTION_KEY`, exactly as the QA runtime reads them.
+A handle names exactly one environment variable or file. Credential values never belong in
+config. The released runtime also needs `INTERNAL_API_KEY`, `SECRETS_ENCRYPTION_KEY`,
+`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, and the selected model channel's credentials.
+Use the existing protected environment and mounts. No installation host or credential is
+built into the driver. Repository evidence uses the platform GitHub App read adapter.
 
-## Commands
+The later operator operation supplies a released image with Codegen API, auth-admin and reader
+reachability, its protected environment, the GitHub App key mount, read-only config/credential
+files and a writable persistent evidence mount. Inside that runtime invoke:
 
 ```bash
-"${RUN[@]}" check   --config /buyer/buyer.json            # offline: config, handle presence, evidence state
-"${RUN[@]}" run     --config /buyer/buyer.json --orchestrator-revision <sha>
-"${RUN[@]}" inspect --config /buyer/buyer.json            # offline: retained phase, verdict, ids
-"${RUN[@]}" resume  --config /buyer/buyer.json --orchestrator-revision <sha>
-"${RUN[@]}" cleanup --config /buyer/buyer.json --orchestrator-revision <sha>
-"${RUN[@]}" identity --config /buyer/buyer.json [--release <token>]  # the shared identity's hold
+python -m src.synthetic_buyer check --config /buyer/buyer.json
+python -m src.synthetic_buyer run --config /buyer/buyer.json --orchestrator-revision <40-hex-sha>
+python -m src.synthetic_buyer inspect --config /buyer/buyer.json
 ```
 
-`check` connects to nothing and prints only handle names and whether each resolves. `run`
-refuses an operation whose evidence already exists. `resume` continues an interrupted
-operation from its first incomplete phase, from its retained ids and its one retained intent:
-it never registers, orders or creates a BotFather bot twice, answers the bot's unanswered
-messages first, and adopts only the project proven by the order's token. A failed operation is
-not resumed; `resume` and `cleanup` then reconcile its retained intent and only finish its
-teardown, which is refused while a delivery stays unknown or the retained ownership proof no
-longer holds. Evidence of another schema version is refused and left untouched for an operator
-to read.
+`check` validates config and reports handle presence, identities, channels, model and evidence
+location without values or connections. `inspect` reports retained ids, ownership, verdict,
+cleanup and pending diagnostic intent without modifying evidence. Both are offline.
+The revision on `run` identifies the released orchestrator image's source commit.
 
-## Ownership and shared state
+## Ordering and evidence
 
-- **Promo codes.** Minted only when the buyer is not yet registered; the code is redeemed by
-  the buyer through the Codegen bot. Reruns reuse the registered buyer.
-- **Module rollout.** `capabilities.module_rollout` stays operator-owned. The driver reads it,
-  appends only its project's id, preserves every other id and key, and reads it back before
-  the feature is described. It never removes an id; the archived project's id stays listed.
-- **The shared QA session.** One holder at a time through the identity hold (above), native QA
-  included. Never run two operations at once: the second one only waits for the first's holds
-  and would interleave its order with the first's.
-- **Teardown.** Only the project this operation proved it owns by its token. No user, dialogue,
-  repository or registry deletion, and nothing of the separately authorized old user.
+The controller reuses a registered buyer or mints one promo through the existing API, sends
+it through Codegen and requires registration readback. It obtains a token from its protected
+handle or a bounded BotFather creation conversation. Failure stops; there is no interrupted
+creation continuation. It creates no brief or Story through the API to replace ordering.
 
-## Evidence
+Before describing the feature, it proves a new owner-visible project's authenticated owner,
+initiating run and stored token match this order's sent token. A same-owner project's timestamp
+cannot establish attribution. Ambiguous or unproven candidates are never adopted, allowlisted
+or deleted. It appends only the proven id to `capabilities.module_rollout.project_ids` through
+the config API, preserves unrelated ids/values and verifies readback before feature preview.
 
-`<evidence_dir>/<operation_id>/evidence.json` (schema version 2) and `report.md` are rewritten
-at every phase boundary and before cleanup. They hold the orchestrator revision, the handle
-names, the user/project/story/brief/task/deploy/QA/application ids, the product and BotFather
-bot usernames, the publication and deploy workflow run ids, each identity hold's admission and
-release time, timestamps, the redacted Codegen, BotFather and product dialogs, each persona
-decision, the rollout readback, every observation with its provenance, the verdict and the
-cleanup. Promo codes, tokens, the session, API hashes, internal and admin keys, platform keys,
-capabilities and Fernet envelopes are never written: announced values and credential-shaped
-text are replaced, including when a bot or an exception echoes them. Messages the driver sent
-that carried a secret appear as a placeholder.
+The persona sees only a redacted product scenario: named channel posts, Russian language,
+answers to PO questions and agreement to story splitting. It receives no module, package,
+key, platform or credential instructions. The controller handles credentials and visible
+buttons. Before replying to the current presented brief, it proves that revision's frozen
+plan routes through a module and its preview postdates rollout readback. After that response,
+it observes the confirmed Story through APIs; absence stops within the order deadline.
 
-## Operator facts to confirm before the first run
+Intent precedes each effect. A lost send receipt is searched for boundedly within this
+invocation and never resent. Unproven sends/callbacks stop with diagnostics and refuse cleanup.
+Explicit deadlines bound stalled conversations, native work and product probes.
 
-1. `check` reports every handle present inside the `deploy-worker` one-off container, in
-   particular `TELETHON_API_ID`, `TELETHON_API_HASH` and `TELETHON_SESSION` (qa-worker reads
-   them from the same `.env`), `REDIS_URL` (the Redis qa-worker holds the identity in),
-   `INTERNAL_API_KEY`, `SECRETS_ENCRYPTION_KEY`, `GITHUB_APP_ID` and
-   `GITHUB_APP_PRIVATE_KEY_PATH` (whose key file the service mounts). `check` also prints
-   `shares_native_qa_identity`: it must be `true` (the buyer is the QA account native QA holds),
-   and the released qa-worker must be the revision that takes the hold.
-2. The persona's channel has its credential in that container. `openrouter` needs the PO's
-   `PO_LLM_BASE_URL` and `PO_LLM_API_KEY` (and a model in the chain entry). A `codex` or `claude`
-   channel needs its own profile mounted; never copy a subscription profile for this.
-3. The Codegen bot's username and numeric id, and `reader_base_url`, are confirmed from the
-   production configuration, not guessed.
-4. For BotFather mode, the QA account may create bots; otherwise a product token is placed in
-   a protected file or variable and named by its handle.
-5. The QA account receives product messages only while the product admits it. If the product
-   answers the owner's `/start` with an access refusal after QA revoked its temporary access,
-   the operation stops with `product_access_denied`; that is a product-access defect for the
-   observer, not something this driver works around.
-6. Deploy and install provenance needs the generated repository's Actions runs and jobs
-   readable by the platform's GitHub App and the deploy result's `deployment_result`
-   (`deploy.yml` run, deployed commit, image references and digests) as the released deployer
-   writes it. A product deployed before those fields existed, or a repository the App cannot
-   read, leaves those observations `unknown` and the verdict `incomplete`.
-7. Before the first run, `identity` shows the record `idle`. On a freshly released revision it
-   is missing until the release operation initializes it (above). A hold left by an earlier
-   killed process is released only as described above, never by editing the key by hand.
+| Observation | Required proof |
+|---|---|
+| Brief and route | Confirmed brief, frozen plan and rollout-before-preview correlation. |
+| Immediate install | Matched typed installer preflight/verification and published scaffold/install/head chain before engineering. |
+| Worker glue | Repository delta after install stays within admitted glue; task/engineering order agrees. |
+| Publication/deploy | Successful built merge commit `ci.yml` with `build-and-push`; distinct successful `deploy.yml` agrees with deployed SHA, SHA-tagged images and digests. |
+| QA | Terminal typed pass for this project/Story, deployed URL and ordering after deploy. |
+| Product | Bound live bot, Russian reply, configured `/channels`, unsolicited configured-channel post, then `/digest` reply. |
+| Language | Core settings `language=en` write/readback, then an English reply. |
+| Platform | Product's own registered non-revoked auth key and attributed reader activity; key rechecked while live. |
+
+Post delivery is witnessed before `/digest`, whose multipart answer can arrive late and
+unquoted. The witness requires the released `tg-channels.post` form, matching configured
+channel/link and independent channel post date no later than delivery. A delayed digest item,
+inconsistent event or absent post stays unknown. Unreadable install/Actions facts likewise
+stay unknown; missing or contradictory facts cannot pass. Fixture tests prove judgments,
+not delivered production events.
+
+## Evidence and ordinary cleanup
+
+Atomic `evidence.json` and `report.md` keep revision, user/project/initiating-run/brief/Story/
+task/install/deploy/QA/workflow ids, conversations, decisions, plan, installer/glue proof,
+provenance and observations. The original verdict is saved before deletion and preserved
+through cleanup failures. Resolved secrets and credential-shaped text are scrubbed before
+persona input, artifact writes and diagnostics: sessions, tokens, promos, internal/admin/
+platform keys, encrypted envelopes and echoed values.
+
+In the uninterrupted terminal path cleanup revalidates authenticated ownership, initiating
+run and token attribution. It performs owner `POST /api/projects/{id}/teardown`, polls
+`GET /api/projects/{id}/teardown` to completed and requires owner project readback archived.
+Only then, with matching owner/run identity on that readback, it calls owner
+`DELETE /api/projects/{id}`, requires 204 and subsequent owner GET 404. `teardown` and
+`deletion` are separate evidence records. Refused, failed, unknown or timed-out teardown
+never permits DELETE. Uncertain DELETE or unreadable/present GET never reports cleanup success.
+There is no interrupted cleanup reconciliation.
+
+Exit 0 requires acceptance passed and deletion confirmed. A failed/incomplete acceptance may
+clean up its proven project but still exits 1. No user or unrelated project is deleted.
+External repository/registry cleanup and the separately authorized old `7192117299` user's
+project are later scoped operations outside this driver.

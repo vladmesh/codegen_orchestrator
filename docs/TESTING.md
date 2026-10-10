@@ -857,58 +857,39 @@ credentials then reach qa-worker alone, through its own env file. `mega-noop` re
 proven session for fixed probes while bypassing model sessions. `scripts/make_stand_session.py`
 authorizes a new stand session.
 
-### Synthetic buyer: what its tests prove, and what they do not
+### Synthetic buyer evidence
 
-The production acceptance of a fresh order is an operation, not a suite: `python -m
-src.synthetic_buyer` orders through the actual Codegen bot as the QA account and is run by an
-operator ([runbook](runbooks/synthetic-buyer.md)); no workflow or service starts it. Its tests in
-`services/langgraph/tests/unit/synthetic_buyer/` run the real controller over an in-process world
-(`fakes.py`): a Codegen bot answering the PO's scenario, the API's records, the product bot, the
-platform facts and a clock that moves only when the controller sleeps. They cover the whole
-conversation-to-teardown path, identity and bot mismatch, stale/unrelated/duplicate messages,
-rollout-before-preview and confirmation gating, secret handoff and redaction, stalled/stopped/timed
-out work, the shared session around QA, wrong project or run correlation, absent post/auth/reader/
-language facts, resume without a second order, and cleanup failure. The adapters run against
-controlled transports (`httpx.MockTransport`, Telethon-shaped objects, a scripted chat model). The
-cases also cover the controller's single authority path: an accepted send interrupted before its
-receipt; a confirmation whose receipt stayed invisible until delivery checks ended, then
-reconciled by a failed `resume` and by `cleanup` with one send, owned teardown and the failed
-verdict kept, while an unprovable send, a press and unproven ownership stay refused; a promo echo
-after a new process; a same-owner project without this order's token; an affirmative model reply
-with no authority; deploy provenance with distinct `ci.yml` publication and `deploy.yml` runs
-(missing, failed, `main.yml`, deploy-as-publication, failed `build-and-push`, wrong commit or
-image tag, timeline disagreement, unreadable Actions); and unsolicited delivery proven before
-`/digest` against a delayed unquoted digest item linking a fresh post, a resumed uncertain
-`/digest`, event-form messages that do not hold together, and absent delivery.
-The shared QA identity's exclusion is the real `TelegramIdentityLease` over an in-memory Redis
-with Lua (fakeredis), starting from an operator-initialized `idle` record: native QA admitted
-before registration, right after a quiet moment, during the persona's model call and during API
-reads; queued/running Run rows changing nothing; QA keeping the identity through the probe; an
-orphaned hold refusing until released by token; a failed or cancelled buyer disconnect and a
-setup failure after connect (`synthetic_buyer/test_controller.py`, and the actual
-`TelethonPort` against a Telethon-shaped client in `test_adapters.py`). Failed resume and
-cleanup with the promo read unavailable or a retained code missing read no dialog and tear
-nothing down, then succeed once rehydration does. The lease itself (`test_qa_telegram_lease.py`)
-covers admission only from `idle`, a missing or malformed record refusing until initialized, a
-lost record refusing a second applicant while the first is still in use, simultaneous
-admission, release and retention from the lifetime account on error and cancellation, stale
-reporting without expiry and ownership loss. `test_qa_identity_release.py` drives the real
-runner, capability endpoint, executor client and lease together, faulting a refused or missing
-removal answer, a delete publish failure, cancellation at the removal answer and at endpoint
-stop, an endpoint stop failure, identity-proof disconnect failure or cancellation, and a probe
-child whose exit is not seen. Worker-manager units (`test_qa_worker.py`, `test_consumer.py`)
-show a Docker failure on the executor or its proxy is never a proven QA removal.
-All of it is host-profile unit work under the 0.5 s budget, with no process or real wait.
-CI-only service legs: LangGraph `tests/service/test_qa_telegram_identity_lease.py` runs the
-lease against the real Redis (contention, missing record and lost record with a live first
-holder, retention without TTL, ownership loss) and a native QA run over the real
-`worker:commands`/`worker:responses` streams whose sandbox is served the session, with proven,
-refused, unanswered and cancelled removal answers. Worker-manager
-`tests/service/test_qa_removal_answer.py` produces the answer with the real consumer and manager
-over real Redis and Docker containers, injecting a Docker removal failure on the executor or its
-proxy. They are CI evidence only when executed.
-These tests prove the driver's and the coordination's behavior only; a live acceptance verdict
-exists only in an operation's own evidence.
+`services/langgraph/tests/unit/synthetic_buyer/` exercises the fresh operator driver through
+in-process Telegram, API, repository, persona, platform and clock ports. Time advances only
+through the fake clock; no socket, server, process, container or real wait is used. Controlled
+HTTP transports and Telethon-shaped clients exercise the adapters. These tests run through
+`python -m shared` in the native host profile, with its 0.5 s per-test and 240 s CPU budgets.
+
+The complete working route covers registration or buyer reuse, protected token or bounded
+BotFather creation, token-attributed authenticated ownership, rollout readback before feature
+preview, frozen module-route admission before confirmation, immediate install and glue proof,
+distinct built-commit publication and deployment workflows, terminal typed QA, actual-post
+witness judgment before `/digest`, RU/EN replies, core language readback, product auth and
+attributed reader activity. Missing, contradictory or unreadable evidence cannot pass.
+Controller handoff tests hold back Story visibility after confirmation and require no Telegram
+use while waiting or during native work. Failed, blocked or invalid QA cannot start product probes.
+An unknown confirmation is sent once, stops the run and retains diagnostic intent and ownership.
+
+Cleanup cases prove the acceptance verdict is saved before completed teardown and archived
+readback, owner-authenticated DELETE 204, and owner GET 404. Foreign or replaced ownership,
+failed/refused/unknown/timed-out teardown, refused DELETE and unreadable or present readback
+cannot claim successful cleanup. Unrelated projects remain intact. Offline `check` and `inspect`
+connect to no port; another fresh run refuses existing evidence without modifying it.
+
+These are controller and adapter proofs, not delivered production events. The operator's later
+operation supplies live evidence, as described in the [runbook](runbooks/synthetic-buyer.md).
+Native QA and worker-manager keep released-main behavior. Independent same-account QA is
+excluded by operator sequencing during buyer Telegram phases; status observations establish
+no concurrency lock. Concurrent admission, orphan/cancellation accounting and interrupted-run
+reconciliation are deferred to `issue:c369b68e3d23896c2d6d`. Their prototype coordination tests,
+including unmarked socket tests, were removed with that layer. Retained real service boundaries
+run only in the existing CI service/integration shards; historical host network results supply
+no candidate evidence.
 
 ## Integration Test Architecture
 

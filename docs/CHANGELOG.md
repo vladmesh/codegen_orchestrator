@@ -5,20 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-10
 
-- `python -m src.synthetic_buyer` orders a fresh channel bot through the actual Codegen bot as the
-  QA account, checks the live product, keeps redacted resumable evidence and tears its project down.
-- The synthetic buyer runs every effect through one authority path: QA-guarded session, durable
-  intents, token-proven project ownership, brief-route admission and provenance-chain judgments.
-- Native QA and the synthetic buyer hold the QA Telegram account through one Redis record with
-  explicit idle/held/retained state; a missing record admits no one until an operator initializes it.
-- The identity hold releases only when every client, probe, endpoint and sandbox it registered is
-  proven ended; a QA executor's delete answers success only when Docker shows it and its proxy gone.
-- The synthetic buyer's run, resume and cleanup consume one authority result; a refused
-  rehydration reads no dialog and tears nothing down, and a later visible send keeps the failure.
-- The buyer's deploy evidence keeps `deployment_result.run_id` as the `deploy.yml` run and
-  proves the built commit's `ci.yml` build-and-push publication separately.
-- The buyer observes unsolicited `tg-channels.post` delivery before sending `/digest`, so a late
-  digest item can never be mistaken for it.
+- The synthetic buyer orders through Telegram, proves native acceptance and deletes its owned project
+  after verified teardown; fresh runs retain redacted evidence and use an ordered QA handoff.
 - Kit 7b547c69 (core 2.5.0) is the scaffold, tooling and catalog pin; one activated catalog snapshot
   replaces the live HEAD reader, and installs name and add from its exact commit.
 - The PO previews capabilities through the Architect before a brief; the API stores the derived

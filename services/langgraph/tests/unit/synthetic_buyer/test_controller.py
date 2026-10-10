@@ -7,14 +7,12 @@ what it changed through the API and what its retained evidence says.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 from datetime import timedelta
 import json
 
 import pytest
 
-from src.consumers._qa_telegram_lease import Holder, HolderKind
 from src.synthetic_buyer.controller import DEFERRAL, OPENING, botfather_username
 from src.synthetic_buyer.persona import PersonaDecision, PersonaTurn
 from src.synthetic_buyer.platform_evidence import AuthFacts, UsageFacts, platform_product_id
@@ -42,9 +40,7 @@ from tests.unit.synthetic_buyer.fakes import (
     TOKEN,
     UNRELATED_PROJECT,
     USER_ID,
-    ProcessDied,
     harness,
-    identity_lease,
     install_operation,
     post_event,
 )
@@ -112,7 +108,8 @@ async def test_a_full_order_is_observed_end_to_end_and_its_project_torn_down(tmp
     assert deploy["publication"]["conclusion"] == "success"
     post = h.store.record["observations"]["post_delivered"]["detail"]
     assert (post["channel"], post["post_id"]) == ("chan_two", 201)
-    assert h.world.projects[PROJECT]["status"] == "archived"
+    assert h.store.record["teardown"]["project_status"] == "archived"
+    assert PROJECT not in h.world.projects
     assert h.store.record["cleanup"]["released_bot_username"] == PRODUCT.username
 
 
@@ -184,6 +181,23 @@ async def test_a_bot_that_is_not_the_configured_codegen_bot_gets_nothing(tmp_pat
     await h.buyer(codegen_bot={"username": CODEGEN.username, "user_id": CODEGEN.id + 1}).run()
 
     assert _verdict(h)["reason"] == "codegen_bot_mismatch"
+
+
+async def test_a_session_whose_setup_fails_after_connect_is_still_disconnected(tmp_path):
+    h = harness(tmp_path)
+    original = h.telegram.connect
+
+    async def connected_then_refused():
+        await original()
+        raise TransportError("authorization", "did not answer in 30s")
+
+    h.telegram.connect = connected_then_refused
+    result = await h.buyer().run()
+
+    assert _verdict(h)["reason"] == "TransportError"
+    assert not h.telegram.connected
+    assert [e for e in h.telegram.events if e[0] == "disconnect"]
+    assert result.cleanup == "nothing_owned"
     assert [event for event in h.telegram.events if event[0] == "send"] == []
 
 
@@ -313,374 +327,6 @@ async def test_cleanup_refuses_a_project_whose_retained_proof_no_longer_holds(tm
     assert "request_teardown" not in h.api.calls
 
 
-# --- BLOCKER-qa-conversation-overlap: one hold on the shared identity ------------------
-
-
-def _telegram_uses(h) -> list[tuple]:
-    return [e for e in h.telegram.events if e[0] in {"connect", "send", "press"}]
-
-
-def _no_overlap(h) -> None:
-    assert h.world.sends_while_qa_busy == []
-    assert h.world.connects_while_qa_busy == 0
-    assert h.world.reads_while_qa_busy == 0
-
-
-async def test_native_qa_holding_the_identity_before_registration_gets_no_buyer_use(tmp_path):
-    h = harness(tmp_path)
-    assert await h.world.native.start(reference="qa-before")
-
-    outcome = await h.buyer().run()
-
-    assert _telegram_uses(h) == []
-    verdict = _verdict(h)
-    assert (verdict["failure_phase"], verdict["reason"]) == ("preflight", "identity_busy")
-    assert verdict["detail"]["holder"]["kind"] == "native_qa"
-    assert verdict["detail"]["holder"]["reference"] == "qa-before"
-    assert verdict["detail"]["waited_seconds"] >= 600
-    assert outcome.cleanup == "nothing_owned"
-
-
-async def test_qa_admitted_right_after_a_quiet_moment_still_excludes_the_buyer(tmp_path):
-    """The old guard read the runs API, then connected: a run admitted between overlapped."""
-    h = harness(tmp_path)
-    h.world.users[BUYER] = {"id": USER_ID}
-    admitted = {}
-    original = h.api.user_by_telegram
-
-    async def qa_admitted_after_the_read(telegram_id):
-        found = await original(telegram_id)
-        if "at" not in admitted and await h.world.native.start(reference="qa-late"):
-            admitted["at"] = h.clock.now
-            h.clock.hooks.append(qa_ends)
-        return found
-
-    async def qa_ends():
-        if h.clock.now >= admitted["at"] + timedelta(seconds=90):
-            h.clock.hooks.remove(qa_ends)
-            await h.world.native.end()
-
-    h.api.user_by_telegram = qa_admitted_after_the_read
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    _no_overlap(h)
-    # No connection while the run it admitted held the identity; the next one after it.
-    assert [at for at in h.world.connected_at if at >= admitted["at"] + timedelta(seconds=90)]
-
-
-async def test_queued_and_running_rows_are_not_admission_authority(tmp_path):
-    """A run still `queued` already holds the identity; its move to `running` changes nothing."""
-    h = harness(tmp_path)
-    row = {"id": "qa-moving", "type": "qa", "status": "queued", "story_id": "other"}
-    h.world.runs.append(row)
-    assert await h.world.native.start(reference="qa-moving")
-
-    async def the_run_moves_on():
-        if h.clock.now >= START + timedelta(seconds=30):
-            row["status"] = "running"
-        if h.clock.now >= START + timedelta(seconds=90) and h.world.native.holding:
-            row["status"] = "completed"
-            await h.world.native.end()
-
-    h.clock.hooks.append(the_run_moves_on)
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    _no_overlap(h)
-    assert min(h.world.connected_at) >= START + timedelta(seconds=90)
-
-
-async def test_qa_admitted_while_the_persona_thinks_holds_off_the_buyers_reply(tmp_path):
-    h = harness(tmp_path)
-    started = {}
-    original = h.persona.turn
-
-    async def qa_starts_during_the_model_call(context):
-        if not started and await h.world.native.start(reference="qa-during-model"):
-            started["at"] = h.clock.now
-            h.clock.hooks.append(qa_ends)
-        return await original(context)
-
-    async def qa_ends():
-        if h.clock.now >= started["at"] + timedelta(seconds=120):
-            h.clock.hooks.remove(qa_ends)
-            await h.world.native.end()
-
-    h.persona.turn = qa_starts_during_the_model_call
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    assert started, "the buyer held the identity across the persona's model call"
-    _no_overlap(h)
-    reply = next(e for e in h.store.record["conversation"]["codegen"] if e.get("kind") == "persona")
-    assert reply["date"] >= (started["at"] + timedelta(seconds=120)).isoformat()
-
-
-async def test_qa_admitted_during_api_reads_between_turns_is_waited_out(tmp_path):
-    h = harness(tmp_path)
-    window = {}
-    original = h.api.capability_plan
-
-    async def qa_starts_during_the_brief_read(brief_id):
-        if not window and await h.world.native.start(reference="qa-during-api"):
-            window["at"] = h.clock.now
-            h.clock.hooks.append(qa_ends)
-        return await original(brief_id)
-
-    async def qa_ends():
-        if h.clock.now >= window["at"] + timedelta(seconds=60):
-            h.clock.hooks.remove(qa_ends)
-            await h.world.native.end()
-
-    h.api.capability_plan = qa_starts_during_the_brief_read
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    assert window
-    _no_overlap(h)
-
-
-async def test_the_buyer_holds_nothing_while_native_work_and_its_qa_run(tmp_path):
-    h = harness(tmp_path)
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    # The story's QA took the identity once the buyer had released it, and gave it back.
-    (span,) = h.world.native.spans
-    assert span[1] is not None
-    _no_overlap(h)
-    assert (await identity_lease(h.world.redis, h.clock).holder())["state"] == "idle"
-
-
-async def test_a_qa_run_that_keeps_the_identity_is_a_bounded_failure_without_probes(tmp_path):
-    h = harness(tmp_path)
-
-    original = h.api.bot_liveness
-
-    async def qa_admitted_as_the_story_settles(project_id):
-        await h.world.native.start(reference="qa-stuck")
-        return await original(project_id)
-
-    h.api.bot_liveness = qa_admitted_as_the_story_settles
-
-    outcome = await h.buyer().run()
-
-    verdict = _verdict(h)
-    assert (verdict["failure_phase"], verdict["reason"]) == ("product_probe", "identity_busy")
-    assert verdict["detail"]["holder"]["reference"] == "qa-stuck"
-    _no_overlap(h)
-    assert [e for e in h.telegram.events if e[0] == "send" and e[1] == PRODUCT.username] == []
-    assert outcome.cleanup == "completed"
-
-
-async def test_an_orphaned_hold_refuses_the_buyer_until_an_operator_releases_it(tmp_path):
-    """A buyer process killed while holding leaves the hold: time alone frees nothing."""
-    h = harness(tmp_path)
-    orphan = identity_lease(h.world.redis, h.clock)
-    token = await orphan._acquire(  # noqa: SLF001 - the killed process's admission
-        Holder(HolderKind.SYNTHETIC_BUYER, "s1487-buyer-001", "buyer:order"), 0, 0
-    )
-    h.clock.now += timedelta(hours=3)
-
-    first = await h.buyer().run()
-
-    assert _telegram_uses(h) == []
-    assert _verdict(h)["reason"] == "identity_busy"
-    assert first.cleanup == "nothing_owned"
-    holder = await orphan.holder()
-    assert holder["token"] == token
-    diagnostic = _verdict(h)["detail"]["diagnostic"]
-    assert "not renewed for" in diagnostic
-    assert token in diagnostic
-    assert await orphan.release(token)
-
-    second = await h.buyer().run()
-
-    assert (second.verdict, second.cleanup) == ("failed", "nothing_owned")
-    assert _telegram_uses(h) == []
-
-
-async def test_a_disconnect_that_fails_keeps_the_identity_retained(tmp_path):
-    h = harness(tmp_path)
-    h.world.users[BUYER] = {"id": USER_ID}
-    original = h.telegram.disconnect
-
-    async def disconnect_fails():
-        await original()
-        raise TransportError("disconnect", "did not answer in 30s")
-
-    h.telegram.disconnect = disconnect_fails
-
-    await h.buyer().run()
-
-    holder = await identity_lease(h.world.redis, h.clock).holder()
-    assert (holder["state"], holder["kind"]) == ("retained", "synthetic_buyer")
-    assert holder["retained"].startswith("outstanding: client buyer session")
-    assert holder["retained"].endswith("(its disconnect failed at disconnect)")
-    assert not await h.world.native.start(reference="qa-next")
-
-
-async def test_a_session_whose_setup_fails_after_connect_is_still_disconnected(tmp_path):
-    h = harness(tmp_path)
-    original = h.telegram.connect
-
-    async def connected_then_refused():
-        await original()
-        raise TransportError("authorization", "did not answer in 30s")
-
-    h.telegram.connect = connected_then_refused
-
-    outcome = await h.buyer().run()
-
-    assert _verdict(h)["reason"] == "TransportError"
-    assert not h.telegram.connected
-    assert [e for e in h.telegram.events if e[0] == "disconnect"]
-    assert outcome.cleanup == "nothing_owned"
-    assert (await identity_lease(h.world.redis, h.clock).holder())["state"] == "idle"
-
-
-async def test_a_buyer_cancelled_at_its_disconnect_leaves_the_identity_retained(tmp_path):
-    h = harness(tmp_path)
-    reached = asyncio.Event()
-
-    async def disconnect_hangs():
-        reached.set()
-        await asyncio.Event().wait()
-
-    h.telegram.disconnect = disconnect_hangs
-    run = asyncio.create_task(h.buyer().run())
-    await reached.wait()
-    run.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await run
-
-    holder = await identity_lease(h.world.redis, h.clock).holder()
-    assert holder["state"] == "retained"
-    assert holder["retained"].startswith("outstanding: client buyer session")
-    assert h.telegram.connected
-    assert not await h.world.native.start(reference="qa-next")
-
-
-# --- BLOCKER-resume-duplicate-order and BLOCKER-resume-secret-redaction --------------
-
-
-async def test_an_interrupted_accepted_send_before_its_receipt_is_not_sent_again(tmp_path):
-    h = harness(tmp_path)
-    h.world.users[BUYER] = {"id": USER_ID}
-    original_send = h.telegram.send
-
-    async def die_after_delivery(peer, text):
-        h.telegram.events.append(("send", peer.username, text))
-        h.world.append(peer, text, out=True)
-        raise ProcessDied
-
-    h.telegram.send = die_after_delivery
-    with pytest.raises(ProcessDied):
-        await h.buyer().run()
-    assert h.store.record["pending"]["kind"] == "order_opening"
-    h.telegram.send = original_send
-    h.resume(tmp_path)
-    h.world.append(CODEGEN, "Отлично! Пришлите, пожалуйста, токен бота от @BotFather.")
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    assert _codegen_sends(h).count(OPENING) == 1
-    assert any(d.get("event") == "intent_reconciled" for d in _decisions(h))
-
-
-async def test_a_send_never_found_is_an_unknown_delivery_that_blocks_cleanup(tmp_path):
-    h = harness(tmp_path)
-    original_send = h.telegram.send
-
-    async def die_before_the_confirmation_leaves(peer, text):
-        if text == "Да, всё верно.":
-            raise ProcessDied
-        return await original_send(peer, text)
-
-    h.telegram.send = die_before_the_confirmation_leaves
-    with pytest.raises(ProcessDied):
-        await h.buyer().run()
-    h.telegram.send = original_send
-    h.resume(tmp_path)
-
-    outcome = await h.buyer().run()
-
-    assert (_verdict(h)["reason"], outcome.cleanup) == ("delivery_unknown", "refused")
-    assert h.store.record["cleanup"]["reason"] == "unresolved_action"
-    assert "Да, всё верно." not in _codegen_sends(h)
-    assert "request_teardown" not in h.api.calls
-
-
-async def test_a_delayed_promo_echo_after_a_new_process_stays_redacted(tmp_path):
-    h = harness(tmp_path)
-    original_send = h.telegram.send
-
-    async def die_after_redemption(peer, text):
-        await original_send(peer, text)
-        h.world.append(CODEGEN, "Промокод активирован: " + PROMO)
-        raise ProcessDied
-
-    h.telegram.send = die_after_redemption
-    with pytest.raises(ProcessDied):
-        await h.buyer().run()
-    h.telegram.send = original_send
-    h.resume(tmp_path)
-
-    outcome = await h.buyer().run()
-
-    shown = json.dumps([vars(c) for c in h.persona.contexts], ensure_ascii=False)
-    assert PROMO not in shown
-    assert PROMO not in h.evidence_text()
-    assert h.store.record["registration"]["mode"] == "redeemed"
-    assert outcome.verdict == "passed", _verdict(h)
-
-
-async def test_an_interrupted_promo_mint_is_found_instead_of_minted_twice(tmp_path):
-    h = harness(tmp_path)
-    original = h.api.mint_promo
-
-    async def mint_then_die(**policy):
-        await original(**policy)
-        raise ProcessDied
-
-    h.api.mint_promo = mint_then_die
-    with pytest.raises(ProcessDied):
-        await h.buyer().run()
-    assert h.store.record["pending"]["kind"] == "promo_mint"
-    h.api.mint_promo = original
-    h.resume(tmp_path)
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    assert len(h.world.promos) == 1
-    assert _codegen_sends(h).count(PROMO) == 1
-
-
-async def test_an_interrupted_order_resumes_without_a_second_order(tmp_path):
-    h = harness(tmp_path)
-    h.persona.interrupt_on = "готовым решением"
-
-    with pytest.raises(ProcessDied):
-        await h.buyer().run()
-    h.resume(tmp_path)
-    h.persona.interrupt_on = None
-
-    outcome = await h.buyer().run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    sends = _codegen_sends(h)
-    assert (sends.count(PROMO), sends.count(TOKEN), sends.count(OPENING)) == (1, 1, 1)
-    assert len(h.world.rollout_writes) == 1
-
-
 async def test_secrets_reach_codegen_but_never_the_persona_or_the_evidence(tmp_path):
     h = harness(tmp_path)
 
@@ -706,176 +352,7 @@ async def test_a_send_whose_receipt_is_lost_is_found_not_resent(tmp_path):
     assert any(d.get("event") == "send_receipt_lost" for d in _decisions(h))
 
 
-# --- BLOCKER-resume-cleanup-reconciliation: one authority path ----------------------
-
 CONFIRMATION = "Да, всё верно."
-
-
-async def _a_confirmation_accepted_but_unconfirmed(h) -> None:
-    """The confirmation reaches the PO, its receipt is lost and reads miss it for a while."""
-    h.telegram.unconfirmed.add(CONFIRMATION)
-    first = await h.buyer().run()
-    assert (first.verdict, first.cleanup) == ("failed", "refused")
-    verdict = _verdict(h)
-    assert (verdict["failure_phase"], verdict["reason"]) == ("order", "delivery_unknown")
-    assert h.store.record["cleanup"]["reason"] == "unresolved_action"
-    assert h.store.record["pending"]["kind"] == "persona"
-    assert "request_teardown" not in h.api.calls
-    # Telegram shows the outgoing message only after delivery checks gave up.
-    h.telegram.unconfirmed.clear()
-    h.telegram.hidden.clear()
-
-
-@pytest.mark.parametrize("entrypoint", ["resume", "cleanup"])
-async def test_a_later_visible_send_is_reconciled_and_the_failed_order_torn_down(
-    tmp_path, entrypoint
-):
-    h = harness(tmp_path)
-    await _a_confirmation_accepted_but_unconfirmed(h)
-    failed = dict(_verdict(h))
-    sends_before = len(_codegen_sends(h))
-    asked = len(h.persona.contexts)
-    h.resume(tmp_path)
-
-    if entrypoint == "resume":
-        outcome = await h.buyer().run()
-        verdict, cleanup = outcome.verdict, outcome.cleanup
-    else:
-        cleanup = await h.buyer().cleanup()
-        verdict = _verdict(h)["status"]
-
-    assert (verdict, cleanup) == ("failed", "completed")
-    assert _verdict(h) == failed
-    assert _codegen_sends(h).count(CONFIRMATION) == 1
-    assert len(_codegen_sends(h)) == sends_before
-    assert h.store.record["pending"] is None
-    reconciled = [d for d in _decisions(h) if d.get("event") == "intent_reconciled"]
-    assert reconciled == [{"event": "intent_reconciled", "kind": "persona", "verdict": "failed"}]
-    assert h.world.projects[PROJECT]["status"] == "archived"
-    assert len(h.persona.contexts) == asked
-    _no_overlap(h)
-
-
-async def _enter(h, entrypoint: str) -> str:
-    if entrypoint == "resume":
-        return (await h.buyer().run()).cleanup
-    return await h.buyer().cleanup()
-
-
-@pytest.mark.parametrize("entrypoint", ["resume", "cleanup"])
-@pytest.mark.parametrize(
-    ("refusal", "reason"), [("unavailable", "ApiRefused"), ("missing", "promo_unreadable")]
-)
-async def test_a_refused_rehydration_forbids_reconciliation_and_teardown_until_it_succeeds(
-    tmp_path, entrypoint, refusal, reason
-):
-    h = harness(tmp_path)
-    await _a_confirmation_accepted_but_unconfirmed(h)
-    failed = dict(_verdict(h))
-    uses_before = len(_telegram_uses(h))
-    reads_before = h.api.calls.count("promo_codes")
-    h.resume(tmp_path)
-    if refusal == "unavailable":
-        h.api.refuse.add("promo_codes")
-    else:
-        h.world.promos_withheld = True
-
-    refused = await _enter(h, entrypoint)
-
-    assert h.api.calls.count("promo_codes") > reads_before
-    assert refused == "refused"
-    assert h.store.record["cleanup"]["reason"] == reason
-    assert len(_telegram_uses(h)) == uses_before  # no connect, read or send at all
-    assert h.store.record["pending"]["kind"] == "persona"
-    assert "request_teardown" not in h.api.calls
-    assert _verdict(h) == failed
-
-    # The prerequisite returns: the whole path runs again, rehydration first.
-    h.api.refuse.clear()
-    h.world.promos_withheld = False
-    h.resume(tmp_path)
-
-    assert await _enter(h, entrypoint) == "completed"
-    assert _verdict(h) == failed
-    assert _codegen_sends(h).count(CONFIRMATION) == 1
-    assert h.store.record["pending"] is None
-    assert h.world.projects[PROJECT]["status"] == "archived"
-    refusals = [d for d in _decisions(h) if d.get("event") == "authorization_refused"]
-    assert refusals[-1]["reason"] == reason
-
-
-@pytest.mark.parametrize("entrypoint", ["resume", "cleanup"])
-async def test_a_send_never_shown_keeps_every_entrypoint_refused(tmp_path, entrypoint):
-    h = harness(tmp_path)
-    h.telegram.unconfirmed.add(CONFIRMATION)
-    await h.buyer().run()
-    h.telegram.unconfirmed.clear()
-    h.resume(tmp_path)
-
-    if entrypoint == "resume":
-        cleanup = (await h.buyer().run()).cleanup
-    else:
-        cleanup = await h.buyer().cleanup()
-
-    assert cleanup == "refused"
-    assert h.store.record["cleanup"]["reason"] == "unresolved_action"
-    assert _verdict(h)["reason"] == "delivery_unknown"
-    assert _codegen_sends(h).count(CONFIRMATION) == 1
-    assert "request_teardown" not in h.api.calls
-
-
-async def test_a_reconciled_send_does_not_make_an_unowned_project_teardownable(tmp_path):
-    h = harness(tmp_path)
-    await _a_confirmation_accepted_but_unconfirmed(h)
-    h.world.secrets[PROJECT] = {"TELEGRAM_BOT_TOKEN": "someone-else"}
-    h.resume(tmp_path)
-
-    cleanup = await h.buyer().cleanup()
-
-    assert cleanup == "refused"
-    assert h.store.record["cleanup"]["reason"] == "ownership_unproven"
-    assert h.store.record["pending"] is None
-    assert "request_teardown" not in h.api.calls
-
-
-async def test_an_unproven_button_press_stays_pending_and_refuses_cleanup(tmp_path):
-    h = harness(tmp_path)
-    h.store.record["pending"] = {
-        "effect": "press",
-        "dialog": "codegen",
-        "kind": "press",
-        "message_id": 5,
-        "at": START.isoformat(),
-    }
-    h.store.record["ownership"] = {
-        "project_id": UNRELATED_PROJECT,
-        "initiating_run_id": "po-unrelated",
-        "token_sha256": "0" * 64,
-    }
-
-    cleanup = await h.buyer().cleanup()
-
-    assert cleanup == "refused"
-    assert h.store.record["cleanup"]["reason"] == "unresolved_action"
-    assert _verdict(h)["reason"] == "delivery_unknown"
-    assert _telegram_uses(h) == []
-    assert "request_teardown" not in h.api.calls
-
-
-async def test_a_cleanup_of_a_running_operation_can_never_be_accepted_afterwards(tmp_path):
-    h = harness(tmp_path)
-    h.persona.interrupt_on = "Описание заказа"
-    with pytest.raises(ProcessDied):
-        await h.buyer().run()
-    h.resume(tmp_path)
-    h.persona.interrupt_on = None
-
-    assert await h.buyer().cleanup() == "completed"
-    again = await h.buyer().run()
-
-    assert (again.verdict, again.cleanup) == ("failed", "completed")
-    assert _verdict(h)["reason"] == "cleanup_before_verdict"
-    assert CONFIRMATION not in _codegen_sends(h)
 
 
 # --- BLOCKER-deploy-provenance and BLOCKER-install-glue-proof --------------------------
@@ -1014,7 +491,7 @@ async def test_a_delayed_unquoted_digest_item_linking_a_fresh_post_is_not_delive
     asked = {}
 
     async def qa_asks_for_a_digest():
-        if h.world.native.holding and "at" not in asked:
+        if h.world.qa_phase == "holding" and "at" not in asked:
             asked["at"] = h.clock.now
             h.world.append(PRODUCT, "/digest", out=True)
 
@@ -1042,34 +519,6 @@ async def test_a_delayed_unquoted_digest_item_linking_a_fresh_post_is_not_delive
     assert [entry["reason"] for entry in observation["detail"]["unattributed"]] == [
         "not the post event's form"
     ]
-    assert outcome.verdict == "incomplete"
-
-
-async def test_a_resumed_operation_with_an_uncertain_digest_cannot_prove_delivery(tmp_path):
-    """The `/digest` left before the process died; resuming re-reads, never forgets it."""
-    h = harness(tmp_path)
-    original = h.world.product_answer
-
-    def dies_on_digest(text):
-        if text == "/digest":
-            h.world.product_answer = original
-            raise ProcessDied
-        return original(text)
-
-    h.world.product_answer = dies_on_digest
-    h.world.post_event = False
-    with pytest.raises(ProcessDied):
-        await h.buyer().run()
-    assert h.store.record["pending"]["shown"] == "/digest"
-    h.resume(tmp_path)
-    h.world.post_event = True
-
-    outcome = await h.buyer().run()
-
-    observation = h.store.record["observations"]["post_delivered"]
-    assert observation["status"] == "unknown"
-    assert observation["detail"]["commands"] == ["/digest"]
-    assert any(d.get("event") == "intent_reconciled" for d in _decisions(h))
     assert outcome.verdict == "incomplete"
 
 
@@ -1238,7 +687,7 @@ async def test_a_failure_stays_a_failure_whatever_the_cleanup_does(tmp_path):
 
     assert (outcome.verdict, outcome.cleanup) == ("failed", "completed")
     again = await h.buyer().run()
-    assert (again.verdict, again.cleanup) == ("failed", "completed")
+    assert (again.verdict, again.cleanup) == ("failed", "refused")
     assert h.api.calls.count("request_teardown") == 1
 
 
@@ -1266,19 +715,3 @@ async def test_a_bot_created_in_botfather_is_owned_by_this_operation(tmp_path):
     assert h.store.record["ids"]["botfather_bot_username"] == username
     assert TOKEN in _codegen_sends(h)
     assert TOKEN not in h.evidence_text()
-
-
-async def test_an_interrupted_creation_reads_the_token_back_instead_of_a_second_bot(tmp_path):
-    h = harness(tmp_path)
-    h.world.botfather_dies_after_creation = True
-
-    with pytest.raises(ProcessDied):
-        await h.buyer(product_token=BOTFATHER_MODE).run()
-    h.resume(tmp_path)
-
-    outcome = await h.buyer(product_token=BOTFATHER_MODE).run()
-
-    assert outcome.verdict == "passed", _verdict(h)
-    assert _botfather_sends(h).count("/newbot") == 1
-    assert len(h.world.botfather_bots) == 1
-    assert "/token" in _botfather_sends(h)
