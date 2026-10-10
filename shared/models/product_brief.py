@@ -91,8 +91,9 @@ class ProductBrief(Base):
     )
     #: The technical `CapabilityPlan` derived when this revision was opened: the selected
     #: closures and the concrete settings of the user's answers. Written once, beside the
-    #: immutable `content`, and never shown to the PO or the user.
-    capability_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: immutable `content`, and never shown to the PO or the user. Absent is SQL NULL (not JSON
+    #: null), which the check constraint pairs with an absent preview.
+    capability_plan: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
 
 
 class CapabilityPreview(Base):
@@ -109,7 +110,6 @@ class CapabilityPreview(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("projects.id"), nullable=False, index=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     #: The `CapabilityRequest` list the preview answered.
     requests: Mapped[list] = mapped_column(JSON, nullable=False)
     #: The `CapabilityPreviewProjection`.

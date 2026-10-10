@@ -469,7 +469,10 @@ def test_the_endpoint_is_mounted_and_the_command_is_wired(applied_tree: Path, ch
     # with a mock application — and `startup` is what the builder now wires.
     assert "async def post_init(application: Application) -> None:" in bot_main
     assert ".post_init(startup)" in bot_main
-    assert "CommandHandler(LEVEL1_COMMAND, handle_level1)" in bot_main
+    # The kit's core registry is the only registrar: the command is declared, not wired.
+    assert "CommandHandler" not in bot_main
+    commands = (applied_tree / module.BOT_COMMANDS).read_text(encoding="utf-8")
+    assert "ProductCommand(LEVEL1_COMMAND, handle_level1)" in commands
     assert sets.marker in (applied_tree / module.BOT_MENU_MODULE).read_text(encoding="utf-8")
 
 

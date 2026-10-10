@@ -6,9 +6,12 @@ name: runner-orchestrator
 
 services:
   api:
+    image: codegen-orchestrator/api:runner-proof
     build:
       context: ../..
       dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["/entrypoint.sh"]
     environment:
       - DEFAULT_AGENT_TYPE=claude

@@ -5,7 +5,8 @@ import pytest
 
 from shared.contracts.template import ServiceTemplateRef, recorded_template_commit_matches
 
-COMMIT = "52e9107495949c9187f41cc0e50367ed8ed7a7a1"
+#: Any full commit: these rules are about the shape of a pin, not about the current one.
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
 REF = TypeAdapter(ServiceTemplateRef)
 
 
@@ -22,7 +23,7 @@ def test_a_floating_ref_is_refused(ref: str) -> None:
 
 @pytest.mark.parametrize(
     "recorded",
-    [COMMIT, "packages/tg-channels/v0.1.2-12-g52e9107", f"0.10.1-3-g{COMMIT[:12]}"],
+    [COMMIT, "packages/tg-channels/v0.1.2-12-g0123456", f"0.10.1-3-g{COMMIT[:12]}"],
 )
 def test_a_commit_pin_matches_its_own_and_its_described_record(recorded: str) -> None:
     assert recorded_template_commit_matches(recorded, COMMIT)
@@ -31,11 +32,11 @@ def test_a_commit_pin_matches_its_own_and_its_described_record(recorded: str) ->
 @pytest.mark.parametrize(
     "recorded",
     [
-        "packages/tg-channels/v0.1.2-12-g52e9108",
+        "packages/tg-channels/v0.1.2-12-g0123457",
         "packages/tg-channels/v0.1.2",
         "0.10.1",
         "1" * 40,
-        "g52e9107",
+        "g0123456",
     ],
 )
 def test_another_render_does_not_match_a_commit_pin(recorded: str) -> None:
@@ -44,4 +45,4 @@ def test_another_render_does_not_match_a_commit_pin(recorded: str) -> None:
 
 def test_a_tag_pin_matches_only_itself() -> None:
     assert recorded_template_commit_matches("0.10.1", "0.10.1")
-    assert not recorded_template_commit_matches("0.10.1-1-g52e9107", "0.10.1")
+    assert not recorded_template_commit_matches("0.10.1-1-g0123456", "0.10.1")

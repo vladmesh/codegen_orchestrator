@@ -30,6 +30,8 @@ _SHELL_ASSIGNMENT = re.compile(
     r"^\s*(?:(?:export|local|readonly|declare)\s+)?(" + _ENV_NAME + r")="
 )
 _SHELL_READ = re.compile(r"\bread(?:\s+-[A-Za-z]+)*\s+(" + _ENV_NAME + r")\b")
+#: A `for NAME in ...` loop binds NAME in the script itself; it is not an environment key.
+_SHELL_FOR = re.compile(r"^\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b")
 _SHELL_BUILTINS = {
     "BASH_SOURCE",
     "HOME",
@@ -283,6 +285,9 @@ def _shell_references(root: Path, path: Path) -> list[EnvReference]:
         read = _SHELL_READ.search(line)
         if read:
             local_names.add(read.group(1))
+        loop = _SHELL_FOR.match(line)
+        if loop:
+            local_names.add(loop.group(1))
     relative_path = _relative_path(root, path)
     references: list[EnvReference] = []
     for line_number, line in enumerate(lines, start=1):

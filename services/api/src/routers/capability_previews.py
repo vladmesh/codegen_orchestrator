@@ -8,7 +8,6 @@ the stored preview here (`plan_for_content`), so the plan beside a revision is d
 from what the server stored, never from what a caller sent.
 """
 
-from datetime import UTC, datetime
 import secrets
 import uuid
 
@@ -137,7 +136,6 @@ async def create_capability_preview(
     preview = CapabilityPreview(
         id=f"preview-{secrets.token_hex(12)}",
         project_id=body.project_id,
-        created_at=datetime.now(UTC),
         requests=[request.model_dump(mode="json") for request in body.requests],
         product=body.product.model_dump(mode="json"),
         technical=body.technical.model_dump(mode="json", by_alias=True),

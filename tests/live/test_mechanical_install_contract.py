@@ -5,6 +5,7 @@ import json
 import tomllib
 from types import SimpleNamespace
 
+from framework.spec.package_resolution import CORE_VERSION
 from level1_brief import build_level1_brief
 from level1_change_set import _fixture_text
 from mechanical_install import (
@@ -137,7 +138,7 @@ def baseline():
         },
         "deployment": {
             service: {
-                "core": "2.4.0",
+                "core": CORE_VERSION,
                 "digests": [f"registry/{service}@sha256:" + "a" * 64],
                 "reference": f"registry/{service}:sha-{'a' * 12}",
                 "registry_digest": "sha256:" + "a" * 64,

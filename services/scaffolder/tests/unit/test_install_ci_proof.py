@@ -36,7 +36,8 @@ def test_ci_notes_customization_runs_registered_save_and_list(tmp_path):
     product = tmp_path / "product"
     shutil.copytree(TEMPLATE_PIN.fixture_path(root), product)
     namespace = runpy.run_path(str(script))
-    namespace["customize_notes"](product)
+    # The orchestrator's interpreter carries the same pinned kit tooling as the product.
+    namespace["customize_notes"](product, sys.executable)
     # Fresh interpreter avoids the orchestrator's shared package. Broker I/O is
     # irrelevant to notes commands; the released CI product uses its real library.
     code = """

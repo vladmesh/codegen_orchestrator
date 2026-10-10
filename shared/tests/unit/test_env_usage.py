@@ -457,6 +457,20 @@ def test_template_fixture_has_known_contract_gaps(tmp_path: Path):
     )
 
 
+def test_a_shell_loop_variable_is_not_an_environment_key(tmp_path: Path):
+    """`for env in "$@"` binds env in the script, as `prepare-env.sh` of the kit render does."""
+    (tmp_path / "prepare.sh").write_text(
+        '#!/bin/sh\nfor env in "$@"; do\n  echo "$env $MISSING_KEY"\ndone\n'
+    )
+    write_fragment(tmp_path, {})
+
+    result = check_env_contract_usage(tmp_path)
+
+    assert result.warnings == (
+        "undeclared environment key MISSING_KEY used at prepare.sh:3 (shell)",
+    )
+
+
 def test_shell_undeclared_usage_is_a_warning(tmp_path: Path):
     (tmp_path / "entrypoint.sh").write_text("echo $MISSING_KEY\n")
     write_fragment(tmp_path, {})

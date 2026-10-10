@@ -137,6 +137,8 @@ BACKEND_ROUTERS_PACKAGE = "services/backend/src/app/api/routers/"
 BACKEND_GENERATED_PACKAGE = "services/backend/src/generated/"
 BOT_MENU_MODULE = "services/tg_bot/src/menu.py"
 BOT_MAIN = "services/tg_bot/src/main.py"
+#: Where the product declares its own bot commands; the core registry is generated from it.
+BOT_COMMANDS = "services/tg_bot/src/commands.py"
 #: The commands the kit's bot already answers, which the published menu keeps.
 BOT_EXISTING_COMMANDS = (("start", "start the bot"), ("command", "publish a command event"))
 
@@ -369,8 +371,9 @@ def bot_contract(marker: str, *, agent_type: str) -> str:
     return (
         "What to deliver:\n"
         f"- The bot service (`services/tg_bot`) answers the command /{LEVEL1_COMMAND} with "
-        f'exactly "level-1 marker: {marker}". Register it with '
-        f'`CommandHandler("{LEVEL1_COMMAND}", ...)` beside the handlers the bot already has.\n'
+        f'exactly "level-1 marker: {marker}". Declare it as '
+        f'`ProductCommand("{LEVEL1_COMMAND}", ...)` in `COMMANDS` of `{BOT_COMMANDS}`; the '
+        "core command registry, generated from that declaration, registers it.\n"
         "- When the bot starts, it publishes its command menu to Telegram with "
         "`setMyCommands` (`application.bot.set_my_commands`). The menu lists "
         f'/{LEVEL1_COMMAND} with the description "{level1_command_description(marker)}", '
@@ -572,7 +575,7 @@ async def register_command_menu(application: Application) -> None:
 
 
 def _bot_main() -> str:
-    """Wire the new handler and the menu publication into the bot's entry point.
+    """Wire the menu publication into the bot's entry point.
 
     ``post_init`` keeps its exact signature and its exact body: the kit's own
     unit test calls it directly with a ``MagicMock`` application, and awaiting
@@ -588,12 +591,9 @@ def _bot_main() -> str:
         "    is_active,\n"
         "    telegram_external_id,\n"
         ")\n"
-        "from services.tg_bot.src.generated import bindings\n"
+        "from services.tg_bot.src.generated import bindings, commands\n"
     )
-    menu_import = (
-        "from services.tg_bot.src.menu import "
-        "LEVEL1_COMMAND, handle_level1, register_command_menu\n"
-    )
+    menu_import = "from services.tg_bot.src.menu import register_command_menu\n"
     text = _substitute(
         _fixture_text(BOT_MAIN),
         access_import,
@@ -612,18 +612,26 @@ def _bot_main() -> str:
         "async def post_shutdown(application: Application) -> None:\n",
         where=BOT_MAIN,
     )
-    text = _substitute(
+    return _substitute(
         text,
         "        .post_init(post_init)\n",
         "        .post_init(startup)\n",
         where=BOT_MAIN,
     )
+
+
+def _bot_commands() -> str:
+    """Declare the level-1 command where the core registry reads product commands.
+
+    The kit refuses direct handler registration; ``make setup`` regenerates the registry
+    (``services/tg_bot/src/generated/commands.py``) from this declaration.
+    """
     return _substitute(
-        text,
-        '    application.add_handler(CommandHandler("command", handle_command))\n',
-        '    application.add_handler(CommandHandler("command", handle_command))\n'
-        "    application.add_handler(CommandHandler(LEVEL1_COMMAND, handle_level1))\n",
-        where=BOT_MAIN,
+        _fixture_text(BOT_COMMANDS),
+        "COMMANDS: tuple[ProductCommand, ...] = ()\n",
+        "from services.tg_bot.src.menu import LEVEL1_COMMAND, handle_level1\n\n"
+        "COMMANDS: tuple[ProductCommand, ...] = (ProductCommand(LEVEL1_COMMAND, handle_level1),)\n",
+        where=BOT_COMMANDS,
     )
 
 
@@ -640,6 +648,7 @@ def bot_operations(marker: str) -> list[Operation]:
     """The second task: the Telegram command handler and its published menu."""
     return [
         Operation("create", BOT_MENU_MODULE, _bot_menu(marker)),
+        Operation("replace", BOT_COMMANDS, _bot_commands()),
         Operation("replace", BOT_MAIN, _bot_main()),
     ]
 

@@ -11,7 +11,6 @@ import pytest
 import yaml
 
 from scripts.template_pin import TEMPLATE_PIN
-from shared.contracts.template import recorded_template_commit_matches
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = Path(".github/workflows/deploy.yml")
@@ -230,7 +229,9 @@ def test_published_update_retains_owned_bytes_and_requires_reconciliation(
     assert before == {name: (product / name).read_bytes() for name in owned}
     answers = yaml.safe_load((product / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    assert recorded_template_commit_matches(answers["_commit"], TEMPLATE_PIN.ref)
+    # A commit pin is recorded as itself or as `<tag>-<n>-g<abbreviated commit>`.
+    recorded = str(answers["_commit"])
+    assert recorded == TEMPLATE_PIN.ref or TEMPLATE_PIN.ref.startswith(recorded.rsplit("-g", 1)[-1])
     assert answers["modules"] == "backend,tg_bot"
     assert f"codegen-product-kit.git@{RELEASE_SHA}" in (product / "pyproject.toml").read_text()
     assert f"rev={RELEASE_SHA}#{RELEASE_SHA}" in (product / "uv.lock").read_text()
