@@ -2387,7 +2387,7 @@ async def _confirm_level1_brief_and_publish_story(
     ownership of the deploy stack, then the claim in flight, then the story.
     """
     confirmed = await po["confirm_product_brief"].ainvoke(
-        {"project_id": ctx["project_id"], "brief_id": ctx["brief_id"], "catalog_packages": []},
+        {"project_id": ctx["project_id"], "brief_id": ctx["brief_id"]},
         config=config,
     )
     if "confirmed and frozen" not in confirmed:

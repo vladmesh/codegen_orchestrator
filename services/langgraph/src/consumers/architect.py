@@ -1162,9 +1162,8 @@ def _catalog_dependent(tasks: list[TaskDTO]) -> bool:
 
     A story that has had an INSTALL task is a catalog story: planned without the
     catalog it can only be planned as something else, as story-360b14d9 was (a fix
-    task in place of its install). The PO's `catalog_packages` declaration is
-    checked against its turn's catalog at confirmation and is not stored
-    (docs/contracts/product-brief.md), so a brief carries nothing to read here.
+    task in place of its install). A brief with a stored capability plan is one
+    from its first attempt; `_plan` reads that plan before it asks this.
     """
     return any(task.type == TaskType.INSTALL for task in tasks)
 
