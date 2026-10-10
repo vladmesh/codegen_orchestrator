@@ -81,8 +81,10 @@ class CleanupStatus(StrEnum):
     PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
-    #: There was nothing this operation owned to tear down.
+    #: There was nothing this operation proved it owns to tear down.
     NOTHING_OWNED = "nothing_owned"
+    #: Teardown was not attempted: an unresolved action or unproven ownership outranks it.
+    REFUSED = "refused"
 
 
 #: Every production DoD observation a passed verdict needs, each observed.
@@ -182,6 +184,7 @@ def new_record(*, operation_id: str, revision: str, handles: dict[str, str], now
         "conversation": {"codegen": [], "botfather": [], "product": [], "decisions": []},
         "watermarks": {},
         "observations": {},
+        "pending": None,
         "verdict": {"status": VerdictStatus.RUNNING.value},
         "cleanup": {"status": CleanupStatus.NOT_STARTED.value},
     }

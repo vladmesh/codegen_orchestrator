@@ -155,8 +155,11 @@ class Deadlines(_Strict):
     teardown_seconds: int = Field(gt=0, le=6 * 3600)
     #: Interval between API observations while waiting.
     poll_seconds: int = Field(gt=0, le=600)
-    #: Attempts at one Telegram send whose delivery is unknown.
-    send_attempts: int = Field(gt=0, le=5)
+    #: Dialog reads, one poll apart, that look for a send whose receipt was lost
+    #: before its delivery is declared unknown. An unknown delivery is never resent.
+    delivery_checks: int = Field(gt=0, le=10)
+    #: Fixed deferrals the buyer may send before the order's project is proven.
+    deferrals: int = Field(gt=0, le=10)
 
 
 class ApiEndpoint(_Strict):

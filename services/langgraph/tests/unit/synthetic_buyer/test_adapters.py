@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 import pytest
 import respx
 
-from src.synthetic_buyer import platform_evidence
+from src.synthetic_buyer import platform_evidence, repository_evidence
 from src.synthetic_buyer.codegen_api import ApiRefused, CodegenApi
 from src.synthetic_buyer.config import parse_config
 from src.synthetic_buyer.evidence import Redaction
@@ -25,7 +25,16 @@ from src.synthetic_buyer.persona import (
     PersonaTurn,
     deviation,
 )
-from src.synthetic_buyer.platform_evidence import LivePlatformFacts, platform_product_id
+from src.synthetic_buyer.platform_evidence import (
+    LivePlatformFacts,
+    ReaderUsageRefused,
+    platform_product_id,
+)
+from src.synthetic_buyer.repository_evidence import (
+    GitHubRepositoryFacts,
+    RepositoryFactUnavailable,
+    repository_name,
+)
 from src.synthetic_buyer.telegram import TelethonPort, TransportError, to_message
 from tests.unit.synthetic_buyer.fakes import ENVIRON, PROJECT, PROMO, TOKEN, config_data
 
@@ -113,20 +122,14 @@ def test_the_platform_product_id_is_the_deploy_resolvers():
     assert len(expected) == 63
 
 
-async def test_reader_usage_is_read_with_the_products_own_key_and_redacted():
-    key = "cps_abcdefghijk2_" + "B" * 43
-    seen = []
+READER_KEY = "cps_abcdefghijk2_" + "B" * 43
 
-    def handler(request):
-        seen.append(request)
-        return httpx.Response(
-            200, json={"used": {"channels": 2}, "requests_this_minute": 0, "resolves_today": 3}
-        )
 
+def _reader(handler, redaction=None) -> tuple[LivePlatformFacts, Redaction]:
     async def stored(project_id):
-        return {"PLATFORM_KEY": key}
+        return {"PLATFORM_KEY": READER_KEY}
 
-    redaction = Redaction()
+    redaction = redaction or Redaction()
     facts = LivePlatformFacts(
         CONFIG.platform,
         ENVIRON,
@@ -134,13 +137,59 @@ async def test_reader_usage_is_read_with_the_products_own_key_and_redacted():
         stored_secrets=stored,
         http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
+    return facts, redaction
 
+
+async def test_reader_usage_is_read_from_the_released_nested_shape_with_the_products_key():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        # The reader's released `Usage`: every counter lives in `used`.
+        return httpx.Response(
+            200,
+            json={
+                "product_id": "orch-example",
+                "limits": {"channels_max": 50, "requests_per_minute": 60, "resolve_per_day": 200},
+                "used": {"channels": 2, "requests_this_minute": 7, "resolves_today": 3},
+            },
+        )
+
+    facts, redaction = _reader(handler)
     usage = await facts.usage(PROJECT, "https://reader.example.test/channels")
 
-    assert (usage.status, usage.channels_used, usage.resolves_today) == (200, 2, 3)
+    assert (usage.product_id, usage.channels, usage.requests_this_minute, usage.resolves_today) == (
+        "orch-example",
+        2,
+        7,
+        3,
+    )
     assert seen[0].url == "https://reader.example.test/channels/v1/usage"
-    assert seen[0].headers["Authorization"] == "Bearer " + key
-    assert key not in redaction.text(f"echo {key}")
+    assert seen[0].headers["Authorization"] == "Bearer " + READER_KEY
+    assert READER_KEY not in redaction.text(f"echo {READER_KEY}")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"product_id": "orch-example", "requests_this_minute": 7, "resolves_today": 3},
+        {"product_id": "orch-example", "used": {"channels": 2, "requests_this_minute": "7"}},
+        {"used": {"channels": 2, "requests_this_minute": 7, "resolves_today": 3}},
+    ],
+)
+async def test_a_missing_or_malformed_usage_document_is_refused(body):
+    facts, _ = _reader(lambda request: httpx.Response(200, json=body))
+
+    with pytest.raises(ReaderUsageRefused):
+        await facts.usage(PROJECT, "https://reader.example.test/channels")
+
+
+async def test_a_refused_usage_read_keeps_its_status_not_its_body():
+    facts, _ = _reader(lambda request: httpx.Response(401, json={"detail": READER_KEY}))
+
+    with pytest.raises(ReaderUsageRefused, match="HTTP 401") as refused:
+        await facts.usage(PROJECT, "https://reader.example.test/channels")
+    assert READER_KEY not in str(refused.value)
 
 
 async def test_auth_facts_match_the_stored_key_against_registered_keys(monkeypatch):
@@ -263,12 +312,19 @@ class _Model:
 
 
 async def test_one_invalid_model_answer_is_reasked_once():
-    model = _Model("not json", '```json\n{"decision": "wait", "bot_asks_for_token": true}\n```')
+    model = _Model("not json", '```json\n{"decision": "reply", "text": "Да."}\n```')
 
     turn = await ModelPersona(model, CONFIG.scenario).turn(PersonaContext(instruction="go"))
 
-    assert (turn.decision, turn.bot_asks_for_token) == (PersonaDecision.WAIT, True)
+    assert (turn.decision, turn.text) == (PersonaDecision.REPLY, "Да.")
     assert len(model.calls) == 2
+
+
+async def test_a_model_claiming_authority_it_does_not_have_is_an_invalid_turn():
+    model = _Model('{"decision": "reply", "text": "Да.", "confirms_brief": true}', "{}")
+
+    with pytest.raises(PersonaInvalid):
+        await ModelPersona(model, CONFIG.scenario).turn(PersonaContext(instruction="go"))
 
 
 async def test_two_invalid_model_answers_are_a_refusal():
@@ -289,3 +345,101 @@ async def test_the_persona_prompt_names_the_scenario_and_no_secret():
     assert "@chan_one" in system.content and "@chan_two" in system.content
     for secret in (TOKEN, PROMO, ENVIRON["TELETHON_SESSION"]):
         assert secret not in system.content + human.content
+
+
+class _App:
+    """The GitHub App client's token surface, without a key."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    async def get_org_token(self, owner):
+        return "installation-token-" + owner
+
+
+def _github(monkeypatch, handler) -> tuple[GitHubRepositoryFacts, list[httpx.Request]]:
+    seen: list[httpx.Request] = []
+
+    def record(request):
+        seen.append(request)
+        return handler(request)
+
+    monkeypatch.setattr(repository_evidence, "GitHubAppClient", _App)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(record))
+    return GitHubRepositoryFacts(client=client), seen
+
+
+async def test_repository_facts_are_read_only_and_typed(monkeypatch):
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/pulls/1"):
+            return httpx.Response(
+                200,
+                json={
+                    "number": 1,
+                    "merged": True,
+                    "head": {"sha": "3" * 40},
+                    "base": {"sha": "1" * 40},
+                    "merge_commit_sha": "4" * 40,
+                },
+            )
+        if "/compare/" in path:
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ahead",
+                    "commits": [{"sha": "2" * 40}],
+                    "files": [{"filename": "pyproject.toml"}],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"id": 9, "head_sha": "4" * 40, "status": "completed", "conclusion": "success"},
+        )
+
+    facts, seen = _github(monkeypatch, handler)
+
+    pull = await facts.pull_request("org/repo", 1)
+    compare = await facts.compare("org/repo", "1" * 40, "2" * 40)
+    run = await facts.workflow_run("org/repo", 9)
+
+    assert (pull.merged, pull.base_sha, pull.merge_commit_sha) == (True, "1" * 40, "4" * 40)
+    assert (compare.status, compare.commits, compare.files) == (
+        "ahead",
+        ("2" * 40,),
+        ("pyproject.toml",),
+    )
+    assert (run.head_sha, run.conclusion) == ("4" * 40, "success")
+    assert {request.method for request in seen} == {"GET"}
+    assert seen[0].headers["Authorization"] == "token installation-token-org"
+    assert seen[1].url.path == f"/repos/org/repo/compare/{'1' * 40}...{'2' * 40}"
+
+
+async def test_an_unreadable_repository_fact_names_its_route_not_its_token(monkeypatch):
+    facts, _ = _github(monkeypatch, lambda request: httpx.Response(404, json={"message": "x"}))
+
+    with pytest.raises(RepositoryFactUnavailable, match="HTTP 404") as refused:
+        await facts.pull_request("org/repo", 1)
+    assert "installation-token" not in str(refused.value)
+
+
+def test_only_a_github_repository_url_names_a_repository():
+    assert repository_name("https://github.com/org/repo") == "org/repo"
+    assert repository_name("https://github.com/org/repo.git") == "org/repo"
+    assert repository_name("pending://slug") is None
+    assert repository_name("https://example.test/org/repo") is None
+
+
+async def test_a_channel_post_is_dated_by_the_channel_itself():
+    class Client:
+        async def get_messages(self, entity, ids):
+            assert (entity, ids) == ("@chan_two", 201)
+            return SimpleNamespace(date=datetime(2026, 10, 10, 12, 5, tzinfo=UTC))
+
+    port = TelethonPort(CONFIG.telegram, ENVIRON, Redaction())
+    port._client = Client()
+
+    assert await port.post_date("chan_two", 201) == datetime(2026, 10, 10, 12, 5, tzinfo=UTC)

@@ -21,12 +21,15 @@ from .controller import Clock, SyntheticBuyer
 from .evidence import EvidenceStore, Redaction
 from .persona import ModelPersona
 from .platform_evidence import LivePlatformFacts
+from .repository_evidence import GitHubRepositoryFacts
 from .telegram import TelethonPort
 
 #: Runtime credentials read by existing shared code, not by a handle: the internal
 #: API transport's key and the project-secret cipher's key.
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 RUNTIME_KEY_ENV = "SECRETS_ENCRYPTION_KEY"
+#: The platform's GitHub App, read by `GitHubAppClient` for repository provenance.
+GITHUB_APP_ENV = ("GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH")
 
 
 def persona_model(model: ModelConfig):
@@ -57,9 +60,12 @@ async def live_buyer(config: BuyerConfig, store: EvidenceStore, environ: Mapping
     api = CodegenApi(config.api.base_url)
 
     async def stored_secrets(project_id: str) -> dict:
+        """The project's own encrypted secrets, decrypted here as the QA runtime does."""
         project = await api.project(project_id)
         stored = (project.get("config") or {}).get("secrets") or {}
-        return decrypt_dict(stored) if stored else {}
+        values = decrypt_dict(stored) if stored else {}
+        redaction.add(*(value for value in values.values() if isinstance(value, str)))
+        return values
 
     try:
         yield SyntheticBuyer(
@@ -70,6 +76,8 @@ async def live_buyer(config: BuyerConfig, store: EvidenceStore, environ: Mapping
             platform=LivePlatformFacts(
                 config.platform, environ, redaction, stored_secrets=stored_secrets
             ),
+            repository=GitHubRepositoryFacts(),
+            stored_secrets=stored_secrets,
             store=store,
             clock=Clock(wall=lambda: datetime.now(UTC), sleep=_sleep),
             environ=environ,

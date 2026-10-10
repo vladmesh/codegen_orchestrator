@@ -134,6 +134,12 @@ class CodegenApi(InternalAPIClient):
         )
         return None if response.status_code == httpx.codes.NOT_FOUND else response.json()
 
+    async def brief(self, brief_id: str) -> dict:
+        return (await self._call("GET", f"product-briefs/{brief_id}")).json()
+
+    async def repositories(self, project_id: str) -> list[dict]:
+        return (await self._call("GET", "repositories/", params={"project_id": project_id})).json()
+
     async def capability_plan(self, brief_id: str) -> CapabilityPlan | None:
         response = await self._call(
             "GET",
@@ -168,10 +174,9 @@ class CodegenApi(InternalAPIClient):
             params["status"] = status
         return (await self._call("GET", "runs/", params=params)).json()
 
-    async def bot_liveness(self, project_id: str, telegram_id: int) -> dict:
-        return (
-            await self._call("GET", f"projects/{project_id}/telegram/liveness", as_user=telegram_id)
-        ).json()
+    async def bot_liveness(self, project_id: str) -> dict:
+        """Internal-only: the API asks Telegram with the token it holds, as the service."""
+        return (await self._call("GET", f"projects/{project_id}/telegram/liveness")).json()
 
     # --- teardown -------------------------------------------------------------
 

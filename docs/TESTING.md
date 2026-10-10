@@ -869,8 +869,13 @@ conversation-to-teardown path, identity and bot mismatch, stale/unrelated/duplic
 rollout-before-preview and confirmation gating, secret handoff and redaction, stalled/stopped/timed
 out work, the shared session around QA, wrong project or run correlation, absent post/auth/reader/
 language facts, resume without a second order, and cleanup failure. The adapters run against
-controlled transports (`httpx.MockTransport`, Telethon-shaped objects, a scripted chat model). All
-of it is host-profile unit work under the 0.5 s budget, with no process, socket or real wait.
+controlled transports (`httpx.MockTransport`, Telethon-shaped objects, a scripted chat model). The
+cases also cover the controller's single authority path: QA active before registration, mid-order
+and before a reconnection; an accepted send interrupted before its receipt; a promo echo after a
+new process; a same-owner project without this order's token; an affirmative model reply with no
+authority; uncorrelated install, glue and deploy provenance; and a delayed command reply linking a
+new post. All of it is host-profile unit work under the 0.5 s budget, with no process, socket or
+real wait.
 These tests prove the driver's behavior only; a live acceptance verdict exists only in an
 operation's own evidence.
 

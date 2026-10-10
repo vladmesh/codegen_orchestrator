@@ -30,7 +30,13 @@ from shared.log_config import setup_logging
 
 from .config import BuyerConfig, ConfigError, MissingSecret, load_config, resolve_secret
 from .evidence import EvidenceStore, new_record
-from .live import INTERNAL_API_KEY_ENV, RUNTIME_KEY_ENV, live_buyer, new_store
+from .live import (
+    GITHUB_APP_ENV,
+    INTERNAL_API_KEY_ENV,
+    RUNTIME_KEY_ENV,
+    live_buyer,
+    new_store,
+)
 
 EXIT_CONFIG = 2
 EXIT_REFUSED = 3
@@ -47,7 +53,7 @@ def handle_presence(config: BuyerConfig, environ: Mapping[str, str]) -> dict[str
             presence[role] = False
         else:
             presence[role] = True
-    for name in (INTERNAL_API_KEY_ENV, RUNTIME_KEY_ENV):
+    for name in (INTERNAL_API_KEY_ENV, RUNTIME_KEY_ENV, *GITHUB_APP_ENV):
         presence[f"runtime.{name}"] = bool(environ.get(name, "").strip())
     return presence
 

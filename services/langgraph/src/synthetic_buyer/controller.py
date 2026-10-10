@@ -1,31 +1,31 @@
 """One synthetic purchase, from the customer's first message to the project's teardown.
 
-The controller is deterministic and owns every decision: which session is
-connected, what is sent, when to pause, when to stop. The persona only proposes
-the customer's words. The order of an operation is fixed:
+The controller is deterministic and is the one authority over every effect. Every
+entrypoint — `run`, `resume` and `cleanup` — passes the same ordered path before
+anything reaches Telegram, the API or the project:
 
-1. prove the session is the configured buyer before anything is sent, and that the
-   bot it talks to is the configured Codegen bot;
-2. register the buyer through the customer door (a promo code minted by the
-   internal API, redeemed by sending it to the Codegen bot) or reuse the buyer
-   the API already knows;
-3. obtain the product bot token (a protected handle, or a bot this operation
-   creates in BotFather);
-4. order through the actual Codegen bot. When the API shows the order's new
-   project, the conversation pauses: the project's id is appended to
-   `capabilities.module_rollout` and read back before the customer describes
-   the channel feature, and the brief is confirmed only after the bot stated a
-   module route;
-5. disconnect the shared session and observe the native work through the API
-   until the story is completed, its deploy succeeded and its QA passed;
-6. wait until no QA run holds the shared account, reconnect, and probe the live
-   product as the customer: Russian replies, `/channels`, `/digest`, a post
-   delivered unsolicited from a configured channel, the language switched through
-   core settings and an English reply; read the platform's auth and reader facts;
-7. freeze the verdict, then tear down only this operation's project.
-
-Every phase boundary writes the redacted evidence, so `resume` and `cleanup`
-continue from retained ids and never order, register or create a bot twice.
+1. validate the run: the retained evidence is this operation's, for this buyer;
+2. rebuild the redaction set from protected handles and authenticated reads (the
+   Telethon credentials, the product token handle, every promo code this
+   operation minted read back through the internal promo API) before any dialog
+   is read or the persona is asked;
+3. reconcile the one durable side-effect intent: a send whose receipt was lost is
+   looked for in the dialog, a promo mint is looked for in the promo API; an
+   unresolved intent stops the operation and outranks every retry and cleanup;
+4. prove ownership: the order's project is the new owner-visible project whose own
+   encrypted secrets hold exactly the product token this operation sent in its
+   Telegram order, with its initiating run retained; nothing else is ever adopted,
+   admitted to the rollout or torn down;
+5. acquire the shared session only through the QA handoff guard: no connection,
+   dialog read or send while the API shows a QA run queued or running;
+6. admit only the action the current state allows: before the project is proven
+   and admitted to the rollout the buyer sends only the controller's own opening,
+   the token and fixed deferrals — never the persona's words; while the project
+   holds an open brief revision, nothing is sent until that revision's stored
+   capability plan routes a module and its preview postdates the rollout readback;
+7. persist the intent before the effect and record the receipt after it;
+8. judge correlated observations, freeze the verdict, then tear down only the
+   proven project.
 """
 
 from __future__ import annotations
@@ -50,36 +50,41 @@ from .evidence import (
     Phase,
     VerdictStatus,
 )
-from .persona import (
-    ACCEPTED_ROUTES,
-    Persona,
-    PersonaContext,
-    PersonaDecision,
-    PersonaInvalid,
-    PersonaTurn,
-    StatedRoute,
-    deviation,
+from .persona import Persona, PersonaContext, PersonaDecision, PersonaInvalid, deviation
+from .platform_evidence import (
+    PlatformFacts,
+    ReaderUsageRefused,
+    StoredSecrets,
+    platform_product_id,
 )
-from .platform_evidence import PlatformFacts
+from .repository_evidence import RepositoryFacts, repository_name
 from .telegram import Message, Peer, TelegramPort, TransportError
 
 #: How often an open dialog is re-read while a reply is awaited.
 DIALOG_POLL_SECONDS = 2
 #: How much of the dialog the persona is shown.
 PERSONA_TRANSCRIPT = 40
+#: Reader usage reads, one poll apart, before product activity is called unknown.
+USAGE_READS = 3
 BOT_TOKEN = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
+TOKEN_REQUEST = re.compile(r"токен|token", re.IGNORECASE)
+#: The secret key the API stores a validated product bot token under.
+TELEGRAM_TOKEN_KEY = "TELEGRAM_BOT_TOKEN"  # noqa: S105 - a key name
+#: The project-config pointer the PO keeps at the open brief revision.
+BRIEF_POINTER_KEY = "product_brief_id"
 SHOWN = {
     "promo_code": "[покупатель отправил промокод]",
     "product_token": "[покупатель отправил токен бота]",
 }
-OPENING = (
-    "Начни разговор: скажи, что хочешь заказать нового Telegram-бота для себя. Пока бот "
-    "не сообщил, что проект создан, не описывай, что именно должен делать бот: если спросят, "
-    "ответь, что подробно опишешь сразу после создания проекта."
+#: The controller's own words before the order's project is proven and admitted.
+OPENING = "Здравствуйте! Хочу заказать нового Telegram-бота для себя. Токен бота у меня есть."
+DEFERRAL = (
+    "Подробно опишу, что должен делать бот, сразу после создания проекта. "
+    "Создайте, пожалуйста, проект."
 )
 DESCRIBE = (
-    "Проект создан. Теперь опиши, что должен делать бот, отвечай на вопросы, выбирай русский "
-    "язык, соглашайся на разбиение на этапы и подтверди описание заказа, если оно совпадает с "
+    "Проект создан. Опиши, что должен делать бот, отвечай на вопросы, выбирай русский язык, "
+    "соглашайся на разбиение на этапы и подтверди описание заказа, если оно совпадает с "
     "твоим желанием."
 )
 _STOPPED_STORY = {
@@ -123,6 +128,10 @@ def botfather_username(operation_id: str) -> str:
     return "sb" + hashlib.sha256(operation_id.encode()).hexdigest()[:12] + "_bot"
 
 
+def digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 class SyntheticBuyer:
     """The controller of one operation over injected ports."""
 
@@ -134,6 +143,8 @@ class SyntheticBuyer:
         api: CodegenApi,
         persona: Persona,
         platform: PlatformFacts,
+        repository: RepositoryFacts,
+        stored_secrets: StoredSecrets,
         store: EvidenceStore,
         clock: Clock,
         environ: Mapping[str, str],
@@ -143,6 +154,8 @@ class SyntheticBuyer:
         self.api = api
         self.persona = persona
         self.platform = platform
+        self.repository = repository
+        self._stored_secrets = stored_secrets
         self.store = store
         self.clock = clock
         self.environ = environ
@@ -165,7 +178,10 @@ class SyntheticBuyer:
     def _elapsed_since(self, stamp: str) -> float:
         return (self.clock.wall() - datetime.fromisoformat(stamp)).total_seconds()
 
-    # --- the operation --------------------------------------------------------
+    def _record(self, name: str, finding: native.Finding, provenance: str) -> None:
+        self.store.observe(name, finding.status, provenance=provenance, detail=finding.detail)
+
+    # --- the authority path: entrypoints ----------------------------------------
 
     def _phases(self) -> list[tuple[Phase, Callable[[], Awaitable[None]]]]:
         return [
@@ -186,8 +202,9 @@ class SyntheticBuyer:
     async def run(self) -> Outcome:
         """Run or resume the acceptance phases, then tear down what this operation owns."""
         if self.store.record["verdict"]["status"] != VerdictStatus.FAILED.value:
-            phase = Phase.PREFLIGHT
+            phase = Phase(self.store.record["phase"])
             try:
+                await self._authorize()
                 for phase, step in self._phases():
                     if self.store.is_complete(phase):
                         continue
@@ -204,19 +221,87 @@ class SyntheticBuyer:
                 await self._release_session()
         return Outcome(self.store.record["verdict"]["status"], await self.cleanup())
 
-    async def _release_session(self) -> None:
-        if self.telegram.connected:
-            try:
-                await self.telegram.disconnect()
-            except TransportError as error:
-                self.store.decide({"event": "disconnect_failed", "stage": error.stage})
-        self._section("session")["released_at"] = self.store.now()
-        self.store.save()
+    async def _authorize(self) -> None:
+        """Steps 1-3 of the authority order, before any dialog is read or effect admitted."""
+        self._validate_identity()
+        await self._rehydrate()
+        await self._reconcile()
 
-    # --- the session ------------------------------------------------------------
+    def _validate_identity(self) -> None:
+        record = self.store.record
+        if record["operation_id"] != self.config.operation_id:
+            raise Stop("operation_mismatch", {"retained": record["operation_id"]})
+        retained = self.ids.get("buyer_telegram_id")
+        if retained is not None and retained != self.buyer:
+            raise Stop("buyer_mismatch", {"retained": retained, "configured": self.buyer})
 
-    async def _connect(self) -> None:
-        """Connect and prove the buyer before anything may be sent."""
+    async def _rehydrate(self) -> None:
+        """Every protected value this operation may meet again, back in the redaction set."""
+        redaction = self.store.redaction
+        telegram = self.config.telegram
+        redaction.add(
+            resolve_secret(telegram.session, self.environ),
+            resolve_secret(telegram.api_hash, self.environ),
+        )
+        if self.config.product_token.handle is not None:
+            redaction.add(resolve_secret(self.config.product_token.handle, self.environ))
+        minted = set(self._section("registration").get("promo_code_ids", []))
+        if minted:
+            codes = {code["id"]: code for code in await self.api.promo_codes()}
+            missing = sorted(minted - set(codes))
+            if missing:
+                raise Stop("promo_unreadable", {"promo_code_ids": missing})
+            redaction.add(*(codes[code_id]["code"] for code_id in minted))
+
+    async def _reconcile(self) -> None:
+        """Resolve the one retained intent before any new action is admitted."""
+        pending = self.store.record.get("pending")
+        if not pending:
+            return
+        if pending["effect"] == "mint":
+            await self._reconcile_mint(pending)
+            return
+        public = {key: value for key, value in pending.items() if key != "digest"}
+        if pending["effect"] != "send":
+            raise Stop("delivery_unknown", public)
+        peer = await self._dialog_peer(pending["dialog"])
+        sent = await self._find_delivery(peer, pending)
+        if sent is None:
+            raise Stop("delivery_unknown", public)
+        self._receipt(pending, sent)
+        self.store.decide({"event": "intent_reconciled", "kind": pending["kind"]})
+
+    # --- the shared session: one QA handoff guard --------------------------------
+
+    async def _busy_qa(self) -> list[str]:
+        busy = []
+        for status in ("running", "queued"):
+            busy += [run["id"] for run in await self.api.runs(run_type=RunType.QA, status=status)]
+        return sorted(busy)
+
+    async def _wait_qa_quiet(self) -> None:
+        started = self.clock.wall()
+        while busy := await self._busy_qa():
+            if (
+                self.clock.wall() - started
+            ).total_seconds() >= self.config.deadlines.qa_quiet_seconds:
+                raise Stop("qa_never_quiet", {"qa_run_ids": busy})
+            await self.clock.sleep(self.config.deadlines.poll_seconds)
+        self.store.stamp("qa_quiet_at")
+
+    async def _session(self) -> None:
+        """The one acquisition path: QA quiet first, then connect, then prove the buyer.
+
+        Called before every connection, dialog read and send. A QA run the API shows
+        queued or running makes the buyer step out, disconnected, until it ends. This
+        is a check before each action, not an atomic exclusion: a QA run admitted after
+        the check can overlap the action that follows it.
+        """
+        busy = await self._busy_qa()
+        if busy:
+            self.store.decide({"event": "qa_yielded", "qa_run_ids": busy})
+            await self._release_session()
+            await self._wait_qa_quiet()
         if not self.telegram.connected:
             await self.telegram.connect()
             self._section("session")["connected_at"] = self.store.now()
@@ -226,7 +311,17 @@ class SyntheticBuyer:
             raise Stop("identity_mismatch", {"expected": self.buyer, "actual": me})
         self.ids["buyer_telegram_id"] = me
 
+    async def _release_session(self) -> None:
+        if self.telegram.connected:
+            try:
+                await self.telegram.disconnect()
+            except TransportError as error:
+                self.store.decide({"event": "disconnect_failed", "stage": error.stage})
+            self._section("session")["released_at"] = self.store.now()
+            self.store.save()
+
     async def _peer(self, role: str, username: str, *, user_id: int | None = None) -> Peer:
+        await self._session()
         if role in self._peers:
             return self._peers[role]
         peer = await self.telegram.resolve(username)
@@ -241,18 +336,34 @@ class SyntheticBuyer:
         return peer
 
     async def _codegen(self) -> Peer:
-        await self._connect()
         bot = self.config.codegen_bot
         return await self._peer("codegen", bot.username, user_id=bot.user_id)
+
+    async def _botfather(self) -> Peer:
+        return await self._peer("botfather", self.config.product_token.botfather_username or "")
+
+    async def _product(self) -> Peer:
+        return await self._peer("product", self.ids["product_bot_username"])
+
+    async def _dialog_peer(self, dialog: str) -> Peer:
+        return await {
+            "codegen": self._codegen,
+            "botfather": self._botfather,
+            "product": self._product,
+        }[dialog]()
 
     async def _ensure_watermark(self, peer: Peer, dialog: str) -> None:
         marks = self.store.record["watermarks"]
         if dialog not in marks:
+            await self._session()
             marks[dialog] = await self.telegram.latest_id(peer)
             self.store.save()
 
+    # --- reads and sends -------------------------------------------------------
+
     async def _read_new(self, peer: Peer, dialog: str) -> list[Message]:
         """Inbound messages from *peer* above the dialog's watermark, each read once."""
+        await self._session()
         marks = self.store.record["watermarks"]
         mark = marks[dialog]
         inbound = []
@@ -293,39 +404,69 @@ class SyntheticBuyer:
                 return []
             await self.clock.sleep(DIALOG_POLL_SECONDS)
 
+    async def _find_delivery(self, peer: Peer, intent: dict) -> Message | None:
+        """The outgoing message an intent named, looked for a bounded number of times."""
+        for check in range(self.config.deadlines.delivery_checks):
+            if check:
+                await self.clock.sleep(DIALOG_POLL_SECONDS)
+            await self._session()
+            try:
+                recent = await self.telegram.messages_after(peer, intent["after"])
+            except TransportError:
+                continue
+            for message in recent:
+                if message.outgoing and digest(message.text) == intent["digest"]:
+                    return message
+        return None
+
+    def _receipt(self, intent: dict, sent: Message) -> None:
+        marks = self.store.record["watermarks"]
+        self.store.message(
+            intent["dialog"],
+            {
+                "direction": "out",
+                "kind": intent["kind"],
+                "id": sent.id,
+                "date": sent.date.isoformat(),
+                "text": intent["shown"],
+            },
+        )
+        marks[intent["dialog"]] = max(marks.get(intent["dialog"], 0), sent.id)
+        self.store.record["pending"] = None
+        self.store.save()
+
     async def _send(
         self, peer: Peer, dialog: str, text: str, *, kind: str, shown: str | None = None
     ) -> Message:
-        """Send once; a send whose delivery is unknown is looked for before it is retried."""
-        marks = self.store.record["watermarks"]
-        failures = []
-        for _ in range(self.config.deadlines.send_attempts):
-            try:
-                sent = await self.telegram.send(peer, text)
-            except TransportError as error:
-                failures.append(error.stage)
-                try:
-                    recent = await self.telegram.messages_after(peer, marks[dialog])
-                except TransportError:
-                    recent = []
-                delivered = [item for item in recent if item.outgoing and item.text == text]
-                if not delivered:
-                    await self.clock.sleep(DIALOG_POLL_SECONDS)
-                    continue
-                sent = delivered[0]
-            entry = {
-                "direction": "out",
-                "kind": kind,
-                "id": sent.id,
-                "date": sent.date.isoformat(),
-                "text": shown if shown is not None else self.store.redaction.text(text),
-                "send_failures": failures,
-            }
-            self.store.message(dialog, entry)
-            marks[dialog] = max(marks[dialog], sent.id)
-            self.store.save()
-            return sent
-        raise Stop("send_failed", {"dialog": dialog, "kind": kind, "failures": failures})
+        """Persist the intent, send once under the QA guard, record the receipt.
+
+        A send whose receipt is lost is looked for in the dialog; one that cannot be
+        found is an unknown delivery and stops the operation. It is never sent again.
+        """
+        if self.store.record.get("pending"):
+            raise Stop("unresolved_action", {"kind": self.store.record["pending"]["kind"]})
+        await self._session()
+        intent = {
+            "effect": "send",
+            "dialog": dialog,
+            "kind": kind,
+            "digest": digest(text),
+            "shown": shown if shown is not None else self.store.redaction.text(text),
+            "after": self.store.record["watermarks"][dialog],
+            "at": self.store.now(),
+        }
+        self.store.record["pending"] = intent
+        self.store.save()
+        try:
+            sent = await self.telegram.send(peer, text)
+        except TransportError as error:
+            self.store.decide({"event": "send_receipt_lost", "kind": kind, "stage": error.stage})
+            found = await self._find_delivery(peer, intent)
+            if found is None:
+                raise Stop("delivery_unknown", {"dialog": dialog, "kind": kind}) from None
+            sent = found
+        self._receipt(intent, sent)
+        return sent
 
     # --- 1. preflight -----------------------------------------------------------
 
@@ -334,6 +475,56 @@ class SyntheticBuyer:
         self.store.stamp("identity_proven_at")
 
     # --- 2. registration --------------------------------------------------------
+
+    async def _promo(self) -> dict:
+        """This operation's unredeemed code, or one minted under a persisted intent."""
+        minted = set(self._section("registration").get("promo_code_ids", []))
+        if minted:
+            for code in await self.api.promo_codes():
+                if code["id"] in minted and code.get("redeemed_by_user_id") is None:
+                    return code
+        self.store.record["pending"] = {
+            "effect": "mint",
+            "kind": "promo_mint",
+            "at": self.store.now(),
+        }
+        self.store.save()
+        policy = self.config.registration
+        promo = await self.api.mint_promo(
+            credits_microusd=policy.credits_microusd,
+            reservation_microusd=policy.attempt_reservation_microusd,
+        )
+        self._adopt_promo(promo)
+        return promo
+
+    def _adopt_promo(self, promo: dict) -> None:
+        self.store.redaction.add(promo["code"])
+        registration = self._section("registration")
+        registration.setdefault("promo_code_ids", []).append(promo["id"])
+        self.store.record["pending"] = None
+        self.store.save()
+
+    async def _reconcile_mint(self, pending: dict) -> None:
+        """A mint interrupted before its id was kept: find it, or know it never happened."""
+        policy = self.config.registration
+        retained = set(self._section("registration").get("promo_code_ids", []))
+        since = datetime.fromisoformat(pending["at"]) - timedelta(seconds=1)
+        candidates = [
+            code
+            for code in await self.api.promo_codes()
+            if code["id"] not in retained
+            and code.get("redeemed_by_user_id") is None
+            and code.get("credits_microusd") == policy.credits_microusd
+            and code.get("attempt_reservation_microusd") == policy.attempt_reservation_microusd
+            and (native.parse_time(code.get("created_at")) or since) >= since
+        ]
+        if len(candidates) > 1:
+            raise Stop("promo_mint_ambiguous", {"candidates": sorted(c["id"] for c in candidates)})
+        if candidates:
+            self._adopt_promo(candidates[0])
+            return
+        self.store.record["pending"] = None
+        self.store.save()
 
     async def _registration(self) -> None:
         registration = self._section("registration")
@@ -347,17 +538,11 @@ class SyntheticBuyer:
             return
         peer = await self._codegen()
         await self._ensure_watermark(peer, "codegen")
-        policy = self.config.registration
-        promo = await self.api.mint_promo(
-            credits_microusd=policy.credits_microusd,
-            reservation_microusd=policy.attempt_reservation_microusd,
-        )
-        self.store.redaction.add(promo["code"])
-        registration.setdefault("promo_code_ids", []).append(promo["id"])
-        self.store.save()
-        await self._send(
-            peer, "codegen", promo["code"], kind="promo_code", shown=SHOWN["promo_code"]
-        )
+        promo = await self._promo()
+        if not self._sent("codegen", "promo_code"):
+            await self._send(
+                peer, "codegen", promo["code"], kind="promo_code", shown=SHOWN["promo_code"]
+            )
         replies = await self._await_reply(
             peer, "codegen", timeout=self.config.deadlines.reply_seconds
         )
@@ -372,11 +557,13 @@ class SyntheticBuyer:
 
     async def _product_token_phase(self) -> None:
         await self._product_token()
-        self._section("product_token")["source"] = (
-            self.config.product_token.handle.describe()
-            if self.config.product_token.handle is not None
-            else f"botfather:@{self.ids.get('botfather_bot_username')}"
-        )
+        self._section("product_token")["source"] = self._token_source()
+
+    def _token_source(self) -> str:
+        handle = self.config.product_token.handle
+        if handle is not None:
+            return handle.describe()
+        return f"botfather:@{botfather_username(self.config.operation_id)}"
 
     async def _product_token(self) -> str:
         if self._token is not None:
@@ -407,14 +594,12 @@ class SyntheticBuyer:
         return None
 
     async def _botfather_token(self) -> str:
-        await self._connect()
-        source = self.config.product_token
-        peer = await self._peer("botfather", source.botfather_username or "")
+        peer = await self._botfather()
         await self._ensure_watermark(peer, "botfather")
         state = self._section("botfather")
         username = botfather_username(self.config.operation_id)
         if state.get("requested_username"):
-            # A crash after asking may have created it: never create a second one.
+            # The intent to create was kept before /newbot: read the token back instead.
             await self._botfather_exchange(peer, "/token")
             token = self._token_in(await self._botfather_exchange(peer, f"@{username}"))
             if token is not None:
@@ -428,7 +613,7 @@ class SyntheticBuyer:
         state["requested_username"] = username
         self.store.save()
         await self._botfather_exchange(peer, "/newbot")
-        await self._botfather_exchange(peer, source.bot_display_name or "")
+        await self._botfather_exchange(peer, self.config.product_token.bot_display_name or "")
         replies = await self._botfather_exchange(peer, username)
         token = self._token_in(replies)
         if token is None:
@@ -441,7 +626,19 @@ class SyntheticBuyer:
 
     # --- 4. the order -----------------------------------------------------------
 
-    async def _order(self) -> None:  # noqa: C901, PLR0912 - one bounded dialog loop
+    def _sent(self, dialog: str, kind: str) -> int:
+        """How many sends of *kind* this operation holds a receipt for in *dialog*."""
+        return sum(
+            1
+            for entry in self.store.record["conversation"][dialog]
+            if entry["direction"] == "out" and entry.get("kind") == kind
+        )
+
+    def _order_entries(self) -> list[dict]:
+        order = self._section("order")
+        return self.store.record["conversation"]["codegen"][order["conversation_from"] :]
+
+    async def _order(self) -> None:
         peer = await self._codegen()
         await self._ensure_watermark(peer, "codegen")
         order = self._section("order")
@@ -451,10 +648,10 @@ class SyntheticBuyer:
             order["started_at"] = self.store.now()
             order["conversation_from"] = len(self.store.record["conversation"]["codegen"])
             self.store.save()
-        deadline = self.config.deadlines.order_seconds
         # A resumed order first answers what the bot said before the interruption.
         latest = self._unanswered() + await self._read_new(peer, "codegen")
-        expect_reply = False
+        entries = self._order_entries()
+        expect_reply = not latest and bool(entries) and entries[-1]["direction"] == "out"
         while True:
             await self._observe_project()
             if await self._observe_story():
@@ -463,8 +660,8 @@ class SyntheticBuyer:
                 )
                 self.store.stamp("order_accepted_at")
                 return
-            if self._elapsed_since(order["started_at"]) >= deadline:
-                raise Stop("order_timeout", {"seconds": deadline})
+            if self._elapsed_since(order["started_at"]) >= self.config.deadlines.order_seconds:
+                raise Stop("order_timeout", self._order_stall_detail())
             if expect_reply:
                 latest = await self._await_reply(
                     peer, "codegen", timeout=self.config.deadlines.reply_seconds
@@ -474,19 +671,125 @@ class SyntheticBuyer:
                     await self._observe_project()
                     if await self._observe_story():
                         continue
-                    raise Stop("conversation_stalled", self._last_turns())
+                    raise Stop("conversation_stalled", self._order_stall_detail())
                 continue
-            turn = await self.persona.turn(self._persona_context(latest))
-            self.store.decide({"event": "persona_turn", **turn.model_dump(mode="json")})
-            await self._apply(peer, turn, latest)
+            await self._act(peer, latest)
             latest = []
             expect_reply = True
+
+    async def _act(self, peer: Peer, latest: list[Message]) -> None:
+        """Admit exactly the one action the order's current state allows, and take it."""
+        order = self._section("order")
+        if not any(entry["direction"] == "out" for entry in self._order_entries()):
+            await self._send(peer, "codegen", OPENING, kind="order_opening")
+            return
+        asked_token = any(TOKEN_REQUEST.search(message.text) for message in latest)
+        if asked_token and not self._sent("codegen", "product_token"):
+            token = await self._product_token()
+            order["token_sha256"] = digest(token)
+            await self._send(
+                peer, "codegen", token, kind="product_token", shown=SHOWN["product_token"]
+            )
+            return
+        if not order.get("allowlist_applied_at"):
+            if self._sent("codegen", "deferral") >= self.config.deadlines.deferrals:
+                raise Stop("project_not_proven", self._order_stall_detail())
+            await self._send(peer, "codegen", DEFERRAL, kind="deferral")
+            return
+        await self._persona_act(peer, latest)
+
+    async def _persona_act(self, peer: Peer, latest: list[Message]) -> None:
+        """The customer's words, sent only across a boundary the controller admitted."""
+        order = self._section("order")
+        turn = await self.persona.turn(self._persona_context(latest))
+        self.store.decide({"event": "persona_turn", **turn.model_dump(mode="json")})
+        reason = deviation(turn, self.config.scenario)
+        if reason is not None:
+            raise Stop(
+                "persona_deviation",
+                {"reason": reason, "text": self.store.redaction.text(turn.text or "")},
+            )
+        if turn.decision is PersonaDecision.IMPOSSIBLE:
+            raise Stop("order_impossible", {"bot": probe.texts(latest)})
+        if turn.decision is PersonaDecision.WAIT:
+            return
+        turns = order["turns"] = order.get("turns", 0) + 1
+        if turns > self.config.deadlines.conversation_turns:
+            raise Stop("turn_limit", {"turns": turns - 1})
+        await self._admit_open_brief()
+        if turn.decision is PersonaDecision.PRESS:
+            await self._press(peer, latest, turn.button or "")
+            return
+        await self._send(peer, "codegen", turn.text or "", kind="persona")
+
+    async def _press(self, peer: Peer, latest: list[Message], label: str) -> None:
+        for message in reversed(latest):
+            for button in message.buttons:
+                if button.text == label and button.data is not None:
+                    await self._session()
+                    self.store.record["pending"] = {
+                        "effect": "press",
+                        "dialog": "codegen",
+                        "kind": "press",
+                        "message_id": message.id,
+                        "at": self.store.now(),
+                    }
+                    self.store.save()
+                    await self.telegram.press(peer, message.id, button.data)
+                    self.store.message(
+                        "codegen",
+                        {
+                            "direction": "out",
+                            "kind": "press",
+                            "message_id": message.id,
+                            "text": self.store.redaction.text(button.text),
+                        },
+                    )
+                    self.store.record["pending"] = None
+                    self.store.save()
+                    return
+        raise Stop("button_not_visible", {"button": label})
+
+    async def _admit_open_brief(self) -> None:
+        """While the project holds an open brief revision, prove its route before any reply.
+
+        The PO points the project's config at the revision it presented
+        (`product_brief_id`). Any reply could be read as its confirmation, so none
+        is sent until that revision's stored capability plan routes a module with
+        its install and its preview was made after the rollout readback.
+        """
+        project_id = self.ids["project_id"]
+        order = self._section("order")
+        project = await self.api.project(project_id)
+        pointer = (project.get("config") or {}).get(BRIEF_POINTER_KEY)
+        if not pointer:
+            return
+        brief = await self.api.brief(pointer)
+        if str(brief.get("project_id")) != project_id:
+            raise Stop("brief_of_another_project", {"brief_id": pointer})
+        plan = await self.api.capability_plan(pointer)
+        route = native.plan_routes(plan)
+        if plan is None or route.status is not ObservationStatus.OBSERVED:
+            raise Stop("route_not_module", {"brief_id": pointer, "plan": route.detail})
+        preview = await self.api.capability_preview(plan.preview_id)
+        ordering = native.preview_after_allowlist(
+            preview, order.get("allowlist_applied_at"), project_id
+        )
+        if ordering.status is not ObservationStatus.OBSERVED:
+            raise Stop("preview_not_after_allowlist", ordering.detail)
+        order["admitted_brief"] = {
+            "brief_id": pointer,
+            "revision": brief.get("revision"),
+            "preview_id": plan.preview_id,
+            "routes": route.detail["capabilities"],
+            "at": self.store.now(),
+        }
+        self.store.save()
 
     def _unanswered(self) -> list[Message]:
         """Inbound messages retained after the buyer's last action: read, never answered."""
         unanswered: list[Message] = []
-        start = self._section("order")["conversation_from"]
-        for entry in self.store.record["conversation"]["codegen"][start:]:
+        for entry in self._order_entries():
             if entry["direction"] == "out":
                 unanswered = []
                 continue
@@ -502,13 +805,12 @@ class SyntheticBuyer:
         return unanswered
 
     def _persona_context(self, latest: list[Message]) -> PersonaContext:
-        order = self._section("order")
         transcript = [
             {"from": "bot" if entry["direction"] == "in" else "me", "text": entry.get("text", "")}
             for entry in self.store.record["conversation"]["codegen"][-PERSONA_TRANSCRIPT:]
         ]
         return PersonaContext(
-            instruction=DESCRIBE if order.get("allowlist_applied_at") else OPENING,
+            instruction=DESCRIBE,
             transcript=transcript,
             latest=[
                 {
@@ -519,89 +821,44 @@ class SyntheticBuyer:
             ],
         )
 
-    async def _apply(self, peer: Peer, turn: PersonaTurn, latest: list[Message]) -> None:  # noqa: C901
+    def _order_stall_detail(self) -> dict:
         order = self._section("order")
-        reason = deviation(turn, self.config.scenario)
-        if reason is not None:
-            raise Stop(
-                "persona_deviation",
-                {"reason": reason, "text": self.store.redaction.text(turn.text or "")},
-            )
-        if turn.stated_route is not StatedRoute.NOT_STATED:
-            order["stated_route"] = turn.stated_route.value
-            if turn.stated_route not in ACCEPTED_ROUTES:
-                raise Stop("route_not_module", {"stated_route": turn.stated_route.value})
-        if turn.decision is PersonaDecision.IMPOSSIBLE:
-            raise Stop("order_impossible", {"bot": probe.texts(latest)})
-        if turn.bot_asks_for_token:
-            if order.get("token_sent_at"):
-                raise Stop(
-                    "product_token_rejected",
-                    {
-                        "source": self._section("product_token").get("source"),
-                        "bot": probe.texts(latest),
-                    },
-                )
-            token = await self._product_token()
-            await self._send(
-                peer, "codegen", token, kind="product_token", shown=SHOWN["product_token"]
-            )
-            order["token_sent_at"] = self.store.now()
-            return
-        if turn.decision is PersonaDecision.WAIT:
-            return
-        turns = order["turns"] = order.get("turns", 0) + 1
-        if turns > self.config.deadlines.conversation_turns:
-            raise Stop("turn_limit", {"turns": turns - 1})
-        if turn.confirms_brief:
-            route = order.get("stated_route")
-            if not order.get("allowlist_applied_at") or route not in {
-                r.value for r in ACCEPTED_ROUTES
-            }:
-                raise Stop(
-                    "confirmation_not_admitted",
-                    {
-                        "allowlist_applied": bool(order.get("allowlist_applied_at")),
-                        "stated_route": route,
-                    },
-                )
-            order["confirmed_at"] = self.store.now()
-        if turn.decision is PersonaDecision.PRESS:
-            for message in reversed(latest):
-                for button in message.buttons:
-                    if button.text == turn.button and button.data is not None:
-                        await self.telegram.press(peer, message.id, button.data)
-                        self.store.message(
-                            "codegen",
-                            {
-                                "direction": "out",
-                                "kind": "press",
-                                "message_id": message.id,
-                                "text": self.store.redaction.text(button.text),
-                            },
-                        )
-                        self.store.save()
-                        return
-            raise Stop("button_not_visible", {"button": turn.button})
-        await self._send(peer, "codegen", turn.text or "", kind="persona")
-
-    def _last_turns(self) -> dict:
-        return {"last": self.store.record["conversation"]["codegen"][-4:]}
+        return {
+            "last": self._order_entries()[-4:],
+            "token_source": self._token_source(),
+            "token_sent": bool(self._sent("codegen", "product_token")),
+            "unproven_candidates": order.get("unproven_candidates", []),
+        }
 
     async def _observe_project(self) -> None:
-        """Pause on the order's new project: prove it is ours, then admit it to the rollout."""
+        """Prove the order's project by the token it holds, then admit it to the rollout.
+
+        Owner and timing only narrow the candidates. The proof is that the project's own
+        encrypted secrets hold exactly the product token this operation sent in its
+        Telegram order; a candidate without it is never adopted, admitted or torn down.
+        """
+        order = self._section("order")
         if "project_id" in self.ids:
-            if not self._section("order").get("allowlist_applied_at"):
+            if not order.get("allowlist_applied_at"):
                 await self._allowlist(self.ids["project_id"])
             return
-        order = self._section("order")
-        owned = await self.api.owned_projects(self.buyer)
-        new = [p for p in owned if str(p["id"]) not in order["baseline_project_ids"]]
-        if not new:
+        if not order.get("token_sha256") or not self._sent("codegen", "product_token"):
             return
-        if len(new) > 1:
-            raise Stop("ambiguous_new_projects", {"project_ids": sorted(str(p["id"]) for p in new)})
-        project_id = str(new[0]["id"])
+        owned = await self.api.owned_projects(self.buyer)
+        new = [str(p["id"]) for p in owned if str(p["id"]) not in order["baseline_project_ids"]]
+        proven = []
+        for project_id in new:
+            stored = await self._stored_secrets(project_id)
+            self.store.redaction.add(*(v for v in stored.values() if isinstance(v, str)))
+            held = stored.get(TELEGRAM_TOKEN_KEY)
+            if isinstance(held, str) and digest(held) == order["token_sha256"]:
+                proven.append(project_id)
+        order["unproven_candidates"] = sorted(set(new) - set(proven))
+        if not proven:
+            return
+        if len(proven) > 1:
+            raise Stop("ambiguous_new_projects", {"project_ids": sorted(proven)})
+        project_id = proven[0]
         readback = await self.api.project(project_id, as_user=self.buyer)
         if readback.get("owner_id") != self.ids.get("user_id"):
             raise Stop("project_not_owned", {"project_id": project_id})
@@ -609,8 +866,21 @@ class SyntheticBuyer:
         started = datetime.fromisoformat(order["started_at"])
         if created is None or created < started - timedelta(seconds=1):
             raise Stop("project_predates_order", {"project_id": project_id})
+        if not readback.get("initiating_run_id"):
+            raise Stop("project_without_initiating_run", {"project_id": project_id})
+        self.store.record["ownership"] = {
+            "project_id": project_id,
+            "initiating_run_id": readback["initiating_run_id"],
+            "token_sha256": order["token_sha256"],
+            "token_message_id": next(
+                (e["id"] for e in self._order_entries() if e.get("kind") == "product_token"),
+                None,
+            ),
+            "proven_at": self.store.now(),
+        }
         self.ids["project_id"] = project_id
-        self.store.stamp("project_detected_at")
+        self.ids["initiating_run_id"] = readback["initiating_run_id"]
+        self.store.stamp("project_proven_at")
         self.store.save()
         await self._allowlist(project_id)
 
@@ -638,7 +908,7 @@ class SyntheticBuyer:
     async def _observe_story(self) -> bool:
         if "story_id" in self.ids:
             return True
-        if "project_id" not in self.ids:
+        if not self._section("order").get("allowlist_applied_at"):
             return False
         confirmed = []
         for story in await self.api.stories(self.ids["project_id"]):
@@ -687,7 +957,25 @@ class SyntheticBuyer:
         self.store.stamp("story_completed_at")
         await self._observe_native(story)
 
-    async def _observe_native(self, story: dict) -> None:
+    async def _fact(self, read: Awaitable[Any], what: str) -> Any:
+        """One repository fact, or None (unknown) with the reason kept."""
+        try:
+            return await read
+        except Exception as error:  # noqa: BLE001 - an unreadable fact stays unknown
+            self.store.decide(
+                {"event": "repository_fact_unavailable", "fact": what, "type": type(error).__name__}
+            )
+            return None
+
+    async def _repository(self, project_id: str) -> str | None:
+        names = [
+            name
+            for repo in await self.api.repositories(project_id)
+            if (name := repository_name(str(repo.get("git_url") or "")))
+        ]
+        return names[0] if len(names) == 1 else None
+
+    async def _observe_native(self, story: dict) -> None:  # noqa: C901, PLR0915 - one ordered read
         project_id, story_id = self.ids["project_id"], self.ids["story_id"]
         brief = await self.api.brief_by_story(story_id)
         self._record("brief_frozen", native.brief_frozen(brief), "GET /api/product-briefs/by-story")
@@ -697,29 +985,73 @@ class SyntheticBuyer:
         self._record(
             "preview_after_allowlist",
             native.preview_after_allowlist(
-                preview, self._section("order").get("allowlist_applied_at")
+                preview, self._section("order").get("allowlist_applied_at"), project_id
             ),
             "GET /api/capability-previews/{id} vs. rollout readback",
         )
         tasks = await self.api.tasks(story_id)
         engineering = await self.api.runs(story_id=story_id, run_type=RunType.ENGINEERING)
         self.ids["task_ids"] = [task["id"] for task in tasks]
-        self._record(
-            "install_after_scaffold",
-            native.install_mechanical(tasks, engineering),
-            "GET /api/tasks (install_operation) and engineering runs",
+        repository = await self._repository(project_id)
+        self.ids["repository"] = repository
+        timeline = story.get("generated_product_timeline") or {}
+        number = story.get("pr_number") or (timeline.get("pull_request") or {}).get("number")
+        pull_request = (
+            await self._fact(self.repository.pull_request(repository, int(number)), "pull_request")
+            if repository and number
+            else None
         )
-        self._record("engineering_glue_only", native.glue_only(tasks), "GET /api/tasks blocked_by")
+        operations = {
+            task["id"]: task.get("install_operation") or {} for task in native.install_tasks(tasks)
+        }
+        published = {}
+        for task_id, operation in operations.items():
+            base, head = operation.get("base_sha"), operation.get("head_sha")
+            published[task_id] = (
+                await self._fact(self.repository.compare(repository, base, head), "install commits")
+                if repository and base and head
+                else None
+            )
+        bases = {operation.get("base_sha") for operation in operations.values()}
+        last = [op.get("head_sha") for op in operations.values() if op.get("head_sha") not in bases]
+        delta = (
+            await self._fact(
+                self.repository.compare(repository, last[0], pull_request.head_sha),
+                "engineering delta",
+            )
+            if repository and pull_request and pull_request.head_sha and len(last) == 1 and last[0]
+            else None
+        )
+        chain, _ = native.install_chain(tasks, engineering, pull_request, published, delta)
+        self._record("install_after_scaffold", chain, "typed install operations + repository")
+        self._record(
+            "engineering_glue_only",
+            native.glue_only(tasks, plan, delta),
+            "repository change after the install vs. the kit's admitted glue",
+        )
         self._record("product_ci", native.product_ci(story), "story generated_product_timeline")
         deploys = await self.api.runs(story_id=story_id, run_type=RunType.DEPLOY)
-        deploy_finding, deploy = native.deploy_success(project_id, story_id, deploys)
-        self._record("deploy_success", deploy_finding, "GET /api/runs type=deploy typed result")
+        typed, deploy = native.deploy_typed(project_id, story_id, deploys)
+        if deploy is None:
+            self._record("deploy_success", typed, "GET /api/runs type=deploy typed result")
+        else:
+            run_id = deploy.get("publication_run_id")
+            publication = (
+                await self._fact(
+                    self.repository.workflow_run(repository, int(run_id)), "publication"
+                )
+                if repository and isinstance(run_id, int)
+                else None
+            )
+            self._record(
+                "deploy_success",
+                native.deploy_provenance(deploy, story, pull_request, publication),
+                "typed deploy result + merged PR + publication run + image digests",
+            )
         qa_runs = await self.api.runs(story_id=story_id, run_type=RunType.QA)
-        self._record(
-            "qa_passed",
-            native.qa_passed(project_id, story_id, qa_runs, deploy),
-            "GET /api/runs type=qa typed result",
-        )
+        qa = native.qa_passed(project_id, story_id, qa_runs, deploy)
+        self._record("qa_passed", qa, "GET /api/runs type=qa typed result")
+        bound = native.unknown("no successful deploy names a bot")
         if deploy is not None:
             self.ids.update(
                 deploy_run_id=deploy["run_id"],
@@ -727,76 +1059,37 @@ class SyntheticBuyer:
                 product_bot_username=deploy["bot_username"],
                 deployed_url=deploy["deployed_url"],
             )
-            liveness = await self.api.bot_liveness(project_id, self.buyer)
-            bound = (
+            liveness = await self.api.bot_liveness(project_id)
+            alive = (
                 liveness.get("state") == "alive"
                 and str(liveness.get("bot_username", "")).casefold()
                 == deploy["bot_username"].casefold()
             )
-            self._record(
-                "product_bot_bound",
-                native.observed(liveness) if bound else native.failed(liveness),
-                "GET /api/projects/{id}/telegram/liveness",
+            bound = native.observed(liveness) if alive else native.failed(liveness)
+        self._record("product_bot_bound", bound, "GET /api/projects/{id}/telegram/liveness")
+        if isinstance(qa.detail, dict) and qa.detail.get("run_id"):
+            self.ids["qa_run_id"] = qa.detail["run_id"]
+        settled = [typed.status, qa.status, bound.status]
+        if settled != [ObservationStatus.OBSERVED] * 3:
+            raise Stop(
+                "native_acceptance_not_settled", {"statuses": [item.value for item in settled]}
             )
-        qa = self.store.record["observations"].get("qa_passed", {}).get("detail") or {}
-        if isinstance(qa, dict) and qa.get("run_id"):
-            self.ids["qa_run_id"] = qa["run_id"]
-        settled = [
-            self.store.record["observations"].get(name, {}).get("status")
-            for name in ("deploy_success", "qa_passed", "product_bot_bound")
-        ]
-        if settled != [ObservationStatus.OBSERVED.value] * 3:
-            raise Stop("native_acceptance_not_settled", {"statuses": settled})
 
-    def _record(self, name: str, finding: native.Finding, provenance: str) -> None:
-        self.store.observe(name, finding.status, provenance=provenance, detail=finding.detail)
+    # --- 6. the live product -------------------------------------------------------
 
-    # --- 6. the shared account and the live product --------------------------------
-
-    async def _busy_qa(self) -> list[str]:
-        busy = []
-        for status in ("running", "queued"):
-            busy += [run["id"] for run in await self.api.runs(run_type=RunType.QA, status=status)]
-        return sorted(busy)
-
-    async def _wait_qa_quiet(self) -> None:
-        started = self.clock.wall()
-        while busy := await self._busy_qa():
-            if (
-                self.clock.wall() - started
-            ).total_seconds() >= self.config.deadlines.qa_quiet_seconds:
-                raise Stop("qa_never_quiet", {"qa_run_ids": busy})
-            await self.clock.sleep(self.config.deadlines.poll_seconds)
-        self.store.stamp("qa_quiet_at")
-
-    async def _guard_qa(self) -> None:
-        """Never send while a QA run may hold the same account: step out and come back."""
-        busy = await self._busy_qa()
-        if not busy:
-            return
-        self.store.decide({"event": "qa_conflict_yielded", "qa_run_ids": busy})
-        await self._release_session()
-        await self._wait_qa_quiet()
-        await self._connect()
-
-    async def _product(self) -> Peer:
-        await self._connect()
-        peer = await self._peer("product", self.ids["product_bot_username"])
-        await self._ensure_watermark(peer, "product")
-        return peer
-
-    async def _command(self, peer: Peer, command: str) -> list[Message]:
-        await self._guard_qa()
-        await self._send(peer, "product", command, kind="probe")
-        return await self._await_reply(
+    async def _command(self, peer: Peer, command: str) -> tuple[Message, list[Message]]:
+        sent = await self._send(peer, "product", command, kind="probe")
+        replies = await self._await_reply(
             peer, "product", timeout=self.config.deadlines.probe_reply_seconds
         )
+        return sent, replies
 
     async def _product_probe(self) -> None:
         await self._wait_qa_quiet()
         peer = await self._product()
+        await self._ensure_watermark(peer, "product")
         channels = self.config.scenario.public_channels
-        started = await self._command(peer, "/start")
+        _, started = await self._command(peer, "/start")
         if probe.access_denied(started):
             self._record("reply_ru", native.failed(probe.texts(started)), "product /start")
             raise Stop("product_access_denied", {"replies": probe.texts(started)})
@@ -807,7 +1100,7 @@ class SyntheticBuyer:
             else native.failed(probe.texts(started)),
             "product /start",
         )
-        listed = await self._command(peer, "/channels")
+        _, listed = await self._command(peer, "/channels")
         missing = probe.missing_channels(listed, channels)
         self._record(
             "channels_listed",
@@ -816,41 +1109,55 @@ class SyntheticBuyer:
             else native.observed(probe.texts(listed)),
             "product /channels",
         )
-        digest = await self._command(peer, "/digest")
-        digest_urls = {url for message in digest for url in message.urls}
+        sent, digest_replies = await self._command(peer, "/digest")
         self._record(
             "digest_answered",
-            native.observed({"replies": len(digest), "urls": sorted(digest_urls)})
-            if digest
+            native.observed(
+                {
+                    "replies": len(digest_replies),
+                    "urls": sorted({url for message in digest_replies for url in message.urls}),
+                }
+            )
+            if digest_replies
             else native.failed("no reply to /digest"),
             "product /digest",
         )
+        self._section("probe")["last_command_at"] = sent.date.isoformat()
         await self._release_session()
-        await self._await_post(digest_urls)
+        await self._await_post(sent.date)
 
-    async def _await_post(self, digest_urls: set[str]) -> None:
-        """A post the product sends on its own, from a configured channel, not in the digest.
+    async def _await_post(self, last_command: datetime) -> None:
+        """A post the product delivers on its own, attributed by its source post's time.
 
-        The session is connected only for each read, after the QA check: a long wait
-        never holds the account a QA run may need.
+        A delivery counts only when it replies to nothing and links a post of a
+        configured channel that the channel itself dates after the last command the
+        buyer sent: no command reply, delayed or split, can contain a post published
+        after the command was answered. The session is connected only for each read.
         """
         channels = self.config.scenario.public_channels
         started = self.clock.wall()
+        unattributed: list[dict] = []
         while (
             self.clock.wall() - started
         ).total_seconds() < self.config.deadlines.post_delivery_seconds:
-            await self._wait_qa_quiet()
             peer = await self._product()
-            arrived = await self._read_new(peer, "product")
-            await self._release_session()
-            for message in arrived:
-                fresh = [
-                    link
-                    for link in probe.channel_post_links(message, channels)
-                    if link[2] not in digest_urls
-                ]
-                if fresh:
-                    channel, post_id, url = fresh[0]
+            for message in await self._read_new(peer, "product"):
+                if message.reply_to is not None:
+                    unattributed.append({"message_id": message.id, "reason": "a reply"})
+                    continue
+                for channel, post_id, url in probe.channel_post_links(message, channels):
+                    published = await self.telegram.post_date(channel, post_id)
+                    if published is None or published <= last_command or message.date < published:
+                        unattributed.append(
+                            {
+                                "message_id": message.id,
+                                "url": url,
+                                "source_published_at": None
+                                if published is None
+                                else published.isoformat(),
+                            }
+                        )
+                        continue
                     self._record(
                         "post_delivered",
                         native.observed(
@@ -859,19 +1166,26 @@ class SyntheticBuyer:
                                 "delivered_at": message.date.isoformat(),
                                 "channel": channel,
                                 "post_id": post_id,
+                                "source_published_at": published.isoformat(),
+                                "last_command_at": last_command.isoformat(),
                                 "url": url,
                             }
                         ),
-                        "unsolicited product message linking a configured channel post",
+                        "unsolicited product message; source post dated by its channel",
                     )
+                    await self._release_session()
                     return
+            await self._release_session()
             await self.clock.sleep(self.config.deadlines.poll_seconds)
         self._record(
             "post_delivered",
             native.unknown(
-                f"no unsolicited post within {self.config.deadlines.post_delivery_seconds}s"
+                {
+                    "waited_seconds": self.config.deadlines.post_delivery_seconds,
+                    "unattributed": unattributed[-10:],
+                }
             ),
-            "unsolicited product message linking a configured channel post",
+            "unsolicited product message; source post dated by its channel",
         )
 
     async def _auth_finding(self) -> native.Finding:
@@ -892,31 +1206,33 @@ class SyntheticBuyer:
         self._record(
             "auth_key_active", await self._auth_finding(), "platform auth admin product keys"
         )
-        try:
-            usage = await self.platform.usage(
-                self.ids["project_id"], self.config.platform.reader_base_url
+        self._record("reader_usage", await self._usage_finding(), "reader GET /v1/usage")
+
+    async def _usage_finding(self) -> native.Finding:
+        """Activity the reader attributes to this product's own key, read a few times."""
+        project_id = self.ids["project_id"]
+        expected = platform_product_id(project_id)
+        reads = []
+        for attempt in range(USAGE_READS):
+            if attempt:
+                await self.clock.sleep(self.config.deadlines.poll_seconds)
+            try:
+                usage = await self.platform.usage(project_id, self.config.platform.reader_base_url)
+            except ReaderUsageRefused as refusal:
+                return native.unknown({"refused": self.store.redaction.text(str(refusal))})
+            reads.append(
+                {
+                    "product_id": usage.product_id,
+                    "channels": usage.channels,
+                    "requests_this_minute": usage.requests_this_minute,
+                    "resolves_today": usage.resolves_today,
+                }
             )
-        except Exception as error:  # noqa: BLE001 - an unreadable fact stays unknown
-            self._record(
-                "reader_usage",
-                native.unknown(self.store.redaction.text(str(error))),
-                "reader /v1/usage",
-            )
-            return
-        detail = {
-            "status": usage.status,
-            "channels_used": usage.channels_used,
-            "requests_this_minute": usage.requests_this_minute,
-            "resolves_today": usage.resolves_today,
-        }
-        activity = (usage.requests_this_minute or 0) + (usage.resolves_today or 0)
-        if usage.status != 200:  # noqa: PLR2004
-            finding = native.failed(detail)
-        elif (usage.channels_used or 0) >= 1 and activity >= 1:
-            finding = native.observed(detail)
-        else:
-            finding = native.unknown(detail)
-        self._record("reader_usage", finding, "reader GET /v1/usage with the product's own key")
+            if usage.product_id != expected:
+                return native.failed({"expected_product_id": expected, "reads": reads})
+            if usage.channels >= 1 and usage.requests_this_minute + usage.resolves_today >= 1:
+                return native.observed({"product_id": expected, "reads": reads})
+        return native.unknown({"product_id": expected, "reads": reads})
 
     async def _language(self) -> None:
         language = self.config.scenario.switch_language
@@ -941,7 +1257,7 @@ class SyntheticBuyer:
         if not switched:
             return
         peer = await self._product()
-        replies = await self._command(peer, "/channels")
+        _, replies = await self._command(peer, "/channels")
         await self._release_session()
         self._record(
             "reply_en",
@@ -963,13 +1279,30 @@ class SyntheticBuyer:
     # --- 7. cleanup -------------------------------------------------------------
 
     async def cleanup(self) -> str:
-        """Tear down only this operation's project, observe it archived, keep the verdict."""
-        project_id = self.ids.get("project_id")
-        if project_id is None:
-            self.store.cleanup(CleanupStatus.NOTHING_OWNED)
+        """Tear down only the proven project, observe it archived, keep the verdict."""
+        ownership = self.store.record.get("ownership")
+        if ownership is None:
+            self.store.cleanup(
+                CleanupStatus.NOTHING_OWNED,
+                unproven_candidates=self._section("order").get("unproven_candidates", []),
+            )
             return CleanupStatus.NOTHING_OWNED.value
         if self.store.record["cleanup"]["status"] == CleanupStatus.COMPLETED.value:
             return CleanupStatus.COMPLETED.value
+        project_id = ownership["project_id"]
+        try:
+            self._validate_identity()
+            await self._rehydrate()
+            if self.store.record.get("pending"):
+                return self._refuse_cleanup(project_id, "unresolved_action")
+            if not await self._still_owned(ownership):
+                return self._refuse_cleanup(project_id, "ownership_unproven")
+        except Stop as stop:
+            return self._refuse_cleanup(project_id, stop.reason)
+        except ApiRefused as error:
+            return self._refuse_cleanup(project_id, f"ownership_unreadable:{error.status}")
+        except Exception as error:  # noqa: BLE001 - unproven ownership refuses, whatever the cause
+            return self._refuse_cleanup(project_id, f"ownership_unreadable:{type(error).__name__}")
         self.store.enter(Phase.TEARDOWN)
         self.store.cleanup(CleanupStatus.PENDING, project_id=project_id)
         started = self.clock.wall()
@@ -1010,3 +1343,19 @@ class SyntheticBuyer:
         self.store.cleanup(CleanupStatus.COMPLETED, **facts)
         self.store.complete(Phase.TEARDOWN)
         return CleanupStatus.COMPLETED.value
+
+    async def _still_owned(self, ownership: dict) -> bool:
+        """The retained proof still holds: same initiating run, same token in its secrets."""
+        project = await self.api.project(ownership["project_id"])
+        if project.get("initiating_run_id") != ownership["initiating_run_id"]:
+            return False
+        if project.get("status") == "archived":
+            return True
+        stored = await self._stored_secrets(ownership["project_id"])
+        self.store.redaction.add(*(v for v in stored.values() if isinstance(v, str)))
+        held = stored.get(TELEGRAM_TOKEN_KEY)
+        return isinstance(held, str) and digest(held) == ownership["token_sha256"]
+
+    def _refuse_cleanup(self, project_id: str, reason: str) -> str:
+        self.store.cleanup(CleanupStatus.REFUSED, project_id=project_id, reason=reason)
+        return CleanupStatus.REFUSED.value

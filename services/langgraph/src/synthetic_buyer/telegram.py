@@ -102,6 +102,8 @@ class TelegramPort(Protocol):
 
     async def press(self, peer: Peer, message_id: int, data: bytes) -> None: ...
 
+    async def post_date(self, channel: str, post_id: int) -> datetime | None: ...
+
 
 @dataclass
 class TelethonPort:
@@ -204,6 +206,13 @@ class TelethonPort:
             ),
             "press",
         )
+
+    async def post_date(self, channel: str, post_id: int) -> datetime | None:
+        """When a public channel published *post_id*, read from the channel itself."""
+        post = await self._call(
+            self._require().get_messages(f"@{channel}", ids=post_id), "read channel post"
+        )
+        return None if post is None else post.date
 
 
 def to_message(item: Any) -> Message:

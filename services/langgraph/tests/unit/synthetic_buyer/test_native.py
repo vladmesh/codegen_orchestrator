@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from src.synthetic_buyer import native, probe
 from src.synthetic_buyer.evidence import ObservationStatus
+from src.synthetic_buyer.repository_evidence import (
+    CompareFacts,
+    PullRequestFacts,
+    WorkflowRunFacts,
+)
 from src.synthetic_buyer.telegram import Message
-from tests.unit.synthetic_buyer.fakes import PROJECT, START, plan
+from tests.unit.synthetic_buyer.fakes import (
+    INSTALL_HEAD,
+    MERGE,
+    PR_HEAD,
+    PROJECT,
+    SCAFFOLD,
+    START,
+    install,
+    install_operation,
+    plan,
+)
 
 STORY = "story-1"
 DEPLOY = {
@@ -43,47 +60,126 @@ def test_a_from_scratch_plan_is_not_a_module_order():
 
 
 def test_a_preview_made_before_the_rollout_contradicts_the_order():
-    preview = {"created_at": "2026-10-10T12:00:00+00:00"}
+    preview = {"created_at": "2026-10-10T12:00:00+00:00", "project_id": PROJECT}
 
-    assert native.preview_after_allowlist(preview, "2026-10-10T12:05:00+00:00").status is (
+    assert native.preview_after_allowlist(preview, "2026-10-10T12:05:00+00:00", PROJECT).status is (
         ObservationStatus.FAILED
     )
-    assert native.preview_after_allowlist(preview, None).status is ObservationStatus.UNKNOWN
-
-
-def test_engineering_that_does_not_wait_on_the_install_is_not_glue():
-    tasks = [
-        {"id": "i", "type": "install"},
-        {"id": "g", "type": "feature", "blocked_by_task_id": "i"},
-        {"id": "g2", "type": "fix", "blocked_by_task_id": "g"},
-        {"id": "s", "type": "feature", "blocked_by_task_id": None},
-    ]
-
-    finding = native.glue_only(tasks)
-
-    assert finding.status is ObservationStatus.FAILED
-    assert finding.detail["not_glue"] == ["s"]
-
-
-def test_an_install_worked_by_a_model_is_not_mechanical():
-    tasks = [
-        {
-            "id": "i",
-            "type": "install",
-            "status": "done",
-            "install_operation": {"state": "published"},
-        }
-    ]
-
-    assert native.install_mechanical(tasks, []).status is ObservationStatus.OBSERVED
-    assert native.install_mechanical(tasks, [{"id": "e", "task_id": "i"}]).status is (
-        ObservationStatus.FAILED
+    assert native.preview_after_allowlist(preview, None, PROJECT).status is (
+        ObservationStatus.UNKNOWN
     )
-    assert native.install_mechanical([], []).status is ObservationStatus.FAILED
+    assert native.preview_after_allowlist(
+        preview | {"created_at": "2026-10-10T12:06:00+00:00"}, "2026-10-10T12:05:00+00:00", "other"
+    ).status is (ObservationStatus.FAILED)
+
+
+def _install_task(**operation) -> dict:
+    return {
+        "id": "i",
+        "type": "install",
+        "status": "done",
+        "install": install(),
+        "install_operation": install_operation(**operation),
+    }
+
+
+PULL = PullRequestFacts(1, True, PR_HEAD, SCAFFOLD, MERGE)
+PUBLISHED = {"i": CompareFacts(SCAFFOLD, INSTALL_HEAD, "ahead", ("c1",), ("pyproject.toml",))}
+AFTER = CompareFacts(INSTALL_HEAD, PR_HEAD, "identical", (), ())
+
+
+def test_a_dependency_path_or_published_status_alone_proves_no_mechanical_install():
+    bare = {
+        "id": "i",
+        "type": "install",
+        "status": "done",
+        "install_operation": {"state": "published"},
+    }
+
+    finding, _ = native.install_chain([bare], [], PULL, {}, AFTER)
+
+    assert finding.status is ObservationStatus.UNKNOWN
+
+
+def test_the_install_chain_starts_on_the_scaffold_and_the_story_contains_it():
+    observed, head = native.install_chain([_install_task()], [], PULL, PUBLISHED, AFTER)
+    elsewhere, _ = native.install_chain(
+        [_install_task(base_sha="8" * 40)], [], PULL, PUBLISHED, AFTER
+    )
+    modelled, _ = native.install_chain(
+        [_install_task()], [{"id": "e", "task_id": "i"}], PULL, PUBLISHED, AFTER
+    )
+    dropped, _ = native.install_chain(
+        [_install_task()], [], PULL, PUBLISHED, replace(AFTER, status="diverged")
+    )
+
+    assert (observed.status, head) == (ObservationStatus.OBSERVED, INSTALL_HEAD)
+    assert {elsewhere.status, modelled.status, dropped.status} == {ObservationStatus.FAILED}
+
+
+def test_engineering_after_the_install_is_judged_by_the_files_it_changed():
+    tasks = [_install_task()]
+    feature = replace(AFTER, status="ahead", commits=("g",), files=("services/x.py",))
+
+    assert native.glue_only(tasks, plan("module"), AFTER).status is ObservationStatus.OBSERVED
+    assert native.glue_only(tasks, plan("module"), feature).status is ObservationStatus.FAILED
+    assert native.glue_only(tasks, plan("module_with_glue"), feature).status is (
+        ObservationStatus.UNKNOWN
+    )
+    assert native.glue_only(tasks, plan("module"), None).status is ObservationStatus.UNKNOWN
+
+
+def _deploy_run(**placed) -> dict:
+    deployment = {
+        "status": "success",
+        "run_id": 9001,
+        "deployed_commit_sha": MERGE,
+        "image_references": {"BACKEND_IMAGE": "registry/p:x"},
+        "image_digests": {"BACKEND_IMAGE": "sha256:" + "c" * 64},
+    } | placed
+    return DEPLOY | {"result": DEPLOY["result"] | {"deployment_result": deployment}}
+
+
+STORY_RECORD = {"generated_product_timeline": {"pull_request": {"head_sha": PR_HEAD}}}
+PUBLICATION = WorkflowRunFacts(9001, MERGE, "completed", "success", "main.yml")
+
+
+def test_a_typed_success_without_its_provenance_chain_is_not_an_observed_deploy():
+    _, bare = native.deploy_typed(PROJECT, STORY, [DEPLOY])
+    _, full = native.deploy_typed(PROJECT, STORY, [_deploy_run()])
+    _, undigested = native.deploy_typed(PROJECT, STORY, [_deploy_run(image_digests={})])
+
+    assert native.deploy_provenance(bare, STORY_RECORD, PULL, PUBLICATION).status is (
+        ObservationStatus.UNKNOWN
+    )
+    assert native.deploy_provenance(undigested, STORY_RECORD, PULL, PUBLICATION).status is (
+        ObservationStatus.UNKNOWN
+    )
+    assert native.deploy_provenance(full, STORY_RECORD, PULL, None).status is (
+        ObservationStatus.UNKNOWN
+    )
+    assert native.deploy_provenance(full, STORY_RECORD, PULL, PUBLICATION).status is (
+        ObservationStatus.OBSERVED
+    )
+
+
+def test_inconsistent_deploy_provenance_fails():
+    _, full = native.deploy_typed(PROJECT, STORY, [_deploy_run()])
+    other_head = {"generated_product_timeline": {"pull_request": {"head_sha": "7" * 40}}}
+
+    for story, pull, publication in (
+        (other_head, PULL, PUBLICATION),
+        (STORY_RECORD, PULL, replace(PUBLICATION, conclusion="failure")),
+        (STORY_RECORD, PULL, replace(PUBLICATION, head_sha="9" * 40)),
+        (STORY_RECORD, replace(PULL, merge_commit_sha="6" * 40), PUBLICATION),
+    ):
+        assert native.deploy_provenance(full, story, pull, publication).status is (
+            ObservationStatus.FAILED
+        )
 
 
 def test_qa_binds_to_the_storys_deploy_or_does_not_count():
-    finding, deploy = native.deploy_success(PROJECT, STORY, [DEPLOY])
+    finding, deploy = native.deploy_typed(PROJECT, STORY, [DEPLOY])
     assert finding.status is ObservationStatus.OBSERVED
 
     after = native.qa_passed(PROJECT, STORY, [_qa("2026-10-10T13:10:00+00:00")], deploy)

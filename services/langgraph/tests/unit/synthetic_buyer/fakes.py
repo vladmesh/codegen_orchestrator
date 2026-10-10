@@ -1,11 +1,13 @@
 """An in-process world for the synthetic buyer: Telegram, the Codegen API, the product.
 
 The Codegen bot here answers the way the released PO's scenario does (token, then
-project, then the feature, a module route and a language question, the brief, the
-accepted order) and records into the fake API exactly what the real one would
-expose. Time is a fake clock that only moves when the controller sleeps; native
-work, QA runs and channel posts happen on those sleeps. Nothing starts a process,
-opens a socket or really sleeps.
+a project bound to that token, then the feature, a preview and a language question,
+the brief it points the project at, the accepted order) and records into the fake
+API, the project's secrets and the repository exactly what the real ones would
+expose. Judgment stays in the controller and its adapters; the world only holds
+facts. Time is a fake clock that moves only when the controller sleeps; native work,
+QA runs and channel posts happen on those sleeps. Nothing starts a process, opens a
+socket or really sleeps.
 """
 
 from __future__ import annotations
@@ -21,13 +23,14 @@ from src.synthetic_buyer.codegen_api import ApiRefused
 from src.synthetic_buyer.config import parse_config
 from src.synthetic_buyer.controller import Clock, SyntheticBuyer
 from src.synthetic_buyer.evidence import EvidenceStore, Redaction, new_record
-from src.synthetic_buyer.persona import (
-    PersonaContext,
-    PersonaDecision,
-    PersonaTurn,
-    StatedRoute,
+from src.synthetic_buyer.persona import PersonaContext, PersonaDecision, PersonaTurn
+from src.synthetic_buyer.platform_evidence import AuthFacts, UsageFacts, platform_product_id
+from src.synthetic_buyer.repository_evidence import (
+    CompareFacts,
+    PullRequestFacts,
+    RepositoryFactUnavailable,
+    WorkflowRunFacts,
 )
-from src.synthetic_buyer.platform_evidence import AuthFacts, UsageFacts
 from src.synthetic_buyer.telegram import Button, Message, Peer, TransportError
 
 BUYER = 8202532144
@@ -37,18 +40,27 @@ PRODUCT = Peer(id=7002, username="channels_digest_bot", is_bot=True)
 BOTFATHER = Peer(id=93372553, username="BotFather", is_bot=True)
 STRANGER = 5550001
 TOKEN = "7712345678:" + "AAH" + "k" * 32
+OTHER_TOKEN = "7799999999:" + "BBH" + "z" * 32
 PROMO = "PROMOCODEVALUE" + "Q" * 10
 SESSION = "1BVtsOK" + "s" * 60
 API_HASH = "f" * 32
 INTERNAL_KEY = "internal-key-value-0123456789"
 UNRELATED_PROJECT = "11111111-1111-4111-8111-111111111111"
 PROJECT = "22222222-2222-4222-8222-222222222222"
+SIDE_PROJECT = "33333333-3333-4333-8333-333333333333"
 STORY = "story-0001"
-BRIEF = "brief-0001"
+BRIEF = "brief-" + "a" * 24
 PREVIEW = "preview-" + "1" * 24
+REPOSITORY = "product-org/channels-digest"
 CHANNELS = ["chan_one", "chan_two"]
 START = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 REVISION = "f090f9ad6682c28de4e508a24082f8b2cbcc7770"
+SCAFFOLD = "0" * 39 + "1"
+INSTALL_HEAD = "0" * 39 + "2"
+PR_HEAD = "0" * 39 + "3"
+MERGE = "0" * 39 + "4"
+PUBLICATION_RUN = 9001
+DIGEST = "sha256:" + "c" * 64
 
 
 def config_data(**overrides: Any) -> dict:
@@ -74,7 +86,8 @@ def config_data(**overrides: Any) -> dict:
             "post_delivery_seconds": 600,
             "teardown_seconds": 600,
             "poll_seconds": 30,
-            "send_attempts": 2,
+            "delivery_checks": 3,
+            "deferrals": 3,
         },
         "evidence_dir": "/evidence",
         "api": {"base_url": "http://api:8000"},
@@ -105,6 +118,8 @@ ENVIRON = {
     "PLATFORM_AUTH_ADMIN_URL": "http://auth:8000",
     "PLATFORM_AUTH_ADMIN_TOKEN": "admin-token-value-abcdef",
     "SECRETS_ENCRYPTION_KEY": "runtime-key",
+    "GITHUB_APP_ID": "12345",
+    "GITHUB_APP_PRIVATE_KEY_PATH": "/app/keys/github_app.pem",
 }
 
 
@@ -131,6 +146,50 @@ def install() -> dict:
     }
 
 
+def install_operation(**changes: Any) -> dict:
+    payload = install()
+    operation = {
+        "id": "op-1",
+        "project_id": PROJECT,
+        "task_id": "t-install",
+        "story_id": STORY,
+        "repository_id": "repo-1",
+        "cycle_started_at": "2026-10-10T12:10:00+00:00",
+        "state": "published",
+        "stage": "published",
+        "token": "install-op-secret-token",
+        "base_sha": SCAFFOLD,
+        "head_sha": INSTALL_HEAD,
+        "verification": {
+            "core_version": payload["core_version"],
+            "tooling_commit": payload["tooling_commit"],
+            "binding_sha256": "b" * 64,
+            "distributions": {"tg-channels": "0.1.2"},
+            "component_targets": {},
+            "protected_sha256": {},
+        },
+        "preflight": {
+            "result_version": 1,
+            "package": "tg-channels",
+            "status": "mechanical",
+            "product_core": payload["core_version"],
+            "target": {
+                "route": "catalog",
+                "catalog_source": payload["catalog"]["repository"],
+                "catalog_ref": payload["catalog"]["commit"],
+                "tag": payload["package"]["tag"],
+                "version": "0.1.2",
+                "requires_core": ">=2.4,<3",
+                "metadata_sha256": "d" * 64,
+            },
+            "glue": [],
+            "incompatible": None,
+        },
+    }
+    operation.update(changes)
+    return operation
+
+
 def plan(route: str = "module") -> CapabilityPlan:
     capability = {"request_id": "channels", "route": route, "requirement_ids": ["req-1"]}
     if route != "from_scratch":
@@ -152,14 +211,12 @@ class ProcessDied(BaseException):  # noqa: N818 - the process, not an error, end
 class FakeClock:
     now: datetime = START
     hooks: list[Callable[[], None]] = field(default_factory=list)
-    slept: float = 0.0
 
     def wall(self) -> datetime:
         return self.now
 
     async def sleep(self, seconds: float) -> None:
         self.now += timedelta(seconds=seconds)
-        self.slept += seconds
         for hook in list(self.hooks):
             hook()
 
@@ -170,7 +227,7 @@ class FakeClock:
 class World:
     """Both sides of every boundary the controller crosses, in one consistent state."""
 
-    def __init__(self, clock: FakeClock) -> None:
+    def __init__(self, clock: FakeClock) -> None:  # noqa: PLR0915 - one world's facts
         self.clock = clock
         self.dialogs: dict[int, list[Message]] = {CODEGEN.id: [], PRODUCT.id: [], BOTFATHER.id: []}
         self.next_id = 500
@@ -181,13 +238,16 @@ class World:
                 "id": UNRELATED_PROJECT,
                 "owner_id": 99,
                 "created_at": "2026-01-01T00:00:00+00:00",
+                "initiating_run_id": "po-unrelated",
+                "config": {},
             }
         }
+        self.secrets: dict[str, dict] = {}
         self.rollout: dict = {"project_ids": [UNRELATED_PROJECT], "note": "operator-owned"}
         self.rollout_writes: list[dict] = []
         self.previews: dict[str, dict] = {}
-        self.stories: list[dict] = []
         self.briefs: dict[str, dict] = {}
+        self.stories: list[dict] = []
         self.plans: dict[str, CapabilityPlan] = {}
         self.tasks: list[dict] = []
         self.runs: list[dict] = []
@@ -196,25 +256,43 @@ class World:
         self.teardown = "completed"
         self.sends_while_qa_busy: list[str] = []
         self.connects_while_qa_busy = 0
-        self.botfather_state: str | None = None
-        self.botfather_bots: list[str] = []
-        self.botfather_dies_after_creation = False
-        self.order_messages = 0
+        self.reads_while_qa_busy = 0
         self.stage = "new"
         self.route = "module"
         self.post_after_digest = True
         self.build_ticks = 2
         self.story_final = "completed"
-        self.new_project_owner = USER_ID
         self.auth = AuthFacts("orch-x", "abcdefghijk2", ("abcdefghijk2",), ())
-        self.usage = UsageFacts(200, 2, 1, 2)
+        self.usage = UsageFacts(platform_product_id(PROJECT), 2, 1, 2)
         self.language_switch_works = True
         self.deploy_project = PROJECT
+        self.deploy_result: dict = {
+            "deploy_outcome": "success",
+            "deployed_url": "https://product.example.test",
+            "application_id": 5,
+            "bot_username": PRODUCT.username,
+            "deployment_result": {
+                "status": "success",
+                "run_id": PUBLICATION_RUN,
+                "deployed_commit_sha": MERGE,
+                "image_references": {"BACKEND_IMAGE": "registry/p:" + MERGE},
+                "image_digests": {"BACKEND_IMAGE": DIGEST},
+            },
+        }
+        self.operation = install_operation()
+        self.engineering_files: tuple[str, ...] = ()
+        self.publication = WorkflowRunFacts(
+            PUBLICATION_RUN, MERGE, "completed", "success", ".github/workflows/main.yml"
+        )
+        self.channel_posts: dict[tuple[str, int], datetime] = {}
+        self.botfather_state: str | None = None
+        self.botfather_bots: list[str] = []
+        self.botfather_dies_after_creation = False
         self.events: list[tuple] = []
 
     # --- Telegram side ---------------------------------------------------------
 
-    def append(
+    def append(  # noqa: PLR0913 - every field a message may carry
         self,
         peer: Peer,
         text: str,
@@ -223,6 +301,7 @@ class World:
         out: bool = False,
         urls: tuple[str, ...] = (),
         buttons: tuple[Button, ...] = (),
+        reply_to: int | None = None,
     ) -> Message:
         self.next_id += 1
         message = Message(
@@ -233,9 +312,21 @@ class World:
             text=text,
             urls=urls,
             buttons=buttons,
+            reply_to=reply_to,
         )
         self.dialogs[peer.id].append(message)
         return message
+
+    def create_project(self, project_id: str, token: str | None, *, run: str) -> None:
+        self.projects[project_id] = {
+            "id": project_id,
+            "owner_id": USER_ID,
+            "created_at": self.clock.now.isoformat(),
+            "status": "draft",
+            "initiating_run_id": run,
+            "config": {},
+        }
+        self.secrets[project_id] = {} if token is None else {"TELEGRAM_BOT_TOKEN": token}
 
     def codegen_answer(self, text: str) -> list[str]:  # noqa: PLR0911 - the PO scenario
         if text == PROMO:
@@ -245,20 +336,15 @@ class World:
         if BUYER not in self.users:
             return ["Чтобы начать, пришлите одноразовый промокод."]
         if text == TOKEN:
-            self.projects[PROJECT] = {
-                "id": PROJECT,
-                "owner_id": self.new_project_owner,
-                "created_at": self.clock.now.isoformat(),
-                "status": "draft",
-            }
+            self.create_project(PROJECT, TOKEN, run="po-0123456789ab")
             self.stage = "project"
-            return [f"Проект создан, токен принят (echo {TOKEN}). Что должен делать бот?"]
-        self.order_messages += 1
+            return [f"Проект создан, бот подключён (echo {TOKEN}). Что должен делать бот?"]
         if self.stage == "new":
             return ["Отлично! Пришлите, пожалуйста, токен бота от @BotFather."]
         if self.stage == "project":
             self.previews[PREVIEW] = {
                 "preview_id": PREVIEW,
+                "project_id": PROJECT,
                 "created_at": self.clock.now.isoformat(),
             }
             self.stage = "preview"
@@ -266,27 +352,63 @@ class World:
             return [f"Это можно сделать {words}.", "Какой язык бота: русский или английский?"]
         if self.stage == "preview":
             self.stage = "brief"
-            return ["Описание заказа: бот присылает посты из каналов. Подтверждаете?"]
+            self.briefs[BRIEF] = {
+                "id": BRIEF,
+                "project_id": PROJECT,
+                "revision": 1,
+                "confirmed_at": None,
+                "content": {"language": "ru"},
+            }
+            self.plans[BRIEF] = plan(self.route)
+            self.projects[PROJECT]["config"]["product_brief_id"] = BRIEF
+            return ["Описание заказа: бот присылает посты из каналов.\n\nда / поправить"]
         if self.stage == "brief":
             self.stage = "ordered"
+            self.briefs[BRIEF]["confirmed_at"] = self.clock.now.isoformat()
             self.stories.append(
                 {
                     "id": STORY,
                     "project_id": PROJECT,
                     "status": "in_progress",
+                    "pr_number": 1,
                     "created_at": self.clock.now.isoformat(),
                 }
             )
-            self.briefs[STORY] = {
-                "id": BRIEF,
-                "revision": 1,
-                "confirmed_at": self.clock.now.isoformat(),
-                "content": {"language": "ru"},
-            }
-            self.plans[BRIEF] = plan(self.route)
             self.clock.hooks.append(self.build_tick)
             return ["Заказ принят, приступаем к работе."]
         return ["Работа идёт."]
+
+    def product_answer(self, text: str) -> list[tuple[str, tuple[str, ...]]]:
+        ru = self.language == "ru"
+        if text == "/start":
+            return [
+                (
+                    "Привет! Команды: /channel, /channels, /digest"
+                    if ru
+                    else "Hello! Commands: /channel, /channels, /digest",
+                    (),
+                )
+            ]
+        if text == "/channels":
+            if ru:
+                return [(f"@{name}", ()) for name in CHANNELS]
+            return [(f"Channel @{name}", ()) for name in CHANNELS]
+        if text == "/digest":
+            if self.post_after_digest:
+                self.digest_at = self.clock.now
+                self.clock.hooks.append(self.deliver_post)
+            url = "https://t.me/chan_one/100"
+            self.channel_posts[("chan_one", 100)] = self.clock.now - timedelta(hours=5)
+            return [(f"@chan_one\n2026-10-09\nСтарый пост\n{url}", (url,))]
+        return []
+
+    def deliver_post(self) -> None:
+        if self.clock.now < self.digest_at + timedelta(seconds=120):
+            return
+        self.clock.hooks.remove(self.deliver_post)
+        url = "https://t.me/chan_two/201"
+        self.channel_posts[("chan_two", 201)] = self.clock.now - timedelta(seconds=30)
+        self.append(PRODUCT, f"@chan_two\nНовый пост\n{url}", urls=(url,))
 
     def botfather_answer(self, text: str) -> list[str]:
         if text == "/newbot":
@@ -312,40 +434,6 @@ class World:
             return ["Invalid bot selected."]
         return ["Unrecognized command."]
 
-    def product_answer(self, text: str) -> list[tuple[str, tuple[str, ...]]]:
-        if self.busy_qa:
-            self.sends_while_qa_busy.append(text)
-        ru = self.language == "ru"
-        if text == "/start":
-            return [
-                (
-                    "Привет! Команды: /channel, /channels, /digest"
-                    if ru
-                    else "Hello! Commands: /channel, /channels, /digest",
-                    (),
-                )
-            ]
-        if text == "/channels":
-            return (
-                [(f"@{name}", ()) for name in CHANNELS]
-                if ru
-                else [(f"Channel @{name}", ()) for name in CHANNELS]
-            )
-        if text == "/digest":
-            if self.post_after_digest:
-                self.digest_at = self.clock.now
-                self.clock.hooks.append(self.deliver_post)
-            url = "https://t.me/chan_one/100"
-            return [(f"@chan_one\n2026-10-09\nСтарый пост\n{url}", (url,))]
-        return []
-
-    def deliver_post(self) -> None:
-        if self.clock.now < self.digest_at + timedelta(seconds=120):
-            return
-        self.clock.hooks.remove(self.deliver_post)
-        url = "https://t.me/chan_two/201"
-        self.append(PRODUCT, f"@chan_two\nНовый пост\n{url}", urls=(url,))
-
     # --- native work ---------------------------------------------------------------
 
     def build_tick(self) -> None:
@@ -360,11 +448,11 @@ class World:
                 "number": 1,
                 "state": "closed",
                 "merged_at": "2026-10-10T13:00:00+00:00",
-                "head_sha": "a" * 40,
-                "merge_commit_sha": "b" * 40,
+                "head_sha": PR_HEAD,
+                "merge_commit_sha": MERGE,
             },
             "ci_runs": [
-                {"id": 9, "url": "https://ci/9", "conclusion": "success", "head_sha": "a" * 40}
+                {"id": 8, "url": "https://ci/8", "conclusion": "success", "head_sha": PR_HEAD}
             ],
         }
         self.tasks[:] = [
@@ -374,12 +462,8 @@ class World:
                 "status": "done",
                 "blocked_by_task_id": None,
                 "created_at": "2026-10-10T12:10:00+00:00",
-                "install_operation": {
-                    "id": "op-1",
-                    "state": "published",
-                    "stage": "published",
-                    "token": "install-op-secret-token",
-                },
+                "install": install(),
+                "install_operation": self.operation,
             },
             {
                 "id": "t-glue",
@@ -408,17 +492,7 @@ class World:
                 "project_id": self.deploy_project,
                 "story_id": STORY,
                 "completed_at": deployed,
-                "result": {
-                    "deploy_outcome": "success",
-                    "deployed_url": "https://product.example.test",
-                    "application_id": 5,
-                    "bot_username": PRODUCT.username,
-                    "deployment_result": {
-                        "status": "success",
-                        "deployed_commit_sha": "b" * 40,
-                        "image_references": {"backend": "registry/p@sha256:" + "c" * 64},
-                    },
-                },
+                "result": self.deploy_result,
             },
             {
                 "id": "qa-1",
@@ -471,9 +545,8 @@ class FakeTelegram:
 
     async def resolve(self, username: str) -> Peer:
         self._require()
-        return {p.username.casefold(): p for p in (CODEGEN, PRODUCT, BOTFATHER)}[
-            username.casefold()
-        ]
+        peers = {p.username.casefold(): p for p in (CODEGEN, PRODUCT, BOTFATHER)}
+        return peers[username.casefold()]
 
     async def latest_id(self, peer: Peer) -> int:
         self._require()
@@ -482,11 +555,15 @@ class FakeTelegram:
 
     async def messages_after(self, peer: Peer, after_id: int) -> list[Message]:
         self._require()
+        if self.world.busy_qa:
+            self.world.reads_while_qa_busy += 1
         found = [m for m in self.world.dialogs[peer.id] if m.id > after_id]
         return found + found if self.duplicate_reads else found
 
     async def send(self, peer: Peer, text: str) -> Message:
         self._require()
+        if self.world.busy_qa:
+            self.world.sends_while_qa_busy.append(text)
         self.events.append(("send", peer.username, text))
         self.world.events.append(("send", peer.username, text))
         sent = self.world.append(peer, text, out=True)
@@ -508,6 +585,10 @@ class FakeTelegram:
         self._require()
         self.events.append(("press", peer.username, message_id, data))
 
+    async def post_date(self, channel: str, post_id: int) -> datetime | None:
+        self._require()
+        return self.world.channel_posts.get((channel, post_id))
+
 
 class FakeApi:
     def __init__(self, world: World) -> None:
@@ -527,23 +608,30 @@ class FakeApi:
 
     async def mint_promo(self, *, credits_microusd: int, reservation_microusd: int) -> dict:
         self._call("mint_promo")
-        promo = {"id": len(self.world.promos) + 1, "code": PROMO, "redeemed_by_user_id": None}
+        promo = {
+            "id": len(self.world.promos) + 1,
+            "code": PROMO,
+            "credits_microusd": credits_microusd,
+            "attempt_reservation_microusd": reservation_microusd,
+            "redeemed_by_user_id": None,
+            "created_at": self.world.clock.now.isoformat(),
+        }
         self.world.promos.append(promo)
-        return promo
+        return dict(promo)
+
+    async def promo_codes(self) -> list[dict]:
+        self._call("promo_codes")
+        return [dict(code) for code in self.world.promos]
 
     async def owned_projects(self, telegram_id: int) -> list[dict]:
         self._call("owned_projects")
         user = self.world.users[telegram_id]
-        return [
-            p
-            for p in self.world.projects.values()
-            if p["owner_id"] == user["id"]
-            or (p["id"] == PROJECT and self.world.new_project_owner != USER_ID)
-        ]
+        return [dict(p) for p in self.world.projects.values() if p["owner_id"] == user["id"]]
 
     async def project(self, project_id: str, *, as_user: int | None = None) -> dict:
         self._call("project")
-        return dict(self.world.projects[project_id])
+        project = self.world.projects[project_id]
+        return {**project, "config": dict(project["config"])}
 
     async def module_rollout(self) -> dict:
         self._call("module_rollout")
@@ -565,7 +653,17 @@ class FakeApi:
 
     async def brief_by_story(self, story_id: str) -> dict | None:
         self._call("brief_by_story")
-        return self.world.briefs.get(story_id)
+        if story_id != STORY or BRIEF not in self.world.briefs:
+            return None
+        return dict(self.world.briefs[BRIEF])
+
+    async def brief(self, brief_id: str) -> dict:
+        self._call("brief")
+        return dict(self.world.briefs[brief_id])
+
+    async def repositories(self, project_id: str) -> list[dict]:
+        self._call("repositories")
+        return [{"id": "repo-1", "git_url": f"https://github.com/{REPOSITORY}"}]
 
     async def capability_plan(self, brief_id: str) -> CapabilityPlan | None:
         self._call("capability_plan")
@@ -573,7 +671,7 @@ class FakeApi:
 
     async def capability_preview(self, preview_id: str) -> dict:
         self._call("capability_preview")
-        return self.world.previews[preview_id]
+        return dict(self.world.previews[preview_id])
 
     async def tasks(self, story_id: str) -> list[dict]:
         self._call("tasks")
@@ -587,7 +685,7 @@ class FakeApi:
             r for r in self.world.runs if r["type"] == run_type.value and r["story_id"] == story_id
         ]
 
-    async def bot_liveness(self, project_id: str, telegram_id: int) -> dict:
+    async def bot_liveness(self, project_id: str) -> dict:
         self._call("bot_liveness")
         return {"state": "alive", "bot_username": PRODUCT.username}
 
@@ -605,6 +703,38 @@ class FakeApi:
                 "released_bot_username": PRODUCT.username,
             }
         return {"status": "failed", "project_status": "active", "error": "undeploy failed"}
+
+
+class FakeRepository:
+    """Read-only repository facts of the generated product."""
+
+    def __init__(self, world: World) -> None:
+        self.world = world
+        self.unavailable: set[str] = set()
+
+    def _check(self, fact: str) -> None:
+        if fact in self.unavailable:
+            raise RepositoryFactUnavailable(f"{fact}: HTTP 404")
+
+    async def pull_request(self, repository: str, number: int) -> PullRequestFacts:
+        self._check("pull_request")
+        return PullRequestFacts(number, True, PR_HEAD, SCAFFOLD, MERGE)
+
+    async def compare(self, repository: str, base: str, head: str) -> CompareFacts:
+        self._check("compare")
+        if (base, head) == (SCAFFOLD, INSTALL_HEAD):
+            return CompareFacts(base, head, "ahead", ("install-commit",), ("pyproject.toml",))
+        if (base, head) == (INSTALL_HEAD, PR_HEAD):
+            commits = ("glue-commit",) if self.world.engineering_files else ()
+            status = "ahead" if commits else "identical"
+            return CompareFacts(base, head, status, commits, self.world.engineering_files)
+        return CompareFacts(base, head, "diverged", (), ())
+
+    async def workflow_run(self, repository: str, run_id: int) -> WorkflowRunFacts:
+        self._check("workflow_run")
+        if run_id != self.world.publication.id:
+            raise RepositoryFactUnavailable("actions run: HTTP 404")
+        return self.world.publication
 
 
 class FakePlatform:
@@ -639,35 +769,15 @@ class ScriptedPersona:
                 return turn
         if self.interrupt_on and self.interrupt_on in said:
             raise ProcessDied
-        if "токен" in said and "принят" not in said:
-            return PersonaTurn(decision=PersonaDecision.WAIT, bot_asks_for_token=True)
         if "Что должен делать бот" in said:
             return PersonaTurn(
                 decision=PersonaDecision.REPLY,
                 text="Хочу получать новые посты из каналов @chan_one и @chan_two.",
             )
-        if "готовым решением" in said:
-            return PersonaTurn(
-                decision=PersonaDecision.REPLY, text="Русский.", stated_route=StatedRoute.MODULE
-            )
-        if "с нуля" in said:
-            return PersonaTurn(
-                decision=PersonaDecision.REPLY,
-                text="Русский.",
-                stated_route=StatedRoute.FROM_SCRATCH,
-            )
+        if "Какой язык" in said:
+            return PersonaTurn(decision=PersonaDecision.REPLY, text="Русский.")
         if "Описание заказа" in said:
-            return PersonaTurn(
-                decision=PersonaDecision.REPLY,
-                text="Да, всё верно.",
-                brief_presented=True,
-                confirms_brief=True,
-            )
-        if not context.latest:
-            return PersonaTurn(
-                decision=PersonaDecision.REPLY,
-                text="Здравствуйте! Хочу заказать нового Telegram-бота.",
-            )
+            return PersonaTurn(decision=PersonaDecision.REPLY, text="Да, всё верно.")
         return PersonaTurn(decision=PersonaDecision.WAIT)
 
 
@@ -679,7 +789,12 @@ class Harness:
     api: FakeApi
     persona: ScriptedPersona
     platform: FakePlatform
+    repository: FakeRepository
     store: EvidenceStore
+
+    async def stored_secrets(self, project_id: str) -> dict:
+        self.world.events.append(("api", "project_secrets"))
+        return dict(self.world.secrets.get(project_id, {}))
 
     def buyer(self, **config_overrides: Any) -> SyntheticBuyer:
         return SyntheticBuyer(
@@ -688,10 +803,18 @@ class Harness:
             api=self.api,
             persona=self.persona,
             platform=self.platform,
+            repository=self.repository,
+            stored_secrets=self.stored_secrets,
             store=self.store,
             clock=self.clock.clock(),
             environ=ENVIRON,
         )
+
+    def resume(self, directory) -> None:
+        """A new process: a fresh redaction set over the retained evidence."""
+        self.store = EvidenceStore(directory, Redaction(), clock=self.clock.wall)
+        self.store.load()
+        self.telegram._connected = False
 
     def evidence_text(self) -> str:
         return (self.store.directory / "evidence.json").read_text() + (
@@ -713,5 +836,6 @@ def harness(directory, *, me: int = BUYER) -> Harness:
         api=FakeApi(world),
         persona=ScriptedPersona(),
         platform=FakePlatform(world),
+        repository=FakeRepository(world),
         store=store,
     )

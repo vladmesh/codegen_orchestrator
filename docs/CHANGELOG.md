@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - `python -m src.synthetic_buyer` orders a fresh channel bot through the actual Codegen bot as the
   QA account, checks the live product, keeps redacted resumable evidence and tears its project down.
+- The synthetic buyer runs every effect through one authority path: QA-guarded session, durable
+  intents, token-proven project ownership, brief-route admission and provenance-chain judgments.
 - Kit 7b547c69 (core 2.5.0) is the scaffold, tooling and catalog pin; one activated catalog snapshot
   replaces the live HEAD reader, and installs name and add from its exact commit.
 - The PO previews capabilities through the Architect before a brief; the API stores the derived

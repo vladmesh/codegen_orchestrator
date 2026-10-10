@@ -20,7 +20,8 @@
     "post_delivery_seconds": 7200,
     "teardown_seconds": 1800,
     "poll_seconds": 60,
-    "send_attempts": 2
+    "delivery_checks": 3,
+    "deferrals": 3
   },
   "evidence_dir": "/buyer/evidence",
   "api": {"base_url": "http://api:8000"},

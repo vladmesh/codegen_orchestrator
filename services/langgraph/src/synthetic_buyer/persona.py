@@ -2,8 +2,9 @@
 
 A scripted LLM persona reads what the Codegen bot said and answers as a product-only
 customer: it wants a bot that sends it posts from named public channels, chooses
-Russian, accepts the product brief and a proposed split into stages. It decides
-nothing about the operation. The controller owns credentials, buttons, waits and
+Russian, accepts the product brief and a proposed split into stages. It is asked
+only after the order's project is proven and admitted to the module rollout, and
+it decides nothing about the operation. The controller owns credentials, buttons, waits and
 every lifecycle decision; the persona's structured answer is a proposal the
 controller checks before anything is sent.
 
@@ -37,33 +38,18 @@ class PersonaDecision(StrEnum):
     IMPOSSIBLE = "impossible"
 
 
-class StatedRoute(StrEnum):
-    """How the bot said the channel feature will be made, in its own plain words."""
-
-    MODULE = "module"
-    MODULE_WITH_GLUE = "module_with_glue"
-    FROM_SCRATCH = "from_scratch"
-    IMPOSSIBLE = "impossible"
-    NOT_STATED = "not_stated"
-
-
-ACCEPTED_ROUTES = frozenset({StatedRoute.MODULE, StatedRoute.MODULE_WITH_GLUE})
-
-
 class PersonaTurn(BaseModel):
-    """One structured answer of the persona."""
+    """One structured answer of the persona: words or a button, never an authority.
+
+    Whether a reply may cross the confirmation boundary is the controller's
+    decision from API evidence; nothing the model says about its own answer counts.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     decision: PersonaDecision
     text: str | None = Field(default=None, max_length=1500)
     button: str | None = Field(default=None, max_length=200)
-    bot_asks_for_token: bool = False
-    stated_route: StatedRoute = StatedRoute.NOT_STATED
-    brief_presented: bool = False
-    #: This reply confirms the product brief (or the order) the bot presented.
-    confirms_brief: bool = False
-    accepts_split: bool = False
 
 
 class PersonaInvalid(RuntimeError):  # noqa: N818 - a refusal of the model's answer
@@ -159,21 +145,15 @@ def persona_prompt(scenario: Scenario) -> str:
 версиях, платформе, ключах, API, коде, серверах, репозиториях или развёртывании.
 - Не упоминай других каналов, кроме {channels}.
 - Если бот спрашивает язык бота, выбирай русский.
-- Если бот просит токен бота, установи bot_asks_for_token=true и decision="wait": \
-токен отправят без тебя. Никогда не пиши токен, пароль или код сам.
-- Если бот предлагает разбить работу на этапы, соглашайся (accepts_split=true).
-- Если бот показывает описание заказа (бриф), установи brief_presented=true; если оно \
-совпадает с твоим желанием, подтверди его (decision="reply", confirms_brief=true).
-- Если бот сказал, как будет сделана функция каналов, отметь это в stated_route: \
-готовое решение — "module"; готовое решение плюс доработка — "module_with_glue"; \
-сделают с нуля — "from_scratch"; невозможно — "impossible"; не говорил — "not_stated".
+- Никогда не пиши токен, пароль или код: их отправляют без тебя.
+- Если бот предлагает разбить работу на этапы, соглашайся.
+- Если бот показывает описание заказа и оно совпадает с твоим желанием, подтверди его.
 - Если бот ещё работает или ничего не спросил — decision="wait".
 - Если бот говорит, что сделать это нельзя — decision="impossible".
 - Кнопку нажимай только видимую, по её точной подписи (decision="press", button=подпись).
 
 Ответь одним JSON-объектом без пояснений, с полями: decision ("reply"|"press"|"wait"|\
-"impossible"), text (строка или null), button (строка или null), bot_asks_for_token, \
-stated_route, brief_presented, confirms_brief, accepts_split.
+"impossible"), text (строка или null), button (строка или null).
 """
 
 
