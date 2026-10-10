@@ -244,7 +244,7 @@ jobs:
       - name: Upload unit junit and durations
         timeout-minutes: 2
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: unit-reports-${{ github.sha }}
           path: ${{ runner.temp }}/unit-reports/
@@ -613,7 +613,7 @@ jobs:
       - name: Upload compatibility result
         timeout-minutes: 2
         if: always() && (matrix.candidate == false || inputs.service_template_candidate_ref != '')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: template-compat-${{ matrix.entry }}
           path: |
@@ -797,7 +797,7 @@ jobs:
       - name: Preserve runner proof evidence
         if: always()
         timeout-minutes: 2
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-proof-${{ matrix.leg }}-${{ env.ORCHESTRATOR_SHA }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runner-proof
@@ -836,7 +836,7 @@ jobs:
         timeout-minutes: 2
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22.23.2
           cache: npm
@@ -1193,7 +1193,7 @@ jobs:
           DIGEST_FILE: ${{ runner.temp }}/worker-images.json
 
       - name: Upload published worker image digests
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: worker-images-${{ github.sha }}
           path: ${{ runner.temp }}/worker-images.json
@@ -1252,7 +1252,7 @@ jobs:
           DIGEST_FILE: ${{ runner.temp }}/service-images.json
 
       - name: Upload published service image digests
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: service-images-${{ github.sha }}
           path: ${{ runner.temp }}/service-images.json
