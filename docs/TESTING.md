@@ -416,6 +416,27 @@ A pull request keeps one run: a newer push to its branch cancels the older run. 
 push to main above all, is a concurrency group of its own and is never cancelled or replaced, so every
 merge commit runs to its gate and gets its service and worker release.
 
+### Runner proof
+
+`runner-proof` (legs `fresh`: tg-channels; `coexistence`: reminders then tg-channels) runs on every
+pull request and every main push, with no path filter, and `merge-gate` fails a skipped leg. It reuses
+the kit's harness at the activated kit commit (`tests/runner/fresh_product.py` there): the
+orchestrator's real install executor, product CI and drift, the cold environment regression, pushed
+and run image digests, the pinned platform's real auth and Caddy with key negatives, the fixture
+reader, timer post delivery, the coexistence reminder and the RU/EN causal probes. The narrow adapter
+`tests/runner/activated_snapshot_proof.py` replaces only the catalog mode and the selection: the
+catalog is the `shared/catalog_activation.yaml` commit, fetched by git and checked against its digests
+before and after the installs, with the real default branch's HEAD recorded beside it; the payloads
+are the INSTALL tasks that `tests/runner/production_plan.py` persisted through the production path —
+the PO's preview, brief and confirmation tools, the API image and its database
+(`tests/runner/compose.orchestrator.yml`), the stored plan and the Architect's first planning
+attempt, with no model. `tests/runner/verify_evidence.py` requires the passed, SHA-bound evidence:
+the kit's published-release checks plus that stored plan, persisted task and installed payload are
+one closure at the activated commit. The kit's own reusable workflow at that commit cannot prove this
+candidate: its selection reads the catalog at `HEAD`, which this orchestrator refuses to plan an
+install from. The read-only `PLATFORM_SERVICES_DEPLOY_KEY` is used only for a same-repository pull
+request or a main push, and checkouts keep no credentials.
+
 ### Docker layer cache
 
 Every image a CI job builds reads and writes the buildx layer cache of its **Dockerfile**, in the
@@ -722,7 +743,7 @@ unreadable surface.
 lifecycle: **no model is asked anything, at any stage**. The PO document is a constant
 (`tests/live/level1_brief.py`) driven through the released PO tools, the plan is admitted through
 the architect's own coverage routes by the harness, the first-story developer is the scripted
-`NoopRunner`, and the second Story uses native INSTALL with the live catalog planner.
+`NoopRunner`, and the second Story uses native INSTALL planned from the activated catalog snapshot.
 QA runs fixed actual-chat steps inside the native temporary access window. Its budget is the ledger in
 `shared/stand_deadlines.py`, whose entries are the waits themselves; the 196-minute cap is derived
 from them and stated in `tests/live/README.md`.

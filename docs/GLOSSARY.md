@@ -116,6 +116,24 @@ The unit of work planning for a developer/agent.
 A record in the DB for discussing technical decisions before coding starts.
 **Table:** `brainstorms`
 
+### Capability preview
+The Architect's deterministic answer, before a Product Brief is presented, to what a user-level
+capability means for a project: a route (`module`, `module_with_glue`, `from_scratch`,
+`impossible`), questions and limitations. The PO sees only that product projection; the closure
+and setting keys behind it are its technical half.
+**Table:** `capability_previews`
+
+### Capability plan
+The technical plan a capability-backed brief revision resolves to: the activated catalog
+snapshot, each module's install closure and the exact settings of the user's answers. Derived by
+the API from the stored preview, stored beside the revision and read only by the platform.
+**Column:** `product_briefs.capability_plan`
+
+### Activated catalog snapshot
+The one kit catalog commit, with its raw and semantic digests and the host kit core and tooling it
+was verified for, that previews, plans and installs read (`shared/catalog_activation.yaml`). Never a
+live branch; a newer catalog is activated by a reviewed orchestrator change.
+
 ## Data & Messaging
 
 ### Run

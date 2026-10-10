@@ -77,15 +77,15 @@ environment:
     required: true
     source:
       kind: platform_key
-      service: tg-reader
-      scopes: [tg-reader:read]
+      service: fictional-reader
+      scopes: [fictional-reader:read]
       quota: {channels_max: 50, requests_per_minute: 60, resolve_per_day: 200}
   - name: PLATFORM_BASE_URL
     required: true
     source:
       kind: platform_base_url
-      service: tg-reader
-      url: https://platform.vladmesh.dev/tg-reader
+      service: fictional-reader
+      url: https://platform.vladmesh.dev/fictional-reader
 resources: []
 actions:
   - name: add

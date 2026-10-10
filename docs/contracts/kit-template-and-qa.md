@@ -19,32 +19,35 @@ the admitted sources production uses is separate and lives in
 
 That seed is the single definition of the pin: it is what a deployed orchestrator
 reads, so nothing else in the repository writes the source or the ref down again.
-Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
-repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.10.1` tag, object
-`902ae4aaddc48665f18297b8994e04b1be9c2d6a`, which dereferences to
-`f7de8f96b18f79b94dcd0546905771674cf11cfa`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.10.1` tree is its `backend,tg_bot`
-Copier render and records that tag in `_commit`. The root `codegen-kit-tooling`
-dependency and its lock resolve the same commit.
+Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by an immutable
+commit of that repository and no longer from `service-template`.
+The production boundary is kit main commit `52e9107495949c9187f41cc0e50367ed8ed7a7a1`
+(kit card 54, merged-main Runner 38010408741 green on it). Rendered at a commit, Copier
+records `_commit` in `git describe` form (`packages/tg-channels/v0.1.2-12-g52e9107`);
+`shared.contracts.template.recorded_template_commit_matches` and the install probe accept
+exactly the pin itself or that form of it. The matching
+`shared/tests/fixtures/codegen-product-kit-52e9107495949c9187f41cc0e50367ed8ed7a7a1` tree is
+its `backend,tg_bot` Copier render. The root `codegen-kit-tooling` dependency, the LangGraph
+requirement and their locks resolve the same commit; the locks are the CI producer's output
+(`.github/workflows/template-fixture.yml`, job `locks`), never hand edits.
 It represents the committed checkout: generated ignored `.env` and `TASK.md`
 are omitted; every versioned rendered file retains the producer's bytes. It is
 rendered with `copier copy --trust --defaults --vcs-ref=<tag>` and the answers
 its `.copier-answers.yml` records, and only the files a fresh `git add -A` of the
 render would track are vendored; the `uv.lock` Copier's task writes resolves
 third-party packages at render time.
-Its main-push image workflow runs frozen root sync, frozen `services/backend`
-sync, and generation in that order before building either service image.
+Its main-push image workflow prepares the root, `services/backend` and `services/tg_bot`
+environments (`scripts/prepare-env.sh`, frozen syncs) before generation and before building
+either service image.
 The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
 after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs, as since the
 kit's [0.6.3 release](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md).
 
-This release carries core facade `2.4.0`, protocol `1` and tooling distribution `0.1.0`.
-It includes generic platform environment sources and finite bilingual binding v2;
-v1 remains unchanged. The [core patch](https://github.com/vladmesh/codegen-product-kit/blob/f7de8f96b18f79b94dcd0546905771674cf11cfa/docs/releases/0.10.1.md)
-seeds product-owned environments under `/workspace` in the backend dev image and masks
-host environments with anonymous integration volumes, so bound generation works in CI.
-The retained fixture was rendered in [CI run 37753179032](https://github.com/vladmesh/codegen_orchestrator/actions/runs/37753179032);
+This commit carries core facade `2.5.0`, protocol `1` and tooling distribution `0.1.0`:
+the core-owned product `language` setting, one authoritative bot command registry, and the
+typed `kit check-install` preflight, on top of generic platform environment sources and
+finite bilingual binding v2 (v1 unchanged).
+The retained fixture was rendered in [CI run 38012764349](https://github.com/vladmesh/codegen_orchestrator/actions/runs/38012764349);
 [producer hashes](../evidence/catalog-install-fixture.json) cover every tracked file and the saved answers.
 
 Failed Actions evidence keeps the earliest root diagnostic and final error in at most
@@ -186,14 +189,20 @@ requires story/repository ownership; TaskRead/TaskDTO persist the same payload.
 ownership through TaskUpdate. The migration adds nullable JSON columns and a DB
 constraint pairing the payload with INSTALL and required ownership.
 
-The live reader uses the pinned kit loader, bounded HTTP reads and a five-minute
-successful-read cache. Binding and manifest bytes come from the independent released
-component tag. Unavailable or invalid catalogs, unknown/incompatible packages,
-missing recommendations/resources and binding dependency failures are named refusals
-with no install task. No stale list, prose classifier, arbitrary schema mapping or
-reminders-only planner supplies a replacement. The released reminders closure is
-reminders `0.5.0`, recommended textparse `0.1.0`, and its default binding requiring
-`textparse.when`; the executor rechecks it against the kit's real default live catalog.
+The reader reads only the activated catalog snapshot (`shared/catalog_activation.yaml`):
+`packages/catalog.yaml` at its commit, verified against its raw SHA256 and the semantic
+digest of the parsed catalog, on a host whose kit core and tooling are the activation's.
+Other bytes are `provenance` and another host is `inactive`, both terminal for a stored
+plan; a transport failure retries. It uses the pinned kit loader, bounded HTTP reads and a
+five-minute successful-read cache; binding and manifest bytes come from the independent
+released component tag. Every payload it plans names the catalog it was planned from
+(`CatalogInstall.catalog`: repository, full commit, raw SHA256); a read at a moving ref
+plans nothing (`catalog_unpinned`). Unavailable or invalid catalogs, unknown/incompatible
+packages, missing recommendations/resources and binding dependency failures are named
+refusals with no install task. The released reminders closure is reminders `0.5.0`,
+recommended textparse `0.1.0`, and its default binding requiring `textparse.when`; the
+executor rechecks it against the payload's catalog commit. API admission refuses a stored
+payload without one (`catalog_unpinned`) before any operation exists.
 
 Scheduler dispatch calls `POST /tasks/{id}/catalog-install` with `InstallCommand`.
 Admission locks Task rows in order, then Story, Project, Repository and engineering
@@ -222,10 +231,12 @@ repository-scoped Git authorization. Product probes, kit/component fetches, gene
 tests and per-service mypy use an explicit anonymous environment allowlist.
 
 The executor runs fixed argument vectors in the product's own environment:
-`kit add <package>`, `kit add <library>` for each recommendation,
+`kit add <package>`, `kit add <library>` for each recommendation, both with
+`--catalog-source <repository> --catalog-ref <commit>` from the payload,
 `kit bind <package> --default`, regeneration, spec validation, each service's own
-mypy and existing product tests. Kit commands fetch the default catalog and independent
-released tags; no wheel/source override or task-authored patch is accepted. Readback
+mypy and existing product tests. Kit commands and the probe read the catalog at the
+payload's commit and the independent released tags, never the kit's default branch;
+no wheel/source override or task-authored patch is accepted. Readback
 checks installed distributions/interpreter prefixes, default resource bytes,
 backend allowlist and generated ACTIVE_PACKAGES manifest digests. Existing app,
 controller, handler, owned tg_bot/src application files (excluding generated output),
@@ -233,8 +244,9 @@ spec, binding and environment bytes plus answers/root lock are
 hashed before mutation and compared before commit. Binding v1 declares a timezone;
 v2 declares a language and optionally a timezone. Setting keys and schemas come from
 the binding through the kit's `binding_settings`, including probe conflict checks.
-Confirmed explicit values use Product Brief initial_settings and the existing
-seed/deploy path; missing confirmed values are returned, never guessed.
+Confirmed explicit values use Product Brief initial_settings or the capability answers of
+the brief's stored plan, through the existing seed/deploy path; missing confirmed values
+are returned, never guessed.
 Credentials, user IDs and timezone values never enter
 parser/generator code.
 
