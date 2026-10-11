@@ -1,0 +1,105 @@
+{
+  "task": "codegen-orchestrator-1641",
+  "generation": 2,
+  "prior_candidate_sha": "3fe4a4b2c775ce494ab54544986bc8bfd8090f07",
+  "red": {
+    "ci": "https://github.com/vladmesh/codegen_orchestrator/actions/runs/38150728614/job/114503461706",
+    "log_path": "/home/dev/ummanu-data/workspaces/observers/sprint-1489/turn34-ci1641-failed.log",
+    "log_sha256": "4e07e5632e5f6327edb327ec7a706e661df57ff7ef3c5ce2cc4a14f96ad8d9b8",
+    "budget_error_display_seconds": 0.51,
+    "unit_assertions_passed": 3302,
+    "unit_budget_errors": 1
+  },
+  "repair": {
+    "production_change_in_generation_2": false,
+    "service_path": "services/langgraph/tests/service/test_catalog_install_planning.py",
+    "regression": "test_explicit_criteria_rechecks_changed_inputs_before_writing",
+    "cases": [
+      "catalog",
+      "binding",
+      "manifest",
+      "activation",
+      "duplicate"
+    ],
+    "regression_ast_equal_to_prior_unit_test": true,
+    "api_transport": "AsyncMock as in the original regression; native restoration and resolution remain real",
+    "unit_refusal_cases": [
+      "snapshot",
+      "selection"
+    ],
+    "unit_native_invalidation": "services/langgraph/tests/unit/test_planning_module_facts.py"
+  },
+  "ci_placement": {
+    "job": "Service Tests (langgraph)",
+    "workflow": ".github/workflows/ci.yml",
+    "command": "make test-service SERVICE=langgraph",
+    "compose": "tests/compose/service/langgraph.yml",
+    "runner_argv": [
+      "pytest",
+      "tests/service/",
+      "-v",
+      "-ra",
+      "--durations=0",
+      "--durations-min=0"
+    ],
+    "expected_moved_nodes": [
+      "tests/service/test_catalog_install_planning.py::test_explicit_criteria_rechecks_changed_inputs_before_writing[catalog]",
+      "tests/service/test_catalog_install_planning.py::test_explicit_criteria_rechecks_changed_inputs_before_writing[binding]",
+      "tests/service/test_catalog_install_planning.py::test_explicit_criteria_rechecks_changed_inputs_before_writing[manifest]",
+      "tests/service/test_catalog_install_planning.py::test_explicit_criteria_rechecks_changed_inputs_before_writing[activation]",
+      "tests/service/test_catalog_install_planning.py::test_explicit_criteria_rechecks_changed_inputs_before_writing[duplicate]"
+    ],
+    "collection_and_execution_status": "Pending candidate CI; no local service run authorized or performed"
+  },
+  "native_focused_metrics": {
+    "test_verified_fact_refusal_prevents_repository_writes[snapshot]": {
+      "setup": {
+        "guard_cumulative": 0.0,
+        "report_seconds": 1.4735984920116607
+      },
+      "call": {
+        "guard_cumulative": 0.0031522989738732576,
+        "report_seconds": 0.004696489981142804
+      },
+      "teardown": {
+        "guard_cumulative": 0.004025700967758894,
+        "report_seconds": 0.00087980498210527
+      }
+    },
+    "test_verified_fact_refusal_prevents_repository_writes[selection]": {
+      "setup": {
+        "guard_cumulative": 0.003927748970454559,
+        "report_seconds": 0.004294593003578484
+      },
+      "call": {
+        "guard_cumulative": 0.006205557001521811,
+        "report_seconds": 0.002306469017639756
+      },
+      "teardown": {
+        "guard_cumulative": 0.006843892013421282,
+        "report_seconds": 0.0006596090097445995
+      }
+    },
+    "test_a_reminders_brief_installs_the_catalog_package": {
+      "setup": {
+        "guard_cumulative": 0.0030139170412439853,
+        "report_seconds": 0.0032074209884740412
+      },
+      "call": {
+        "guard_cumulative": 0.1608400924909289,
+        "report_seconds": 0.15995184300118126
+      },
+      "teardown": {
+        "guard_cumulative": 0.16221833143295217,
+        "report_seconds": 0.001412669982528314
+      }
+    }
+  },
+  "method": "Temporary makereport hook read the unchanged native unit budget stash after each phase. Hook removed before final lint and broad check. First-use imports and session setup are excluded by the native guard, not this instrumentation.",
+  "notes": [
+    "Host measurements do not guarantee CI latency.",
+    "Reminders still verifies one native catalog parse and one closure resolution in its genuine scripted graph.",
+    "Original two failed main attempts and first-candidate CI remain retained RED evidence.",
+    "The five native changed-input criteria cases moved intact; no slow marker, deselection or budget/production validation change."
+  ]
+}

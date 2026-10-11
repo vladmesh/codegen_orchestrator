@@ -1,18 +1,17 @@
 """Selected package jobs are validated before the canonical checklist write."""
 
-from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, sentinel
 
 import pytest
 import yaml
 
 from src.agents.architect import tools
-from src.catalog_install import INSTALL_PYTHON_VERSION, plan_install_payload
+from src.catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, plan_install_payload
 from src.kit_catalog import install_snapshot
-from src.planning_module_jobs import PlanningModuleFacts, module_job_contracts, plan_module_install
+from src.planning_module_jobs import PlanningModuleFacts, module_job_contracts
 from tests.unit.factories import make_task
 
 
@@ -219,32 +218,20 @@ async def test_explicit_install_contract_drift_refuses_the_criteria_write(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("changed", ["catalog", "binding", "manifest", "activation", "duplicate"])
-async def test_explicit_criteria_rechecks_changed_inputs_before_writing(
-    criteria_api, activated_kit_catalog, changed
+@pytest.mark.parametrize("boundary", ["snapshot", "selection"])
+async def test_verified_fact_refusal_prevents_repository_writes(
+    criteria_api, monkeypatch, boundary
 ):
-    injected = deepcopy(install_snapshot(activated_kit_catalog))
-    facts = PlanningModuleFacts()
-    catalog = facts.restore(injected)
-    install, _ = plan_module_install(catalog, "reminders", INSTALL_PYTHON_VERSION, facts=facts)
-    tasks = [make_task(type="install", install=install)]
-    if changed == "catalog":
-        injected["catalog"] += "\n# changed\n"
-    elif changed == "binding":
-        injected["bindings"]["reminders"] = injected["bindings"]["reminders"].replace(
-            "textparse.when", "invented.when"
-        )
-    elif changed == "manifest":
-        injected["manifests"]["reminders"] = "jobs_schema: ["
-    elif changed == "activation":
-        injected["commit"] = "c" * 40
-    else:
-        tasks.append(
-            make_task(
-                type="install", install=install.model_copy(update={"catalog_digest": "0" * 64})
-            )
-        )
-    criteria_api.get_tasks_by_story.return_value = tasks
+    # Native changed-input validation has separate genuine-byte unit and service proofs.
+    # This unit owns only the tool's refusal-before-write behavior.
+    facts = Mock(spec=PlanningModuleFacts)
+    facts.restore.return_value = sentinel.catalog
+    contract_check = Mock(side_effect=InstallRefusal("plan_drift: reminders"))
+    monkeypatch.setattr(tools, "module_job_contracts", contract_check)
+    criteria_api.get_tasks_by_story.return_value = []
+    injected = {"commit": "c" * 40}
+    if boundary == "snapshot":
+        facts.restore.side_effect = ValueError("catalog_provenance_mismatch")
 
     result = await tools.update_acceptance_criteria.ainvoke(
         {
@@ -257,6 +244,14 @@ async def test_explicit_criteria_rechecks_changed_inputs_before_writing(
         config={"configurable": {"planning_module_facts": facts}},
     )
     assert "Selected module job contract refused" in result["error"]
+    facts.restore.assert_called_once_with(injected)
+    if boundary == "snapshot":
+        contract_check.assert_not_called()
+        criteria_api.get_tasks_by_story.assert_not_awaited()
+    else:
+        criteria_api.get_tasks_by_story.assert_awaited_once_with("story-1")
+        contract_check.assert_called_once_with(sentinel.catalog, [], facts=facts)
+    criteria_api.get_primary_repository.assert_not_awaited()
     criteria_api.update_repository.assert_not_awaited()
 
 

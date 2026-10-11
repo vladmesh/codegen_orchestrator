@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- Move full changed-input criteria refusal checks to LangGraph service CI and retain cheap unit
+  refusal checks, so genuine native revalidation no longer exceeds the unit budget.
 - Architect reuses verified catalog facts within one planning attempt and aligns fixture snapshot
   bytes, removing duplicate native validation while retaining drift refusals and the unit budget.
 - Architect resolves each selected module closure once per planning check and reuses its verified
