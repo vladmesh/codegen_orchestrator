@@ -10,6 +10,7 @@ does not own.
 """
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from http import HTTPStatus
 import json
 import os
@@ -24,11 +25,43 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionOutcome,
+    EngineeringBudgetReservationState,
+)
 from shared.contracts.dto.project import ProjectStatus, TeardownStatus
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.qa_verification import QAUnverifiedOrigin
+from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.telegram import TokenRejectionReason, TokenVerdictStatus
+from shared.contracts.dto.temporary_access import TemporaryAccessRevokeReason, TemporaryAccessStatus
+from shared.contracts.dto.users_grant import GrantIntentKind, GrantIntentStatus
 from shared.contracts.queues.deploy import DeployAction, DeployTrigger
-from shared.models import CapabilityPreview, ProductBrief, Project, RequirementCoverage
+from shared.contracts.queues.qa import QAMessage
+from shared.models import (
+    Application,
+    ApplicationHealthHistory,
+    CapabilityPreview,
+    CommitRecovery,
+    Deployment,
+    EngineeringAttemptLedger,
+    EngineeringBudgetReservation,
+    PortAllocation,
+    ProductBrief,
+    Project,
+    Repository,
+    RequirementCoverage,
+    Run,
+    Story,
+    Task,
+    TaskEvent,
+    TemporaryAccessGrant,
+    User,
+    UsersGrantIntent,
+    VerificationGap,
+    WorkAdmissionAudit,
+)
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.tests.ssh_key_fixtures import fleet_private_key
 
@@ -399,6 +432,285 @@ async def test_owner_delete_after_teardown_removes_only_owned_capability_depende
         {row for row in before[3] if row.brief_id == briefs[-1].id},
     ]
     assert await persisted_rows() == expected
+
+
+async def _seed_grant_delete_dependencies(
+    client: AsyncClient, db: AsyncSession, *, survivor: bool, with_execution_run: bool = True
+) -> list:
+    """Populate actual FK paths, including retained history, in the migrated service DB."""
+    project_id, repo_id = await _make_project(client, "Grant deletion fixture")
+    app_id = await _add_application(client, repo_id, ApplicationStatus.NOT_DEPLOYED.value)
+    project = await db.get(Project, uuid.UUID(project_id))
+    repository = await db.get(Repository, repo_id)
+    application = await db.get(Application, app_id)
+    owner = await db.get(User, project.owner_id)
+    now = datetime.now(UTC)
+    story = Story(
+        id=f"story-{uuid.uuid4().hex}",
+        project_id=project.id,
+        title="Completed deletion fixture",
+        status=StoryStatus.COMPLETED.value,
+    )
+    db.add(story)
+    await db.flush()
+    task = Task(
+        id=f"task-{uuid.uuid4().hex}",
+        project_id=project.id,
+        story_id=story.id,
+        repository_id=repo_id,
+        title="Completed task",
+        status=TaskStatus.DONE.value,
+    )
+    preview = CapabilityPreview(
+        id=f"preview-{uuid.uuid4().hex}",
+        project_id=project.id,
+        requests=[],
+        product={"routes": [], "questions": [], "limitations": []},
+        technical={"modules": [], "targets": []},
+    )
+    db.add_all([task, preview])
+    await db.flush()
+    brief = ProductBrief(
+        id=f"brief-{uuid.uuid4().hex}",
+        project_id=project.id,
+        story_id=story.id,
+        revision=1,
+        title="Completed brief",
+        content={"summary": "Deletion fixture"},
+        request_id=f"request-{uuid.uuid4().hex}",
+        capability_preview_id=preview.id,
+        capability_plan={"modules": [], "settings": []},
+    )
+    runs = [
+        Run(
+            id=f"{kind.value}-{uuid.uuid4().hex}",
+            type=kind.value,
+            status=RunStatus.COMPLETED.value,
+            project_id=project.id,
+            story_id=story.id,
+            task_id=task.id,
+            user_id=owner.id,
+            completed_at=now,
+        )
+        for kind in (RunType.DEPLOY, RunType.QA, RunType.ENGINEERING)
+    ]
+    db.add_all([brief, *runs])
+    await db.flush()
+    # Initial-owner variants cover both the Run FK and the independent Project
+    # FK; an additional terminal unbound intent prevents status-based cleanup.
+    intents = [
+        UsersGrantIntent(
+            id=f"intent-{uuid.uuid4().hex}",
+            kind=kind.value,
+            project_id=project.id,
+            channel="telegram",
+            external_id=OWNER,
+            target_application_id=app_id,
+            target_sha="a" * 40,
+            initiating_actor=f"user:{owner.id}",
+            status=(GrantIntentStatus.APPLYING if survivor else GrantIntentStatus.APPLIED).value
+            if execution_run_id
+            else GrantIntentStatus.FAILED.value,
+            execution_run_id=execution_run_id,
+            attempts=1,
+        )
+        for kind, execution_run_id in (
+            (GrantIntentKind.INITIAL_OWNER, runs[0].id if with_execution_run else None),
+            (GrantIntentKind.ADD_USER, None),
+        )
+    ]
+    temporary = TemporaryAccessGrant(
+        id=f"grant-{uuid.uuid4().hex}",
+        project_id=project.id,
+        channel="telegram",
+        external_id=OWNER,
+        target_application_id=app_id,
+        target_base_url="https://fixture.example",
+        head_sha="a" * 40,
+        qa_run_id=runs[1].id,
+        grant_run_id=runs[0].id,
+        qa_message=QAMessage(
+            project_id=project_id,
+            story_id=story.id,
+            initiating_run_id=project.initiating_run_id,
+            deployed_url="https://fixture.example",
+            application_id=app_id,
+            acceptance_criteria="Health endpoint responds",
+            run_id=runs[1].id,
+        ).model_dump(mode="json"),
+        status=(TemporaryAccessStatus.GRANTED if survivor else TemporaryAccessStatus.REVOKED).value,
+        granted_at=now,
+        revoked_at=None if survivor else now,
+        revoke_reason=None if survivor else TemporaryAccessRevokeReason.RUN_TERMINAL.value,
+    )
+    gap = VerificationGap(
+        project_id=project.id,
+        story_id=story.id,
+        run_id=runs[1].id,
+        name="Unauthorized identity",
+        reason="Transport cannot exercise another identity",
+        origin=QAUnverifiedOrigin.EXECUTOR.value,
+    )
+    coverage = RequirementCoverage(
+        brief_id=brief.id,
+        requirement_id="fixture",
+        task_id=task.id,
+        planning_attempt_id="fixture-attempt",
+    )
+    event = TaskEvent(task_id=task.id, details={"completed": True})
+    health = ApplicationHealthHistory(application_id=app_id, metrics={"healthy": True})
+    deployment = Deployment(
+        application_id=app_id,
+        project_id=project.id,
+        service_name=application.service_name,
+        server_handle=application.server_handle,
+        port=8024,
+    )
+    allocation = PortAllocation(
+        application_id=app_id,
+        server_handle=application.server_handle,
+        port=20_000 + app_id,
+        service_name=application.service_name,
+    )
+    recovery = CommitRecovery(
+        attempt_id=runs[2].id,
+        story_id=story.id,
+        commit_sha="a" * 40,
+        actor="fixture",
+        claimed_at=now,
+        identity={"fixture": True},
+    )
+    ledger = EngineeringAttemptLedger(
+        idempotency_key=f"engineering-run:{runs[2].id}",
+        run_id=runs[2].id,
+        project_id=project.id,
+        story_id=story.id,
+        task_id=task.id,
+        user_id=owner.id,
+        owner_attribution="resolved",
+        occurred_at=now,
+        role="engineering",
+        cost_source="unknown",
+        cost_microusd=None,
+    )
+    reservation = EngineeringBudgetReservation(
+        idempotency_key=f"reservation:{runs[2].id}",
+        attempt_id=runs[2].id,
+        project_id=project.id,
+        story_id=story.id,
+        task_id=task.id,
+        user_id=owner.id,
+        outcome=EngineeringBudgetAdmissionOutcome.ADMITTED,
+        state=EngineeringBudgetReservationState.UNKNOWN_FINAL,
+        reservation_microusd=2_000_000,
+        known_spend_microusd=0,
+        active_held_microusd=0,
+    )
+    audit = WorkAdmissionAudit(
+        subject="engineering",
+        outcome="admitted",
+        user_id=owner.id,
+        reference_id=runs[2].id,
+        command_payload={"project_id": project_id},
+        before_value={"remaining_microusd": 20_000_000},
+        after_value={"remaining_microusd": 18_000_000},
+        actor="fixture",
+    )
+    records = [
+        project,
+        repository,
+        application,
+        owner,
+        story,
+        task,
+        preview,
+        brief,
+        *runs,
+        *intents,
+        temporary,
+        gap,
+        coverage,
+        event,
+        health,
+        deployment,
+        allocation,
+        recovery,
+        ledger,
+        reservation,
+        audit,
+    ]
+    db.add_all(records)
+    await db.commit()
+    return records
+
+
+async def _delete_fixture_snapshot(db: AsyncSession, records: list) -> dict:
+    """Read full persisted columns by seeded primary key, avoiding stale ORM identities."""
+    snapshot = {}
+    for record in records:
+        table = record.__table__
+        key = next(iter(table.primary_key.columns))
+        record_id = getattr(record, key.name)
+        row = (await db.execute(select(table).where(key == record_id))).mappings().one_or_none()
+        snapshot[(table.name, record_id)] = dict(row) if row is not None else None
+    return snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_execution_run", [True, False], ids=["referenced", "unbound-owner"])
+async def test_owner_delete_removes_grant_fk_closure_and_retains_accounting(
+    client: AsyncClient,
+    user_client: AsyncClient,
+    db_session: AsyncSession,
+    with_execution_run: bool,
+):
+    """Real migrated FKs permit owner 204/404 while retaining cost/admission and neighbours."""
+    await _ensure_user(client, INTRUDER)
+    target = await _seed_grant_delete_dependencies(
+        client, db_session, survivor=False, with_execution_run=with_execution_run
+    )
+    unrelated = await _seed_grant_delete_dependencies(client, db_session, survivor=True)
+    project_id = str(target[0].id)
+    torn = await _teardown(user_client, project_id)
+    assert torn.status_code == HTTPStatus.OK, torn.text
+    assert torn.json()["status"] == TeardownStatus.COMPLETED.value
+    assert torn.json()["project_status"] == ProjectStatus.ARCHIVED.value
+
+    before = await _delete_fixture_snapshot(db_session, target)
+    unrelated_before = await _delete_fixture_snapshot(db_session, unrelated)
+    for project in (target[0], unrelated[0]):
+        refused = await user_client.delete(
+            f"/api/projects/{project.id}", headers={"X-Telegram-ID": INTRUDER}
+        )
+        assert refused.status_code == HTTPStatus.FORBIDDEN, refused.text
+        assert await _delete_fixture_snapshot(db_session, target) == before
+        assert await _delete_fixture_snapshot(db_session, unrelated) == unrelated_before
+
+    deleted = await user_client.delete(
+        f"/api/projects/{project_id}", headers={"X-Telegram-ID": OWNER}
+    )
+    assert deleted.status_code == HTTPStatus.NO_CONTENT, deleted.text
+    gone = await user_client.get(f"/api/projects/{project_id}", headers={"X-Telegram-ID": OWNER})
+    assert gone.status_code == HTTPStatus.NOT_FOUND, gone.text
+    assert await _delete_fixture_snapshot(db_session, unrelated) == unrelated_before
+
+    # All immutable columns, including amounts, admission history, timestamps
+    # and user association, stay identical. Reservation story/task ids are plain
+    # historical references; only its Project FK is SET NULL in the migration.
+    detach = {
+        EngineeringAttemptLedger.__tablename__: ("run_id", "project_id", "story_id", "task_id"),
+        EngineeringBudgetReservation.__tablename__: ("project_id",),
+    }
+    expected = {}
+    for key, row in before.items():
+        table = key[0]
+        if table in detach:
+            expected[key] = {**row, **dict.fromkeys(detach[table])}
+        elif table in (User.__tablename__, WorkAdmissionAudit.__tablename__):
+            expected[key] = row
+        else:
+            expected[key] = None
+    assert await _delete_fixture_snapshot(db_session, target) == expected
 
 
 @pytest.mark.asyncio
