@@ -12,7 +12,7 @@ async def test_owned_delete_follows_archived_teardown_and_frozen_acceptance(tmp_
     original = h.api.delete_project
 
     async def delete(project_id, telegram_id):
-        retained = json.loads(h.store.path.read_text())
+        retained = json.loads(h.retained_evidence())
         assert retained["verdict"]["status"] == "passed"
         assert retained["observations"]["install_after_scaffold"]["status"] == "observed"
         assert retained["teardown"]["status"] == "completed"

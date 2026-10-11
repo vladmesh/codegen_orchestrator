@@ -1,10 +1,12 @@
 """No-model planning through the real API, coverage, scheduler and Redis boundaries."""
 
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import uuid
 
@@ -13,8 +15,14 @@ import pytest
 
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.queues import ENGINEERING_QUEUE, SCAFFOLD_QUEUE, WORKER_COMMANDS
+from src.agents.architect import tools
+from src.catalog_install import INSTALL_PYTHON_VERSION
 from src.clients.api import LanggraphAPIClient
+from src.kit_catalog import install_snapshot
+from src.planning_module_jobs import PlanningModuleFacts, plan_module_install
 from src.scripted_install_plan import scripted_install_plan
+from tests.unit.activated_catalog import activated_catalog
+from tests.unit.factories import make_task
 from tests.unit.test_catalog_install import snapshot
 
 
@@ -153,3 +161,61 @@ async def test_scripted_selection_persists_one_install_and_dispatches_without_en
                     assert (await cursor.fetchone())[0] == 0
     finally:
         await api.close()
+
+
+@pytest.fixture(scope="session")
+def activated_kit_catalog():
+    return activated_catalog()
+
+
+@pytest.fixture
+def criteria_api(monkeypatch):
+    # Only API transport is doubled. Restoration, binding/manifest/schema checks
+    # and selected-closure comparison exercise the native planning boundary.
+    api = AsyncMock()
+    api.get_primary_repository.return_value = SimpleNamespace(id="repo-1")
+    api.update_repository.side_effect = lambda repo, body: SimpleNamespace(id=repo, **body)
+    monkeypatch.setattr(tools, "api_client", api)
+    return api
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["catalog", "binding", "manifest", "activation", "duplicate"])
+async def test_explicit_criteria_rechecks_changed_inputs_before_writing(
+    criteria_api, activated_kit_catalog, changed
+):
+    injected = deepcopy(install_snapshot(activated_kit_catalog))
+    facts = PlanningModuleFacts()
+    catalog = facts.restore(injected)
+    install, _ = plan_module_install(catalog, "reminders", INSTALL_PYTHON_VERSION, facts=facts)
+    tasks = [make_task(type="install", install=install)]
+    if changed == "catalog":
+        injected["catalog"] += "\n# changed\n"
+    elif changed == "binding":
+        injected["bindings"]["reminders"] = injected["bindings"]["reminders"].replace(
+            "textparse.when", "invented.when"
+        )
+    elif changed == "manifest":
+        injected["manifests"]["reminders"] = "jobs_schema: ["
+    elif changed == "activation":
+        injected["commit"] = "c" * 40
+    else:
+        tasks.append(
+            make_task(
+                type="install", install=install.model_copy(update={"catalog_digest": "0" * 64})
+            )
+        )
+    criteria_api.get_tasks_by_story.return_value = tasks
+
+    result = await tools.update_acceptance_criteria.ainvoke(
+        {
+            "project_id": "project-1",
+            "story_id": "story-1",
+            "acceptance_criteria": "- GET /health returns 200",
+            "selected_module_jobs": {},
+            "kit_install_snapshot": injected,
+        },
+        config={"configurable": {"planning_module_facts": facts}},
+    )
+    assert "Selected module job contract refused" in result["error"]
+    criteria_api.update_repository.assert_not_awaited()

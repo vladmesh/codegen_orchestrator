@@ -1,0 +1,90 @@
+{
+  "task": "codegen-orchestrator-1641",
+  "generation": 3,
+  "prior_candidate_sha": "dd674bb2fa02bec108319aea88dad9cab3b495f2",
+  "ci_red": {
+    "run": "https://github.com/vladmesh/codegen_orchestrator/actions/runs/38152787535",
+    "log_path": "/tmp/codegen-1641-generation3-ci-failed.log",
+    "sha256": "bd53921c93c7b4894d311916847fa625259c58bf58d02eaf5dc7e4c9518436bd",
+    "assertions_passed": 3299,
+    "timing_errors": [
+      {
+        "node": "test_uncorrelated_install_glue_and_deploy_evidence_never_passes[deploy_run_given_as_publication-deploy_success-failed]",
+        "displayed_combined_seconds": 0.81
+      },
+      {
+        "node": "test_uncorrelated_install_glue_and_deploy_evidence_never_passes[deployed_another_commit-deploy_success-failed]",
+        "displayed_combined_seconds": 0.52
+      },
+      {
+        "node": "test_a_missing_or_contradicted_live_fact_never_passes[another_products_usage-reader_usage-failed]",
+        "displayed_combined_seconds": 0.75
+      },
+      {
+        "node": "test_delayed_story_after_confirmation_is_waited_for_without_telegram",
+        "displayed_combined_seconds": 0.69
+      }
+    ]
+  },
+  "measurement_selector": "services/langgraph/tests/unit/synthetic_buyer/test_controller.py::test_uncorrelated_install_glue_and_deploy_evidence_never_passes[deploy_run_given_as_publication-deploy_success-failed]",
+  "native_focused_measurements": {
+    "before": {
+      "native_operations": {
+        "write": {
+          "count": 200,
+          "seconds": 0.044578138447832316
+        },
+        "save": {
+          "count": 100,
+          "seconds": 0.11037994601065293
+        }
+      },
+      "guard_seconds": 0.11253255598997491
+    },
+    "after": {
+      "native_operations": {
+        "write": {
+          "count": 0,
+          "seconds": 0.0
+        },
+        "save": {
+          "count": 100,
+          "seconds": 0.05517390207387507
+        }
+      },
+      "guard_seconds": 0.06157773901941255
+    }
+  },
+  "method": "Temporary perf_counter wrappers timed real EvidenceStore.save and _atomic_write, counting all calls. A temporary makereport hook read the unchanged native budget stash after teardown. All instrumentation removed before final lint and broad.",
+  "repair": "Per-harness write_text callback retains ordered serialized JSON/report pairs and latest text per path. Native save, redaction, reporting and all controller behavior remain real. Default production persistence and dedicated store/CLI tests unchanged.",
+  "structural_red": "test_controller_capture_keeps_paired_immutable_redacted_snapshots initially failed because the harness did not capture evidence_writes; passed after adding the writer callback.",
+  "prior_service_execution": {
+    "sha": "dd674bb2fa02bec108319aea88dad9cab3b495f2",
+    "url": "https://github.com/vladmesh/codegen_orchestrator/actions/runs/38152787535/job/114509569981",
+    "status": "success",
+    "collected": 179,
+    "log_path": "/tmp/codegen-1641-generation3-service.log",
+    "sha256": "a0d954c44a64ef08289ca09ec8ed2122cb564aecdc94bc97e17350ab828f1be1",
+    "moved_case_status": {
+      "catalog": "PASSED",
+      "binding": "PASSED",
+      "manifest": "PASSED",
+      "activation": "PASSED",
+      "duplicate": "PASSED"
+    },
+    "source_lines": [
+      1890,
+      1891,
+      1892,
+      1893,
+      1894
+    ]
+  },
+  "notes": [
+    "100 native saves retained; 200 atomic writes eliminated from this controller case only.",
+    "Before guard 0.11253255598997491s; after 0.06157773901941255s; unchanged limit 0.5s. Host observations do not guarantee CI latency.",
+    "All failed-build, cleanup, ownership, redaction and handoff business assertions retained. Three reads moved from disk to captured serialized output; replay additionally checks no extra writes.",
+    "No production changes in generation 3; original failed main attempts and both failed candidates remain retained evidence.",
+    "Prior service success is bound to dd674bb2, not execution evidence for the new candidate."
+  ]
+}

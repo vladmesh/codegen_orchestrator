@@ -1,0 +1,84 @@
+{
+  "task": "codegen-orchestrator-1641",
+  "base_sha": "80f37307884bff56a6155cf6d163dd85dcb510eb",
+  "profile": "native ummanu check subset, candidate .venv/bin/python, unchanged 0.5s setup+call+teardown guard",
+  "before_selector": "services/langgraph/tests/unit/test_architect_kit_catalog_plan.py::test_a_reminders_brief_installs_the_catalog_package",
+  "after_selector": "services/langgraph/tests/unit/test_architect_kit_catalog_plan.py",
+  "method": "Temporary perf_counter wrappers around real native functions and native pytest phase reports; no behavior stubs. Post-change guard value read from native item stash after makereport. Hooks removed before final validation.",
+  "before": {
+    "load_catalog_binding": {
+      "count": 2,
+      "seconds": 0.01198696400388144
+    },
+    "selected_package_manifest": {
+      "count": 2,
+      "seconds": 0.07394022098742425
+    },
+    "resolve_install_payload": {
+      "count": 2,
+      "seconds": 0.08848722698166966
+    },
+    "_kit_catalog_briefing": {
+      "count": 1,
+      "seconds": 0.05274924499099143
+    },
+    "parse_catalog": {
+      "count": 2,
+      "seconds": 0.09684009201009758
+    },
+    "restore_install_snapshot": {
+      "count": 2,
+      "seconds": 0.09810156401363201
+    },
+    "call_seconds": 0.22860639498685487
+  },
+  "before_pytest_phases": {
+    "setup": 1.2465466130233835,
+    "call": 0.2290763539785985,
+    "teardown": 0.0013291090144775808
+  },
+  "after": {
+    "load_catalog_binding": {
+      "count": 1,
+      "seconds": 0.006635533994995058
+    },
+    "selected_package_manifest": {
+      "count": 1,
+      "seconds": 0.039125272014644
+    },
+    "resolve_install_payload": {
+      "count": 1,
+      "seconds": 0.04773853701772168
+    },
+    "_kit_catalog_briefing": {
+      "count": 1,
+      "seconds": 0.06237951901857741
+    },
+    "parse_catalog": {
+      "count": 1,
+      "seconds": 0.0749055200139992
+    },
+    "restore": {
+      "count": 2,
+      "seconds": 0.078695273026824
+    },
+    "call_seconds": 0.17268385700299405
+  },
+  "after_pytest_phases": {
+    "setup": 0.003770397015614435,
+    "call": 0.1734531429829076,
+    "teardown": 0.0013140029914211482
+  },
+  "after_guard_cumulative": {
+    "setup": 0.003501693077851087,
+    "call": 0.17234998153741288,
+    "teardown": 0.17362675653175164
+  },
+  "notes": [
+    "Native phase durations include first-use imports/session fixtures; the unchanged guard accounts for excluded suite cost. Before guard unrounded value was not captured.",
+    "Initial cProfile exploratory native subset passed assertions but exceeded the guard at displayed 0.67s; profiling overhead is not an original production timing measurement.",
+    "Cheap before call 0.228606s and after call 0.172684s are host observations, not deterministic CI latency.",
+    "Detached per-attempt resolutions remove a second native catalog parse and binding/manifest resolution. The genuine bundled catalog raw bytes now match the fixture parsed catalog.",
+    "Main CI 38147629813 attempts 1 and 2 remain failed evidence. Attempt 2 reminders guard displays 0.50s above limit; JUnit 0.611s is a different timing measure."
+  ]
+}

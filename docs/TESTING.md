@@ -56,6 +56,17 @@ responses do not prove live backend freshness or production recovery.
 
 ## Test Layers
 
+LangGraph `tests/service/test_catalog_install_planning.py` retains the full criteria-write
+refusal regression for changed catalog bytes, binding, manifest, activation and later duplicate
+drift. It restores and resolves genuine pinned snapshots before changing each input, then invokes
+the registered criteria tool with the same attempt-local facts. Only API transport is doubled;
+native provenance, binding, manifest, schema and closure validation remain real. The existing
+`Service Tests (langgraph)` job runs `make test-service SERVICE=langgraph`; its Compose runner
+collects all `tests/service/` cases with verbose node IDs. Its five parametrized refusal cases
+must execute on the candidate SHA before service coverage is claimed. Unit tests retain native
+input invalidation and separate cheap refusal-before-write checks. Control-host service runs
+are forbidden for card 1641; local broad receipts attest only the host unit profile.
+
 Worker output receipt regressions in the broker unit suite prove bounded TTL,
 lost-reply replay without another publication/output, changed-body refusal and
 isolated legacy-lease cleanup. Manager units prove receipt cleanup after removal
@@ -864,6 +875,14 @@ in-process Telegram, API, repository, persona, platform and clock ports. Time ad
 through the fake clock; no socket, server, process, container or real wait is used. Controlled
 HTTP transports and Telethon-shaped clients exercise the adapters. These tests run through
 `python -m shared` in the native host profile, with its 0.5 s per-test and 240 s CPU budgets.
+
+Controller harnesses pass a per-harness capture to `EvidenceStore.write_text`: every native
+save still redacts, serializes and renders its report. The capture retains every JSON/report
+pair in order plus the latest text per path. Cleanup reads captured JSON before deletion;
+unknown-confirmation replay verifies identical retained content and no additional writes.
+`test_evidence_capture.py` proves paired immutable snapshots and real redaction. Dedicated
+`test_config_and_evidence.py` and `test_cli.py` continue using the default atomic disk writer
+and native reads; controller captures establish save content/order, not disk durability.
 
 The complete working route covers registration or buyer reuse, protected token or bounded
 BotFather creation, token-attributed authenticated ownership, rollout readback before feature

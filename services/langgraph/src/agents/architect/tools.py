@@ -35,6 +35,7 @@ from typing import Annotated
 
 from framework.cli import _parser as kit_cli_parser
 import httpx
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 from pydantic import ValidationError
@@ -46,8 +47,8 @@ from shared.contracts.dto.task import TaskCreate, TaskStatus, TaskType
 
 from ...catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal
 from ...clients.api import api_client
-from ...kit_catalog import restore_install_snapshot
 from ...planning_module_jobs import (
+    PlanningModuleFacts,
     module_criteria_error,
     module_job_contracts,
     plan_module_install,
@@ -55,6 +56,12 @@ from ...planning_module_jobs import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+def _planning_facts(config: RunnableConfig) -> PlanningModuleFacts:
+    facts = config.get("configurable", {}).get("planning_module_facts")
+    return facts if facts is not None else PlanningModuleFacts()
+
 
 # Auto-chaining state: tracks the last created task ID per story.
 # Reset between architect invocations (module is long-lived but each graph
@@ -232,6 +239,8 @@ async def plan_install(
     project_id: Annotated[str, InjectedState("project_id")],
     kit_install_snapshot: Annotated[dict | None, InjectedState("kit_install_snapshot")],
     planning_attempt_id: Annotated[str | None, InjectedState("planning_attempt_id")] = None,
+    *,
+    config: RunnableConfig,
 ) -> dict:
     """Select a catalog package on an existing backend,tg_bot product.
 
@@ -242,8 +251,9 @@ async def plan_install(
     if kit_install_snapshot is None:
         return {"error": "catalog_unavailable"}
     try:
-        snapshot = restore_install_snapshot(kit_install_snapshot)
-        payload, _ = plan_module_install(snapshot, name, INSTALL_PYTHON_VERSION)
+        facts = _planning_facts(config)
+        snapshot = facts.restore(kit_install_snapshot)
+        payload, _ = plan_module_install(snapshot, name, INSTALL_PYTHON_VERSION, facts=facts)
     except (InstallRefusal, ValueError) as error:
         return {"error": str(error)}
     return await create_install_task(
@@ -458,6 +468,8 @@ async def update_acceptance_criteria(
     selected_module_jobs: Annotated[dict, InjectedState("selected_module_jobs")],
     kit_install_snapshot: Annotated[dict | None, InjectedState("kit_install_snapshot")] = None,
     story_id: Annotated[str | None, InjectedState("story_id")] = None,
+    *,
+    config: RunnableConfig,
 ) -> dict:
     """Update the repository's acceptance criteria for regression testing.
 
@@ -501,9 +513,12 @@ async def update_acceptance_criteria(
         # Explicit selection can happen during this model turn. Persisted INSTALL tasks,
         # rather than the whole selectable catalog, own its authoritative namespaces.
         try:
-            snapshot = restore_install_snapshot(kit_install_snapshot)
+            facts = _planning_facts(config)
+            snapshot = facts.restore(kit_install_snapshot)
             tasks = await api_client.get_tasks_by_story(story_id)
-            contracts.update(module_job_contracts(snapshot, selected_install_closures(tasks)))
+            contracts.update(
+                module_job_contracts(snapshot, selected_install_closures(tasks), facts=facts)
+            )
         except (InstallRefusal, ValueError) as error:
             return {"error": f"Selected module job contract refused: {error}"}
     error = module_criteria_error(acceptance_criteria, contracts)

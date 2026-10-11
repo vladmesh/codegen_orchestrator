@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, nullcontext, suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -87,6 +88,7 @@ from ..llm import (
 )
 from ..llm.chain import ChannelUsage
 from ..planning_module_jobs import (
+    PlanningModuleFacts,
     module_job_contracts,
     module_jobs_briefing,
     plan_module_install,
@@ -855,7 +857,9 @@ KIT_CATALOG_HEADING = "Kit package catalog"
 _rendered_kit_catalog: tuple[KitCatalog, str] | None = None
 
 
-def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
+def _kit_catalog_briefing(
+    catalog: KitCatalogAnswer, *, facts: PlanningModuleFacts | None = None
+) -> str:
     """The kit packages this run may plan, read live from the kit's catalog.
 
     Every run gets the block, brief-backed or not, because any run may place a new
@@ -872,7 +876,7 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
             "or, where only a package could meet a requirement, return it with "
             "returned_reason saying the kit package catalog was unavailable."
         )
-    if _rendered_kit_catalog is not None and _rendered_kit_catalog[0] is catalog:
+    if _rendered_kit_catalog is not None and _rendered_kit_catalog[0] == catalog:
         return _rendered_kit_catalog[1]
     rule = (
         "Plan a capability as a kit package only when a package listed here covers it, "
@@ -903,7 +907,9 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
             else:
                 lines.append("  binding product settings: " + json.dumps(schemas))
             try:
-                _, jobs = plan_module_install(catalog, package.name, INSTALL_PYTHON_VERSION)
+                _, jobs = plan_module_install(
+                    catalog, package.name, INSTALL_PYTHON_VERSION, facts=facts
+                )
                 lines.append(
                     "  released job contract (read-only; applies if selected): "
                     + json.dumps(jobs, sort_keys=True)
@@ -944,7 +950,7 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
             "and the default binding. Do not create separate parser/backend/handler coding tasks."
         )
     )
-    _rendered_kit_catalog = (catalog, briefing)
+    _rendered_kit_catalog = (deepcopy(catalog), briefing)
     return briefing
 
 
@@ -1324,6 +1330,7 @@ async def _plan_replanned_install(  # noqa: PLR0913 — one replanned cycle's wh
             return await _refuse_replanned_install(msg, f"{name}: {refusal}", planning, usage, log)
     reset_task_chain()
     snapshot = install_snapshot(catalog)
+    config = {"configurable": {"planning_module_facts": PlanningModuleFacts()}}
     created = []
     for name in packages:
         result = await plan_install.coroutine(
@@ -1332,6 +1339,7 @@ async def _plan_replanned_install(  # noqa: PLR0913 — one replanned cycle's wh
             project_id=msg.project_id,
             kit_install_snapshot=snapshot,
             planning_attempt_id=None if planning is None else planning.planning_attempt_id,
+            config=config,
         )
         if "error" in result:
             return await _refuse_replanned_install(
@@ -1444,6 +1452,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             return live_work_settled({"status": "success", "replanned_install": replanned})
 
         reset_task_chain()
+        planning_facts = PlanningModuleFacts()
         installs: dict[str, str] = {}
         covered: dict[str, str] = {}
         selected_module_jobs = {}
@@ -1463,7 +1472,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
         elif isinstance(catalog, KitCatalog):
             try:
                 selected_module_jobs = module_job_contracts(
-                    catalog, selected_install_closures(tasks)
+                    catalog, selected_install_closures(tasks), facts=planning_facts
                 )
             except InstallRefusal as error:
                 return await _refuse_replanned_install(msg, str(error), planning, usage, log)
@@ -1502,7 +1511,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
         user_content += (
             _capability_plan_briefing(capability_plan, installs)
             if capability_plan is not None
-            else _kit_catalog_briefing(catalog)
+            else _kit_catalog_briefing(catalog, facts=planning_facts)
         )
         selectable = capability_plan is None and isinstance(catalog, KitCatalog)
         user_content += module_jobs_briefing(selected_module_jobs)
@@ -1521,7 +1530,10 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
         }
 
         config = {
-            "configurable": {"thread_id": str(uuid.uuid4())},
+            "configurable": {
+                "thread_id": str(uuid.uuid4()),
+                "planning_module_facts": planning_facts,
+            },
         }
         heartbeat = _planning_heartbeat(planning, log) if planning else nullcontext()
         async with heartbeat:

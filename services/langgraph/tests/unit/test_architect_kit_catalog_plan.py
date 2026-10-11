@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import itertools
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from framework.catalog import parse_catalog
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -204,13 +204,24 @@ packages:
 
 
 @pytest.mark.asyncio
-async def test_a_reminders_brief_installs_the_catalog_package():
+async def test_a_reminders_brief_installs_the_catalog_package(monkeypatch):
+    from src import kit_catalog, planning_module_jobs
+    from src.consumers import architect
+
+    # Exercise a cold briefing, selection and persisted-criteria read in one attempt.
+    monkeypatch.setattr(architect, "_rendered_kit_catalog", None)
+    parse = Mock(wraps=kit_catalog.parse_catalog)
+    resolve = Mock(wraps=planning_module_jobs.resolve_install_payload)
+    monkeypatch.setattr(kit_catalog, "parse_catalog", parse)
+    monkeypatch.setattr(planning_module_jobs, "resolve_install_payload", resolve)
     api, result, seen = await _run(reminders_brief(), [_INSTALL_REMINDERS])
 
     assert result["status"] == "success", result
     assert api.released == ["task-1"]
     assert_every_requirement_is_disposed(api)
     assert_plan_installs_reminders_from_the_catalog(api)
+    assert parse.call_count == 1
+    assert resolve.call_count == 1
     # The planner was shown the catalog the double read, package by package.
     briefing = seen[0][-1].content
     assert (
@@ -223,6 +234,7 @@ async def test_a_reminders_brief_installs_the_catalog_package():
     assert "  required environment: REDIS_URL: Redis broker" in briefing
     assert "plan_install" in briefing
     assert "textparse" in briefing and "default binding" in briefing
+    assert "released job contract" in briefing and "reminders.tick" in briefing
 
 
 @pytest.mark.asyncio
