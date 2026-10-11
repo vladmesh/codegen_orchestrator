@@ -30,6 +30,8 @@ from ..temporary_access import grant_temporary_access
 
 logger = structlog.get_logger(__name__)
 
+LEGACY_TEMPLATE_SOURCE = "gh:vladmesh/service-template"
+
 
 def _qa_run_id_for_deploy(deploy_run_id: str) -> str:
     """One QA run per deploy run, named so a repeat of the handoff finds it."""
@@ -98,8 +100,16 @@ def _temporary_access_is_needed(
     result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Only Telegram bot QA needs the dedicated, revocable QA identity."""
-    del result, log
+    """Only Telegram bot QA needs the dedicated, revocable QA identity.
+
+    A legacy `service-template` product has no kit `users` capability to grant
+    through; its bot admits the identities in its env allowlist instead, so the
+    grant could only fail and park the story.
+    """
+    del result
+    if (project.config.get("service_template") or {}).get("source") == LEGACY_TEMPLATE_SOURCE:
+        log.info("qa_handoff_legacy_template_no_temporary_access", project_id=str(project.id))
+        return False
     return "tg_bot" in project.config.get("modules", [])
 
 
