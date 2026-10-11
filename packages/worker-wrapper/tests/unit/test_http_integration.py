@@ -8,6 +8,7 @@ Tests that:
 
 import asyncio
 import json
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +21,60 @@ from shared.contracts.queues.worker_result import (
     WorkerCompletedResult,
     WorkerResultStatus,
 )
+from shared.contracts.worker_turn import WorkerTurnInput
+
+BRANCH = "story/test-http"
+
+
+def _git(path, *args):
+    return subprocess.run(  # noqa: S603
+        ["/usr/bin/git", *args],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def developer_checkout(tmp_path, monkeypatch):
+    """A real developer commit and origin for the CI-only HTTP success cases."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "--bare", "-b", BRANCH, str(origin))
+    _git(workspace, "init", "-b", BRANCH)
+    (workspace / "app.py").write_text("VALUE = 1\n")
+    (workspace / "Makefile").write_text(
+        "DOCKER_COMPOSE ?= docker compose\n"
+        "worker-start:\n"
+        "\t$(DOCKER_COMPOSE) -f infra/compose.base.yml -f infra/compose.dev.yml up -d\n"
+    )
+    _git(workspace, "add", "app.py", "Makefile")
+    _git(
+        workspace,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "Developer work",
+    )
+    _git(workspace, "remote", "add", "origin", str(origin))
+    return origin, _git(workspace, "rev-parse", "--verify", "HEAD^{commit}")
+
+
+def _developer_turn(request_id):
+    return WorkerTurnInput(
+        request_id=request_id,
+        attempt_id=f"attempt-{request_id}",
+        turn_deadline_seconds=10,
+        prompt="do stuff",
+        branch=BRANCH,
+    ).model_dump(mode="json", exclude_none=True)
 
 
 @pytest.fixture(autouse=True)
@@ -55,19 +110,17 @@ class TestHttpServerLifecycle:
     """HTTP server starts/stops around agent execution."""
 
     @pytest.mark.subprocess
-    async def test_http_result_published_to_output_stream(self):
+    async def test_http_result_published_to_output_stream(self, developer_checkout):
         """When agent POSTs to /complete, result appears on output stream."""
         config = _make_config()
         broker_mock = _make_broker_mock()
         wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
-        wrapper._pushed_completed_result = MagicMock(
-            side_effect=lambda result, _branch: (result, None)
-        )
+        origin, sha = developer_checkout
 
         async def fake_agent(data):
             port = wrapper._http_server.port
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            payload = json.dumps({"success": True, "commit": "abc123", "summary": "Done"}).encode()
+            payload = json.dumps({"success": True, "commit": sha, "summary": "Done"}).encode()
             request = (
                 f"POST /result HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{port}\r\n"
@@ -91,13 +144,15 @@ class TestHttpServerLifecycle:
                         with patch.object(wrapper, "_collect_and_archive"):
                             msg = MagicMock()
                             msg.message_id = "msg-1"
-                            msg.data = {"prompt": "do stuff", "branch": "story/test-http"}
+                            msg.data = _developer_turn(msg.message_id)
                             await wrapper.process_message(msg.message_id, msg.data)
 
         broker_mock.submit_output.assert_any_call(
             "msg-1",
-            WorkerCompletedResult(commit_sha="abc123", content="Done"),
+            WorkerCompletedResult(commit_sha=sha, content="Done"),
         )
+        assert broker_mock.submit_output.call_count == 1
+        assert _git(origin, "rev-parse", BRANCH) == sha
 
     @pytest.mark.subprocess
     async def test_http_server_stops_after_agent(self):
@@ -128,14 +183,12 @@ class TestStdoutCapture:
     """Agent stdout tail is captured and attached to results."""
 
     @pytest.mark.subprocess
-    async def test_stdout_tail_attached_to_http_result(self):
+    async def test_stdout_tail_attached_to_http_result(self, developer_checkout):
         """When agent produces stdout, it's included in the published result."""
         config = _make_config()
         broker_mock = _make_broker_mock()
         wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
-        wrapper._pushed_completed_result = MagicMock(
-            side_effect=lambda result, _branch: (result, None)
-        )
+        origin, sha = developer_checkout
 
         async def agent_with_stdout(data):
             # Simulate stdout capture
@@ -143,7 +196,7 @@ class TestStdoutCapture:
             # Also call HTTP result
             port = wrapper._http_server.port
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            payload = json.dumps({"success": True, "commit": "abc123", "summary": "Done"}).encode()
+            payload = json.dumps({"success": True, "commit": sha, "summary": "Done"}).encode()
             request = (
                 f"POST /result HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{port}\r\n"
@@ -154,7 +207,8 @@ class TestStdoutCapture:
             ).encode() + payload
             writer.write(request)
             await writer.drain()
-            await reader.read(65536)
+            response = await reader.read(65536)
+            assert "200" in response.split(b"\r\n", 1)[0].decode()
             writer.close()
             await writer.wait_closed()
 
@@ -165,7 +219,7 @@ class TestStdoutCapture:
                         with patch.object(wrapper, "_collect_and_archive"):
                             msg = MagicMock()
                             msg.message_id = "msg-stdout"
-                            msg.data = {"prompt": "do stuff", "branch": "story/test-stdout"}
+                            msg.data = _developer_turn(msg.message_id)
                             await wrapper.process_message(msg.message_id, msg.data)
 
         publish_calls = broker_mock.submit_output.call_args_list
@@ -173,7 +227,9 @@ class TestStdoutCapture:
         assert len(output_calls) == 1
         result = output_calls[0][0][1]
         assert result.agent_stdout_tail == "Agent thinking about task..."
-        assert result.commit_sha == "abc123"
+        assert result.commit_sha == sha
+        assert result.status == WorkerResultStatus.COMPLETED
+        assert _git(origin, "rev-parse", BRANCH) == sha
 
     @pytest.mark.subprocess
     async def test_stdout_tail_attached_to_error_result(self):
@@ -336,20 +392,18 @@ class TestWatchdog:
         assert output_calls[0][0][1].status == WorkerResultStatus.FAILED
 
     @pytest.mark.subprocess
-    async def test_http_result_prevents_watchdog(self):
+    async def test_http_result_prevents_watchdog(self, developer_checkout):
         """If HTTP result received, watchdog does not publish failed."""
         config = _make_config()
         broker_mock = _make_broker_mock()
         wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
-        wrapper._pushed_completed_result = MagicMock(
-            side_effect=lambda result, _branch: (result, None)
-        )
+        origin, sha = developer_checkout
 
         async def agent_with_http(data):
             port = wrapper._http_server.port
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             payload = json.dumps(
-                {"success": True, "commit": "http-sha", "summary": "HTTP result"}
+                {"success": True, "commit": sha, "summary": "HTTP result"}
             ).encode()
             request = (
                 f"POST /result HTTP/1.1\r\n"
@@ -361,7 +415,8 @@ class TestWatchdog:
             ).encode() + payload
             writer.write(request)
             await writer.drain()
-            await reader.read(65536)
+            response = await reader.read(65536)
+            assert "200" in response.split(b"\r\n", 1)[0].decode()
             writer.close()
             await writer.wait_closed()
 
@@ -372,14 +427,16 @@ class TestWatchdog:
                         with patch.object(wrapper, "_collect_and_archive"):
                             msg = MagicMock()
                             msg.message_id = "msg-5"
-                            msg.data = {"prompt": "do stuff", "branch": "story/test-watchdog"}
+                            msg.data = _developer_turn(msg.message_id)
                             await wrapper.process_message(msg.message_id, msg.data)
 
         # HTTP result published by callback, no additional failed publish
         publish_calls = broker_mock.submit_output.call_args_list
         output_calls = publish_calls
         assert len(output_calls) == 1
-        assert output_calls[0][0][1].commit_sha == "http-sha"
+        assert output_calls[0][0][1].commit_sha == sha
+        assert output_calls[0][0][1].status == WorkerResultStatus.COMPLETED
+        assert _git(origin, "rev-parse", BRANCH) == sha
 
 
 @pytest.fixture(autouse=True)

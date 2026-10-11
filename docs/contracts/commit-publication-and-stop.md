@@ -56,6 +56,14 @@ and owned teardown. A committed stop prevents later command/turn publication.
 
 ## Publication delivery
 
+Developer completion uses the installed `worker-report-completed` command, which
+reads the full commit from native Git and serializes the agent's summary. HTTP
+intake inspects the claimed commit against the leased attempt's checkout and branch
+before buffering it or setting the terminal event. Invalid claims return bounded,
+redacted native evidence with 400 and permit correction on that same current turn.
+Acceptance freezes the resolved SHA; duplicate terminal requests return 409.
+Failure reports and central QA's separate no-repository path retain their semantics.
+
 Wrapper completion and explicit recovery both call `shared.commit_publication`.
 It resolves the named commit, requires exact local HEAD and branch, checks the
 owned origin and push URL in recovery, inspects injected paths, and validates the

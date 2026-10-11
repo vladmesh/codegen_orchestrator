@@ -135,7 +135,7 @@ before the project is created.
 5. Injects a dynamic `TASK.md` into `/workspace/TASK.md` with the project-specific task
 6. Starts the coding agent (Claude Code, Droid or Codex) in non-interactive mode
 7. The agent commits and pushes to the feature branch. Worker-wrapper pulls from the current branch (not a hardcoded `main`)
-8. The agent reports the result over HTTP: `curl -X POST localhost:9090/result -d '{"success":true,"commit":"<sha>","summary":"..."}'`
+8. The agent runs `worker-report-completed --summary '...'` in `/workspace`. The installed helper reads native Git's full HEAD SHA and serializes the HTTP request. Intake inspects the owned branch and object before buffering and setting the terminal event; a refusal returns 400 for correction on the same turn. The accepted SHA is frozen and checked again by the strict publisher before broker output/ACK.
 9. If the task cannot be completed: `curl -X POST localhost:9090/result -d '{"success":false,"reason":"..."}'`
 
 **The worker-wrapper HTTP server** (`localhost:9090`):

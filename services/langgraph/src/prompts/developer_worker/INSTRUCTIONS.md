@@ -242,10 +242,9 @@ Make descriptive commit messages.
 When done, report via HTTP (localhost:9090 is always available inside the container):
 
 ```bash
-# Task completed — include commit SHA and summary
-curl -sf -X POST http://localhost:9090/result \
-  -H 'Content-Type: application/json' \
-  -d '{"success":true,"commit":"<sha>","summary":"<what you did>"}'
+# Task completed — the installed helper reads the full SHA from native Git
+cd /workspace
+worker-report-completed --summary 'Describe what you did'
 
 # Task not completed — explain why
 curl -sf -X POST http://localhost:9090/result \
@@ -253,7 +252,13 @@ curl -sf -X POST http://localhost:9090/result \
   -d '{"success":false,"reason":"<why you cannot complete this task>"}'
 ```
 
-If you get a 400 response — fix the JSON payload format and retry.
+Use `worker-report-completed` for every successful completion. Supply only your
+non-secret summary; the helper obtains and safely serializes the full commit
+from the assigned checkout. Do not transcribe a SHA into a manual success POST.
+If you get a 400 response, read its validation evidence and correct the current
+checkout or request before submitting again on this same turn. Invalid Git claims
+do not finish the turn. A 200 accepts your local report; the wrapper still requires
+exact remote publication proof before forwarding success.
 If you get a 409 response — you already submitted a result, no action needed.
 
 ### When to report failure (success: false)

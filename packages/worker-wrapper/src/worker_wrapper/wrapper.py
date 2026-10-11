@@ -11,7 +11,7 @@ from typing import Any
 
 import structlog
 
-from shared.commit_publication import publish_commit
+from shared.commit_publication import publish_commit, resolve_inspected_commit
 from shared.constants import WorkerWorkspace
 from shared.contracts.dto.commit_publication import CommitPublication, PublicationFailure
 from shared.contracts.dto.engineering_execution import (
@@ -35,7 +35,7 @@ from .compose_proxy import (
     install_compose_proxy,
 )
 from .config import WorkerWrapperConfig
-from .http_server import ResultHttpServer
+from .http_server import ResultHttpServer, ResultRefused
 from .injected_paths import instruction_filename, offending_paths, write_git_exclude
 from .observability import extract_effort_metrics, save_transcript
 
@@ -414,6 +414,24 @@ class WorkerWrapper:
         self._buffered_result: WorkerResult | None = None
 
         async def _buffer_http_result(result: WorkerResult) -> None:
+            if isinstance(result, WorkerCompletedResult) and not self.is_qa_executor:
+                branch = data.get("branch")
+                if not data.get("attempt_id"):
+                    raise ResultRefused(
+                        CommitPublication(failure=PublicationFailure.OWNERSHIP_MISSING)
+                    )
+                if not isinstance(branch, str) or not branch:
+                    raise ResultRefused(
+                        CommitPublication(failure=PublicationFailure.BRANCH_MISSING)
+                    )
+                resolved = await asyncio.to_thread(
+                    resolve_inspected_commit, Path(WORKSPACE_DIR), branch, result.commit_sha
+                )
+                if isinstance(resolved, CommitPublication):
+                    raise ResultRefused(resolved)
+                # Freeze the inspected object, including abbreviations/symbolic
+                # names, so publication can never resolve a later HEAD instead.
+                result = result.model_copy(update={"commit_sha": resolved})
             self._buffered_result = result
 
         self._http_server = ResultHttpServer(
@@ -1432,8 +1450,10 @@ class WorkerWrapper:
 
         resume_prompt = (
             "You finished without calling the result endpoint. "
-            "Call POST http://localhost:9090/result with your result now. "
-            'If the task is done: {"success": true, "commit": "<sha>", "summary": "..."}. '
+            'If the task is done, run worker-report-completed --summary "what you did" '
+            "in /workspace; it reads the exact commit from Git and submits it. "
+            "Read any 400 refusal and correct the checkout before submitting again. "
+            "Otherwise call POST http://localhost:9090/result: "
             'If you could not complete it: {"success": false, "reason": "..."}.'
         )
 

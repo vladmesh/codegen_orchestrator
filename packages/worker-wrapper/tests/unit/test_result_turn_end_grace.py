@@ -27,6 +27,7 @@ from shared.contracts.queues.worker_result import (
     WorkerFailedResult,
     parse_worker_result,
 )
+from shared.contracts.worker_turn import WorkerTurnInput
 
 # Every test here starts processes: CI runs this file, the host profile skips it.
 pytestmark = pytest.mark.subprocess
@@ -175,7 +176,14 @@ async def _run_turn(wrapper: WorkerWrapper, tmp_path: Path, scenario: str, *, gr
     ):
         await asyncio.wait_for(
             wrapper.process_message(
-                "1-0", {"request_id": "req-1", "prompt": "do the task", "branch": BRANCH}
+                "1-0",
+                WorkerTurnInput(
+                    request_id="req-1",
+                    attempt_id="attempt-grace-1",
+                    turn_deadline_seconds=60,
+                    prompt="do the task",
+                    branch=BRANCH,
+                ).model_dump(mode="json", exclude_none=True),
             ),
             timeout=30,
         )
