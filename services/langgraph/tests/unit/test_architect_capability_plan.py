@@ -11,7 +11,7 @@ itself is the real preview and derivation the PO tool and the API make.
 from __future__ import annotations
 
 from dataclasses import replace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import uuid
 
 import httpx
@@ -491,16 +491,21 @@ async def test_glue_work_planned_after_the_install_covers_the_requirement(
 
 @pytest.mark.asyncio
 async def test_frozen_glue_planning_receives_the_installed_job_contract(
-    activated_kit_catalog, kit_catalog_off_github
+    activated_kit_catalog, kit_catalog_off_github, monkeypatch
 ):
     kit_catalog_off_github.read.return_value = activated_kit_catalog
     brief, plan = _glue_brief(activated_kit_catalog)
     api = _PlanApi(brief, plan)
     graph, seen = _glue_graph(api, cover_with="feature")
+    from src import planning_module_jobs
+
+    resolve = Mock(wraps=planning_module_jobs.resolve_install_payload)
+    monkeypatch.setattr(planning_module_jobs, "resolve_install_payload", resolve)
 
     result = await _plan_glue(api, graph)
 
     assert result["status"] == "success", result
+    assert resolve.call_count == 1
     [contract] = seen["selected_module_jobs"].values()
     assert contract["package"] == plan.modules[0].install.package.model_dump(mode="json")
     assert contract["catalog"] == plan.modules[0].install.catalog.model_dump(mode="json")

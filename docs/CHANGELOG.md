@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- Architect reuses verified catalog facts within one planning attempt and aligns fixture snapshot
+  bytes, removing duplicate native validation while retaining drift refusals and the unit budget.
 - Architect resolves each selected module closure once per planning check and reuses its verified
   job facts, keeping duplicate selection and reminder planning within the unit budget.
 - Architect planning reads pinned module job schemas and timers and refuses unknown names

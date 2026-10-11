@@ -75,6 +75,7 @@ async def test_install_reads_product_modules_from_the_real_api_shape(monkeypatch
                 "commit": catalog.commit,
                 "catalog_sha256": catalog.catalog_sha256,
             },
+            config={"configurable": {}},
         )
         assert result == {"id": "task-install"}
         body = api.create_task.call_args.args[0]

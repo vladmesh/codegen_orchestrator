@@ -1,5 +1,6 @@
 """Selected package jobs are validated before the canonical checklist write."""
 
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ import yaml
 from src.agents.architect import tools
 from src.catalog_install import INSTALL_PYTHON_VERSION, plan_install_payload
 from src.kit_catalog import install_snapshot
-from src.planning_module_jobs import module_job_contracts
+from src.planning_module_jobs import PlanningModuleFacts, module_job_contracts, plan_module_install
 from tests.unit.factories import make_task
 
 
@@ -214,6 +215,48 @@ async def test_explicit_install_contract_drift_refuses_the_criteria_write(
         }
     )
     assert "plan_drift" in result["error"]
+    criteria_api.update_repository.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["catalog", "binding", "manifest", "activation", "duplicate"])
+async def test_explicit_criteria_rechecks_changed_inputs_before_writing(
+    criteria_api, activated_kit_catalog, changed
+):
+    injected = deepcopy(install_snapshot(activated_kit_catalog))
+    facts = PlanningModuleFacts()
+    catalog = facts.restore(injected)
+    install, _ = plan_module_install(catalog, "reminders", INSTALL_PYTHON_VERSION, facts=facts)
+    tasks = [make_task(type="install", install=install)]
+    if changed == "catalog":
+        injected["catalog"] += "\n# changed\n"
+    elif changed == "binding":
+        injected["bindings"]["reminders"] = injected["bindings"]["reminders"].replace(
+            "textparse.when", "invented.when"
+        )
+    elif changed == "manifest":
+        injected["manifests"]["reminders"] = "jobs_schema: ["
+    elif changed == "activation":
+        injected["commit"] = "c" * 40
+    else:
+        tasks.append(
+            make_task(
+                type="install", install=install.model_copy(update={"catalog_digest": "0" * 64})
+            )
+        )
+    criteria_api.get_tasks_by_story.return_value = tasks
+
+    result = await tools.update_acceptance_criteria.ainvoke(
+        {
+            "project_id": "project-1",
+            "story_id": "story-1",
+            "acceptance_criteria": "- GET /health returns 200",
+            "selected_module_jobs": {},
+            "kit_install_snapshot": injected,
+        },
+        config={"configurable": {"planning_module_facts": facts}},
+    )
+    assert "Selected module job contract refused" in result["error"]
     criteria_api.update_repository.assert_not_awaited()
 
 

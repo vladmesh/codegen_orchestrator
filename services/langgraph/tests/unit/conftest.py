@@ -97,6 +97,7 @@ def bundled_kit_catalog():
     """
     from dataclasses import replace
     from hashlib import sha256
+    from importlib.resources import files
 
     from framework.catalog import bundled_catalog
 
@@ -104,7 +105,8 @@ def bundled_kit_catalog():
     from src import kit_catalog
 
     data = Path(__file__).parent / "fixtures/catalog-install"
-    raw = (data / "catalog.yaml").read_text()
+    # Inject exactly the bytes bundled_catalog parsed, including every selectable package.
+    raw = files("framework").joinpath("package_catalog.yaml").read_text()
     return replace(
         kit_catalog.installable(bundled_catalog(), BUNDLED_KIT_CATALOG_SOURCE),
         raw=raw,

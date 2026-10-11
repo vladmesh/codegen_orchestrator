@@ -1,5 +1,6 @@
 """Read-only job facts from the same pinned closure mechanical installation resolves."""
 
+from copy import deepcopy
 import hashlib
 import json
 
@@ -11,8 +12,44 @@ from shared.contracts.acceptance import parse_scheduled_behaviours
 from shared.contracts.dto.catalog_install import CatalogInstall
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 
+from . import catalog_install
 from .catalog_install import InstallRefusal, resolve_install_payload
-from .kit_catalog import KitCatalog
+from .kit_catalog import KitCatalog, restore_install_snapshot
+
+
+class PlanningModuleFacts:
+    """One attempt's native resolutions, detached from mutable injected state.
+
+    Snapshot bytes and all parsed catalog fields identify the facts, together with
+    Python and host tooling. Keep only the latest catalog; a changed input must pass
+    native parsing, binding/manifest identity and schema validation before reuse.
+    Returned closures and job dictionaries cannot mutate the verified originals.
+    """
+
+    def __init__(self) -> None:
+        self._restored: tuple[dict, KitCatalog] | None = None
+        self._catalog: KitCatalog | None = None
+        self._tooling: str | None = None
+        self._resolved: dict[tuple[str, str], tuple[CatalogInstall, dict[str, dict]]] = {}
+
+    def restore(self, snapshot: dict) -> KitCatalog:
+        if self._restored is None or self._restored[0] != snapshot:
+            catalog = restore_install_snapshot(snapshot)
+            self._restored = (deepcopy(snapshot), deepcopy(catalog))
+        return deepcopy(self._restored[1])
+
+    def resolve(
+        self, catalog: KitCatalog, name: str, python_version: str
+    ) -> tuple[CatalogInstall, dict[str, dict]]:
+        tooling = catalog_install.installed_tooling_commit()
+        if self._catalog != catalog or self._tooling != tooling:
+            self._resolved.clear()
+            self._catalog = deepcopy(catalog)
+            self._tooling = tooling
+        key = (name, python_version)
+        if key not in self._resolved:
+            self._resolved[key] = _resolve_module_install(catalog, name, python_version)
+        return deepcopy(self._resolved[key])
 
 
 def selected_install_closures(tasks: list[TaskDTO]) -> list[CatalogInstall]:
@@ -24,15 +61,18 @@ def selected_install_closures(tasks: list[TaskDTO]) -> list[CatalogInstall]:
     ]
 
 
-def module_job_contracts(catalog: KitCatalog, installs: list[CatalogInstall]) -> dict[str, dict]:
+def module_job_contracts(
+    catalog: KitCatalog, installs: list[CatalogInstall], *, facts: PlanningModuleFacts | None = None
+) -> dict[str, dict]:
     """Resolve only selected releases; any drift or invalid schema refuses planning."""
     contracts = {}
+    facts = facts if facts is not None else PlanningModuleFacts()
     resolved: dict[tuple[str, str], CatalogInstall] = {}
     for install in installs:
         name = install.package.name
         key = (name, install.python_version)
         if key not in resolved:
-            current, jobs = plan_module_install(catalog, name, install.python_version)
+            current, jobs = plan_module_install(catalog, name, install.python_version, facts=facts)
             _merge_job_contracts(contracts, jobs)
             resolved[key] = current
         # Reuse only this invocation's resolution, comparing every selected closure.
@@ -49,6 +89,17 @@ def _merge_job_contracts(contracts: dict[str, dict], jobs: dict[str, dict]) -> N
 
 
 def plan_module_install(
+    catalog: KitCatalog,
+    name: str,
+    python_version: str,
+    *,
+    facts: PlanningModuleFacts | None = None,
+) -> tuple[CatalogInstall, dict[str, dict]]:
+    facts = facts if facts is not None else PlanningModuleFacts()
+    return facts.resolve(catalog, name, python_version)
+
+
+def _resolve_module_install(
     catalog: KitCatalog, name: str, python_version: str
 ) -> tuple[CatalogInstall, dict[str, dict]]:
     """Resolve a new selection and its job facts through one native manifest read."""

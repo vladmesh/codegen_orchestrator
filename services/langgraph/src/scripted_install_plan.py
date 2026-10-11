@@ -76,6 +76,7 @@ async def _owned_plan(catalog, brief, attempt, project_id, story_id, package, re
         project_id=project_id,
         planning_attempt_id=attempt,
         kit_install_snapshot=install_snapshot(catalog),
+        config={"configurable": {}},
     )
     if "error" in result:
         return result
