@@ -1,5 +1,6 @@
 """Unit tests for DELETE /api/projects/{project_id} endpoint."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
@@ -8,8 +9,11 @@ from internal_caller import INTERNAL_HEADERS
 import pytest
 from sqlalchemy import delete
 
-from shared.models import CapabilityPreview
-from shared.tests.project_cleanup import PROJECT_BRIEF_TASK_STORY_DELETE_ORDER
+from shared.models import Base, CapabilityPreview
+from shared.tests.project_cleanup import (
+    PROJECT_BRIEF_TASK_STORY_DELETE_ORDER,
+    metadata_catalog_payload,
+)
 from src.database import get_async_session
 from src.main import app
 
@@ -138,6 +142,58 @@ async def test_delete_project_success():
     )
     session.delete.assert_called_once_with(project)
     session.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_project_obeys_schema_dependencies_and_retention():
+    """Native deletion covers incoming refusing FKs and leaves SET NULL history to the DB."""
+    project = _make_project()
+    session = _mock_session(project=project)
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        response = await client.delete(f"/api/projects/{PROJECT_UUID}")
+    assert response.status_code == 204  # noqa: PLR2004
+    session.delete.assert_called_once_with(project)
+    statements = {call.args[0].table.name: call.args[0] for call in session.execute.call_args_list}
+    order = list(statements) + ["projects"]
+    positions = {table: index for index, table in enumerate(order)}
+    foreign_keys = json.loads(metadata_catalog_payload())["foreign_keys"]
+    models = {mapper.local_table.name: mapper.class_ for mapper in Base.registry.mappers}
+
+    # A cascading child is removed at its parent's statement even without an
+    # explicit DELETE. Follow those edges too, so its own blockers stay covered.
+    while True:
+        cascaded = dict(positions)
+        for fk in foreign_keys:
+            parent, child = fk["parent_table"], fk["child_table"]
+            if fk["delete_rule"] == "c" and parent in positions and child not in order:
+                # With several cascade parents, the earliest delete removes it.
+                cascaded[child] = min(cascaded.get(child, positions[parent]), positions[parent])
+        if cascaded == positions:
+            break
+        positions = cascaded
+
+    for fk in foreign_keys:
+        parent, child = fk["parent_table"], fk["child_table"]
+        if parent not in positions:
+            continue
+        if fk["delete_rule"] in ("a", "r"):
+            assert child in positions, f"Missing child DELETE: {fk}"
+            if parent == "projects":
+                model = models[child]
+                column = getattr(model, fk["child_columns"][0])
+                assert statements[child].compare(delete(model).where(column == PROJECT_UUID)), fk
+            # A single scoped DELETE handles intra-table edges (Task blocking).
+            if child != parent:
+                assert positions[child] < positions[parent], f"Parent deleted before child: {fk}"
+        elif fk["delete_rule"] == "n":
+            assert child not in order, f"SET NULL history must survive: {fk}"
 
 
 @pytest.mark.asyncio

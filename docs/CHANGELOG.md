@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- Owned-project DELETE removes permanent and temporary grant dependencies before Runs,
+  so completed teardown can commit deletion while retaining cost and admission history.
 - HTTP completion CI checkouts include the required Makefile, so native proxy setup
   reaches their success, stdout and watchdog publication checks.
 - HTTP completion and turn-grace CI fixtures carry owned attempts and native commits,
