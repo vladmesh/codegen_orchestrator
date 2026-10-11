@@ -21,13 +21,13 @@ class TestMainMenuDashboardButton:
     """Dashboard button appears for all users."""
 
     def test_non_admin_sees_dashboard_button(self):
-        keyboard = main_menu_keyboard(is_admin=False)
+        keyboard = main_menu_keyboard("en", is_admin=False)
         all_buttons = [btn for row in keyboard.inline_keyboard for btn in row]
         callbacks = [btn.callback_data for btn in all_buttons]
         assert PREFIX_DASHBOARD in callbacks
 
     def test_admin_sees_dashboard_button(self):
-        keyboard = main_menu_keyboard(is_admin=True)
+        keyboard = main_menu_keyboard("en", is_admin=True)
         all_buttons = [btn for row in keyboard.inline_keyboard for btn in row]
         callbacks = [btn.callback_data for btn in all_buttons]
         assert PREFIX_DASHBOARD in callbacks
@@ -80,24 +80,26 @@ class TestDashboardCommand:
     async def test_dashboard_no_projects_shows_message(self):
         from src.main import dashboard
 
-        update = MagicMock()
-        update.effective_user.id = 42
-        update.message.reply_text = AsyncMock()
+        for language_code, expected in (("ru", "нет проектов"), ("en", "no projects")):
+            update = MagicMock()
+            update.effective_user.id = 42
+            update.effective_user.language_code = language_code
+            update.message.reply_text = AsyncMock()
 
-        context = MagicMock()
+            context = MagicMock()
 
-        with (
-            patch("src.main._stream_client") as mock_client,
-            patch("src.main.api_client") as mock_api,
-        ):
-            mock_client.redis = AsyncMock()
-            mock_api.get_json = AsyncMock(return_value=[])
+            with (
+                patch("src.main._stream_client") as mock_client,
+                patch("src.main.api_client") as mock_api,
+            ):
+                mock_client.redis = AsyncMock()
+                mock_api.get_json = AsyncMock(return_value=[])
 
-            await dashboard(update, context)
+                await dashboard(update, context)
 
-        update.message.reply_text.assert_called_once()
-        reply_text = update.message.reply_text.call_args[0][0]
-        assert "нет проектов" in reply_text.lower()
+            update.message.reply_text.assert_called_once()
+            reply_text = update.message.reply_text.call_args[0][0]
+            assert expected in reply_text.lower()
 
     @pytest.mark.asyncio
     async def test_dashboard_no_redis_raises(self):

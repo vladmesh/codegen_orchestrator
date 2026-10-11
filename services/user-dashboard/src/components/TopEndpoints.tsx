@@ -1,10 +1,12 @@
+import { t } from '@/lib/i18n'
+
 interface TopEndpointsProps {
   endpoints: Array<Record<string, unknown>>
 }
 
 export default function TopEndpoints({ endpoints }: TopEndpointsProps) {
   if (endpoints.length === 0) {
-    return <p className="text-sm text-muted-foreground">Нет данных</p>
+    return <p className="text-sm text-muted-foreground">{t('noData')}</p>
   }
 
   return (

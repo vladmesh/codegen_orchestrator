@@ -72,7 +72,7 @@ def update(app, number, user_id, text=None, callback=None):
         "message_id": number,
         "date": 0,
         "chat": {"id": user_id, "type": "private"},
-        "from": {"id": user_id, "is_bot": False, "first_name": "fixture"},
+        "from": {"id": user_id, "is_bot": False, "first_name": "fixture", "language_code": "ru"},
         "text": text or "menu",
     }
     if text and text.startswith("/"):

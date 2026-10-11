@@ -2,6 +2,8 @@
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from .texts import text
+
 # Callback data prefixes
 PREFIX_MENU = "menu"
 PREFIX_PROJECTS = "projects"
@@ -24,20 +26,34 @@ PREFIX_DASHBOARD = "dashboard"
 PREFIX_ADMIN = "admin"
 
 
-def main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+def main_menu_button(locale: str) -> InlineKeyboardButton:
+    """The button that returns to the main menu."""
+    return InlineKeyboardButton(
+        text(locale, "btn_main_menu"), callback_data=f"{PREFIX_MENU}:{ACTION_BACK}"
+    )
+
+
+def main_menu_keyboard(locale: str, is_admin: bool = False) -> InlineKeyboardMarkup:
     """Build main menu keyboard.
 
     Args:
+        locale: The user's locale (`texts.user_locale`).
         is_admin: If True, show admin-only options (servers list).
     """
     keyboard = [
         [
             InlineKeyboardButton(
-                "📦 Список проектов", callback_data=f"{PREFIX_PROJECTS}:{ACTION_LIST}"
+                text(locale, "btn_projects_list"),
+                callback_data=f"{PREFIX_PROJECTS}:{ACTION_LIST}",
             )
         ],
-        [InlineKeyboardButton("➕ Новый проект", callback_data=f"{PREFIX_PROJECTS}:{ACTION_NEW}")],
-        [InlineKeyboardButton("📊 Мой дашборд", callback_data=PREFIX_DASHBOARD)],
+        [
+            InlineKeyboardButton(
+                text(locale, "btn_new_project"),
+                callback_data=f"{PREFIX_PROJECTS}:{ACTION_NEW}",
+            )
+        ],
+        [InlineKeyboardButton(text(locale, "btn_my_dashboard"), callback_data=PREFIX_DASHBOARD)],
     ]
 
     # Admin-only buttons
@@ -45,14 +61,15 @@ def main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    "🖥️ Список серверов", callback_data=f"{PREFIX_SERVERS}:{ACTION_LIST}"
+                    text(locale, "btn_servers_list"),
+                    callback_data=f"{PREFIX_SERVERS}:{ACTION_LIST}",
                 )
             ]
         )
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    "👤 Добавить пользователя",
+                    text(locale, "btn_add_user"),
                     callback_data=f"{PREFIX_ADMIN}:{ACTION_ADD_USER}",
                 )
             ]
@@ -61,19 +78,17 @@ def main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-def back_to_menu_keyboard() -> InlineKeyboardMarkup:
+def back_to_menu_keyboard(locale: str) -> InlineKeyboardMarkup:
     """Build back to main menu keyboard."""
-    keyboard = [
-        [InlineKeyboardButton("← Главное меню", callback_data=f"{PREFIX_MENU}:{ACTION_BACK}")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup([[main_menu_button(locale)]])
 
 
-def projects_list_keyboard(projects: list[dict]) -> InlineKeyboardMarkup:
+def projects_list_keyboard(projects: list[dict], locale: str) -> InlineKeyboardMarkup:
     """Build projects list keyboard with details buttons.
 
     Args:
         projects: List of project dicts with 'id' and 'title' keys.
+        locale: The user's locale (`texts.user_locale`).
     """
     keyboard = []
 
@@ -92,43 +107,41 @@ def projects_list_keyboard(projects: list[dict]) -> InlineKeyboardMarkup:
             ]
         )
 
-    keyboard.append(
-        [InlineKeyboardButton("← Главное меню", callback_data=f"{PREFIX_MENU}:{ACTION_BACK}")]
-    )
+    keyboard.append([main_menu_button(locale)])
 
     return InlineKeyboardMarkup(keyboard)
 
 
-def project_details_keyboard(project_id: str) -> InlineKeyboardMarkup:
+def project_details_keyboard(project_id: str, locale: str) -> InlineKeyboardMarkup:
     """Build project details keyboard with action buttons."""
     keyboard = [
         [
             InlineKeyboardButton(
-                "🔧 Maintenance",
+                text(locale, "btn_maintenance"),
                 callback_data=f"{PREFIX_PROJECT}:{ACTION_MAINTENANCE}:{project_id}",
             ),
             InlineKeyboardButton(
-                "🚀 Deploy", callback_data=f"{PREFIX_PROJECT}:{ACTION_DEPLOY}:{project_id}"
+                text(locale, "btn_deploy"),
+                callback_data=f"{PREFIX_PROJECT}:{ACTION_DEPLOY}:{project_id}",
             ),
         ],
         [
             InlineKeyboardButton(
-                "← Список проектов", callback_data=f"{PREFIX_PROJECTS}:{ACTION_LIST}"
+                text(locale, "btn_back_to_projects"),
+                callback_data=f"{PREFIX_PROJECTS}:{ACTION_LIST}",
             )
         ],
-        [InlineKeyboardButton("← Главное меню", callback_data=f"{PREFIX_MENU}:{ACTION_BACK}")],
+        [main_menu_button(locale)],
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
-def servers_list_keyboard(servers: list[dict]) -> InlineKeyboardMarkup:
+def servers_list_keyboard(servers: list[dict], locale: str) -> InlineKeyboardMarkup:
     """Build servers list with back button.
 
     Args:
         servers: List of server dicts.
+        locale: The user's locale (`texts.user_locale`).
     """
     # Servers displayed as text, only back button needed
-    keyboard = [
-        [InlineKeyboardButton("← Главное меню", callback_data=f"{PREFIX_MENU}:{ACTION_BACK}")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return back_to_menu_keyboard(locale)

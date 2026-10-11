@@ -4,6 +4,7 @@ import { setToken, isAuthenticated } from '@/lib/auth'
 import type { TokenExchangeResponse } from '@/types/api'
 import Spinner from '@/components/Spinner'
 import ErrorMessage from '@/components/ErrorMessage'
+import { t } from '@/lib/i18n'
 
 export default function AuthPage() {
   const [searchParams] = useSearchParams()
@@ -13,7 +14,7 @@ export default function AuthPage() {
   // A missing token is visible from the URL alone, so it is derived rather than
   // written into state from inside the effect.
   const token = searchParams.get('token')
-  const error = token ? exchangeError : 'Ссылка недействительна. Запросите новую через Telegram.'
+  const error = token ? exchangeError : t('linkInvalid')
 
   useEffect(() => {
     if (isAuthenticated()) {
@@ -31,7 +32,7 @@ export default function AuthPage() {
       .then(async (res) => {
         if (!res.ok) {
           const detail = await res.json().catch(() => null)
-          throw new Error(detail?.detail ?? 'Токен недействителен или истёк')
+          throw new Error(detail?.detail ?? t('tokenInvalid'))
         }
         return res.json() as Promise<TokenExchangeResponse>
       })
@@ -52,7 +53,7 @@ export default function AuthPage() {
         ) : (
           <div className="flex flex-col items-center gap-3">
             <Spinner className="h-8 w-8" />
-            <p className="text-sm text-muted-foreground">Входим...</p>
+            <p className="text-sm text-muted-foreground">{t('signingIn')}</p>
           </div>
         )}
       </div>

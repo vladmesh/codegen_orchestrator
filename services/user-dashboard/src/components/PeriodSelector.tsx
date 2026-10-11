@@ -1,10 +1,11 @@
 import { cn } from '@/lib/utils'
 import type { SummaryPeriod } from '@/types/api'
+import { t } from '@/lib/i18n'
 
 const periods: { value: SummaryPeriod; label: string }[] = [
-  { value: '24h', label: '24ч' },
-  { value: '7d', label: '7д' },
-  { value: '30d', label: '30д' },
+  { value: '24h', label: t('period24h') },
+  { value: '7d', label: t('period7d') },
+  { value: '30d', label: t('period30d') },
 ]
 
 interface PeriodSelectorProps {

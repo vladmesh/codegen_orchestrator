@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { t } from '@/lib/i18n'
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -13,8 +14,8 @@ export function formatNumber(n: number): string {
 
 export function formatMs(ms: number | null | undefined): string {
   if (ms == null) return '—'
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}с`
-  return `${Math.round(ms)}мс`
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}${t('seconds')}`
+  return `${Math.round(ms)}${t('milliseconds')}`
 }
 
 export function formatPercent(rate: number | null | undefined): string {

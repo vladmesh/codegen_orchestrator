@@ -133,20 +133,20 @@ class ProvisionerNotifier:
         """Format provisioner result for Telegram message."""
         if result.status == ResultStatus.SUCCESS:
             lines = [
-                "✅ Provisioning завершён",
-                f"Сервер: {result.server_handle}",
+                "✅ Provisioning complete",
+                f"Server: {result.server_handle}",
             ]
             if result.server_ip:
                 lines.append(f"IP: {result.server_ip}")
             if result.services_redeployed:
-                lines.append(f"Редеплой сервисов: {result.services_redeployed}")
+                lines.append(f"Services redeployed: {result.services_redeployed}")
         else:
             lines = [
                 "❌ Provisioning failed",
-                f"Сервер: {result.server_handle}",
+                f"Server: {result.server_handle}",
             ]
             if result.errors:
-                lines.append("Ошибки:")
+                lines.append("Errors:")
                 for err in result.errors[:3]:  # Max 3 errors
                     lines.append(f"  • {err}")
 

@@ -171,6 +171,9 @@ RECLAIM_INTERVAL_MS = PEL_TIMEOUT_MS // 2
 
 READ_BLOCK_MS = 5_000
 READ_COUNT = 10
+# What a waiting user is sent when the PO turn ends with no text. English: the
+# PO input carries no user language.
+EMPTY_REPLY_FALLBACK = "Sorry, I could not come up with a reply. Please try again."
 
 _po_input_adapter = TypeAdapter(POInputMessage)
 
@@ -640,7 +643,7 @@ async def _handle_message(
     if request_id:
         # Synchronous response — telegram bot is waiting
         if not response_text:
-            response_text = "Бот вернул пустой ответ"
+            response_text = EMPTY_REPLY_FALLBACK
             logger.warning(
                 "po_empty_response_fallback",
                 telegram_chat_id=telegram_chat_id,

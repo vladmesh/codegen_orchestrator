@@ -20,6 +20,7 @@ from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_GROUP,
 from shared.redis import RedisStreamClient
 from src.main import _read_po_response, _send_to_po_and_wait
 from src.proactive import ProactiveOutcome, process_proactive_entry
+from src.texts import text as bot_text
 
 CANARIES = (
     "1234567890:AAredis_test_token_abcdefgh",
@@ -119,6 +120,7 @@ async def test_reply_delivery_exception_does_not_render_echoed_secret(client, mo
     update = MagicMock()
     update.effective_user.id = update.effective_chat.id = 14310001
     update.effective_user.first_name = TEXT
+    update.effective_user.language_code = "en"
     update.message.text = TEXT
     update.message.reply_text = AsyncMock()
     context = MagicMock(user_data={}, bot=AsyncMock())
@@ -137,7 +139,7 @@ async def test_reply_delivery_exception_does_not_render_echoed_secret(client, mo
             )
             await client.ack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, entry.message_id)
             await handler
-            update.message.reply_text.assert_awaited_once_with(main.MESSAGE_FAILED_REPLY)
+            update.message.reply_text.assert_awaited_once_with(bot_text("en", "message_failed"))
             no_secrets(await client.redis.xrange(PO_INPUT_QUEUE))
     finally:
         await reader.aclose()

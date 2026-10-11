@@ -22,6 +22,7 @@ from shared.contracts.queues.po import MESSAGE_BREAK, POProactiveMessage
 from shared.telegram_text import SAFE_MESSAGE_LENGTH, TELEGRAM_MESSAGE_LIMIT, utf16_length
 import src.main as bot_main
 from src.proactive import SendProgress, attempt_proactive_delivery, send_text
+from src.texts import text as bot_text
 
 LIMIT = SAFE_MESSAGE_LENGTH
 CHAT_ID = 4242
@@ -280,13 +281,13 @@ class TestNoRawErrorText:
         update = MagicMock()
         update.message.reply_text = AsyncMock()
         update.message.text = "hi"
+        update.effective_user.language_code = "en"
         context = MagicMock()
         context.user_data = {}
 
         await bot_main.handle_message(update, context)
 
-        update.message.reply_text.assert_awaited_once_with(bot_main.MESSAGE_FAILED_REPLY)
-        assert "too long" not in bot_main.MESSAGE_FAILED_REPLY
+        update.message.reply_text.assert_awaited_once_with(bot_text("en", "message_failed"))
 
 
 def test_delivery_module_loads_by_path():
