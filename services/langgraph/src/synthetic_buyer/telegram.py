@@ -184,20 +184,40 @@ class TelethonPort:
             is_bot=bool(getattr(entity, "bot", False)),
         )
 
+    async def _target(self, peer: Peer) -> Any:
+        """Resolve on this client and bind its native input peer to the validated bot.
+
+        A numeric id alone needs Telethon's transient entity cache, which is lost
+        at every disconnect. Username resolution supplies the current access hash;
+        identity checks prevent a reassigned username from changing our recipient.
+        """
+        client = self._require()
+        entity = await self._call(client.get_entity(f"@{peer.username}"), "resolve")
+        if (
+            entity.id != peer.id
+            or str(getattr(entity, "username", "") or "").casefold() != peer.username.casefold()
+            or bool(getattr(entity, "bot", False)) != peer.is_bot
+        ):
+            raise TransportError("resolve", "peer identity mismatch")
+        return await self._call(client.get_input_entity(entity), "resolve")
+
     async def latest_id(self, peer: Peer) -> int:
-        found = await self._call(self._require().get_messages(peer.id, limit=1), "read")
+        target = await self._target(peer)
+        found = await self._call(self._require().get_messages(target, limit=1), "read")
         return found[0].id if found else 0
 
     async def messages_after(self, peer: Peer, after_id: int) -> list[Message]:
+        target = await self._target(peer)
         found = await self._call(
-            self._require().get_messages(peer.id, min_id=after_id, limit=PAGE), "read"
+            self._require().get_messages(target, min_id=after_id, limit=PAGE), "read"
         )
         return sorted(
             (to_message(item) for item in found if item.id > after_id), key=lambda m: m.id
         )
 
     async def send(self, peer: Peer, text: str) -> Message:
-        sent = await self._call(self._require().send_message(peer.id, text), "send")
+        target = await self._target(peer)
+        sent = await self._call(self._require().send_message(target, text), "send")
         return to_message(sent)
 
     async def press(self, peer: Peer, message_id: int, data: bytes) -> None:
@@ -205,10 +225,9 @@ class TelethonPort:
             GetBotCallbackAnswerRequest,
         )
 
+        target = await self._target(peer)
         await self._call(
-            self._require()(
-                GetBotCallbackAnswerRequest(peer=peer.id, msg_id=message_id, data=data)
-            ),
+            self._require()(GetBotCallbackAnswerRequest(peer=target, msg_id=message_id, data=data)),
             "press",
         )
 

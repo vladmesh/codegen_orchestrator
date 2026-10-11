@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-11
+
+- The synthetic buyer resolves and revalidates Telegram peers on each client before reads, sends
+  and callbacks, so disconnected phases no longer depend on a previous client's entity cache.
+
 ## 2026-10-10
 
 - The synthetic buyer orders through Telegram, proves native acceptance and deletes its owned project
