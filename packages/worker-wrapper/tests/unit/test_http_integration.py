@@ -38,15 +38,21 @@ def _git(path, *args):
 
 
 @pytest.fixture
-def developer_checkout(tmp_path):
+def developer_checkout(tmp_path, monkeypatch):
     """A real developer commit and origin for the CI-only HTTP success cases."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     origin = tmp_path / "origin.git"
     _git(tmp_path, "init", "--bare", "-b", BRANCH, str(origin))
     _git(workspace, "init", "-b", BRANCH)
     (workspace / "app.py").write_text("VALUE = 1\n")
-    _git(workspace, "add", "app.py")
+    (workspace / "Makefile").write_text(
+        "DOCKER_COMPOSE ?= docker compose\n"
+        "worker-start:\n"
+        "\t$(DOCKER_COMPOSE) -f infra/compose.base.yml -f infra/compose.dev.yml up -d\n"
+    )
+    _git(workspace, "add", "app.py", "Makefile")
     _git(
         workspace,
         "-c",

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- HTTP completion CI checkouts include the required Makefile, so native proxy setup
+  reaches their success, stdout and watchdog publication checks.
 - HTTP completion and turn-grace CI fixtures carry owned attempts and native commits,
   so strict intake preserves their stdout, watchdog, cost and publication coverage.
 - Developer completion reads Git's full SHA and rejects invalid claims before the terminal barrier,
