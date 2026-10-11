@@ -876,6 +876,14 @@ through the fake clock; no socket, server, process, container or real wait is us
 HTTP transports and Telethon-shaped clients exercise the adapters. These tests run through
 `python -m shared` in the native host profile, with its 0.5 s per-test and 240 s CPU budgets.
 
+Controller harnesses pass a per-harness capture to `EvidenceStore.write_text`: every native
+save still redacts, serializes and renders its report. The capture retains every JSON/report
+pair in order plus the latest text per path. Cleanup reads captured JSON before deletion;
+unknown-confirmation replay verifies identical retained content and no additional writes.
+`test_evidence_capture.py` proves paired immutable snapshots and real redaction. Dedicated
+`test_config_and_evidence.py` and `test_cli.py` continue using the default atomic disk writer
+and native reads; controller captures establish save content/order, not disk durability.
+
 The complete working route covers registration or buyer reuse, protected token or bounded
 BotFather creation, token-attributed authenticated ownership, rollout readback before feature
 preview, frozen module-route admission before confirmation, immediate install and glue proof,

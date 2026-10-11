@@ -73,14 +73,16 @@ async def test_unknown_confirmation_stops_once_and_retains_ownership(tmp_path):
     assert h.store.record["pending"]["kind"] == "persona"
     assert len([e for e in h.telegram.events if e == ("send", CODEGEN.username, confirm)]) == 1
     assert "request_teardown" not in h.api.calls
-    before = h.store.path.read_text()
+    before = h.retained_evidence()
+    writes = list(h.evidence_writes)
     calls = list(h.api.calls)
     events = list(h.telegram.events)
 
     repeated = await h.buyer().run()
 
     assert repeated.exit_code == 1
-    assert h.store.path.read_text() == before
+    assert h.retained_evidence() == before
+    assert h.evidence_writes == writes
     assert h.api.calls == calls
     assert h.telegram.events == events
 

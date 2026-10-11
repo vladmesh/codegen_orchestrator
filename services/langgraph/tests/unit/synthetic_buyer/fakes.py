@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import inspect
+from pathlib import Path
 from typing import Any
 
 from shared.catalog_activation import CATALOG_ACTIVATION
@@ -24,7 +25,7 @@ from shared.contracts.dto.capability_preview import CapabilityPlan
 from src.synthetic_buyer.codegen_api import ApiRefused
 from src.synthetic_buyer.config import parse_config
 from src.synthetic_buyer.controller import Clock, SyntheticBuyer
-from src.synthetic_buyer.evidence import EvidenceStore, Redaction, new_record
+from src.synthetic_buyer.evidence import REPORT_FILE, EvidenceStore, Redaction, new_record
 from src.synthetic_buyer.persona import PersonaContext, PersonaDecision, PersonaTurn
 from src.synthetic_buyer.platform_evidence import AuthFacts, UsageFacts, platform_product_id
 from src.synthetic_buyer.repository_evidence import (
@@ -905,6 +906,8 @@ class Harness:
     platform: FakePlatform
     repository: FakeRepository
     store: EvidenceStore
+    evidence_writes: list[tuple[Path, str]]
+    evidence_files: dict[Path, str]
 
     async def stored_secrets(self, project_id: str) -> dict:
         self.world.events.append(("api", "project_secrets"))
@@ -924,10 +927,11 @@ class Harness:
             environ=ENVIRON,
         )
 
+    def retained_evidence(self) -> str:
+        return self.evidence_files[self.store.path]
+
     def evidence_text(self) -> str:
-        return (self.store.directory / "evidence.json").read_text() + (
-            self.store.directory / "report.md"
-        ).read_text()
+        return self.retained_evidence() + self.evidence_files[self.store.directory / REPORT_FILE]
 
 
 def post_event(channel: str, text: str, url: str) -> str:
@@ -938,7 +942,16 @@ def post_event(channel: str, text: str, url: str) -> str:
 def harness(directory, *, me: int = BUYER) -> Harness:
     clock = FakeClock()
     world = World(clock)
-    store = EvidenceStore(directory, Redaction(), clock=clock.wall)
+    writes: list[tuple[Path, str]] = []
+    files: dict[Path, str] = {}
+
+    def capture(path: Path, text: str) -> None:
+        # Real save/redaction/serialization/reporting, with controller-local persistence.
+        # Native atomic writes and disk reads retain their dedicated store/CLI tests.
+        writes.append((path, text))
+        files[path] = text
+
+    store = EvidenceStore(directory, Redaction(), clock=clock.wall, write_text=capture)
     store.record = new_record(
         operation_id="s1487-buyer-001", revision=REVISION, handles={}, now=START.isoformat()
     )
@@ -951,4 +964,6 @@ def harness(directory, *, me: int = BUYER) -> Harness:
         platform=FakePlatform(world),
         repository=FakeRepository(world),
         store=store,
+        evidence_writes=writes,
+        evidence_files=files,
     )
