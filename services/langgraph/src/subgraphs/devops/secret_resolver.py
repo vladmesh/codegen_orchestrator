@@ -49,6 +49,7 @@ logger = structlog.get_logger()
 _MAX_TCP_PORT = 65535
 _REPOSITORY_PATH_PARTS = 2
 _USERS_GRANT_CAPABILITY = "USERS_GRANT_CAPABILITY"
+_LEGACY_TEMPLATE_SOURCE = "gh:vladmesh/service-template"
 
 
 class SecretResolutionError(RuntimeError):
@@ -275,10 +276,16 @@ class SecretResolverNode(FunctionalNode):
     def _validate_generated_bot_capability(
         project_spec: dict, contract: CanonicalEnvContract
     ) -> None:
-        """Require the generated grant capability for every generated Telegram bot."""
+        """Require the generated grant capability for every generated Telegram bot.
+
+        A legacy `service-template` bot predates the kit `users` core: it admits the
+        identities in its env allowlist and has no capability to generate.
+        """
         config = project_spec.get("config") or {}
         modules = config.get("modules")
         if not (isinstance(modules, list) and "tg_bot" in modules):
+            return
+        if (config.get("service_template") or {}).get("source") == _LEGACY_TEMPLATE_SOURCE:
             return
         entry = contract.entries.get(_USERS_GRANT_CAPABILITY)
         if not isinstance(entry, GeneratedSecretEntry) or "production" not in entry.environments:
