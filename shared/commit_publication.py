@@ -98,7 +98,7 @@ def _publication_operation(
     env: dict[str, str] | None = None,
     secrets: tuple[str, ...] = (),
     publish: bool,
-) -> CommitPublication | None:
+) -> CommitPublication | str:
     """Verify the named local HEAD, inspect it, push that SHA, prove the ref.
 
     A failed/ambiguous push still gets readback. Exact remote proof wins even
@@ -151,7 +151,7 @@ def _publication_operation(
         inspection = _inspect_commit(git, sha, baseline)
         if inspection is not None:
             return refuse(*inspection)
-        return _push_and_readback(git, sha, branch, secrets) if publish else None
+        return _push_and_readback(git, sha, branch, secrets) if publish else sha
     except subprocess.TimeoutExpired:
         return refuse(PublicationFailure.TIMEOUT)
     except OSError as exc:
@@ -160,6 +160,21 @@ def _publication_operation(
 
 def inspect_commit(workspace, branch, commit, *, baseline, repository_url, env):
     """Run the same local proof before the privileged owner obtains credentials."""
+    result = resolve_inspected_commit(
+        workspace,
+        branch,
+        commit,
+        baseline=baseline,
+        repository_url=repository_url,
+        env=env,
+    )
+    return None if isinstance(result, str) else result
+
+
+def resolve_inspected_commit(
+    workspace, branch, commit, *, baseline=None, repository_url=None, env=None
+):
+    """Return the exact inspected identity or a refusal, without any remote operation."""
     return _publication_operation(
         workspace,
         branch,

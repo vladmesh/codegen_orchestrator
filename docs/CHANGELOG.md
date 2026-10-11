@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- Developer completion reads Git's full SHA and rejects invalid claims before the terminal barrier,
+  so the same turn can correct its report while strict remote publication remains mandatory.
 - Scoped registry cleanup and residue reads negotiate OCI and Docker manifests; cleanup verifies
   captured tags and digests after deletion so retained images cannot pass as absent.
 - Project DELETE removes capability previews after their dependent briefs, so completed teardown

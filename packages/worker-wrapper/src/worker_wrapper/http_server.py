@@ -15,6 +15,7 @@ import json
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.commit_publication import CommitPublication
 from shared.contracts.queues.worker_result import WorkerResult
 
 from .http_models import (
@@ -23,6 +24,14 @@ from .http_models import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+class ResultRefused(ValueError):
+    """A current submission can be corrected before the terminal barrier."""
+
+    def __init__(self, evidence: CommitPublication):
+        self.evidence = evidence
+        super().__init__(f"Commit validation refused: {evidence.failure.value}")
 
 
 class ResultHttpServer:
@@ -52,6 +61,7 @@ class ResultHttpServer:
         self._port = port
         self._server: asyncio.Server | None = None
         self._compose = compose_callback
+        self._result_lock = asyncio.Lock()
 
     @property
     def port(self) -> int:
@@ -131,6 +141,12 @@ class ResultHttpServer:
             return HTTPStatus.NOT_FOUND, {"error": f"Unknown path: {path}"}
 
     async def _handle_result(self, raw_body: bytes) -> tuple[HTTPStatus, dict]:
+        # Validation may await native Git. A second connection cannot accept a
+        # different result while that first submission is being inspected.
+        async with self._result_lock:
+            return await self._handle_result_locked(raw_body)
+
+    async def _handle_result_locked(self, raw_body: bytes) -> tuple[HTTPStatus, dict]:
         """Handle POST /result — worker task result."""
         # Parse JSON
         try:
@@ -161,7 +177,13 @@ class ResultHttpServer:
             status=result.status,
         )
 
-        await self._publish(result)
+        try:
+            await self._publish(result)
+        except ResultRefused as exc:
+            return HTTPStatus.BAD_REQUEST, {
+                "error": str(exc),
+                "publication": exc.evidence.model_dump(mode="json", exclude_none=True),
+            }
         self._result_event.set()
 
         return HTTPStatus.OK, {"ok": True}
