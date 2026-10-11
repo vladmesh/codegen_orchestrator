@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- HTTP completion and turn-grace CI fixtures carry owned attempts and native commits,
+  so strict intake preserves their stdout, watchdog, cost and publication coverage.
 - Developer completion reads Git's full SHA and rejects invalid claims before the terminal barrier,
   so the same turn can correct its report while strict remote publication remains mandatory.
 - Scoped registry cleanup and residue reads negotiate OCI and Docker manifests; cleanup verifies
