@@ -118,6 +118,7 @@ class TelethonPort:
     redaction: Redaction
     timeout: float = CALL_TIMEOUT_SECONDS
     _client: Any = field(default=None, init=False, repr=False)
+    _targets: dict[Peer, Any] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def connected(self) -> bool:
@@ -153,6 +154,7 @@ class TelethonPort:
             raise TransportError("connect", f"session refused: {type(exc).__name__}") from None
         # Kept from here, before any await could open a connection: whatever fails
         # in setup, the caller's disconnect still reaches this client.
+        self._targets.clear()
         self._client = client
         await self._call(client.connect(), "connect")
         if not await self._call(client.is_user_authorized(), "authorization"):
@@ -164,6 +166,7 @@ class TelethonPort:
         if client is not None:
             await self._call(client.disconnect(), "disconnect")
             self._client = None
+            self._targets.clear()
 
     def _require(self) -> Any:
         if self._client is None:
@@ -177,21 +180,26 @@ class TelethonPort:
         return int(user.id)
 
     async def resolve(self, username: str) -> Peer:
-        entity = await self._call(self._require().get_entity(f"@{username}"), "resolve")
-        return Peer(
+        client = self._require()
+        entity = await self._call(client.get_entity(f"@{username}"), "resolve")
+        peer = Peer(
             id=int(entity.id),
             username=str(getattr(entity, "username", "") or ""),
             is_bot=bool(getattr(entity, "bot", False)),
         )
+        self._targets[peer] = await self._call(client.get_input_entity(entity), "resolve")
+        return peer
 
     async def _target(self, peer: Peer) -> Any:
-        """Resolve on this client and bind its native input peer to the validated bot.
+        """Acquire once per client, bound to the complete validated peer identity.
 
         A numeric id alone needs Telethon's transient entity cache, which is lost
-        at every disconnect. Username resolution supplies the current access hash;
-        identity checks prevent a reassigned username from changing our recipient.
+        at every disconnect. Resolve and check identity on first use after reconnect,
+        then reuse the native target through this client's reads, sends and callbacks.
         """
         client = self._require()
+        if peer in self._targets:
+            return self._targets[peer]
         entity = await self._call(client.get_entity(f"@{peer.username}"), "resolve")
         if (
             entity.id != peer.id
@@ -199,7 +207,9 @@ class TelethonPort:
             or bool(getattr(entity, "bot", False)) != peer.is_bot
         ):
             raise TransportError("resolve", "peer identity mismatch")
-        return await self._call(client.get_input_entity(entity), "resolve")
+        target = await self._call(client.get_input_entity(entity), "resolve")
+        self._targets[peer] = target
+        return target
 
     async def latest_id(self, peer: Peer) -> int:
         target = await self._target(peer)

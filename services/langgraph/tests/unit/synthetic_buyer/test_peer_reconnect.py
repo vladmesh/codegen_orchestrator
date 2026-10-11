@@ -61,6 +61,7 @@ def clients(monkeypatch):
             self.updates = receive_updates
             self.effects = []
             self.events = []
+            self.resolutions = []
             built.append(self)
 
         async def connect(self):
@@ -77,6 +78,7 @@ def clients(monkeypatch):
             return SimpleNamespace(id=BUYER)
 
         async def get_entity(self, username):
+            self.resolutions.append(username)
             entity = entities[username]
             if isinstance(entity, Exception):
                 raise entity
@@ -123,6 +125,120 @@ async def _invoke(port, peer, method):
 
 def _port():
     return TelethonPort(parse_config(config_data()).telegram, ENVIRON, Redaction())
+
+
+async def test_connected_client_reuses_each_validated_target_across_polls_and_dispatch(clients):
+    built, entities = clients
+    port = _port()
+    await port.connect()
+    peers = [await port.resolve(peer.username) for peer in (CODEGEN, BOTFATHER, PRODUCT)]
+
+    async def dispatch_all():
+        for peer in peers:
+            assert await port.latest_id(peer) == 41
+            for _ in range(5):
+                assert [message.id for message in await port.messages_after(peer, 42)] == [43]
+            assert (await port.send(peer, "hello")).outgoing
+            await port.press(peer, 43, b"confirm")
+
+    await dispatch_all()
+    assert built[0].resolutions == [f"@{peer.username}" for peer in peers]
+    assert built[0].effects == [
+        (method, InputPeerUser(peer.id, peer.id + 9000000))
+        for peer in peers
+        for method in ["read"] * 6 + ["send", "press"]
+    ]
+    await port.disconnect()
+
+    for entity in entities.values():
+        entity.access_hash += 1
+    await port.connect()
+    await dispatch_all()
+    assert built[1].resolutions == [f"@{peer.username}" for peer in peers]
+    assert built[1].effects == [
+        (method, InputPeerUser(peer.id, peer.id + 9000001))
+        for peer in peers
+        for method in ["read"] * 6 + ["send", "press"]
+    ]
+    await port.disconnect()
+    assert not port.connected and all(not client.active for client in built)
+
+
+async def test_controller_reply_polls_resolve_once_on_its_connected_client(clients, tmp_path):
+    built, _ = clients
+    h = harness(tmp_path)
+    h.telegram = _port()
+    buyer = h.buyer(codegen_bot={"username": CODEGEN.username, "user_id": CODEGEN.id})
+    await buyer._preflight()
+    peer = await buyer._codegen()
+    await buyer._ensure_watermark(peer, "codegen")
+
+    replies = await buyer._await_reply(peer, "codegen", timeout=60)
+
+    assert [message.id for message in replies] == [43]
+    assert len(built) == 3
+    assert len(built[2].effects) > 2
+    assert built[2].resolutions == [f"@{CODEGEN.username}"]
+    assert all(not client.active for client in built) and not h.telegram.connected
+
+
+@pytest.mark.parametrize("mismatch", ["id", "username", "bot"])
+async def test_cached_target_cannot_authorize_a_different_expected_peer(clients, mismatch):
+    built, entities = clients
+    port = _port()
+    await port.connect()
+    peer = await port.resolve(CODEGEN.username)
+    assert await port.latest_id(peer) == 41
+    if mismatch == "id":
+        expected = Peer(peer.id + 1, peer.username, peer.is_bot)
+    elif mismatch == "username":
+        expected = Peer(peer.id, "another_bot", peer.is_bot)
+        entities["@another_bot"] = _entity(peer)
+    else:
+        expected = Peer(peer.id, peer.username, False)
+    before = list(built[0].effects)
+
+    for method in METHODS:
+        with pytest.raises(TransportError, match="peer identity mismatch"):
+            await _invoke(port, expected, method)
+
+    assert built[0].effects == before
+    assert await port.latest_id(peer) == 41
+    await port.disconnect()
+
+
+@pytest.mark.parametrize("failure", ["identity", "resolution", "conversion"])
+async def test_failed_acquisition_does_not_supply_a_target_to_later_dispatch(
+    clients, monkeypatch, failure
+):
+    built, entities = clients
+    port = _port()
+    await port.connect()
+    if failure == "identity":
+        replacement = _entity(CODEGEN)
+        replacement.id += 1
+        entities[f"@{CODEGEN.username}"] = replacement
+    elif failure == "resolution":
+        entities[f"@{CODEGEN.username}"] = ValueError("synthetic-secret")
+    else:
+        original = built[0].get_input_entity
+
+        async def refuse(entity):
+            raise ValueError("synthetic-secret")
+
+        monkeypatch.setattr(built[0], "get_input_entity", refuse)
+
+    with pytest.raises(TransportError):
+        await port.send(CODEGEN, "hello")
+    assert built[0].effects == []
+    entities[f"@{CODEGEN.username}"] = _entity(CODEGEN)
+    if failure == "conversion":
+        monkeypatch.setattr(built[0], "get_input_entity", original)
+
+    assert (await port.send(CODEGEN, "hello")).outgoing
+    assert built[0].resolutions == [f"@{CODEGEN.username}"] * 2
+    assert built[0].effects == [("send", InputPeerUser(CODEGEN.id, CODEGEN.id + 9000000))]
+    await port.disconnect()
 
 
 async def test_registration_watermark_works_after_validated_codegen_disconnect(clients, tmp_path):

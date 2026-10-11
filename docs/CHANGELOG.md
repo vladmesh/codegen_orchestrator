@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
-- The synthetic buyer resolves and revalidates Telegram peers on each client before reads, sends
-  and callbacks, so disconnected phases no longer depend on a previous client's entity cache.
+- The synthetic buyer validates Telegram targets once per connected client and discards them on
+  disconnect, so reply polls reuse targets and reconnects require fresh identity validation.
 
 ## 2026-10-10
 
