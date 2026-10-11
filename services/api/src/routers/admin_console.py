@@ -1,5 +1,6 @@
 """Admin console read models: request journeys, runtime topology, attention feed."""
 
+from datetime import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,8 +22,12 @@ router = APIRouter(
 
 
 @router.get("/attention", response_model=AttentionResponse)
-async def attention(db: AsyncSession = Depends(get_async_session)) -> AttentionResponse:
-    return await admin_console.build_attention(db)
+async def attention(
+    since: datetime | None = Query(None),
+    project_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> AttentionResponse:
+    return await admin_console.build_attention(db, since=since, project_id=project_id)
 
 
 @router.get("/journeys", response_model=list[JourneySummary])

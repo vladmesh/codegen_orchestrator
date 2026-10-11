@@ -15,6 +15,7 @@ from src.admin_console import (
     build_passports,
     build_steps,
     median_lead_time_minutes,
+    scope_attention,
     stage_for,
 )
 from src.main import app
@@ -319,6 +320,32 @@ def test_attention_puts_critical_first_then_most_recent():
     ]
     assert items[0].detail == "channel not found"
     assert items[0].project_title == "weather-cats"
+
+
+def test_attention_scope_keeps_one_project_and_recent_items():
+    other = uuid.UUID("00000000-0000-0000-0000-0000000000bb")
+    tasks = [
+        task("t-old", status="waiting_human_review", updated_at=at(-600)),
+        task("t-new", status="waiting_human_review", updated_at=at(10)),
+        task("t-other", status="waiting_human_review", updated_at=at(10), project_id=other),
+    ]
+    incidents = [
+        SimpleNamespace(
+            incident_type="service_down",
+            status="detected",
+            detected_at=at(20),
+            affected_services=[],
+            server_handle="vps-ams-2",
+        )
+    ]
+    items = attention_items({}, tasks, [], incidents, [], ["engineering:queue lag"])
+
+    recent = scope_attention(items, at(0), None)
+    assert sorted(i.task_id or i.kind for i in recent) == ["incident", "queue", "t-new", "t-other"]
+
+    scoped = scope_attention(items, at(0), PROJECT)
+    assert [i.task_id for i in scoped] == ["t-new"]
+    assert scope_attention(items, None, None) == items
 
 
 def test_median_lead_time_ignores_stories_without_a_completion_stamp():

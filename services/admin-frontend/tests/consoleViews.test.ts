@@ -19,7 +19,12 @@ import {
   productPlacement,
   secretUsage,
 } from '../src/pages/atlasModel.ts'
-import { attentionLink, formatLeadTime, severityCounts } from '../src/pages/attentionView.ts'
+import {
+  attentionLink,
+  attentionScope,
+  formatLeadTime,
+  severityCounts,
+} from '../src/pages/attentionView.ts'
 
 const T0 = Date.parse('2026-10-07T14:00:00Z')
 const at = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString()
@@ -194,4 +199,15 @@ test('attention rows lead to the journey first, then the most specific page', ()
   assert.equal(formatLeadTime(null), '—')
   assert.equal(formatLeadTime(24), '24 min')
   assert.equal(formatLeadTime(90), '1.5 h')
+})
+
+test('attention scope turns a relative since and a project into the feed query', () => {
+  const now = new Date('2026-10-12T12:00:00Z')
+  const scope = attentionScope(new URLSearchParams('since=2h&project=p-1'), now)
+  assert.equal(scope.query, '?since=2026-10-12T10%3A00%3A00.000Z&project_id=p-1')
+  assert.equal(scope.label, 'last 2h, one project')
+  assert.deepEqual(attentionScope(new URLSearchParams('since=nonsense'), now), {
+    query: '',
+    label: null,
+  })
 })
