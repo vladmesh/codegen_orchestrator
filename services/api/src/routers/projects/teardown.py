@@ -21,6 +21,7 @@ from shared.models import (
     Application,
     ApplicationHealthHistory,
     Brainstorm,
+    CapabilityPreview,
     Deployment,
     PortAllocation,
     ProductBrief,
@@ -358,6 +359,7 @@ async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> No
         delete(RequirementCoverage).where(RequirementCoverage.brief_id.in_(brief_ids_q))
     )
     await db.execute(delete(ProductBrief).where(ProductBrief.project_id == project_id))
+    await db.execute(delete(CapabilityPreview).where(CapabilityPreview.project_id == project_id))
     await db.execute(delete(Task).where(Task.project_id == project_id))
     await db.execute(delete(Story).where(Story.project_id == project_id))
     await db.execute(delete(Brainstorm).where(Brainstorm.project_id == project_id))

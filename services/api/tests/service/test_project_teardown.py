@@ -20,12 +20,15 @@ import httpx
 from httpx import ASGITransport, AsyncClient
 import pytest
 from redis.asyncio import Redis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus, TeardownStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.telegram import TokenRejectionReason, TokenVerdictStatus
 from shared.contracts.queues.deploy import DeployAction, DeployTrigger
+from shared.models import CapabilityPreview, ProductBrief, Project, RequirementCoverage
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.tests.ssh_key_fixtures import fleet_private_key
 
@@ -297,6 +300,105 @@ async def _secret_keys(client: AsyncClient, project_id: str) -> list[str]:
 async def _deploy_messages(redis: Redis, count: int) -> list[dict]:
     entries = await redis.xrevrange(DEPLOY_QUEUE, count=count)
     return [json.loads(fields["data"]) for _entry_id, fields in entries]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_brief", [True, False], ids=["referenced", "preview-only"])
+async def test_owner_delete_after_teardown_removes_only_owned_capability_dependents(
+    client: AsyncClient, user_client: AsyncClient, db_session: AsyncSession, with_brief: bool
+):
+    """The migrated preview/brief FKs must permit a committed, owner-scoped DELETE."""
+    await _ensure_user(client, INTRUDER)
+    project_id, _ = await _make_project(client, "Preview deletion target")
+    other_project_id, _ = await _make_project(client, "Preview deletion survivor")
+    project_ids = [uuid.UUID(project_id), uuid.UUID(other_project_id)]
+    previews = [
+        CapabilityPreview(
+            id=f"preview-{uuid.uuid4().hex}",
+            project_id=owned_id,
+            requests=[],
+            product={"routes": [], "questions": [], "limitations": []},
+            technical={"modules": [], "targets": []},
+        )
+        for owned_id in (project_ids[0], project_ids[0], project_ids[1])
+    ]
+    db_session.add_all(previews)
+    await db_session.flush()
+    # Seed persistence directly: these tests exercise deletion, not plan derivation.
+    briefs = [
+        ProductBrief(
+            id=f"brief-{uuid.uuid4().hex}",
+            project_id=preview.project_id,
+            revision=1,
+            title="Preview-backed brief",
+            content={"summary": "Deletion fixture", "must_requirements": []},
+            request_id=f"request-{uuid.uuid4().hex}",
+            capability_preview_id=preview.id,
+            capability_plan={"modules": [], "settings": []},
+        )
+        for preview in ([previews[0], previews[2]] if with_brief else [previews[2]])
+    ]
+    db_session.add_all(briefs)
+    await db_session.flush()
+    db_session.add_all(
+        RequirementCoverage(
+            brief_id=brief.id,
+            requirement_id="fixture",
+            returned_reason="No work remains",
+            planning_attempt_id="fixture-attempt",
+        )
+        for brief in briefs
+    )
+    await db_session.commit()
+
+    torn = await _teardown(user_client, project_id)
+    assert torn.status_code == HTTPStatus.OK, torn.text
+    settled = await _teardown_status(user_client, project_id)
+    assert settled.status_code == HTTPStatus.OK, settled.text
+    assert settled.json()["status"] == TeardownStatus.COMPLETED.value
+    assert settled.json()["project_status"] == ProjectStatus.ARCHIVED.value
+
+    async def persisted_rows():
+        # Column reads avoid returning stale ORM objects after endpoint commits.
+        queries = (
+            select(Project.id, Project.owner_id, Project.status).where(Project.id.in_(project_ids)),
+            select(CapabilityPreview.id, CapabilityPreview.project_id).where(
+                CapabilityPreview.project_id.in_(project_ids)
+            ),
+            select(
+                ProductBrief.id, ProductBrief.project_id, ProductBrief.capability_preview_id
+            ).where(ProductBrief.project_id.in_(project_ids)),
+            select(RequirementCoverage.id, RequirementCoverage.brief_id).where(
+                RequirementCoverage.brief_id.in_([brief.id for brief in briefs])
+            ),
+        )
+        return [set((await db_session.execute(query)).all()) for query in queries]
+
+    before = await persisted_rows()
+    for owned_id in (project_id, other_project_id):
+        refused = await user_client.delete(
+            f"/api/projects/{owned_id}", headers={"X-Telegram-ID": INTRUDER}
+        )
+        assert refused.status_code == HTTPStatus.FORBIDDEN, refused.text
+        assert await persisted_rows() == before
+
+    deleted = await user_client.delete(
+        f"/api/projects/{project_id}", headers={"X-Telegram-ID": OWNER}
+    )
+    assert deleted.status_code == HTTPStatus.NO_CONTENT, deleted.text
+    gone = await user_client.get(f"/api/projects/{project_id}", headers={"X-Telegram-ID": OWNER})
+    assert gone.status_code == HTTPStatus.NOT_FOUND, gone.text
+    survivor = await user_client.get(
+        f"/api/projects/{other_project_id}", headers={"X-Telegram-ID": OWNER}
+    )
+    assert survivor.status_code == HTTPStatus.OK, survivor.text
+    expected = [
+        {row for row in before[0] if row.id == project_ids[1]},
+        {row for row in before[1] if row.project_id == project_ids[1]},
+        {row for row in before[2] if row.project_id == project_ids[1]},
+        {row for row in before[3] if row.brief_id == briefs[-1].id},
+    ]
+    assert await persisted_rows() == expected
 
 
 @pytest.mark.asyncio

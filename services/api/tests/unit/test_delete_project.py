@@ -6,7 +6,9 @@ import uuid
 from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
+from sqlalchemy import delete
 
+from shared.models import CapabilityPreview
 from shared.tests.project_cleanup import PROJECT_BRIEF_TASK_STORY_DELETE_ORDER
 from src.database import get_async_session
 from src.main import app
@@ -58,8 +60,11 @@ def _mock_session(project=None, resolve_user=None):
 
 
 @pytest.fixture(autouse=True)
-def _cleanup_overrides():
+def _cleanup_overrides(monkeypatch):
     """Clean up FastAPI dependency overrides after each test."""
+    monkeypatch.setattr(
+        "src.routers.projects.teardown._cleanup_project_queue_messages", AsyncMock(return_value=0)
+    )
     yield
     app.dependency_overrides.clear()
 
@@ -114,6 +119,7 @@ async def test_delete_project_success():
         "repositories",
         "applications",
         "product_briefs",
+        "capability_previews",
         "requirement_coverages",
         "tasks",
         "runs",
@@ -122,6 +128,14 @@ async def test_delete_project_success():
     assert [
         table for table in delete_order if table in PROJECT_BRIEF_TASK_STORY_DELETE_ORDER
     ] == list(PROJECT_BRIEF_TASK_STORY_DELETE_ORDER)
+    preview_delete = next(
+        call.args[0]
+        for call in session.execute.call_args_list
+        if call.args[0].table.name == "capability_previews"
+    )
+    assert preview_delete.compare(
+        delete(CapabilityPreview).where(CapabilityPreview.project_id == PROJECT_UUID)
+    )
     session.delete.assert_called_once_with(project)
     session.commit.assert_called_once()
 
