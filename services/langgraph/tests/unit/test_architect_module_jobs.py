@@ -30,6 +30,27 @@ def selected_jobs(activated_kit_catalog):
     return module_job_contracts(activated_kit_catalog, [install])
 
 
+def test_repeated_requirements_select_one_verified_job_contract(activated_kit_catalog):
+    install = plan_install_payload(activated_kit_catalog, "tg-channels", INSTALL_PYTHON_VERSION)
+
+    contracts = module_job_contracts(activated_kit_catalog, [install] * 16)
+
+    [contract] = contracts.values()
+    assert contract["package"] == install.package.model_dump(mode="json")
+    assert contract["jobs"]["tg_channels.tick"]["required"] == ["at"]
+    assert contract["timers"] == {"tg_channels.tick": 60}
+
+
+def test_a_later_selection_of_the_same_package_cannot_hide_drift(activated_kit_catalog):
+    from src.catalog_install import InstallRefusal
+
+    install = plan_install_payload(activated_kit_catalog, "tg-channels", INSTALL_PYTHON_VERSION)
+    drifted = install.model_copy(update={"catalog_digest": "0" * 64})
+
+    with pytest.raises(InstallRefusal, match="plan_drift: tg-channels"):
+        module_job_contracts(activated_kit_catalog, [install, drifted])
+
+
 @pytest.mark.parametrize("name", ["tg-channels", "reminders"])
 def test_planning_job_facts_match_the_pinned_native_registry_composition(
     activated_kit_catalog, name

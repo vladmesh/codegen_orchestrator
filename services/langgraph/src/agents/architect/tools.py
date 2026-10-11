@@ -44,12 +44,13 @@ from shared.contracts.dto.catalog_install import CatalogInstall
 from shared.contracts.dto.product_brief import RequirementCoverageCreate
 from shared.contracts.dto.task import TaskCreate, TaskStatus, TaskType
 
-from ...catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, plan_install_payload
+from ...catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal
 from ...clients.api import api_client
 from ...kit_catalog import restore_install_snapshot
 from ...planning_module_jobs import (
     module_criteria_error,
     module_job_contracts,
+    plan_module_install,
     selected_install_closures,
 )
 
@@ -242,8 +243,7 @@ async def plan_install(
         return {"error": "catalog_unavailable"}
     try:
         snapshot = restore_install_snapshot(kit_install_snapshot)
-        payload = plan_install_payload(snapshot, name, INSTALL_PYTHON_VERSION)
-        module_job_contracts(snapshot, [payload])
+        payload, _ = plan_module_install(snapshot, name, INSTALL_PYTHON_VERSION)
     except (InstallRefusal, ValueError) as error:
         return {"error": str(error)}
     return await create_install_task(

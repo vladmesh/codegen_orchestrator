@@ -11,7 +11,7 @@ from shared.contracts.acceptance import parse_scheduled_behaviours
 from shared.contracts.dto.catalog_install import CatalogInstall
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 
-from .catalog_install import InstallRefusal, plan_install_payload, selected_package_manifest
+from .catalog_install import InstallRefusal, resolve_install_payload
 from .kit_catalog import KitCatalog
 
 
@@ -27,38 +27,58 @@ def selected_install_closures(tasks: list[TaskDTO]) -> list[CatalogInstall]:
 def module_job_contracts(catalog: KitCatalog, installs: list[CatalogInstall]) -> dict[str, dict]:
     """Resolve only selected releases; any drift or invalid schema refuses planning."""
     contracts = {}
+    resolved: dict[tuple[str, str], CatalogInstall] = {}
     for install in installs:
         name = install.package.name
-        if plan_install_payload(catalog, name, install.python_version) != install:
+        key = (name, install.python_version)
+        if key not in resolved:
+            current, jobs = plan_module_install(catalog, name, install.python_version)
+            _merge_job_contracts(contracts, jobs)
+            resolved[key] = current
+        # Reuse only this invocation's resolution, comparing every selected closure.
+        if resolved[key] != install:
             raise InstallRefusal(f"plan_drift: {name}")
-        manifest = selected_package_manifest(catalog, name)
-        # This is the installed loader's namespace rule, including packages with no jobs.
-        namespace = _package_prefix(manifest.name)
-        if namespace in contracts and contracts[namespace]["package"] != install.package.model_dump(
-            mode="json"
-        ):
+    return contracts
+
+
+def _merge_job_contracts(contracts: dict[str, dict], jobs: dict[str, dict]) -> None:
+    for namespace, contract in jobs.items():
+        if namespace in contracts and contracts[namespace]["package"] != contract["package"]:
             raise InstallRefusal(f"module_job_namespace_conflict: {namespace}")
-        jobs = {
-            f"{namespace}.{local}": schema
-            for local, schema in manifest.jobs_schema["properties"].items()
-        }
-        try:
-            for schema in jobs.values():
-                Draft202012Validator.check_schema(schema)
-        except SchemaError as error:
-            raise InstallRefusal(f"invalid_job_schema: {name}: {error.message}") from error
-        contracts[namespace] = {
+        contracts[namespace] = contract
+
+
+def plan_module_install(
+    catalog: KitCatalog, name: str, python_version: str
+) -> tuple[CatalogInstall, dict[str, dict]]:
+    """Resolve a new selection and its job facts through one native manifest read."""
+    install, manifest = resolve_install_payload(catalog, name, python_version)
+    # This is the installed loader's namespace rule, including packages with no jobs.
+    namespace = _package_prefix(manifest.name)
+    jobs = {
+        f"{namespace}.{local}": schema
+        for local, schema in manifest.jobs_schema["properties"].items()
+    }
+    try:
+        for schema in jobs.values():
+            Draft202012Validator.check_schema(schema)
+    except SchemaError as error:
+        raise InstallRefusal(f"invalid_job_schema: {manifest.name}: {error.message}") from error
+    return install, {
+        namespace: {
             "package": install.package.model_dump(mode="json"),
             "catalog": install.catalog.model_dump(mode="json"),
             "catalog_digest": install.catalog_digest,
             "tooling_commit": install.tooling_commit,
-            "manifest_sha256": hashlib.sha256(catalog.manifests[name].encode()).hexdigest(),
+            "manifest_sha256": hashlib.sha256(
+                catalog.manifests[manifest.name].encode()
+            ).hexdigest(),
             "jobs": jobs,
             "timers": {
                 f"{namespace}.{timer.job}": timer.every_seconds for timer in manifest.timers
             },
         }
-    return contracts
+    }
 
 
 def module_jobs_briefing(contracts: dict[str, dict]) -> str:

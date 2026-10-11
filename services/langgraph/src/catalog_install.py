@@ -61,6 +61,14 @@ def load_catalog_binding(content: str) -> Binding | BindingV2:
 def plan_install_payload(
     snapshot: KitCatalogAnswer, name: str, python_version: str
 ) -> CatalogInstall:
+    payload, _ = resolve_install_payload(snapshot, name, python_version)
+    return payload
+
+
+def resolve_install_payload(
+    snapshot: KitCatalogAnswer, name: str, python_version: str
+) -> tuple[CatalogInstall, PackageManifest]:
+    """Keep the validated manifest alongside the closure it resolved."""
     if not isinstance(snapshot, KitCatalog):
         raise InstallRefusal("catalog_unavailable: no install task can be created")
     if snapshot.commit is None or snapshot.repository is None or not snapshot.catalog_sha256:
@@ -123,7 +131,7 @@ def plan_install_payload(
         )
     except ValueError as error:
         raise InstallRefusal(f"invalid_binding_contract: {error}") from error
-    return CatalogInstall(
+    payload = CatalogInstall(
         package=InstallComponent(
             name=name,
             distribution=package.distribution,
@@ -147,3 +155,4 @@ def plan_install_payload(
             catalog_sha256=snapshot.catalog_sha256,
         ),
     )
+    return payload, manifest

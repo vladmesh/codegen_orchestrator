@@ -89,6 +89,7 @@ from ..llm.chain import ChannelUsage
 from ..planning_module_jobs import (
     module_job_contracts,
     module_jobs_briefing,
+    plan_module_install,
     selected_install_closures,
 )
 from ._base import start_worker, validate_queued_message
@@ -902,10 +903,10 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
             else:
                 lines.append("  binding product settings: " + json.dumps(schemas))
             try:
-                payload = plan_install_payload(catalog, package.name, INSTALL_PYTHON_VERSION)
+                _, jobs = plan_module_install(catalog, package.name, INSTALL_PYTHON_VERSION)
                 lines.append(
                     "  released job contract (read-only; applies if selected): "
-                    + json.dumps(module_job_contracts(catalog, [payload]), sort_keys=True)
+                    + json.dumps(jobs, sort_keys=True)
                 )
             except InstallRefusal as error:
                 lines.append(f"  module job contract refused: {error}")
@@ -1454,10 +1455,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
                 )
             if isinstance(planned, dict) and "status" in planned:
                 return planned
-            installs, covered = planned
-            selected_module_jobs = module_job_contracts(
-                catalog, [item.install for item in capability_plan.modules]
-            )
+            installs, covered, selected_module_jobs = planned
             if not _needs_model(capability_plan, planning, covered):
                 # Every requirement is a module the stored plan installs: nothing is left
                 # for a model to decide, so none is asked.
@@ -1631,7 +1629,7 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
     planning: _PlanningAttempt,
     usage: ChannelUsage,
     log,
-) -> tuple[dict[str, str], dict[str, str]] | dict:
+) -> tuple[dict[str, str], dict[str, str], dict[str, dict]] | dict:
     """Create the INSTALL tasks the confirmed brief's stored plan selected.
 
     The plan's closures are checked against the activated snapshot read now — the same
@@ -1640,7 +1638,7 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
     are covered by its install task, except a `module_with_glue` route's: those stay
     outstanding for feature tasks planned after the install, and admission refuses the
     plan until such a task covers them. Returns `(install task per request, covering task
-    per requirement)`, or the recorded refusal.
+    per requirement, verified job contracts)`, or the recorded refusal.
     """
     if (catalog.commit, catalog.digest, catalog.catalog_sha256) != (
         plan.activation.commit,
@@ -1650,21 +1648,14 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
         return await _refuse_capability_plan(
             msg, "catalog_provenance_mismatch", planning, usage, log
         )
-    for item in plan.modules:
-        try:
-            current = plan_install_payload(
-                catalog, item.install.package.name, item.install.python_version
-            )
-            module_job_contracts(catalog, [item.install])
-        except InstallRefusal as refusal:
-            log.error("architect_capability_plan_unresolvable", detail=str(refusal))
-            return await _refuse_capability_plan(
-                msg, f"plan_drift: {item.request_id}", planning, usage, log
-            )
-        if current != item.install:
-            return await _refuse_capability_plan(
-                msg, f"plan_drift: {item.request_id}", planning, usage, log
-            )
+    try:
+        jobs = module_job_contracts(catalog, [item.install for item in plan.modules])
+    except InstallRefusal as refusal:
+        log.error("architect_capability_plan_unresolvable", detail=str(refusal))
+        requests = ", ".join(item.request_id for item in plan.modules)
+        return await _refuse_capability_plan(
+            msg, f"plan_drift: {requests}: {refusal}", planning, usage, log
+        )
     installs: dict[str, str] = {}
     covered: dict[str, str] = {}
     # One INSTALL per closure: two requests selecting the same capability share it. The
@@ -1705,7 +1696,7 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
             if "error" in coverage:
                 raise RuntimeError(f"capability install coverage refused: {coverage['error']}")
             covered[requirement_id] = task_id
-    return installs, covered
+    return installs, covered, jobs
 
 
 def _needs_model(plan: CapabilityPlan, planning: _PlanningAttempt, covered: dict) -> bool:
