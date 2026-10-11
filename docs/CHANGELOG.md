@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- Admin console v2: `GET /api/admin/v2/{attention,journeys,topology}` read models and Attention, Journey and
+  Atlas screens, so one story is traceable from brief to running container without five pages.
 - QA handoff of a legacy `service-template` bot skips the kit temporary-access grant it cannot serve;
   its env allowlist admits the QA identity, so the grant no longer parks the story.
 - The deploy secret resolver no longer requires `USERS_GRANT_CAPABILITY` from a legacy `service-template`

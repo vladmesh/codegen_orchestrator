@@ -147,6 +147,7 @@ app.include_router(routers.health.router)
 # the same gate as the rest of the API rather than beside /health.
 app.include_router(routers.debug.router, prefix="/api")
 app.include_router(routers.admin_overview.router, prefix="/api")
+app.include_router(routers.admin_console.router, prefix="/api")
 app.include_router(routers.users.router, prefix="/api")
 app.include_router(routers.projects.router, prefix="/api")
 app.include_router(routers.promo_codes.router, prefix="/api")
