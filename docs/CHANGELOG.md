@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - QA handoff of a legacy `service-template` bot skips the kit temporary-access grant it cannot serve;
   its env allowlist admits the QA identity, so the grant no longer parks the story.
+- The deploy secret resolver no longer requires `USERS_GRANT_CAPABILITY` from a legacy `service-template`
+  bot, which has no kit users core; its contract was refused before every deploy.
 - Capture buyer controller evidence through the existing writer hook, removing repeated disk
   replacements from unit tests while preserving native saves and dedicated persistence coverage.
 - Move full changed-input criteria refusal checks to LangGraph service CI and retain cheap unit
