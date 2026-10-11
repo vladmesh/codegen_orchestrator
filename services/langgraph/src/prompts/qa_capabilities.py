@@ -56,6 +56,12 @@ when it is stated through what that user can do:
 
 {actions}.
 
+For an owner-only Telegram requirement, the owner's reachable /start response \
+can be checked by this one QA user. A denial check needing a different Telegram \
+identity cannot be checked with this account: do not fabricate a second identity \
+or mark its denial as passed. Keep authorization in the implementation; attribute \
+the unsupported check to its requirement using the return rule below.
+
 A scheduled job is written in the form "Scheduled Behaviours" gives. QA never \
 performs:
 

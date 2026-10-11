@@ -40,3 +40,6 @@ class ArchitectState(AgentState):
     kit_catalog_packages: list[str] | None
 
     kit_install_snapshot: dict | None
+    #: Read-only contracts of frozen/previously selected module namespaces. This
+    #: grants no catalog selection or install capability to a frozen planning run.
+    selected_module_jobs: dict[str, dict]

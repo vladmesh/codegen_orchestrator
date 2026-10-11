@@ -190,6 +190,22 @@ def install_snapshot(catalog: KitCatalog) -> dict:
     }
 
 
+def restore_install_snapshot(snapshot: dict) -> KitCatalog:
+    """Rehydrate injected snapshot bytes, refusing a changed raw catalog."""
+    raw = snapshot["catalog"]
+    if hashlib.sha256(raw.encode()).hexdigest() != snapshot["catalog_sha256"]:
+        raise ValueError("catalog_provenance_mismatch")
+    return replace(
+        installable(parse_catalog(raw), snapshot["source"], snapshot["core_version"]),
+        raw=raw,
+        bindings=snapshot["bindings"],
+        manifests=snapshot["manifests"],
+        repository=snapshot["repository"],
+        commit=snapshot["commit"],
+        catalog_sha256=snapshot["catalog_sha256"],
+    )
+
+
 class KitCatalogReader:
     """Reads the catalog from one URL, answering again from a read younger than `ttl`.
 

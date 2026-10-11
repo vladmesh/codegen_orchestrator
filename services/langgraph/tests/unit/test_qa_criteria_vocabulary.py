@@ -9,6 +9,8 @@ the bot reaches the executor, which sends it as the QA user from its sandbox.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from shared.contracts.dto.qa_verification import QAUnverifiedOrigin
@@ -17,6 +19,7 @@ from src.agents.qa.acceptance import prepare_central_qa_criteria
 from src.consumers._qa_runner import (
     QAResult,
     apply_unverifiable_criteria,
+    parse_qa_result,
     settle_unverified_checks,
 )
 from src.prompts.qa import build_qa_prompt
@@ -27,6 +30,36 @@ TEXT_ITEM = '- Telegram: sending "coffee 250" replies with "Recorded 250"'
 BUTTON_ITEM = "- Telegram: pressing the inline button Undo removes the last expense"
 GET_ITEM = "- GET /api/transactions lists the recorded transaction"
 SEPT_15_CRITERIA = "\n".join((POST_ITEM, PHOTO_ITEM, TEXT_ITEM, BUTTON_ITEM, GET_ITEM))
+
+
+def test_owner_start_passes_while_second_identity_denial_remains_an_attributed_gap():
+    owner = "Telegram: owner /start responds with welcome (requirement owner-start)"
+    denial = "Telegram: a different user is denied (requirement owner-only)"
+    result = settle_unverified_checks(
+        parse_qa_result(
+            json.dumps(
+                {
+                    "pass": False,
+                    "summary": "One QA Telegram identity",
+                    "checks": [
+                        {"name": owner, "pass": True, "detail": "welcome received"},
+                        {
+                            "name": denial,
+                            "pass": False,
+                            "cause": "qa_capability",
+                            "detail": "QA cannot act as a second Telegram identity",
+                        },
+                    ],
+                }
+            )
+        )
+    )
+    assert result.passed is True
+    assert result.checks == [{"name": owner, "pass": True, "detail": "welcome received"}]
+    [gap] = result.unverified_checks
+    assert gap.name == denial and "requirement owner-only" in gap.name
+    assert gap.origin is QAUnverifiedOrigin.EXECUTOR
+    assert "second Telegram identity" in gap.reason
 
 
 EXECUTOR = None

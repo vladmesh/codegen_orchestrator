@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- Architect resolves each selected module closure once per planning check and reuses its verified
+  job facts, keeping duplicate selection and reminder planning within the unit budget.
+- Architect planning reads pinned module job schemas and timers and refuses unknown names
+  before saving QA criteria, preserving package ownership and the single QA identity boundary.
 - Owned-project DELETE removes permanent and temporary grant dependencies before Runs,
   so completed teardown can commit deletion while retaining cost and admission history.
 - HTTP completion CI checkouts include the required Makefile, so native proxy setup

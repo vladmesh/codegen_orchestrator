@@ -86,6 +86,12 @@ from ..llm import (
     unconfigured_channel_env,
 )
 from ..llm.chain import ChannelUsage
+from ..planning_module_jobs import (
+    module_job_contracts,
+    module_jobs_briefing,
+    plan_module_install,
+    selected_install_closures,
+)
 from ._base import start_worker, validate_queued_message
 from ._events import publish_story_event
 from ._live_work import live_work_settled, live_work_unsettled
@@ -844,6 +850,10 @@ def _settings_briefing(attempt: _PlanningAttempt) -> str:
 #: The heading of the catalog block; the prompt's "Capability Shape" points at it by name.
 KIT_CATALOG_HEADING = "Kit package catalog"
 
+# Like the PO's catalog renderer, keep only the reader's latest immutable snapshot.
+# Selected closures are still verified independently before tasks or criteria writes.
+_rendered_kit_catalog: tuple[KitCatalog, str] | None = None
+
 
 def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
     """The kit packages this run may plan, read live from the kit's catalog.
@@ -852,6 +862,7 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
     capability. When the catalog could not be read the block says so: no package can be
     planned this time, and nothing stands in for the list.
     """
+    global _rendered_kit_catalog
     if not isinstance(catalog, KitCatalog):
         return (
             f"\n\n{KIT_CATALOG_HEADING}: unavailable this time ({catalog.source}: "
@@ -861,6 +872,8 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
             "or, where only a package could meet a requirement, return it with "
             "returned_reason saying the kit package catalog was unavailable."
         )
+    if _rendered_kit_catalog is not None and _rendered_kit_catalog[0] is catalog:
+        return _rendered_kit_catalog[1]
     rule = (
         "Plan a capability as a kit package only when a package listed here covers it, "
         "and install it only as `kit add <name>` with the name exactly as listed: never "
@@ -889,6 +902,14 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
                 lines.append(f"  binding settings refused: {error}")
             else:
                 lines.append("  binding product settings: " + json.dumps(schemas))
+            try:
+                _, jobs = plan_module_install(catalog, package.name, INSTALL_PYTHON_VERSION)
+                lines.append(
+                    "  released job contract (read-only; applies if selected): "
+                    + json.dumps(jobs, sort_keys=True)
+                )
+            except InstallRefusal as error:
+                lines.append(f"  module job contract refused: {error}")
         lines.append(
             "  recommendations: "
             + "; ".join(f"{item.library}: {item.why}" for item in package.recommended_with)
@@ -910,7 +931,7 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
         + ", ".join(f.name for f in item.functions)
         for item in catalog.libraries
     )
-    return (
+    briefing = (
         heading
         + "\n".join(entries)
         + "\n"
@@ -923,6 +944,8 @@ def _kit_catalog_briefing(catalog: KitCatalogAnswer) -> str:
             "and the default binding. Do not create separate parser/backend/handler coding tasks."
         )
     )
+    _rendered_kit_catalog = (catalog, briefing)
+    return briefing
 
 
 def _capability_plan_briefing(plan: CapabilityPlan, installs: dict[str, str]) -> str:
@@ -1423,6 +1446,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
         reset_task_chain()
         installs: dict[str, str] = {}
         covered: dict[str, str] = {}
+        selected_module_jobs = {}
         if capability_plan is not None:
             heartbeat = _planning_heartbeat(planning, log)
             async with heartbeat:
@@ -1431,11 +1455,18 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
                 )
             if isinstance(planned, dict) and "status" in planned:
                 return planned
-            installs, covered = planned
+            installs, covered, selected_module_jobs = planned
             if not _needs_model(capability_plan, planning, covered):
                 # Every requirement is a module the stored plan installs: nothing is left
                 # for a model to decide, so none is asked.
                 return await _finish_plan(msg, story_status, usage, planning, redis, log)
+        elif isinstance(catalog, KitCatalog):
+            try:
+                selected_module_jobs = module_job_contracts(
+                    catalog, selected_install_closures(tasks)
+                )
+            except InstallRefusal as error:
+                return await _refuse_replanned_install(msg, str(error), planning, usage, log)
         if scaffold_deferred:
             scaffold_result = await _await_scaffold_before_model(msg, planning, log)
             if scaffold_result is not None:
@@ -1474,6 +1505,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             else _kit_catalog_briefing(catalog)
         )
         selectable = capability_plan is None and isinstance(catalog, KitCatalog)
+        user_content += module_jobs_briefing(selected_module_jobs)
 
         initial_state = {
             "messages": [{"role": "user", "content": user_content}],
@@ -1482,6 +1514,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             "telegram_chat_id": msg.telegram_chat_id,
             **_planning_state(planning),
             "kit_install_snapshot": install_snapshot(catalog) if selectable else None,
+            "selected_module_jobs": selected_module_jobs,
             "kit_catalog_packages": (
                 sorted(catalog.names) if selectable else [] if capability_plan else None
             ),
@@ -1596,7 +1629,7 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
     planning: _PlanningAttempt,
     usage: ChannelUsage,
     log,
-) -> tuple[dict[str, str], dict[str, str]] | dict:
+) -> tuple[dict[str, str], dict[str, str], dict[str, dict]] | dict:
     """Create the INSTALL tasks the confirmed brief's stored plan selected.
 
     The plan's closures are checked against the activated snapshot read now — the same
@@ -1605,26 +1638,24 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
     are covered by its install task, except a `module_with_glue` route's: those stay
     outstanding for feature tasks planned after the install, and admission refuses the
     plan until such a task covers them. Returns `(install task per request, covering task
-    per requirement)`, or the recorded refusal.
+    per requirement, verified job contracts)`, or the recorded refusal.
     """
-    if (catalog.commit, catalog.digest) != (plan.activation.commit, plan.activation.catalog_digest):
+    if (catalog.commit, catalog.digest, catalog.catalog_sha256) != (
+        plan.activation.commit,
+        plan.activation.catalog_digest,
+        plan.activation.catalog_sha256,
+    ):
         return await _refuse_capability_plan(
             msg, "catalog_provenance_mismatch", planning, usage, log
         )
-    for item in plan.modules:
-        try:
-            current = plan_install_payload(
-                catalog, item.install.package.name, item.install.python_version
-            )
-        except InstallRefusal as refusal:
-            log.error("architect_capability_plan_unresolvable", detail=str(refusal))
-            return await _refuse_capability_plan(
-                msg, f"plan_drift: {item.request_id}", planning, usage, log
-            )
-        if current != item.install:
-            return await _refuse_capability_plan(
-                msg, f"plan_drift: {item.request_id}", planning, usage, log
-            )
+    try:
+        jobs = module_job_contracts(catalog, [item.install for item in plan.modules])
+    except InstallRefusal as refusal:
+        log.error("architect_capability_plan_unresolvable", detail=str(refusal))
+        requests = ", ".join(item.request_id for item in plan.modules)
+        return await _refuse_capability_plan(
+            msg, f"plan_drift: {requests}: {refusal}", planning, usage, log
+        )
     installs: dict[str, str] = {}
     covered: dict[str, str] = {}
     # One INSTALL per closure: two requests selecting the same capability share it. The
@@ -1665,7 +1696,7 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
             if "error" in coverage:
                 raise RuntimeError(f"capability install coverage refused: {coverage['error']}")
             covered[requirement_id] = task_id
-    return installs, covered
+    return installs, covered, jobs
 
 
 def _needs_model(plan: CapabilityPlan, planning: _PlanningAttempt, covered: dict) -> bool:

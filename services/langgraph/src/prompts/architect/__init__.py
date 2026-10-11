@@ -191,16 +191,17 @@ and an app-level set/readback test pass.
 
 ## Scheduled Behaviours
 
-A must-requirement sometimes asks for something the product does on a schedule \
-or after a delay rather than in answer to a request — a nightly digest, \
-a periodic sync, a reminder. Production fires no product job on a clock; \
-the core schedules nothing. Plan an in-process timer in the backend or bot \
-that calls the declared job for any behaviour that must run on a schedule. \
+A scheduled requirement uses a selected package job when its contract covers it. \
+Package jobs already have providers and generated declarations; the core delivers \
+their declared timers natively. Use the pinned runtime-qualified names, schemas \
+and timer facts. Never redeclare package jobs in service manifests, modify package \
+code, or add aliases, bridges or duplicate timers. For a service-owned scheduled \
+behaviour, plan an in-process timer in the backend or bot that calls the declared job. \
 `FIRE JOB` remains the QA verification form, not a production scheduler. The core accepts a \
 fire, records the command and emits `job_fired`, and whichever optional module \
 declared `provides: ["jobs.fire"]` subscribes to that event and does the work.
 
-Beyond the timer, your plan owes such a behaviour two things:
+For a service-owned behaviour, beyond the timer your plan owes two things:
 
 - **The declaration.** The product must declare the behaviour by name in its \
 own `services/<service>/manifest.yaml` under `jobs_schema`, with an arguments \
@@ -228,9 +229,10 @@ of the whole line:
 
     - FIRE JOB daily_digest WITH {"languages":["ru","en"]} THEN a digest per configured language
 
-The `<name>` is character for character the string the manifest declares — not \
-a paraphrase, not a human-readable title — and the arguments, when present, \
-satisfy the schema the manifest declared for them. QA reads the name off this \
+For a service-owned job, `<name>` is character for character the string the manifest declares, \
+not a paraphrase. For a package job, use the selected contract's exact runtime-qualified \
+name. WITH must supply all required schema arguments, including date-time `at` \
+for a package timer job; QA injects no arguments. QA reads the name off this \
 line and off nothing else; a line the platform cannot spell exactly offers no \
 fire at all.
 

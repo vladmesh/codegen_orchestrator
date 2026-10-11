@@ -213,9 +213,10 @@ class TestScheduledBehaviourDirectives:
         assert "additionalproperties: false" in lower
         assert "job name not declared" in lower
 
-    def test_says_the_core_schedules_nothing_and_the_plan_owes_a_provider(self):
-        lower = SYSTEM_PROMPT.lower()
-        assert "the core schedules nothing" in lower
+    def test_package_timers_are_native_and_service_jobs_need_a_provider(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "the core delivers their declared timers natively" in prompt
+        assert "for a service-owned behaviour" in prompt
         assert 'provides: ["jobs.fire"]' in SYSTEM_PROMPT
         assert "subscribes to `job_fired`" in SYSTEM_PROMPT
 
@@ -228,10 +229,12 @@ class TestScheduledBehaviourDirectives:
         assert "durable output" in lower
         assert "dispatch_status" in SYSTEM_PROMPT
 
-    def test_production_schedule_needs_an_in_process_timer_calling_the_declared_job(self):
+    def test_service_schedule_needs_a_timer_while_package_timers_keep_their_ownership(self):
         prompt = " ".join(SYSTEM_PROMPT.lower().split())
         assert "notifications_worker" not in SYSTEM_PROMPT
-        assert "production fires no product job on a clock" in prompt
+        assert "for a service-owned scheduled behaviour" in prompt
+        assert "never redeclare package jobs in service manifests" in prompt
+        assert "aliases, bridges or duplicate timers" in prompt
         assert "in-process timer in the backend or bot" in prompt
         assert "calls the declared job" in prompt
         assert "`fire job` remains the qa verification form" in prompt
