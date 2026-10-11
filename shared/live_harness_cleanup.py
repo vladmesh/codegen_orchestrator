@@ -17,6 +17,7 @@ import structlog
 import yaml
 
 from shared.clients.github import GitHubAppClient
+from shared.clients.registry import MANIFEST_ACCEPT
 from shared.contracts.env_contract import merge_env_contract_fragments
 from shared.deployment_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 from shared.generated_contracts import (
@@ -598,14 +599,15 @@ def _registry_credentials() -> tuple[str, str, str]:
 
 async def cleanup_registry_repository(*, repository: str) -> None:
     base, username, password = _registry_credentials()
-    headers = {"Accept": "application/vnd.docker.distribution.manifest.v2+json"}
+    headers = {"Accept": MANIFEST_ACCEPT}
     async with httpx.AsyncClient(auth=(username, password), timeout=20) as client:
         tags = await client.get(f"{base}/v2/{repository}/tags/list")
         if tags.status_code == HTTP_NOT_FOUND:
             return
         tags.raise_for_status()
+        discovered_tags = tags.json().get("tags") or []
         digests = set()
-        for tag in tags.json().get("tags") or []:
+        for tag in discovered_tags:
             manifest_url = f"{base}/v2/{repository}/manifests/{tag}"
             manifest = await client.get(manifest_url, headers=headers)
             if manifest.status_code == HTTP_NOT_FOUND:
@@ -622,11 +624,12 @@ async def cleanup_registry_repository(*, repository: str) -> None:
                 deleted.raise_for_status()
 
         verify = await client.get(f"{base}/v2/{repository}/tags/list")
-        if verify.status_code == HTTP_NOT_FOUND:
-            return
-        verify.raise_for_status()
+        remaining_tags = []
+        if verify.status_code != HTTP_NOT_FOUND:
+            verify.raise_for_status()
+            remaining_tags = verify.json().get("tags") or []
         live_tags = []
-        for tag in verify.json().get("tags") or []:
+        for tag in sorted(set(discovered_tags) | set(remaining_tags)):
             manifest = await client.get(f"{base}/v2/{repository}/manifests/{tag}", headers=headers)
             if manifest.status_code == HTTP_NOT_FOUND:
                 continue
@@ -634,6 +637,15 @@ async def cleanup_registry_repository(*, repository: str) -> None:
             live_tags.append(tag)
         if live_tags:
             raise RuntimeError(f"registry tags remain for {repository}: {live_tags}")
+        # A disappeared tag/listing does not establish absence of a known manifest.
+        for digest in digests:
+            manifest = await client.get(
+                f"{base}/v2/{repository}/manifests/{digest}", headers=headers
+            )
+            if manifest.status_code == HTTP_NOT_FOUND:
+                continue
+            manifest.raise_for_status()
+            raise RuntimeError(f"registry manifest remains for {repository}: {digest}")
 
 
 def build_remote_diagnostics_command(project_name: str) -> str:
@@ -812,32 +824,40 @@ async def _registry_repositories_residue(repositories: list[str]) -> dict[str, A
         base, username, password = _registry_credentials()
     except RuntimeError as error:
         return {RESIDUE_ERROR_KEY: str(error)}
-    headers = {"Accept": "application/vnd.docker.distribution.manifest.v2+json"}
+    headers = {"Accept": MANIFEST_ACCEPT}
     findings: list[str] = []
-    async with httpx.AsyncClient(auth=(username, password), timeout=20) as client:
-        for repository in repositories:
-            listing = await client.get(f"{base}/v2/{repository}/tags/list")
-            if listing.status_code == HTTP_NOT_FOUND:
-                continue
-            if listing.status_code != HTTP_OK:
-                return {
-                    RESIDUE_ERROR_KEY: (
-                        f"GET /v2/{repository}/tags/list answered {listing.status_code}"
-                    )
-                }
-            for tag in listing.json().get("tags") or []:
-                manifest = await client.get(
-                    f"{base}/v2/{repository}/manifests/{tag}", headers=headers
-                )
-                if manifest.status_code == HTTP_NOT_FOUND:
+    try:
+        async with httpx.AsyncClient(auth=(username, password), timeout=20) as client:
+            for repository in repositories:
+                listing = await client.get(f"{base}/v2/{repository}/tags/list")
+                if listing.status_code == HTTP_NOT_FOUND:
                     continue
-                if manifest.status_code != HTTP_OK:
+                if listing.status_code != HTTP_OK:
                     return {
                         RESIDUE_ERROR_KEY: (
-                            f"GET /v2/{repository}/manifests/{tag} answered {manifest.status_code}"
+                            f"GET /v2/{repository}/tags/list answered {listing.status_code}"
                         )
                     }
-                findings.append(f"{repository}:{tag}")
+                for tag in listing.json().get("tags") or []:
+                    manifest = await client.get(
+                        f"{base}/v2/{repository}/manifests/{tag}", headers=headers
+                    )
+                    if manifest.status_code == HTTP_NOT_FOUND:
+                        continue
+                    if manifest.status_code != HTTP_OK:
+                        return {
+                            RESIDUE_ERROR_KEY: (
+                                f"GET /v2/{repository}/manifests/{tag} "
+                                f"answered {manifest.status_code}"
+                            )
+                        }
+                    if not manifest.headers.get("Docker-Content-Digest"):
+                        return {
+                            RESIDUE_ERROR_KEY: f"manifest digest missing for {repository}:{tag}"
+                        }
+                    findings.append(f"{repository}:{tag}")
+    except httpx.HTTPError as error:
+        return {RESIDUE_ERROR_KEY: f"registry could not be read: {type(error).__name__}"}
     return {RESIDUE_FINDINGS_KEY: findings}
 
 

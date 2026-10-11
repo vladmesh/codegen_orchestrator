@@ -31,6 +31,11 @@ body already failed. The one exception is stated rather than tolerated: the data
 itself refuses to delete are declared retained, proven still there and reported — see **Database
 teardown, derived from the catalog**.
 
+Registry cleanup and residue reads accept the native OCI manifest/index and Docker schema2
+manifest/list representations. Cleanup deletes each discovered digest once within its exact
+repository, then reads both captured tags/digests and any remaining listed tags. A missing or empty
+tag listing cannot hide a retained known manifest; unreadable responses fail verification.
+
 Scaffold stream deletion is not treated as cancellation. Each execution atomically checks the
 project cancel marker and registers its own expiring lease before external work. Concurrent or
 reclaimed jobs therefore hold distinct tokens. Teardown writes the cancel marker and waits for all

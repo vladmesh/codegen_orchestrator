@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- Scoped registry cleanup and residue reads negotiate OCI and Docker manifests; cleanup verifies
+  captured tags and digests after deletion so retained images cannot pass as absent.
 - Project DELETE removes capability previews after their dependent briefs, so completed teardown
   can commit deletion without a preview foreign-key violation.
 - The synthetic buyer validates Telegram targets once per connected client and discards them on

@@ -31,7 +31,7 @@ _COMMIT_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 # for a single-platform build and an index when it builds several, and an older
 # daemon still writes the Docker media types, so all four are accepted rather
 # than guessing which one this registry holds.
-_MANIFEST_ACCEPT = ", ".join(
+MANIFEST_ACCEPT = ", ".join(
     (
         "application/vnd.oci.image.index.v1+json",
         "application/vnd.oci.image.manifest.v1+json",
@@ -119,7 +119,7 @@ class DockerRegistryClient:
             async with httpx.AsyncClient(
                 auth=(self._username, self._password), timeout=self._timeout
             ) as client:
-                response = await client.get(url, headers={"Accept": _MANIFEST_ACCEPT})
+                response = await client.get(url, headers={"Accept": MANIFEST_ACCEPT})
         except httpx.HTTPError as error:
             raise RegistryError(
                 f"registry could not be read for {repository}:{tag}: {type(error).__name__}"
