@@ -20,6 +20,11 @@ visibility is delayed. It sends nothing further while native work can start and 
 disconnected throughout engineering/deploy/QA. Product probes reconnect only after correlated
 terminal deployment and typed QA passed. Failed, blocked, stopped or untyped QA cannot pass.
 
+Each connected client resolves a peer's username once and verifies the previously validated
+numeric id, username and bot status before dispatch. Reads, sends and callbacks reuse that
+client's validated target, including during reply polling. Disconnect discards the targets;
+reconnect requires fresh validation. A mismatched or unresolved peer stops the phase.
+
 Interrupted-run continuation, cleanup reconciliation, concurrent admission and generic
 orphan/cancellation recovery belong to `issue:c369b68e3d23896c2d6d`. Interrupted evidence
 remains inspectable. Another fresh run of the same operation refuses existing evidence and

@@ -118,6 +118,7 @@ class TelethonPort:
     redaction: Redaction
     timeout: float = CALL_TIMEOUT_SECONDS
     _client: Any = field(default=None, init=False, repr=False)
+    _targets: dict[Peer, Any] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def connected(self) -> bool:
@@ -153,6 +154,7 @@ class TelethonPort:
             raise TransportError("connect", f"session refused: {type(exc).__name__}") from None
         # Kept from here, before any await could open a connection: whatever fails
         # in setup, the caller's disconnect still reaches this client.
+        self._targets.clear()
         self._client = client
         await self._call(client.connect(), "connect")
         if not await self._call(client.is_user_authorized(), "authorization"):
@@ -164,6 +166,7 @@ class TelethonPort:
         if client is not None:
             await self._call(client.disconnect(), "disconnect")
             self._client = None
+            self._targets.clear()
 
     def _require(self) -> Any:
         if self._client is None:
@@ -177,27 +180,54 @@ class TelethonPort:
         return int(user.id)
 
     async def resolve(self, username: str) -> Peer:
-        entity = await self._call(self._require().get_entity(f"@{username}"), "resolve")
-        return Peer(
+        client = self._require()
+        entity = await self._call(client.get_entity(f"@{username}"), "resolve")
+        peer = Peer(
             id=int(entity.id),
             username=str(getattr(entity, "username", "") or ""),
             is_bot=bool(getattr(entity, "bot", False)),
         )
+        self._targets[peer] = await self._call(client.get_input_entity(entity), "resolve")
+        return peer
+
+    async def _target(self, peer: Peer) -> Any:
+        """Acquire once per client, bound to the complete validated peer identity.
+
+        A numeric id alone needs Telethon's transient entity cache, which is lost
+        at every disconnect. Resolve and check identity on first use after reconnect,
+        then reuse the native target through this client's reads, sends and callbacks.
+        """
+        client = self._require()
+        if peer in self._targets:
+            return self._targets[peer]
+        entity = await self._call(client.get_entity(f"@{peer.username}"), "resolve")
+        if (
+            entity.id != peer.id
+            or str(getattr(entity, "username", "") or "").casefold() != peer.username.casefold()
+            or bool(getattr(entity, "bot", False)) != peer.is_bot
+        ):
+            raise TransportError("resolve", "peer identity mismatch")
+        target = await self._call(client.get_input_entity(entity), "resolve")
+        self._targets[peer] = target
+        return target
 
     async def latest_id(self, peer: Peer) -> int:
-        found = await self._call(self._require().get_messages(peer.id, limit=1), "read")
+        target = await self._target(peer)
+        found = await self._call(self._require().get_messages(target, limit=1), "read")
         return found[0].id if found else 0
 
     async def messages_after(self, peer: Peer, after_id: int) -> list[Message]:
+        target = await self._target(peer)
         found = await self._call(
-            self._require().get_messages(peer.id, min_id=after_id, limit=PAGE), "read"
+            self._require().get_messages(target, min_id=after_id, limit=PAGE), "read"
         )
         return sorted(
             (to_message(item) for item in found if item.id > after_id), key=lambda m: m.id
         )
 
     async def send(self, peer: Peer, text: str) -> Message:
-        sent = await self._call(self._require().send_message(peer.id, text), "send")
+        target = await self._target(peer)
+        sent = await self._call(self._require().send_message(target, text), "send")
         return to_message(sent)
 
     async def press(self, peer: Peer, message_id: int, data: bytes) -> None:
@@ -205,10 +235,9 @@ class TelethonPort:
             GetBotCallbackAnswerRequest,
         )
 
+        target = await self._target(peer)
         await self._call(
-            self._require()(
-                GetBotCallbackAnswerRequest(peer=peer.id, msg_id=message_id, data=data)
-            ),
+            self._require()(GetBotCallbackAnswerRequest(peer=target, msg_id=message_id, data=data)),
             "press",
         )
 
