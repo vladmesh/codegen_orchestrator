@@ -27,6 +27,26 @@ class InstallRefusal(ValueError):
     pass
 
 
+def selected_package_manifest(snapshot: KitCatalog, name: str) -> PackageManifest:
+    """Read the released declaration used by installation and planning alike."""
+    selected = next((item for item in snapshot.packages if item.name == name), None)
+    if selected is None:
+        raise InstallRefusal(f"unknown_package: {name}")
+    if name not in snapshot.manifests:
+        raise InstallRefusal("binding_manifest_unavailable")
+    try:
+        manifest = PackageManifest.model_validate(yaml.safe_load(snapshot.manifests[name]))
+    except (ValueError, yaml.YAMLError) as error:
+        raise InstallRefusal(f"invalid_package_manifest: {error}") from error
+    if (
+        manifest.name != name
+        or manifest.version != selected.version.version
+        or manifest.default_binding != selected.package.default_binding
+    ):
+        raise InstallRefusal("binding_manifest_identity_mismatch")
+    return manifest
+
+
 def load_catalog_binding(content: str) -> Binding | BindingV2:
     """Use the pinned kit's data-only version dispatch on snapshot bytes."""
     with tempfile.TemporaryDirectory(prefix="catalog-binding-") as scratch:
@@ -76,15 +96,7 @@ def plan_install_payload(
     content = snapshot.bindings[name]
     try:
         binding = load_catalog_binding(content)
-        if name not in snapshot.manifests:
-            raise InstallRefusal("binding_manifest_unavailable")
-        manifest = PackageManifest.model_validate(yaml.safe_load(snapshot.manifests[name]))
-        if (
-            manifest.name != name
-            or manifest.version != selected.version.version
-            or manifest.default_binding != package.default_binding
-        ):
-            raise InstallRefusal("binding_manifest_identity_mismatch")
+        manifest = selected_package_manifest(snapshot, name)
     except ValueError as error:
         raise InstallRefusal(f"invalid_binding: {error}") from error
     functions = sorted(

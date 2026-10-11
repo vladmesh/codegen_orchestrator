@@ -10,11 +10,13 @@ itself is the real preview and derivation the PO tool and the API make.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import httpx
 import pytest
+import yaml
 
 from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.contracts.dto.capability_preview import (
@@ -485,6 +487,68 @@ async def test_glue_work_planned_after_the_install_covers_the_requirement(
     assert feature["blocked_by_task_id"] == "task-1"
     assert api.coverage == {"digest": ("plan-live", "task-2", None)}
     assert api.released == ["task-1", "task-2"]
+
+
+@pytest.mark.asyncio
+async def test_frozen_glue_planning_receives_the_installed_job_contract(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, plan = _glue_brief(activated_kit_catalog)
+    api = _PlanApi(brief, plan)
+    graph, seen = _glue_graph(api, cover_with="feature")
+
+    result = await _plan_glue(api, graph)
+
+    assert result["status"] == "success", result
+    [contract] = seen["selected_module_jobs"].values()
+    assert contract["package"] == plan.modules[0].install.package.model_dump(mode="json")
+    assert contract["catalog"] == plan.modules[0].install.catalog.model_dump(mode="json")
+    assert contract["tooling_commit"] == plan.modules[0].install.tooling_commit
+    assert contract["jobs"]["tg_channels.tick"]["required"] == ["at"]
+    assert contract["timers"] == {"tg_channels.tick": 60}
+    assert "tg_channels.tick" in seen["messages"][0]["content"]
+    assert seen["kit_install_snapshot"] is None and seen["kit_catalog_packages"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault", ["missing", "name", "version", "schema", "timer", "yaml", "provenance"]
+)
+async def test_invalid_frozen_package_job_facts_refuse_before_tasks_or_a_model(
+    activated_kit_catalog, kit_catalog_off_github, fault
+):
+    brief, plan = _glue_brief(activated_kit_catalog)
+    manifests = dict(activated_kit_catalog.manifests)
+    raw = yaml.safe_load(manifests["tg-channels"])
+    if fault == "missing":
+        manifests.pop("tg-channels")
+    elif fault == "yaml":
+        manifests["tg-channels"] = "jobs_schema: ["
+    elif fault == "provenance":
+        pass
+    else:
+        if fault in {"name", "version"}:
+            raw[fault] = "another-package" if fault == "name" else "0.1.1"
+        elif fault == "schema":
+            raw["timers"] = []
+            raw["jobs_schema"]["properties"]["tick"]["properties"]["at"]["type"] = "invalid"
+        else:
+            raw["timers"][0]["job"] = "poll"
+        manifests["tg-channels"] = yaml.safe_dump(raw)
+    catalog = replace(activated_kit_catalog, manifests=manifests)
+    if fault == "provenance":
+        catalog = replace(catalog, catalog_sha256="0" * 64)
+    kit_catalog_off_github.read.return_value = catalog
+    api = _PlanApi(brief, plan)
+
+    result = await _plan(api)
+
+    assert result["status"] == "failed", result
+    assert api.task_payloads == [] and api.coverage == {} and api.admit_calls == 0
+    [report] = api.planning_reports
+    assert report.retriable is False
+    assert "CapabilityPlanRefused:" in report.failure.detail
 
 
 class _DraftPlanApi(_PlanApi):
