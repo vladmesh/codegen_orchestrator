@@ -6,6 +6,7 @@ from typing import Final
 PROJECT_BRIEF_TASK_STORY_DELETE_ORDER: Final[tuple[str, ...]] = (
     "requirement_coverages",
     "product_briefs",
+    "capability_previews",
     "tasks",
     "stories",
 )

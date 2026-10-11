@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- Project DELETE removes capability previews after their dependent briefs, so completed teardown
+  can commit deletion without a preview foreign-key violation.
 - The synthetic buyer validates Telegram targets once per connected client and discards them on
   disconnect, so reply polls reuse targets and reconnects require fresh identity validation.
 
