@@ -167,6 +167,9 @@ async def native_third_story(api, api_internal, api_observer, ctx, *, debug_pref
     baseline = parent["readback"]
     with story_scope(ctx, artifact):
         ctx["level1_brief"] = brief(ctx["level1_marker"])
+        # The story scope reset the PO cursor; fence out the earlier stories' events before
+        # this one can notify its owner.
+        ctx["po_input_cursor"] = h.po_input_cursor()
         await h.create_level1_confirmed_brief(api, ctx)
         requested = await api.get(f"/api/stories/{ctx['story_id']}")
         requested.raise_for_status()

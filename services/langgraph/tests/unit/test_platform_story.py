@@ -118,6 +118,7 @@ async def test_third_install_owns_claim_then_deploys_qa_and_revokes_without_engi
         )
 
     monkeypatch.setattr(h, "create_level1_confirmed_brief", create)
+    monkeypatch.setattr(h, "po_input_cursor", lambda: "0-0")
     monkeypatch.setattr(h, "_write_level1_qa_criteria", AsyncMock())
     monkeypatch.setattr(h, "verify_level1_plan_is_this_runs_alone", AsyncMock())
     commands = []
