@@ -28,6 +28,13 @@ const otherYear = new Intl.DateTimeFormat('en-US', {
   hourCycle: 'h23',
 })
 const clock = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+const clockSec = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+
+/** `23:03:41`, for log lines. */
+export function logTime(value: string | number): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '--:--:--' : clockSec.format(date)
+}
 
 /** `Oct 12, 23:03`; the year is added only when it differs from `now`'s. */
 export function shortDateTime(iso: string, now: number): string {

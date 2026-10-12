@@ -69,7 +69,7 @@
     {"id": "run-eng-04", "kind": "engineering", "stage": "build", "task": 4, "actor": "Developer", "start": 145, "end": 230},
     {"id": "run-eng-05", "kind": "engineering", "stage": "build", "task": 5, "actor": "Developer", "start": 200, "end": 285},
     {"id": "ci-run-1", "kind": "engineering", "stage": "review", "task": null, "actor": "GitHub CI", "start": 292, "end": 385, "end_status": "failed",
-     "error": "test_streak_resets_at_local_midnight: streak reset at UTC midnight instead of the user's"},
+     "error": "test_streak_resets_at_midnight: assert 1 == 0 — streak kept after a missed day (UTC date, not the user's)"},
     {"id": "run-eng-06", "kind": "engineering", "stage": "review", "task": 6, "actor": "Developer", "start": 392, "end": 450},
     {"id": "ci-run-2", "kind": "engineering", "stage": "review", "task": null, "actor": "GitHub CI", "start": 452, "end": 482},
     {"id": "run-deploy-1", "kind": "deploy", "stage": "deploy", "task": null, "actor": "Deployer", "start": 492, "end": 548},

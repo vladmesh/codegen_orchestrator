@@ -7,6 +7,8 @@ import { cn, formatClock, formatDate, isDemo } from '@/lib/utils'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Passport } from '@/components/console/Passport'
 import { TaskBoard } from '@/components/console/TaskBoard'
+import { LiveLog } from '@/components/console/LiveLog'
+import { RepoPanel } from '@/components/console/RepoPanel'
 import { humanizeLabel } from '@/lib/display'
 import type { JourneyAttempt, JourneyDetail, JourneyStage, JourneyStep, StepStatus, Task } from '@/types/api'
 import {
@@ -356,7 +358,14 @@ export function JourneyPage() {
         </aside>
       </div>
 
-      {isDemo && <TaskBoard tasks={tasks.data ?? []} steps={steps} prNumber={journey.data.pr_number} ready={tasks.isSuccess} />}
+      {isDemo && (
+        // board and live log side by side, one height, so the frame never jumps
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_600px]">
+          <TaskBoard tasks={tasks.data ?? []} steps={steps} prNumber={journey.data.pr_number} ready={tasks.isSuccess} />
+          <LiveLog storyId={storyId} live={!summary.finished_at} className="h-[459px]" />
+        </div>
+      )}
+      {isDemo && <RepoPanel storyId={storyId} />}
 
       <LinkedPullRequests links={linkedPullRequests(journey.data.links)} />
 

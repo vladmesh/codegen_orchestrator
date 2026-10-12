@@ -30,6 +30,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scene1_feed as FEED  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 DIST = Path(os.environ.get("DEMO_DIST", HERE.parent / "services/admin-frontend/dist"))
 TIMELINE = Path(os.environ.get("DEMO_TIMELINE", HERE / "scene1.timeline.json"))
@@ -420,6 +423,14 @@ def repository(v: View):
             "bot_username": "brimos_demo_first_part_bot", "created_at": v.ts(REPO["from"])}
 
 
+def repo_file(v: View, path: str, **owner):
+    state = FEED.repo_at(v.s) if v.active else {}
+    if path not in state:
+        return 404, None
+    text = FEED.content(path, state[path][0])
+    return 200, {**owner, "path": path, "content": text, "size": len(text.encode())}
+
+
 def route(method: str, path: str, q: dict):
     """Return (status, body). body None → 404."""
     v = View()
@@ -438,6 +449,15 @@ def route(method: str, path: str, q: dict):
             rows.append(scene_summary(v))
         rows.sort(key=lambda r: r["updated_at"], reverse=True)
         return 200, rows
+    if p.startswith("/api/admin/v2/journeys/") and p.endswith("/live"):
+        # demo-only: live log, repository tree and diffs of the scene story
+        sid = p.split("/")[5]
+        if not (v.active and sid == ST["id"]):
+            return (200, {"lines": [], "files": [], "focus": None, "task_changes": None}) \
+                if any(b["story_id"] == sid for b in BACKGROUND) else (404, None)
+        tid = one("task")
+        task = next((i + 1 for i, t in enumerate(TL["tasks"]) if t["id"] == tid), None)
+        return 200, FEED.live(v.s, v.ts, task=task, file=one("file"))
     if p.startswith("/api/admin/v2/journeys/"):
         sid = p.rsplit("/", 1)[1]
         if v.active and sid == ST["id"]:
@@ -547,13 +567,20 @@ def route(method: str, path: str, q: dict):
     if p.startswith("/wm-api/workers/"):
         parts = p.split("/")
         w = next((x for x in (scene_workers(v) if v.active else []) if x["id"] == parts[3]), None)
+        tail = int(one("tail", "200"))
         if len(parts) > 4 and parts[4] == "logs":
-            return 200, {"worker_id": parts[3], "logs": "", "tail": int(one("tail", "200"))}
+            logs = FEED.worker_log_text(parts[3], v.s, tail) if v.active else ""
+            return 200, {"worker_id": parts[3], "logs": logs, "tail": tail}
         if len(parts) > 4 and parts[4] == "tree":
-            return 200, []
+            return 200, FEED.tree(v.s) if v.active else []
+        if len(parts) > 4 and parts[4] == "files":
+            return repo_file(v, "/".join(parts[5:]), worker_id=parts[3])
         return (200, w) if w else (404, None)
     if p.startswith("/wm-api/workspaces/"):
-        return 200, []
+        parts = p.split("/")
+        if len(parts) > 4 and parts[4] == "files":
+            return repo_file(v, "/".join(parts[5:]), repo_id=parts[3])
+        return 200, FEED.tree(v.s) if v.active and parts[3] == REPO["id"] else []
     return 404, None
 
 

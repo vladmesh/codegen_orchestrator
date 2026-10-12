@@ -948,6 +948,47 @@ export interface JourneyDetail {
   links: StoryLink[]
 }
 
+/** Demo build only: GET /admin/v2/journeys/{story_id}/live — what the agents print and write. */
+export type LiveLineKind = 'cmd' | 'out' | 'ok' | 'err' | 'info' | 'file' | 'step'
+
+export interface LiveLogLine {
+  /** Monotonic line number within the story; the React key. */
+  n: number
+  at: string
+  /** Architect, Developer 1, GitHub CI, Deployer, QA, Brimos… */
+  source: string
+  kind: LiveLineKind
+  text: string
+}
+
+export interface RepoFileChange {
+  path: string
+  status: 'added' | 'modified'
+  additions: number
+  deletions: number
+  /** Unified-diff hunks (from @@ on), no file headers. */
+  patch: string
+  author?: string
+  at?: string
+}
+
+export interface RepoTreeEntry extends FileTreeEntry {
+  /** Written in the last few seconds. */
+  mark?: 'new' | 'edited'
+  /** Against the scaffold, i.e. what the pull request adds. */
+  additions?: number
+  deletions?: number
+}
+
+export interface JourneyLive {
+  lines: LiveLogLine[]
+  files: RepoTreeEntry[]
+  /** Latest write (or the requested file's latest write) as a diff. */
+  focus: RepoFileChange | null
+  /** With ?task=: every file the task changed, against the code before it started. */
+  task_changes: RepoFileChange[] | null
+}
+
 export interface PlacementView {
   handle: string
   role: 'control' | 'product'

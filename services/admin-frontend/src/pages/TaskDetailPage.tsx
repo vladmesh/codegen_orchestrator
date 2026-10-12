@@ -9,6 +9,9 @@ import { formatDate, isDemo } from '@/lib/utils'
 import { humanizeLabel } from '@/lib/display'
 import type { SpawnWorkerRequest, SpawnWorkerResponse, Story, Task, TaskEvent, TaskResume, TaskTransition } from '@/types/api'
 import { enterClass, livePoll } from '@/lib/live'
+import { LiveLog } from '@/components/console/LiveLog'
+import { useJourneyLive } from '@/lib/useJourneyLive'
+import { TaskChanges } from '@/components/console/RepoPanel'
 
 export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -87,6 +90,8 @@ export function TaskDetailPage() {
         </Card>
       )}
 
+      {isDemo && task.story_id && <TaskWork storyId={task.story_id} taskId={task.id} live={task.status !== 'done'} />}
+
       <Card>
         <h2 className="mb-4 text-sm font-medium text-muted-foreground">
           Event Timeline ({events?.length ?? 0})
@@ -120,6 +125,31 @@ export function TaskDetailPage() {
           </div>
         )}
       </Card>
+    </div>
+  )
+}
+
+/* ---------- Demo: what the developer did on this task ---------- */
+
+function TaskWork({ storyId, taskId, live }: { storyId: string; taskId: string; live: boolean }) {
+  const { data } = useJourneyLive(storyId, taskId)
+  const changes = data?.task_changes ?? []
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <LiveLog storyId={storyId} taskId={taskId} live={live} title="Developer log" className="h-[520px]" />
+      <section aria-labelledby="task-changes" className="flex h-[520px] min-h-0 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-[#0b0d10]">
+        <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
+          <h2 id="task-changes" className="text-sm font-semibold text-foreground">Changes</h2>
+          <span className="font-mono text-[11px] text-zinc-500">
+            {changes.length} file{changes.length === 1 ? '' : 's'} ·{' '}
+            <span className="text-emerald-400">+{changes.reduce((n, c) => n + c.additions, 0)}</span>{' '}
+            <span className="text-red-400">−{changes.reduce((n, c) => n + c.deletions, 0)}</span>
+          </span>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-3">
+          <TaskChanges changes={changes} />
+        </div>
+      </section>
     </div>
   )
 }

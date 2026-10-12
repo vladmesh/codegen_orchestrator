@@ -8,6 +8,8 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate, isDemo } from '@/lib/utils'
 import { humanizeLabel } from '@/lib/display'
 import { TaskBoard } from '@/components/console/TaskBoard'
+import { LiveLog } from '@/components/console/LiveLog'
+import { RepoPanel } from '@/components/console/RepoPanel'
 import type { JourneyDetail, Story, Task } from '@/types/api'
 import { requestStoryQaRecheck } from './storyRecheck'
 import { planningRetryTarget, requestPlanningRetry } from './storyPlanningRetry'
@@ -235,8 +237,12 @@ export function StoryDetailPage() {
 
       {/* Demo build: the task board right under the header, so it stays in frame */}
       {isDemo && (
-        <TaskBoard tasks={tasks ?? []} steps={journey?.steps} prNumber={journey?.pr_number ?? null} ready={tasksReady} />
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_600px]">
+          <TaskBoard tasks={tasks ?? []} steps={journey?.steps} prNumber={journey?.pr_number ?? null} ready={tasksReady} />
+          <LiveLog storyId={id} live={!journey?.summary.finished_at} className="h-[459px]" />
+        </div>
       )}
+      {isDemo && <RepoPanel storyId={id} />}
 
       {/* Description */}
       {story.description && (
