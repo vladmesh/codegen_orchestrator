@@ -355,3 +355,48 @@ def test_the_qa_grant_is_checked_against_the_story_commit_not_the_merge_commit()
     ctx["deploy_head_sha"] = "another-head"
     with pytest.raises(Level1PhaseFailed, match="grant"):
         qa_probe(ctx)
+
+
+def _accounting_world(monkeypatch, *, attempt_id):
+    facts = {
+        "engineering_runs": 0,
+        "engineering_ledger": 0,
+        "engineering_reservations": 0,
+        "project_ledger": [],
+        "project_runs": [],
+        "stories": [],
+    }
+    monkeypatch.setattr(
+        mechanical_install.h,
+        "_psql",
+        lambda sql: SimpleNamespace(returncode=0, stdout=json.dumps(facts)),
+    )
+    create = {"config": {"ownership": {"story_id": "install-story", "attempt_id": attempt_id}}}
+
+    def redis(*args):
+        if args[1] == mechanical_install.WORKER_COMMANDS:
+            return [["1-0", ["data", json.dumps(create)]]]
+        return []
+
+    monkeypatch.setattr(mechanical_install.h, "_redis_json", redis)
+    monkeypatch.setattr(
+        mechanical_install.h,
+        "_flat_redis_fields",
+        lambda fields: dict(zip(fields[::2], fields[1::2], strict=True)),
+    )
+    return {"story_id": "install-story", "project_id": "product"}
+
+
+def test_install_accounting_admits_the_story_s_own_qa_executor(monkeypatch):
+    ctx = _accounting_world(monkeypatch, attempt_id="qa-deploy-grant-1")
+
+    assert mechanical_install.sql_snapshot(ctx)["dispatch"] == []
+    assert ctx["mechanical_accounting_last"]["dispatch"] == []
+
+
+def test_install_accounting_refuses_an_engineering_worker_for_the_story(monkeypatch):
+    ctx = _accounting_world(monkeypatch, attempt_id="eng-1")
+
+    with pytest.raises(Level1PhaseFailed, match="unexpected engineering"):
+        mechanical_install.sql_snapshot(ctx)
+    assert ctx["mechanical_accounting_last"]["dispatch"][0]["attempt_id"] == "eng-1"
