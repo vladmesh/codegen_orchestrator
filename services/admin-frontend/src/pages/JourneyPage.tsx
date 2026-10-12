@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { cn, formatClock, formatDate, isDemo } from '@/lib/utils'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Passport } from '@/components/console/Passport'
+import { TaskBoard } from '@/components/console/TaskBoard'
 import { humanizeLabel } from '@/lib/display'
 import type { JourneyAttempt, JourneyDetail, JourneyStage, JourneyStep, StepStatus, Task } from '@/types/api'
 import {
@@ -303,6 +304,8 @@ export function JourneyPage() {
           <StepDetail step={currentStep} now={now} taskTitles={taskTitles} />
         </aside>
       </div>
+
+      {isDemo && <TaskBoard tasks={tasks.data ?? []} steps={steps} prNumber={journey.data.pr_number} ready={tasks.isSuccess} />}
 
       <LinkedPullRequests links={linkedPullRequests(journey.data.links)} />
 

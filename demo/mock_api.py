@@ -222,7 +222,9 @@ def scene_tasks(v: View):
                     "repository_id": REPO["id"], "blocked_by_task_id": None, "failure_metadata": None,
                     "dispatch_admitted": st not in ("backlog",), "created_at": v.ts(t["status"][0][0]),
                     "updated_at": v.ts(v.since(t["status"])), "last_event": f"status → {st}",
-                    "elapsed_minutes": round((v.s - t["status"][0][0]) / 60, 1)})
+                    "elapsed_minutes": round((v.s - t["status"][0][0]) / 60, 1),
+                    # demo-only: who picks the task up, shown once it leaves the backlog
+                    "assignee": worker_name(t) if st not in ("backlog", "todo") else None})
     return out
 
 

@@ -7,7 +7,8 @@ import { ConfirmButton } from '@/components/ui/ConfirmButton'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate, isDemo } from '@/lib/utils'
 import { humanizeLabel } from '@/lib/display'
-import type { Story, Task } from '@/types/api'
+import { TaskBoard } from '@/components/console/TaskBoard'
+import type { JourneyDetail, Story, Task } from '@/types/api'
 import { requestStoryQaRecheck } from './storyRecheck'
 import { planningRetryTarget, requestPlanningRetry } from './storyPlanningRetry'
 import {
@@ -30,10 +31,18 @@ export function StoryDetailPage() {
     refetchInterval: 10_000,
   })
 
-  const { data: tasks } = useQuery({
+  const { data: tasks, isSuccess: tasksReady } = useQuery({
     queryKey: ['tasks', 'story', id],
     queryFn: () => api.get<Task[]>(`/tasks/?story_id=${id}&limit=200`),
     enabled: !!id,
+    refetchInterval: 10_000,
+  })
+
+  // Demo build shows the tasks as a board, which needs the journey steps (planning, CI).
+  const { data: journey } = useQuery({
+    queryKey: ['admin-console-journey', id],
+    queryFn: () => api.get<JourneyDetail>(`/admin/v2/journeys/${id}`),
+    enabled: isDemo && !!id,
     refetchInterval: 10_000,
   })
 
@@ -223,6 +232,11 @@ export function StoryDetailPage() {
         </Card>
       </div>
 
+      {/* Demo build: the task board right under the header, so it stays in frame */}
+      {isDemo && (
+        <TaskBoard tasks={tasks ?? []} steps={journey?.steps} prNumber={journey?.pr_number ?? null} ready={tasksReady} />
+      )}
+
       {/* Description */}
       {story.description && (
         <Card>
@@ -293,6 +307,7 @@ export function StoryDetailPage() {
       )}
 
       {/* Tasks */}
+      {!isDemo && (
       <Card>
         <h2 className="mb-4 text-sm font-medium text-muted-foreground">
           Tasks ({tasks?.length ?? 0})
@@ -313,6 +328,7 @@ export function StoryDetailPage() {
           </ul>
         )}
       </Card>
+      )}
     </div>
   )
 }

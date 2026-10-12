@@ -269,6 +269,8 @@ export interface Task {
   updated_at?: string | null
   last_event?: string | null
   elapsed_minutes?: number | null
+  /** Demo mock only: human name of the developer on the task. */
+  assignee?: string | null
 }
 
 export type TaskStatus =
