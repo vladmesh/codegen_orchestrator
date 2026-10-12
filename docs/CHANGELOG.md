@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-12
 
+- Ready catalog modules are open to every project: the PO capability preview no longer reads the
+  per-project `capabilities.module_rollout` list, so a channel digest is no longer refused as impossible.
 - A CI-retry reopen no longer parks a mixed install story as "older story cycle": an install closed before
   the reopen is proved by its published head on the branch, not by the new cycle.
 - A story that installs a catalog module beside engineering tasks takes the ordinary CI, conflict and QA

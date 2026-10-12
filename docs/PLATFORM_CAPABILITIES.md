@@ -70,7 +70,7 @@ How: Kit tg_bot uses python-telegram-bot 21.4 run_polling. Every product include
 
 #### Read public Telegram channels
 
-How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module of a stored brief plan; outside the module rollout allowlist it is impossible. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Platform uses its egress proxy. Plan it now; deployment handles key issuance; no user key is needed. Auth admin required; unavailable auth retries. Only stand can override declared HTTPS URLs with its fixture ingress.
+How: Read public Telegram channels for posts, digests and new-post delivery only through a platform-backed catalog module of a stored brief plan. Private channels and groups are not supported. Products must not fetch or scrape t.me, Telegram web previews or Telegram APIs for channel content themselves. Platform uses its egress proxy. Plan it now; deployment handles key issuance; no user key is needed. Auth admin required; unavailable auth retries. Only stand can override declared HTTPS URLs with its fixture ingress.
 
 #### The bot remembers data
 
