@@ -466,3 +466,52 @@ async def test_replanned_install_completes_on_its_new_cycle_past_the_cancelled_o
     )
     api_client.stop_story.assert_not_awaited()
     api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 7})
+
+
+@pytest.mark.asyncio
+async def test_a_ci_retry_reopen_keeps_the_earlier_install_of_a_mixed_story(
+    api_client, redis_client
+):
+    """The CI-fix reopen stamps a new cycle; the install it carries stays proved by its head."""
+    from datetime import timedelta
+
+    from shared.contracts.dto.catalog_install import InstallOperation
+    from shared.contracts.dto.task import TaskType
+
+    reopened = _NOW + timedelta(hours=2)
+    install_head = "c" * 40
+    install = _done_task().model_copy(
+        update={
+            "id": "task-install",
+            "type": TaskType.INSTALL,
+            "created_at": _NOW,
+            "install_operation": InstallOperation(
+                project_id=_PROJ_ID,
+                id="install-1",
+                task_id="task-install",
+                story_id="story-1",
+                repository_id="repo-1",
+                cycle_started_at=_NOW,
+                state="published",
+                stage="published",
+                head_sha=install_head,
+            ),
+        }
+    )
+    feature = _done_task().model_copy(update={"id": "task-feature", "created_at": _NOW})
+    fix = _done_task().model_copy(
+        update={"id": "task-fix", "type": TaskType.FIX, "created_at": reopened}
+    )
+    api_client.get_stories_by_status.return_value = [
+        _story().model_copy(update={"reopened_at": reopened})
+    ]
+    api_client.get_tasks_by_story.return_value = [install, feature, fix]
+    github = _completing_github("story-1")
+    github.branch_contains_commit.return_value = True
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)):
+        assert await complete_stories(api_client, redis_client) == 1
+    github.branch_contains_commit.assert_awaited_once_with(
+        "org", "test-project", "story/story-1", install_head
+    )
+    api_client.stop_story.assert_not_awaited()
+    api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 7})

@@ -9,7 +9,7 @@ import structlog
 from shared.clients.github import GitHubAppClient, NoCommitsBetweenError
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryDTO, StoryStatus
-from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode, in_work_cycle
 from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
@@ -164,7 +164,10 @@ async def _install_publication_refusal(tasks, story, pr, github, owner, repo_nam
         if operation is None or operation.state != "published" or not operation.head_sha:
             install_refusal = "Install Task lacks its exact durable publication head"
             break
-        if operation.cycle_started_at != (story.reopened_at or story.created_at):
+        # An install closed before a CI-retry reopen is history the branch still
+        # carries: only its publication head is proved, not its cycle.
+        current = in_work_cycle(installed.created_at, story.reopened_at, installed.status.value)
+        if current and operation.cycle_started_at != (story.reopened_at or story.created_at):
             install_refusal = "Install Task belongs to an older story cycle"
             break
         if not await github.branch_contains_commit(owner, repo_name, branch, operation.head_sha):
