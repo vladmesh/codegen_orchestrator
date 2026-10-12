@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-12
 
+- A CI-retry reopen no longer parks a mixed install story as "older story cycle": an install closed before
+  the reopen is proved by its published head on the branch, not by the new cycle.
 - A story that installs a catalog module beside engineering tasks takes the ordinary CI, conflict and QA
   repair route; only a purely mechanical install story still parks for human review.
 - The admin console Journey shows a catalog install the dispatcher has not claimed yet as queued and a running
