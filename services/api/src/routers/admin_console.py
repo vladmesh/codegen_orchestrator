@@ -3,8 +3,11 @@
 from datetime import datetime
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from shared.models import Story, StoryLink
 
 from .. import admin_console
 from ..database import get_async_session
@@ -13,6 +16,8 @@ from ..schemas.admin_console import (
     AttentionResponse,
     JourneyDetail,
     JourneySummary,
+    StoryLinkCreate,
+    StoryLinkView,
     TopologyResponse,
 )
 
@@ -45,6 +50,37 @@ async def journey(story_id: str, db: AsyncSession = Depends(get_async_session)) 
     if detail is None:
         raise HTTPException(status_code=404, detail="Story not found")
     return detail
+
+
+@router.post(
+    "/journeys/{story_id}/links",
+    response_model=StoryLinkView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_journey_link(
+    story_id: str, body: StoryLinkCreate, db: AsyncSession = Depends(get_async_session)
+) -> StoryLinkView:
+    """Link a pull request made outside the story's own runs, e.g. a proposed reusable module."""
+    if await db.get(Story, story_id) is None:
+        raise HTTPException(status_code=404, detail="Story not found")
+    link = StoryLink(story_id=story_id, kind=body.kind.value, title=body.title, url=body.url)
+    db.add(link)
+    await db.commit()
+    await db.refresh(link)
+    return admin_console.link_view(link)
+
+
+@router.delete("/journeys/{story_id}/links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_journey_link(
+    story_id: str, link_id: int, db: AsyncSession = Depends(get_async_session)
+) -> None:
+    link = await db.scalar(
+        select(StoryLink).where(StoryLink.id == link_id, StoryLink.story_id == story_id)
+    )
+    if link is None:
+        raise HTTPException(status_code=404, detail="Link not found")
+    await db.delete(link)
+    await db.commit()
 
 
 @router.get("/topology", response_model=TopologyResponse)

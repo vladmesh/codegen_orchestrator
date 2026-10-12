@@ -16,6 +16,7 @@ from shared.models import (
     Run,
     Server,
     Story,
+    StoryLink,
     Task,
     User,
 )
@@ -193,6 +194,7 @@ async def product(db_session):
         (PortAllocation, PortAllocation.application_id, app_row.id),
         (Application, Application.repo_id, repo.id),
         (Run, Run.project_id, project.id),
+        (StoryLink, StoryLink.story_id, story.id),
         (Task, Task.project_id, project.id),
         (ProductBrief, ProductBrief.project_id, project.id),
         (Story, Story.project_id, project.id),
@@ -239,6 +241,55 @@ async def test_journey_detail_lays_out_the_story_and_its_passport(async_client, 
             "deployed_sha": "a91f3c2",
         }
     ]
+
+
+MODULE_PR = "https://github.com/vladmesh/codegen-product-kit/pull/42"
+
+
+async def test_a_linked_pull_request_shows_on_the_journey_until_removed(async_client, product):
+    story_id = product["story"].id
+    assert (await async_client.get(f"/api/admin/v2/journeys/{story_id}")).json()["links"] == []
+
+    added = await async_client.post(
+        f"/api/admin/v2/journeys/{story_id}/links",
+        json={"kind": "module_proposal", "title": "Reminders module", "url": MODULE_PR},
+    )
+    assert added.status_code == 201, added.text
+    link = added.json()
+    assert {k: link[k] for k in ("kind", "title", "url")} == {
+        "kind": "module_proposal",
+        "title": "Reminders module",
+        "url": MODULE_PR,
+    }
+
+    detail = (await async_client.get(f"/api/admin/v2/journeys/{story_id}")).json()
+    assert detail["links"] == [link]
+
+    other_story = product["waiting"].story_id
+    foreign = await async_client.delete(f"/api/admin/v2/journeys/{other_story}/links/{link['id']}")
+    assert foreign.status_code == 404
+    removed = await async_client.delete(f"/api/admin/v2/journeys/{story_id}/links/{link['id']}")
+    assert removed.status_code == 204
+    assert (await async_client.get(f"/api/admin/v2/journeys/{story_id}")).json()["links"] == []
+    again = await async_client.delete(f"/api/admin/v2/journeys/{story_id}/links/{link['id']}")
+    assert again.status_code == 404
+
+
+async def test_linking_needs_a_known_story_and_a_github_pull_url(async_client, product):
+    unknown = await async_client.post(
+        "/api/admin/v2/journeys/st-missing/links",
+        json={"kind": "module_proposal", "title": "Reminders module", "url": MODULE_PR},
+    )
+    assert unknown.status_code == 404
+    not_github = await async_client.post(
+        f"/api/admin/v2/journeys/{product['story'].id}/links",
+        json={
+            "kind": "module_proposal",
+            "title": "Reminders module",
+            "url": "https://example.com/pull/42",
+        },
+    )
+    assert not_github.status_code == 422
 
 
 async def test_journey_list_filters_by_project(async_client, product):

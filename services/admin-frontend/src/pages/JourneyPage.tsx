@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
-import { RotateCcw } from 'lucide-react'
+import { ExternalLink, GitPullRequest, RotateCcw } from 'lucide-react'
 import { api } from '@/lib/api'
 import { cn, formatDate } from '@/lib/utils'
 import { StatusBadge } from '@/components/ui/StatusBadge'
@@ -14,9 +14,11 @@ import {
   formatDuration,
   journeyLanes,
   journeyWindow,
+  linkedPullRequests,
   progressIndex,
   retries,
   type BarTone,
+  type LinkedPullRequest,
 } from './journeyView'
 
 const knobStyles: Record<StepStatus, string> = {
@@ -125,6 +127,37 @@ function StepDetail({ step, now }: { step: JourneyStep; now: number }) {
   )
 }
 
+function LinkedPullRequests({ links }: { links: LinkedPullRequest[] }) {
+  if (links.length === 0) return null
+  return (
+    <section className="rounded-lg border border-border p-4" aria-labelledby="linked-pull-requests">
+      <h2 id="linked-pull-requests" className="mb-3 text-sm font-semibold text-foreground">
+        Linked pull requests
+      </h2>
+      <ul className="space-y-2">
+        {links.map((link) => (
+          <li key={link.key}>
+            <a
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-border p-3 hover:border-teal-400/60"
+            >
+              <GitPullRequest className="h-4 w-4 shrink-0 text-teal-300" />
+              <span className="font-mono text-[11px] uppercase tracking-wider text-teal-300">{link.label}</span>
+              <span className="min-w-0 flex-1 break-words text-sm text-foreground group-hover:underline">{link.title}</span>
+              {link.repo && <span className="font-mono text-xs text-muted-foreground">{link.repo}</span>}
+              {link.number && <span className="font-mono text-xs text-foreground">{link.number}</span>}
+              <span className="text-xs text-muted-foreground">{formatDate(link.createdAt)}</span>
+              <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 export function JourneyPage() {
   const { storyId } = useParams<{ storyId: string }>()
   const [selected, setSelected] = useState<JourneyStage | null>(null)
@@ -224,6 +257,8 @@ export function JourneyPage() {
           <StepDetail step={currentStep} now={now} />
         </aside>
       </div>
+
+      <LinkedPullRequests links={linkedPullRequests(journey.data.links)} />
 
       <Passport passport={passport} />
     </div>

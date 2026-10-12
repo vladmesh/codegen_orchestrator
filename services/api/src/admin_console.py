@@ -35,6 +35,7 @@ from shared.models import (
     Run,
     Server,
     Story,
+    StoryLink,
     Task,
 )
 
@@ -58,6 +59,7 @@ from .schemas.admin_console import (
     ProductView,
     Severity,
     StepStatus,
+    StoryLinkView,
     TopologyResponse,
 )
 
@@ -340,6 +342,16 @@ def build_steps(  # noqa: C901, PLR0912, PLR0915  # one linear walk over the eig
             )
         )
     return steps
+
+
+def link_view(link: Any) -> StoryLinkView:
+    return StoryLinkView(
+        id=link.id,
+        kind=link.kind,
+        title=link.title,
+        url=link.url,
+        created_at=_aware(link.created_at),
+    )
 
 
 def finished_at(story: Any) -> datetime | None:
@@ -635,6 +647,13 @@ async def load_journey(db: AsyncSession, story_id: str) -> JourneyDetail | None:
     brief = await db.scalar(select(ProductBrief).where(ProductBrief.story_id == story_id))
     tasks = (await db.scalars(select(Task).where(Task.story_id == story_id))).all()
     runs = (await db.scalars(select(Run).where(Run.story_id == story_id))).all()
+    links = (
+        await db.scalars(
+            select(StoryLink)
+            .where(StoryLink.story_id == story_id)
+            .order_by(StoryLink.created_at, StoryLink.id)
+        )
+    ).all()
     passports = await _project_passports(db, [project])
     content = brief.content if brief is not None else {}
     return JourneyDetail(
@@ -644,6 +663,7 @@ async def load_journey(db: AsyncSession, story_id: str) -> JourneyDetail | None:
         pr_number=story.pr_number,
         steps=build_steps(story, brief, tasks, runs),
         passport=passports[project.id],
+        links=[link_view(link) for link in links],
     )
 
 
