@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-12
 
+- The stand platform-module story requires the admin topology to link the deployed product to its platform
+  service, proving `deployment_info.platform_services` end to end on a real deploy.
 - The admin console Atlas shows platform services: declared in `PLATFORM_SERVICES` and probed, linked to the
   products whose latest deploy drew a platform key or endpoint from them (`deployment_info.platform_services`).
 - The Telegram bot and user dashboard show English to users whose Telegram or browser language is not
