@@ -1,0 +1,15 @@
+#!/bin/sh
+# Scene control for the Brimos dashboard demo.
+#   ./democtl start [speed] [at]   start scene 1 (speed 1 = real 10 min; at = start offset, s)
+#   ./democtl reset                back to idle (only old products visible) — before every take
+#   ./democtl seek <at>            jump to a scene second
+#   ./democtl state
+B=${DEMO_URL:-http://127.0.0.1:8790}
+case "$1" in
+  start) curl -s -XPOST "$B/demo/start?speed=${2:-1}&at=${3:-0}" ;;
+  reset) curl -s -XPOST "$B/demo/reset" ;;
+  seek)  curl -s -XPOST "$B/demo/seek?at=${2:?at}" ;;
+  state|"") curl -s "$B/demo/state" ;;
+  *) echo "usage: $0 start [speed] [at] | reset | seek <at> | state" >&2; exit 2 ;;
+esac
+echo
