@@ -5880,8 +5880,10 @@ def record_level1_merge_artifact(ctx: dict) -> bool:
     ctx["level1_merge_artifact_verdict"] = {
         "holds": not reasons,
         "reasons": reasons,
+        # A catalog install story declares no scripted change set; its comparison is
+        # informational, so it is made against the empty set instead of failing the run.
         "change_set": change_set_comparison(
-            observation, expected_paths=ctx["level1_change_set_paths"]
+            observation, expected_paths=ctx.get("level1_change_set_paths") or []
         ),
     }
     return not reasons

@@ -6697,3 +6697,18 @@ def test_the_declared_pre_teardown_proofs_are_taken_before_the_tests_see_the_con
             f"{PIPELINE_FIXTURE} yields the phases directly, so a proof recorded in its "
             "`finally` reaches the tests too late to be asserted"
         )
+
+
+def test_an_install_story_merge_is_judged_without_a_declared_change_set(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "probe_merge_file_set",
+        lambda repo, sha: {"changed_paths": ["services/backend/pyproject.toml"]},
+    )
+    monkeypatch.setattr(pipeline_helpers, "merge_artifact_mismatches", lambda *a, **k: [])
+    ctx = {"deploy_merge_commit_sha": "c0ffee", "repo_name": "product"}
+
+    assert pipeline_helpers.record_level1_merge_artifact(ctx)
+    assert ctx["level1_merge_artifact_verdict"]["change_set"]["extra_paths"] == [
+        "services/backend/pyproject.toml"
+    ]
