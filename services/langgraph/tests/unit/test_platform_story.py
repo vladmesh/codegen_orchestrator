@@ -101,6 +101,8 @@ async def test_third_install_owns_claim_then_deploys_qa_and_revokes_without_engi
             return response(value)
         if path.endswith("/coverage"):
             return response({"covered": True})
+        if path == "/api/admin/v2/topology":
+            return response({"platform_services": [{"name": "feeds", "products": ["product"]}]})
         raise AssertionError(path)
 
     api.get.side_effect = get

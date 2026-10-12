@@ -303,6 +303,17 @@ async def native_third_story(api, api_internal, api_observer, ctx, *, debug_pref
             "deploy",
             "third images differ from merged head",
         )
+        # The admin console Atlas links a product to each platform service its deploy drew a key
+        # or endpoint from (deployment_info.platform_services); this deploy drew one.
+        response = await api_internal.get("/api/admin/v2/topology")
+        response.raise_for_status()
+        linked = [
+            service["name"]
+            for service in response.json()["platform_services"]
+            if ctx["project_id"] in service["products"]
+        ]
+        artifact["topology_platform_services"] = linked
+        m.require(bool(linked), "deploy", "admin topology links the product to no platform service")
         response = await api.get(f"/api/stories/{ctx['story_id']}")
         response.raise_for_status()
         pr = response.json()["pr_number"]
