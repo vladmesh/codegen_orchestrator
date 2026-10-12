@@ -12,6 +12,7 @@ from statistics import median
 from typing import Any
 import uuid
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +38,7 @@ from shared.models import (
     Task,
 )
 
+from .config import get_settings
 from .queue_snapshot import get_queue_snapshot
 from .schemas.admin_console import (
     AttentionItem,
@@ -51,6 +53,7 @@ from .schemas.admin_console import (
     JourneySummary,
     PackageRef,
     PlacementView,
+    PlatformServiceView,
     ProductPassport,
     ProductView,
     Severity,
@@ -644,7 +647,66 @@ async def load_journey(db: AsyncSession, story_id: str) -> JourneyDetail | None:
     )
 
 
-async def build_topology(db: AsyncSession) -> TopologyResponse:
+_PLATFORM_PROBE_TTL = timedelta(seconds=60)
+_platform_probe_cache: dict[str, tuple[datetime, str]] = {}
+
+
+async def probe_platform_service(url: str, now: datetime) -> str:
+    """`up` when the service's edge answers below 5xx, `down` on 5xx, `unreachable` otherwise.
+
+    Any answer below 5xx (401 without a key, 404 on the bare base URL) proves the service
+    behind the edge is serving; a 502/503 is the edge reporting it gone.
+    """
+    cached = _platform_probe_cache.get(url)
+    if cached and now - cached[0] < _PLATFORM_PROBE_TTL:
+        return cached[1]
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(url)
+        status = "up" if response.status_code < httpx.codes.INTERNAL_SERVER_ERROR else "down"
+    except httpx.HTTPError:
+        status = "unreachable"
+    _platform_probe_cache[url] = (now, status)
+    return status
+
+
+def platform_service_views(
+    declared: dict[str, str],
+    statuses: dict[str, str],
+    used_by: dict[uuid.UUID, list[str]],
+) -> list[PlatformServiceView]:
+    """Declared services plus any a deployed product uses, each with the products using it."""
+    names = set(declared) | {name for names in used_by.values() for name in names}
+    return [
+        PlatformServiceView(
+            name=name,
+            status=statuses.get(name, "undeclared"),
+            products=sorted((pid for pid, names in used_by.items() if name in names), key=str),
+        )
+        for name in sorted(names)
+    ]
+
+
+async def _platform_services(db: AsyncSession, now: datetime) -> list[PlatformServiceView]:
+    latest = (
+        await db.execute(
+            select(Deployment.project_id, Deployment.deployment_info)
+            .where(Deployment.result == DeploymentResult.SUCCESS.value)
+            .distinct(Deployment.project_id)
+            .order_by(Deployment.project_id, Deployment.deployed_at.desc())
+        )
+    ).all()
+    used_by = {
+        pid: list((info or {}).get("platform_services") or [])
+        for pid, info in latest
+        if (info or {}).get("platform_services")
+    }
+    declared = get_settings().get_platform_services()
+    statuses = {name: await probe_platform_service(url, now) for name, url in declared.items()}
+    return platform_service_views(declared, statuses, used_by)
+
+
+async def build_topology(db: AsyncSession, now: datetime | None = None) -> TopologyResponse:
     servers = (await db.scalars(select(Server).order_by(Server.handle))).all()
     projects = (
         await db.scalars(
@@ -681,7 +743,7 @@ async def build_topology(db: AsyncSession) -> TopologyResponse:
             )
             for p in projects
         ],
-        platform_services=[],
+        platform_services=await _platform_services(db, now or datetime.now(UTC)),
     )
 
 

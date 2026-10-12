@@ -141,6 +141,8 @@ class ProductView(_ConsoleModel):
 
 class PlatformServiceView(_ConsoleModel):
     name: str
+    #: `up`, `down` or `unreachable` from a probe of the declared base URL; `undeclared` for a
+    #: service a deployed product uses that `PLATFORM_SERVICES` does not name.
     status: str
     products: list[uuid.UUID]
 
@@ -148,8 +150,8 @@ class PlatformServiceView(_ConsoleModel):
 class TopologyResponse(_ConsoleModel):
     placements: list[PlacementView]
     products: list[ProductView]
-    #: Empty until the orchestrator integrates with codegen-platform-services; the console
-    #: renders that as a stated absence rather than inventing services.
+    #: Services declared in `PLATFORM_SERVICES` plus any a product's latest successful deploy
+    #: drew a platform key or endpoint from (`deployment_info.platform_services`).
     platform_services: list[PlatformServiceView]
 
 

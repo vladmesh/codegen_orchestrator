@@ -348,6 +348,7 @@ jobs:
           TELETHON_API_HASH=${{ secrets.TELETHON_API_HASH }}
           TELETHON_SESSION=${{ secrets.TELETHON_SESSION }}
           ADMIN_TELEGRAM_IDS=${{ secrets.ADMIN_TELEGRAM_IDS }}
+          PLATFORM_SERVICES=${{ inputs.environment == 'production' && vars.PLATFORM_SERVICES || '' }}
           TELEGRAM_ID_ADMIN=${{ secrets.TELEGRAM_ID_ADMIN }}
 
           # Encryption

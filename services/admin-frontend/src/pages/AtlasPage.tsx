@@ -135,12 +135,17 @@ function ProductTile({
   )
 }
 
+function platformTone(status: string): DotTone {
+  if (status === 'up') return 'ok'
+  if (status === 'undeclared') return 'idle'
+  return 'down'
+}
+
 function PlatformAbsent() {
   return (
     <p className="rounded-md border border-dashed border-violet-700/70 p-3 text-xs text-violet-200/80">
-      codegen-platform-services is not integrated yet: the orchestrator reads no auth grants and no{' '}
-      <code>platform_key</code> env sources, so no product is shown as connected to a shared service.
-      Products reach outside APIs with their own keys, listed below.
+      No platform service is declared (<code>PLATFORM_SERVICES</code>) and no deployed product draws a{' '}
+      <code>platform_key</code> from one. Products reach outside APIs with their own keys, listed below.
     </p>
   )
 }
@@ -183,7 +188,17 @@ function Layers({
         ) : (
           <div className="flex flex-wrap gap-2">
             {topology.platform_services.map((s) => (
-              <Chip key={s.name} kind="platform">
+              <Chip
+                key={s.name}
+                kind="platform"
+                title={`${s.name}: ${s.status}, used by ${s.products.length} product(s)`}
+                active={
+                  (selection?.kind === 'platform' && selection.id === s.name) ||
+                  (lit?.platforms.has(s.name) ?? false)
+                }
+                onClick={() => select('platform', s.name)}
+              >
+                <Dot tone={platformTone(s.status)} />
                 {s.name} · {s.products.length}
               </Chip>
             ))}
@@ -340,6 +355,7 @@ function ProductFocus({ topology, productId, select }: { topology: Topology; pro
   const { passport } = product
   const bot = passport.containers.find((c) => c.name === 'tg_bot') ?? (passport.modules.includes('tg_bot') ? null : undefined)
   const app = passport.containers.filter((c) => c.name !== 'tg_bot')
+  const platforms = topology.platform_services.filter((s) => s.products.includes(product.project_id))
   return (
     <div className="space-y-4 p-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -397,7 +413,14 @@ function ProductFocus({ topology, productId, select }: { topology: Topology; pro
         </FlowColumn>
         <Arrow />
         <FlowColumn title="platform" tone="border-dashed border-violet-800 bg-violet-950/20">
-          <span className="text-xs text-violet-200/70">No platform service is connected; the integration does not exist yet.</span>
+          {platforms.length === 0 && <span className="text-xs text-violet-200/70">No platform service is connected.</span>}
+          {platforms.map((s) => (
+            <div key={s.name} className="flex items-center gap-2">
+              <Dot tone={platformTone(s.status)} />
+              <Chip kind="platform" onClick={() => select('platform', s.name)}>{s.name}</Chip>
+              <span className="ml-auto font-mono text-xs text-muted-foreground">{s.status}</span>
+            </div>
+          ))}
         </FlowColumn>
         <Arrow />
         <FlowColumn title="outside, user keys">
@@ -416,7 +439,8 @@ function SelectionDetail({ topology, selection, lit }: { topology: Topology; sel
   if (!selection || !lit) {
     return (
       <p className="text-sm text-muted-foreground">
-        Click a product, a placement, a catalog package or a user key: everything connected to it lights up.
+        Click a product, a placement, a platform service, a catalog package or a user key: everything connected to it
+        lights up.
       </p>
     )
   }
@@ -455,13 +479,24 @@ function SelectionDetail({ topology, selection, lit }: { topology: Topology; sel
     package: packageKind(topology, selection.id) === 'library' ? 'catalog library' : 'catalog package',
     secret: 'user key',
     placement: 'placement',
+    platform: 'platform service',
   }[selection.kind]
+  const platform = topology.platform_services.find((s) => selection.kind === 'platform' && s.name === selection.id)
   return (
     <div className="space-y-3">
       <div>
         <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">{title}</div>
         <h2 className="break-words font-mono text-lg font-semibold">{selection.id === UNPLACED ? 'not deployed' : selection.id}</h2>
       </div>
+      {platform && (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+          <dt className="font-mono text-xs text-muted-foreground">status</dt>
+          <dd className="flex items-center gap-2">
+            <Dot tone={platformTone(platform.status)} />
+            {platform.status}
+          </dd>
+        </dl>
+      )}
       {placement && (
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
           <dt className="font-mono text-xs text-muted-foreground">status</dt>

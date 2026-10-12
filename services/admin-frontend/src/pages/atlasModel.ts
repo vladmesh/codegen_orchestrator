@@ -46,7 +46,7 @@ export function groupByPlacement(topology: Topology): PlacementGroup[] {
   })
 }
 
-export type SelectionKind = 'product' | 'package' | 'secret' | 'placement'
+export type SelectionKind = 'product' | 'package' | 'secret' | 'placement' | 'platform'
 
 export interface Selection {
   kind: SelectionKind
@@ -57,15 +57,20 @@ export interface Highlight {
   products: Set<string>
   packages: Set<string>
   secrets: Set<string>
+  platforms: Set<string>
 }
 
 /** Selecting a component lights the products using it; selecting a product lights its parts. */
 export function highlight(topology: Topology, selection: Selection | null): Highlight | null {
   if (!selection) return null
-  const result: Highlight = { products: new Set(), packages: new Set(), secrets: new Set() }
+  const result: Highlight = { products: new Set(), packages: new Set(), secrets: new Set(), platforms: new Set() }
   for (const product of topology.products) {
     const packages = product.passport.packages.map((p) => p.name)
+    const platforms = topology.platform_services
+      .filter((s) => s.products.includes(product.project_id))
+      .map((s) => s.name)
     const uses =
+      (selection.kind === 'platform' && platforms.includes(selection.id)) ||
       (selection.kind === 'product' && product.project_id === selection.id) ||
       (selection.kind === 'package' && packages.includes(selection.id)) ||
       (selection.kind === 'secret' && product.passport.user_secrets.includes(selection.id)) ||
@@ -75,10 +80,12 @@ export function highlight(topology: Topology, selection: Selection | null): High
     if (selection.kind === 'product') {
       packages.forEach((name) => result.packages.add(name))
       product.passport.user_secrets.forEach((name) => result.secrets.add(name))
+      platforms.forEach((name) => result.platforms.add(name))
     }
   }
   if (selection.kind === 'package') result.packages.add(selection.id)
   if (selection.kind === 'secret') result.secrets.add(selection.id)
+  if (selection.kind === 'platform') result.platforms.add(selection.id)
   return result
 }
 

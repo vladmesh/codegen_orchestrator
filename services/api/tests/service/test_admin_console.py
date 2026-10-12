@@ -179,6 +179,7 @@ async def product(db_session):
                 port=8102,
                 result="success",
                 deployed_sha="a91f3c2",
+                deployment_info={"platform_services": ["feeds"]},
             ),
         ]
     )
@@ -256,7 +257,8 @@ async def test_topology_places_the_product_on_its_server(async_client, product):
     ours = next(p for p in body["products"] if p["project_id"] == str(product["project"].id))
     assert [c["placement"] for c in ours["passport"]["containers"]] == [product["server"].handle]
     assert [p["name"] for p in ours["passport"]["packages"]] == ["textparse", "reminders"]
-    assert body["platform_services"] == []
+    reader = next(s for s in body["platform_services"] if s["name"] == "feeds")
+    assert str(product["project"].id) in reader["products"]
 
 
 async def test_attention_lists_the_parked_task_and_the_degraded_container(async_client, product):
