@@ -7,8 +7,11 @@ from shared.contracts.dto.task import TaskStatus, TaskType
 async def refuse_install_coding_fallback(api, story_id, detail, *, tasks=None) -> bool:
     if tasks is None:
         tasks = await api.get_tasks_by_story(story_id)
-    if not any(
-        task.type is TaskType.INSTALL and task.status is not TaskStatus.CANCELLED for task in tasks
+    live = [task for task in tasks if task.status is not TaskStatus.CANCELLED]
+    # A story that also carries engineering tasks already paid for coding: its CI,
+    # conflict and QA failures take the ordinary repair route like any feature story.
+    if not any(task.type is TaskType.INSTALL for task in live) or any(
+        task.type is not TaskType.INSTALL for task in live
     ):
         return False
     await api.stop_story(

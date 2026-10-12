@@ -29,3 +29,25 @@ async def test_ordinary_feature_repairs_keep_their_existing_owner():
     ]
     assert not await refuse_install_coding_fallback(api, "story-1", "CI failure")
     api.stop_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_install_beside_engineering_work_keeps_the_ordinary_repair():
+    api = AsyncMock()
+    api.get_tasks_by_story.return_value = [
+        SimpleNamespace(type=TaskType.INSTALL, status=TaskStatus.DONE),
+        SimpleNamespace(type=TaskType.FEATURE, status=TaskStatus.DONE),
+    ]
+    assert not await refuse_install_coding_fallback(api, "story-1", "CI failure")
+    api.stop_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_feature_leaves_the_install_story_mechanical():
+    api = AsyncMock()
+    api.get_tasks_by_story.return_value = [
+        SimpleNamespace(type=TaskType.INSTALL, status=TaskStatus.DONE),
+        SimpleNamespace(type=TaskType.FEATURE, status=TaskStatus.CANCELLED),
+    ]
+    assert await refuse_install_coding_fallback(api, "story-1", "CI failure")
+    api.stop_story.assert_awaited_once()

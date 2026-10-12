@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-12
 
+- A story that installs a catalog module beside engineering tasks takes the ordinary CI, conflict and QA
+  repair route; only a purely mechanical install story still parks for human review.
 - The admin console Journey shows a catalog install the dispatcher has not claimed yet as queued and a running
   one as active, instead of failed or done while the story already counts as building.
 - The PO writes a scheduled behaviour's brief usage example as the moment in plain words, so a confirmed
