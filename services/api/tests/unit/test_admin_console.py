@@ -355,11 +355,11 @@ def test_platform_services_join_declared_and_used_with_their_products():
     views = platform_service_views(
         {"feeds": "https://platform.example/feeds"},
         {"feeds": "up"},
-        {PROJECT: ["feeds"], other: ["feeds", "geo"]},
+        {PROJECT: ["feeds"], other: ["feeds", "weather"]},
     )
     assert [(v.name, v.status, v.products) for v in views] == [
-        ("geo", "undeclared", [other]),
         ("feeds", "up", [PROJECT, other]),
+        ("weather", "undeclared", [other]),
     ]
     assert platform_service_views({}, {}, {}) == []
 
