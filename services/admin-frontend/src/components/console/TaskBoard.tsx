@@ -60,9 +60,12 @@ function useCardFlip(container: React.RefObject<HTMLDivElement | null>, signatur
     const nextSigs = new Map<string, string>()
     let fresh = 0
     const animate = mounted.current && !reducedMotion()
+    // Boxes are kept relative to the board, so page scrolling between polls is not a "move".
+    const origin = root.getBoundingClientRect()
     for (const el of cards) {
       const key = el.dataset.card!
-      const box = el.getBoundingClientRect()
+      const r = el.getBoundingClientRect()
+      const box = new DOMRect(r.left - origin.left, r.top - origin.top, r.width, r.height)
       next.set(key, box)
       const sig = el.dataset.sig ?? ''
       nextSigs.set(key, sig)

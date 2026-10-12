@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -78,7 +78,8 @@ export function WorkerDetailPage() {
           )}
           <StatusBadge status={worker.status.toLowerCase()} />
         </div>
-        <div>
+        {/* Demo: no destructive button in the investor video. */}
+        <div className={isDemo ? 'hidden' : undefined}>
           {confirmKill ? (
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">Kill this worker?</span>
@@ -236,8 +237,16 @@ function ConsoleTab({ workerId }: { workerId: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ['worker-logs', workerId, tail],
     queryFn: () => api.raw<WorkerLogsResponse>(`/wm-api/workers/${workerId}/logs?tail=${tail}`),
-    refetchInterval: 7_000,
+    refetchInterval: livePoll(7_000),
   })
+  // Demo: the console follows its tail (current task), unless the viewer scrolled up.
+  const box = useRef<HTMLPreElement>(null)
+  const follow = useRef(true)
+  const logs = data?.logs
+  useLayoutEffect(() => {
+    const el = box.current
+    if (isDemo && el && follow.current) el.scrollTop = el.scrollHeight
+  }, [logs])
 
   return (
     <div className="space-y-3">
@@ -259,7 +268,13 @@ function ConsoleTab({ workerId }: { workerId: string }) {
         <p className="text-muted-foreground">Loading logs...</p>
       ) : data?.logs ? (
         <pre
-          className="max-h-[600px] overflow-auto rounded-lg bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300"
+          ref={box}
+          role={isDemo ? 'log' : undefined}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+          }}
+          className={`${isDemo ? 'max-h-[560px]' : 'max-h-[600px]'} overflow-auto rounded-lg bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300`}
           dangerouslySetInnerHTML={{ __html: ansiUp.ansi_to_html(data.logs) }}
         />
       ) : (
