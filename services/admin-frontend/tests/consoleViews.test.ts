@@ -211,3 +211,15 @@ test('attention scope turns a relative since and a project into the feed query',
     label: null,
   })
 })
+
+test('selecting a platform service lights its products; a product lights its services', () => {
+  const withPlatform: Topology = {
+    ...topology,
+    platform_services: [{ name: 'tg-reader', status: 'up', products: ['p2'] }],
+  }
+  const byPlatform = highlight(withPlatform, { kind: 'platform', id: 'tg-reader' })!
+  assert.deepEqual([...byPlatform.products], ['p2'])
+  assert.deepEqual([...byPlatform.platforms], ['tg-reader'])
+  assert.deepEqual([...highlight(withPlatform, { kind: 'product', id: 'p2' })!.platforms], ['tg-reader'])
+  assert.deepEqual([...highlight(withPlatform, { kind: 'product', id: 'p3' })!.platforms], [])
+})

@@ -44,6 +44,20 @@ class Settings(BaseSettings):
 
     admin_telegram_ids: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
 
+    # Platform services the admin console shows, as `name=https://base-url` pairs separated by
+    # commas (e.g. `tg-reader=https://platform.example/tg-reader`). Core keeps no service
+    # registry; empty shows none beyond the ones deployed products already use.
+    platform_services: str = Field(default="", alias="PLATFORM_SERVICES")
+
+    def get_platform_services(self) -> dict[str, str]:
+        """Parse the declared platform services into name → base URL."""
+        services: dict[str, str] = {}
+        for pair in self.platform_services.split(","):
+            name, _, url = pair.strip().partition("=")
+            if name.strip() and url.strip():
+                services[name.strip()] = url.strip()
+        return services
+
     def get_admin_ids(self) -> set[int]:
         """Parse the bot's owner list for the registration exception."""
         return {

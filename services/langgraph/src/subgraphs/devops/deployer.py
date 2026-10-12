@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from typing import Any
 
 from langchain_core.messages import AIMessage
 import structlog
@@ -172,6 +173,20 @@ async def _create_deployment_record(
             error_type=type(e).__name__,
         )
         return None
+
+
+def _platform_services(contract: Any) -> list[str]:
+    """Platform services the deployed environment contract draws a key or endpoint from."""
+    if hasattr(contract, "model_dump"):
+        contract = contract.model_dump(mode="json")
+    entries = (contract or {}).get("entries") or {}
+    return sorted(
+        {
+            entry["service"]
+            for entry in entries.values()
+            if entry.get("source") in {"platform_key", "platform_base_url"} and entry.get("service")
+        }
+    )
 
 
 def _modules_label(project_spec: dict) -> str:
@@ -863,6 +878,8 @@ class DeployerNode(FunctionalNode):
                     "repo_full_name": f"{owner}/{repo}",
                     "branch": "main",
                     "modules": modules,
+                    # Read by the admin console topology to draw product → service links.
+                    "platform_services": _platform_services(state.get("environment_contract")),
                     "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
                     # What ran, not what was asked for. A SHA alone is a claim
                     # about a commit; these are the references the target pulled

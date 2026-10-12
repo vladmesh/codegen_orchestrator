@@ -15,9 +15,11 @@ from src.admin_console import (
     build_passports,
     build_steps,
     median_lead_time_minutes,
+    platform_service_views,
     scope_attention,
     stage_for,
 )
+from src.config import Settings
 from src.main import app
 from src.schemas.admin_console import (
     AttentionResponse,
@@ -346,6 +348,25 @@ def test_attention_scope_keeps_one_project_and_recent_items():
     scoped = scope_attention(items, at(0), PROJECT)
     assert [i.task_id for i in scoped] == ["t-new"]
     assert scope_attention(items, None, None) == items
+
+
+def test_platform_services_join_declared_and_used_with_their_products():
+    other = uuid.UUID("00000000-0000-0000-0000-0000000000bb")
+    views = platform_service_views(
+        {"tg-reader": "https://platform.example/tg-reader"},
+        {"tg-reader": "up"},
+        {PROJECT: ["tg-reader"], other: ["tg-reader", "geo"]},
+    )
+    assert [(v.name, v.status, v.products) for v in views] == [
+        ("geo", "undeclared", [other]),
+        ("tg-reader", "up", [PROJECT, other]),
+    ]
+    assert platform_service_views({}, {}, {}) == []
+
+
+def test_platform_services_setting_parses_name_url_pairs():
+    settings = SimpleNamespace(platform_services=" tg-reader=https://p.example/tg-reader, ,bad, ")
+    assert Settings.get_platform_services(settings) == {"tg-reader": "https://p.example/tg-reader"}
 
 
 def test_median_lead_time_ignores_stories_without_a_completion_stamp():
