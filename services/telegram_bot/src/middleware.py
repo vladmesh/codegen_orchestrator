@@ -13,6 +13,7 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from .clients.api import api_client
 from .config import get_settings
+from .texts import text, user_locale
 
 logger = structlog.get_logger()
 
@@ -121,13 +122,14 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         username=update.effective_user.username,
     )
 
+    locale = user_locale(update)
     promo_code = _promo_from_update(update)
     if promo_code and await _upsert_user(update.effective_user, promo_code):
-        await update.message.reply_text("Промокод активирован. Добро пожаловать!")
+        await update.message.reply_text(text(locale, "promo_activated"))
     elif update.message:
-        await update.message.reply_text("Чтобы начать, пришлите одноразовый промокод.")
+        await update.message.reply_text(text(locale, "promo_required"))
     elif update.callback_query:
-        await update.callback_query.answer("Сначала активируйте промокод", show_alert=True)
+        await update.callback_query.answer(text(locale, "promo_first"), show_alert=True)
     raise ApplicationHandlerStop()
 
 

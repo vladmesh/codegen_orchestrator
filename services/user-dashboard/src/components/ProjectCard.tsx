@@ -6,6 +6,7 @@ import MetricValue from './MetricValue'
 import { formatNumber, formatMs, formatPercent } from '@/lib/utils'
 import CollectionNotice from './CollectionNotice'
 import { emptyDataText } from './emptyDataText'
+import { t } from '@/lib/i18n'
 
 export default function ProjectCard({ project }: { project: LkProject }) {
   const navigate = useNavigate()
@@ -33,10 +34,10 @@ export default function ProjectCard({ project }: { project: LkProject }) {
 
       {d ? (
         <div className="grid grid-cols-4 gap-2">
-          <MetricValue label="Пользователи" value={formatNumber(d.unique_users)} />
-          <MetricValue label="Запросы" value={formatNumber(d.total_requests)} />
-          <MetricValue label="Скорость" value={formatMs(d.p95_ms)} />
-          <MetricValue label="Ошибки" value={formatPercent(d.error_rate)} />
+          <MetricValue label={t('users')} value={formatNumber(d.unique_users)} />
+          <MetricValue label={t('requests')} value={formatNumber(d.total_requests)} />
+          <MetricValue label={t('speed')} value={formatMs(d.p95_ms)} />
+          <MetricValue label={t('errors')} value={formatPercent(d.error_rate)} />
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">{emptyDataText(project.collection)}</p>

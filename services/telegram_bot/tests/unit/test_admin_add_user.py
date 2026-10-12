@@ -38,13 +38,13 @@ class TestMainMenuKeyboardAddUser:
     """Test that Add User button appears for admins."""
 
     def test_admin_sees_add_user_button(self):
-        keyboard = main_menu_keyboard(is_admin=True)
+        keyboard = main_menu_keyboard("en", is_admin=True)
         all_buttons = [btn for row in keyboard.inline_keyboard for btn in row]
         callbacks = [btn.callback_data for btn in all_buttons]
         assert f"{PREFIX_ADMIN}:{ACTION_ADD_USER}" in callbacks
 
     def test_non_admin_no_add_user_button(self):
-        keyboard = main_menu_keyboard(is_admin=False)
+        keyboard = main_menu_keyboard("en", is_admin=False)
         all_buttons = [btn for row in keyboard.inline_keyboard for btn in row]
         callbacks = [btn.callback_data for btn in all_buttons]
         assert f"{PREFIX_ADMIN}:{ACTION_ADD_USER}" not in callbacks
@@ -52,7 +52,9 @@ class TestMainMenuKeyboardAddUser:
 
 class TestProjectKeyboard:
     def test_project_uses_api_title(self):
-        keyboard = projects_list_keyboard([{"id": "p1", "title": "My Project", "status": "active"}])
+        keyboard = projects_list_keyboard(
+            [{"id": "p1", "title": "My Project", "status": "active"}], "en"
+        )
         assert keyboard.inline_keyboard[0][0].text == "✅ My Project"
 
 
@@ -159,6 +161,7 @@ class TestAddUserInput:
         update.message.text = "not-a-number"
         update.message.reply_text = AsyncMock()
         update.effective_user.id = 111
+        update.effective_user.language_code = "ru"
 
         context = MagicMock()
         context.user_data = {"awaiting_add_user": True}
@@ -220,15 +223,20 @@ class TestAddUserInput:
     async def test_cancel_clears_pending_invite(self):
         from src.handlers import cancel_add_user
 
-        update = MagicMock()
-        update.message.reply_text = AsyncMock()
-        context = MagicMock()
-        context.user_data = {"awaiting_add_user": True}
+        for language_code, expected in (
+            ("ru", "Добавление пользователя отменено."),
+            ("en", "Adding a user was cancelled."),
+        ):
+            update = MagicMock()
+            update.effective_user.language_code = language_code
+            update.message.reply_text = AsyncMock()
+            context = MagicMock()
+            context.user_data = {"awaiting_add_user": True}
 
-        await cancel_add_user(update, context)
+            await cancel_add_user(update, context)
 
-        assert "awaiting_add_user" not in context.user_data
-        update.message.reply_text.assert_awaited_once_with("Добавление пользователя отменено.")
+            assert "awaiting_add_user" not in context.user_data
+            update.message.reply_text.assert_awaited_once_with(expected)
 
     @pytest.mark.asyncio
     async def test_not_awaiting_returns_none(self):

@@ -1,9 +1,10 @@
 import type { ServiceBreakdown as ServiceBreakdownType } from '@/types/api'
 import { formatNumber, formatMs, formatPercent } from '@/lib/utils'
+import { t } from '@/lib/i18n'
 
 export default function ServiceBreakdown({ breakdown }: { breakdown: ServiceBreakdownType[] }) {
   if (breakdown.length === 0) {
-    return <p className="text-sm text-muted-foreground">Нет данных</p>
+    return <p className="text-sm text-muted-foreground">{t('noData')}</p>
   }
 
   return (
@@ -11,11 +12,11 @@ export default function ServiceBreakdown({ breakdown }: { breakdown: ServiceBrea
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border text-left text-muted-foreground">
-            <th className="pb-2 font-medium">Сервис</th>
-            <th className="pb-2 font-medium text-right">Запросы</th>
-            <th className="pb-2 font-medium text-right">Ошибки</th>
-            <th className="pb-2 font-medium text-right">Пользователи</th>
-            <th className="pb-2 font-medium text-right">Скорость</th>
+            <th className="pb-2 font-medium">{t('service')}</th>
+            <th className="pb-2 font-medium text-right">{t('requests')}</th>
+            <th className="pb-2 font-medium text-right">{t('errors')}</th>
+            <th className="pb-2 font-medium text-right">{t('users')}</th>
+            <th className="pb-2 font-medium text-right">{t('speed')}</th>
           </tr>
         </thead>
         <tbody>

@@ -4,6 +4,7 @@ import type { LkProject } from '@/types/api'
 import ProjectCard from '@/components/ProjectCard'
 import Spinner from '@/components/Spinner'
 import ErrorMessage from '@/components/ErrorMessage'
+import { t } from '@/lib/i18n'
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<LkProject[]>([])
@@ -28,7 +29,7 @@ export default function ProjectsPage() {
   if (projects.length === 0) {
     return (
       <div className="text-center py-12">
-        <p className="text-muted-foreground">Нет данных о проектах</p>
+        <p className="text-muted-foreground">{t('noProjectData')}</p>
       </div>
     )
   }

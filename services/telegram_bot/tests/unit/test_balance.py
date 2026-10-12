@@ -13,9 +13,10 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token-for-unit-tests")
 os.environ.setdefault("LK_DOMAIN", "https://lk.test.example.com")
 
 
-def _update(telegram_id: int = 42) -> MagicMock:
+def _update(telegram_id: int = 42, language_code: str = "ru") -> MagicMock:
     update = MagicMock()
     update.effective_user.id = telegram_id
+    update.effective_user.language_code = language_code
     update.message.reply_text = AsyncMock()
     return update
 
@@ -113,3 +114,27 @@ async def test_balance_reports_temporary_api_failure_without_leaking_details():
     text = update.message.reply_text.await_args.args[0]
     assert "попробуйте позже" in text.lower()
     assert "private upstream detail" not in text
+
+
+@pytest.mark.asyncio
+async def test_balance_speaks_english_to_an_english_user():
+    from src.main import balance
+
+    update = _update(language_code="en")
+    payload = {
+        "enforcement": "unlimited",
+        "known_spend_microusd": 1_500_000,
+        "remaining_microusd": None,
+        "exhausted": False,
+        "unknown_cost_attempt_count": 2,
+        "incomplete_coverage": True,
+    }
+
+    with patch("src.main.api_client") as mock_api:
+        mock_api.get_json = AsyncMock(return_value=payload)
+        await balance(update, MagicMock())
+
+    text = update.message.reply_text.await_args.args[0]
+    assert "Spent: $1.50" in text
+    assert "no limit is set" in text
+    assert "unknown cost: 2" in text

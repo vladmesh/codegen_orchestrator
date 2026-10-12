@@ -280,7 +280,7 @@ async def test_concurrent_project_creations_cannot_pass_the_same_user_ceiling(
                     "outcome": "denied",
                     "reason": "project_limit",
                     "retryable": False,
-                    "message": "Достигнут лимит активных проектов. Попробуйте позже.",
+                    "message": "Active project limit reached. Please try again later.",
                 }
             return response.status_code
 
@@ -589,7 +589,7 @@ async def test_paid_run_refusal_is_durable_but_the_same_command_rechecks_the_sto
             "outcome": "denied",
             "reason": "emergency_stop",
             "retryable": False,
-            "message": "Запуск новой работы временно остановлен оператором.",
+            "message": "Starting new work is temporarily paused by the operator.",
         }
         replay = await async_client.post("/api/work-admission/paid-runs", json=payload)
         assert replay.json() == refused.json()
@@ -599,7 +599,7 @@ async def test_paid_run_refusal_is_durable_but_the_same_command_rechecks_the_sto
         assert audit is not None
         assert audit.user_id == user.json()["id"]
         assert audit.reason == "emergency_stop"
-        assert audit.message == "Запуск новой работы временно остановлен оператором."
+        assert audit.message == "Starting new work is temporarily paused by the operator."
         assert audit.command_payload == {
             **payload,
             "story_id": None,

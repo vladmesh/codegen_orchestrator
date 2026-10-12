@@ -1,9 +1,10 @@
 import type { ServiceStatus } from '@/types/api'
 import StatusBadge from './StatusBadge'
+import { t } from '@/lib/i18n'
 
 export default function ServiceStatusList({ services }: { services: ServiceStatus[] }) {
   if (services.length === 0) {
-    return <p className="text-sm text-muted-foreground">Нет сервисов</p>
+    return <p className="text-sm text-muted-foreground">{t('noServices')}</p>
   }
 
   return (

@@ -54,18 +54,20 @@ PAID_WORK_CONTROL_KEYS = tuple(
     )
 )
 
+# English: the user's language is not known here, and the PO retells a refusal
+# to the user in the conversation's language.
 _REFUSAL_MESSAGES = {
-    WorkAdmissionReason.EMERGENCY_STOP: "Запуск новой работы временно остановлен оператором.",
-    WorkAdmissionReason.PROJECT_LIMIT: "Достигнут лимит активных проектов. Попробуйте позже.",
+    WorkAdmissionReason.EMERGENCY_STOP: "Starting new work is temporarily paused by the operator.",
+    WorkAdmissionReason.PROJECT_LIMIT: "Active project limit reached. Please try again later.",
     WorkAdmissionReason.PAID_WORK_LIMIT: (
-        "Достигнут лимит одновременной платной работы. Попробуйте позже."
+        "Concurrent paid work limit reached. Please try again later."
     ),
     WorkAdmissionReason.ENGINEERING_BUDGET_DENIED: (
-        "Недостаточно доступного бюджета для запуска инженерной задачи."
+        "There is not enough available budget to start the engineering task."
     ),
-    WorkAdmissionReason.EXECUTOR_UNAVAILABLE: "Выбранный исполнитель сейчас недоступен.",
+    WorkAdmissionReason.EXECUTOR_UNAVAILABLE: "The selected executor is unavailable right now.",
     WorkAdmissionReason.EXECUTOR_CONFIRMATION_REQUIRED: (
-        "Текущее состояние исполнителя неизвестно и требует подтверждения администратора."
+        "The current executor state is unknown and needs administrator confirmation."
     ),
 }
 

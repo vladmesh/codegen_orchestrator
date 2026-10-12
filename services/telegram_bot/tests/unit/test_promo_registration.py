@@ -13,6 +13,7 @@ async def test_unregistered_message_is_not_sent_to_po(monkeypatch) -> None:
     update = AsyncMock()
     update.effective_user.id = 42
     update.effective_user.first_name = "New"
+    update.effective_user.language_code = "ru"
     update.effective_chat.id = 42
     update.message.text = "hello"
     update.message.reply_text = AsyncMock()
@@ -34,6 +35,7 @@ async def test_unknown_update_is_stopped_for_every_update_kind(monkeypatch, kind
     update = AsyncMock()
     update.effective_user.id = 43
     update.effective_user.username = "unknown"
+    update.effective_user.language_code = "en"
     update.message = AsyncMock() if kind != "callback" else None
     if update.message is not None:
         update.message.text = "/start" if kind == "command" else "hello"

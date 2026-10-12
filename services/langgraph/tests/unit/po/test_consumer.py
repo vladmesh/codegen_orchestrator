@@ -11,7 +11,12 @@ import pytest
 
 from shared.contracts.queues.po import POInputMessage, POSystemEvent, POUserMessage
 from shared.contracts.vocab import OwnerNotificationEvent
-from src.consumers.po import _handle_message, _process_message, _repair_orphan_tool_calls
+from src.consumers.po import (
+    EMPTY_REPLY_FALLBACK,
+    _handle_message,
+    _process_message,
+    _repair_orphan_tool_calls,
+)
 
 
 @pytest.fixture
@@ -305,7 +310,7 @@ class TestHandleMessage:
         mock_client.publish_flat.assert_called_once()
         call_args = mock_client.publish_flat.call_args
         assert call_args[0][0] == "po:response:req-empty"
-        assert call_args[0][1]["text"] == "Бот вернул пустой ответ"
+        assert call_args[0][1]["text"] == EMPTY_REPLY_FALLBACK
 
     @pytest.mark.asyncio
     async def test_handles_missing_timestamp(self, mock_graph, mock_client):

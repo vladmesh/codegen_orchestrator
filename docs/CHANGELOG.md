@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-12
+
+- The Telegram bot and user dashboard show English to users whose Telegram or browser language is not
+  Russian; admission refusals and the empty-reply fallback are English, so English users see no Russian.
+
 ## 2026-10-11
 
 - The admin console Attention feed takes `since` and `project_id` (page URL `?since=2h&project=<id>`),

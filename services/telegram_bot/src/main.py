@@ -52,6 +52,7 @@ from .proactive import (  # noqa: E402
     process_proactive_entry,
     send_text,
 )
+from .texts import text, user_locale  # noqa: E402
 from .update_processor import UserUpdateProcessor  # noqa: E402
 
 logger = structlog.get_logger()
@@ -74,19 +75,15 @@ PO_RESPONSE_TIMEOUT_S = 60
 # Pause after a failed read of the PO response stream before the next read.
 PO_RESPONSE_READ_RETRY_DELAY_S = 0.5
 TYPING_INTERVAL_S = 5
-# What the user sees when their message could not be answered. Fixed on purpose:
-# exception text is for the logs, never for the chat.
-MESSAGE_FAILED_REPLY = "Не удалось обработать сообщение. Попробуйте позже."
 
 
 async def start(update: Update, context) -> None:
     """Handle /start command - show main menu."""
     user_is_admin = is_admin(context)
+    locale = user_locale(update)
     await update.message.reply_text(
-        "🏠 <b>Главное меню</b>\n\n"
-        "Привет! Я оркестратор для генерации проектов.\n\n"
-        "Выберите действие или опишите проект в чате:",
-        reply_markup=main_menu_keyboard(is_admin=user_is_admin),
+        text(locale, "start_html"),
+        reply_markup=main_menu_keyboard(locale, is_admin=user_is_admin),
         parse_mode=ParseMode.HTML,
     )
 
@@ -94,9 +91,10 @@ async def start(update: Update, context) -> None:
 async def menu(update: Update, context) -> None:
     """Handle /menu command - show main menu."""
     user_is_admin = is_admin(context)
+    locale = user_locale(update)
     await update.message.reply_text(
-        "🏠 <b>Главное меню</b>\n\nВыберите действие:",
-        reply_markup=main_menu_keyboard(is_admin=user_is_admin),
+        text(locale, "menu_html"),
+        reply_markup=main_menu_keyboard(locale, is_admin=user_is_admin),
         parse_mode=ParseMode.HTML,
     )
 
@@ -127,15 +125,18 @@ async def _generate_dashboard_url(telegram_id: int) -> str | None:
 async def dashboard(update: Update, context) -> None:
     """Handle /dashboard command — generate one-time token and send dashboard URL."""
     telegram_id = update.effective_user.id
+    locale = user_locale(update)
 
     url = await _generate_dashboard_url(telegram_id)
     if url is None:
-        await update.message.reply_text("У вас пока нет проектов.")
+        await update.message.reply_text(text(locale, "no_projects"))
         return
 
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Открыть дашборд", url=url)]])
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(text(locale, "btn_open_dashboard"), url=url)]]
+    )
     await update.message.reply_text(
-        "Нажмите кнопку, чтобы открыть дашборд.\nСсылка действительна 5 минут.",
+        text(locale, "dashboard_link"),
         reply_markup=keyboard,
         parse_mode=ParseMode.HTML,
     )
@@ -144,6 +145,7 @@ async def dashboard(update: Update, context) -> None:
 async def balance(update: Update, context) -> None:
     """Show the authenticated user's ledger-derived engineering balance."""
     telegram_id = update.effective_user.id
+    locale = user_locale(update)
     try:
         data = await api_client.get_json(
             "engineering-budget-policy/balance",
@@ -153,35 +155,31 @@ async def balance(update: Update, context) -> None:
         logger.warning(
             "engineering_budget_balance_failed", telegram_id=telegram_id, error=str(error)
         )
-        await update.message.reply_text("Не удалось получить баланс. Попробуйте позже.")
+        await update.message.reply_text(text(locale, "balance_failed"))
         return
 
     lines = [
-        "💰 Баланс разработки",
+        text(locale, "balance_title"),
         "",
-        f"Потрачено: {format_microusd(data['known_spend_microusd'])}",
+        text(locale, "balance_spent", amount=format_microusd(data["known_spend_microusd"])),
     ]
     enforcement = data["enforcement"]
     if enforcement == "enforced":
-        lines.append(f"Доступно сейчас: {format_microusd(data['remaining_microusd'])}")
+        lines.append(
+            text(locale, "balance_available", amount=format_microusd(data["remaining_microusd"]))
+        )
         if data["exhausted"]:
-            lines.append("Лимит исчерпан.")
+            lines.append(text(locale, "balance_exhausted"))
     elif enforcement == "not_enforced":
-        lines.append("Лимит сейчас отключён.")
+        lines.append(text(locale, "balance_not_enforced"))
     else:
-        lines.append("Доступно: без ограничений — лимит не установлен.")
+        lines.append(text(locale, "balance_unlimited"))
 
     unknown_attempts = data["unknown_cost_attempt_count"]
     if unknown_attempts:
-        lines.extend(
-            [
-                "",
-                f"⚠️ Попыток с неизвестной стоимостью: {unknown_attempts}. "
-                "Фактические расходы могут быть выше.",
-            ]
-        )
+        lines.extend(["", text(locale, "balance_unknown_cost", count=unknown_attempts)])
     elif data["incomplete_coverage"]:
-        lines.extend(["", "⚠️ Часть расходов ещё уточняется."])
+        lines.extend(["", text(locale, "balance_incomplete")])
 
     await update.message.reply_text("\n".join(lines))
 
@@ -350,9 +348,13 @@ async def handle_message(update: Update, context) -> None:
 
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    text = update.message.text
+    message_text = update.message.text
 
-    logger.info("message_received", user_id=user_id, text_length=len(text) if text else 0)
+    logger.info(
+        "message_received",
+        user_id=user_id,
+        text_length=len(message_text) if message_text else 0,
+    )
 
     try:
         if _stream_client is None:
@@ -363,7 +365,7 @@ async def handle_message(update: Update, context) -> None:
         response_text = await _send_to_po_and_wait(
             client=_stream_client,
             telegram_chat_id=user_id,
-            text=text,
+            text=message_text,
             bot=context.bot,
             chat_id=chat_id,
             user_name=user_name,
@@ -372,15 +374,17 @@ async def handle_message(update: Update, context) -> None:
         # Send response to user
         await _send_response_to_user(context.application, user_id, response_text)
 
+    # What the user sees when their message could not be answered is fixed on
+    # purpose: exception text is for the logs, never for the chat.
     except TimeoutError:
         logger.warning("po_response_timeout", user_id=user_id)
-        await update.message.reply_text("Таймаут ожидания ответа. Попробуйте позже.")
+        await update.message.reply_text(text(user_locale(update), "po_timeout"))
     except RuntimeError as e:
         logger.error("po_response_error", error_type=type(e).__name__, user_id=user_id)
-        await update.message.reply_text(MESSAGE_FAILED_REPLY)
+        await update.message.reply_text(text(user_locale(update), "message_failed"))
     except Exception as e:
         logger.error("message_handling_failed", error_type=type(e).__name__, user_id=user_id)
-        await update.message.reply_text(MESSAGE_FAILED_REPLY)
+        await update.message.reply_text(text(user_locale(update), "message_failed"))
 
 
 class ProactiveListener:

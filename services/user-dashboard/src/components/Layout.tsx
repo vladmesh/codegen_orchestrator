@@ -1,6 +1,7 @@
 import { Outlet, useNavigate, useLocation } from 'react-router'
 import { ArrowLeft, LayoutDashboard } from 'lucide-react'
 import { clearToken } from '@/lib/auth'
+import { t } from '@/lib/i18n'
 
 export default function Layout() {
   const navigate = useNavigate()
@@ -19,12 +20,12 @@ export default function Layout() {
                 className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
                 <ArrowLeft className="h-4 w-4" />
-                Проекты
+                {t('projects')}
               </button>
             ) : (
               <div className="flex items-center gap-2 font-semibold">
                 <LayoutDashboard className="h-5 w-5 text-primary" />
-                Мои проекты
+                {t('myProjects')}
               </div>
             )}
           </div>
@@ -32,7 +33,7 @@ export default function Layout() {
             onClick={() => { clearToken(); navigate('/auth') }}
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
-            Выйти
+            {t('logOut')}
           </button>
         </div>
       </header>

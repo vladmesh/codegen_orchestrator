@@ -4,11 +4,12 @@ import { api } from '@/lib/api'
 import type { ChartMetric, ChartResponse, SummaryPeriod } from '@/types/api'
 import { cn } from '@/lib/utils'
 import Spinner from './Spinner'
+import { t } from '@/lib/i18n'
 
 const metrics: { value: ChartMetric; label: string }[] = [
-  { value: 'users', label: 'Пользователи' },
-  { value: 'requests', label: 'Запросы' },
-  { value: 'errors', label: 'Ошибки' },
+  { value: 'users', label: t('users') },
+  { value: 'requests', label: t('requests') },
+  { value: 'errors', label: t('errors') },
 ]
 
 interface MetricChartProps {
@@ -67,8 +68,8 @@ export default function MetricChart({ projectId, period }: MetricChartProps) {
       ) : !data || data.data.length === 0 ? (
         <p className="text-sm text-muted-foreground text-center py-12">
           {data && data.collection.state !== 'ok'
-            ? 'Сбор данных не работает — графика нет по этой причине'
-            : 'Нет данных для графика'}
+            ? t('chartCollectionDown')
+            : t('chartNoData')}
         </p>
       ) : (
         <ResponsiveContainer width="100%" height={280}>

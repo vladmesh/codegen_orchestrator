@@ -13,6 +13,7 @@ import ServiceBreakdown from '@/components/ServiceBreakdown'
 import Spinner from '@/components/Spinner'
 import ErrorMessage from '@/components/ErrorMessage'
 import CollectionNotice from '@/components/CollectionNotice'
+import { t } from '@/lib/i18n'
 
 export default function DashboardPage() {
   const { id } = useParams<{ id: string }>()
@@ -58,7 +59,7 @@ export default function DashboardPage() {
   }
 
   if (!summary) {
-    return <p className="text-center text-muted-foreground py-12">Нет данных</p>
+    return <p className="text-center text-muted-foreground py-12">{t('noData')}</p>
   }
 
   return (
@@ -74,22 +75,22 @@ export default function DashboardPage() {
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <KpiCard
-          label="Пользователи"
+          label={t('users')}
           value={formatNumber(summary.total_users)}
           icon={<Users className="h-4 w-4" />}
         />
         <KpiCard
-          label="Запросы"
+          label={t('requests')}
           value={formatNumber(summary.total_requests)}
           icon={<Activity className="h-4 w-4" />}
         />
         <KpiCard
-          label="Ошибки"
+          label={t('errors')}
           value={formatPercent(summary.error_rate)}
           icon={<AlertTriangle className="h-4 w-4" />}
         />
         <KpiCard
-          label="Скорость"
+          label={t('speed')}
           value={formatMs(summary.p95_ms)}
           icon={<Gauge className="h-4 w-4" />}
         />
@@ -97,14 +98,14 @@ export default function DashboardPage() {
 
       {/* Chart */}
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
-        <h2 className="font-semibold mb-4">Динамика</h2>
+        <h2 className="font-semibold mb-4">{t('trend')}</h2>
         <MetricChart projectId={id!} period={period} />
       </div>
 
       {/* Service status */}
       {status && status.services.length > 0 && (
         <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
-          <h2 className="font-semibold mb-3">Сервисы</h2>
+          <h2 className="font-semibold mb-3">{t('services')}</h2>
           <ServiceStatusList services={status.services} />
         </div>
       )}
@@ -112,7 +113,7 @@ export default function DashboardPage() {
       {/* Top endpoints */}
       {summary.top_endpoints.length > 0 && (
         <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
-          <h2 className="font-semibold mb-3">Популярные эндпоинты</h2>
+          <h2 className="font-semibold mb-3">{t('topEndpoints')}</h2>
           <TopEndpoints endpoints={summary.top_endpoints} />
         </div>
       )}
@@ -120,7 +121,7 @@ export default function DashboardPage() {
       {/* Service breakdown */}
       {summary.breakdown.length > 0 && (
         <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
-          <h2 className="font-semibold mb-3">По сервисам</h2>
+          <h2 className="font-semibold mb-3">{t('byService')}</h2>
           <ServiceBreakdown breakdown={summary.breakdown} />
         </div>
       )}
