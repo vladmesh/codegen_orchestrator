@@ -93,7 +93,7 @@ _WAITING_STAGE: dict[StoryWaitingOn, JourneyStage] = {
 
 _TERMINAL_STORY = {StoryStatus.COMPLETED, StoryStatus.FAILED, StoryStatus.ARCHIVED}
 _ACTIVE_ATTEMPT = {RunStatus.QUEUED.value, RunStatus.RUNNING.value, "queued", "running"}
-_DONE_ATTEMPT = {RunStatus.COMPLETED.value, "published"}
+_DONE_ATTEMPT = {RunStatus.COMPLETED.value, TaskStatus.DONE.value, "published"}
 _RUN_STAGE = {
     RunType.ENGINEERING.value: JourneyStage.BUILD,
     RunType.DEPLOY.value: JourneyStage.DEPLOY,
@@ -154,15 +154,14 @@ def run_attempt(run: Any) -> JourneyAttempt:
     )
 
 
+_FINISHED_TASK = {TaskStatus.DONE.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}
+
+
 def install_attempt(task: Any) -> JourneyAttempt:
     operation = task.install_operation or {}
-    state = operation.get("state") or task.status
-    finished = (
-        task.updated_at
-        if task.status
-        in {TaskStatus.DONE.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}
-        else None
-    )
+    # A task the dispatcher has not claimed yet has no operation: it is queued, not failed.
+    state = operation.get("state") or (task.status if task.status in _FINISHED_TASK else "queued")
+    finished = task.updated_at if task.status in _FINISHED_TASK else None
     return JourneyAttempt(
         id=task.id,
         kind="install",
@@ -305,7 +304,8 @@ def build_steps(  # noqa: C901, PLR0912, PLR0915  # one linear walk over the eig
                 if stage_attempts
                 else (StepStatus.DONE if evidence else StepStatus.SKIPPED)
             )
-            if step_status is StepStatus.ACTIVE:
+            # An in-progress story already counts as building while its install still runs.
+            if step_status is StepStatus.ACTIVE and stage is not JourneyStage.INSTALL:
                 step_status = StepStatus.DONE
         elif index == reached:
             if status is StoryStatus.COMPLETED:

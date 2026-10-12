@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-12
 
+- The admin console Journey shows a catalog install the dispatcher has not claimed yet as queued and a running
+  one as active, instead of failed or done while the story already counts as building.
 - Stand e2e refuses to rent machines unless `confirm_paid=owner-approved`: paid runs are the owner's
   call, after an agent re-dispatched red mega-noop runs all night.
 - The stand install-story accounting admits the story's own QA executor create and keeps its last facts in

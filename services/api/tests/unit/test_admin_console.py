@@ -137,6 +137,39 @@ def test_completed_story_walks_every_stage_and_keeps_the_retry_visible():
     assert steps[JourneyStage.LIVE].finished_at == at(26)
 
 
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [
+        (None, StepStatus.ACTIVE),
+        ({"state": "running", "stage": "preflight"}, StepStatus.ACTIVE),
+        ({"state": "refused"}, StepStatus.FAILED),
+    ],
+)
+def test_an_install_under_way_stays_active_while_the_story_is_building(operation, expected):
+    steps = by_stage(
+        build_steps(
+            story(status="in_progress", pr_number=None),
+            BRIEF,
+            [
+                task(
+                    "t-install",
+                    type="install",
+                    status="todo",
+                    install=INSTALL,
+                    install_operation=operation,
+                ),
+                task("t-1", status="todo"),
+            ],
+            [],
+        )
+    )
+
+    install = steps[JourneyStage.INSTALL]
+    assert install.status is expected
+    assert install.attempts[0].status == (operation or {}).get("state", "queued")
+    assert steps[JourneyStage.BUILD].status is StepStatus.ACTIVE
+
+
 def test_a_story_without_brief_or_install_marks_those_stages_skipped():
     steps = by_stage(
         build_steps(
