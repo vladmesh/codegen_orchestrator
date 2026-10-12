@@ -236,11 +236,18 @@ def task_events(v: View, task_id: str):
                 break
             ev.append({"id": n + 1, "task_id": task_id, "event_type": "created" if prev is None else "status_changed",
                        "from_status": prev, "to_status": st, "iteration": 1, "details": {},
-                       "actor": "architect" if prev is None else ("coding worker" if st != "done" else "Brimos"),
+                       "actor": "Architect" if prev is None else (worker_name(t) or "Developer") if st != "done" else "Brimos",
                        "created_at": v.ts(at)})
             prev = st
         return ev
     return None
+
+
+def worker_name(task) -> str | None:
+    """Human name of the worker that ran a task ("Developer 1")."""
+    if not task:
+        return None
+    return next((w["name"] for w in TL["workers"] if w["id"] == task.get("worker")), None)
 
 
 def attempt_view(v: View, a):
@@ -248,8 +255,9 @@ def attempt_view(v: View, a):
         return None
     done = v.seen(a["end"])
     status = (a.get("end_status", "completed") if done else "running")
+    task = TL["tasks"][a["task"] - 1] if a.get("task") else None
     return {"id": a["id"], "kind": a["kind"], "status": status,
-            "task_id": TL["tasks"][a["task"] - 1]["id"] if a.get("task") else None, "actor": a["actor"],
+            "task_id": task["id"] if task else None, "actor": worker_name(task) or a["actor"],
             "started_at": v.ts(a["start"]), "finished_at": v.ts(a["end"]) if done else None,
             "error": a.get("error") if done else None}
 
@@ -328,7 +336,9 @@ def scene_workers(v: View):
                     "active_turn_lease_error": None, "story_bindings": [ST["id"]], "story_bindings_error": None,
                     "attempt_run": {"id": f"run-{w['id'][4:]}", "status": "running"} if busy else None,
                     "attempt_run_error": None, "waiting_attempt": None, "waiting_attempt_error": None,
-                    "container_id": w["id"][4:], "image": "brimos/worker:2026.10"})
+                    "container_id": w["id"][4:], "image": "brimos/worker:2026.10",
+                    "display_name": w["name"], "project_title": P["title"],
+                    "current_task": task["title"] if task else ("Checking the live bot" if w.get("qa") else None)})
     return out
 
 

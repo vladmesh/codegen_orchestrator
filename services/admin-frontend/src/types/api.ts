@@ -466,6 +466,10 @@ export interface WorkerSummary {
   attempt_run_error: string | null
   waiting_attempt: WorkerWaitingAttempt | null
   waiting_attempt_error: string | null
+  /** Demo mock only: human name ("Developer 1"), project title and the task being worked on. */
+  display_name?: string | null
+  project_title?: string | null
+  current_task?: string | null
 }
 
 export interface WorkerDetail extends WorkerSummary {

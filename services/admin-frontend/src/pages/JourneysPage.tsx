@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api } from '@/lib/api'
-import { relativeTime } from '@/lib/utils'
+import { isDemo, relativeTime } from '@/lib/utils'
+import { humanizeLabel } from '@/lib/display'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import type { JourneySummary } from '@/types/api'
 import { STAGE_LABELS, formatDuration } from './journeyView'
@@ -54,7 +55,7 @@ export function JourneysPage() {
                   <td className="px-3 py-2.5 font-mono text-xs">
                     {journey.current_stage ? STAGE_LABELS[journey.current_stage] : '—'}
                     {journey.waiting_on !== 'none' && (
-                      <span className="ml-2 text-amber-400">waits on {journey.waiting_on.replace('_', ' ')}</span>
+                      <span className="ml-2 text-amber-400">waits on {isDemo ? humanizeLabel(journey.waiting_on) : journey.waiting_on.replace('_', ' ')}</span>
                     )}
                   </td>
                   <td className="px-3 py-2.5">

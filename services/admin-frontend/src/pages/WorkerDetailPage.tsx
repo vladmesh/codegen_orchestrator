@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { isDemo } from '@/lib/utils'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { WorkspaceBrowser } from '@/components/workspace'
@@ -70,7 +71,11 @@ export function WorkerDetailPage() {
             Workers
           </Link>
           <span className="text-muted-foreground">/</span>
-          <h1 className="font-mono text-xl font-bold text-foreground">{worker.id.slice(0, 12)}</h1>
+          {isDemo ? (
+            <h1 className="text-xl font-bold text-foreground">{worker.display_name ?? 'Worker'}</h1>
+          ) : (
+            <h1 className="font-mono text-xl font-bold text-foreground">{worker.id.slice(0, 12)}</h1>
+          )}
           <StatusBadge status={worker.status.toLowerCase()} />
         </div>
         <div>
@@ -109,7 +114,7 @@ export function WorkerDetailPage() {
           <p className="mt-1 text-foreground">
             {worker.project_id ? (
               <Link to={`/projects/${worker.project_id}`} className="text-primary hover:underline">
-                {worker.project_id.slice(0, 8)}
+                {isDemo ? (worker.project_title ?? 'Project') : worker.project_id.slice(0, 8)}
               </Link>
             ) : (
               '-'
@@ -120,7 +125,9 @@ export function WorkerDetailPage() {
           <p className="text-sm text-muted-foreground">Container</p>
           <p className="mt-1 font-mono text-xs text-foreground">
             {worker.container
-              ? `${worker.container.state ?? 'unknown'}: ${worker.container.id.slice(0, 12)}`
+              ? isDemo
+                ? (worker.container.state ?? 'unknown')
+                : `${worker.container.state ?? 'unknown'}: ${worker.container.id.slice(0, 12)}`
               : inventoryFact(null, worker.container_error, 'absent')}
           </p>
         </Card>
@@ -128,16 +135,24 @@ export function WorkerDetailPage() {
           <p className="text-sm text-muted-foreground">Image</p>
           <p className="mt-1 font-mono text-xs text-foreground">{worker.image ?? '-'}</p>
         </Card>
-        <Card>
-          <p className="text-sm text-muted-foreground">Network</p>
-          <p className="mt-1 font-mono text-xs text-foreground">{worker.dev_network ?? '-'}</p>
-        </Card>
+        {!isDemo && (
+          <Card>
+            <p className="text-sm text-muted-foreground">Network</p>
+            <p className="mt-1 font-mono text-xs text-foreground">{worker.dev_network ?? '-'}</p>
+          </Card>
+        )}
         <Card>
           <p className="text-sm text-muted-foreground">Agent process</p>
           <p className="mt-1 font-mono text-xs text-foreground">
             {inventoryFact(worker.agent_process_status, worker.agent_process_status_error, 'absent')}
           </p>
         </Card>
+        {isDemo ? (
+          <Card className="col-span-2">
+            <p className="text-sm text-muted-foreground">Working on</p>
+            <p className="mt-1 text-sm text-foreground">{worker.current_task ?? 'Waiting for the next task'}</p>
+          </Card>
+        ) : (<>
         <Card>
           <p className="text-sm text-muted-foreground">Broker lease</p>
           <p className="mt-1 font-mono text-xs text-foreground">
@@ -168,6 +183,7 @@ export function WorkerDetailPage() {
               : worker.waiting_attempt_error ?? 'none'}
           </p>
         </Card>
+        </>)}
       </div>
 
       {worker.error && (

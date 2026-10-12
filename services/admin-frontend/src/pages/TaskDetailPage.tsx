@@ -5,7 +5,8 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { ConfirmButton } from '@/components/ui/ConfirmButton'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { formatDate } from '@/lib/utils'
+import { formatDate, isDemo } from '@/lib/utils'
+import { humanizeLabel } from '@/lib/display'
 import type { SpawnWorkerRequest, SpawnWorkerResponse, Story, Task, TaskEvent, TaskResume, TaskTransition } from '@/types/api'
 
 export function TaskDetailPage() {
@@ -49,7 +50,7 @@ export function TaskDetailPage() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Card>
           <p className="text-sm text-muted-foreground">Type</p>
-          <p className="mt-1 text-foreground">{task.type}</p>
+          <p className="mt-1 text-foreground">{isDemo ? humanizeLabel(task.type) : task.type}</p>
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Priority</p>
@@ -63,7 +64,7 @@ export function TaskDetailPage() {
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Created by</p>
-          <p className="mt-1 text-foreground">{task.created_by}</p>
+          <p className="mt-1 text-foreground">{isDemo ? humanizeLabel(task.created_by) : task.created_by}</p>
         </Card>
       </div>
 
@@ -99,10 +100,10 @@ export function TaskDetailPage() {
                 <span className="shrink-0 text-muted-foreground">
                   {formatDate(event.created_at)}
                 </span>
-                <span className="font-medium text-foreground">{event.event_type}</span>
+                <span className="font-medium text-foreground">{isDemo ? humanizeLabel(event.event_type) : event.event_type}</span>
                 {event.from_status && event.to_status && (
                   <span className="text-muted-foreground">
-                    {event.from_status} → {event.to_status}
+                    {isDemo ? `${humanizeLabel(event.from_status)} → ${humanizeLabel(event.to_status)}` : `${event.from_status} → ${event.to_status}`}
                   </span>
                 )}
                 <span className="text-muted-foreground">{event.actor}</span>

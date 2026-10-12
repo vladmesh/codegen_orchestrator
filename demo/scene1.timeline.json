@@ -57,22 +57,22 @@
      "status": [[386, "todo"], [392, "in_dev"], [450, "in_ci"], [482, "done"]], "worker": "wkr-5d07ae19c3b2"}
   ],
   "workers": [
-    {"id": "wkr-3f9c2a71d0e4", "from": 50, "to": 288},
-    {"id": "wkr-b81e04c6a925", "from": 53, "to": 233},
-    {"id": "wkr-5d07ae19c3b2", "from": 390, "to": 484},
-    {"id": "wkr-qa-e2a4c8f01b", "from": 554, "to": 595, "qa": true}
+    {"id": "wkr-3f9c2a71d0e4", "name": "Developer 1", "from": 50, "to": 288},
+    {"id": "wkr-b81e04c6a925", "name": "Developer 2", "from": 53, "to": 233},
+    {"id": "wkr-5d07ae19c3b2", "name": "Developer 3", "from": 390, "to": 484},
+    {"id": "wkr-qa-e2a4c8f01b", "name": "QA worker", "from": 554, "to": 595, "qa": true}
   ],
   "attempts": [
-    {"id": "run-eng-01", "kind": "engineering", "stage": "build", "task": 1, "actor": "coding worker", "start": 52, "end": 120},
-    {"id": "run-eng-02", "kind": "engineering", "stage": "build", "task": 2, "actor": "coding worker", "start": 55, "end": 140},
-    {"id": "run-eng-03", "kind": "engineering", "stage": "build", "task": 3, "actor": "coding worker", "start": 125, "end": 195},
-    {"id": "run-eng-04", "kind": "engineering", "stage": "build", "task": 4, "actor": "coding worker", "start": 145, "end": 230},
-    {"id": "run-eng-05", "kind": "engineering", "stage": "build", "task": 5, "actor": "coding worker", "start": 200, "end": 285},
+    {"id": "run-eng-01", "kind": "engineering", "stage": "build", "task": 1, "actor": "Developer", "start": 52, "end": 120},
+    {"id": "run-eng-02", "kind": "engineering", "stage": "build", "task": 2, "actor": "Developer", "start": 55, "end": 140},
+    {"id": "run-eng-03", "kind": "engineering", "stage": "build", "task": 3, "actor": "Developer", "start": 125, "end": 195},
+    {"id": "run-eng-04", "kind": "engineering", "stage": "build", "task": 4, "actor": "Developer", "start": 145, "end": 230},
+    {"id": "run-eng-05", "kind": "engineering", "stage": "build", "task": 5, "actor": "Developer", "start": 200, "end": 285},
     {"id": "ci-run-1", "kind": "engineering", "stage": "review", "task": null, "actor": "GitHub CI", "start": 292, "end": 385, "end_status": "failed",
      "error": "test_streak_resets_at_local_midnight: streak reset at UTC midnight instead of the user's"},
-    {"id": "run-eng-06", "kind": "engineering", "stage": "review", "task": 6, "actor": "coding worker", "start": 392, "end": 450},
+    {"id": "run-eng-06", "kind": "engineering", "stage": "review", "task": 6, "actor": "Developer", "start": 392, "end": 450},
     {"id": "ci-run-2", "kind": "engineering", "stage": "review", "task": null, "actor": "GitHub CI", "start": 452, "end": 482},
-    {"id": "run-deploy-1", "kind": "deploy", "stage": "deploy", "task": null, "actor": "deploy worker", "start": 492, "end": 548},
+    {"id": "run-deploy-1", "kind": "deploy", "stage": "deploy", "task": null, "actor": "Deployer", "start": 492, "end": 548},
     {"id": "run-qa-1", "kind": "qa", "stage": "verify", "task": null, "actor": "QA worker", "start": 555, "end": 594}
   ],
   "application": {"id": 107, "service_name": "water-reminder-bot", "server": "edge-eu-2", "port": 8031,

@@ -1,12 +1,22 @@
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { clockTime, shortDateTime } from './display'
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** True in the investor-demo build (`VITE_DEMO=1 npm run build`). */
+export const isDemo = import.meta.env.VITE_DEMO === '1'
+
 export function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString()
+  // The demo build shows `Oct 12, 23:03` instead of the browser's locale string.
+  return isDemo ? shortDateTime(iso, Date.now()) : new Date(iso).toLocaleString()
+}
+
+/** Wall-clock time of day; `23:03` in the demo build, the locale string otherwise. */
+export function formatClock(value: string | number): string {
+  return isDemo ? clockTime(value) : new Date(value).toLocaleTimeString()
 }
 
 export function relativeTime(iso: string | null | undefined): string {

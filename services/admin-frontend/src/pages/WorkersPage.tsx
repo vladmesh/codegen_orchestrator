@@ -2,12 +2,57 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api } from '@/lib/api'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { relativeTime } from '@/lib/utils'
+import { isDemo, relativeTime } from '@/lib/utils'
+import { humanizeLabel } from '@/lib/display'
 import type { EngineeringConsumerDrain, WorkerSummary } from '@/types/api'
 import { requestEngineeringConsumerDrain, requestEngineeringConsumerResume } from './engineeringConsumerDrain'
 
 function inventoryFact(value: string | null | undefined, error: string | null | undefined, absent = 'none') {
   return value ?? error ?? absent
+}
+
+/** Demo build: names and roles instead of container, lease and run ids. */
+function DemoWorkersTable({ workers }: { workers: WorkerSummary[] }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-border">
+      <table className="w-full text-sm">
+        <thead className="border-b border-border bg-muted/50">
+          <tr>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Worker</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Agent</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Working on</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Product</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {workers.map((w, index) => (
+            <tr key={w.id} className="hover:bg-muted/30">
+              <td className="px-4 py-3">
+                <Link to={`/workers/${w.id}`} className="font-medium text-primary hover:underline">
+                  {w.display_name ?? `Worker ${index + 1}`}
+                </Link>
+              </td>
+              <td className="px-4 py-3">
+                <StatusBadge status={w.status.toLowerCase()} />
+              </td>
+              <td className="px-4 py-3 text-foreground">{humanizeLabel(w.agent_process_status)}</td>
+              <td className="px-4 py-3 text-foreground">{w.current_task ?? <span className="text-muted-foreground">—</span>}</td>
+              <td className="px-4 py-3">
+                {w.project_id ? (
+                  <Link to={`/projects/${w.project_id}`} className="text-primary hover:underline">
+                    {w.project_title ?? 'Project'}
+                  </Link>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 export function WorkersPage() {
@@ -35,6 +80,7 @@ export function WorkersPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-foreground">Workers</h1>
 
+      {!isDemo && (
       <section className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-4 py-3">
         <div>
           <p className="font-medium text-foreground">
@@ -64,11 +110,16 @@ export function WorkersPage() {
           </button>
         )}
       </section>
+      )}
 
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : (workers ?? []).length === 0 ? (
-        <p className="text-muted-foreground">No active workers</p>
+        <p className="text-muted-foreground">
+          {isDemo ? 'No workers running. Brimos starts one per task when there is work.' : 'No active workers'}
+        </p>
+      ) : isDemo ? (
+        <DemoWorkersTable workers={workers ?? []} />
       ) : (
         <div className="overflow-hidden rounded-lg border border-border">
           <table className="w-full text-sm">

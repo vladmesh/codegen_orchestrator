@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router'
 import { api } from '@/lib/api'
-import { cn, relativeTime } from '@/lib/utils'
+import { cn, isDemo, relativeTime } from '@/lib/utils'
 import type { Attention, AttentionItem } from '@/types/api'
 import { attentionLink, attentionScope, formatLeadTime, severityCounts } from './attentionView'
 
@@ -73,7 +73,11 @@ export function ConsolePage() {
 
       {items.length === 0 ? (
         <p className="rounded-lg border border-border p-6 text-muted-foreground">
-          Nothing is parked, failed or degraded.
+          {!isDemo
+            ? 'Nothing is parked, failed or degraded.'
+            : kpis.active_journeys > 0
+              ? `All clear. ${kpis.active_journeys === 1 ? '1 journey is' : `${kpis.active_journeys} journeys are`} in flight and nothing needs a human.`
+              : 'All clear. Nothing needs a human right now.'}
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">

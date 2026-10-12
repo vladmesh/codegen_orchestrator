@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router'
 import { api } from '@/lib/api'
-import { cn, relativeTime } from '@/lib/utils'
+import { cn, isDemo, relativeTime } from '@/lib/utils'
 import { Chip, Dot, type DotTone } from '@/components/console/Chips'
 import { containerTone } from '@/components/console/tones'
 import { Passport } from '@/components/console/Passport'
@@ -408,7 +408,9 @@ function ProductFocus({ topology, productId, select }: { topology: Topology; pro
             </div>
           ))}
           {passport.containers.length === 0 && (
-            <span className="text-xs text-muted-foreground">Not deployed. Modules: {passport.modules.join(', ') || '—'}</span>
+            <span className="text-xs text-muted-foreground">
+              {isDemo ? 'Not deployed yet' : `Not deployed. Modules: ${passport.modules.join(', ') || '—'}`}
+            </span>
           )}
         </FlowColumn>
         <Arrow />

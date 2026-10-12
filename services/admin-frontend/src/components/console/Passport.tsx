@@ -1,4 +1,5 @@
 import type { ProductPassport } from '@/types/api'
+import { isDemo } from '@/lib/utils'
 import { Chip, Dot } from './Chips'
 import { containerTone } from './tones'
 
@@ -21,7 +22,7 @@ export function Passport({ passport }: { passport: ProductPassport }) {
     <section aria-label="Product passport" className="grid overflow-hidden rounded-lg border border-border sm:grid-cols-2 xl:grid-cols-4">
       <Column title="Containers">
         {passport.containers.length === 0 ? (
-          <Empty>Not deployed. Modules: {passport.modules.join(', ') || '—'}</Empty>
+          <Empty>{isDemo ? 'Not deployed yet' : `Not deployed. Modules: ${passport.modules.join(', ') || '—'}`}</Empty>
         ) : (
           <ul className="space-y-1.5 text-sm">
             {passport.containers.map((c) => (
@@ -38,7 +39,7 @@ export function Passport({ passport }: { passport: ProductPassport }) {
       </Column>
       <Column title="Catalog packages">
         {passport.packages.length === 0 ? (
-          <Empty>None installed</Empty>
+          <Empty>{isDemo ? 'None needed — custom code' : 'None installed'}</Empty>
         ) : (
           <ul className="space-y-1.5 text-sm">
             {passport.packages.map((p) => (
@@ -58,12 +59,12 @@ export function Passport({ passport }: { passport: ProductPassport }) {
             </Chip>
           ))}
         </div>
-        {passport.user_secrets.length === 0 && <Empty>No user keys</Empty>}
-        <span className="text-xs text-muted-foreground">Platform services: not integrated yet</span>
+        {passport.user_secrets.length === 0 && <Empty>{isDemo ? 'No keys connected yet' : 'No user keys'}</Empty>}
+        {!isDemo && <span className="text-xs text-muted-foreground">Platform services: not integrated yet</span>}
       </Column>
       <Column title="Runs on">
         {passport.containers.length === 0 ? (
-          <Empty>—</Empty>
+          <Empty>{isDemo ? 'Server is picked at deploy' : '—'}</Empty>
         ) : (
           <ul className="space-y-1.5 text-sm">
             {[...new Set(passport.containers.map((c) => c.placement))].map((handle) => {

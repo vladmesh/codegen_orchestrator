@@ -5,7 +5,8 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { ConfirmButton } from '@/components/ui/ConfirmButton'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { formatDate } from '@/lib/utils'
+import { formatDate, isDemo } from '@/lib/utils'
+import { humanizeLabel } from '@/lib/display'
 import type { Story, Task } from '@/types/api'
 import { requestStoryQaRecheck } from './storyRecheck'
 import { planningRetryTarget, requestPlanningRetry } from './storyPlanningRetry'
@@ -88,8 +89,11 @@ export function StoryDetailPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link to={`/projects/${story.project_id}`} className="text-muted-foreground hover:text-foreground">
-            Project
+          <Link
+            to={isDemo ? `/journeys/${story.id}` : `/projects/${story.project_id}`}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            {isDemo ? 'Journey' : 'Project'}
           </Link>
           <span className="text-muted-foreground">/</span>
           <h1 className="text-2xl font-bold text-foreground">{story.title}</h1>
@@ -199,7 +203,7 @@ export function StoryDetailPage() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <Card>
           <p className="text-sm text-muted-foreground">Type</p>
-          <p className="mt-1 text-foreground">{story.type}</p>
+          <p className="mt-1 text-foreground">{isDemo ? humanizeLabel(story.type) : story.type}</p>
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Priority</p>
@@ -207,7 +211,7 @@ export function StoryDetailPage() {
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Created by</p>
-          <p className="mt-1 text-foreground">{story.created_by}</p>
+          <p className="mt-1 text-foreground">{isDemo ? humanizeLabel(story.created_by) : story.created_by}</p>
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Created</p>
@@ -303,7 +307,7 @@ export function StoryDetailPage() {
                 <Link to={`/tasks/${task.id}`} className="text-primary hover:underline">
                   {task.title}
                 </Link>
-                <span className="text-xs text-muted-foreground">{task.type}</span>
+                <span className="text-xs text-muted-foreground">{isDemo ? humanizeLabel(task.type) : task.type}</span>
               </li>
             ))}
           </ul>

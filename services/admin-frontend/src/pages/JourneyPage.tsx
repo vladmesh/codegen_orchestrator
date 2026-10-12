@@ -3,10 +3,11 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
 import { ExternalLink, GitPullRequest, RotateCcw } from 'lucide-react'
 import { api } from '@/lib/api'
-import { cn, formatDate } from '@/lib/utils'
+import { cn, formatClock, formatDate, isDemo } from '@/lib/utils'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Passport } from '@/components/console/Passport'
-import type { JourneyDetail, JourneyStage, JourneyStep, StepStatus } from '@/types/api'
+import { humanizeLabel } from '@/lib/display'
+import type { JourneyAttempt, JourneyDetail, JourneyStage, JourneyStep, StepStatus, Task } from '@/types/api'
 import {
   STAGE_ACTORS,
   STAGE_LABELS,
@@ -28,6 +29,26 @@ const knobStyles: Record<StepStatus, string> = {
   failed: 'border-red-500 bg-red-950 text-red-300',
   pending: 'border-zinc-600 bg-zinc-950 text-zinc-500',
   skipped: 'border-dashed border-zinc-700 bg-zinc-950 text-zinc-600',
+}
+
+// Demo build: role names a viewer reads at a glance, instead of internal worker kinds.
+const DEMO_ACTORS: Partial<Record<JourneyStage, string>> = {
+  build: 'Developer',
+  deploy: 'Deployer',
+  verify: 'QA',
+}
+
+function stageActor(stage: JourneyStage): string {
+  return (isDemo && DEMO_ACTORS[stage]) || STAGE_ACTORS[stage]
+}
+
+/** Demo build: what an attempt worked on, in words — the task title, or the run kind. */
+function attemptLabel(attempt: JourneyAttempt, step: JourneyStep, taskTitles: Map<string, string>): string {
+  if (attempt.task_id && taskTitles.has(attempt.task_id)) return taskTitles.get(attempt.task_id)!
+  if (attempt.kind === 'deploy') return 'Deploy to server'
+  if (attempt.kind === 'qa') return 'Live checks'
+  const ciRuns = step.attempts.filter((a) => !a.task_id)
+  return `CI run ${ciRuns.indexOf(attempt) + 1}`
 }
 
 const barStyles: Record<BarTone, string> = {
@@ -78,12 +99,12 @@ function Station({
   )
 }
 
-function StepDetail({ step, now }: { step: JourneyStep; now: number }) {
+function StepDetail({ step, now, taskTitles }: { step: JourneyStep; now: number; taskTitles: Map<string, string> }) {
   return (
     <div className="space-y-3">
       <div>
         <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
-          {STAGE_ACTORS[step.stage]}
+          {stageActor(step.stage)}
         </div>
         <h2 className="text-lg font-semibold text-foreground">{STAGE_LABELS[step.stage]}</h2>
         <StatusBadge status={step.status} />
@@ -107,14 +128,24 @@ function StepDetail({ step, now }: { step: JourneyStep; now: number }) {
             <div key={attempt.id} className="rounded border border-border p-2 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge status={attempt.status} />
-                <span className="font-mono text-muted-foreground">{attempt.id}</span>
+                {isDemo ? (
+                  attempt.task_id ? (
+                    <Link to={`/tasks/${attempt.task_id}`} className="min-w-0 text-foreground hover:underline">
+                      {attemptLabel(attempt, step, taskTitles)}
+                    </Link>
+                  ) : (
+                    <span className="min-w-0 text-foreground">{attemptLabel(attempt, step, taskTitles)}</span>
+                  )
+                ) : (
+                  <span className="font-mono text-muted-foreground">{attempt.id}</span>
+                )}
                 {attempt.actor && <span className="text-muted-foreground">· {attempt.actor}</span>}
                 <span className="ml-auto tabular-nums text-muted-foreground">
                   {formatDuration(attempt.started_at, attempt.finished_at, now)}
                 </span>
               </div>
               {attempt.error && <p className="mt-1 break-words text-red-300">{attempt.error}</p>}
-              {attempt.task_id && (
+              {!isDemo && attempt.task_id && (
                 <Link to={`/tasks/${attempt.task_id}`} className="mt-1 inline-block text-teal-300 hover:underline">
                   task {attempt.task_id}
                 </Link>
@@ -167,6 +198,13 @@ export function JourneyPage() {
     refetchInterval: 10_000,
     enabled: Boolean(storyId),
   })
+  // Demo build names attempts by their task, so it needs the story's task titles.
+  const tasks = useQuery({
+    queryKey: ['tasks', 'story', storyId],
+    queryFn: () => api.get<Task[]>(`/tasks/?story_id=${storyId}&limit=200`),
+    refetchInterval: 10_000,
+    enabled: isDemo && Boolean(storyId),
+  })
 
   if (journey.isLoading) return <p className="text-muted-foreground">Loading…</p>
   if (journey.isError || !journey.data) {
@@ -181,6 +219,7 @@ export function JourneyPage() {
   const current = selected ?? focusStage(steps)
   const currentStep = steps.find((s) => s.stage === current) ?? steps[0]
   const reached = progressIndex(steps)
+  const taskTitles = new Map((tasks.data ?? []).map((t) => [t.id, t.title]))
 
   return (
     <div className="space-y-5">
@@ -188,13 +227,20 @@ export function JourneyPage() {
         <div className="font-mono text-xs text-muted-foreground">
           <Link to="/journeys" className="hover:underline">Journeys</Link> /{' '}
           <Link to={`/projects/${summary.project_id}`} className="hover:underline">{summary.project_title}</Link> /{' '}
-          <Link to={`/stories/${summary.story_id}`} className="hover:underline">{summary.story_id}</Link>
+          <Link to={`/stories/${summary.story_id}`} className="hover:underline">
+            {isDemo ? summary.title : summary.story_id}
+          </Link>
         </div>
-        <h1 className="text-2xl font-bold text-foreground">{journey.data.request ?? summary.title}</h1>
+        <h1 className="text-2xl font-bold text-foreground">
+          {isDemo ? summary.title : (journey.data.request ?? summary.title)}
+        </h1>
+        {isDemo && journey.data.request && (
+          <p className="max-w-3xl text-sm italic text-muted-foreground">“{journey.data.request}”</p>
+        )}
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <StatusBadge status={summary.status} />
           {summary.waiting_on !== 'none' && (
-            <span className="text-amber-400">waits on {summary.waiting_on.replace('_', ' ')}</span>
+            <span className="text-amber-400">waits on {isDemo ? humanizeLabel(summary.waiting_on) : summary.waiting_on.replace('_', ' ')}</span>
           )}
           <span>
             {summary.finished_at ? 'took ' : 'running for '}
@@ -229,7 +275,7 @@ export function JourneyPage() {
               <div className="mt-6 space-y-1.5">
                 {lanes.map((lane) => (
                   <div key={lane.stage} className="grid grid-cols-[120px_1fr] items-center gap-2">
-                    <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">{lane.actor}</span>
+                    <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">{isDemo ? stageActor(lane.stage) : lane.actor}</span>
                     <div className="relative h-4 rounded bg-zinc-900">
                       {lane.bars.map((bar) => (
                         <span
@@ -245,8 +291,8 @@ export function JourneyPage() {
                 <div className="grid grid-cols-[120px_1fr] gap-2 font-mono text-[10px] text-muted-foreground">
                   <span />
                   <div className="flex justify-between">
-                    <span>{new Date(span.start).toLocaleTimeString()}</span>
-                    <span>{new Date(span.end).toLocaleTimeString()}</span>
+                    <span>{formatClock(span.start)}</span>
+                    <span>{formatClock(span.end)}</span>
                   </div>
                 </div>
               </div>
@@ -254,7 +300,7 @@ export function JourneyPage() {
           </div>
         </div>
         <aside className="bg-zinc-950/60 p-4" aria-live="polite">
-          <StepDetail step={currentStep} now={now} />
+          <StepDetail step={currentStep} now={now} taskTitles={taskTitles} />
         </aside>
       </div>
 
