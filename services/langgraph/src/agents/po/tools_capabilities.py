@@ -3,7 +3,7 @@
 `preview_capabilities` is the PO's only way to learn what a requested capability means
 for a project. The decision is the Architect's deterministic Python
 (`src.capability_preview`), made against the activated catalog snapshot, the project's
-shape and the module rollout policy; the API stores it with its technical half. The PO
+shape; ready modules are open to every project. The API stores it with its technical half. The PO
 gets back the product projection only — preview id, routes, questions, limitations —
 and every refusal is a typed code with request ids, never a package, key or catalog
 detail.
@@ -26,7 +26,6 @@ from shared.contracts.dto.capability_preview import (
     CapabilityPreviewRead,
     CapabilityPreviewRefusal,
     CapabilityRequest,
-    ModuleRollout,
     PreviewRefusalCode,
 )
 
@@ -89,19 +88,6 @@ def _refused(refusal: CapabilityPreviewRefusal) -> str:
     )
 
 
-async def _rollout() -> ModuleRollout | None:
-    """The rollout policy, read as the service itself: it is platform configuration."""
-    response = await _get_api().get_raw(f"system-configs/{MODULE_ROLLOUT_CONFIG_KEY}")
-    if response.status_code != HTTPStatus.OK:
-        logger.warning("po_module_rollout_unreadable", status=response.status_code)
-        return None
-    try:
-        return ModuleRollout.model_validate(response.json()["value"])
-    except (ValidationError, KeyError, TypeError) as error:
-        logger.warning("po_module_rollout_invalid", error=str(error))
-        return None
-
-
 @tool
 async def preview_capabilities(
     project_id: str, requests: list[dict], *, config: RunnableConfig
@@ -148,7 +134,6 @@ async def preview_capabilities(
     if project.status_code != HTTPStatus.OK:
         return f"No preview was stored: project {project_id} cannot be read."
     modules = (project.json().get("config") or {}).get("modules")
-    rollout = await _rollout()
     try:
         body = resolve_preview(
             project_id=project_uuid,
@@ -156,7 +141,9 @@ async def preview_capabilities(
             catalog=await turn_catalog(config),
             activation=CATALOG_ACTIVATION,
             project_modules=set(modules) if isinstance(modules, list) else set(),
-            rollout_admits=None if rollout is None else rollout.admits(project_uuid),
+            # Ready modules are open to every project; the per-project rollout list
+            # (`capabilities.module_rollout`) is no longer consulted.
+            rollout_admits=True,
             platform_cannot=platform_cannot,
         )
     except PreviewRefused as refused:

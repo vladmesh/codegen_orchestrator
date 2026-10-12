@@ -166,21 +166,8 @@ async def test_the_technical_half_is_stored_by_the_platform_itself(api, activate
 
 
 @pytest.mark.asyncio
-async def test_outside_the_rollout_a_channel_capability_is_impossible(activated_kit_catalog):
-    api = _API(rollout={"project_ids": []})
-    init_po_clients(api, AsyncMock())
-    result = json.loads(await _preview(activated_kit_catalog, CHANNEL_REQUEST))
-    assert [(r["route"], r["reason"]) for r in result["routes"]] == [
-        ("impossible", "rollout_not_enabled")
-    ]
-    assert result["questions"] == []
-
-
-@pytest.mark.asyncio
-async def test_leaving_out_the_id_does_not_make_a_channel_capability_programmable(
-    activated_kit_catalog,
-):
-    """Reviewer reproduction (1588): null id, the catalog's own phrase, outside the rollout."""
+async def test_a_channel_capability_is_a_module_for_every_project(activated_kit_catalog):
+    """Ready modules are open to all: the PO no longer reads the per-project rollout list."""
     api = _API(rollout={"project_ids": []})
     init_po_clients(api, AsyncMock())
     request = {
@@ -190,20 +177,9 @@ async def test_leaving_out_the_id_does_not_make_a_channel_capability_programmabl
     }
     answer = await _preview(activated_kit_catalog, request)
     result = json.loads(answer)
-    assert [(r["route"], r["reason"], r["capability_id"]) for r in result["routes"]] == [
-        ("impossible", "rollout_not_enabled", CHANNELS)
-    ]
+    assert [(r["route"], r["capability_id"]) for r in result["routes"]] == [("module", CHANNELS)]
     for technical in TECHNICAL:
         assert technical not in answer
-
-
-@pytest.mark.asyncio
-async def test_an_unreadable_rollout_stores_no_preview(activated_kit_catalog):
-    api = _API(rollout="unreadable")
-    init_po_clients(api, AsyncMock())
-    result = json.loads(await _preview(activated_kit_catalog, CHANNEL_REQUEST))
-    assert (result["status"], result["code"]) == ("preview_refused", "rollout_unavailable")
-    assert api.posts == []
 
 
 @pytest.mark.asyncio
