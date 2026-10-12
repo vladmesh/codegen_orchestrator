@@ -9,6 +9,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   products whose latest deploy drew a platform key or endpoint from them (`deployment_info.platform_services`).
 - The Telegram bot and user dashboard show English to users whose Telegram or browser language is not
   Russian; admission refusals and the empty-reply fallback are English, so English users see no Russian.
+- Stories carry linked pull requests (`story_links`, `POST/DELETE /api/admin/v2/journeys/{id}/links`), so the
+  Journey page shows a reusable-module proposal PR opened outside the story's own runs.
 
 ## 2026-10-11
 

@@ -7,6 +7,7 @@ import {
   formatDuration,
   journeyLanes,
   journeyWindow,
+  linkedPullRequests,
   progressIndex,
   retries,
 } from '../src/pages/journeyView.ts'
@@ -222,4 +223,32 @@ test('selecting a platform service lights its products; a product lights its ser
   assert.deepEqual([...byPlatform.platforms], ['feeds'])
   assert.deepEqual([...highlight(withPlatform, { kind: 'product', id: 'p2' })!.platforms], ['feeds'])
   assert.deepEqual([...highlight(withPlatform, { kind: 'product', id: 'p3' })!.platforms], [])
+})
+
+test('linked pull requests read their PR number and repository from the URL, oldest first', () => {
+  const links = linkedPullRequests([
+    {
+      id: 7,
+      kind: 'module_proposal',
+      title: 'Reminders module',
+      url: 'https://github.com/vladmesh/codegen-product-kit/pull/123',
+      created_at: at(40),
+    },
+    {
+      id: 3,
+      kind: 'module_proposal',
+      title: 'Weather module',
+      url: 'https://github.com/vladmesh/codegen-product-kit/pull/98',
+      created_at: at(30),
+    },
+  ])
+  assert.deepEqual(
+    links.map((l) => [l.key, l.label, l.repo, l.number]),
+    [
+      [3, 'Reusable module proposed', 'vladmesh/codegen-product-kit', '#98'],
+      [7, 'Reusable module proposed', 'vladmesh/codegen-product-kit', '#123'],
+    ],
+  )
+  assert.equal(links[1].url, 'https://github.com/vladmesh/codegen-product-kit/pull/123')
+  assert.deepEqual(linkedPullRequests([]), [])
 })

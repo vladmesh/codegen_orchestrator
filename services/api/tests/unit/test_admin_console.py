@@ -7,6 +7,7 @@ import uuid
 
 from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
+from pydantic import ValidationError
 import pytest
 
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
@@ -27,6 +28,7 @@ from src.schemas.admin_console import (
     JourneyStage,
     Severity,
     StepStatus,
+    StoryLinkCreate,
     TopologyResponse,
 )
 
@@ -416,3 +418,53 @@ async def test_console_routes_are_internal_or_admin_only():
             ).json() == []
             missing = await client.get("/api/admin/v2/journeys/st-1", headers=INTERNAL_HEADERS)
             assert missing.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/vladmesh/codegen-product-kit/pull/42",
+        "https://github.com/owner/repo.name/pull/7",
+    ],
+)
+def test_a_linked_pull_request_accepts_a_github_pull_url(url):
+    link = StoryLinkCreate(kind="module_proposal", title="Reminders module", url=url)
+    assert link.url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://github.com/vladmesh/codegen-product-kit/pull/42",
+        "https://gitlab.com/vladmesh/codegen-product-kit/pull/42",
+        "https://github.com.evil.test/vladmesh/kit/pull/42",
+        "https://github.com/vladmesh/codegen-product-kit",
+        "https://github.com/vladmesh/codegen-product-kit/pull/42/files",
+        "javascript:alert(1)",
+    ],
+)
+def test_a_linked_pull_request_refuses_anything_but_a_github_pull_url(url):
+    with pytest.raises(ValidationError):
+        StoryLinkCreate(kind="module_proposal", title="Reminders module", url=url)
+
+
+def test_a_linked_pull_request_refuses_an_unknown_kind():
+    with pytest.raises(ValidationError):
+        StoryLinkCreate(kind="anything", title="x", url="https://github.com/vladmesh/kit/pull/1")
+
+
+@pytest.mark.asyncio
+async def test_link_routes_are_internal_or_admin_only():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        added = await client.post(
+            "/api/admin/v2/journeys/st-1/links",
+            json={
+                "kind": "module_proposal",
+                "title": "Reminders module",
+                "url": "https://github.com/vladmesh/codegen-product-kit/pull/42",
+            },
+        )
+        assert added.status_code == 401
+        removed = await client.delete("/api/admin/v2/journeys/st-1/links/1")
+        assert removed.status_code == 401

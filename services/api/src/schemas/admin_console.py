@@ -7,10 +7,11 @@ assembled, not what the frontend renders.
 
 from datetime import datetime
 from enum import StrEnum
+import re
 from typing import Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
 
@@ -109,6 +110,40 @@ class ProductPassport(_ConsoleModel):
     user_secrets: list[str]
 
 
+class StoryLinkKind(StrEnum):
+    """Why a pull request outside the story's own runs is linked to it."""
+
+    #: A reusable module the platform proposed to the module library after the product went live.
+    MODULE_PROPOSAL = "module_proposal"
+
+
+#: A linked pull request lives on GitHub: `https://github.com/<owner>/<repo>/pull/<number>`.
+GITHUB_PULL_URL = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*$")
+
+
+class StoryLinkCreate(_ConsoleModel):
+    kind: StoryLinkKind
+    title: str = Field(min_length=1, max_length=500)
+    url: str = Field(max_length=2048)
+
+    @field_validator("url")
+    @classmethod
+    def _github_pull_request(cls, url: str) -> str:
+        if not GITHUB_PULL_URL.match(url):
+            raise ValueError(
+                "url must be a GitHub pull request: https://github.com/<owner>/<repo>/pull/<n>"
+            )
+        return url
+
+
+class StoryLinkView(_ConsoleModel):
+    id: int
+    kind: StoryLinkKind
+    title: str
+    url: str
+    created_at: datetime
+
+
 class JourneyDetail(_ConsoleModel):
     summary: JourneySummary
     request: str | None
@@ -116,6 +151,8 @@ class JourneyDetail(_ConsoleModel):
     pr_number: int | None
     steps: list[JourneyStep]
     passport: ProductPassport
+    #: Pull requests an operator or automation linked to the story, oldest first.
+    links: list[StoryLinkView]
 
 
 class PlacementView(_ConsoleModel):
@@ -206,6 +243,9 @@ __all__ = [
     "ProductPassport",
     "ProductView",
     "Severity",
+    "StoryLinkCreate",
+    "StoryLinkKind",
+    "StoryLinkView",
     "StepStatus",
     "TopologyResponse",
 ]

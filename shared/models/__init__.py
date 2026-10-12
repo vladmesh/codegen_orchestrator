@@ -26,6 +26,7 @@ from .run import Run
 from .server import Server, ServerStatus
 from .server_metrics_history import ServerMetricsHistory
 from .story import Story
+from .story_link import StoryLink
 from .system_config import SystemConfig
 from .task import Task, TaskEvent
 from .temporary_access_grant import TemporaryAccessGrant
@@ -73,5 +74,6 @@ __all__ = [
     "EngineeringBudgetPolicy",
     "EngineeringBudgetReservation",
     "Story",
+    "StoryLink",
     "SystemConfig",
 ]

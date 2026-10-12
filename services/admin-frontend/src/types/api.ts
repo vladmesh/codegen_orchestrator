@@ -921,6 +921,17 @@ export interface ProductPassport {
   user_secrets: string[]
 }
 
+export type StoryLinkKind = 'module_proposal'
+
+/** A pull request an operator or automation linked to a story, outside its own runs. */
+export interface StoryLink {
+  id: number
+  kind: StoryLinkKind
+  title: string
+  url: string
+  created_at: string
+}
+
 export interface JourneyDetail {
   summary: JourneySummary
   request: string | null
@@ -928,6 +939,7 @@ export interface JourneyDetail {
   pr_number: number | null
   steps: JourneyStep[]
   passport: ProductPassport
+  links: StoryLink[]
 }
 
 export interface PlacementView {

@@ -1,4 +1,4 @@
-import type { JourneyAttempt, JourneyStage, JourneyStep, StepStatus } from '../types/api'
+import type { JourneyAttempt, JourneyStage, JourneyStep, StepStatus, StoryLink, StoryLinkKind } from '../types/api'
 
 export const STAGE_LABELS: Record<JourneyStage, string> = {
   brief: 'Brief',
@@ -137,4 +137,38 @@ export function progressIndex(steps: JourneyStep[]): number {
     if (step.status !== 'pending' && step.status !== 'skipped') index = i
   })
   return index
+}
+
+export const LINK_KIND_LABELS: Record<StoryLinkKind, string> = {
+  module_proposal: 'Reusable module proposed',
+}
+
+export interface LinkedPullRequest {
+  key: number
+  label: string
+  title: string
+  url: string
+  repo: string | null
+  number: string | null
+  createdAt: string
+}
+
+const PULL_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/
+
+/** The linked pull requests as the card lists them, oldest first, with `owner/repo` and `#n` from the URL. */
+export function linkedPullRequests(links: StoryLink[]): LinkedPullRequest[] {
+  return [...links]
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id - b.id)
+    .map((link) => {
+      const match = PULL_URL.exec(link.url)
+      return {
+        key: link.id,
+        label: LINK_KIND_LABELS[link.kind] ?? link.kind,
+        title: link.title,
+        url: link.url,
+        repo: match ? match[1] : null,
+        number: match ? `#${match[2]}` : null,
+        createdAt: link.created_at,
+      }
+    })
 }
