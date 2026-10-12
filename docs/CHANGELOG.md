@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-12
 
+- Stand e2e refuses to rent machines unless `confirm_paid=owner-approved`: paid runs are the owner's
+  call, after an agent re-dispatched red mega-noop runs all night.
 - The stand install-story accounting admits the story's own QA executor create and keeps its last facts in
   the evidence, so a deterministic QA no longer reads as forbidden engineering.
 - The stand mega-noop install stories capture their own PO input cursor, so waiting for the owner's
