@@ -112,13 +112,30 @@ def sql_snapshot(ctx):
     for queue in (ENGINEERING_QUEUE, WORKER_COMMANDS):
         for entry_id, fields in h._redis_json("XRANGE", queue, "-", "+"):
             payload = json.loads(h._flat_redis_fields(fields)["data"])
+            ownership = (payload.get("config") or {}).get("ownership") or {}
+            # The install Story's own QA executor is expected: its ownership names the QA Run
+            # as the attempt (WorkerOwnership.for_qa). Any other work for the Story is not.
+            if str(ownership.get("attempt_id") or "").startswith("qa-"):
+                continue
             # Only engineering work or a worker create for this install Story is forbidden.
-            if payload.get("story_id") == ctx["story_id"] or (
-                (payload.get("config") or {}).get("ownership", {}).get("story_id")
-                == ctx["story_id"]
+            if (
+                payload.get("story_id") == ctx["story_id"]
+                or ownership.get("story_id") == ctx["story_id"]
             ):
-                dispatched.append({"queue": queue, "id": entry_id})
+                dispatched.append(
+                    {"queue": queue, "id": entry_id, "attempt_id": ownership.get("attempt_id")}
+                )
     facts["dispatch"] = dispatched
+    # Kept before the verdict, so a refused snapshot still explains itself in the evidence.
+    ctx["mechanical_accounting_last"] = {
+        key: facts[key]
+        for key in (
+            "engineering_runs",
+            "engineering_ledger",
+            "engineering_reservations",
+            "dispatch",
+        )
+    }
     require(
         all(
             facts[key] == 0
@@ -349,6 +366,7 @@ def install_scope(ctx):
             finally:
                 artifact = ctx["mechanical_acceptance"]
                 retain_qa(ctx, artifact, "install_qa")
+                artifact["accounting_last"] = ctx.get("mechanical_accounting_last")
                 artifact["partial_deploy"] = {
                     key: ctx[key]
                     for key in (

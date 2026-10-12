@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-12
 
+- The stand install-story accounting admits the story's own QA executor create and keeps its last facts in
+  the evidence, so a deterministic QA no longer reads as forbidden engineering.
 - The stand mega-noop install stories capture their own PO input cursor, so waiting for the owner's
   completion notice no longer stops on a missing `po_input_cursor`.
 - The stand mega-noop install stories judge their merge without a declared scripted change set, so the
