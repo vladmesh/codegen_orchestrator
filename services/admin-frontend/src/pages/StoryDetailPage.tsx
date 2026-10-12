@@ -26,12 +26,14 @@ export function StoryDetailPage() {
     queryKey: ['story', id],
     queryFn: () => api.get<Story>(`/stories/${id}`),
     enabled: !!id,
+    refetchInterval: 10_000,
   })
 
   const { data: tasks } = useQuery({
     queryKey: ['tasks', 'story', id],
     queryFn: () => api.get<Task[]>(`/tasks/?story_id=${id}&limit=200`),
     enabled: !!id,
+    refetchInterval: 10_000,
   })
 
   const sendToArchitectMutation = useMutation({

@@ -166,7 +166,7 @@ function Layers({
   const secrets = secretUsage(topology)
   return (
     <div>
-      <Band title="Orchestrator" note="builds and deploys" tone="bg-zinc-900/60">
+      <Band title="Brimos" note="builds and deploys" tone="bg-zinc-900/60">
         <div className="flex flex-wrap gap-2">
           {control.length === 0 && <span className="text-xs text-muted-foreground">No control host is registered.</span>}
           {control.map((p) => (

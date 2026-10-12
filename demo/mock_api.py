@@ -11,6 +11,9 @@ Control:
   POST /demo/seek?at=300          jump to a scene second (keeps speed)
   GET  /demo/state                current scene second, speed, bot stage
 
+Build the frontend in demo mode (hides Queues/Servers/Logs/Settings in the sidebar):
+  cd services/admin-frontend && VITE_DEMO=1 npm run build
+
 Timestamps are written as "now minus (scene_now - t)", so durations on screen read in scene
 seconds even when the scene runs accelerated.
 """
@@ -233,7 +236,7 @@ def task_events(v: View, task_id: str):
                 break
             ev.append({"id": n + 1, "task_id": task_id, "event_type": "created" if prev is None else "status_changed",
                        "from_status": prev, "to_status": st, "iteration": 1, "details": {},
-                       "actor": "architect" if prev is None else ("coding worker" if st != "done" else "orchestrator"),
+                       "actor": "architect" if prev is None else ("coding worker" if st != "done" else "Brimos"),
                        "created_at": v.ts(at)})
             prev = st
         return ev
@@ -630,7 +633,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     if not (DIST / "index.html").is_file():
-        sys.exit(f"no built frontend at {DIST}; run npm run build in services/admin-frontend")
+        sys.exit(f"no built frontend at {DIST}; run VITE_DEMO=1 npm run build in services/admin-frontend")
     if os.environ.get("DEMO_AUTOSTART"):
         CLOCK.start(float(os.environ.get("DEMO_SPEED", "1")), 0)
     print(f"brimos dashboard demo on http://{HOST}:{PORT}", flush=True)
