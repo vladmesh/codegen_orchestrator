@@ -103,6 +103,12 @@ budget and `make lint` refuses a unit test that reads `docs/`, repository Markdo
 
 ## Rules
 
+**Paid stand e2e is the owner's** — every `stand-e2e` suite (mega-noop, mega-live, mega-brief, custom) rents
+BitLaunch machines by the hour. Only the owner starts one, by hand, with `confirm_paid=owner-approved`.
+An agent never dispatches it (`gh workflow run stand-e2e.yml`, the API or a script) and never sets that
+input, not even to verify its own fix: it fixes from the logs and artifacts of the last run and hands
+the paid rerun to the owner.
+
 **Documentation language** — project documentation is written in English, including new entries in `docs/CHANGELOG.md`.
 
 **CHANGELOG shape** — every entry lives under a `## YYYY-MM-DD` heading for the day it is merged

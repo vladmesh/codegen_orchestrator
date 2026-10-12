@@ -57,6 +57,11 @@ on:
         required: false
         default: false
         type: boolean
+      confirm_paid:
+        description: 'Every suite rents BitLaunch machines by the hour. Type owner-approved only when the owner starts or approves this run himself; agents, boards and scripts never set it'
+        required: false
+        default: ''
+        type: string
   schedule:
     - cron: '17 * * * *'
 
@@ -111,6 +116,19 @@ jobs:
         -o ServerAliveInterval=30
         -o ServerAliveCountMax=10
     steps:
+      # Paid runs are the owner's call (2026-10-12): an agent looping on red mega-noop runs rented
+      # 16 stand pairs in one night. Refused before checkout, so no machine, DNS record or secret is touched.
+      - name: Require the owner's approval for a paid run
+        shell: bash
+        env:
+          CONFIRM_PAID: ${{ inputs.confirm_paid }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_PAID" != "owner-approved" ]; then
+            echo "FATAL: stand e2e rents paid BitLaunch machines; only the owner starts it, with confirm_paid=owner-approved" >&2
+            exit 1
+          fi
+
       - name: Check out lifecycle code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

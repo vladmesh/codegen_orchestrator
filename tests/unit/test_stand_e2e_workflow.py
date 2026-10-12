@@ -679,6 +679,24 @@ def test_stand_profile_is_owned_by_the_exact_worker_image_identity():
     )
 
 
+def test_a_paid_run_needs_the_owners_approval_before_anything_runs():
+    approval = _workflow()["on"]["workflow_dispatch"]["inputs"]["confirm_paid"]
+    assert approval["required"] is False
+    assert approval["default"] == ""
+    first = _workflow()["jobs"]["e2e"]["steps"][0]
+    assert first["name"] == "Require the owner's approval for a paid run"
+    assert first["env"]["CONFIRM_PAID"] == "${{ inputs.confirm_paid }}"
+    for value, code in (("", 1), ("yes", 1), ("owner-approved", 0)):
+        result = subprocess.run(
+            ["bash", "-c", first["run"]],
+            env={**os.environ, "CONFIRM_PAID": value},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == code, (value, result.stderr)
+
+
 def test_missing_exact_worker_release_fails_with_retry_guidance_not_a_local_build():
     job = _workflow()["jobs"]["e2e"]
     # The stand's worker pull starts in the background after bootstrap and is joined
@@ -688,7 +706,7 @@ def test_missing_exact_worker_release_fails_with_retry_guidance_not_a_local_buil
     gate = _steps()["Validate exact worker image release"]
 
     assert job["permissions"]["packages"] == "read"
-    assert job["steps"][0]["with"]["fetch-depth"] == 0
+    assert _steps()["Check out lifecycle code"]["with"]["fetch-depth"] == 0
     assert "${GITHUB_SHA}" in start["run"]
     assert "${GITHUB_SHA}" in step["run"]
     for script in (start["run"], step["run"]):

@@ -653,7 +653,9 @@ commit SHA with the tag it was resolved from as a `# vX` comment; the CI contrac
 ## E2E Testing
 
 Paid E2E tests are not part of required PR CI. Run the canonical named suites through the
-`stand-e2e` workflow or `make stand-run SUITE=<suite>` against the isolated stand. `mega-noop`
+`stand-e2e` workflow or `make stand-run SUITE=<suite>` against the isolated stand. Every
+`stand-e2e` run rents BitLaunch machines by the hour, so only the owner starts one: the e2e job
+refuses unless `confirm_paid=owner-approved`. Agents, boards and scripts never dispatch it. `mega-noop`
 exercises the full pipeline without a model call; `mega-live` runs the very same lifecycle — the
 same class and its 42 tests — with one selected real developer and one selected real QA executor;
 `mega-brief` proves the confirmed Product Brief through Architect, engineering, deploy and QA with
