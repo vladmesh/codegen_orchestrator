@@ -1399,10 +1399,10 @@ def test_platform_services_lists_each_service_the_contract_draws_from():
     contract = {
         "version": 1,
         "entries": {
-            "TG_READER_KEY": {"source": "platform_key", "service": "tg-reader"},
-            "PLATFORM_BASE_URL": {"source": "platform_base_url", "service": "tg-reader"},
+            "FEEDS_KEY": {"source": "platform_key", "service": "feeds"},
+            "PLATFORM_BASE_URL": {"source": "platform_base_url", "service": "feeds"},
             "TELEGRAM_TOKEN": {"source": "user_secret"},
         },
     }
-    assert _platform_services(contract) == ["tg-reader"]
+    assert _platform_services(contract) == ["feeds"]
     assert _platform_services(None) == []

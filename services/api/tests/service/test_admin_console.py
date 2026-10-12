@@ -179,7 +179,7 @@ async def product(db_session):
                 port=8102,
                 result="success",
                 deployed_sha="a91f3c2",
-                deployment_info={"platform_services": ["tg-reader"]},
+                deployment_info={"platform_services": ["feeds"]},
             ),
         ]
     )
@@ -257,7 +257,7 @@ async def test_topology_places_the_product_on_its_server(async_client, product):
     ours = next(p for p in body["products"] if p["project_id"] == str(product["project"].id))
     assert [c["placement"] for c in ours["passport"]["containers"]] == [product["server"].handle]
     assert [p["name"] for p in ours["passport"]["packages"]] == ["textparse", "reminders"]
-    reader = next(s for s in body["platform_services"] if s["name"] == "tg-reader")
+    reader = next(s for s in body["platform_services"] if s["name"] == "feeds")
     assert str(product["project"].id) in reader["products"]
 
 

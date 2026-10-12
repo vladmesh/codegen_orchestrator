@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     admin_telegram_ids: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
 
     # Platform services the admin console shows, as `name=https://base-url` pairs separated by
-    # commas (e.g. `tg-reader=https://platform.example/tg-reader`). Core keeps no service
+    # commas (e.g. `feeds=https://platform.example/feeds`). Core keeps no service
     # registry; empty shows none beyond the ones deployed products already use.
     platform_services: str = Field(default="", alias="PLATFORM_SERVICES")
 

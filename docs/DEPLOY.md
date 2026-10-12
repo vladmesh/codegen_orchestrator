@@ -447,7 +447,7 @@ would otherwise sign dashboard tokens with a known key.
 
 | Variable | Description |
 |----------|-------------|
-| `PLATFORM_SERVICES` | Repository variable, production only: `name=https-base-url` pairs separated by commas, e.g. `tg-reader=https://platform.vladmesh.dev/tg-reader`. The api probes each base URL (any answer below 5xx is `up`) for the Atlas; products are linked to a service by their latest successful deploy's `deployment_info.platform_services`. |
+| `PLATFORM_SERVICES` | Repository variable, production only: `name=https-base-url` pairs separated by commas, e.g. `feeds=https://platform.example/feeds`. The api probes each base URL (any answer below 5xx is `up`) for the Atlas; products are linked to a service by their latest successful deploy's `deployment_info.platform_services`. |
 
 ### Platform auth admin API
 
