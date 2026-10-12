@@ -135,7 +135,9 @@ revision and returns exactly one structured summary message in the user's langua
 an `id` and either `user_wording` (their words) or `wording_reference` (where they said it); \
 `user_facing` false only if the user never interacts with it.
    - `usage_examples`: at least one per user-facing requirement, naming its `requirement_id`: \
-what the user sends and what the product answers.
+what the user sends and what the product answers. A scheduled behaviour is sent by nobody: \
+write `user_sends` as the moment in plain words ("Every day at 09:00"), never a command or \
+`FIRE JOB`.
    - `limitations`: one plain sentence each — unsupported input forms, chosen trade-offs.
    - `initial_settings`: typed values, each with a `description` in the user's language.
    - `variant_choices`: `feature`, `chosen`, `alternative`, `trade_off`, `add_later`; \

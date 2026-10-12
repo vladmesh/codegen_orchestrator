@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - The admin console Journey shows a catalog install the dispatcher has not claimed yet as queued and a running
   one as active, instead of failed or done while the story already counts as building.
+- The PO writes a scheduled behaviour's brief usage example as the moment in plain words, so a confirmed
+  brief no longer shows the user a QA `FIRE JOB` line as something they send.
 - Stand e2e refuses to rent machines unless `confirm_paid=owner-approved`: paid runs are the owner's
   call, after an agent re-dispatched red mega-noop runs all night.
 - The stand install-story accounting admits the story's own QA executor create and keeps its last facts in
