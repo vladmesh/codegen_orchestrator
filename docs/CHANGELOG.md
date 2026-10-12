@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-12
 
+- The stand mega-noop install stories capture their own PO input cursor, so waiting for the owner's
+  completion notice no longer stops on a missing `po_input_cursor`.
 - The stand mega-noop install stories judge their merge without a declared scripted change set, so the
   native reminders and platform installs no longer stop on a missing `level1_change_set_paths`.
 - The stand platform-module story requires the admin topology to link the deployed product to its platform
