@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { api } from '@/lib/api'
 import { cn, relativeTime } from '@/lib/utils'
 import type { Attention, AttentionItem } from '@/types/api'
-import { attentionLink, formatLeadTime, severityCounts } from './attentionView'
+import { attentionLink, attentionScope, formatLeadTime, severityCounts } from './attentionView'
 
 const severityStripe: Record<AttentionItem['severity'], string> = {
   critical: 'shadow-[inset_3px_0_0_var(--color-red-500)]',
@@ -21,9 +21,11 @@ function Kpi({ value, label, tone }: { value: React.ReactNode; label: string; to
 }
 
 export function ConsolePage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const scope = attentionScope(searchParams, new Date())
   const attention = useQuery({
-    queryKey: ['admin-console-attention'],
-    queryFn: () => api.get<Attention>('/admin/v2/attention'),
+    queryKey: ['admin-console-attention', scope.query],
+    queryFn: () => api.get<Attention>(`/admin/v2/attention${scope.query}`),
     refetchInterval: 15_000,
   })
 
@@ -42,6 +44,18 @@ export function ConsolePage() {
         <span className="text-sm text-muted-foreground">
           {counts.critical} critical · {counts.warning} warning · {counts.info} info
         </span>
+        {scope.label && (
+          <span className="text-sm text-muted-foreground">
+            {scope.label} ·{' '}
+            <button
+              type="button"
+              className="underline hover:text-foreground"
+              onClick={() => setSearchParams({})}
+            >
+              show all
+            </button>
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border sm:grid-cols-3 lg:grid-cols-6">

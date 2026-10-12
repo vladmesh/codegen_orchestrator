@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-11
 
+- The admin console Attention feed takes `since` and `project_id` (page URL `?since=2h&project=<id>`),
+  so an operator can watch one fresh project without the backlog of older parked work.
 - Admin console v2: `GET /api/admin/v2/{attention,journeys,topology}` read models and Attention, Journey and
   Atlas screens, so one story is traceable from brief to running container without five pages.
 - QA handoff of a legacy `service-template` bot skips the kit temporary-access grant it cannot serve;

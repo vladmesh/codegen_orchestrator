@@ -685,7 +685,28 @@ async def build_topology(db: AsyncSession) -> TopologyResponse:
     )
 
 
-async def build_attention(db: AsyncSession, now: datetime | None = None) -> AttentionResponse:
+def scope_attention(
+    items: list[AttentionItem], since: datetime | None, project_id: uuid.UUID | None
+) -> list[AttentionItem]:
+    """Narrow the feed to one project and to items that started at or after `since`.
+
+    A project scope drops platform-wide items (incidents, queues); `since` keeps undated items,
+    which describe the present moment.
+    """
+    if project_id is not None:
+        items = [i for i in items if i.project_id == project_id]
+    if since is not None:
+        cutoff = _aware(since)
+        items = [i for i in items if i.since is None or i.since >= cutoff]
+    return items
+
+
+async def build_attention(
+    db: AsyncSession,
+    now: datetime | None = None,
+    since: datetime | None = None,
+    project_id: uuid.UUID | None = None,
+) -> AttentionResponse:
     now = now or datetime.now(UTC)
     tasks = (
         await db.scalars(
@@ -743,11 +764,16 @@ async def build_attention(db: AsyncSession, now: datetime | None = None) -> Atte
             )
         ).all()
     )
-    active_journeys = await db.scalar(
+    active_query = (
         select(func.count())
         .select_from(Story)
         .where(Story.status.not_in([s.value for s in _TERMINAL_STORY]))
     )
+    if project_id is not None:
+        active_query = active_query.where(Story.project_id == project_id)
+    if since is not None:
+        active_query = active_query.where(Story.updated_at >= _aware(since))
+    active_journeys = await db.scalar(active_query)
     live_products = await db.scalar(
         select(func.count(func.distinct(Repository.project_id)))
         .select_from(Application)
@@ -762,14 +788,17 @@ async def build_attention(db: AsyncSession, now: datetime | None = None) -> Atte
             )
         )
     ).all()
+    items = scope_attention(
+        attention_items(titles, tasks, stories, incidents, sick, queues.issues), since, project_id
+    )
     return AttentionResponse(
         kpis=ConsoleKpis(
             active_journeys=active_journeys or 0,
             running_runs=run_counts.get(RunStatus.RUNNING.value, 0),
             queued_runs=run_counts.get(RunStatus.QUEUED.value, 0),
             live_products=live_products or 0,
-            degraded_containers=len(sick),
+            degraded_containers=sum(1 for i in items if i.kind == "application"),
             median_lead_time_minutes_7d=median_lead_time_minutes(recent),
         ),
-        items=attention_items(titles, tasks, stories, incidents, sick, queues.issues),
+        items=items,
     )
