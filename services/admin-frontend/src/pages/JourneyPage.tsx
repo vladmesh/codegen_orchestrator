@@ -20,12 +20,15 @@ import {
   progressIndex,
   retries,
   type BarTone,
+  type Lane,
   type LinkedPullRequest,
 } from './journeyView'
+import { enterClass, livePoll, useFlash } from '@/lib/live'
 
 const knobStyles: Record<StepStatus, string> = {
   done: 'border-teal-400 bg-teal-400 text-zinc-950',
-  active: 'border-teal-400 bg-zinc-950 text-teal-300 animate-pulse',
+  // demo build: a soft ring breathes around it instead (see Station)
+  active: isDemo ? 'border-teal-400 bg-zinc-950 text-teal-300' : 'border-teal-400 bg-zinc-950 text-teal-300 animate-pulse',
   waiting: 'border-amber-500 bg-amber-950 text-amber-300',
   failed: 'border-red-500 bg-red-950 text-red-300',
   pending: 'border-zinc-600 bg-zinc-950 text-zinc-500',
@@ -37,6 +40,23 @@ const DEMO_ACTORS: Partial<Record<JourneyStage, string>> = {
   build: 'Developer',
   deploy: 'Deployer',
   verify: 'QA',
+}
+
+/**
+ * Demo build: every working stage keeps its lane from the start (an empty track until it
+ * begins), so lanes appearing mid-scene never push the page down. Bar positions are rounded,
+ * so a poll whose data did not move does not touch the DOM.
+ */
+function demoLanes(lanes: Lane[], steps: JourneyStep[]): Lane[] {
+  if (!isDemo) return lanes
+  const round = (v: number) => Math.round(v * 20) / 20
+  return steps
+    .filter((s) => s.stage !== 'live')
+    .map((s) => {
+      const lane = lanes.find((l) => l.stage === s.stage)
+      const bars = (lane?.bars ?? []).map((b) => ({ ...b, left: round(b.left), width: round(b.width) }))
+      return { stage: s.stage, actor: lane?.actor ?? STAGE_ACTORS[s.stage], bars }
+    })
 }
 
 function stageActor(stage: JourneyStage): string {
@@ -55,7 +75,7 @@ function attemptLabel(attempt: JourneyAttempt, step: JourneyStep, taskTitles: Ma
 const barStyles: Record<BarTone, string> = {
   done: 'bg-teal-500/80',
   failed: 'bg-red-500/80',
-  active: 'bg-teal-300 animate-pulse',
+  active: isDemo ? 'bg-teal-300 live-shimmer' : 'bg-teal-300 animate-pulse',
   waiting: 'bg-amber-500/80',
 }
 
@@ -73,6 +93,7 @@ function Station({
   now: number
 }) {
   const retried = retries(step)
+  const knob = useFlash<HTMLSpanElement>(step.status, step.status === 'failed' ? 'red' : 'teal')
   return (
     <button
       type="button"
@@ -82,21 +103,37 @@ function Station({
       className="group relative flex flex-col items-center gap-1.5 px-1 text-center focus-visible:outline-none"
     >
       <span
+        ref={knob}
         className={cn(
-          'z-10 grid h-9 w-9 place-items-center rounded-full border-2 font-mono text-xs',
+          'relative z-10 grid h-9 w-9 place-items-center rounded-full border-2 font-mono text-xs',
+          isDemo && 'demo-smooth transition-colors duration-500',
           knobStyles[step.status],
           selected && 'ring-4 ring-teal-400/30',
           'group-focus-visible:ring-4 group-focus-visible:ring-teal-400/60',
         )}
       >
+        {isDemo && step.status === 'active' && (
+          <span aria-hidden className="live-ring absolute -inset-[3px] rounded-full border-2 border-teal-400" />
+        )}
         {retried > 0 && step.status === 'done' ? <RotateCcw className="h-3.5 w-3.5" /> : index + 1}
       </span>
       <span className="text-sm font-semibold leading-tight text-foreground">{STAGE_LABELS[step.stage]}</span>
-      <span className="font-mono text-[10.5px] leading-tight text-muted-foreground">
+      <span className={cn('font-mono text-[10.5px] leading-tight text-muted-foreground', isDemo && 'min-h-[26px]')}>
         {step.status === 'skipped' ? 'skipped' : step.status === 'pending' ? '—' : formatDuration(step.started_at, step.finished_at, now)}
         {retried > 0 && <span className="block text-amber-400">{retried} failed</span>}
       </span>
     </button>
+  )
+}
+
+/** One attempt box; in the demo build it slides in when new and glows when its status changes. */
+function AttemptRow({ status, children }: { status: string; children: React.ReactNode }) {
+  const failed = !['queued', 'running', 'completed', 'published'].includes(status)
+  const ref = useFlash<HTMLDivElement>(status, failed ? 'red' : 'teal')
+  return (
+    <div ref={ref} className={cn('rounded border border-border p-2 text-xs', enterClass)}>
+      {children}
+    </div>
   )
 }
 
@@ -126,7 +163,7 @@ function StepDetail({ step, now, taskTitles }: { step: JourneyStep; now: number;
         <div className="space-y-1.5">
           <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">attempts</div>
           {step.attempts.map((attempt) => (
-            <div key={attempt.id} className="rounded border border-border p-2 text-xs">
+            <AttemptRow key={attempt.id} status={attempt.status}>
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge status={attempt.status} />
                 {isDemo ? (
@@ -151,7 +188,7 @@ function StepDetail({ step, now, taskTitles }: { step: JourneyStep; now: number;
                   task {attempt.task_id}
                 </Link>
               )}
-            </div>
+            </AttemptRow>
           ))}
         </div>
       )}
@@ -196,14 +233,14 @@ export function JourneyPage() {
   const journey = useQuery({
     queryKey: ['admin-console-journey', storyId],
     queryFn: () => api.get<JourneyDetail>(`/admin/v2/journeys/${storyId}`),
-    refetchInterval: 10_000,
+    refetchInterval: livePoll(10_000),
     enabled: Boolean(storyId),
   })
   // Demo build names attempts by their task, so it needs the story's task titles.
   const tasks = useQuery({
     queryKey: ['tasks', 'story', storyId],
     queryFn: () => api.get<Task[]>(`/tasks/?story_id=${storyId}&limit=200`),
-    refetchInterval: 10_000,
+    refetchInterval: livePoll(10_000),
     enabled: isDemo && Boolean(storyId),
   })
 
@@ -216,7 +253,7 @@ export function JourneyPage() {
   // The moment of the last fetch, so a render never reads the clock itself.
   const now = journey.dataUpdatedAt
   const span = journeyWindow(steps, now)
-  const lanes = span ? journeyLanes(steps, span, now) : []
+  const lanes = span ? demoLanes(journeyLanes(steps, span, now), steps) : []
   const current = selected ?? focusStage(steps)
   const currentStep = steps.find((s) => s.stage === current) ?? steps[0]
   const reached = progressIndex(steps)
@@ -252,13 +289,22 @@ export function JourneyPage() {
         </div>
       </div>
 
-      <div className="grid overflow-hidden rounded-lg border border-border lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div
+        className={cn(
+          'grid overflow-hidden rounded-lg border border-border lg:grid-cols-[minmax(0,1fr)_320px]',
+          // demo: one fixed height for the whole scene, the side panel scrolls instead of pushing the page
+          isDemo && 'lg:h-[384px]',
+        )}
+      >
         <div className="overflow-x-auto border-b border-border p-4 lg:border-b-0 lg:border-r">
           <div className="min-w-[760px]">
             <div className="relative grid grid-cols-8" role="tablist" aria-label="Journey stages">
               <div className="absolute left-[6.25%] right-[6.25%] top-[17px] h-[3px] rounded bg-zinc-800" />
               <div
-                className="absolute left-[6.25%] top-[17px] h-[3px] rounded bg-teal-400"
+                className={cn(
+                  'absolute left-[6.25%] top-[17px] h-[3px] rounded bg-teal-400',
+                  isDemo && 'demo-smooth transition-[width] duration-1000 ease-in-out',
+                )}
                 style={{ width: `${(reached / 7) * 87.5}%` }}
               />
               {steps.map((step, index) => (
@@ -275,14 +321,19 @@ export function JourneyPage() {
             {span && lanes.length > 0 && (
               <div className="mt-6 space-y-1.5">
                 {lanes.map((lane) => (
-                  <div key={lane.stage} className="grid grid-cols-[120px_1fr] items-center gap-2">
+                  <div key={lane.stage} className={cn('grid grid-cols-[120px_1fr] items-center gap-2', enterClass)}>
                     <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">{isDemo ? stageActor(lane.stage) : lane.actor}</span>
                     <div className="relative h-4 rounded bg-zinc-900">
                       {lane.bars.map((bar) => (
                         <span
                           key={bar.key}
                           title={bar.label}
-                          className={cn('absolute top-0.5 h-3 rounded-sm', barStyles[bar.tone])}
+                          className={cn(
+                            'absolute top-0.5 h-3 rounded-sm',
+                            barStyles[bar.tone],
+                            // bars grow with the clock: glide between polls instead of stepping
+                            isDemo && 'demo-smooth transition-[left,width,background-color] duration-[1500ms] ease-linear',
+                          )}
                           style={{ left: `${bar.left}%`, width: `${bar.width}%` }}
                         />
                       ))}
@@ -300,7 +351,7 @@ export function JourneyPage() {
             )}
           </div>
         </div>
-        <aside className="bg-zinc-950/60 p-4" aria-live="polite">
+        <aside className={cn('bg-zinc-950/60 p-4', isDemo && 'overflow-y-auto')} aria-live="polite">
           <StepDetail step={currentStep} now={now} taskTitles={taskTitles} />
         </aside>
       </div>

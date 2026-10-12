@@ -4,6 +4,7 @@ import { api } from '@/lib/api'
 import { cn, isDemo, relativeTime } from '@/lib/utils'
 import type { Attention, AttentionItem } from '@/types/api'
 import { attentionLink, attentionScope, formatLeadTime, severityCounts } from './attentionView'
+import { enterClass, livePoll, useFlash } from '@/lib/live'
 
 const severityStripe: Record<AttentionItem['severity'], string> = {
   critical: 'shadow-[inset_3px_0_0_var(--color-red-500)]',
@@ -12,8 +13,9 @@ const severityStripe: Record<AttentionItem['severity'], string> = {
 }
 
 function Kpi({ value, label, tone }: { value: React.ReactNode; label: string; tone?: string }) {
+  const ref = useFlash<HTMLDivElement>(String(value))
   return (
-    <div className="flex flex-col gap-0.5 border-r border-border px-4 py-3 last:border-r-0">
+    <div ref={ref} className="flex flex-col gap-0.5 border-r border-border px-4 py-3 last:border-r-0">
       <span className={cn('text-2xl font-semibold tabular-nums', tone)}>{value}</span>
       <span className="text-xs text-muted-foreground">{label}</span>
     </div>
@@ -26,7 +28,7 @@ export function ConsolePage() {
   const attention = useQuery({
     queryKey: ['admin-console-attention', scope.query],
     queryFn: () => api.get<Attention>(`/admin/v2/attention${scope.query}`),
-    refetchInterval: 15_000,
+    refetchInterval: livePoll(15_000),
   })
 
   if (attention.isLoading) return <p className="text-muted-foreground">Loading…</p>
@@ -94,7 +96,10 @@ export function ConsolePage() {
               {items.map((item, index) => {
                 const link = attentionLink(item)
                 return (
-                  <tr key={`${item.kind}-${index}`} className="border-b border-border/60 align-top last:border-b-0">
+                  <tr
+                    key={isDemo ? `${item.kind}-${item.title}` : `${item.kind}-${index}`}
+                    className={cn('border-b border-border/60 align-top last:border-b-0', enterClass)}
+                  >
                     <td className={cn('px-3 py-2.5', severityStripe[item.severity])}>
                       <div className="text-foreground">{item.title}</div>
                       {item.detail && <div className="mt-0.5 text-xs text-muted-foreground">{item.detail}</div>}

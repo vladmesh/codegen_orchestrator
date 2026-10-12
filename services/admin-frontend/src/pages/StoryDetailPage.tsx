@@ -15,6 +15,7 @@ import {
   infrastructureRetryTarget,
   requestInfrastructureRetry,
 } from './storyInfrastructureRetry'
+import { livePoll } from '@/lib/live'
 
 const ARCHITECT_STATUSES = new Set(['created', 'reopened'])
 
@@ -28,14 +29,14 @@ export function StoryDetailPage() {
     queryKey: ['story', id],
     queryFn: () => api.get<Story>(`/stories/${id}`),
     enabled: !!id,
-    refetchInterval: 10_000,
+    refetchInterval: livePoll(10_000),
   })
 
   const { data: tasks, isSuccess: tasksReady } = useQuery({
     queryKey: ['tasks', 'story', id],
     queryFn: () => api.get<Task[]>(`/tasks/?story_id=${id}&limit=200`),
     enabled: !!id,
-    refetchInterval: 10_000,
+    refetchInterval: livePoll(10_000),
   })
 
   // Demo build shows the tasks as a board, which needs the journey steps (planning, CI).
@@ -43,7 +44,7 @@ export function StoryDetailPage() {
     queryKey: ['admin-console-journey', id],
     queryFn: () => api.get<JourneyDetail>(`/admin/v2/journeys/${id}`),
     enabled: isDemo && !!id,
-    refetchInterval: 10_000,
+    refetchInterval: livePoll(10_000),
   })
 
   const sendToArchitectMutation = useMutation({

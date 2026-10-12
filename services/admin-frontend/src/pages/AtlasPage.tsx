@@ -19,6 +19,7 @@ import {
   type Selection,
   type SelectionKind,
 } from './atlasModel'
+import { enterClass, livePoll, useFlash } from '@/lib/live'
 
 type View = 'layers' | 'matrix' | 'product'
 const VIEWS: { id: View; label: string }[] = [
@@ -77,8 +78,12 @@ function ProductTile({
   const dim = lit !== null && !lit.products.has(product.project_id)
   const hit = lit !== null && lit.products.has(product.project_id) && !selected
   const backend = product.passport.containers.find((c) => c.name === 'backend')
+  const flash = useFlash<HTMLDivElement>(
+    [product.status, ...product.passport.containers.map((c) => `${c.name}:${c.status}`)].join('|'),
+  )
   return (
     <div
+      ref={flash}
       role="button"
       tabIndex={0}
       onClick={() => select('product', product.project_id)}
@@ -90,6 +95,7 @@ function ProductTile({
       }}
       className={cn(
         'flex cursor-pointer flex-col gap-1.5 rounded-lg border border-border bg-card p-2.5 text-left transition-opacity',
+        enterClass,
         dim && 'opacity-25',
         hit && 'border-teal-400 shadow-[0_0_0_2px_rgba(45,212,191,0.25)]',
         selected && 'border-teal-400 ring-2 ring-teal-400',
@@ -533,7 +539,7 @@ export function AtlasPage() {
   const topology = useQuery({
     queryKey: ['admin-console-topology'],
     queryFn: () => api.get<Topology>('/admin/v2/topology'),
-    refetchInterval: 30_000,
+    refetchInterval: livePoll(30_000),
   })
 
   const setView = (next: View) => {

@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate, isDemo } from '@/lib/utils'
 import { humanizeLabel } from '@/lib/display'
 import type { SpawnWorkerRequest, SpawnWorkerResponse, Story, Task, TaskEvent, TaskResume, TaskTransition } from '@/types/api'
+import { enterClass, livePoll } from '@/lib/live'
 
 export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -17,12 +18,14 @@ export function TaskDetailPage() {
     queryKey: ['task', id],
     queryFn: () => api.get<Task>(`/tasks/${id}`),
     enabled: !!id,
+    refetchInterval: livePoll(false),
   })
 
   const { data: events } = useQuery({
     queryKey: ['task-events', id],
     queryFn: () => api.get<TaskEvent[]>(`/tasks/${id}/events`),
     enabled: !!id,
+    refetchInterval: livePoll(false),
   })
 
   const invalidateTask = () => {
@@ -95,7 +98,7 @@ export function TaskDetailPage() {
             {(events ?? []).map((event) => (
               <div
                 key={event.id}
-                className="flex gap-4 border-l-2 border-border pl-4 text-sm"
+                className={`flex gap-4 border-l-2 border-border pl-4 text-sm ${enterClass}`}
               >
                 <span className="shrink-0 text-muted-foreground">
                   {formatDate(event.created_at)}

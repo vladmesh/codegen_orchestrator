@@ -1,5 +1,6 @@
 import type { ProductPassport } from '@/types/api'
-import { isDemo } from '@/lib/utils'
+import { cn, isDemo } from '@/lib/utils'
+import { enterClass, useFlash } from '@/lib/live'
 import { Chip, Dot } from './Chips'
 import { containerTone } from './tones'
 
@@ -16,6 +17,16 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <span className="text-sm text-muted-foreground">{children}</span>
 }
 
+/** A container line; demo build: slides in on first deploy, glows when its status changes. */
+function ContainerRow({ status, children }: { status: string; children: React.ReactNode }) {
+  const ref = useFlash<HTMLLIElement>(status, status === 'down' ? 'red' : 'teal')
+  return (
+    <li ref={ref} className={cn('flex items-center gap-2 rounded', enterClass)}>
+      {children}
+    </li>
+  )
+}
+
 /** What a product is built from, what it connects to and where it runs. */
 export function Passport({ passport }: { passport: ProductPassport }) {
   return (
@@ -26,13 +37,13 @@ export function Passport({ passport }: { passport: ProductPassport }) {
         ) : (
           <ul className="space-y-1.5 text-sm">
             {passport.containers.map((c) => (
-              <li key={`${c.placement}-${c.name}`} className="flex items-center gap-2">
+              <ContainerRow key={`${c.placement}-${c.name}`} status={c.status}>
                 <Dot tone={containerTone(c.status)} />
                 <Chip kind="container">{c.name}</Chip>
                 <span className="ml-auto font-mono text-xs text-muted-foreground">
                   {c.port ? `:${c.port}` : c.status}
                 </span>
-              </li>
+              </ContainerRow>
             ))}
           </ul>
         )}

@@ -1,4 +1,5 @@
-import { cn } from '@/lib/utils'
+import { cn, isDemo } from '@/lib/utils'
+import { useFlash } from '@/lib/live'
 
 const statusColors: Record<string, string> = {
   // Task statuses
@@ -45,10 +46,14 @@ const statusColors: Record<string, string> = {
 }
 
 export function StatusBadge({ status }: { status: string }) {
+  // Demo build: colours cross-fade and the badge glows briefly when the status changes.
+  const ref = useFlash<HTMLSpanElement>(status)
   return (
     <span
+      ref={ref}
       className={cn(
         'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+        isDemo && 'demo-smooth transition-colors duration-500',
         statusColors[status] ?? 'bg-zinc-700 text-zinc-200',
       )}
     >

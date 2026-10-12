@@ -30,7 +30,7 @@ export function WorkerDetailPage() {
     queryKey: ['worker', id],
     queryFn: () => api.raw<WorkerDetail>(`/wm-api/workers/${id}`),
     enabled: !!id,
-    refetchInterval: 5_000,
+    refetchInterval: livePoll(5_000),
   })
 
   const killMutation = useMutation({
@@ -227,6 +227,7 @@ export function WorkerDetailPage() {
 /* ---------- Console Tab ---------- */
 
 import { AnsiUp } from 'ansi_up'
+import { livePoll } from '@/lib/live'
 const ansiUp = new AnsiUp()
 
 function ConsoleTab({ workerId }: { workerId: string }) {

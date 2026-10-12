@@ -6,6 +6,9 @@ import { isDemo, relativeTime } from '@/lib/utils'
 import { humanizeLabel } from '@/lib/display'
 import type { EngineeringConsumerDrain, WorkerSummary } from '@/types/api'
 import { requestEngineeringConsumerDrain, requestEngineeringConsumerResume } from './engineeringConsumerDrain'
+import { enterClass, livePoll, useFlash } from '@/lib/live'
+import { LiveDot } from '@/components/ui/LiveDot'
+import { cn } from '@/lib/utils'
 
 function inventoryFact(value: string | null | undefined, error: string | null | undefined, absent = 'none') {
   return value ?? error ?? absent
@@ -27,9 +30,10 @@ function DemoWorkersTable({ workers }: { workers: WorkerSummary[] }) {
         </thead>
         <tbody className="divide-y divide-border">
           {workers.map((w, index) => (
-            <tr key={w.id} className="hover:bg-muted/30">
+            <DemoWorkerRow key={w.id} worker={w}>
               <td className="px-4 py-3">
-                <Link to={`/workers/${w.id}`} className="font-medium text-primary hover:underline">
+                <Link to={`/workers/${w.id}`} className="inline-flex items-center gap-2 font-medium text-primary hover:underline">
+                  {w.agent_process_status === 'working' && <LiveDot label="working" />}
                   {w.display_name ?? `Worker ${index + 1}`}
                 </Link>
               </td>
@@ -47,11 +51,21 @@ function DemoWorkersTable({ workers }: { workers: WorkerSummary[] }) {
                   <span className="text-muted-foreground">—</span>
                 )}
               </td>
-            </tr>
+            </DemoWorkerRow>
           ))}
         </tbody>
       </table>
     </div>
+  )
+}
+
+/** Row that slides in when the worker appears and glows when it picks up or finishes work. */
+function DemoWorkerRow({ worker, children }: { worker: WorkerSummary; children: React.ReactNode }) {
+  const ref = useFlash<HTMLTableRowElement>(`${worker.agent_process_status ?? ''}|${worker.current_task ?? ''}`)
+  return (
+    <tr ref={ref} className={cn('hover:bg-muted/30', enterClass)}>
+      {children}
+    </tr>
   )
 }
 
@@ -60,7 +74,7 @@ export function WorkersPage() {
   const { data: workers, isLoading } = useQuery({
     queryKey: ['workers'],
     queryFn: () => api.raw<WorkerSummary[]>('/wm-api/workers/'),
-    refetchInterval: 5_000,
+    refetchInterval: livePoll(5_000),
   })
   const drainQuery = useQuery({
     queryKey: ['engineering-consumer-drain'],

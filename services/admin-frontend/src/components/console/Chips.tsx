@@ -1,4 +1,4 @@
-import { cn } from '@/lib/utils'
+import { cn, isDemo } from '@/lib/utils'
 
 // One visual language for the three delivery forms of the kit vocabulary, used on every
 // console screen: a container (product compose service), a package or library (code inside
@@ -65,5 +65,5 @@ const dotStyles = {
 export type DotTone = keyof typeof dotStyles
 
 export function Dot({ tone }: { tone: DotTone }) {
-  return <span className={cn('inline-block h-2 w-2 flex-none rounded-full', dotStyles[tone])} />
+  return <span className={cn('inline-block h-2 w-2 flex-none rounded-full', isDemo && 'demo-smooth transition-colors duration-500', dotStyles[tone])} />
 }
