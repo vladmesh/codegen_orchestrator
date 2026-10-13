@@ -9,6 +9,7 @@ import { Passport } from '@/components/console/Passport'
 import { TaskBoard } from '@/components/console/TaskBoard'
 import { LiveLog } from '@/components/console/LiveLog'
 import { RepoPanel } from '@/components/console/RepoPanel'
+import { Split } from '@/components/ui/Split'
 import { humanizeLabel } from '@/lib/display'
 import type { JourneyAttempt, JourneyDetail, JourneyStage, JourneyStep, StepStatus, Task } from '@/types/api'
 import {
@@ -320,85 +321,171 @@ export function JourneyPage() {
         )}
       </div>
 
-      <div
-        className={cn(
-          'grid overflow-hidden rounded-lg border border-border lg:grid-cols-[minmax(0,1fr)_320px]',
-          // demo: one fixed height for the whole scene, the side panel scrolls instead of pushing the page
-          isDemo && 'lg:h-[384px]',
-        )}
-      >
-        <div className="overflow-x-auto border-b border-border p-4 lg:border-b-0 lg:border-r">
-          <div className="min-w-[760px]">
-            <div className="relative grid grid-cols-8" role="tablist" aria-label="Journey stages">
-              <div className="absolute left-[6.25%] right-[6.25%] top-[17px] h-[3px] rounded bg-zinc-800" />
-              <div
-                className={cn(
-                  'absolute left-[6.25%] top-[17px] h-[3px] rounded bg-teal-400',
-                  isDemo && 'demo-smooth transition-[width] duration-1000 ease-in-out',
-                )}
-                style={{ width: `${(reached / 7) * 87.5}%` }}
-              />
-              {steps.map((step, index) => (
-                <Station
-                  key={step.stage}
-                  step={step}
-                  index={index}
-                  selected={step.stage === current}
-                  onSelect={() => setSelected(step.stage)}
-                  now={now}
+      {isDemo ? (
+        // demo: timeline and stage details split by a draggable handle, as in an IDE
+        <div className="overflow-hidden rounded-lg border border-border lg:h-[384px]">
+          <Split
+            id="journey-top"
+            defaultLeft={74}
+            minLeft={40}
+            minRight={18}
+            className="h-full"
+            stackedClassName="gap-0"
+            left={
+                      <div className="h-full overflow-x-auto border-b border-border p-4 lg:border-b-0">
+                        <div className="min-w-[760px]">
+                          <div className="relative grid grid-cols-8" role="tablist" aria-label="Journey stages">
+                            <div className="absolute left-[6.25%] right-[6.25%] top-[17px] h-[3px] rounded bg-zinc-800" />
+                            <div
+                              className={cn(
+                                'absolute left-[6.25%] top-[17px] h-[3px] rounded bg-teal-400',
+                                isDemo && 'demo-smooth transition-[width] duration-1000 ease-in-out',
+                              )}
+                              style={{ width: `${(reached / 7) * 87.5}%` }}
+                            />
+                            {steps.map((step, index) => (
+                              <Station
+                                key={step.stage}
+                                step={step}
+                                index={index}
+                                selected={step.stage === current}
+                                onSelect={() => setSelected(step.stage)}
+                                now={now}
+                              />
+                            ))}
+                          </div>
+                          {span && lanes.length > 0 && (
+                            <div className="mt-6 space-y-1.5">
+                              {lanes.map((lane) => (
+                                <div key={lane.stage} className={cn('grid grid-cols-[120px_1fr] items-center gap-2', enterClass)}>
+                                  <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">{isDemo ? stageActor(lane.stage) : lane.actor}</span>
+                                  <div className="relative h-4 rounded bg-zinc-900">
+                                    {lane.bars.map((bar) => (
+                                      <span
+                                        key={bar.key}
+                                        title={bar.label}
+                                        className={cn(
+                                          'absolute top-0.5 h-3 rounded-sm',
+                                          barStyles[bar.tone],
+                                          // bars grow with the clock: glide between polls instead of stepping
+                                          isDemo && 'demo-smooth transition-[left,width,background-color] duration-[1500ms] ease-linear',
+                                        )}
+                                        style={{ left: `${bar.left}%`, width: `${bar.width}%` }}
+                                      >
+                                        {isDemo && bar.caption && bar.width >= 4 && (
+                                          <span className="pointer-events-none absolute inset-0 overflow-hidden whitespace-nowrap px-1 font-mono text-[9.5px] font-semibold leading-3 text-zinc-950">
+                                            {bar.caption}
+                                          </span>
+                                        )}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                              <div className="grid grid-cols-[120px_1fr] gap-2 font-mono text-[10px] text-muted-foreground">
+                                <span />
+                                <div className="flex justify-between">
+                                  <span>{formatClock(span.start)}</span>
+                                  <span>{formatClock(span.end)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+            }
+            right={
+                      <aside className={cn('h-full bg-zinc-950/60 p-4', isDemo && 'overflow-y-auto')} aria-live="polite">
+                        <StepDetail step={currentStep} now={now} taskTitles={taskTitles} />
+                      </aside>
+            }
+          />
+        </div>
+      ) : (
+        <div
+          className={cn(
+            'grid overflow-hidden rounded-lg border border-border lg:grid-cols-[minmax(0,1fr)_320px]',
+            // demo: one fixed height for the whole scene, the side panel scrolls instead of pushing the page
+            isDemo && 'lg:h-[384px]',
+          )}
+        >
+          <div className="overflow-x-auto border-b border-border p-4 lg:border-b-0 lg:border-r">
+            <div className="min-w-[760px]">
+              <div className="relative grid grid-cols-8" role="tablist" aria-label="Journey stages">
+                <div className="absolute left-[6.25%] right-[6.25%] top-[17px] h-[3px] rounded bg-zinc-800" />
+                <div
+                  className={cn(
+                    'absolute left-[6.25%] top-[17px] h-[3px] rounded bg-teal-400',
+                    isDemo && 'demo-smooth transition-[width] duration-1000 ease-in-out',
+                  )}
+                  style={{ width: `${(reached / 7) * 87.5}%` }}
                 />
-              ))}
-            </div>
-            {span && lanes.length > 0 && (
-              <div className="mt-6 space-y-1.5">
-                {lanes.map((lane) => (
-                  <div key={lane.stage} className={cn('grid grid-cols-[120px_1fr] items-center gap-2', enterClass)}>
-                    <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">{isDemo ? stageActor(lane.stage) : lane.actor}</span>
-                    <div className="relative h-4 rounded bg-zinc-900">
-                      {lane.bars.map((bar) => (
-                        <span
-                          key={bar.key}
-                          title={bar.label}
-                          className={cn(
-                            'absolute top-0.5 h-3 rounded-sm',
-                            barStyles[bar.tone],
-                            // bars grow with the clock: glide between polls instead of stepping
-                            isDemo && 'demo-smooth transition-[left,width,background-color] duration-[1500ms] ease-linear',
-                          )}
-                          style={{ left: `${bar.left}%`, width: `${bar.width}%` }}
-                        >
-                          {isDemo && bar.caption && bar.width >= 4 && (
-                            <span className="pointer-events-none absolute inset-0 overflow-hidden whitespace-nowrap px-1 font-mono text-[9.5px] font-semibold leading-3 text-zinc-950">
-                              {bar.caption}
-                            </span>
-                          )}
-                        </span>
-                      ))}
+                {steps.map((step, index) => (
+                  <Station
+                    key={step.stage}
+                    step={step}
+                    index={index}
+                    selected={step.stage === current}
+                    onSelect={() => setSelected(step.stage)}
+                    now={now}
+                  />
+                ))}
+              </div>
+              {span && lanes.length > 0 && (
+                <div className="mt-6 space-y-1.5">
+                  {lanes.map((lane) => (
+                    <div key={lane.stage} className={cn('grid grid-cols-[120px_1fr] items-center gap-2', enterClass)}>
+                      <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">{isDemo ? stageActor(lane.stage) : lane.actor}</span>
+                      <div className="relative h-4 rounded bg-zinc-900">
+                        {lane.bars.map((bar) => (
+                          <span
+                            key={bar.key}
+                            title={bar.label}
+                            className={cn(
+                              'absolute top-0.5 h-3 rounded-sm',
+                              barStyles[bar.tone],
+                              // bars grow with the clock: glide between polls instead of stepping
+                              isDemo && 'demo-smooth transition-[left,width,background-color] duration-[1500ms] ease-linear',
+                            )}
+                            style={{ left: `${bar.left}%`, width: `${bar.width}%` }}
+                          >
+                            {isDemo && bar.caption && bar.width >= 4 && (
+                              <span className="pointer-events-none absolute inset-0 overflow-hidden whitespace-nowrap px-1 font-mono text-[9.5px] font-semibold leading-3 text-zinc-950">
+                                {bar.caption}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  <div className="grid grid-cols-[120px_1fr] gap-2 font-mono text-[10px] text-muted-foreground">
+                    <span />
+                    <div className="flex justify-between">
+                      <span>{formatClock(span.start)}</span>
+                      <span>{formatClock(span.end)}</span>
                     </div>
                   </div>
-                ))}
-                <div className="grid grid-cols-[120px_1fr] gap-2 font-mono text-[10px] text-muted-foreground">
-                  <span />
-                  <div className="flex justify-between">
-                    <span>{formatClock(span.start)}</span>
-                    <span>{formatClock(span.end)}</span>
-                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
+          <aside className={cn('bg-zinc-950/60 p-4', isDemo && 'overflow-y-auto')} aria-live="polite">
+            <StepDetail step={currentStep} now={now} taskTitles={taskTitles} />
+          </aside>
         </div>
-        <aside className={cn('bg-zinc-950/60 p-4', isDemo && 'overflow-y-auto')} aria-live="polite">
-          <StepDetail step={currentStep} now={now} taskTitles={taskTitles} />
-        </aside>
-      </div>
+      )}
 
       {isDemo && (
         // board and live log side by side, one height, so the frame never jumps
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_600px]">
-          <TaskBoard tasks={tasks.data ?? []} steps={steps} prNumber={journey.data.pr_number} ready={tasks.isSuccess} />
-          <LiveLog storyId={storyId} live={!summary.finished_at} className="h-[459px]" />
-        </div>
+        <Split
+          id="journey-board"
+          defaultLeft={56}
+          minLeft={28}
+          minRight={22}
+          left={<TaskBoard tasks={tasks.data ?? []} steps={steps} prNumber={journey.data.pr_number} ready={tasks.isSuccess} />}
+          right={<LiveLog storyId={storyId} live={!summary.finished_at} className="h-[459px]" />}
+        />
       )}
       {isDemo && <RepoPanel storyId={storyId} />}
 

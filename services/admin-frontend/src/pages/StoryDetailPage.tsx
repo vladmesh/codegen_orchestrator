@@ -9,6 +9,7 @@ import { formatDate, isDemo } from '@/lib/utils'
 import { humanizeLabel } from '@/lib/display'
 import { TaskBoard } from '@/components/console/TaskBoard'
 import { LiveLog } from '@/components/console/LiveLog'
+import { Split } from '@/components/ui/Split'
 import { RepoPanel } from '@/components/console/RepoPanel'
 import type { JourneyDetail, Story, Task } from '@/types/api'
 import { requestStoryQaRecheck } from './storyRecheck'
@@ -237,10 +238,14 @@ export function StoryDetailPage() {
 
       {/* Demo build: the task board right under the header, so it stays in frame */}
       {isDemo && (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_600px]">
-          <TaskBoard tasks={tasks ?? []} steps={journey?.steps} prNumber={journey?.pr_number ?? null} ready={tasksReady} />
-          <LiveLog storyId={id} live={!journey?.summary.finished_at} className="h-[459px]" />
-        </div>
+        <Split
+          id="story-board"
+          defaultLeft={56}
+          minLeft={28}
+          minRight={22}
+          left={<TaskBoard tasks={tasks ?? []} steps={journey?.steps} prNumber={journey?.pr_number ?? null} ready={tasksReady} />}
+          right={<LiveLog storyId={id} live={!journey?.summary.finished_at} className="h-[459px]" />}
+        />
       )}
       {isDemo && <RepoPanel storyId={id} />}
 
