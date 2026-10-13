@@ -179,7 +179,8 @@ def bg_journey(bg, n):
         steps.append({"stage": stage, "status": "skipped" if skipped else "done",
                       "started_at": None if skipped else iso(a), "finished_at": None if skipped else iso(b),
                       "attempts": [], "facts": []})
-    return {"summary": bg_summary(bg, n), "request": bg["story"], "requirements": 6, "pr_number": 1,
+    return {"summary": bg_summary(bg, n), "request": bg["story"], "requirements": None, "requirement_list": None,
+            "pr_number": 1,
             "steps": steps, "passport": bg_passport(bg), "links": []}
 
 
@@ -320,7 +321,11 @@ def scene_passport(v: View):
 
 def scene_journey(v: View):
     steps = scene_steps(v)
-    return {"summary": scene_summary(v, steps), "request": ST["request"], "requirements": v.at(ST["requirements"]),
+    count = v.at(ST["requirements"])
+    # demo-only: the list behind the count; the count is always its length
+    reqs = ST["requirement_list"][:count] if count else None
+    return {"summary": scene_summary(v, steps), "request": ST["request"], "requirements": len(reqs) if reqs else None,
+            "requirement_list": reqs,
             "pr_number": v.at(ST["pr_number"]), "steps": steps, "passport": scene_passport(v), "links": []}
 
 

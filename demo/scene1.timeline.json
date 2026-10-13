@@ -30,7 +30,8 @@
     "status": [[0, "created"], [8, "in_progress"], [290, "pr_review"], [490, "deploying"], [553, "testing"], [598, "completed"]],
     "waiting_on": [[0, "none"], [290, "ci"], [490, "deploy"], [553, "qa"], [598, "none"]],
     "pr_number": [[290, 1]],
-    "requirements": [[20, 7]]
+    "requirements": [[20, 7]],
+    "requirement_list": ["Send a reminder every 2 hours from 9:00 to 21:00 in the user's time zone", "Log a glass with one tap on the reminder or with /drink", "Daily goal of 8 glasses by default, changeable with /goal (1–30)", "Count the streak of days with the goal reached; reset it after a missed day", "A day ends at the user's local midnight, not at UTC midnight", "Send a weekly summary on Sunday at 20:00: glasses per day and the streak", "/stats shows today's glasses, the current streak and the best streak"]
   },
   "steps": {
     "brief":   {"status": [[-150, "active"], [0, "done"]], "facts": [[0, "Confirmed by", "Alex"], [0, "Questions asked", "3"]]},

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
-import { ExternalLink, GitPullRequest, RotateCcw } from 'lucide-react'
+import { ChevronDown, ExternalLink, GitPullRequest, RotateCcw } from 'lucide-react'
 import { api } from '@/lib/api'
 import { cn, formatClock, formatDate, isDemo } from '@/lib/utils'
 import { StatusBadge } from '@/components/ui/StatusBadge'
@@ -236,6 +236,7 @@ function LinkedPullRequests({ links }: { links: LinkedPullRequest[] }) {
 export function JourneyPage() {
   const { storyId } = useParams<{ storyId: string }>()
   const [selected, setSelected] = useState<JourneyStage | null>(null)
+  const [showReqs, setShowReqs] = useState(false)
   const journey = useQuery({
     queryKey: ['admin-console-journey', storyId],
     queryFn: () => api.get<JourneyDetail>(`/admin/v2/journeys/${storyId}`),
@@ -290,9 +291,33 @@ export function JourneyPage() {
             {summary.finished_at ? 'took ' : 'running for '}
             {formatDuration(summary.created_at, summary.finished_at, now)}
           </span>
-          {journey.data.requirements !== null && <span>· {journey.data.requirements} requirements</span>}
+          {journey.data.requirements !== null &&
+            (isDemo && journey.data.requirement_list?.length ? (
+              <button
+                type="button"
+                onClick={() => setShowReqs((v) => !v)}
+                aria-expanded={showReqs}
+                aria-controls="journey-requirements"
+                className="inline-flex items-center gap-1 rounded px-1 text-teal-300 underline decoration-dotted underline-offset-4 hover:text-teal-200"
+              >
+                · {journey.data.requirement_list.length} requirements
+                <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showReqs && 'rotate-180')} />
+              </button>
+            ) : (
+              <span>· {journey.data.requirements} requirements</span>
+            ))}
           {journey.data.pr_number !== null && <span>· PR #{journey.data.pr_number}</span>}
         </div>
+        {isDemo && showReqs && journey.data.requirement_list && journey.data.requirement_list.length > 0 && (
+          <ol
+            id="journey-requirements"
+            className={cn('mt-2 max-w-3xl list-decimal space-y-1 rounded-lg border border-border bg-zinc-950/60 py-3 pl-9 pr-4 text-sm text-foreground', enterClass)}
+          >
+            {journey.data.requirement_list.map((req) => (
+              <li key={req} className="pl-1 marker:font-mono marker:text-xs marker:text-muted-foreground">{req}</li>
+            ))}
+          </ol>
+        )}
       </div>
 
       <div

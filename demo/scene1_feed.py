@@ -66,7 +66,7 @@ def _build_script() -> list[Line]:
         (4, "architect", "out", "Request: reminders 9:00–21:00 every 2 h, daily goal, weekly summary, streak", None),
         (9, "architect", "info", "Stack: python 3.12, aiogram 3, APScheduler, sqlite", None),
         (14, "architect", "info", "Open question resolved: streak day = user's local day", None),
-        (19, "architect", "ok", "7 requirements written", None),
+        (19, "architect", "ok", "7 requirements written — see the list on the journey", None),
         (20, "scaffolder", "cmd", "gh repo create brimos-products/water-reminder-bot --private", None),
         (21, "scaffolder", "out", "Created repository brimos-products/water-reminder-bot", None),
         (22, "scaffolder", "file", "Created pyproject.toml", ("pyproject.toml", 0)),

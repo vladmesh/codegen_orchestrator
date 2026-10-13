@@ -942,6 +942,8 @@ export interface JourneyDetail {
   summary: JourneySummary
   request: string | null
   requirements: number | null
+  /** Demo mock: the requirements behind the count, in the architect's words. */
+  requirement_list?: string[] | null
   pr_number: number | null
   steps: JourneyStep[]
   passport: ProductPassport
