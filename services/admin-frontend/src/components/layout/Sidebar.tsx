@@ -50,16 +50,16 @@ export function Sidebar() {
   const location = useLocation()
 
   return (
-    <aside className="flex h-full w-56 flex-col border-r border-border bg-sidebar-background">
-      <div className="flex h-14 items-center gap-2 border-b border-border px-4">
+    <aside className="flex h-full w-14 shrink-0 flex-col border-r border-border bg-sidebar-background md:w-56">
+      <div className="flex h-14 items-center gap-2 border-b border-border px-3.5 md:px-4">
         <img src={brimosLogo} alt="" className="h-7 w-7 rounded-md" />
-        <span className="text-lg font-semibold text-sidebar-foreground">Brimos</span>
+        <span className="hidden text-lg font-semibold text-sidebar-foreground md:inline">Brimos</span>
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto p-2">
         {[...consoleItems, null, ...visibleNavItems].map((item) => {
           if (item === null) {
             return (
-              <div key="reference" className="px-3 pb-1 pt-4 font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+              <div key="reference" className="hidden px-3 pb-1 pt-4 font-mono md:block text-[10.5px] uppercase tracking-wider text-muted-foreground">
                 Reference
               </div>
             )
@@ -86,6 +86,7 @@ export function Sidebar() {
             <Link
               key={item.label}
               to={item.path}
+              title={item.label}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm',
                 isActive
@@ -93,8 +94,8 @@ export function Sidebar() {
                   : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
               )}
             >
-              <item.icon className="h-4 w-4" />
-              {item.label}
+              <item.icon className="h-4 w-4 shrink-0" />
+              <span className="hidden md:inline">{item.label}</span>
             </Link>
           )
         })}

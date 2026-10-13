@@ -196,7 +196,7 @@ def scene_user(v: View):
 
 
 def scene_project(v: View):
-    return {"id": P["id"], "title": P["title"], "slug": P["slug"], "status": v.at(P["status"], "scaffolding"),
+    return {"id": P["id"], "title": P["title"], "slug": P["slug"], "status": v.at(P["status"], "in_development"),
             "config": {}, "owner_id": U["id"], "project_spec": None, "created_at": v.ts(0), "updated_at": iso(v.now)}
 
 
@@ -395,7 +395,7 @@ def topology(v: View):
                  "latest_story_id": bg["story_id"], "passport": bg_passport(bg)} for bg in BACKGROUND]
     if v.active:
         products.append({"project_id": P["id"], "title": P["title"], "slug": P["slug"],
-                         "status": v.at(P["status"], "scaffolding"), "latest_story_id": ST["id"],
+                         "status": v.at(P["status"], "in_development"), "latest_story_id": ST["id"],
                          "passport": scene_passport(v)})
     services = [{"name": "tg-reader", "status": "up",
                  "products": [bg["project_id"] for bg in BACKGROUND if "tg-reader" in bg.get("platform", [])]}]

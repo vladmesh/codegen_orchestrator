@@ -106,7 +106,7 @@ function ProductTile({
         <Dot tone={healthTone[productHealth(product)]} />
         <span className="truncate">{product.title}</span>
         <span className="ml-auto font-mono text-[10.5px] font-normal text-muted-foreground">
-          {backend?.port ? `:${backend.port}` : product.status}
+          {backend?.port ? `:${backend.port}` : product.status.replace(/_/g, ' ')}
         </span>
       </div>
       <div className="flex flex-wrap gap-1">
@@ -459,7 +459,7 @@ function SelectionDetail({ topology, selection, lit }: { topology: Topology; sel
     return (
       <div className="space-y-3">
         <div>
-          <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">product · {product.status}</div>
+          <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">product · {product.status.replace(/_/g, ' ')}</div>
           <h2 className="text-lg font-semibold">{product.title}</h2>
         </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">

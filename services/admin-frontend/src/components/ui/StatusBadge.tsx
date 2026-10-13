@@ -16,6 +16,7 @@ const statusColors: Record<string, string> = {
   // Project statuses
   active: 'bg-green-900 text-green-200',
   scaffolding: 'bg-blue-900 text-blue-200',
+  in_development: 'bg-sky-900 text-sky-200',
   deploying: 'bg-purple-900 text-purple-200',
   // Server statuses
   discovered: 'bg-zinc-700 text-zinc-200',
@@ -52,7 +53,7 @@ export function StatusBadge({ status }: { status: string }) {
     <span
       ref={ref}
       className={cn(
-        'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+        'inline-flex items-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium',
         isDemo && 'demo-smooth transition-colors duration-500',
         statusColors[status] ?? 'bg-zinc-700 text-zinc-200',
       )}

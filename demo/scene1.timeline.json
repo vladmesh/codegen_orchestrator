@@ -17,7 +17,7 @@
     "id": "6b1f0c2e-9a4d-4e57-8c3b-2f1e7a90d1c5",
     "title": "Water Reminder Bot",
     "slug": "water-reminder-bot",
-    "status": [[0, "scaffolding"], [49, "active"]]
+    "status": [[0, "in_development"], [598, "active"]]
   },
   "repository": {"id": "8d2c4f10-5b7e-4c1a-9e3d-6a0b1c2d3e4f", "name": "water-reminder-bot", "git_url": "https://github.com/brimos-products/water-reminder-bot.git", "from": 20},
   "story": {
