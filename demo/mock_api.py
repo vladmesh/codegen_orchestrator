@@ -486,6 +486,13 @@ def route(method: str, path: str, q: dict):
         if owner:
             rows = [r for r in rows if str(r["owner_id"]) == owner]
         return 200, rows
+    if p.startswith("/api/projects/") and p.endswith("/config/secrets/keys"):
+        # names only: the product's user secrets, the same list as its passport
+        pid = p.split("/")[3]
+        if v.active and pid == P["id"]:
+            return 200, {"keys": scene_passport(v)["user_secrets"]}
+        bg = next((b for b in BACKGROUND if b["project_id"] == pid), None)
+        return (200, {"keys": bg_passport(bg)["user_secrets"]}) if bg else (404, None)
     if p.startswith("/api/projects/"):
         pid = p.split("/")[3]
         return next(((200, r) for r in all_projects(v) if r["id"] == pid), (404, None))

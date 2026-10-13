@@ -62,7 +62,7 @@ export function Passport({ passport }: { passport: ProductPassport }) {
           </ul>
         )}
       </Column>
-      <Column title="Connected">
+      <Column title={isDemo ? 'User secrets' : 'Connected'}>
         <div className="flex flex-wrap gap-1.5">
           {passport.user_secrets.map((name) => (
             <Chip key={name} kind="secret" title="user secret (name only)">

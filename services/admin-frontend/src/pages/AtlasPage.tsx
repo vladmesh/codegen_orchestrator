@@ -14,7 +14,6 @@ import {
   packageUsage,
   productHealth,
   productPlacement,
-  secretUsage,
   type Highlight,
   type Selection,
   type SelectionKind,
@@ -137,6 +136,22 @@ function ProductTile({
           ))}
         </div>
       )}
+      {product.passport.user_secrets.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">secrets</span>
+          {product.passport.user_secrets.map((name) => (
+            <Chip
+              key={name}
+              kind="secret"
+              title="user secret of this product (name only)"
+              active={selection?.kind === 'secret' && selection.id === name}
+              onClick={() => select('secret', name)}
+            >
+              {name}
+            </Chip>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -151,7 +166,7 @@ function PlatformAbsent() {
   return (
     <p className="rounded-md border border-dashed border-violet-700/70 p-3 text-xs text-violet-200/80">
       No platform service is declared (<code>PLATFORM_SERVICES</code>) and no deployed product draws a{' '}
-      <code>platform_key</code> from one. Products reach outside APIs with their own keys, listed below.
+      <code>platform_key</code> from one. Products reach outside APIs with their own keys, shown on each product.
     </p>
   )
 }
@@ -169,7 +184,6 @@ function Layers({
 }) {
   const control = topology.placements.filter((p) => p.role === 'control')
   const groups = groupByPlacement(topology)
-  const secrets = secretUsage(topology)
   return (
     <div>
       <Band title="Brimos" note="builds and deploys" tone="bg-zinc-900/60">
@@ -246,28 +260,12 @@ function Layers({
           </div>
         )}
       </Band>
-      <Band title="Outside world" note="keys users gave their products (names only)" tone="bg-zinc-900/60">
-        <div className="flex flex-wrap gap-1.5">
-          {secrets.length === 0 && <span className="text-xs text-muted-foreground">No user keys.</span>}
-          {secrets.map((s) => (
-            <Chip
-              key={s.name}
-              kind="secret"
-              active={selection?.kind === 'secret' && selection.id === s.name}
-              onClick={() => select('secret', s.name)}
-            >
-              {s.name} <span className="text-zinc-500">{s.count}</span>
-            </Chip>
-          ))}
-        </div>
-      </Band>
     </div>
   )
 }
 
 function Matrix({ topology, select }: { topology: Topology; select: (kind: SelectionKind, id: string) => void }) {
   const packages = packageUsage(topology)
-  const secrets = secretUsage(topology)
   const order = groupByPlacement(topology).flatMap((group) => group.products)
   const cell = 'border-b border-border/60 px-2 py-1.5 text-center'
   return (
@@ -278,7 +276,6 @@ function Matrix({ topology, select }: { topology: Topology; select: (kind: Selec
             <th className="sticky left-0 bg-background px-2 pt-2 text-left" />
             <th className="px-2 pt-2" />
             {packages.length > 0 && <th colSpan={packages.length} className="border-l border-border px-2 pt-2 text-violet-300">catalog</th>}
-            {secrets.length > 0 && <th colSpan={secrets.length} className="border-l border-border px-2 pt-2">user keys</th>}
           </tr>
           <tr className="font-mono text-[10.5px] text-muted-foreground">
             <th className="sticky left-0 border-b border-border bg-background px-2 py-1.5 text-left font-medium">product</th>
@@ -286,11 +283,6 @@ function Matrix({ topology, select }: { topology: Topology; select: (kind: Selec
             {packages.map((p, i) => (
               <th key={p.name} className={cn('border-b border-border px-2 py-1.5 font-medium text-violet-200', i === 0 && 'border-l')}>
                 {p.name}
-              </th>
-            ))}
-            {secrets.map((s, i) => (
-              <th key={s.name} className={cn('border-b border-border px-2 py-1.5 font-medium', i === 0 && 'border-l')}>
-                {s.name}
               </th>
             ))}
           </tr>
@@ -316,11 +308,6 @@ function Matrix({ topology, select }: { topology: Topology; select: (kind: Selec
                   </td>
                 )
               })}
-              {secrets.map((s, i) => (
-                <td key={s.name} className={cn(cell, i === 0 && 'border-l border-l-border')}>
-                  {product.passport.user_secrets.includes(s.name) && <span className="inline-block h-2.5 w-2.5 rounded-sm bg-zinc-400" />}
-                </td>
-              ))}
             </tr>
           ))}
         </tbody>
@@ -330,9 +317,6 @@ function Matrix({ topology, select }: { topology: Topology; select: (kind: Selec
             <td />
             {packages.map((p, i) => (
               <td key={p.name} className={cn('px-2 py-1.5 text-center', i === 0 && 'border-l border-border')}>{p.count}</td>
-            ))}
-            {secrets.map((s, i) => (
-              <td key={s.name} className={cn('px-2 py-1.5 text-center', i === 0 && 'border-l border-border')}>{s.count}</td>
             ))}
           </tr>
         </tfoot>
@@ -384,7 +368,7 @@ function ProductFocus({ topology, productId, select }: { topology: Topology; pro
           </Link>
         )}
       </div>
-      <div className="grid gap-2 lg:grid-cols-[minmax(0,0.8fr)_24px_minmax(0,1.4fr)_24px_minmax(0,1.1fr)_24px_minmax(0,0.9fr)]">
+      <div className="grid gap-2 lg:grid-cols-[minmax(0,0.8fr)_24px_minmax(0,1.4fr)_24px_minmax(0,1.1fr)]">
         <FlowColumn title="entry">
           <div className="rounded-md border border-border p-2 text-sm">Telegram users</div>
           {bot !== undefined && <div className="rounded-md border border-border p-2 text-sm">Telegram Bot API</div>}
@@ -413,6 +397,14 @@ function ProductFocus({ topology, productId, select }: { topology: Topology; pro
               )}
             </div>
           ))}
+          {passport.user_secrets.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 rounded-md border border-dashed border-border p-2">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">user secrets</span>
+              {passport.user_secrets.map((name) => (
+                <Chip key={name} kind="secret">{name}</Chip>
+              ))}
+            </div>
+          )}
           {passport.containers.length === 0 && (
             <span className="text-xs text-muted-foreground">
               {isDemo ? 'Not deployed yet' : `Not deployed. Modules: ${passport.modules.join(', ') || '—'}`}
@@ -430,13 +422,6 @@ function ProductFocus({ topology, productId, select }: { topology: Topology; pro
             </div>
           ))}
         </FlowColumn>
-        <Arrow />
-        <FlowColumn title="outside, user keys">
-          {passport.user_secrets.length === 0 && <span className="text-xs text-muted-foreground">none</span>}
-          {passport.user_secrets.map((name) => (
-            <Chip key={name} kind="secret">{name}</Chip>
-          ))}
-        </FlowColumn>
       </div>
       <Passport passport={passport} />
     </div>
@@ -447,7 +432,7 @@ function SelectionDetail({ topology, selection, lit }: { topology: Topology; sel
   if (!selection || !lit) {
     return (
       <p className="text-sm text-muted-foreground">
-        Click a product, a placement, a platform service, a catalog package or a user key: everything connected to it
+        Click a product, a placement, a platform service, a catalog package or a product secret: everything connected to it
         lights up.
       </p>
     )
@@ -469,7 +454,7 @@ function SelectionDetail({ topology, selection, lit }: { topology: Topology; sel
           <dd>{product.passport.containers.length}</dd>
           <dt className="font-mono text-xs text-muted-foreground">packages</dt>
           <dd>{product.passport.packages.length}</dd>
-          <dt className="font-mono text-xs text-muted-foreground">user keys</dt>
+          <dt className="font-mono text-xs text-muted-foreground">user secrets</dt>
           <dd>{product.passport.user_secrets.length}</dd>
         </dl>
         <div className="flex flex-wrap gap-2 text-xs">
@@ -485,7 +470,7 @@ function SelectionDetail({ topology, selection, lit }: { topology: Topology; sel
   const placement = topology.placements.find((p) => p.handle === selection.id)
   const title = {
     package: packageKind(topology, selection.id) === 'library' ? 'catalog library' : 'catalog package',
-    secret: 'user key',
+    secret: 'user secret',
     placement: 'placement',
     platform: 'platform service',
   }[selection.kind]
