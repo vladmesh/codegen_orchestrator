@@ -115,13 +115,13 @@ function TaskCard({ task }: { task: Task }) {
         data-card={task.id}
         data-sig={`${status}|${task.assignee ?? ''}`}
         className={cn(
-          'relative flex items-center gap-1.5 overflow-hidden rounded-md border bg-zinc-900/60 py-1.5 pl-3 pr-2.5 transition-colors hover:border-teal-400/60',
+          'relative flex items-start gap-1.5 overflow-hidden rounded-md border bg-zinc-900/60 py-1.5 pl-3 pr-2.5 transition-colors hover:border-teal-400/60',
           fix ? 'border-red-500/40' : 'border-zinc-800',
         )}
       >
         {fix && <span className="absolute inset-y-0 left-0 w-1 bg-red-500/70" />}
-        <Check className="h-3.5 w-3.5 shrink-0 text-teal-400" />
-        <span className="min-w-0 truncate text-[12.5px] text-zinc-300">{cardTitle(task)}</span>
+        <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-teal-400" />
+        <span className="min-w-0 break-words text-[12.5px] leading-snug text-zinc-300">{cardTitle(task)}</span>
         <span className="demo-smooth ml-auto shrink-0 rounded-full bg-teal-950 px-1.5 py-px text-[11px] font-medium text-teal-300 transition-colors duration-500">
           {cardStatusLabel(status)}
         </span>
@@ -147,11 +147,11 @@ function TaskCard({ task }: { task: Task }) {
             fix
           </span>
         )}
-        <span className="line-clamp-2 text-[13px] font-medium leading-snug text-foreground">{cardTitle(task)}</span>
+        <span className="min-w-0 break-words text-[13px] font-medium leading-snug text-foreground">{cardTitle(task)}</span>
       </div>
-      <div className="mt-1.5 flex items-center gap-2 text-[11px]">
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
         {working && <LiveDot tone="amber" label="working" />}
-        <span className="min-w-0 truncate text-muted-foreground">
+        <span className="min-w-0 text-muted-foreground">
           {task.assignee ?? (status === 'todo' ? 'Waiting for a developer' : 'Not started')}
         </span>
         <span
@@ -179,12 +179,12 @@ function PullRequestCard({ card }: { card: PrCard }) {
       className={cn('demo-smooth relative overflow-hidden rounded-md border bg-zinc-900/80 py-2 pl-3 pr-2.5 transition-colors duration-500', tone.card)}
     >
       {card.tone === 'failed' && <span className="absolute inset-y-0 left-0 w-1 bg-red-500" />}
-      <div className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+      <div className="flex flex-wrap items-center gap-1.5 text-[13px] font-medium text-foreground">
         <GitPullRequest className="h-3.5 w-3.5 shrink-0 text-violet-300" />
         {card.title}
       </div>
-      <div className="mt-1.5 flex items-center gap-2 text-[11px]">
-        <span className="min-w-0 truncate text-muted-foreground">{card.detail && card.tone !== 'failed' ? card.detail : 'GitHub CI'}</span>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+        <span className="min-w-0 text-muted-foreground">{card.detail && card.tone !== 'failed' ? card.detail : 'GitHub CI'}</span>
         <span className={cn('demo-smooth ml-auto shrink-0 rounded-full px-1.5 py-px font-medium transition-colors duration-500', tone.badge)}>{card.status}</span>
       </div>
       {card.tone === 'running' && <span aria-hidden className="live-shimmer absolute inset-x-0 bottom-0 h-0.5 bg-violet-400/40" />}
@@ -224,8 +224,9 @@ export function TaskBoard({
   useCardFlip(root, signature, ready && steps !== undefined)
 
   return (
-    <section className="rounded-lg border border-border p-4" aria-labelledby="task-board">
-      <div className="mb-3 flex items-baseline gap-3">
+    // @container: the board picks its layout from its own width (it also lives in resizable panels)
+    <section className="@container min-w-0 rounded-lg border border-border p-4" aria-labelledby="task-board">
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
         <h2 id="task-board" className="text-sm font-semibold text-foreground">
           Architect’s breakdown
         </h2>
@@ -237,7 +238,7 @@ export function TaskBoard({
             : `${tasks.length} tasks · ${done} done`}
         </span>
         {tasks.length > 0 && (
-          <div className="ml-auto h-1.5 w-48 overflow-hidden rounded-full bg-zinc-800">
+          <div className="ml-auto h-1.5 w-32 overflow-hidden rounded-full bg-zinc-800 @lg:w-48">
             <div
               className="demo-smooth h-full rounded-full bg-teal-400 transition-[width] duration-1000 ease-out"
               style={{ width: `${(done / tasks.length) * 100}%` }}
@@ -246,7 +247,11 @@ export function TaskBoard({
         )}
       </div>
       <div ref={root} className="relative">
-        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
+        {/* narrow: one column per row; medium: 2 × 2; wide: all columns side by side */}
+        <div
+          className="grid grid-cols-1 gap-3 @md:grid-cols-2 @3xl:grid-cols-[repeat(var(--board-cols),minmax(0,1fr))]"
+          style={{ '--board-cols': columns.length } as React.CSSProperties}
+        >
           {columns.map((column) => (
             <div key={column.id} className="min-w-0 rounded-md bg-zinc-950/70 p-2">
               <div className="mb-2 flex items-center gap-2 px-1">
@@ -257,7 +262,7 @@ export function TaskBoard({
                 </span>
               </div>
               {/* Fixed height for the whole scene: cards moving between columns never resize the page. */}
-              <div className="flex min-h-[352px] flex-col gap-2">
+              <div className="flex min-h-[40px] flex-col gap-2 @md:min-h-[150px] @3xl:min-h-[352px]">
                 {pr?.column === column.id && column.id !== 'done' && <PullRequestCard card={pr} />}
                 {column.tasks.map((task) => (
                   <TaskCard key={task.id} task={task} />
