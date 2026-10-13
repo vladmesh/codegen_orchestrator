@@ -29,7 +29,7 @@ class Line:
     who: str
     kind: str  # cmd | out | ok | err | info | file | step
     text: str
-    task: int | None = None  # 1..6, task the line belongs to
+    task: int | None = None  # 1..4, task the line belongs to
     file: tuple[str, int] | None = None  # (path, version index) written at this moment
     n: int = 0
 
@@ -83,11 +83,9 @@ def _build_script() -> list[Line]:
         (31, "architect", "cmd", "catalog search: reminder, streak, habit", None),
         (34, "architect", "out", "no package matches — new code", None),
         (36, "architect", "info", "Task 1: Reminder scheduler", None),
-        (37, "architect", "info", "Task 2: Glass counter and daily goal", None),
-        (38, "architect", "info", "Task 3: Streak tracking", None),
-        (40, "architect", "info", "Task 4: Weekly summary on Sundays", None),
-        (42, "architect", "info", "Task 5: Commands and buttons", None),
-        (45, "architect", "ok", "5 tasks in 2 lanes, handing over to developers", None),
+        (37, "architect", "info", "Task 2: Glasses, daily goal and streak", None),
+        (39, "architect", "info", "Task 3: Commands, /stats and weekly summary", None),
+        (45, "architect", "ok", "3 tasks in 2 lanes, handing over to developers", None),
     ]:
         add(Line(t, who, kind, text, None, f))
 
@@ -120,10 +118,10 @@ def _build_script() -> list[Line]:
     ])
     L += _ci_task(1, "task/reminder-scheduler", 105, 120, "29 passed in 0.52s")
 
-    # --- task 2: glass counter and goal (Developer 2, 55 → 122 → 140)
-    L += _task_script(2, "dev2", 55, 122, [
-        (0.00, "step", "Task: Glass counter and daily goal (/goal)"),
-        (0.03, "cmd", "git checkout -b task/glass-counter"),
+    # --- task 2: glasses, goal and streak (Developer 2, 55 → 180 → 195)
+    L += _task_script(2, "dev2", 55, 118, [
+        (0.00, "step", "Task: Glasses, daily goal (/goal) and streak"),
+        (0.03, "cmd", "git checkout -b task/glasses-and-streak"),
         (0.08, "cmd", "git pull origin task/reminder-scheduler -- bot/db.py"),
         (0.15, "info", "Glasses are rows per day; goal lives on the user, default 8"),
         (0.30, "file", "Edited bot/db.py — goal must be 1–30", ("bot/db.py", 1)),
@@ -133,38 +131,29 @@ def _build_script() -> list[Line]:
         (0.62, "file", "Edited bot/main.py — register /goal", ("bot/main.py", 2)),
         (0.70, "cmd", "pytest -q tests/test_goal.py"),
         (0.76, "ok", "5 passed in 0.29s"),
-        (0.82, "cmd", "ruff check ."),
-        (0.84, "out", "All checks passed!"),
-        (0.89, "cmd", 'git commit -m "Glass counter and /goal (1-30 glasses)"'),
-        (0.92, "out", "{stat:2}"),
-        (0.96, "cmd", "git push -u origin task/glass-counter"),
-        (1.00, "ok", "Pushed, CI started"),
+        (0.86, "cmd", 'git commit -m "Glass counter and /goal (1-30 glasses)"'),
+        (1.00, "info", "Goal works; next: the streak on top of the daily totals"),
     ])
-    L += _ci_task(2, "task/glass-counter", 122, 140, "34 passed in 0.61s")
-
-    # --- task 3: streak (Developer 1, 125 → 180 → 195)
-    L += _task_script(3, "dev1", 125, 180, [
-        (0.00, "step", "Task: Streak tracking"),
-        (0.04, "cmd", "git checkout -b task/streak main"),
+    L += _task_script(2, "dev2", 118, 180, [
         (0.10, "info", "Streak +1 when the goal is reached on the next day, 0 after a missed day"),
         (0.24, "file", "Edited bot/db.py — streaks table", ("bot/db.py", 2)),
         (0.40, "file", "Created bot/streak.py", ("bot/streak.py", 0)),
         (0.55, "file", "Created tests/test_streak.py", ("tests/test_streak.py", 0)),
-        (0.66, "cmd", "pytest -q tests/test_streak.py"),
-        (0.72, "ok", "3 passed in 0.33s"),
+        (0.66, "cmd", "pytest -q"),
+        (0.72, "ok", "37 passed in 0.70s"),
         (0.80, "cmd", "ruff check ."),
         (0.82, "out", "All checks passed!"),
         (0.88, "cmd", 'git commit -m "Daily streak with best streak"'),
-        (0.91, "out", "{stat:3}"),
-        (0.96, "cmd", "git push -u origin task/streak"),
+        (0.91, "out", "{stat:2}"),
+        (0.96, "cmd", "git push -u origin task/glasses-and-streak"),
         (1.00, "ok", "Pushed, CI started"),
     ])
-    L += _ci_task(3, "task/streak", 180, 195, "37 passed in 0.70s")
+    L += _ci_task(2, "task/glasses-and-streak", 180, 195, "37 passed in 0.70s")
 
-    # --- task 4: weekly summary (Developer 2, 145 → 212 → 230)
-    L += _task_script(4, "dev2", 145, 212, [
-        (0.00, "step", "Task: Weekly summary on Sundays"),
-        (0.03, "cmd", "git checkout -b task/weekly-summary main"),
+    # --- task 3: weekly summary, then commands (Developer 1, 125 → 268 → 285)
+    L += _task_script(3, "dev1", 125, 195, [
+        (0.00, "step", "Task: Commands, /stats and weekly summary"),
+        (0.03, "cmd", "git checkout -b task/commands-and-summary main"),
         (0.10, "info", "Sunday 20:00 in the user's time zone; totals from the last 7 days"),
         (0.25, "file", "Created bot/summary.py", ("bot/summary.py", 0)),
         (0.40, "file", "Edited bot/db.py — last_7_days()", ("bot/db.py", 3)),
@@ -174,17 +163,10 @@ def _build_script() -> list[Line]:
         (0.70, "info", "Fixture adds up to 46, the assert used 48; fixed the test data"),
         (0.76, "cmd", "pytest -q tests/test_summary.py"),
         (0.80, "ok", "3 passed in 0.12s"),
-        (0.86, "cmd", 'git commit -m "Weekly summary on Sundays at 20:00"'),
-        (0.89, "out", "{stat:4}"),
-        (0.95, "cmd", "git push -u origin task/weekly-summary"),
-        (1.00, "ok", "Pushed, CI started"),
+        (0.88, "cmd", 'git commit -m "Weekly summary on Sundays at 20:00"'),
+        (1.00, "info", "Summary done; next: /start, /stats and the +1 glass button"),
     ])
-    L += _ci_task(4, "task/weekly-summary", 212, 230, "40 passed in 0.74s")
-
-    # --- task 5: commands (Developer 1, 200 → 268 → 285)
-    L += _task_script(5, "dev1", 200, 268, [
-        (0.00, "step", "Task: Commands and buttons (/start, /stats, log a glass)"),
-        (0.03, "cmd", "git checkout -b task/commands main"),
+    L += _task_script(3, "dev1", 195, 268, [
         (0.12, "info", "/start registers the user and schedules reminders; +1 button closes the day"),
         (0.25, "file", "Created bot/handlers/commands.py", ("bot/handlers/commands.py", 0)),
         (0.38, "file", "Created tests/fakes.py", ("tests/fakes.py", 0)),
@@ -196,11 +178,11 @@ def _build_script() -> list[Line]:
         (0.80, "cmd", "ruff check ."),
         (0.82, "out", "All checks passed!"),
         (0.88, "cmd", 'git commit -m "/start, /stats and the +1 glass button"'),
-        (0.91, "out", "{stat:5}"),
-        (0.96, "cmd", "git push -u origin task/commands"),
+        (0.91, "out", "{stat:3}"),
+        (0.96, "cmd", "git push -u origin task/commands-and-summary"),
         (1.00, "ok", "Pushed, CI started"),
     ])
-    L += _ci_task(5, "task/commands", 268, 285, "42 passed in 0.93s")
+    L += _ci_task(3, "task/commands-and-summary", 268, 285, "42 passed in 0.93s")
 
     # --- PR #1 and CI run 1 (292 → 385, fails)
     fl = failing_line()
@@ -230,8 +212,8 @@ def _build_script() -> list[Line]:
     ]:
         add(Line(t, who, kind, text, None, f))
 
-    # --- task 6: fix (Developer 3, 392 → 450 → 482 via CI run 2)
-    L += _task_script(6, "dev3", 392, 450, [
+    # --- task 4: fix (Developer 3, 387 → 450, then CI run 2 → 482)
+    L += _task_script(4, "dev3", 387, 450, [
         (0.00, "step", "Task: Fix: streak resets at the user's local midnight"),
         (0.04, "cmd", "git checkout fix/streak-local-midnight"),
         (0.10, "cmd", "pytest -q tests/test_acceptance.py -k midnight"),
@@ -244,7 +226,7 @@ def _build_script() -> list[Line]:
         (0.70, "cmd", "pytest -q"),
         (0.78, "ok", "48 passed in 2.98s"),
         (0.86, "cmd", 'git commit -m "Streak day ends at the user\'s local midnight"'),
-        (0.89, "out", "{stat:6}"),
+        (0.89, "out", "{stat:4}"),
         (0.95, "cmd", "git push origin fix/streak-local-midnight"),
         (1.00, "ok", "Pushed to PR #1"),
     ])
@@ -290,7 +272,7 @@ def _build_script() -> list[Line]:
 
 
 SCRIPT = _build_script()
-TASK_SPAN = {1: (52, 120), 2: (55, 140), 3: (125, 195), 4: (145, 230), 5: (200, 285), 6: (392, 482)}
+TASK_SPAN = {1: (52, 120), 2: (55, 195), 3: (125, 285), 4: (387, 482)}
 
 
 # ---------------------------------------------------------------- repository state
