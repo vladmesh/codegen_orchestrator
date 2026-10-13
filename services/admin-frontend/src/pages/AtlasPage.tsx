@@ -277,14 +277,14 @@ function Matrix({ topology, select }: { topology: Topology; select: (kind: Selec
           <tr className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
             <th className="sticky left-0 bg-background px-2 pt-2 text-left" />
             <th className="px-2 pt-2" />
-            {packages.length > 0 && <th colSpan={packages.length} className="border-l border-border px-2 pt-2 text-amber-400">catalog</th>}
+            {packages.length > 0 && <th colSpan={packages.length} className="border-l border-border px-2 pt-2 text-violet-300">catalog</th>}
             {secrets.length > 0 && <th colSpan={secrets.length} className="border-l border-border px-2 pt-2">user keys</th>}
           </tr>
           <tr className="font-mono text-[10.5px] text-muted-foreground">
             <th className="sticky left-0 border-b border-border bg-background px-2 py-1.5 text-left font-medium">product</th>
             <th className="border-b border-border px-2 py-1.5 text-left font-medium">runs on</th>
             {packages.map((p, i) => (
-              <th key={p.name} className={cn('border-b border-border px-2 py-1.5 font-medium text-amber-300', i === 0 && 'border-l')}>
+              <th key={p.name} className={cn('border-b border-border px-2 py-1.5 font-medium text-violet-200', i === 0 && 'border-l')}>
                 {p.name}
               </th>
             ))}
@@ -312,7 +312,7 @@ function Matrix({ topology, select }: { topology: Topology; select: (kind: Selec
                 const lib = packageKind(topology, p.name) === 'library'
                 return (
                   <td key={p.name} className={cn(cell, i === 0 && 'border-l border-l-border')}>
-                    {has && <span className={cn('inline-block h-2.5 w-2.5 rounded-sm', lib ? 'border border-dashed border-amber-500' : 'bg-amber-500')} />}
+                    {has && <span className={cn('inline-block h-2.5 w-2.5 rounded-sm', lib ? 'border border-dashed border-violet-400' : 'bg-violet-400')} />}
                   </td>
                 )
               })}

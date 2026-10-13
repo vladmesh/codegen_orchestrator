@@ -7,8 +7,9 @@ export type ChipKind = 'container' | 'package' | 'library' | 'platform' | 'secre
 
 const chipStyles: Record<ChipKind, string> = {
   container: 'border-zinc-700 bg-zinc-900 text-zinc-300',
-  package: 'border-transparent bg-amber-950 text-amber-300',
-  library: 'border-dashed border-amber-700 text-amber-300',
+  // catalog code next to the platform services: violet family, never warning amber
+  package: 'border-violet-800/70 bg-zinc-900 text-violet-200',
+  library: 'border-dashed border-violet-800/70 text-violet-200',
   platform: 'border-violet-500 bg-violet-950 text-violet-300',
   secret: 'border-zinc-700 text-zinc-400',
 }
