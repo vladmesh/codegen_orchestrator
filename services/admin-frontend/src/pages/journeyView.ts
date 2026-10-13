@@ -23,7 +23,7 @@ export const STAGE_ACTORS: Record<JourneyStage, string> = {
   live: 'Product',
 }
 
-export type BarTone = 'done' | 'failed' | 'active' | 'waiting'
+export type BarTone = 'done' | 'failed' | 'active' | 'waiting' | 'rework'
 
 export interface Bar {
   key: string
@@ -31,6 +31,8 @@ export interface Bar {
   width: number
   tone: BarTone
   label: string
+  /** Short text drawn inside the bar when it is wide enough (demo build). */
+  caption?: string
 }
 
 export interface Lane {
@@ -93,7 +95,14 @@ export function journeyLanes(steps: JourneyStep[], window: TimeWindow, now: numb
       const from = ms(attempt.started_at)
       if (from === null) continue
       const to = ms(attempt.finished_at) ?? now
-      bars.push(bar(attempt.id, from, to, window, attemptTone(attempt), `${attempt.kind} ${attempt.status}`))
+      // A task run inside PR + CI is rework after a failed check: drawn apart from the CI runs.
+      const rework = step.stage === 'review' && attempt.task_id !== null && attemptTone(attempt) !== 'failed'
+      const tone = rework ? 'rework' : attemptTone(attempt)
+      const b = bar(attempt.id, from, to, window, tone, rework ? `rework ${attempt.status}` : `${attempt.kind} ${attempt.status}`)
+      if (step.stage === 'review') {
+        b.caption = rework ? 'rework' : `CI ${tone === 'failed' ? '✗' : tone === 'done' ? '✓' : '…'}`
+      }
+      bars.push(b)
     }
     if (bars.length === 0) {
       const from = ms(step.started_at)

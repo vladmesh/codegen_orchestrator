@@ -79,6 +79,10 @@ const barStyles: Record<BarTone, string> = {
   failed: 'bg-red-500/80',
   active: isDemo ? 'bg-teal-300 live-shimmer' : 'bg-teal-300 animate-pulse',
   waiting: 'bg-amber-500/80',
+  // rework after a failed CI: striped amber, so CI ✗ → rework → CI reads as three different things
+  rework: isDemo
+    ? 'bg-amber-500/80 bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgba(0,0,0,0.25)_6px_12px)]'
+    : 'bg-amber-500/80',
 }
 
 function Station({
@@ -337,7 +341,13 @@ export function JourneyPage() {
                             isDemo && 'demo-smooth transition-[left,width,background-color] duration-[1500ms] ease-linear',
                           )}
                           style={{ left: `${bar.left}%`, width: `${bar.width}%` }}
-                        />
+                        >
+                          {isDemo && bar.caption && bar.width >= 4 && (
+                            <span className="pointer-events-none absolute inset-0 overflow-hidden whitespace-nowrap px-1 font-mono text-[9.5px] font-semibold leading-3 text-zinc-950">
+                              {bar.caption}
+                            </span>
+                          )}
+                        </span>
                       ))}
                     </div>
                   </div>
