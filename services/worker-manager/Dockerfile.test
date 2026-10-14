@@ -6,6 +6,7 @@ FROM python:3.12.13-slim AS base
 WORKDIR /app
 ENV PYTHONPATH=/app
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \

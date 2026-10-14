@@ -9,6 +9,7 @@ FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install system dependencies needed for building Python packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \

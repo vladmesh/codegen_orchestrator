@@ -3,6 +3,7 @@ FROM python:3.12.13-slim
 
 WORKDIR /app
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install SSH client and sshpass for Ansible
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \

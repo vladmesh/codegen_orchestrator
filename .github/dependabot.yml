@@ -35,6 +35,19 @@ updates:
     groups:
       python-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # Our own workspace members. Unrelated PyPI packages share some of these
+      # names, so Dependabot tries to pin a member to the PyPI version and uv
+      # can never resolve it (scheduler, scaffolder in run 38420183278). Every
+      # member is listed: tests/unit/test_dependabot_ignores_workspace.py.
+      - dependency-name: api
+      - dependency-name: langgraph-orchestrator
+      - dependency-name: telegram-bot
+      - dependency-name: scheduler
+      - dependency-name: worker-manager
+      - dependency-name: infra-service
+      - dependency-name: scaffolder
+      - dependency-name: worker-wrapper
 
   - package-ecosystem: github-actions
     directory: /

@@ -101,7 +101,7 @@ async def test_remote_docker_prepares_mounts_in_the_daemon_namespace(monkeypatch
         read_only=True,
         cap_drop=["ALL"],
         cap_add=["CHOWN", "DAC_OVERRIDE"],
-        security_opt=["no-new-privileges:true"],
+        security_opt=["no-new-privileges=true"],
         pids_limit=32,
         mem_limit="64m",
     )
@@ -382,7 +382,7 @@ async def test_production_launch_uses_hardened_container_config(agent_type):
     assert kwargs["cpu_quota"] == 100000
     assert kwargs["pids_limit"] > 0
     assert kwargs["cap_drop"] == ["ALL"]
-    assert kwargs["security_opt"] == ["no-new-privileges:true"]
+    assert kwargs["security_opt"] == ["no-new-privileges=true"]
 
 
 @pytest.mark.asyncio
@@ -475,7 +475,7 @@ async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
     assert kwargs["network_mode"] == "host"
     assert "network" not in kwargs
     assert kwargs["cap_drop"] == ["ALL"]
-    assert kwargs["security_opt"] == ["no-new-privileges:true"]
+    assert kwargs["security_opt"] == ["no-new-privileges=true"]
 
 
 @pytest.mark.asyncio

@@ -207,7 +207,7 @@ class TestAQaExecutorNeedsNoRepository:
 
         run_kwargs = _executor_run(wrapper)
         assert run_kwargs["cap_drop"] == ["ALL"]
-        assert run_kwargs["security_opt"] == ["no-new-privileges:true"]
+        assert run_kwargs["security_opt"] == ["no-new-privileges=true"]
 
 
 class TestItReachesOnlyItsAllowlist:
