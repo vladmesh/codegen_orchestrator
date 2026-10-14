@@ -461,7 +461,7 @@ def _docker_mock() -> MagicMock:
     return wrapper
 
 
-async def test_a_false_checkout_fails_creation_before_any_material_is_injected():
+async def test_a_false_checkout_fails_creation_before_any_material_is_injected(transcript_root):
     redis = aioredis.FakeRedis(decode_responses=True)
     manager = WorkerManager(redis=redis, docker_client=_docker_mock())
 
@@ -490,7 +490,7 @@ async def test_a_false_checkout_fails_creation_before_any_material_is_injected()
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
-        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
         mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
         mock_settings.WORKER_TRANSCRIPT_RETENTION_DAYS = 30
 

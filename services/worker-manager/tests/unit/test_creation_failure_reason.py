@@ -53,7 +53,7 @@ def _docker_mock() -> MagicMock:
     return wrapper
 
 
-async def test_checkout_timeout_after_ack_names_its_step_in_the_worker_error():
+async def test_checkout_timeout_after_ack_names_its_step_in_the_worker_error(transcript_root):
     """The 18:13 production failure: an empty-message timeout during checkout."""
     redis = aioredis.FakeRedis(decode_responses=True)
     manager = WorkerManager(redis=redis, docker_client=_docker_mock())
@@ -84,7 +84,7 @@ async def test_checkout_timeout_after_ack_names_its_step_in_the_worker_error():
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
-        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
         mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
         mock_settings.WORKER_TRANSCRIPT_RETENTION_DAYS = 30
 

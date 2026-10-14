@@ -12,6 +12,7 @@ import pytest
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.queues.po import unprotect_po_payload
 from shared.queues import PO_REMINDERS_KEY
+from shared.tests.telegram_token_fixtures import fake_bot_token
 from src.agents.po.tools import (
     get_all_tools,
     get_budget_balance,
@@ -42,7 +43,7 @@ from src.agents.po.tools_stories import (
     reopen_story,
 )
 
-BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+BOT_TOKEN = fake_bot_token(123456789)
 
 
 @pytest.fixture(autouse=True)

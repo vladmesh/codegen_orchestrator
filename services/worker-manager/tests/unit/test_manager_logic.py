@@ -127,7 +127,7 @@ async def test_remote_docker_omits_transcript_mount_when_not_retained(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_instruction_injection_failure_aborts_worker_creation():
+async def test_instruction_injection_failure_aborts_worker_creation(transcript_root):
     """A failed created worker stays owned and fenced until deletion confirms removal."""
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
@@ -160,7 +160,7 @@ async def test_instruction_injection_failure_aborts_worker_creation():
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
-        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
         mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
         mock_settings.WORKER_TRANSCRIPT_RETENTION_DAYS = 30
 
@@ -278,7 +278,7 @@ async def test_stand_token_is_not_a_docker_label():
 
 
 @pytest.mark.asyncio
-async def test_network_selection_uses_worker_network():
+async def test_network_selection_uses_worker_network(transcript_root):
     """
     When DOCKER_NETWORK is empty, workers should connect to WORKER_NETWORK, not
     INTERNAL_NETWORK.
@@ -307,6 +307,7 @@ async def test_network_selection_uses_worker_network():
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
 
         await manager.create_worker_with_capabilities(
             worker_id="w1",
@@ -332,7 +333,7 @@ async def test_network_selection_uses_worker_network():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_type", [AgentType.CLAUDE, AgentType.CODEX, AgentType.FACTORY])
-async def test_production_launch_uses_hardened_container_config(agent_type):
+async def test_production_launch_uses_hardened_container_config(agent_type, transcript_root):
     """The real production launch passes the config's hardening to Docker."""
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
@@ -359,7 +360,7 @@ async def test_production_launch_uses_hardened_container_config(agent_type):
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
-        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
         mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
 
         await manager.create_worker_with_capabilities(
@@ -386,7 +387,7 @@ async def test_production_launch_uses_hardened_container_config(agent_type):
 
 
 @pytest.mark.asyncio
-async def test_production_launch_rejects_host_network_configuration():
+async def test_production_launch_rejects_host_network_configuration(transcript_root):
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     manager = WorkerManager(redis=redis, docker_client=wrapper)
@@ -411,7 +412,7 @@ async def test_production_launch_rejects_host_network_configuration():
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
-        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
         mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
 
         with pytest.raises(RuntimeError, match="DOCKER_NETWORK=host"):
@@ -430,7 +431,7 @@ async def test_production_launch_rejects_host_network_configuration():
 
 
 @pytest.mark.asyncio
-async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
+async def test_dind_launch_keeps_explicit_test_host_network_compatibility(transcript_root):
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
@@ -456,7 +457,7 @@ async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
-        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
         mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
 
         await manager.create_worker_with_capabilities(
@@ -479,7 +480,7 @@ async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
 
 
 @pytest.mark.asyncio
-async def test_ownership_preparation_failure_aborts_before_container_launch():
+async def test_ownership_preparation_failure_aborts_before_container_launch(transcript_root):
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     manager = WorkerManager(redis=redis, docker_client=wrapper)
@@ -508,7 +509,7 @@ async def test_ownership_preparation_failure_aborts_before_container_launch():
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
-        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
         mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
 
         with pytest.raises(RuntimeError, match="ownership failed"):
@@ -1083,7 +1084,7 @@ async def test_check_project_lock_keeps_starting_worker():
 
 
 @pytest.mark.asyncio
-async def test_checkout_branch_called_when_branch_provided():
+async def test_checkout_branch_called_when_branch_provided(transcript_root):
     """create_worker_with_capabilities with branch should call _checkout_branch."""
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
@@ -1111,6 +1112,7 @@ async def test_checkout_branch_called_when_branch_provided():
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
 
         await manager.create_worker_with_capabilities(
             worker_id="w-branch-test",
@@ -1145,7 +1147,7 @@ async def test_checkout_branch_called_when_branch_provided():
 
 
 @pytest.mark.asyncio
-async def test_no_checkout_branch_when_branch_is_none():
+async def test_no_checkout_branch_when_branch_is_none(transcript_root):
     """create_worker_with_capabilities without branch should NOT call _checkout_branch."""
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
@@ -1172,6 +1174,7 @@ async def test_no_checkout_branch_when_branch_is_none():
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(transcript_root)
 
         await manager.create_worker_with_capabilities(
             worker_id="w-no-branch",

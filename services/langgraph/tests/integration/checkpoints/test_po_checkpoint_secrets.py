@@ -18,11 +18,12 @@ import pytest
 import structlog
 
 from shared.contracts.queues.po import POUserMessage, po_thread_id
+from shared.tests.telegram_token_fixtures import fake_bot_token
 from src.agents.po.graph import create_po_graph
 from src.consumers.po import _handle_message, _process_message, _repair_orphan_tool_calls
 
 CANARIES = (
-    "1234567890:AAcheckpoint_test_token_abcdefgh",
+    fake_bot_token(1234567890),
     "sk-or-v1-checkpoint_test_provider_abcdefgh",
     "GOCSPX-checkpoint_test_oauth_abcdefgh",
     "wqzj mvnp frtk bxhs",

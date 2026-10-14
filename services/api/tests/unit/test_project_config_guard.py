@@ -5,9 +5,10 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 import pytest
 
+from shared.tests.telegram_token_fixtures import fake_bot_token
 from src.routers.projects.secrets import _vet_config_write
 
-BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+BOT_TOKEN = fake_bot_token(123456789)
 HTTP_UNPROCESSABLE = 422
 
 

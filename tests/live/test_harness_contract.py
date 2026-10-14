@@ -59,6 +59,7 @@ from shared.contracts.service_ports import (
     PortServiceRole,
 )
 from shared.contracts.worker_evidence import SECRET_ENV_NAME
+from shared.tests.telegram_token_fixtures import fake_bot_token
 
 pytestmark = pytest.mark.needs_no_api_credential
 
@@ -5893,7 +5894,7 @@ async def test_a_policy_that_is_not_the_promos_fails_the_registration_phase(
 # ── Level-1 Telegram-bot product ─────────────────────────────────────────
 
 
-LEVEL1_TOKEN = "123456789:AA-level-1-stand-product-bot-token-value"  # noqa: S105 — a fake
+LEVEL1_TOKEN = fake_bot_token(123456789)
 
 
 def _rejected_verdict(reason_code: str) -> dict:

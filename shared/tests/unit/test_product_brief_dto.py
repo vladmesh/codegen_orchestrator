@@ -26,6 +26,7 @@ from shared.contracts.dto.product_brief import (
     RequirementCoverageCreate,
     SettingScope,
 )
+from shared.tests.telegram_token_fixtures import fake_bot_token
 
 
 def _content(**overrides) -> dict:
@@ -569,7 +570,7 @@ class TestInitialSettings:
     def test_a_credential_shaped_value_is_not_a_setting(self):
         """The brief is read back by the architect, and therefore by an LLM."""
         with pytest.raises(ValidationError):
-            InitialSetting(key="bot.greeting", value="123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw")
+            InitialSetting(key="bot.greeting", value=fake_bot_token(123456789))
 
 
 class TestRequirementCoverageCreate:

@@ -241,6 +241,20 @@ jobs:
           UNIT_REPORT_DIR: ${{ runner.temp }}/unit-reports
         run: make test-unit
 
+      # The unit run writes its reports to runner.temp, outside the checkout, and
+      # pytest/uv caches are gitignored. A MagicMock/ directory (a mock used as a path)
+      # is gitignored too, so it is looked for by name.
+      - name: Check the unit run left the checkout clean
+        timeout-minutes: 1
+        run: |
+          leftovers="$(find . -path ./.git -prune -o -name MagicMock -type d -print)"
+          status="$(git status --porcelain)"
+          if [ -n "$leftovers" ] || [ -n "$status" ]; then
+            echo "::error::make test-unit left files in the checkout; write them under tmp_path"
+            printf '%s\n' "$leftovers" "$status"
+            exit 1
+          fi
+
       - name: Upload unit junit and durations
         timeout-minutes: 2
         if: always()

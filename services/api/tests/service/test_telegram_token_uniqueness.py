@@ -20,10 +20,11 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.telegram import TokenRejectionReason, TokenVerdictStatus
 from shared.crypto import decrypt_dict
 from shared.models import Project, Repository
+from shared.tests.telegram_token_fixtures import fake_bot_token
 
 OWNER_ID = "100711"
 OTHER_OWNER_ID = "100712"
-TOKEN = "987654321:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+TOKEN = fake_bot_token(987654321)
 
 # Captured before patching: the factory below must not call the patched name.
 _REAL_ASYNC_CLIENT = httpx.AsyncClient

@@ -3,8 +3,8 @@
 .github/
 .gitignore
 
-# Python
-__pycache__/
+# Python (** matches nested dirs like services/api/src/__pycache__/)
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -32,6 +32,9 @@ wheels/
 htmlcov/
 .tox/
 .ruff_cache/
+# A mock's os.fspath() name, left by a unit test that used a MagicMock as a path
+MagicMock/
+**/MagicMock/
 
 # IDE
 .vscode/
@@ -79,6 +82,13 @@ Thumbs.db
 
 # Gemini artifacts (local development)
 .gemini/
+
+# Node dependencies (frontend services install their own in the image)
+**/node_modules/
+
+# Local runtime state: board state and live harness ownership records
+state/
+.live-manifests/
 
 # uv
 uv.lock

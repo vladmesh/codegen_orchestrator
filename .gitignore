@@ -32,6 +32,12 @@ htmlcov/
 # Ruff
 .ruff_cache/
 
+# A mock's os.fspath() name, left by a unit test that used a MagicMock as a path
+MagicMock/
+
+# Node dependencies (frontend services)
+node_modules/
+
 # MyPy
 .mypy_cache/
 

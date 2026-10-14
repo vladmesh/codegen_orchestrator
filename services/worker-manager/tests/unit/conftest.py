@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.config import WorkerManagerSettings
+from src.config import WorkerManagerSettings, settings
 
 
 @pytest.fixture
@@ -28,6 +28,21 @@ def worker_settings(monkeypatch):
     monkeypatch.setenv("WORKER_IMAGE_PREFIX", "worker-test")
     monkeypatch.setenv("WORKER_DOCKER_LABELS", json.dumps({"com.codegen.environment": "test"}))
     return WorkerManagerSettings()
+
+
+@pytest.fixture(autouse=True)
+def transcript_root(tmp_path, monkeypatch):
+    """Every unit test keeps worker transcripts under its own tmp_path.
+
+    Worker creation prunes the transcript root, which creates it. The real
+    default is the host's /data, and a MagicMock settings double would create a
+    MagicMock/ directory in the cwd, so a test that replaces settings with a
+    mock sets WORKER_TRANSCRIPT_STORAGE_PATH from this fixture.
+    """
+    root = tmp_path / "worker-transcripts"
+    monkeypatch.setenv("WORKER_TRANSCRIPT_STORAGE_PATH", str(root))
+    monkeypatch.setattr(settings, "WORKER_TRANSCRIPT_STORAGE_PATH", str(root))
+    return root
 
 
 @pytest.fixture(autouse=True)

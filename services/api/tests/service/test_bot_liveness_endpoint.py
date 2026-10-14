@@ -15,9 +15,10 @@ from httpx import AsyncClient
 import pytest
 
 from shared.contracts.dto.telegram import BotLivenessState, TokenVerdictStatus
+from shared.tests.telegram_token_fixtures import fake_bot_token
 
 TELEGRAM_ID = "100687"
-VALID_TOKEN = "987654322:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+VALID_TOKEN = fake_bot_token(987654322)
 
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
 

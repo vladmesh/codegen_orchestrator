@@ -17,9 +17,10 @@ from shared.contracts.dto.telegram import (
     TokenVerdictStatus,
 )
 from shared.models import Project
+from shared.tests.telegram_token_fixtures import fake_bot_token
 from src.utils.telegram_token import looks_like_bot_token, validate_telegram_token
 
-VALID_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+VALID_TOKEN = fake_bot_token(123456789)
 
 
 class _FreeDatabase:
