@@ -61,7 +61,7 @@ class TestDevEnvIntegration:
         container.reload()
         host_config = container.attrs["HostConfig"]
         assert host_config["CapDrop"] == ["ALL"]
-        assert host_config["SecurityOpt"] == ["no-new-privileges:true"]
+        assert host_config["SecurityOpt"] == ["no-new-privileges=true"]
 
         # The hardened worker user must write both paths prepared before launch.
         exit_code, output = container.exec_run(

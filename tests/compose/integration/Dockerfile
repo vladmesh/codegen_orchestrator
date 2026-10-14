@@ -2,6 +2,7 @@ FROM python:3.12.13-slim
 
 WORKDIR /app
 
+ARG DEBIAN_FRONTEND=noninteractive
 # System deps (git needed for scaffolded workspace fixture)
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 

@@ -9,6 +9,7 @@ FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install system dependencies needed for building Python packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -28,6 +29,7 @@ WORKDIR /app
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install curl for healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

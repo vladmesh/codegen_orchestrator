@@ -227,7 +227,7 @@ class WorkerManager:
                 read_only=True,
                 cap_drop=["ALL"],
                 cap_add=["CHOWN", "DAC_OVERRIDE"],
-                security_opt=["no-new-privileges:true"],
+                security_opt=["no-new-privileges=true"],
                 pids_limit=32,
                 mem_limit="64m",
             )

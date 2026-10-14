@@ -8,6 +8,7 @@ FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -44,6 +45,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Agents should use virtual environments for project dependencies.
 ENV PYTHONNOUSERSITE=1
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \

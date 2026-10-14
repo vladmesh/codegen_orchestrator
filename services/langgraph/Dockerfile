@@ -9,6 +9,7 @@ FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install system dependencies needed for building
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -28,6 +29,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # non-root CLI child can execute.
 FROM python:3.12.13-slim AS claude-installer
 
+ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,6 +54,7 @@ FROM python:3.12.13-slim AS production
 
 WORKDIR /app
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install runtime dependencies (git for GitHub operations; nodejs and npm for the
 # Codex CLI, installed the way the Codex worker image installs it)
 RUN apt-get update && apt-get install -y --no-install-recommends \

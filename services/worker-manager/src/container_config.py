@@ -152,7 +152,7 @@ class WorkerContainerConfig:
             "cpu_quota": 100000,  # 1 CPU
             "pids_limit": WORKER_PIDS_LIMIT,
             "cap_drop": ["ALL"],
-            "security_opt": ["no-new-privileges:true"],
+            "security_opt": ["no-new-privileges=true"],
         }
 
         if network_name == "host":

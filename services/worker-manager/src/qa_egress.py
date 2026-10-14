@@ -342,7 +342,7 @@ async def establish(  # noqa: PLR0913 — one run's whole policy, each part name
             mem_limit=PROXY_MEM_LIMIT,
             pids_limit=PROXY_PIDS_LIMIT,
             cap_drop=["ALL"],
-            security_opt=["no-new-privileges:true"],
+            security_opt=["no-new-privileges=true"],
         )
         # The second leg. The proxy needs the connectivity the executor must not
         # have, so it — and only it — is also on a network that has a route out.

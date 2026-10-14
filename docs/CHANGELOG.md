@@ -3,6 +3,13 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-14
+
+- Image builds and worker launches are quieter: apt-get stages declare `ARG DEBIAN_FRONTEND=noninteractive`
+  and workers get `no-new-privileges=true`, the spelling Docker no longer warns about.
+- Dependabot's `uv` job ignores our own workspace members, so a same-named PyPI package (`scheduler`,
+  `scaffolder`) can no longer make it pin a member to an unresolvable version.
+
 ## 2026-10-12
 
 - Ready catalog modules are open to every project: the PO capability preview no longer reads the

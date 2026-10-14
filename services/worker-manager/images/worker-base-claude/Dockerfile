@@ -15,6 +15,7 @@ FROM python:3.12.13-slim AS claude-installer
 
 ARG CLAUDE_CODE_VERSION=2.1.278
 
+ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -37,6 +38,7 @@ FROM ${BASE_IMAGE}
 
 USER root
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install dependencies for Claude CLI native binary
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \

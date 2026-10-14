@@ -8,6 +8,7 @@ FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
+ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -26,6 +27,7 @@ FROM python:3.12.13-slim AS production
 
 WORKDIR /app
 
+ARG DEBIAN_FRONTEND=noninteractive
 # Install runtime dependencies: git (clone/push), make (make setup), uv (copier + venv)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \

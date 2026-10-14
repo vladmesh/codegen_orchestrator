@@ -228,7 +228,7 @@ class TestWorkerContainerConfig:
         assert kwargs["cpu_quota"] == 100000
         assert kwargs["pids_limit"] > 0
         assert kwargs["cap_drop"] == ["ALL"]
-        assert kwargs["security_opt"] == ["no-new-privileges:true"]
+        assert kwargs["security_opt"] == ["no-new-privileges=true"]
 
     def test_to_docker_run_kwargs_rejects_host_network(self):
         config = WorkerContainerConfig(
