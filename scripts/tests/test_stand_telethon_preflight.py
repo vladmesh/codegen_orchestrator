@@ -24,13 +24,14 @@ import pytest
 from scripts import stand_telethon_preflight as preflight
 from scripts.stand_run import SUITES
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
+from shared.tests.telegram_token_fixtures import fake_bot_token
 
 REPO = Path(__file__).resolve().parents[2]
 BOT = "mega_e2e_codegen_bot"
 # Shaped like a Telethon StringSession: a version digit and ~350 base64url chars.
 SESSION = "1" + base64.urlsafe_b64encode(os.urandom(263)).decode()
 API_HASH = "0123456789abcdef0123456789abcdef"
-BOT_TOKEN = "123456789:AAFakeStandProductBotTokenValue000000"  # noqa: S105
+BOT_TOKEN = fake_bot_token()
 
 
 class FakeClient:

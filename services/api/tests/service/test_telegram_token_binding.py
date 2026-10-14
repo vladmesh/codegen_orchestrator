@@ -18,9 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.contracts.dto.telegram import TokenRejectionReason, TokenVerdictStatus
 from shared.crypto import decrypt_dict
 from shared.models import Project, Repository
+from shared.tests.telegram_token_fixtures import fake_bot_token
 
 TELEGRAM_ID = "100686"
-VALID_TOKEN = "987654321:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+VALID_TOKEN = fake_bot_token(987654321)
 
 
 # Captured before patching: the factory below must not call the patched name.

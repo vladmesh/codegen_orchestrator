@@ -64,10 +64,11 @@ from shared.models import (
 )
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.tests.ssh_key_fixtures import fleet_private_key
+from shared.tests.telegram_token_fixtures import fake_bot_token
 
 OWNER = "100714"
 INTRUDER = "100715"
-TOKEN = "987654321:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+TOKEN = fake_bot_token(987654321)
 
 # Captured before patching: the factory below must not call the patched name.
 _REAL_ASYNC_CLIENT = httpx.AsyncClient

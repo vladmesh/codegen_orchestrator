@@ -168,6 +168,9 @@ class ImageBuilder:
         if has_installations:
             lines.append("")
             lines.append("USER root")
+            # Build-time only, unlike ENV: apt-get asks debconf nothing, and the
+            # worker container's environment does not inherit it.
+            lines.append("ARG DEBIAN_FRONTEND=noninteractive")
 
         # Optimization: combine simple apt packages into single RUN
         apt_packages = []

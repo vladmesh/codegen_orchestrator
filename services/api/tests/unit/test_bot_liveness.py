@@ -16,9 +16,10 @@ import httpx
 import pytest
 
 from shared.contracts.dto.telegram import BotLivenessState
+from shared.tests.telegram_token_fixtures import fake_bot_token
 from src.utils.telegram_token import bot_liveness
 
-TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+TOKEN = fake_bot_token(123456789)
 
 # Captured before patching: the factory below must not call the patched name.
 _REAL_ASYNC_CLIENT = httpx.AsyncClient

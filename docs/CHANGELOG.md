@@ -9,6 +9,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   and workers get `no-new-privileges=true`, the spelling Docker no longer warns about.
 - Dependabot's `uv` job ignores our own workspace members, so a same-named PyPI package (`scheduler`,
   `scaffolder`) can no longer make it pin a member to an unresolvable version.
+- Unit tests leave the checkout clean (worker transcripts under `tmp_path`, no `MagicMock/`, nothing in `/data`),
+  Fast Checks fails on leftovers, and test bot tokens share one fake no longer shaped like a real token.
+- Runtime-built worker images run apt-get with `ARG DEBIAN_FRONTEND=noninteractive`.
 
 ## 2026-10-12
 

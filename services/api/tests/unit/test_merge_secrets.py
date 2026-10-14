@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
 
+from shared.tests.telegram_token_fixtures import fake_bot_token
 from src.database import get_async_session
 from src.main import app
 
@@ -226,7 +227,7 @@ async def test_merge_secrets_overwrites_existing_key(mock_decrypt, mock_encrypt)
     assert merged["KEY_A"] == "new-val"
 
 
-BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+BOT_TOKEN = fake_bot_token(123456789)
 
 
 @pytest.mark.asyncio

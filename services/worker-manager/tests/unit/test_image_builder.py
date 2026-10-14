@@ -126,6 +126,16 @@ class TestImageBuilderDockerfileGeneration:
         assert "gh" in dockerfile.lower()
         assert "apt-get" in dockerfile
 
+    def test_apt_get_runs_noninteractive_without_baking_it_into_the_image(self, builder):
+        """debconf asks no questions during the build, and the worker's env is untouched."""
+        dockerfile = builder.generate_dockerfile(capabilities=["GITHUB_CLI", "GIT"])
+        lines = dockerfile.split("\n")
+        first_apt = next(i for i, line in enumerate(lines) if "apt-get" in line)
+
+        assert "ARG DEBIAN_FRONTEND=noninteractive" in lines[:first_apt]
+        assert all(not line.startswith("FROM") for line in lines[1:first_apt])
+        assert "ENV DEBIAN_FRONTEND" not in dockerfile
+
     def test_the_qa_sandbox_capability_installs_telethon_and_its_proxy_backend(self, builder):
         """The container's system python3 imports both; the exact pins were proven together."""
         dockerfile = builder.generate_dockerfile(
