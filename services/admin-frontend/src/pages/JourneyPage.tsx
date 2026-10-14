@@ -80,10 +80,6 @@ const barStyles: Record<BarTone, string> = {
   failed: 'bg-red-500/80',
   active: isDemo ? 'bg-teal-300 live-shimmer' : 'bg-teal-300 animate-pulse',
   waiting: 'bg-amber-500/80',
-  // rework after a failed CI: striped amber, so CI ✗ → rework → CI reads as three different things
-  rework: isDemo
-    ? 'bg-amber-500/80 bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgba(0,0,0,0.25)_6px_12px)]'
-    : 'bg-amber-500/80',
 }
 
 function Station({

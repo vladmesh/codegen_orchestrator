@@ -76,6 +76,35 @@ test('lanes draw one bar per attempt and skip stages without evidence', () => {
   for (const lane of lanes) for (const bar of lane.bars) assert.ok(bar.left + bar.width <= 100.0001)
 })
 
+test('rework after a failed CI run is drawn in the Developer lane, between the two CI runs', () => {
+  const steps: JourneyStep[] = [
+    step('build', {
+      status: 'done',
+      started_at: at(0),
+      finished_at: at(5),
+      attempts: [{ id: 'eng-1', kind: 'engineering', status: 'completed', task_id: 't1', actor: 'dev', started_at: at(0), finished_at: at(5), error: null }],
+    }),
+    step('review', {
+      status: 'done',
+      started_at: at(5),
+      finished_at: at(14),
+      attempts: [
+        { id: 'ci-1', kind: 'engineering', status: 'failed', task_id: null, actor: 'ci', started_at: at(5), finished_at: at(8), error: 'test' },
+        { id: 'fix', kind: 'engineering', status: 'completed', task_id: 't2', actor: 'dev', started_at: at(8), finished_at: at(11), error: null },
+        { id: 'ci-2', kind: 'engineering', status: 'completed', task_id: null, actor: 'ci', started_at: at(11), finished_at: at(14), error: null },
+      ],
+    }),
+  ]
+  const lanes = journeyLanes(steps, journeyWindow(steps, T0)!, T0)
+  const build = lanes.find((l) => l.stage === 'build')!
+  const review = lanes.find((l) => l.stage === 'review')!
+  assert.deepEqual(build.bars.map((b) => [b.key, b.tone]), [['eng-1', 'done'], ['fix', 'done']])
+  assert.deepEqual(review.bars.map((b) => b.caption), ['CI ✗', 'CI ✓'])
+  const fix = build.bars[1]
+  assert.ok(fix.left >= review.bars[0].left + review.bars[0].width - 0.01)
+  assert.ok(review.bars[1].left >= fix.left + fix.width - 0.01)
+})
+
 test('focus opens the stuck station, else the last one reached', () => {
   assert.equal(focusStage(completed), 'live')
   const parked = completed.map((s) => (s.stage === 'deploy' ? { ...s, status: 'waiting' as const } : s))

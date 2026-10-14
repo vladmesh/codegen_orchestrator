@@ -23,7 +23,7 @@ export const STAGE_ACTORS: Record<JourneyStage, string> = {
   live: 'Product',
 }
 
-export type BarTone = 'done' | 'failed' | 'active' | 'waiting' | 'rework'
+export type BarTone = 'done' | 'failed' | 'active' | 'waiting'
 
 export interface Bar {
   key: string
@@ -85,22 +85,32 @@ function bar(key: string, from: number, to: number, window: TimeWindow, tone: Ba
   return { key, left: Math.max(0, Math.min(left, 100 - MIN_BAR_PCT)), width: Math.min(width, 100), tone, label }
 }
 
-/** One lane per stage that did anything: a bar per attempt, or the step window itself. */
+/** A task run inside PR + CI: the developer reworking the code after a failed check. */
+function isRework(step: JourneyStep, attempt: JourneyAttempt): boolean {
+  return step.stage === 'review' && attempt.task_id !== null
+}
+
+/**
+ * One lane per stage that did anything: a bar per attempt, or the step window itself.
+ * Rework after a failed CI run is developer work, so it is drawn in the Code (Developer)
+ * lane; the PR + CI lane keeps only the CI runs: CI ✗, a gap while the fix is coded, CI ✓.
+ */
 export function journeyLanes(steps: JourneyStep[], window: TimeWindow, now: number): Lane[] {
   const lanes: Lane[] = []
+  const reworks = steps.flatMap((step) => step.attempts.filter((a) => isRework(step, a)))
   for (const step of steps) {
     if (step.stage === 'live') continue
     const bars: Bar[] = []
-    for (const attempt of step.attempts) {
+    const attempts = step.attempts.filter((a) => !isRework(step, a))
+    if (step.stage === 'build') attempts.push(...reworks)
+    for (const attempt of attempts) {
       const from = ms(attempt.started_at)
       if (from === null) continue
       const to = ms(attempt.finished_at) ?? now
-      // A task run inside PR + CI is rework after a failed check: drawn apart from the CI runs.
-      const rework = step.stage === 'review' && attempt.task_id !== null && attemptTone(attempt) !== 'failed'
-      const tone = rework ? 'rework' : attemptTone(attempt)
-      const b = bar(attempt.id, from, to, window, tone, rework ? `rework ${attempt.status}` : `${attempt.kind} ${attempt.status}`)
+      const tone = attemptTone(attempt)
+      const b = bar(attempt.id, from, to, window, tone, `${attempt.kind} ${attempt.status}`)
       if (step.stage === 'review') {
-        b.caption = rework ? 'rework' : `CI ${tone === 'failed' ? '✗' : tone === 'done' ? '✓' : '…'}`
+        b.caption = `CI ${tone === 'failed' ? '✗' : tone === 'done' ? '✓' : '…'}`
       }
       bars.push(b)
     }
