@@ -263,12 +263,18 @@ WorkerCommand = CreateWorkerCommand | DeleteWorkerCommand | StatusWorkerCommand
 
 
 class CreateWorkerResponse(BaseModel):
-    """Response to create command."""
+    """Response to create command. A successful ack always names its worker."""
 
     request_id: str
     success: bool
     worker_id: str | None = None
     error: str | None = None
+
+    @model_validator(mode="after")
+    def _success_names_the_worker(self) -> "CreateWorkerResponse":
+        if self.success and not self.worker_id:
+            raise ValueError("a successful create response must carry worker_id")
+        return self
 
 
 class DeleteWorkerResponse(BaseModel):

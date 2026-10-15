@@ -6,10 +6,13 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token-for-unit-tests")
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 import pytest
 
+from shared.contracts.dto.project import ProjectDTO
 from src.keyboards import (
     ACTION_ADD_USER,
     PREFIX_ADMIN,
@@ -52,10 +55,18 @@ class TestMainMenuKeyboardAddUser:
 
 class TestProjectKeyboard:
     def test_project_uses_api_title(self):
-        keyboard = projects_list_keyboard(
-            [{"id": "p1", "title": "My Project", "status": "active"}], "en"
+        project = ProjectDTO(
+            id=uuid.uuid4(),
+            title="My Project",
+            slug="my-project",
+            status="active",
+            owner_id=1,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
-        assert keyboard.inline_keyboard[0][0].text == "✅ My Project"
+        keyboard = projects_list_keyboard([project], "en")
+        button = keyboard.inline_keyboard[0][0]
+        assert button.text == "✅ My Project"
+        assert button.callback_data == f"project:details:{project.id}"
 
 
 class TestAdminCallbackHandler:

@@ -10,7 +10,7 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringExecutionPhase,
     EngineeringInfrastructureRefusal,
 )
-from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.queues.worker import CreateWorkerResponse, WorkerOwnership
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 
 _OWNERSHIP = WorkerOwnership(
@@ -330,12 +330,14 @@ class TestSendTaskToWorker:
     @patch("redis.asyncio.Redis.from_url")
     @patch("src.clients.worker_spawner._send_turn", new_callable=AsyncMock)
     @patch("src.clients.worker_spawner._wait_until_ready", new_callable=AsyncMock)
+    @patch("src.clients.worker_spawner._wait_for_create_ack", new_callable=AsyncMock)
     @patch("src.clients.worker_spawner._wait_for_response", new_callable=AsyncMock)
     @patch("src.prompts.load_developer_instructions", return_value="test instructions")
     async def test_post_turn_exception_requests_worker_deletion(
         self,
         _mock_instructions,
         mock_wait_for_response,
+        mock_wait_for_create_ack,
         mock_wait_until_ready,
         _mock_send_turn,
         mock_redis_from_url,
@@ -349,10 +351,10 @@ class TestSendTaskToWorker:
         mock_redis.aclose = AsyncMock()
         mock_redis.xadd = AsyncMock()
         mock_wait_until_ready.return_value = None
-        mock_wait_for_response.side_effect = [
-            {"success": True, "worker_id": "dev-live-turn"},
-            RuntimeError("output stream unavailable"),
-        ]
+        mock_wait_for_create_ack.return_value = CreateWorkerResponse(
+            request_id="req-live-turn", success=True, worker_id="dev-live-turn"
+        )
+        mock_wait_for_response.side_effect = RuntimeError("output stream unavailable")
 
         from src.clients.worker_spawner import request_spawn
 

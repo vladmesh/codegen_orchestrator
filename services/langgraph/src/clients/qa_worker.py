@@ -47,7 +47,13 @@ from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
 
 from ..config.settings import get_settings
-from .worker_spawner import CREATION_TIMEOUT, _wait_for_response, _wait_until_ready
+from .worker_spawner import (
+    CREATION_TIMEOUT,
+    WorkerCreateAckError,
+    _wait_for_create_ack,
+    _wait_for_response,
+    _wait_until_ready,
+)
 from .worker_turns import ensure_worker_output_group, publish_worker_turn
 
 logger = get_logger(__name__)
@@ -224,21 +230,17 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
         on_create_published()
         logger.info("qa_executor_requested", worker_id=worker_id, agent_type=agent_type.value)
 
-        ack = await _wait_for_response(
-            redis_client,
-            group_name,
-            consumer_id,
-            request_id,
-            CREATION_TIMEOUT,
-            group_start_id="$",
-        )
-        if not ack:
+        try:
+            ack = await _wait_for_create_ack(redis_client, group_name, consumer_id, request_id)
+        except WorkerCreateAckError as exc:
+            raise QAExecutorUnavailable(str(exc), transient=False) from exc
+        if ack is None:
             raise QAExecutorUnavailable(
                 f"worker-manager did not acknowledge the QA executor within {CREATION_TIMEOUT}s",
                 transient=True,
             )
-        if not ack.get("success"):
-            raise _classify_start_failure(str(ack.get("error") or "worker-manager refused"))
+        if not ack.success:
+            raise _classify_start_failure(ack.error or "worker-manager refused")
 
         ready_failure = await _wait_until_ready(redis_client, worker_id, request_id)
         if ready_failure:
