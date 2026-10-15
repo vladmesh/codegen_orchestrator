@@ -15,8 +15,9 @@
 
 ## Перед каждым дублем
 
-1. `./democtl reset` — дашборд вернётся к четырём старым продуктам, новой Journey нет.
-2. В боте `/reset`.
+1. `./democtl reset 1` — сцена 1, дашборд вернётся к четырём старым продуктам, новой Journey нет
+   (просто `./democtl reset` сбрасывает текущую сцену; после `reset 2` текущая — сцена 2).
+2. В боте `/scene1` (если чат был переключён на сцену 2), затем `/reset`.
 3. В браузере открыть **Journeys** и обновить страницу (F5).
 4. `./democtl state` должен показать `"running": false`.
 
@@ -79,3 +80,58 @@ Verifying) в среднем меняются на 57 / 329 / 485 / 565 с, у �
 - **Бот завис или не отвечает**: в Telegram `/reset`. Сервис бота не трогаем, он чужой.
 
 Проверено 13.10: прогон 1× целиком (видео `shots/final/`), кадры там же.
+
+---
+
+# Запись сцены 2 — «переиспользование модуля + платформенный сервис»
+
+Клиент Dana заказывает «weekly digest of competitors' Telegram channels». Архитектор на шаге
+**Catalog** находит готовый модуль `tg-channels 0.1.2` (из Morning Tech Digest) и подключает
+платформенный сервис `tg-reader`, поэтому задач 2 вместо 3, сцена 4 минуты (240 с) вместо 10.
+В конце новый код ранжирования уходит в каталог модулем `tg-post-ranking 0.1.0`. Пользователь и PO
+про модули не говорят — переиспользование видно только в разбивке архитектора, на шаге Catalog,
+в паспорте продукта и в Atlas. CI проходит с первого раза, human-in-the-loop нет.
+
+## Перед каждым дублем
+
+1. `./democtl reset 2` — сцена 2: пять старых продуктов (вкл. Water Reminder Bot), новой Journey нет,
+   у `tg-reader` один потребитель (Morning Tech Digest); на 33 с становится `tg-reader · 2`. `go`/`start`/`seek` дальше играют сцену 2,
+   пока не сделаешь `reset 1`.
+2. В боте `/scene2` (один раз на чат, запоминается), затем `/reset`. `/scene` — какая сцена у чата.
+3. Journeys, F5. `./democtl state` → `"scene": "2", "running": false`.
+
+## В кадре
+
+1. Telegram: заказ «I need a bot that sends me a weekly summary of what my competitors post in their
+   Telegram channels», 3 вопроса (каналы → `@northroast, @beanbox_daily and @kaffa_lab`; что считать
+   важным → `Top 5 posts per channel by views, and flag anything that took off`; когда →
+   `Mondays at 9:00`), бриф.
+2. **✅ Confirm brief** + в ту же секунду `./democtl go`.
+3. 4 минуты параллельно, экраны по таблице.
+
+| сек | экран | что видно |
+|---|---|---|
+| 0–10 | **Journeys** | вверху «Weekly digest of competitors' Telegram channels», in progress |
+| 10–25 | клик → **Journey** | Plan активен; 12 с «6 requirements» (раскрываются); полоса «Reused, not built» пока «checking the catalog…» |
+| 22–40 | Journey, полоса над канбаном | 22 `tg-channels 0.1.2 · from Morning Tech Digest`, 24 `tg-reader · platform service`; Catalog активен (25–38), в логе architect: «2 tasks instead of 3» |
+| 30–40 | клик по шагу **Catalog** | детали: Package tg-channels 0.1.2, Platform service tg-reader · access granted, Reused from Morning Tech Digest |
+| 40–60 | Journey, канбан + лог | 2 карточки: «Rank posts by views…», «Monday digest and /add, /remove commands»; обе In dev |
+| 60–100 | Journey, **Repository** (скролл вниз) | bot/ranking.py, bot/digest.py; в логе dev 1 локальные тесты 2 failed → правка → passed (это не CI) |
+| 98–131 | Journey | карточки уходят в CI → Done (110 и 129) |
+| 132–165 | Journey, **PR + CI** | PR #1, 160 CI run 1 «11 / 11 tests passed», merge |
+| 167–198 | Journey, **Deploy** | edge-eu-2, контейнер competitor-digest-bot, 198 Health 200 OK |
+| 200–226 | Journey, **QA** | QA worker, 225 «7 / 7 passed» |
+| 214–226 | Journey, внизу **Pull requests / паспорт** | 214 PR «tg-post-ranking 0.1.0» в brimos-catalog; 226 Catalog → Published tg-post-ranking 0.1.0 |
+| 226–232 | Journey, **паспорт** внизу | Modules: tg-channels 0.1.2 (reused), tg-post-ranking 0.1.0 (new); Platform services: tg-reader |
+| 228–240 | **Atlas** | 228 Live; 230 Competitor Digest «active» (до этого «in development»); `tg-reader · 2` (второй потребитель добавлен ещё на 33 с, когда Catalog дал доступ); клик по tg-reader → подсвечены Morning Tech Digest и Competitor Digest |
+| 235–240 | клик по **Competitor Digest** → паспорт | модули, платформенный сервис, секрет; в Telegram «Your bot is live! 🎉» |
+
+Синхронизация: этапы бота сцены 2 (script2.yaml, 240 с) в среднем меняются на 46 / 135 / 171 / 201 с,
+у дашборда — на 41 / 134 / 170 / 204 с; разброс бота ±10–15 с. Догнать — `./democtl seek <сек>`.
+Репетиция — `./democtl start 4` (1 минута). Кадры всех ключевых экранов: `demo/shots/scene2/`
+(снимаются `/tmp/pdfenv/bin/python demo/shots_scene2.py`, оставляет reset сцены 2).
+
+Бот: тот же `@brimos_demo_bot`, сцена выбирается на чат командой `/scene2` / `/scene1`.
+Нужен код бота с поддержкой сцен (коммит в brimos-demo-bot от 15.10) — сервис бота должен быть
+перезапущен после него один раз: `systemctl --user restart brimos-demo-bot`. Ссылка в финале —
+`t.me/brimos_demo_second_part_bot` (бот с таким именем должен существовать к съёмке).

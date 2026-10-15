@@ -71,6 +71,7 @@ function attemptLabel(attempt: JourneyAttempt, step: JourneyStep, taskTitles: Ma
   if (attempt.task_id && taskTitles.has(attempt.task_id)) return taskTitles.get(attempt.task_id)!
   if (attempt.kind === 'deploy') return 'Deploy to server'
   if (attempt.kind === 'qa') return 'Live checks'
+  if (attempt.kind === 'install') return 'Install catalog module'
   const ciRuns = step.attempts.filter((a) => !a.task_id)
   return `CI run ${ciRuns.indexOf(attempt) + 1}`
 }
@@ -479,7 +480,7 @@ export function JourneyPage() {
           defaultLeft={56}
           minLeft={28}
           minRight={22}
-          left={<TaskBoard tasks={tasks.data ?? []} steps={steps} prNumber={journey.data.pr_number} ready={tasks.isSuccess} />}
+          left={<TaskBoard tasks={tasks.data ?? []} steps={steps} prNumber={journey.data.pr_number} ready={tasks.isSuccess} reuse={journey.data.reuse} />}
           right={<LiveLog storyId={storyId} live={!summary.finished_at} className="h-[459px]" />}
         />
       )}

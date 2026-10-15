@@ -88,7 +88,7 @@ export function RepoPanel({ storyId, className }: { storyId: string | undefined;
         <h2 id="repo-panel" className="text-sm font-semibold text-foreground">
           Repository
         </h2>
-        <span className="font-mono text-[11px] text-zinc-500">water-reminder-bot</span>
+        <span className="font-mono text-[11px] text-zinc-500">{data?.repo ?? ''}</span>
         {totals.files > 0 && (
           <span className="ml-3 font-mono text-[11px] text-zinc-400">
             {totals.files} files · <span className="text-emerald-400">+{totals.additions}</span>{' '}

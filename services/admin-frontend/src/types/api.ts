@@ -907,6 +907,8 @@ export interface PackageRef {
   name: string
   version: string
   kind: 'package' | 'library'
+  /** Demo mock: "reused" from the catalog, or "new · published" to it by this product. */
+  note?: string
 }
 
 export interface ContainerView {
@@ -925,6 +927,19 @@ export interface ProductPassport {
   packages: PackageRef[]
   containers: ContainerView[]
   user_secrets: string[]
+  /** Demo mock: platform services the product draws on (tg-reader…). */
+  platform_services?: string[]
+}
+
+/** Demo mock: something the architect reused instead of writing it — a catalog module or a platform service. */
+export interface ReuseItem {
+  name: string
+  version: string | null
+  kind: 'package' | 'library' | 'platform'
+  /** What it covers, in a few words. */
+  note: string
+  /** Product it was first built for, if any. */
+  origin: string | null
 }
 
 export type StoryLinkKind = 'module_proposal'
@@ -948,6 +963,8 @@ export interface JourneyDetail {
   steps: JourneyStep[]
   passport: ProductPassport
   links: StoryLink[]
+  /** Demo mock: catalog modules and platform services the architect picked; absent = not shown. */
+  reuse?: ReuseItem[]
 }
 
 /** Demo build only: GET /admin/v2/journeys/{story_id}/live — what the agents print and write. */
@@ -983,6 +1000,8 @@ export interface RepoTreeEntry extends FileTreeEntry {
 }
 
 export interface JourneyLive {
+  /** Demo mock: the product repository name shown in the panel headers. */
+  repo?: string
   lines: LiveLogLine[]
   files: RepoTreeEntry[]
   /** Latest write (or the requested file's latest write) as a diff. */

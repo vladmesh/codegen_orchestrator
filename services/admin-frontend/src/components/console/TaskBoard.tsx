@@ -1,10 +1,11 @@
 import { useLayoutEffect, useRef } from 'react'
 import { Link } from 'react-router'
-import { Check, GitPullRequest, Sparkles, Wrench } from 'lucide-react'
+import { Check, GitPullRequest, Recycle, Sparkles, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { flashElement, reducedMotion } from '@/lib/live'
+import { enterClass, flashElement, reducedMotion } from '@/lib/live'
 import { LiveDot } from '@/components/ui/LiveDot'
-import type { JourneyStep, Task } from '@/types/api'
+import { Chip } from '@/components/console/Chips'
+import type { JourneyStep, ReuseItem, Task } from '@/types/api'
 import {
   boardColumns,
   cardStatusLabel,
@@ -196,6 +197,36 @@ function PullRequestCard({ card }: { card: PrCard }) {
 }
 
 /**
+ * What the architect took instead of writing it: catalog modules and platform services.
+ * One fixed-height row from the start of the scene, so items landing never move the board.
+ */
+function ReuseStrip({ items, planning }: { items: ReuseItem[]; planning: boolean }) {
+  return (
+    <div className="mb-3 flex h-[44px] items-center gap-2 overflow-hidden rounded-md border border-violet-800/50 bg-violet-950/20 px-2.5">
+      <Recycle className="h-4 w-4 shrink-0 text-violet-300" />
+      <span className="shrink-0 font-mono text-[10.5px] uppercase tracking-wider text-violet-200/80">Reused, not built</span>
+      {items.length === 0 && (
+        <span className="text-xs text-muted-foreground">{planning ? 'checking the catalog and platform services…' : 'nothing yet'}</span>
+      )}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+        {items.map((item) => (
+          <span key={item.name} className={cn('inline-flex min-w-0 items-center gap-1.5 text-xs', enterClass)} title={item.note}>
+            <Chip kind={item.kind}>
+              {item.name}
+              {item.version && <span className="text-violet-300/70">{item.version}</span>}
+            </Chip>
+            <span className="truncate text-muted-foreground">
+              {item.kind === 'platform' ? 'platform service' : 'catalog module'}
+              {item.origin ? ` · from ${item.origin}` : ''}
+            </span>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
  * Demo kanban of the architect's breakdown: Backlog → In Dev → CI → Done (Review/QA only
  * when occupied). Shows "Architect is planning…" until the first task exists.
  */
@@ -204,12 +235,15 @@ export function TaskBoard({
   steps,
   prNumber,
   ready = true,
+  reuse,
 }: {
   tasks: Task[]
   steps: JourneyStep[] | undefined
   prNumber: number | null
   /** False while the tasks are still loading, so the first data does not animate in. */
   ready?: boolean
+  /** Scene with reuse: what the architect took from the catalog/platform; undefined hides the strip. */
+  reuse?: ReuseItem[]
 }) {
   const pr = prCard(steps, prNumber)
   const columns = boardColumns(tasks, pr ? [pr.column] : [])
@@ -246,6 +280,7 @@ export function TaskBoard({
           </div>
         )}
       </div>
+      {reuse && <ReuseStrip items={reuse} planning={plan?.status === 'active'} />}
       <div ref={root} className="relative">
         {/* narrow: one column per row; medium: 2 × 2; wide: all columns side by side */}
         <div
@@ -262,7 +297,13 @@ export function TaskBoard({
                 </span>
               </div>
               {/* Fixed height for the whole scene: cards moving between columns never resize the page. */}
-              <div className="flex min-h-[40px] flex-col gap-2 @md:min-h-[150px] @3xl:min-h-[352px]">
+              <div
+                className={cn(
+                  'flex min-h-[40px] flex-col gap-2 @md:min-h-[150px]',
+                  // the reuse strip takes 56 px of the same board height
+                  reuse ? '@3xl:min-h-[296px]' : '@3xl:min-h-[352px]',
+                )}
+              >
                 {pr?.column === column.id && column.id !== 'done' && <PullRequestCard card={pr} />}
                 {column.tasks.map((task) => (
                   <TaskCard key={task.id} task={task} />

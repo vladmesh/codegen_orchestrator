@@ -27,10 +27,25 @@ function ContainerRow({ status, children }: { status: string; children: React.Re
   )
 }
 
+/** A catalog package or platform service line; demo build: slides in when it is attached. */
+function PackageRow({ id, children }: { id: string; children: React.ReactNode }) {
+  const ref = useFlash<HTMLLIElement>(id, 'teal')
+  return (
+    <li ref={ref} className={cn('flex items-center gap-2 rounded', enterClass)}>
+      {children}
+    </li>
+  )
+}
+
 /** What a product is built from, what it connects to and where it runs. */
 export function Passport({ passport }: { passport: ProductPassport }) {
+  // demo: products that draw on a platform service get a fifth column for it
+  const platforms = isDemo ? passport.platform_services : undefined
   return (
-    <section aria-label="Product passport" className="grid overflow-hidden rounded-lg border border-border sm:grid-cols-2 xl:grid-cols-4">
+    <section
+      aria-label="Product passport"
+      className={cn('grid overflow-hidden rounded-lg border border-border sm:grid-cols-2', platforms ? 'xl:grid-cols-5' : 'xl:grid-cols-4')}
+    >
       <Column title="Containers">
         {passport.containers.length === 0 ? (
           <Empty>{isDemo ? 'Not deployed yet' : `Not deployed. Modules: ${passport.modules.join(', ') || '—'}`}</Empty>
@@ -54,14 +69,34 @@ export function Passport({ passport }: { passport: ProductPassport }) {
         ) : (
           <ul className="space-y-1.5 text-sm">
             {passport.packages.map((p) => (
-              <li key={`${p.kind}-${p.name}`} className="flex items-center gap-2">
+              <PackageRow key={`${p.kind}-${p.name}`} id={p.name}>
                 <Chip kind={p.kind}>{p.name}</Chip>
+                {isDemo && p.note && (
+                  <span className={cn('text-[11px]', p.note.startsWith('new') ? 'text-teal-300' : 'text-muted-foreground')}>{p.note}</span>
+                )}
                 <span className="ml-auto font-mono text-xs text-muted-foreground">{p.version}</span>
-              </li>
+              </PackageRow>
             ))}
           </ul>
         )}
       </Column>
+      {platforms && (
+        <Column title="Platform services">
+          {platforms.length === 0 ? (
+            <Empty>Not connected yet</Empty>
+          ) : (
+            <ul className="space-y-1.5 text-sm">
+              {platforms.map((name) => (
+                <PackageRow key={name} id={name}>
+                  <Dot tone="ok" />
+                  <Chip kind="platform">{name}</Chip>
+                  <span className="ml-auto text-[11px] text-muted-foreground">shared</span>
+                </PackageRow>
+              ))}
+            </ul>
+          )}
+        </Column>
+      )}
       <Column title={isDemo ? 'User secrets' : 'Connected'}>
         <div className="flex flex-wrap gap-1.5">
           {passport.user_secrets.map((name) => (

@@ -71,7 +71,7 @@ export function LiveLog({
           {title}
         </h2>
         {live && lines.length > 0 && <LiveDot tone="teal" label="live" className="ml-1" />}
-        <span className="ml-auto font-mono text-[11px] text-zinc-500">water-reminder-bot</span>
+        <span className="ml-auto font-mono text-[11px] text-zinc-500">{data?.repo ?? ''}</span>
       </div>
       <div
         ref={box}

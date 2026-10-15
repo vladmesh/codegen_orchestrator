@@ -3,11 +3,12 @@
 
 No production backend. The API answers the routes the dashboard calls, following the
 contract in services/admin-frontend/src/types/api.ts, and the data moves along the scene
-timeline (scene1.timeline.json).
+timeline (scene1.timeline.json or scene2.timeline.json).
 
 Control:
   POST /demo/start?speed=1&at=0   start the scene (speed: scene seconds per real second, at: start offset)
-  POST /demo/reset                back to idle: only the background products are visible
+  POST /demo/reset?scene=2        back to idle: only the background products are visible; scene= switches
+                                  the scene (1 "builds from scratch", 2 "reuses the platform"), kept until changed
   POST /demo/seek?at=300          jump to a scene second (keeps speed)
   GET  /demo/state                current scene second, speed, bot stage
 
@@ -38,6 +39,8 @@ DIST = Path(os.environ.get("DEMO_DIST", HERE.parent / "services/admin-frontend/d
 TIMELINE = Path(os.environ.get("DEMO_TIMELINE", HERE / "scene1.timeline.json"))
 HOST = os.environ.get("DEMO_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DEMO_PORT", "8790"))
+SCENES = {"1": ("scene1.timeline.json", "scene1_feed"), "2": ("scene2.timeline.json", "scene2_feed")}
+SCENE = "1"
 
 TL = json.loads(TIMELINE.read_text())
 STAGES = ["brief", "plan", "install", "build", "review", "deploy", "verify", "live"]
@@ -122,7 +125,7 @@ class View:
 # ---------------------------------------------------------------- background world
 DAY = 86400
 BG_USER = {"id": 7, "telegram_id": 600000007, "username": "maria_k", "first_name": "Maria", "last_name": None}
-BACKGROUND = [
+BASE_BACKGROUND = [
     {"project_id": "1d0e6a52-3c4b-4f1a-8e2d-a1b2c3d4e501", "title": "Habit Tracker", "slug": "habit-tracker",
      "story_id": "story-1f0b22c4", "story": "Habit tracker with weekly report", "ago": 5 * DAY, "took": 41 * 60,
      "server": "edge-eu-1", "port": 8011, "packages": [], "app_id": 101},
@@ -144,6 +147,9 @@ SERVERS = [
 ]
 
 
+BACKGROUND = list(BASE_BACKGROUND)
+
+
 def bg_times(bg, n: datetime):
     created = n - timedelta(seconds=bg["ago"])
     return created, created + timedelta(seconds=bg["took"])
@@ -156,8 +162,11 @@ def bg_container(bg):
 
 
 def bg_passport(bg):
-    return {"modules": [p["name"] for p in bg["packages"]], "packages": bg["packages"],
-            "containers": [bg_container(bg)], "user_secrets": ["TELEGRAM_BOT_TOKEN"]}
+    out = {"modules": [p["name"] for p in bg["packages"]], "packages": bg["packages"],
+           "containers": [bg_container(bg)], "user_secrets": ["TELEGRAM_BOT_TOKEN"]}
+    if bg.get("platform"):  # demo-only: platform services the product draws on
+        out["platform_services"] = bg["platform"]
+    return out
 
 
 def bg_summary(bg, n):
@@ -192,8 +201,28 @@ APP = TL["application"]
 U = TL["user"]
 
 
+def set_scene(name: str) -> None:
+    """Switch every scene global (timeline, entities, live feed, background) to scene `name`."""
+    global SCENE, TL, P, ST, REPO, APP, U, FEED, BACKGROUND
+    import importlib
+    timeline, feed = SCENES[name]
+    tl = json.loads((HERE / timeline).read_text()) if name != "1" or "DEMO_TIMELINE" not in os.environ \
+        else json.loads(TIMELINE.read_text())
+    FEED = importlib.import_module(feed)
+    TL, P, ST, REPO, APP, U = tl, tl["project"], tl["story"], tl["repository"], tl["application"], tl["user"]
+    extra = [{**b, "ago": b["ago_days"] * DAY} for b in tl.get("background_extra", [])]
+    BACKGROUND = BASE_BACKGROUND + extra
+    SCENE = name
+
+
+def tl_get(key: str, default):
+    """Scene timing that scene 1 had hard-coded; scene 2 sets it in its timeline."""
+    return TL.get(key, default)
+
+
 def scene_user(v: View):
-    return {**U, "is_admin": False, "created_at": v.ts(-240), "updated_at": None, "last_seen": iso(v.now)}
+    return {**U, "is_admin": False, "created_at": v.ts(tl_get("user_created", -240)), "updated_at": None,
+            "last_seen": iso(v.now)}
 
 
 def scene_project(v: View):
@@ -204,7 +233,7 @@ def scene_project(v: View):
 def scene_story(v: View):
     status = v.at(ST["status"], "created")
     return {"id": ST["id"], "project_id": P["id"], "title": ST["title"], "description": ST["description"],
-            "acceptance_criteria": ST["acceptance_criteria"] if v.seen(20) else None, "type": "product",
+            "acceptance_criteria": ST["acceptance_criteria"] if v.seen(tl_get("criteria_from", 20)) else None, "type": "product",
             "status": status, "waiting_on": v.at(ST["waiting_on"], "none"), "priority": 1,
             "created_by": "product_owner", "pr_number": v.at(ST["pr_number"]),
             "status_entered_at": v.ts(v.since(ST["status"])), "created_at": v.ts(0), "updated_at": iso(v.now)}
@@ -300,7 +329,8 @@ def scene_summary(v: View, steps=None):
     done = story["status"] == "completed"
     return {"story_id": ST["id"], "title": ST["title"], "project_id": P["id"], "project_title": P["title"],
             "status": story["status"], "waiting_on": story["waiting_on"], "current_stage": current_stage(steps),
-            "created_at": v.ts(0), "updated_at": iso(v.now), "finished_at": v.ts(598) if done else None}
+            "created_at": v.ts(0), "updated_at": iso(v.now),
+            "finished_at": v.ts(tl_get("finished", 598)) if done else None}
 
 
 def scene_app_status(v: View):
@@ -315,8 +345,28 @@ def scene_passport(v: View):
                            "reserved_ram_mb": 256, "response_time_ms": 84 if st == "running" else None,
                            "uptime_pct_24h": 100.0 if st == "running" else None,
                            "deployed_sha": APP["sha"] if st == "running" else None})
-    return {"modules": [], "packages": [], "containers": containers,
-            "user_secrets": ["TELEGRAM_BOT_TOKEN"] if v.seen(490) else []}
+    # demo-only "note": reused from the catalog, or published to it by this product
+    packages = [{"name": r["name"], "version": r["version"], "kind": r["kind"], "note": "reused"}
+                for r in TL.get("reuse", []) if r["kind"] != "platform" and v.seen(r["from"])]
+    packages += [{"name": c["name"], "version": c["version"], "kind": c["kind"], "note": "new · published"}
+                 for c in TL.get("catalog_new", []) if v.seen(c["from"])]
+    out = {"modules": [p["name"] for p in packages], "packages": packages, "containers": containers,
+           "user_secrets": ["TELEGRAM_BOT_TOKEN"] if v.seen(tl_get("secret_from", 490)) else []}
+    if "platform" in TL:  # demo-only: platform services the product draws on (scene 2)
+        out["platform_services"] = [n for n, t in TL["platform"].items() if v.seen(t)]
+    return out
+
+
+def scene_reuse(v: View):
+    """Demo-only: what the architect found in the catalog and the platform (scene 2); None = not shown."""
+    if "reuse" not in TL:
+        return None
+    return [{k: r[k] for k in ("name", "version", "kind", "note", "origin")} for r in TL["reuse"] if v.seen(r["from"])]
+
+
+def scene_links(v: View):
+    return [{"id": x["id"], "kind": x["kind"], "title": x["title"], "url": x["url"], "created_at": v.ts(x["from"])}
+            for x in TL.get("links", []) if v.seen(x["from"])]
 
 
 def scene_journey(v: View):
@@ -326,7 +376,8 @@ def scene_journey(v: View):
     reqs = ST["requirement_list"][:count] if count else None
     return {"summary": scene_summary(v, steps), "request": ST["request"], "requirements": len(reqs) if reqs else None,
             "requirement_list": reqs,
-            "pr_number": v.at(ST["pr_number"]), "steps": steps, "passport": scene_passport(v), "links": []}
+            "pr_number": v.at(ST["pr_number"]), "steps": steps, "passport": scene_passport(v),
+            "links": scene_links(v), **({"reuse": r} if (r := scene_reuse(v)) is not None else {})}
 
 
 def scene_workers(v: View):
@@ -359,7 +410,7 @@ def all_projects(v: View):
     for bg in BACKGROUND:
         created, finished = bg_times(bg, n)
         out.append({"id": bg["project_id"], "title": bg["title"], "slug": bg["slug"], "status": "active", "config": {},
-                    "owner_id": BG_USER["id"], "created_at": iso(created), "updated_at": iso(finished)})
+                    "owner_id": bg.get("user", BG_USER)["id"], "created_at": iso(created), "updated_at": iso(finished)})
     if v.active:
         out.insert(0, scene_project(v))
     return out
@@ -383,7 +434,7 @@ def attention(v: View):
                               "story_id": ST["id"], "task_id": None, "application_id": None, "server_handle": None})
     running = len(scene_workers(v)) if v.active else 0
     queued = sum(1 for t in scene_tasks(v) if t["status"] == "todo") if v.active else 0
-    live = len(BACKGROUND) + (1 if v.active and v.seen(597) else 0)
+    live = len(BACKGROUND) + (1 if v.active and v.seen(tl_get("live_from", 597)) else 0)
     del steps
     return {"kpis": {"active_journeys": 1 if building else 0, "running_runs": running, "queued_runs": queued,
                      "live_products": live, "degraded_containers": 0, "median_lead_time_minutes_7d": 44.0},
@@ -402,8 +453,10 @@ def topology(v: View):
         products.append({"project_id": P["id"], "title": P["title"], "slug": P["slug"],
                          "status": v.at(P["status"], "in_development"), "latest_story_id": ST["id"],
                          "passport": scene_passport(v)})
-    services = [{"name": "tg-reader", "status": "up",
-                 "products": [bg["project_id"] for bg in BACKGROUND if "tg-reader" in bg.get("platform", [])]}]
+    users = [bg["project_id"] for bg in BACKGROUND if "tg-reader" in bg.get("platform", [])]
+    if v.active and "tg-reader" in scene_passport(v).get("platform_services", []):
+        users.append(P["id"])
+    services = [{"name": "tg-reader", "status": "up", "products": users}]
     return {"placements": placements, "products": products, "platform_services": services}
 
 
@@ -414,10 +467,10 @@ def application(v: View):
     return {"id": APP["id"], "repo_id": REPO["id"], "server_handle": APP["server"], "service_name": APP["service_name"],
             "reserved_ram_mb": 256, "ports": [{"id": 1, "server_handle": APP["server"], "port": APP["port"],
                                               "service_name": APP["service_name"], "application_id": APP["id"],
-                                              "created_at": v.ts(495)}],
+                                              "created_at": v.ts(tl_get("app_created", 495))}],
             "status": st, "last_health_check": iso(v.now) if st == "running" else None,
             "response_time_ms": 84 if st == "running" else None, "uptime_pct_24h": 100.0 if st == "running" else None,
-            "monitoring_enabled": True, "created_at": v.ts(495), "updated_at": iso(v.now)}
+            "monitoring_enabled": True, "created_at": v.ts(tl_get("app_created", 495)), "updated_at": iso(v.now)}
 
 
 def repository(v: View):
@@ -425,7 +478,7 @@ def repository(v: View):
         return None
     return {"id": REPO["id"], "project_id": P["id"], "name": REPO["name"], "git_url": REPO["git_url"],
             "provider_repo_id": 90210, "role": "primary", "visibility": "private", "is_managed": True,
-            "bot_username": "brimos_demo_first_part_bot", "created_at": v.ts(REPO["from"])}
+            "bot_username": tl_get("bot_username", "brimos_demo_first_part_bot"), "created_at": v.ts(REPO["from"])}
 
 
 def repo_file(v: View, path: str, **owner):
@@ -462,7 +515,7 @@ def route(method: str, path: str, q: dict):
                 if any(b["story_id"] == sid for b in BACKGROUND) else (404, None)
         tid = one("task")
         task = next((i + 1 for i, t in enumerate(TL["tasks"]) if t["id"] == tid), None)
-        return 200, FEED.live(v.s, v.ts, task=task, file=one("file"))
+        return 200, {"repo": REPO["name"], **FEED.live(v.s, v.ts, task=task, file=one("file"))}
     if p.startswith("/api/admin/v2/journeys/"):
         sid = p.rsplit("/", 1)[1]
         if v.active and sid == ST["id"]:
@@ -540,15 +593,18 @@ def route(method: str, path: str, q: dict):
             if parts[4] == "health-history":
                 if not a:
                     return 200, []
-                return 200, [{"id": i, "application_id": APP["id"], "recorded_at": v.ts(546 + i * 10),
+                h0 = tl_get("health_from", 546)
+                return 200, [{"id": i, "application_id": APP["id"], "recorded_at": v.ts(h0 + i * 10),
                               "metrics": {"response_time_ms": 80 + i * 3, "status_code": 200, "healthy": True},
-                              "created_at": v.ts(546 + i * 10), "updated_at": None}
-                             for i in range(6) if v.seen(546 + i * 10)]
+                              "created_at": v.ts(h0 + i * 10), "updated_at": None}
+                             for i in range(6) if v.seen(h0 + i * 10)]
             if parts[4] == "runs":
                 return 200, []
         return (200, a) if a else (404, None)
     if p == "/api/users":
         rows = [{**BG_USER, "is_admin": False, "created_at": iso(v.now - timedelta(days=20)), "last_seen": iso(v.now)}]
+        rows += [{**bg["user"], "is_admin": False, "created_at": iso(v.now - timedelta(days=3)), "last_seen": iso(v.now)}
+                 for bg in BACKGROUND if bg.get("user")]
         if v.active:
             rows.insert(0, scene_user(v))
         return 200, rows
@@ -556,6 +612,9 @@ def route(method: str, path: str, q: dict):
         uid = p.split("/")[3]
         if v.active and uid == str(U["id"]):
             return 200, scene_user(v)
+        extra = next((bg["user"] for bg in BACKGROUND if bg.get("user") and str(bg["user"]["id"]) == uid), None)
+        if extra:
+            return 200, {**extra, "is_admin": False, "created_at": iso(v.now - timedelta(days=3)), "last_seen": iso(v.now)}
         if uid == str(BG_USER["id"]):
             return 200, {**BG_USER, "is_admin": False, "created_at": iso(v.now - timedelta(days=20)), "last_seen": iso(v.now)}
         return 404, None
@@ -633,12 +692,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/demo/seek" and method == "POST":
             CLOCK.start(CLOCK.speed if CLOCK.running else num("speed", 1), num("at", 0))
         elif path == "/demo/reset" and method == "POST":
+            scene = (q.get("scene") or [None])[0]
+            if scene is not None and scene not in SCENES:
+                return self._json(400, {"detail": f"unknown scene {scene}; known: {', '.join(SCENES)}"})
             CLOCK.reset()
+            if scene is not None:
+                set_scene(scene)
         elif path != "/demo/state":
             return self._json(404, {"detail": "unknown demo command"})
         s = CLOCK.scene()
-        self._json(200, {"running": CLOCK.running, "scene_second": None if s is None else round(s, 1),
-                         "speed": CLOCK.speed, "bot_stage": bot_stage(s), "story_id": ST["id"]})
+        self._json(200, {"scene": SCENE, "running": CLOCK.running, "scene_second": None if s is None else round(s, 1),
+                         "duration": TL["duration"], "speed": CLOCK.speed, "bot_stage": bot_stage(s),
+                         "story_id": ST["id"], "product": P["title"]})
 
     def _handle(self, method: str) -> None:
         u = urlparse(self.path)
@@ -685,6 +750,8 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not (DIST / "index.html").is_file():
         sys.exit(f"no built frontend at {DIST}; run VITE_DEMO=1 npm run build in services/admin-frontend")
+    if os.environ.get("DEMO_SCENE"):
+        set_scene(os.environ["DEMO_SCENE"])
     if os.environ.get("DEMO_AUTOSTART"):
         CLOCK.start(float(os.environ.get("DEMO_SPEED", "1")), 0)
     print(f"brimos dashboard demo on http://{HOST}:{PORT}", flush=True)

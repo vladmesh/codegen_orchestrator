@@ -243,7 +243,7 @@ export function StoryDetailPage() {
           defaultLeft={56}
           minLeft={28}
           minRight={22}
-          left={<TaskBoard tasks={tasks ?? []} steps={journey?.steps} prNumber={journey?.pr_number ?? null} ready={tasksReady} />}
+          left={<TaskBoard tasks={tasks ?? []} steps={journey?.steps} prNumber={journey?.pr_number ?? null} ready={tasksReady} reuse={journey?.reuse} />}
           right={<LiveLog storyId={id} live={!journey?.summary.finished_at} className="h-[459px]" />}
         />
       )}

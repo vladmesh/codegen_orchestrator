@@ -1,0 +1,96 @@
+{
+  "_doc": [
+    "Scene 2 'reuses the platform' for the admin dashboard mock. t = scene seconds after the user presses Confirm in @brimos_demo_bot (scene 2 script).",
+    "Same format as scene1.timeline.json. The architect finds the catalog module tg-channels and the platform service tg-reader, so 2 tasks instead of 3 and ~4 minutes instead of 10.",
+    "At the end the ranking code goes back to the catalog as a new module tg-post-ranking 0.1.0 ('the platform learns').",
+    "bot_stages mirror script2.yaml progress (240 s, stages end at 17/56/71/85/100 %, equal speeds). The bot adds random jitter, so boundaries drift by ~5-10 s per take."
+  ],
+  "duration": 240,
+  "finished": 230,
+  "live_from": 228,
+  "secret_from": 180,
+  "app_created": 172,
+  "health_from": 196,
+  "criteria_from": 12,
+  "user_created": -180,
+  "bot_stages": [
+    {"name": "Planning", "from": 0, "to": 41},
+    {"name": "Building features", "from": 41, "to": 134},
+    {"name": "Testing", "from": 134, "to": 170},
+    {"name": "Deploying", "from": 170, "to": 204},
+    {"name": "Verifying live", "from": 204, "to": 240}
+  ],
+  "user": {"id": 1077, "telegram_id": 700100377, "username": "dana_roasts", "first_name": "Dana", "last_name": null},
+  "project": {
+    "id": "3a9d7e41-6c20-4b8f-9d15-7e0c2b4f6a18",
+    "title": "Competitor Digest",
+    "slug": "competitor-digest-bot",
+    "status": [[0, "in_development"], [230, "active"]]
+  },
+  "repository": {"id": "c7e2a915-0d4b-4f3e-8a61-2b9d0e7c4f53", "name": "competitor-digest-bot", "git_url": "https://github.com/brimos-products/competitor-digest-bot.git", "from": 27},
+  "bot_username": "brimos_demo_second_part_bot",
+  "story": {
+    "id": "story-3e8b5d10",
+    "title": "Weekly digest of competitors' Telegram channels",
+    "request": "I need a bot that sends me a weekly summary of what my competitors post in their Telegram channels",
+    "description": "Competitor digest bot\n- Channels: @northroast, @beanbox_daily, @kaffa_lab\n- In the summary: top 5 posts per channel by views, posts that took off are flagged\n- Delivery: Mondays at 9:00, covering the past 7 days\n- Channels list: /add and /remove",
+    "acceptance_criteria": "1. The digest covers the posts of the past 7 days of every watched channel\n2. Each channel shows its top 5 posts by views\n3. A post whose views are 3x the channel's weekly median is flagged\n4. The digest arrives on Monday at 9:00 in the user's time zone\n5. /add and /remove change the list of channels\n6. Each item shows the channel, a one-line excerpt, the views and a link",
+    "brief_started": -120,
+    "status": [[0, "created"], [5, "in_progress"], [132, "pr_review"], [167, "deploying"], [200, "testing"], [230, "completed"]],
+    "waiting_on": [[0, "none"], [132, "ci"], [167, "deploy"], [200, "qa"], [230, "none"]],
+    "pr_number": [[132, 1]],
+    "requirements": [[12, 6]],
+    "requirement_list": ["Watch @northroast, @beanbox_daily and @kaffa_lab; /add and /remove change the list", "Collect every post of the past 7 days with its views", "Rank each channel's posts by views and keep the top 5", "Flag a post as \"took off\" when its views are 3× the channel's weekly median", "Send the digest on Mondays at 9:00 in the user's time zone", "Each item: channel, one-line excerpt, views and a link to the post"]
+  },
+  "steps": {
+    "brief":   {"status": [[-120, "active"], [0, "done"]], "facts": [[0, "Confirmed by", "Dana"], [0, "Questions asked", "3"]]},
+    "plan":    {"status": [[0, "active"], [40, "done"]], "facts": [[12, "Requirements", "6"], [22, "Reusable modules", "tg-channels 0.1.2"], [24, "Platform services", "tg-reader"], [33, "Tasks", "2 — only the new logic"], [36, "Parallel lanes", "2"]]},
+    "install": {"status": [[25, "active"], [38, "done"]], "facts": [[30, "Package", "tg-channels 0.1.2 · reads posts and views"], [33, "Platform service", "tg-reader · access granted"], [38, "Reused from", "Morning Tech Digest"], [226, "Published", "tg-post-ranking 0.1.0 (new module)"]]},
+    "build":   {"status": [[41, "active"], [131, "done"]], "facts": [[131, "Tasks done", "2 / 2"]]},
+    "review":  {"status": [[132, "active"], [165, "done"]], "facts": [[132, "Pull request", "#1"], [160, "CI run 1", "11 / 11 tests passed"]]},
+    "deploy":  {"status": [[167, "active"], [198, "done"]], "facts": [[172, "Server", "edge-eu-2"], [194, "Container", "competitor-digest-bot"], [198, "Health", "200 OK · 91 ms"]]},
+    "verify":  {"status": [[200, "active"], [226, "done"]], "facts": [[225, "Checks", "7 / 7 passed"], [225, "Live bot", "@brimos_demo_second_part_bot"]]},
+    "live":    {"status": [[228, "done"]], "facts": [[228, "Link", "t.me/brimos_demo_second_part_bot"]]}
+  },
+  "reuse": [
+    {"from": 22, "name": "tg-channels", "version": "0.1.2", "kind": "package", "note": "reads posts, views and links from public channels", "origin": "Morning Tech Digest"},
+    {"from": 24, "name": "tg-reader", "version": null, "kind": "platform", "note": "shared Telegram reader, no account of the user needed", "origin": null}
+  ],
+  "tasks": [
+    {"id": "b2d4f6a8-1111-4c3d-8e02-000000000001", "title": "Rank posts by views and flag the ones that took off", "type": "feature",
+     "status": [[30, "backlog"], [40, "todo"], [42, "in_dev"], [98, "in_ci"], [110, "done"]], "worker": "wkr-7a1d5c90e3b2"},
+    {"id": "b2d4f6a8-2222-4c3d-8e02-000000000002", "title": "Monday digest and the /add, /remove commands", "type": "feature",
+     "status": [[32, "backlog"], [40, "todo"], [44, "in_dev"], [116, "in_ci"], [129, "done"]], "worker": "wkr-e40b8f26a1c7"}
+  ],
+  "workers": [
+    {"id": "wkr-7a1d5c90e3b2", "name": "Developer 1", "from": 41, "to": 112},
+    {"id": "wkr-e40b8f26a1c7", "name": "Developer 2", "from": 43, "to": 131},
+    {"id": "wkr-qa-5c3e9a0d17", "name": "QA worker", "from": 201, "to": 226, "qa": true}
+  ],
+  "attempts": [
+    {"id": "run-install-1", "kind": "install", "stage": "install", "task": null, "actor": "Scaffolder", "start": 26, "end": 37},
+    {"id": "run-eng-01", "kind": "engineering", "stage": "build", "task": 1, "actor": "Developer", "start": 42, "end": 110},
+    {"id": "run-eng-02", "kind": "engineering", "stage": "build", "task": 2, "actor": "Developer", "start": 44, "end": 129},
+    {"id": "ci-run-1", "kind": "engineering", "stage": "review", "task": null, "actor": "GitHub CI", "start": 134, "end": 160},
+    {"id": "run-deploy-1", "kind": "deploy", "stage": "deploy", "task": null, "actor": "Deployer", "start": 168, "end": 197},
+    {"id": "run-qa-1", "kind": "qa", "stage": "verify", "task": null, "actor": "QA worker", "start": 201, "end": 225}
+  ],
+  "application": {"id": 108, "service_name": "competitor-digest-bot", "server": "edge-eu-2", "port": 8032,
+                  "status": [[172, "deploying"], [194, "running"]], "sha": "9c2e71b0a4d5f836"},
+  "platform": {"tg-reader": 33},
+  "links": [
+    {"from": 214, "id": 1, "kind": "module_proposal", "title": "tg-post-ranking 0.1.0: rank channel posts by views, flag the ones that took off",
+     "url": "https://github.com/brimos-catalog/tg-post-ranking/pull/1"}
+  ],
+  "catalog_new": [
+    {"from": 226, "name": "tg-post-ranking", "version": "0.1.0", "kind": "package",
+     "description": "Ranks channel posts by views and flags the ones that took off", "origin": "Competitor Digest"}
+  ],
+  "background_extra": [
+    {"project_id": "6b1f0c2e-9a4d-4e57-8c3b-2f1e7a90d1c5", "title": "Water Reminder Bot", "slug": "water-reminder-bot",
+     "story_id": "story-7c41e9a2", "story": "Water reminder bot with daily streak", "ago_days": 2, "took": 600,
+     "server": "edge-eu-2", "port": 8031, "packages": [], "app_id": 107,
+     "user": {"id": 1042, "telegram_id": 700100200, "username": "alex_hydrates", "first_name": "Alex", "last_name": null}}
+  ],
+  "attention": []
+}

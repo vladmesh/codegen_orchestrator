@@ -162,6 +162,16 @@ function platformTone(status: string): DotTone {
   return 'down'
 }
 
+/** Demo build: the platform chip glows when a product starts or stops using the service. */
+function PlatformChip({ count, children }: { count: number; children: React.ReactNode }) {
+  const ref = useFlash<HTMLSpanElement>(String(count), 'teal')
+  return (
+    <span ref={ref} className="inline-flex rounded">
+      {children}
+    </span>
+  )
+}
+
 function PlatformAbsent() {
   return (
     <p className="rounded-md border border-dashed border-violet-700/70 p-3 text-xs text-violet-200/80">
@@ -208,8 +218,8 @@ function Layers({
         ) : (
           <div className="flex flex-wrap gap-2">
             {topology.platform_services.map((s) => (
+              <PlatformChip key={s.name} count={s.products.length}>
               <Chip
-                key={s.name}
                 kind="platform"
                 title={`${s.name}: ${s.status}, used by ${s.products.length} product(s)`}
                 active={
@@ -221,6 +231,7 @@ function Layers({
                 <Dot tone={platformTone(s.status)} />
                 {s.name} · {s.products.length}
               </Chip>
+              </PlatformChip>
             ))}
           </div>
         )}
