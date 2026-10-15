@@ -592,6 +592,7 @@ services:
     image: registry:2.8.3
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_LOG_FORMATTER: json
     volumes:
       - registry-data:/var/lib/registry
     networks:
