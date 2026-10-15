@@ -52,6 +52,7 @@ class Channels:
 
     def settings(self, **overrides: Any) -> SimpleNamespace:
         values = {
+            "api_base_url": "http://api.test",
             "llm_codex_home": str(self.codex_home),
             "claude_code_oauth_token": "claude-oauth-test-token",
             "architect_llm_model": "openai/gpt-5.6-sol",
