@@ -30,7 +30,7 @@ CONFIG_KEYS = {
 
 
 async def tick(step: str) -> dict:
-    startup.init_config(CONFIG_KEYS)
+    await startup.init_config(CONFIG_KEYS)
     api = SchedulerAPIClient()
     stream = RedisStreamClient()
     await stream.connect()

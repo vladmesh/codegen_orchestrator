@@ -67,7 +67,7 @@ def mock_deploy_config_store(monkeypatch):
 
     store = MagicMock(spec=ConfigStore)
     store.get_int.return_value = 3600
-    monkeypatch.setattr(deploy, "_config", store)
+    monkeypatch.setattr(deploy, "system_config", lambda: store)
     return store
 
 

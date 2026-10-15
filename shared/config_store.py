@@ -1,26 +1,23 @@
-"""ConfigStore — read-only client for system_configs with TTL cache.
+"""ConfigStore: an in-memory snapshot of every system config, refreshed off the read path.
 
-Reads operational constants from the API. No business logic — just
-HTTP GET + in-memory caching with TTL.
-
-It is read at service startup, from synchronous code, so it takes the
-synchronous form of the shared transport rather than raw `httpx`: these reads are
-internal API calls and carry the same two headers as every other one.
+`refresh()` replaces the snapshot from one batch read through the async internal
+API client, so a read never does I/O and carries the same two headers as every
+other internal call.
 
 Callers must opt a key into bounded last-known-good reads explicitly. Keys with
-no stale policy fail closed when the source cannot be read.
+no stale policy fail closed when the snapshot cannot be kept fresh.
 """
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-import threading
 import time
 from typing import Any
 
 import httpx
 import structlog
 
-from shared.clients.internal_api import InternalAPISyncClient
+from shared.clients.internal_api import InternalAPIClient
 
 logger = structlog.get_logger()
 
@@ -43,41 +40,93 @@ class BoundedStalePolicy:
 
 
 @dataclass(frozen=True)
-class _CachedConfig:
-    value: Any
-    expires_at: float
+class _Snapshot:
+    values: Mapping[str, Any]
     fetched_at: float
 
 
-class ConfigStore:
-    """Read system configs from API with an in-memory TTL cache.
+@dataclass(frozen=True)
+class _RefreshFailure:
+    reason: str
+    cause: Exception | None
 
-    Normal cache hits use `cache_ttl`. Once a refresh is due and the source is
-    unavailable, keys fail closed unless the caller supplied a BoundedStalePolicy
-    for that exact key.
+
+class ConfigStore:
+    """Every system config as one snapshot that is fresh for `cache_ttl` seconds.
+
+    Before the first refresh, or once the snapshot outlives `cache_ttl`, keys fail
+    closed unless the caller supplied a BoundedStalePolicy for that exact key.
     """
 
     def __init__(
         self,
         api_base_url: str,
-        cache_ttl: int = 30,
+        cache_ttl: float = 30,
         *,
         stale_policies: Mapping[str, BoundedStalePolicy] | None = None,
     ):
-        self._client = InternalAPISyncClient(api_base_url, timeout=10.0)
+        if cache_ttl <= 0:
+            raise ValueError("cache_ttl must be greater than zero")
+        self._client = InternalAPIClient(api_base_url, timeout=10.0)
         self._cache_ttl = cache_ttl
         self._stale_policies = dict(stale_policies or {})
-        self._cache: dict[str, _CachedConfig] = {}
-        self._lock = threading.Lock()
+        self._snapshot: _Snapshot | None = None
+        self._failure: _RefreshFailure | None = None
 
-    def _source_unavailable(self, key: str, reason: str, cause: Exception | None) -> Any:
+    async def refresh(self) -> None:
+        """Replace the snapshot from one read of all keys.
+
+        A failed read keeps the previous snapshot, records why for the reads that
+        find it stale, and raises ConfigStoreUnavailableError.
+        """
+        try:
+            resp = await self._client.get_raw("system-configs/")
+        except httpx.RequestError as exc:
+            raise self._record_failure(f"request failed: {exc}", exc) from exc
+        if resp.status_code != httpx.codes.OK:
+            raise self._record_failure(f"HTTP {resp.status_code}", None)
+        try:
+            body = resp.json()
+            if not isinstance(body, list):
+                raise TypeError(f"expected a list, got {type(body).__name__}")
+            values = {entry["key"]: entry["value"] for entry in body}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise self._record_failure("invalid response body", exc) from exc
+        self._snapshot = _Snapshot(values=values, fetched_at=time.monotonic())
+        self._failure = None
+
+    async def refresh_forever(
+        self, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    ) -> None:
+        """Refresh every half TTL until cancelled; a failed refresh waits for the next one."""
+        # Half the TTL keeps a healthy snapshot fresh while one read takes its time.
+        while True:
+            await sleep(self._cache_ttl / 2)
+            try:
+                await self.refresh()
+            except ConfigStoreUnavailableError as exc:
+                logger.warning("config_store_refresh_failed", error=str(exc))
+
+    async def close(self) -> None:
+        await self._client.close()
+
+    def _record_failure(self, reason: str, cause: Exception | None) -> ConfigStoreUnavailableError:
+        self._failure = _RefreshFailure(reason=reason, cause=cause)
+        return ConfigStoreUnavailableError(f"System config API is unavailable ({reason})")
+
+    def _source_unavailable(self, key: str, snapshot: _Snapshot | None) -> Any:
         """Use a bounded last-known value for explicitly opted-in keys, or fail closed."""
-        with self._lock:
-            cached = self._cache.get(key)
+        failure = self._failure
+        if failure is not None:
+            reason = failure.reason
+        elif snapshot is None:
+            reason = "no snapshot yet"
+        else:
+            reason = f"no refresh within {self._cache_ttl}s"
 
         policy = self._stale_policies.get(key)
-        if cached is not None and policy is not None:
-            stale_age_seconds = max(time.monotonic() - cached.fetched_at, 0.0)
+        if snapshot is not None and policy is not None and key in snapshot.values:
+            stale_age_seconds = max(time.monotonic() - snapshot.fetched_at, 0.0)
             if stale_age_seconds <= policy.max_age_seconds:
                 logger.warning(
                     "config_store_source_unavailable_using_bounded_stale",
@@ -86,7 +135,7 @@ class ConfigStore:
                     stale_age_seconds=round(stale_age_seconds, 3),
                     max_stale_age_seconds=policy.max_age_seconds,
                 )
-                return cached.value
+                return snapshot.values[key]
 
             logger.error(
                 "config_store_source_unavailable_stale_expired",
@@ -98,36 +147,15 @@ class ConfigStore:
 
         raise ConfigStoreUnavailableError(
             f"System config API is unavailable while reading '{key}' ({reason})"
-        ) from cause
+        ) from (failure.cause if failure is not None else None)
 
     def get(self, key: str, default: Any = _DEFAULT_SENTINEL) -> Any:
-        """Get a config value by key. Raises KeyError if not found and no default."""
-        with self._lock:
-            cached = self._cache.get(key)
-            if cached and cached.expires_at > time.monotonic():
-                return cached.value
-
-        try:
-            resp = self._client.get_raw(f"system-configs/{key}")
-        except httpx.RequestError as exc:
-            return self._source_unavailable(key, f"request failed: {exc}", exc)
-
-        if resp.status_code == httpx.codes.OK:
-            try:
-                value = resp.json()["value"]
-            except (KeyError, TypeError, ValueError) as exc:
-                return self._source_unavailable(key, "invalid response body", exc)
-            now = time.monotonic()
-            with self._lock:
-                self._cache[key] = _CachedConfig(
-                    value=value,
-                    expires_at=now + self._cache_ttl,
-                    fetched_at=now,
-                )
-            return value
-        if resp.status_code != httpx.codes.NOT_FOUND:
-            return self._source_unavailable(key, f"HTTP {resp.status_code}", None)
-
+        """Get a config value from the snapshot. Raises KeyError if not found and no default."""
+        snapshot = self._snapshot
+        if snapshot is None or time.monotonic() - snapshot.fetched_at >= self._cache_ttl:
+            return self._source_unavailable(key, snapshot)
+        if key in snapshot.values:
+            return snapshot.values[key]
         if default is not _DEFAULT_SENTINEL:
             return default
         raise KeyError(f"System config '{key}' not found")
@@ -145,11 +173,11 @@ class ConfigStore:
         return float(value)
 
     def validate_required(self, keys: list[str]) -> None:
-        """Validate that all required config keys exist in the DB.
+        """Validate that all required config keys exist in the snapshot.
 
-        Raises RuntimeError listing all missing keys — call at service startup.
-        A key that is declared in scripts/system_configs.yaml is missing only if
-        the seeding step of the deploy did not run.
+        Raises RuntimeError listing all missing keys; call at service startup,
+        after the first refresh. A key that is declared in scripts/system_configs.yaml
+        is missing only if the seeding step of the deploy did not run.
         """
         missing = []
         for key in keys:

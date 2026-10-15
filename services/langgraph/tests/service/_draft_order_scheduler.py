@@ -17,7 +17,7 @@ async def run():
     api = SchedulerAPIClient()
     stream = RedisStreamClient()
     await stream.connect()
-    startup.init_config(
+    await startup.init_config(
         {
             "scheduler.scaffold_inflight_ttl",
             "scheduler.service_template_source",

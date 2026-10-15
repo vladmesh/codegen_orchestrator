@@ -22,7 +22,7 @@ async def run():
     await stream.connect()
     story_id = os.environ["INITIAL_OWNER_STORY"]
     mode = os.environ["INITIAL_OWNER_MODE"]
-    startup.init_config({"supervisor.resource_wait_timeout_minutes"})
+    await startup.init_config({"supervisor.resource_wait_timeout_minutes"})
     get_stories = api.get_stories_by_status
     list_notices = api.list_stories_owing_owner_notification
 

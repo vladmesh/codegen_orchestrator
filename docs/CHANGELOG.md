@@ -17,6 +17,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   or QA start with `WorkerCreateAckError`; a successful ack must name its worker.
 - The bot mints dashboard links in one function and reads projects, servers, users and PO replies as typed
   models, so project details show the project title instead of "Unknown".
+- `ConfigStore` reads one snapshot of every system config, refreshed by one batch read per process off
+  the call path, so scheduler loops and the deploy job never block the event loop on a config read.
 
 ## 2026-10-14
 

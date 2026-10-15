@@ -26,7 +26,7 @@ async def run():
             plan = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY])
             await _execute_qa_handoff(api, stream, run.id, plan, structlog.get_logger())
         elif mode == "route":
-            startup.init_config(
+            await startup.init_config(
                 {"supervisor.qa_failure_max_fingerprint_attempts", "supervisor.qa_max_fix_attempts"}
             )
             read_stories = api.get_stories_by_status

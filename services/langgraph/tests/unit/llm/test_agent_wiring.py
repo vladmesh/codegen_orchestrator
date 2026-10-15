@@ -272,6 +272,7 @@ class TestPoStartup:
         with (
             patch.object(main, "api_client", _Configs()),
             patch.object(main, "get_settings", return_value=settings),
+            patch.object(main, "start_system_config", AsyncMock()),
             patch.object(main, "listen_provisioner_triggers", _idle),
             patch.object(main, "listen_worker_events", _idle),
             capture_logs() as logs,

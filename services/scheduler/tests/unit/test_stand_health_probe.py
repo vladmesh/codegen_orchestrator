@@ -1,5 +1,6 @@
 """Tests for the Stand one-shot scheduler health probe."""
 
+import asyncio
 import os
 
 os.environ.setdefault("HEALTH_CHECK_INTERVAL", "60")
@@ -14,11 +15,18 @@ async def test_probe_initializes_config_before_loading_and_checking_server(monke
     events: list[str] = []
     server = object()
 
-    def init_config(required_keys):
+    class Config:
+        async def refresh_forever(self):
+            events.append("refreshing")
+            await asyncio.Event().wait()
+
+    async def init_config(required_keys):
         assert required_keys == stand_health_probe.startup.INFRASTRUCTURE_REQUIRED_KEYS
         events.append("init_config")
+        return Config()
 
     async def get_server(target_handle: str):
+        await asyncio.sleep(0)
         events.append(f"get_server:{target_handle}")
         return server
 
@@ -32,7 +40,7 @@ async def test_probe_initializes_config_before_loading_and_checking_server(monke
 
     await stand_health_probe.probe("bitlaunch-target")
 
-    assert events == ["init_config", "get_server:bitlaunch-target", "check_server"]
+    assert events == ["init_config", "refreshing", "get_server:bitlaunch-target", "check_server"]
 
 
 def test_main_requires_target_handle(monkeypatch):

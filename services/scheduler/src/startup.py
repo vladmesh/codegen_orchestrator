@@ -1,7 +1,7 @@
 """Scheduler startup: validate process-owned configs and expose ConfigStore.
 
-Call init_config() with the process key set before any workers start.
-Other modules import `config` and use `config.get_int(...)`.
+Await init_config() with the process key set before any workers start.
+Other modules read the snapshot through `get_config().get_int(...)`.
 """
 
 from collections.abc import Collection
@@ -105,11 +105,11 @@ def get_config() -> ConfigStore:
     return config
 
 
-def init_config(required_keys: Collection[str]) -> ConfigStore:
-    """Initialize ConfigStore and validate the requested process keys.
+async def init_config(required_keys: Collection[str]) -> ConfigStore:
+    """Build the process ConfigStore, await its first snapshot, and validate the requested keys.
 
-    Raises RuntimeError if any required config is missing.
-    Must be called before workers start.
+    Raises ConfigStoreUnavailableError while the config API cannot answer and
+    RuntimeError if any required config is missing. Must be awaited before workers start.
     """
     global config  # noqa: PLW0603
     api_base_url = os.getenv("API_BASE_URL")
@@ -117,9 +117,15 @@ def init_config(required_keys: Collection[str]) -> ConfigStore:
         raise RuntimeError("API_BASE_URL is not set")
 
     owned_keys = frozenset(required_keys)
-    config = ConfigStore(
+    store = ConfigStore(
         api_base_url,
         stale_policies=_stale_policies_for(owned_keys),
     )
-    config.validate_required(sorted(owned_keys))
-    return config
+    try:
+        await store.refresh()
+        store.validate_required(sorted(owned_keys))
+    except BaseException:
+        await store.close()
+        raise
+    config = store
+    return store
