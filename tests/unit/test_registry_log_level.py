@@ -22,7 +22,9 @@ from tests.unit.test_production_compose_mounts import PROD, _render
 
 ROOT = Path(__file__).parents[2]
 PROMTAIL = ROOT / "infra/promtail.yml"
-ENTRY = re.compile(r"^\S+\t(\{.*?\})\t(.*)$")
+#: A `--dry-run` entry: timestamp, label set, line. The columns go through a tabwriter that
+#: pads with tabs, so a cell whose width is a multiple of 8 is followed by no separator.
+ENTRY = re.compile(r"^[^\s{]+\s*(\{[^{}]*\})\s*(\{.*\})$")
 LABEL = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
 
 
