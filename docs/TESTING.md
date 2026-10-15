@@ -481,6 +481,20 @@ candidate: its selection reads the catalog at `HEAD`, which this orchestrator re
 install from. The read-only `PLATFORM_SERVICES_DEPLOY_KEY` is used only for a same-repository pull
 request or a main push, and checkouts keep no credentials.
 
+The legs fit the pull request jobs' time because the stages are not all serial and the images are
+ready early. Product CI and then the cold integration run in a thread of their own beside the main
+images, platform, deployment and scenario: they share no compose project, and the two of them share
+`tests-integration`, so they stay in order. The main images build beside the platform bring-up. The
+job builds the orchestrator API image during setup through the layer cache of
+`services/api/Dockerfile`, on a builder of its own, and the proof starts its stack from that image.
+That image's `org.codegen.runner_proof_checkout` label must name the checkout, and Compose builds the
+image itself if the job did not. The harness's waits poll every half second with their own timeouts.
+Nothing frees runner disk first: the runner starts with far more free space than the proof's images
+take. The evidence's `timeline` (`tests/runner/timeline.py`) gives every stage, wait and executor
+command its start, end and thread, and every command record carries both too. What remains is mostly
+the real installs and, in the coexistence leg, the product's own 60-second timers: the post waits for
+the next tg-channels poll slot and the reminder for the second reminders slot after it.
+
 ### Docker layer cache
 
 Every image a CI job builds reads and writes the buildx layer cache of its **Dockerfile**, in the

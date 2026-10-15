@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-15
+
+- Runner Proof legs take about 5 and 7 minutes instead of 10 and 13: product CI runs beside the
+  deployment, the API image comes from the layer cache, and the evidence times every stage.
+
 ## 2026-10-14
 
 - Image builds and worker launches are quieter: apt-get stages declare `ARG DEBIAN_FRONTEND=noninteractive`

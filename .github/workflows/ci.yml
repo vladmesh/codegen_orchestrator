@@ -754,12 +754,6 @@ jobs:
             exit 1
           fi
 
-      - name: Free runner disk for product, platform and registry images
-        timeout-minutes: 3
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
-          df -h /
-
       # Docker Hub pulls go through the credential-free public mirror before any container
       # starts; image references stay unchanged and the daemon falls back to Docker Hub.
       - name: Pull Docker Hub images through the public mirror
@@ -776,6 +770,37 @@ jobs:
           EOF
           sudo systemctl restart docker
           docker info --format '{{json .RegistryConfig.Mirrors}}' | grep -F mirror.gcr.io
+
+      # The gha layer cache needs the Actions runtime token, which only actions receive.
+      - name: Expose the Actions cache to Buildx
+        timeout-minutes: 1
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4
+
+      # Beside the setup steps, after the daemon restart: the orchestrator API image through
+      # the layer cache of services/api/Dockerfile (scripts/ci_build_cache.py), on a builder of
+      # its own so the product's and the harness's builds keep the daemon's builder; then the
+      # proof's other orchestrator images and the platform auth build, whose cache the
+      # harness's own build of it reuses.
+      - name: Start the orchestrator API and platform auth builds in the background
+        timeout-minutes: 1
+        env:
+          RUNNER_INTERNAL_API_KEY: unused-by-a-build
+          RUNNER_API_PORT: "1"
+          RUNNER_REDIS_PORT: "1"
+          RUNNER_ORCHESTRATOR_SHA: ${{ env.ORCHESTRATOR_SHA }}
+        run: |
+          compose="docker compose -f tests/runner/compose.orchestrator.yml"
+          python3 scripts/ci_build_cache.py compose-override tests/runner/compose.orchestrator.yml "$RUNNER_TEMP/build-cache.yml"
+          (
+            status=0
+            docker buildx create --name runner-proof-api --driver docker-container --bootstrap \
+              && BUILDX_BUILDER=runner-proof-api $compose -f "$RUNNER_TEMP/build-cache.yml" build \
+              || status=$?
+            echo "$status" > "$RUNNER_TEMP/api-image.status.part"
+            mv "$RUNNER_TEMP/api-image.status.part" "$RUNNER_TEMP/api-image.status"
+            $compose pull db redis
+            docker build --build-arg SERVICE=auth .runner/platform
+          ) > "$RUNNER_TEMP/image-preparation.log" 2>&1 &
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -797,6 +822,18 @@ jobs:
           uv sync --frozen
           .venv/bin/python -c 'import json, sys; from importlib.metadata import distribution as d; c = json.loads(d("codegen-kit-tooling").read_text("direct_url.json"))["vcs_info"]["commit_id"]; sys.exit(c != sys.argv[1])' "$KIT_SHA"
 
+      # The proof starts its API stack from that image. When the build failed or is still
+      # running after 50 s, Compose builds the image itself and only the time is lost.
+      - name: Wait for the background orchestrator API build
+        timeout-minutes: 1
+        run: |
+          status="$RUNNER_TEMP/api-image.status"
+          if timeout 50 bash -c "until [ -f '$status' ]; do sleep 1; done"; then
+            echo "orchestrator API image build exit status: $(cat "$status")"
+          else
+            echo "orchestrator API image build still running; the proof builds it itself"
+          fi
+
       - name: Run the runner proof through the activated snapshot and the stored plan
         id: runner-proof
         run: >-
@@ -816,6 +853,15 @@ jobs:
           name: runner-proof-${{ matrix.leg }}-${{ env.ORCHESTRATOR_SHA }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runner-proof
           if-no-files-found: error
+
+      # The runner starts with far more free disk than the proof's images take, so nothing
+      # is deleted first; this shows what is left.
+      - name: Report runner disk and the background image builds
+        if: always()
+        timeout-minutes: 1
+        run: |
+          df -h /
+          tail -n 20 "$RUNNER_TEMP/image-preparation.log"
 
       - name: Require passed SHA-bound evidence
         timeout-minutes: 2
