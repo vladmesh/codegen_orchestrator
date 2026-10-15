@@ -62,6 +62,22 @@ scrape_configs:
           source: level
           replace: warning
 
+      # The registry logs every 404 for a manifest, blob or repository that is not pushed
+      # yet at error level; that miss is the expected answer to a lookup, so it ships as info.
+      - match:
+          selector: '{compose_service="registry"}'
+          stages:
+            - json:
+                expressions:
+                  status: '"http.response.status"'
+                  err_code: '"err.code"'
+            - template:
+                source: level
+                template: >-
+                  {{ if and (eq (print .status) "404")
+                  (eq (print .err_code) "manifest unknown" "blob unknown" "name unknown")
+                  }}info{{ else if .Value }}{{ .Value }}{{ end }}
+
       # Add extracted fields as labels
       - labels:
           service:

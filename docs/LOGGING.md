@@ -16,6 +16,10 @@ Services (structlog JSON) → stdout → Docker → Promtail → Loki → Grafan
 All services output `LOG_FORMAT=json` in Docker. Promtail reads log files
 non-destructively (`docker logs` still works).
 
+The registry logs JSON at distribution's own levels, so `docker logs registry` shows a 404 for a
+manifest, blob or repository not pushed yet as error; promtail classifies that miss as `info` in
+Loki and Grafana, and every other registry error stays `error`.
+
 ### Correlation ID propagation
 - `BaseMessage` (shared/contracts/base.py) auto-generates `correlation_id` per message
 - All consumers bind it via `bind_message_context()` on message receipt

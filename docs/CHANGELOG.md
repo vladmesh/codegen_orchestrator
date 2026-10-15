@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-15
 
+- The registry logs JSON and promtail ships its 404 manifest, blob and repository misses at info, so an image
+  not pushed yet stops showing as an ERROR in Grafana; 5xx and auth refusals stay error.
 - admin-frontend's nginx resolves upstreams per request, so a late or missing api, worker-manager or
   grafana answers 502 instead of stopping nginx; architect starts only once api and redis are healthy.
 - The API sends user timestamps with a UTC designator and the admin UI reads timezone-less API times as UTC,
