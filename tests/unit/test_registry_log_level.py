@@ -26,6 +26,11 @@ PROMTAIL = ROOT / "infra/promtail.yml"
 #: pads with tabs, so a cell whose width is a multiple of 8 is followed by no separator.
 ENTRY = re.compile(r"^[^\s{]+\s*(\{[^{}]*\})\s*(\{.*\})$")
 LABEL = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
+#: The key of a trailing entry nobody asserts on. Promtail's dry-run logger closes its channel on
+#: shutdown without waiting for its writer goroutine (client/logger.go `Stop`), so the process can
+#: exit while it prints the last stdin entry. The entry handlers in front of it are unbuffered and
+#: drain on stop, so the logger has flushed every entry before the one it received last.
+SENTINEL = "sentinel"
 
 
 @pytest.mark.docker
@@ -93,7 +98,7 @@ def _promtail(tmp_path: Path, compose_service: str, entries: list[dict], key: st
                 "time": "2026-01-02T03:04:05.1Z",
             }
         )
-        for entry in entries
+        for entry in [*entries, {**entries[-1], key: SENTINEL}]
     ]
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     image = compose["services"]["promtail"]["image"]
@@ -117,13 +122,15 @@ def _promtail(tmp_path: Path, compose_service: str, entries: list[dict], key: st
         if match := ENTRY.match(line):
             entry = json.loads(match[2])
             labels[entry[key]] = dict(LABEL.findall(match[1]))
+    labels.pop(SENTINEL, None)
     assert len(labels) == len(entries), result.stdout + result.stderr
     return labels
 
 
 @pytest.mark.docker
 @pytest.mark.timeout(240)
-def test_promtail_ships_registry_misses_as_info_and_keeps_every_other_level(tmp_path):
+@pytest.mark.parametrize("run", range(5))
+def test_promtail_ships_registry_misses_as_info_and_keeps_every_other_level(tmp_path, run):
     registry = [
         _registry_error(
             "manifest-get-miss",

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-15
 
+- The promtail log-level test feeds an unasserted last stdin entry, since promtail's dry-run logger can exit
+  mid-print of the last one, and runs five times so a flake shows in CI.
 - The registry logs JSON and promtail ships its 404 manifest, blob and repository misses at info, so an image
   not pushed yet stops showing as an ERROR in Grafana; 5xx and auth refusals stay error.
 - admin-frontend's nginx resolves upstreams per request, so a late or missing api, worker-manager or
