@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-15
 
+- The API sends user timestamps with a UTC designator and the admin UI reads timezone-less API times as UTC,
+  so `Last seen` is right in any browser zone; a `pending://` repository shows as not created yet.
 - `GET /tasks/` takes `install_state`, and catalog-install recovery lists only running installs in
   `in_dev` and `cancelled` instead of every task in both statuses on each dispatcher cycle.
 - Runner Proof legs take about 5 and 7 minutes instead of 10 and 13: product CI runs beside the

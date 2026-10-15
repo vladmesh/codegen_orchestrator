@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { ConfirmButton } from '@/components/ui/ConfirmButton'
+import { RepositoryLink } from '@/components/ui/RepositoryLink'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { WorkspaceBrowser } from '@/components/workspace'
 import { formatDate } from '@/lib/utils'
@@ -536,23 +537,15 @@ function RepositoriesSection({
 
       {repositories.map((repo) => {
         const repoApps = appsByRepo[repo.id] ?? []
-        const githubUrl = repo.git_url?.replace(/\.git$/, '')
         return (
           <Card key={repo.id}>
             <div className="flex items-center gap-2">
               <span className="font-medium text-foreground">{repo.name}</span>
               <StatusBadge status={repo.role} />
               <span className="text-xs text-muted-foreground">{repo.visibility}</span>
-              {githubUrl && (
-                <a
-                  href={githubUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ml-auto text-sm text-primary hover:underline"
-                >
-                  GitHub
-                </a>
-              )}
+              <RepositoryLink gitUrl={repo.git_url} className="ml-auto text-sm">
+                GitHub
+              </RepositoryLink>
             </div>
 
             {/* Applications for this repo */}
