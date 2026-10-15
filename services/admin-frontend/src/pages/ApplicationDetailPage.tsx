@@ -287,7 +287,12 @@ export function ApplicationDetailPage() {
           <p className="text-sm text-muted-foreground">Repository</p>
           <p className="mt-1 text-foreground">
             {repo ? (
-              <RepositoryLink gitUrl={repo.git_url}>{repo.name}</RepositoryLink>
+              <>
+                {repo.name}
+                <RepositoryLink gitUrl={repo.git_url} className="ml-2 text-sm">
+                  GitHub
+                </RepositoryLink>
+              </>
             ) : (
               app.repo_id
             )}

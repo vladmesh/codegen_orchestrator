@@ -62,6 +62,7 @@ from .schemas.admin_console import (
     StoryLinkView,
     TopologyResponse,
 )
+from .schemas.utc import assume_utc
 
 CONTROL_HOST_ROLE = "control_host"
 JOURNEY_LIST_LIMIT = 50
@@ -105,7 +106,7 @@ def _aware(value: datetime | None) -> datetime | None:
     """Timestamps come from both naive and tz-aware columns; compare them all as UTC."""
     if value is None:
         return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return assume_utc(value)
 
 
 def _min(values: Iterable[datetime | None]) -> datetime | None:
