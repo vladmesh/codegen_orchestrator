@@ -2,6 +2,9 @@
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.server import ServerDTO
+
 from .texts import text
 
 # Callback data prefixes
@@ -83,26 +86,30 @@ def back_to_menu_keyboard(locale: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[main_menu_button(locale)]])
 
 
-def projects_list_keyboard(projects: list[dict], locale: str) -> InlineKeyboardMarkup:
+def projects_list_keyboard(projects: list[ProjectDTO], locale: str) -> InlineKeyboardMarkup:
     """Build projects list keyboard with details buttons.
 
     Args:
-        projects: List of project dicts with 'id' and 'title' keys.
+        projects: The user's projects as the API lists them.
         locale: The user's locale (`texts.user_locale`).
     """
     keyboard = []
 
     for project in projects[:10]:  # Limit to 10 projects
-        project_id = project.get("id", "")
-        name = project.get("title", "Unknown")
-        status = project.get("status", "")
-        status_emoji = "✅" if status == "active" else "📝" if status == "draft" else "⚪"
+        status = project.status
+        status_emoji = (
+            "✅"
+            if status == ProjectStatus.ACTIVE
+            else "📝"
+            if status == ProjectStatus.DRAFT
+            else "⚪"
+        )
 
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    f"{status_emoji} {name}",
-                    callback_data=f"{PREFIX_PROJECT}:{ACTION_DETAILS}:{project_id}",
+                    f"{status_emoji} {project.title}",
+                    callback_data=f"{PREFIX_PROJECT}:{ACTION_DETAILS}:{project.id}",
                 )
             ]
         )
@@ -136,11 +143,11 @@ def project_details_keyboard(project_id: str, locale: str) -> InlineKeyboardMark
     return InlineKeyboardMarkup(keyboard)
 
 
-def servers_list_keyboard(servers: list[dict], locale: str) -> InlineKeyboardMarkup:
+def servers_list_keyboard(servers: list[ServerDTO], locale: str) -> InlineKeyboardMarkup:
     """Build servers list with back button.
 
     Args:
-        servers: List of server dicts.
+        servers: The managed servers as the API lists them.
         locale: The user's locale (`texts.user_locale`).
     """
     # Servers displayed as text, only back button needed

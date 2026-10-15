@@ -27,6 +27,7 @@ from shared.contracts.dto.worker import (
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
+    CreateWorkerResponse,
     DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
@@ -112,6 +113,10 @@ class WorkerOutputDecodeError(Exception):
     poison payload surfaces as an explicit invalid result instead of masquerading
     as a transient timeout.
     """
+
+
+class WorkerCreateAckError(Exception):
+    """worker-manager's create acknowledgement broke the `CreateWorkerResponse` contract."""
 
 
 def _invalid_worker_result(request_id: str, worker_id: str | None) -> SpawnResult:
@@ -494,6 +499,36 @@ async def _wait_for_response(
                 # ACK non-matching messages so they don't pile up
                 await redis_client.xack(stream, group_name, msg_id)
     return None
+
+
+async def _wait_for_create_ack(
+    redis_client: redis.Redis, group_name: str, consumer_id: str, request_id: str
+) -> CreateWorkerResponse | None:
+    """Wait for the create ack of `request_id` and validate it once.
+
+    None on timeout. An ack that breaks the contract raises `WorkerCreateAckError`.
+    """
+    raw = await _wait_for_response(
+        redis_client,
+        group_name,
+        consumer_id,
+        request_id,
+        CREATION_TIMEOUT,
+        group_start_id="$",
+    )
+    if raw is None:
+        return None
+    try:
+        ack = CreateWorkerResponse.model_validate(raw)
+    except ValidationError as e:
+        raise WorkerCreateAckError(
+            f"invalid create ack for request {request_id}: {safe_validation_errors(e)}"
+        ) from e
+    if ack.request_id != request_id:
+        raise WorkerCreateAckError(
+            f"create ack for request {ack.request_id} answered request {request_id}"
+        )
+    return ack
 
 
 async def await_turn_output(
@@ -911,24 +946,20 @@ async def request_spawn(
         logger.info("worker_spawn_requested", request_id=request_id, repo=repo)
 
         # 3. Wait for early ACK (worker_id) — should be near-instant
-        create_resp = await _wait_for_response(
-            redis_client,
-            group_name,
-            consumer_id,
-            request_id,
-            CREATION_TIMEOUT,
-            group_start_id="$",
-        )
+        try:
+            create_resp = await _wait_for_create_ack(
+                redis_client, group_name, consumer_id, request_id
+            )
+        except WorkerCreateAckError as e:
+            return SpawnResult(request_id, False, -1, f"Creation failed: {e}")
 
-        if not create_resp:
+        if create_resp is None:
             return SpawnResult(request_id, False, -1, "Timeout waiting for container creation")
 
-        if not create_resp.get("success"):
-            return SpawnResult(
-                request_id, False, -1, f"Creation failed: {create_resp.get('error')}"
-            )
+        if not create_resp.success:
+            return SpawnResult(request_id, False, -1, f"Creation failed: {create_resp.error}")
 
-        worker_id = create_resp.get("worker_id")
+        worker_id = create_resp.worker_id
         logger.info("worker_ack_received", request_id=request_id, worker_id=worker_id)
         await record_worker_on_attempt(ownership.attempt_id, worker_id)
         await _register_story_worker(redis_client, worker_id, story.story_id)

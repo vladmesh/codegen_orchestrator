@@ -122,7 +122,7 @@ async def test_published_create_records_start_before_a_later_redis_error():
     with (
         patch("src.clients.qa_worker.redis.from_url", return_value=redis_client),
         patch(
-            "src.clients.qa_worker._wait_for_response",
+            "src.clients.qa_worker._wait_for_create_ack",
             new_callable=AsyncMock,
             side_effect=RuntimeError("redis failed after create"),
         ),

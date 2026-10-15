@@ -1,6 +1,7 @@
 """Production Application dispatch, fake Telegram HTTP, real protected PO Redis."""
 
 import asyncio
+from datetime import UTC, datetime
 import json
 import os
 from unittest.mock import AsyncMock
@@ -10,6 +11,7 @@ from telegram import Update
 from telegram.ext import Application
 from telegram.request import BaseRequest
 
+from shared.contracts.dto.user import UserDTO
 from shared.contracts.queues.po import POInputMessage, POResponse, to_flat_fields
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE
 from shared.redis import RedisStreamClient
@@ -67,6 +69,15 @@ class TelegramTransport(BaseRequest):
                 await self.changed.wait()
 
 
+def _registered(telegram_id: int, is_admin: bool) -> UserDTO:
+    return UserDTO(
+        id=telegram_id,
+        telegram_id=telegram_id,
+        is_admin=is_admin,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
 def update(app, number, user_id, text=None, callback=None):
     message = {
         "message_id": number,
@@ -101,7 +112,7 @@ async def dispatch(monkeypatch):
     await client.redis.flushdb()
     monkeypatch.setattr(main, "_stream_client", client)
     monkeypatch.setattr(
-        middleware, "_check_user_in_db", AsyncMock(return_value={"is_admin": False})
+        middleware, "_check_user_in_db", AsyncMock(side_effect=lambda uid: _registered(uid, False))
     )
     wire = TelegramTransport()
     builder = Application.builder
@@ -199,7 +210,7 @@ async def test_admin_callback_command_and_input_remain_ordered_and_authorized(
         middleware,
         "_check_user_in_db",
         AsyncMock(
-            side_effect=lambda uid: {"is_admin": uid == 201} if uid != 203 else None,
+            side_effect=lambda uid: _registered(uid, uid == 201) if uid != 203 else None,
         ),
     )
     monkeypatch.setattr(middleware, "_upsert_user", AsyncMock(return_value=False))

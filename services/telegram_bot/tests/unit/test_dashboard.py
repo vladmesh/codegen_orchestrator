@@ -7,14 +7,54 @@ os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token-for-unit-tests")
 os.environ.setdefault("LK_DOMAIN", "https://lk.test.example.com")
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 import pytest
 
+from shared.contracts.dto.project import ProjectDTO
 from src.keyboards import (
     PREFIX_DASHBOARD,
     main_menu_keyboard,
 )
+
+LK_DOMAIN = "https://lk.test.example.com"
+PROJECT = ProjectDTO(
+    id=uuid.uuid4(),
+    title="Test",
+    slug="test",
+    status="active",
+    owner_id=1,
+    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+)
+
+
+class FakeRedis:
+    """Records what is stored, with its expiry, as Redis would hold it."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, tuple[str, int]] = {}
+
+    async def set(self, key: str, value: str, *, ex: int) -> None:
+        self.values[key] = (value, ex)
+
+
+def _minting(projects: list[ProjectDTO]):
+    api = MagicMock()
+    api.list_projects = AsyncMock(return_value=projects)
+    settings = MagicMock(lk_domain=LK_DOMAIN)
+    return (
+        patch("src.dashboard.api_client", api),
+        patch("src.dashboard.get_settings", return_value=settings),
+    )
+
+
+def _assert_one_time_token(redis: FakeRedis, url: str) -> None:
+    [(key, (value, ttl))] = redis.values.items()
+    assert key.startswith("lk_token:")
+    assert (value, ttl) == ("42", 300)
+    assert url == f"{LK_DOMAIN}/auth?token={key.removeprefix('lk_token:')}"
 
 
 class TestMainMenuDashboardButton:
@@ -43,38 +83,15 @@ class TestDashboardCommand:
         update = MagicMock()
         update.effective_user.id = 42
         update.message.reply_text = AsyncMock()
+        redis = FakeRedis()
+        api, settings = _minting([PROJECT])
 
-        context = MagicMock()
+        with patch("src.main._stream_client", MagicMock(redis=redis)), api, settings:
+            await dashboard(update, MagicMock())
 
-        mock_redis = AsyncMock()
-
-        with (
-            patch("src.main._stream_client") as mock_client,
-            patch("src.main.api_client") as mock_api,
-            patch("src.main.get_settings") as mock_settings,
-        ):
-            mock_client.redis = mock_redis
-            mock_api.get_json = AsyncMock(return_value=[{"id": "proj-1", "name": "Test"}])
-            mock_settings.return_value.lk_domain = "https://lk.test.example.com"
-
-            await dashboard(update, context)
-
-        # Verify Redis set was called with lk_token:* pattern, TTL 300
-        mock_redis.set.assert_called_once()
-        call_args = mock_redis.set.call_args
-        key = call_args[0][0]
-        value = call_args[0][1]
-        assert key.startswith("lk_token:")
-        assert value == "42"
-        assert call_args[1]["ex"] == 300
-
-        # Verify reply contains inline button with URL
-        update.message.reply_text.assert_called_once()
-        call_kwargs = update.message.reply_text.call_args[1]
-        reply_markup = call_kwargs["reply_markup"]
-        buttons = [btn for row in reply_markup.inline_keyboard for btn in row]
-        assert len(buttons) == 1
-        assert buttons[0].url.startswith("https://lk.test.example.com/auth?token=")
+        reply_markup = update.message.reply_text.call_args.kwargs["reply_markup"]
+        [button] = [btn for row in reply_markup.inline_keyboard for btn in row]
+        _assert_one_time_token(redis, button.url)
 
     @pytest.mark.asyncio
     async def test_dashboard_no_projects_shows_message(self):
@@ -85,21 +102,16 @@ class TestDashboardCommand:
             update.effective_user.id = 42
             update.effective_user.language_code = language_code
             update.message.reply_text = AsyncMock()
+            redis = FakeRedis()
+            api, settings = _minting([])
 
-            context = MagicMock()
-
-            with (
-                patch("src.main._stream_client") as mock_client,
-                patch("src.main.api_client") as mock_api,
-            ):
-                mock_client.redis = AsyncMock()
-                mock_api.get_json = AsyncMock(return_value=[])
-
-                await dashboard(update, context)
+            with patch("src.main._stream_client", MagicMock(redis=redis)), api, settings:
+                await dashboard(update, MagicMock())
 
             update.message.reply_text.assert_called_once()
             reply_text = update.message.reply_text.call_args[0][0]
             assert expected in reply_text.lower()
+            assert redis.values == {}
 
     @pytest.mark.asyncio
     async def test_dashboard_no_redis_raises(self):
@@ -119,46 +131,53 @@ class TestDashboardCommand:
 class TestDashboardCallback:
     """Test dashboard callback from inline button."""
 
-    @pytest.mark.asyncio
-    async def test_callback_generates_token_and_sends_url(self):
-        from src.handlers import handle_callback_query
-
+    @staticmethod
+    def _callback():
         query = AsyncMock()
         query.data = PREFIX_DASHBOARD
         query.from_user.id = 42
         query.from_user.username = "testuser"
-
         update = MagicMock()
         update.callback_query = query
+        update.effective_user.language_code = "en"
+        return update, query
 
-        context = MagicMock()
+    @pytest.mark.asyncio
+    async def test_callback_generates_token_and_sends_url(self):
+        from src.handlers import handle_callback_query
 
-        mock_redis = AsyncMock()
+        update, query = self._callback()
+        redis = FakeRedis()
+        api, settings = _minting([PROJECT])
 
         with (
             patch("src.handlers.is_admin", return_value=False),
-            patch("src.handlers._get_stream_client") as mock_get_client,
-            patch("src.handlers.api_client") as mock_api,
-            patch("src.handlers.get_settings") as mock_settings,
+            patch("src.handlers._get_stream_client", return_value=MagicMock(redis=redis)),
+            api,
+            settings,
         ):
-            mock_client = MagicMock()
-            mock_client.redis = mock_redis
-            mock_get_client.return_value = mock_client
-            mock_api.get_json = AsyncMock(return_value=[{"id": "proj-1"}])
-            mock_settings.return_value.lk_domain = "https://lk.test.example.com"
+            await handle_callback_query(update, MagicMock())
 
-            await handle_callback_query(update, context)
+        reply_markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+        [url] = [btn.url for row in reply_markup.inline_keyboard for btn in row if btn.url]
+        _assert_one_time_token(redis, url)
 
-        # Verify Redis set
-        mock_redis.set.assert_called_once()
-        key = mock_redis.set.call_args[0][0]
-        assert key.startswith("lk_token:")
+    @pytest.mark.asyncio
+    async def test_callback_without_projects_mints_nothing(self):
+        from src.handlers import handle_callback_query
+        from src.texts import text
 
-        # Verify edit_message_text with URL button
-        query.edit_message_text.assert_called_once()
-        call_kwargs = query.edit_message_text.call_args[1]
-        reply_markup = call_kwargs["reply_markup"]
-        buttons = [btn for row in reply_markup.inline_keyboard for btn in row]
-        url_buttons = [btn for btn in buttons if btn.url]
-        assert len(url_buttons) == 1
-        assert url_buttons[0].url.startswith("https://lk.test.example.com/auth?token=")
+        update, query = self._callback()
+        redis = FakeRedis()
+        api, settings = _minting([])
+
+        with (
+            patch("src.handlers.is_admin", return_value=False),
+            patch("src.handlers._get_stream_client", return_value=MagicMock(redis=redis)),
+            api,
+            settings,
+        ):
+            await handle_callback_query(update, MagicMock())
+
+        assert query.edit_message_text.call_args.args[0] == text("en", "no_projects_md")
+        assert redis.values == {}

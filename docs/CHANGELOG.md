@@ -13,6 +13,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   action's error is kept instead of a later always() step's error or the cleanup tail.
 - A queue message inherits the bound correlation id by default, so a chain of messages carries one
   id; `periodic_loop` unbinds it before every cycle, so no cycle reuses a startup or earlier id.
+- The worker-create ack is validated once into `CreateWorkerResponse`, so a malformed ack fails the spawn
+  or QA start with `WorkerCreateAckError`; a successful ack must name its worker.
+- The bot mints dashboard links in one function and reads projects, servers, users and PO replies as typed
+  models, so project details show the project title instead of "Unknown".
 
 ## 2026-10-14
 

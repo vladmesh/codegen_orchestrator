@@ -43,6 +43,7 @@ from shared.log_config import setup_logging  # noqa: E402
 
 from .clients.api import api_client  # noqa: E402
 from .config import get_settings  # noqa: E402
+from .dashboard import mint_dashboard_url  # noqa: E402
 from .handlers import cancel_add_user, handle_add_user_input, handle_callback_query  # noqa: E402
 from .keyboards import main_menu_keyboard  # noqa: E402
 from .middleware import auth_middleware, is_admin  # noqa: E402
@@ -99,35 +100,12 @@ async def menu(update: Update, context) -> None:
     )
 
 
-async def _generate_dashboard_url(telegram_id: int) -> str | None:
-    """Generate one-time dashboard token and return URL.
-
-    Returns None if user has no projects.
-    """
-    global _stream_client
-
-    if _stream_client is None:
-        raise RuntimeError("Redis client not initialized")
-
-    # Check user has projects
-    projects = await api_client.get_json("/projects", headers={"X-Telegram-ID": str(telegram_id)})
-    if not projects:
-        return None
-
-    # Generate token, store in Redis with 5min TTL
-    token = str(uuid.uuid4())
-    await _stream_client.redis.set(f"lk_token:{token}", str(telegram_id), ex=300)
-
-    settings = get_settings()
-    return f"{settings.lk_domain}/auth?token={token}"
-
-
 async def dashboard(update: Update, context) -> None:
     """Handle /dashboard command — generate one-time token and send dashboard URL."""
     telegram_id = update.effective_user.id
     locale = user_locale(update)
 
-    url = await _generate_dashboard_url(telegram_id)
+    url = await mint_dashboard_url(get_stream_client().redis, telegram_id)
     if url is None:
         await update.message.reply_text(text(locale, "no_projects"))
         return
@@ -205,7 +183,7 @@ async def _read_po_response(
     redis: redis_lib.Redis,
     response_stream: str,
     timeout_s: float,
-) -> dict | None:
+) -> POResponse | None:
     """Read PO response from a per-request stream.
 
     Uses id="0" to read from beginning — catches response even if
@@ -217,7 +195,7 @@ async def _read_po_response(
         timeout_s: Max wait time in seconds
 
     Returns:
-        Response data dict or None on timeout
+        The PO response, or None on timeout
     """
     start_time = time.monotonic()
 
@@ -251,7 +229,7 @@ async def _read_po_response(
                 _msg_id, data = stream_messages[0]
                 logical = unprotect_po_payload(response_stream, data)
                 try:
-                    return to_flat_fields(POResponse.model_validate(logical))
+                    return POResponse.model_validate(logical)
                 except Exception:
                     raise POPayloadProtectionError("PO response validation failed") from None
 
@@ -307,20 +285,19 @@ async def _send_to_po_and_wait(
 
     try:
         # Wait for response
-        data = await _read_po_response(client.redis, response_stream, PO_RESPONSE_TIMEOUT_S)
+        response = await _read_po_response(client.redis, response_stream, PO_RESPONSE_TIMEOUT_S)
 
-        if data is None:
+        if response is None:
             raise TimeoutError(f"PO did not respond within {PO_RESPONSE_TIMEOUT_S}s")
 
         # Check for error response
-        if data.get("error") == "true":
+        if response.error == "true":
             raise RuntimeError("PO returned an error response")
 
-        response_text = data.get("text", "")
-        if not response_text:
+        if not response.text:
             raise RuntimeError("PO returned empty response")
 
-        return response_text
+        return response.text
 
     finally:
         # Cancel typing indicator

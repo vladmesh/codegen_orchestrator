@@ -3,19 +3,22 @@
 Handles direct API calls without going through LangGraph/LLM.
 """
 
+from collections.abc import Coroutine
 from http import HTTPStatus
 import re
-import uuid
+from typing import Any
 
 import httpx
 import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.server import ServerDTO, ServerStatus
 from shared.engineering_budget_display import format_microusd
 
-from .clients.api import api_client
-from .config import get_settings
+from .clients.api import ProjectDetails, api_client
+from .dashboard import mint_dashboard_url
 from .keyboards import (
     ACTION_ADD_USER,
     ACTION_BACK,
@@ -82,36 +85,29 @@ def escape_markdown(text: str) -> str:
     return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", str(text))
 
 
-async def _api_get(path: str, telegram_id: int | None = None) -> dict | list | None:
-    """Make GET request to API service."""
-    headers = {}
-    if telegram_id:
-        headers["X-Telegram-ID"] = str(telegram_id)
-
+async def _api_read[T](read: Coroutine[Any, Any, T]) -> T | None:
+    """Await one typed API read; an HTTP failure is logged and reads as None."""
     try:
-        return await api_client.get_json(path, headers=headers)
+        return await read
     except httpx.HTTPError as e:
-        logger.error("api_request_failed", path=path, error=str(e))
+        logger.error("api_request_failed", read=read.__qualname__, error=str(e))
         return None
 
 
-def _format_project_details(project: dict, locale: str) -> str:
+def _format_project_details(project: ProjectDetails, locale: str) -> str:
     """Format project details for display."""
-    name = project.get("name", "Unknown")
-    status = project.get("status", "unknown")
-    project_id = project.get("id", "")
+    status = project.status
+    description = project.config.description or text(locale, "no_description")
+    repo_url = project.config.repo_url
+    deployed_url = project.config.deployed_url
 
-    config = project.get("config") or {}
-    description = config.get("description", text(locale, "no_description"))
-
-    repo_url = config.get("repo_url", "")
-    deployed_url = config.get("deployed_url", "")
-
-    status_emoji = "✅" if status == "active" else "📝" if status == "draft" else "⚪"
+    status_emoji = (
+        "✅" if status == ProjectStatus.ACTIVE else "📝" if status == ProjectStatus.DRAFT else "⚪"
+    )
 
     # Escape all dynamic values
-    name_esc = escape_markdown(name)
-    id_esc = escape_markdown(project_id)
+    name_esc = escape_markdown(project.title)
+    id_esc = escape_markdown(str(project.id))
     status_esc = escape_markdown(status)
     desc_esc = escape_markdown(description)
 
@@ -131,23 +127,17 @@ def _format_project_details(project: dict, locale: str) -> str:
     return "\n".join(lines)
 
 
-def _format_server_line(server: dict) -> str:
+def _format_server_line(server: ServerDTO) -> str:
     """Format single server line."""
-    handle = server.get("handle", "unknown")
-    status = server.get("status", "unknown")
-    ip = server.get("public_ip", "")
-    ram_total = server.get("capacity_ram_mb", 0)
-    ram_used = server.get("used_ram_mb", 0)
+    status_emoji = "✅" if server.status in (ServerStatus.READY, ServerStatus.IN_USE) else "⚠️"
 
-    status_emoji = "✅" if status in ("ready", "in_use") else "⚠️"
-
-    handle_esc = escape_markdown(handle)
-    status_esc = escape_markdown(status)
-    ip_esc = escape_markdown(ip)
+    handle_esc = escape_markdown(server.handle)
+    status_esc = escape_markdown(server.status)
+    ip_esc = escape_markdown(server.public_ip)
 
     return (
         f"{status_emoji} *{handle_esc}* \\[{status_esc}\\] — {ip_esc} "
-        f"\\(RAM: {ram_used}/{ram_total} MB\\)"
+        f"\\(RAM: {server.used_ram_mb}/{server.capacity_ram_mb} MB\\)"
     )
 
 
@@ -193,25 +183,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def _handle_dashboard(query, locale: str) -> None:
     """Handle dashboard callback — generate token and send URL."""
-    telegram_id = query.from_user.id
-
-    # Check user has projects
-    projects = await _api_get("/projects", telegram_id=telegram_id)
-    if not projects:
+    url = await mint_dashboard_url(_get_stream_client().redis, query.from_user.id)
+    if url is None:
         await query.edit_message_text(
             text(locale, "no_projects_md"),
             reply_markup=back_to_menu_keyboard(locale),
             parse_mode="MarkdownV2",
         )
         return
-
-    # Generate token, store in Redis
-    client = _get_stream_client()
-    token = str(uuid.uuid4())
-    await client.redis.set(f"lk_token:{token}", str(telegram_id), ex=300)
-
-    settings = get_settings()
-    url = f"{settings.lk_domain}/auth?token={token}"
 
     keyboard = InlineKeyboardMarkup(
         [
@@ -244,8 +223,7 @@ async def _handle_projects(query, parts: list[str], locale: str) -> None:
     telegram_id = query.from_user.id
 
     if action == ACTION_LIST:
-        # Updated endpoint to /projects
-        projects = await _api_get("/projects", telegram_id=telegram_id)
+        projects = await _api_read(api_client.list_projects(telegram_id))
 
         if projects is None:
             await query.edit_message_text(
@@ -292,8 +270,7 @@ async def _handle_project(query, parts: list[str], locale: str) -> None:
         return
 
     if action == ACTION_DETAILS:
-        # Updated endpoint to /projects
-        project = await _api_get(f"/projects/{project_id}", telegram_id=telegram_id)
+        project = await _api_read(api_client.get_project(project_id, telegram_id))
 
         if project is None:
             await query.edit_message_text(
@@ -347,7 +324,7 @@ async def _handle_servers(query, parts: list[str], locale: str, user_is_admin: b
     telegram_id = query.from_user.id
 
     if action == ACTION_LIST:
-        servers = await _api_get("/servers?is_managed=true", telegram_id=telegram_id)
+        servers = await _api_read(api_client.list_managed_servers(telegram_id))
 
         if servers is None:
             await query.edit_message_text(

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from shared.contracts.queues.po import protect_po_payload
+from shared.contracts.queues.po import POResponse, protect_po_payload
 from src.main import (
     _keep_typing,
     _read_po_response,
@@ -88,7 +88,7 @@ class TestReadPOResponse:
 
         result = await _read_po_response(mock_redis, "po:response:abc", timeout_s=5.0)
 
-        assert result == response_data
+        assert result == POResponse(**response_data)
 
     @pytest.mark.asyncio
     async def test_reads_from_id_zero(self):
@@ -132,7 +132,7 @@ class TestReadPOResponse:
 
         result = await _read_po_response(mock_redis, "po:response:abc", timeout_s=5.0)
 
-        assert result == response_data
+        assert result == POResponse(**response_data)
         assert mock_redis.xread.call_count == 2  # noqa: PLR2004
 
 

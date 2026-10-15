@@ -11,6 +11,8 @@ import structlog
 from telegram import Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
+from shared.contracts.dto.user import UserDTO
+
 from .clients.api import api_client
 from .config import get_settings
 from .texts import text, user_locale
@@ -21,13 +23,13 @@ logger = structlog.get_logger()
 USER_IS_ADMIN_KEY = "user_is_admin"
 
 
-async def _check_user_in_db(telegram_id: int) -> dict | None:
+async def _check_user_in_db(telegram_id: int) -> UserDTO | None:
     """Check if user exists in database via API.
 
-    Returns user dict if found, None otherwise.
+    Returns the user if found, None otherwise.
     """
     try:
-        return await api_client.get_json(f"users/by-telegram/{telegram_id}")
+        return await api_client.get_user_by_telegram(telegram_id)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == httpx.codes.NOT_FOUND:
             return None
@@ -105,7 +107,7 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     db_user = await _check_user_in_db(user_id)
     if db_user:
         # User exists in DB - grant access based on their is_admin flag
-        is_admin = db_user.get("is_admin", False)
+        is_admin = db_user.is_admin
         context.user_data[USER_IS_ADMIN_KEY] = is_admin
         logger.debug(
             "user_access_granted",

@@ -27,6 +27,7 @@ from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.queues.worker import (
     QA_TARGET_REFUSED,
     CreateWorkerCommand,
+    CreateWorkerResponse,
     WorkerOwnership,
 )
 from shared.contracts.vocab import AgentType
@@ -370,7 +371,7 @@ async def test_the_create_request_carries_the_target_as_data_and_the_sandbox_too
     with (
         patch("src.clients.qa_worker.redis.from_url", return_value=redis_client),
         patch(
-            "src.clients.qa_worker._wait_for_response",
+            "src.clients.qa_worker._wait_for_create_ack",
             new_callable=AsyncMock,
             side_effect=RuntimeError("stop after create"),
         ),
@@ -412,9 +413,9 @@ async def test_a_refused_deploy_target_is_a_permanent_start_failure_never_retrie
     with (
         patch("src.clients.qa_worker.redis.from_url", return_value=redis_client),
         patch(
-            "src.clients.qa_worker._wait_for_response",
+            "src.clients.qa_worker._wait_for_create_ack",
             new_callable=AsyncMock,
-            return_value={"success": True},
+            return_value=CreateWorkerResponse(request_id="req-1", success=True, worker_id="qa-1"),
         ),
         patch(
             "src.clients.qa_worker._wait_until_ready",
