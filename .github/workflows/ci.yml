@@ -754,12 +754,6 @@ jobs:
             exit 1
           fi
 
-      - name: Free runner disk for product, platform and registry images
-        timeout-minutes: 3
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
-          df -h /
-
       # Docker Hub pulls go through the credential-free public mirror before any container
       # starts; image references stay unchanged and the daemon falls back to Docker Hub.
       - name: Pull Docker Hub images through the public mirror
@@ -776,6 +770,29 @@ jobs:
           EOF
           sudo systemctl restart docker
           docker info --format '{{json .RegistryConfig.Mirrors}}' | grep -F mirror.gcr.io
+
+      # The proof builds both images itself; started here, after the daemon restart, they
+      # build beside the setup steps and the proof's own builds reuse the daemon's cache.
+      - name: Start the orchestrator API and platform auth builds in the background
+        timeout-minutes: 1
+        env:
+          RUNNER_INTERNAL_API_KEY: unused-by-a-build
+          RUNNER_API_PORT: "1"
+          RUNNER_REDIS_PORT: "1"
+        run: >-
+          nohup bash -c 'docker compose -f tests/runner/compose.orchestrator.yml build
+          && docker compose -f tests/runner/compose.orchestrator.yml pull db redis
+          && docker build --build-arg SERVICE=auth .runner/platform'
+          > "$RUNNER_TEMP/image-preparation.log" 2>&1 &
+
+      # At idle I/O priority beside the setup and the proof's first stages, which write
+      # little; "Report runner disk" after the proof shows what the job used.
+      - name: Free runner disk in the background
+        timeout-minutes: 1
+        run: |
+          df -h /
+          sudo nohup ionice -c 3 nice -n 19 rm -rf /usr/local/lib/android /usr/share/dotnet \
+            /opt/ghc /usr/local/.ghcup > /dev/null 2>&1 &
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -816,6 +833,14 @@ jobs:
           name: runner-proof-${{ matrix.leg }}-${{ env.ORCHESTRATOR_SHA }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runner-proof
           if-no-files-found: error
+
+      - name: Report runner disk and the background image builds
+        if: always()
+        timeout-minutes: 1
+        run: |
+          df -h /
+          docker system df
+          tail -n 20 "$RUNNER_TEMP/image-preparation.log"
 
       - name: Require passed SHA-bound evidence
         timeout-minutes: 2

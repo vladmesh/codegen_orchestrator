@@ -33,6 +33,12 @@ and the order lifecycle, and says so in the evidence:
 * the confirmed answers — written by the production seed client, read back by QA's own
   pre-judgement check, then observed as the installed bot's behaviour (language and initial
   channels) before the harness's scenario writes any setting or subscribes anybody.
+
+The harness's stages are unchanged, but not all serial: product CI and then the cold
+integration run in their own thread beside the main images, platform, deployment and scenario,
+which share no compose project with them, and `prove` joins that thread before it returns.
+The evidence's `timeline` (`tests/runner/timeline.py`) times every stage, wait and executor
+command, and every command record carries its start and end.
 """
 
 from __future__ import annotations
@@ -45,8 +51,12 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 from typing import Any
 
 import yaml
@@ -68,6 +78,42 @@ GITHUB_ORG = "ci"
 #: The Telegram user that observes the confirmed answers; no harness scenario uses it.
 OBSERVER_USER = 424242301
 GET_URL = ["git", "-c", "core.hooksPath=/dev/null", "remote", "get-url", "origin"]
+#: The cleanup of this adapter's orchestrator stack, which no harness resource depends on.
+ORCHESTRATOR_STACK = "orchestrator API"
+#: Stages timed in the evidence timeline -> the positional argument naming the call, if any.
+TIMED_STAGES = {
+    "revisions": None,
+    "published_tags": None,
+    "scaffold": None,
+    "activated_snapshot": None,
+    "production_plan": None,
+    "scheduler_tick": 0,
+    "deliver": None,
+    "select_payload": 0,
+    "install": 3,
+    "native_conflict": 0,
+    "native_install": 0,
+    "follow_story": None,
+    "release_evidence": None,
+    "catalog_agreement": None,
+    "coexistence": None,
+    "run_job": 1,
+    "cold_main_regression": None,
+    "main_images": None,
+    "start_registry": None,
+    "start_platform": None,
+    "deploy_product": None,
+    "wait_backend": None,
+    "scenario": None,
+    "confirmed_settings": 1,
+    "seed_causality": None,
+    "initialize_product": None,
+    "access_acknowledgments": None,
+    "reminder_scenario": None,
+    "language_scenario": None,
+    "collect_logs": None,
+    "clean_up": None,
+}
 
 
 def _harness(kit: Path):
@@ -81,7 +127,10 @@ def _harness(kit: Path):
 def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclass, defined over the harness
     fresh_product, support = _harness(args.kit_dir.resolve())
     import native_lifecycle  # noqa: PLC0415 - beside this script
+    import timeline  # noqa: PLC0415
     from verify_evidence import seed_causality_problems  # noqa: PLC0415
+
+    harness_wait = fresh_product.wait_until
 
     activation = yaml.safe_load(
         (args.orchestrator_dir / "shared/catalog_activation.yaml").read_text()
@@ -93,6 +142,134 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
         #: The orchestrator API and Redis of this proof, for the services' own clients.
         api_env: dict[str, str]
         product: Path
+
+        def __init__(self, args: argparse.Namespace) -> None:
+            super().__init__(args)
+            self.evidence["timeline"] = []
+            self.timeline = timeline.Timeline(self.evidence["timeline"])
+            self.counter_lock = threading.Lock()
+            self.product_branch: threading.Thread | None = None
+            self.product_branch_error: Exception | None = None
+            fresh_product.wait_until = self.wait_until
+
+        def wait_until(self, what: str, probe: Any, timeout: float, interval: float = 2.0) -> Any:
+            with self.timeline.span("wait", what):
+                return harness_wait(what, probe, timeout, interval)
+
+        def redact(self, text: str) -> str:
+            # A frozen copy: another thread may add a secret while this one redacts.
+            return support.redact(text, frozenset(self.secrets))
+
+        def command_name(self, argv: list[str]) -> str:
+            return self.redact(shlex.join(str(item) for item in argv))[:200]
+
+        def run(  # noqa: PLR0913 - the harness's signature
+            self,
+            argv: list[str],
+            *,
+            cwd: Path,
+            label: str,
+            env: dict[str, str] | None = None,
+            check: bool = True,
+            timeout: int = 1800,
+        ) -> subprocess.CompletedProcess[str]:
+            """The harness's command record, numbered under a lock and with its start and end."""
+            with self.counter_lock:
+                self.counter += 1
+                number = self.counter
+            started_at, started = timeline.now(), time.monotonic()
+            try:
+                result = subprocess.run(  # noqa: S603
+                    argv,
+                    cwd=cwd,
+                    env=env if env is not None else self.clean_env(),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                result = subprocess.CompletedProcess(
+                    argv, 124, str(error.stdout or ""), f"{error.stderr or ''}\ntimeout {timeout}s"
+                )
+            log = self.logs / f"{number:03d}-{fresh_product.slug(label)}.log"
+            log.write_text(self.redact(f"$ {shlex.join(argv)}\n{result.stdout}{result.stderr}"))
+            self.evidence["commands"].append(
+                {
+                    "label": label,
+                    "argv": [self.redact(item) for item in argv],
+                    "cwd": self.where(cwd),
+                    "exit_code": result.returncode,
+                    "seconds": round(time.monotonic() - started, 1),
+                    "log": str(log.relative_to(self.output)),
+                    "started_at": started_at,
+                    "finished_at": timeline.now(),
+                    "thread": threading.current_thread().name,
+                }
+            )
+            if check and result.returncode != 0:
+                raise fresh_product.ProofError(
+                    f"{label} exited {result.returncode}; see {log.name}"
+                )
+            return result
+
+        def prove(self) -> None:
+            with self.timeline.span("stage", "prove"):
+                try:
+                    super().prove()
+                finally:
+                    if self.product_branch is not None:
+                        self.product_branch.join()
+            if self.product_branch_error is not None:
+                raise self.product_branch_error
+
+        def product_ci(self, head: str) -> None:
+            """Start product CI, then the cold integration, in one thread `prove` joins.
+
+            Both run the product's fixed `tests-integration` compose project, so they stay in
+            order with each other; nothing else the proof runs uses it.
+            """
+            self.product_branch = threading.Thread(
+                target=self.product_ci_branch, args=(head,), name="product-ci"
+            )
+            self.product_branch.start()
+
+        def product_ci_branch(self, head: str) -> None:
+            try:
+                with self.timeline.span("stage", "product_ci"):
+                    super().product_ci(head)
+                with self.timeline.span("stage", "integration_without_host_environments"):
+                    super().integration_without_host_environments()
+            except Exception as error:  # noqa: BLE001 - re-raised by prove
+                self.product_branch_error = error
+
+        def integration_without_host_environments(self) -> None:
+            """Runs in the product CI thread, after product CI; see `product_ci`."""
+
+        def clean_up(self) -> None:
+            """The harness's cleanups in their order, the orchestrator stack's beside them."""
+
+            def remove(label: str, argv: list[str], env: dict[str, str] | None) -> None:
+                self.run(
+                    argv,
+                    cwd=self.work,
+                    env=env or self.clean_env(),
+                    label=f"clean up {label}",
+                    check=False,
+                )
+
+            beside = [
+                threading.Thread(target=remove, args=item, name=f"clean-up-{item[0]}")
+                for item in self.cleanups
+                if item[0] == ORCHESTRATOR_STACK
+            ]
+            for thread in beside:
+                thread.start()
+            for item in self.cleanups:
+                if item[0] != ORCHESTRATOR_STACK:
+                    remove(*item)
+            for thread in beside:
+                thread.join()
 
         def activated_catalog(self, label: str) -> dict[str, str]:
             """The catalog at the activated commit, read by git from the real remote."""
@@ -163,7 +340,7 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
                 "INTERNAL_API_KEY": key,
                 "REDIS_URL": f"redis://127.0.0.1:{redis_port}/0",
             }
-            self.cleanup_later("orchestrator API", [*compose, "down", "-v"], env)
+            self.cleanup_later(ORCHESTRATOR_STACK, [*compose, "down", "-v"], env)
             self.run(
                 [*compose, "up", "-d", "--build", "--wait"],
                 cwd=orchestrator,
@@ -289,7 +466,7 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
                 raise fresh_product.ProofError(f"the scheduler published {message}")
             git_url = f"https://github.com/{GITHUB_ORG}/{message['project_name']}"
             self.scaffolder_env(base)
-            from src import consumer  # noqa: PLC0415
+            from src import consumer, scaffold  # noqa: PLC0415
 
             native_lifecycle.ControlledGitHub.remote = remote
             native_lifecycle.ControlledGitHub.calls = []
@@ -302,7 +479,8 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
             original = consumer.GitHubAppClient
             consumer.GitHubAppClient = native_lifecycle.ControlledGitHub
             try:
-                delivered = self.deliver(consumer)
+                with timeline.commands(self.timeline, scaffold, self.command_name):
+                    delivered = self.deliver(consumer)
             finally:
                 consumer.GitHubAppClient = original
                 os.environ.pop("GIT_CONFIG_GLOBAL")
@@ -413,24 +591,25 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
 
             async def owned(message, settings, git_url, token, fence):
                 name = message.install.package.name
-                harness_transport = install._run_cmd
+                with timeline.commands(runner.timeline, install, runner.command_name):
+                    harness_transport = install._run_cmd
 
-                async def transport(argv, **kwargs):
-                    if argv == GET_URL:
-                        return 0, runner.git_url + "\n", ""
-                    return await harness_transport(argv, **kwargs)
+                    async def transport(argv, **kwargs):
+                        if argv == GET_URL:
+                            return 0, runner.git_url + "\n", ""
+                        return await harness_transport(argv, **kwargs)
 
-                install._run_cmd = transport
-                try:
-                    if name == fresh_product.PACKAGE:
-                        await asyncio.to_thread(
-                            runner.native_conflict, name, install, executor, fence
+                    install._run_cmd = transport
+                    try:
+                        if name == fresh_product.PACKAGE:
+                            await asyncio.to_thread(
+                                runner.native_conflict, name, install, executor, fence
+                            )
+                        result, record = await asyncio.to_thread(
+                            runner.native_install, name, install, executor, fence
                         )
-                    result, record = await asyncio.to_thread(
-                        runner.native_install, name, install, executor, fence
-                    )
-                finally:
-                    install._run_cmd = harness_transport
+                    finally:
+                        install._run_cmd = harness_transport
                 runner.evidence.setdefault("operations", {})[name] = record
                 runner.stand_witness(name, result, record)
                 runner.follow_story(record["story_id"], result.head_sha, install)
@@ -934,6 +1113,9 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
             super().catalog_agreement(payloads)
             self.evidence["catalog"]["after_install"] = self.activated_catalog("after")
 
+    for stage, detail in TIMED_STAGES.items():
+        method = getattr(ActivatedSnapshotRunner, stage)
+        setattr(ActivatedSnapshotRunner, stage, timeline.stage(stage, method, detail))
     return ActivatedSnapshotRunner
 
 
