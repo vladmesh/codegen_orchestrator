@@ -259,9 +259,9 @@ Expected: `alembic_version` equals the latest revision in
 - `make stop` is an alias of `make down`, not a pause.
 - The script `scripts/clean_live_tests.py` reads the `projects` schema directly. After migrations that change
   that table it has to be checked separately: it breaks silently.
-- `admin-frontend` builds the nginx config at image build time. If a merge removed or added a
-  service that nginx proxies to, a targeted reload is not enough: the container will loop with
-  `host not found in upstream` until the image is rebuilt.
+- `admin-frontend` builds the nginx config at image build time and resolves its upstreams per
+  request: a route whose service is not running answers 502 until it is back. A merge that adds or
+  removes a proxied service needs an image rebuild, not a reload.
 - A targeted rebuild after a merge requires checking two places: the changed services, and the fact that compose
   does not pick up changes to the environment variables of an already running container. A container with a new
   environment is recreated in compose only on the next `up -d` of that service.

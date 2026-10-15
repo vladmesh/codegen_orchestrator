@@ -234,8 +234,10 @@ services:
       - ./shared:/app/shared:delegated
       - ${HOST_CODEX_HOME:-./secrets/codex-unconfigured}:/llm-codex-home
     depends_on:
-      - api
-      - redis
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - internal
     restart: unless-stopped

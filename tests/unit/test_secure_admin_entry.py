@@ -56,6 +56,18 @@ def test_production_admin_is_exposed_only_on_host_loopback():
     ]
 
 
+@pytest.mark.docker
+def test_production_start_order_waits_for_a_healthy_api_but_not_for_worker_manager():
+    """architect starts once api answers; the admin proxy tolerates a late worker-manager."""
+    services = _production_compose()["services"]
+    architect = services["architect"]["depends_on"]
+    admin = services["admin-frontend"]["depends_on"]
+
+    assert architect["api"]["condition"] == "service_healthy"
+    assert architect["redis"]["condition"] == "service_healthy"
+    assert "worker-manager" not in admin
+
+
 def test_admin_is_not_routed_by_public_caddy_and_nginx_keeps_all_surfaces_authenticated():
     caddy = (ROOT / "infra/Caddyfile").read_text()
     nginx = (ROOT / "services/admin-frontend/nginx.conf").read_text()
