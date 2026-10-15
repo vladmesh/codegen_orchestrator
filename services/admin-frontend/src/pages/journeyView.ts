@@ -1,4 +1,5 @@
 import type { JourneyAttempt, JourneyStage, JourneyStep, StepStatus, StoryLink, StoryLinkKind } from '../types/api'
+import { parseApiTime } from '../lib/utils.ts'
 
 export const STAGE_LABELS: Record<JourneyStage, string> = {
   brief: 'Brief',
@@ -47,7 +48,7 @@ export interface TimeWindow {
 const MIN_BAR_PCT = 0.8
 
 function ms(iso: string | null): number | null {
-  return iso ? new Date(iso).getTime() : null
+  return iso ? parseApiTime(iso).getTime() : null
 }
 
 /** The span the timeline draws: first evidence to last, or to now while the journey runs. */

@@ -19,7 +19,7 @@ import {
 } from 'recharts'
 import { api } from '@/lib/api'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { relativeTime, formatBytes, formatUptime, freshnessColor } from '@/lib/utils'
+import { relativeTime, formatBytes, formatUptime, freshnessColor, parseApiTime } from '@/lib/utils'
 import type {
   Server,
   Application,
@@ -82,7 +82,7 @@ function MetricCard({
 
 function sslStatusColor(expiresAt: string | null): string {
   if (!expiresAt) return 'text-muted-foreground'
-  const daysLeft = (new Date(expiresAt).getTime() - Date.now()) / 86_400_000
+  const daysLeft = (parseApiTime(expiresAt).getTime() - Date.now()) / 86_400_000
   if (daysLeft <= 7) return 'text-red-400'
   if (daysLeft <= 30) return 'text-yellow-400'
   return 'text-green-400'
@@ -90,7 +90,7 @@ function sslStatusColor(expiresAt: string | null): string {
 
 function sslStatusText(expiresAt: string | null): string {
   if (!expiresAt) return '—'
-  const daysLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 86_400_000)
+  const daysLeft = Math.floor((parseApiTime(expiresAt).getTime() - Date.now()) / 86_400_000)
   if (daysLeft < 0) return 'Expired'
   return `${daysLeft}d left`
 }
@@ -503,7 +503,7 @@ const TOOLTIP_STYLE = {
 }
 
 function formatChartTime(iso: string, hours: number): string {
-  const d = new Date(iso)
+  const d = parseApiTime(iso)
   if (hours <= 1) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }

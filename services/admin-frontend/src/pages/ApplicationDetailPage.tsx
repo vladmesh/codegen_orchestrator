@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { ConfirmButton } from '@/components/ui/ConfirmButton'
+import { RepositoryLink } from '@/components/ui/RepositoryLink'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
 import type { Application, ApplicationHealthEntry, Repository, Run } from '@/types/api'
@@ -161,7 +162,6 @@ export function ApplicationDetailPage() {
   const canUndeploy = ['running', 'stopped', 'down', 'degraded'].includes(app.status)
   const canE2E = app.status === 'running'
 
-  const githubUrl = repo?.git_url?.replace(/\.git$/, '')
   const latestQA = qaRuns?.[0]
 
   return (
@@ -287,13 +287,12 @@ export function ApplicationDetailPage() {
           <p className="text-sm text-muted-foreground">Repository</p>
           <p className="mt-1 text-foreground">
             {repo ? (
-              githubUrl ? (
-                <a href={githubUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                  {repo.name}
-                </a>
-              ) : (
-                repo.name
-              )
+              <>
+                {repo.name}
+                <RepositoryLink gitUrl={repo.git_url} className="ml-2 text-sm">
+                  GitHub
+                </RepositoryLink>
+              </>
             ) : (
               app.repo_id
             )}

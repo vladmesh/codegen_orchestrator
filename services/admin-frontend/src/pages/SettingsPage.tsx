@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight, Save, X, Pencil, Check } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { cn, relativeTime } from '@/lib/utils'
+import { cn, parseApiTime, relativeTime } from '@/lib/utils'
 import type { AgentConfig, AgentConfigUpdate, ExecutorDiagnosticConfirmation, ExecutorDiagnosticConfirmationCommand, ExecutorDiagnosticSnapshot, ExecutorOverride, PaidWorkControls, SystemConfig, SystemConfigUpdate } from '@/types/api'
 import { requiresPaidWorkControlConfirmation, type PaidWorkControlField } from './paidWorkControlTransition'
 import { executorProfileAttention, executorProfileFacts } from './executorProfileHealth'
@@ -188,7 +188,7 @@ function ExecutorDiagnosticsCard() {
   useEffect(() => {
     if (!diagnostics.data) return
 
-    const expiresAt = new Date(diagnostics.data.expires_at).getTime()
+    const expiresAt = parseApiTime(diagnostics.data.expires_at).getTime()
     const updateStaleness = () => setStale(expiresAt <= Date.now())
     updateStaleness()
     const timer = window.setTimeout(updateStaleness, Math.max(0, expiresAt - Date.now()))

@@ -5,6 +5,7 @@ import type {
   ProfileLoginState,
   RefreshMaterialState,
 } from '../types/api'
+import { parseApiTime } from '../lib/utils.ts'
 
 export interface ProfileFact {
   label: string
@@ -31,7 +32,7 @@ const EXPIRY_SOURCE_LABELS: Record<CredentialExpirySource, string> = {
 }
 
 function utc(instant: string): string {
-  return new Date(instant).toISOString().replace('.000Z', 'Z')
+  return parseApiTime(instant).toISOString().replace('.000Z', 'Z')
 }
 
 /**
@@ -42,7 +43,7 @@ function utc(instant: string): string {
 export function executorProfileFacts(profile: ExecutorProfileObservation, now: Date): ProfileFact[] {
   const session = profile.session_expires_at && profile.session_expiry_source
     ? `${utc(profile.session_expires_at)} (${EXPIRY_SOURCE_LABELS[profile.session_expiry_source]}${
-      new Date(profile.session_expires_at).getTime() <= now.getTime()
+      parseApiTime(profile.session_expires_at).getTime() <= now.getTime()
         ? profile.refresh_material === 'present' ? '; expired, renewable' : '; expired'
         : ''
     })`
