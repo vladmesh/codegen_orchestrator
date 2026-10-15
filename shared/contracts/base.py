@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from shared.contracts.recipient import RejectsLegacyRecipientField
 from shared.contracts.vocab import ResultStatus
+from shared.log_config.correlation import get_correlation_id
 
 
 class QueueMeta(RejectsLegacyRecipientField):
@@ -17,7 +18,8 @@ class QueueMeta(RejectsLegacyRecipientField):
     """
 
     version: Literal["1"] = "1"
-    correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    #: The bound correlation id, so a message created while handling one carries its id.
+    correlation_id: str = Field(default_factory=lambda: get_correlation_id() or str(uuid.uuid4()))
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

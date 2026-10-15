@@ -517,6 +517,8 @@ class TestCreateTaskInstallsOnlyCatalogPackages:
             "Install the reminders package with `kit add reminders` from the product root.",
             "Run kit add reminders, then wire /remind.",
             "Run `.venv/bin/kit add reminders`.",
+            "Then run kit add reminders. Then wire /remind.",
+            "Run `kit add reminders --product-root=.` and then `kit add reminders`.",
         ],
     )
     async def test_a_catalog_name_requires_the_mechanical_tool(self, mock_api, description):
@@ -555,6 +557,8 @@ class TestCreateTaskInstallsOnlyCatalogPackages:
             "Run `kit add reminders --wheel=/tmp/build/out`.",
             "Run `kit add reminders --whe=/tmp/build/out`.",
             "Run kit add --wh /tmp/build/out reminders from the product root.",
+            # A full stop inside a code span does not end the command.
+            'Install it: `kit add reminders --product-root=. --wheel "$REMINDERS_WHEEL"`',
         ],
     )
     async def test_a_wheel_or_built_artifact_is_refused(self, mock_api, description):

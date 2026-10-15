@@ -7,6 +7,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Runner Proof legs take about 5 and 7 minutes instead of 10 and 13: product CI runs beside the
   deployment, the API image comes from the layer cache, and the evidence times every stage.
+- The Architect plan guard reads a `kit add` in backticks to the closing backtick, so
+  `--product-root=. --wheel ...` is parsed whole and refused instead of cut at the full stop.
+- A CI failure excerpt scopes to a failed `uses:` step that reports only `##[error]`, so the
+  action's error is kept instead of the trailing cleanup step's tail.
+- A queue message inherits the bound correlation id by default, so a chain of messages carries one
+  id; each scheduler `periodic_loop` cycle unbinds it so cycles never share one.
 
 ## 2026-10-14
 

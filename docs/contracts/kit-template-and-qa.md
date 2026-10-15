@@ -179,6 +179,9 @@ keeps an empty `binding.functions`. Unknown versions are `invalid_binding` refus
 No model runs in closure planning or execution. `scripted_install_plan` invokes the
 same tool, API, planning attempt, requirement coverage and admission without a model.
 `create_task` refuses kit install prose; unrelated feature tasks retain ordinary chaining.
+Its guard is a planning lint: each `kit add` in a code span is read to the span's end or a
+shell separator, one in prose to its sentence end, and the pinned kit CLI parser reads the
+`shlex` tokens; a command built from shell variables or aliases is beyond it.
 
 Architect planning receives read-only job contracts from the verified selected releases:
 runtime-qualified names from the pinned loader, argument schemas, timers and install

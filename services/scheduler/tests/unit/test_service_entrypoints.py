@@ -161,6 +161,49 @@ async def test_unexpected_worker_exit_cancels_its_process_siblings():
 
 
 @pytest.mark.asyncio
+async def test_periodic_loop_cycles_do_not_share_a_correlation_id():
+    import structlog
+
+    from shared.contracts.queues.architect import ArchitectMessage
+    from shared.log_config import ensure_correlation_id
+    from src import runtime
+
+    class Stop(Exception):
+        pass
+
+    published: list[str] = []
+
+    async def cycle(_redis):
+        ensure_correlation_id()
+        message = ArchitectMessage(story_id="story-1", project_id="proj-1")
+        published.append(message.correlation_id)
+
+    async def sleep(_seconds):
+        if len(published) == 2:
+            raise Stop
+
+    redis_client = MagicMock(connect=AsyncMock(), close=AsyncMock())
+    structlog.contextvars.clear_contextvars()
+    try:
+        with pytest.raises(Stop):
+            await runtime.periodic_loop(
+                interval=lambda: 0,
+                cycle=cycle,
+                logger=MagicMock(),
+                started_event="started",
+                cycle_event=None,
+                error_event="failed",
+                stopped_event="stopped",
+                redis_factory=lambda: redis_client,
+                sleep=sleep,
+            )
+    finally:
+        structlog.contextvars.clear_contextvars()
+
+    assert len(set(published)) == 2
+
+
+@pytest.mark.asyncio
 async def test_readiness_marker_is_current_and_removed_on_stop(tmp_path, monkeypatch):
     from src import runtime
 

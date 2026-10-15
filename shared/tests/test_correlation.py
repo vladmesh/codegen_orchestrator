@@ -2,6 +2,7 @@
 
 import structlog
 
+from shared.contracts.queues.architect import ArchitectMessage
 from shared.log_config.correlation import (
     bind_message_context,
     get_correlation_id,
@@ -92,3 +93,42 @@ class TestUnbindMessageContext:
         ctx = structlog.contextvars.get_contextvars()
         assert ctx["service"] == "api"
         assert "correlation_id" not in ctx
+
+
+class TestQueueMessageCorrelation:
+    def setup_method(self):
+        structlog.contextvars.clear_contextvars()
+
+    def teardown_method(self):
+        structlog.contextvars.clear_contextvars()
+
+    @staticmethod
+    def _message(**fields):
+        return ArchitectMessage(story_id="story-1", project_id="proj-1", **fields)
+
+    def test_a_message_inherits_the_bound_correlation_id(self):
+        set_correlation_id("corr-bound")
+
+        assert self._message().correlation_id == "corr-bound"
+
+    def test_a_message_with_none_bound_gets_a_fresh_id(self):
+        first, second = self._message(), self._message()
+
+        assert first.correlation_id != second.correlation_id
+        assert get_correlation_id() is None
+
+    def test_an_explicit_correlation_id_wins(self):
+        set_correlation_id("corr-bound")
+
+        assert self._message(correlation_id="corr-explicit").correlation_id == "corr-explicit"
+
+    def test_a_message_published_while_handling_one_carries_its_id(self):
+        incoming = self._message()
+
+        bind_message_context(incoming.model_dump(mode="json"))
+        published = self._message()
+        unbind_message_context()
+        after = self._message()
+
+        assert published.correlation_id == incoming.correlation_id
+        assert after.correlation_id not in {incoming.correlation_id, published.correlation_id}

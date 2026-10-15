@@ -56,7 +56,11 @@ class WorkflowRunListingIncompleteError(RuntimeError):
 
 
 def _failure_step_bounds(lines: list[str]) -> tuple[int, int]:
-    """Select the last Run step with a failure, excluding subsequent cleanup steps."""
+    """Select the last Run step with a failure, excluding subsequent cleanup steps.
+
+    A step fails on a nonzero runner wrapper, a final diagnostic, or an action's
+    `##[error]` line; the wrapper's own `##[error]` line counts only as the wrapper.
+    """
     step_start = None
     failed_step = None
     for index, line in enumerate(lines):
@@ -64,12 +68,17 @@ def _failure_step_bounds(lines: list[str]) -> tuple[int, int]:
             if _LOG_PREFIX.sub("", line).startswith("##[group]Run "):
                 step_start = index
         elif step_start is not None and (
-            "exit code" in line.lower() or "make" in line or "FAILED " in line
+            "exit code" in line.lower()
+            or "make" in line
+            or "FAILED " in line
+            or "##[error]" in line
         ):
             message = _LOG_PREFIX.sub("", line).lstrip()
             wrapper = _RUNNER_WRAPPER_LOG_LINE.search(message)
-            if (wrapper and int(wrapper.group(1)) != 0) or _FINAL_DIAGNOSTIC_LOG_LINE.search(
-                message
+            if (
+                (wrapper and int(wrapper.group(1)) != 0)
+                or (not wrapper and message.startswith("##[error]"))
+                or _FINAL_DIAGNOSTIC_LOG_LINE.search(message)
             ):
                 failed_step = (step_start, index + 1)
     if failed_step is not None:
