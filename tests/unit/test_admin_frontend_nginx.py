@@ -12,10 +12,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import shutil
+import socket
+import subprocess
+import time
+from uuid import uuid4
 
+import httpx
 import pytest
 
-NGINX_CONF = Path(__file__).parents[2] / "services/admin-frontend/nginx.conf"
+ADMIN_FRONTEND = Path(__file__).parents[2] / "services/admin-frontend"
+NGINX_CONF = ADMIN_FRONTEND / "nginx.conf"
 
 
 @dataclass(frozen=True)
@@ -113,3 +120,54 @@ def test_grafana_live_route_keeps_the_websocket_upgrade():
     assert upstream.http_version == "1.1"
     assert upstream.headers["Upgrade"] == "$http_upgrade"
     assert upstream.headers["Connection"] == "upgrade"
+
+
+def _docker(*args: str, check: bool = True, timeout: float = 30) -> subprocess.CompletedProcess:
+    docker = shutil.which("docker")
+    assert docker is not None
+    return subprocess.run(
+        [docker, *args], check=check, capture_output=True, text=True, timeout=timeout
+    )
+
+
+@pytest.mark.docker
+@pytest.mark.timeout(150)
+def test_nginx_loads_and_stays_up_without_any_upstream(tmp_path):
+    """On a network with no api, worker-manager or grafana, proxied routes answer 502 or 504."""
+    (image,) = re.findall(r"^FROM (nginx:\S+)", (ADMIN_FRONTEND / "Dockerfile").read_text(), re.M)
+    htpasswd = tmp_path / "htpasswd"
+    htpasswd.write_text("probe:{PLAIN}probe\n")
+    name = f"admin-nginx-probe-{uuid4().hex[:12]}"
+    mounts = [
+        *("-v", f"{NGINX_CONF}:/etc/nginx/conf.d/default.conf:ro"),
+        *("-v", f"{htpasswd}:/etc/nginx/.htpasswd:ro"),
+    ]
+    nginx = ["--network", name, *mounts, "--entrypoint", "nginx", image]
+    _docker("pull", image, timeout=60)
+    _docker("network", "create", name)
+    try:
+        syntax = _docker("run", "--rm", *nginx, "-t", check=False)
+        assert syntax.returncode == 0, syntax.stderr
+
+        _docker("run", "-d", "--name", name, "-p", "127.0.0.1::80", *nginx, "-g", "daemon off;")
+        host, port = _docker("port", name, "80/tcp").stdout.split()[0].rsplit(":", 1)
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                socket.create_connection((host, int(port)), timeout=1).close()
+                break
+            except OSError:
+                assert time.monotonic() < deadline, _docker("logs", name).stderr
+                time.sleep(0.2)
+        client = httpx.Client(
+            base_url=f"http://{host}:{port}", auth=("probe", "probe"), timeout=35, trust_env=False
+        )
+        with client:
+            assert client.get("/health").status_code in {502, 504}
+            assert client.get("/wm-api/workers").status_code in {502, 504}
+
+        running = _docker("inspect", "--format", "{{.State.Running}}", name).stdout.strip()
+        assert running == "true", _docker("logs", name).stderr
+    finally:
+        _docker("rm", "-f", name, check=False)
+        _docker("network", "rm", name, check=False)
