@@ -9,6 +9,7 @@ from pathlib import Path
 import structlog
 
 from shared.config_store import ConfigStoreUnavailableError
+from shared.log_config import unbind_message_context
 from shared.redis import RedisStreamClient
 
 from . import startup
@@ -48,12 +49,17 @@ async def periodic_loop(
     redis_factory: Callable[[], RedisStreamClient] = RedisStreamClient,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
-    """Run one Redis-backed periodic worker with a stable lifecycle."""
+    """Run one Redis-backed periodic worker with a stable lifecycle.
+
+    Each cycle starts with the message context unbound, so its messages never inherit
+    a correlation id bound before it, at startup or by the previous cycle.
+    """
     redis_client = redis_factory()
     await redis_client.connect()
     logger.info(started_event, interval=interval())
     try:
         while True:
+            unbind_message_context()
             try:
                 fields = await cycle(redis_client)
                 if cycle_event is not None:

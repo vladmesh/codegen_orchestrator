@@ -42,6 +42,15 @@ def test_failure_excerpt_retains_root_and_final_diagnostics(name, retained):
             ("____ test_load_config ____", "E       AssertionError:", "FAILED tests/"),
         ),
         ("steps", ("Error: SomeError: actual failing step", "make: *** [Makefile:152")),
+        ("upload-artifact", ("##[error]No files were found with the provided path: dist/.",)),
+        (
+            "test-then-upload-artifact",
+            ("E   AssertionError: expected the reminder to fire", "make: *** [Makefile:40"),
+        ),
+        (
+            "action-timeout-then-upload-artifact",
+            ("##[error]The action 'Free runner disk' has timed out after 3 minutes.",),
+        ),
     ],
 )
 def test_failure_excerpt_preserves_context_and_final_error(name, retained):
@@ -56,6 +65,11 @@ def test_failure_excerpt_preserves_context_and_final_error(name, retained):
     if name == "steps":
         assert "handled failure in successful setup" not in excerpt
         assert "handled cleanup retry" not in excerpt
+    if name == "upload-artifact":
+        assert "removing stand volume" not in excerpt
+        assert "Post job cleanup." not in excerpt
+    if name.endswith("-then-upload-artifact"):
+        assert "No files were found" not in excerpt
 
 
 @pytest.mark.parametrize("line_limit", [3, 4, 40, 1000])
