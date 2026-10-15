@@ -653,7 +653,7 @@ jobs:
     timeout-minutes: 60
     needs: [lint, ci-contract]
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request')
       && needs.lint.result == 'success' && needs.ci-contract.result == 'success'
     permissions:
       contents: read
