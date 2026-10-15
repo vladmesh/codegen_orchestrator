@@ -430,12 +430,7 @@ merge commit runs to its gate and gets its service and worker release.
 ### Runner proof
 
 `runner-proof` (legs `fresh`: tg-channels; `coexistence`: reminders then tg-channels) runs on every
-push to main, with no path filter, and `merge-gate` fails a skipped leg there. A pull request skips
-both legs, and the gate accepts that skip only on a `pull_request` run: the coexistence leg cannot
-finish in the seven minutes of the other pull request jobs. After the order, the scaffold and three
-installs (about four minutes on the serial path), its scenario waits for the tg-channels poll slot
-(0 to 60 s) and then two slots of the reminders timer (about 120 s), the product's own 60-second
-timers, which the proof does not fire itself. It reuses
+pull request and every main push, with no path filter, and `merge-gate` fails a skipped leg. It reuses
 the kit's harness at the activated kit commit (`tests/runner/fresh_product.py` there): the
 orchestrator's real install executor, product CI and drift, the cold environment regression, pushed
 and run image digests, the pinned platform's real auth and Caddy with key negatives, the fixture
@@ -483,12 +478,22 @@ proves the verifier refuses forged transitions, an opaque conflict and an ineffe
 `tests/unit/test_install_witness.py` that the witness and this gate refuse every unsafe trace.
 The kit's own reusable workflow at that commit cannot prove this
 candidate: its selection reads the catalog at `HEAD`, which this orchestrator refuses to plan an
-install from. The read-only `PLATFORM_SERVICES_DEPLOY_KEY` is used only by a main push, and
-checkouts keep no credentials. Product CI and then the cold integration run in their own thread
-beside the main images, platform, deployment and scenario, and the job builds the orchestrator API
-and platform auth images in the background during setup, so the proof's own builds reuse the cache.
-The evidence's `timeline` (`tests/runner/timeline.py`) gives every stage, wait and executor command
-its start and end, and every command record carries both too.
+install from. The read-only `PLATFORM_SERVICES_DEPLOY_KEY` is used only for a same-repository pull
+request or a main push, and checkouts keep no credentials.
+
+The legs fit the pull request jobs' time because the stages are not all serial and the images are
+ready early. Product CI and then the cold integration run in a thread of their own beside the main
+images, platform, deployment and scenario: they share no compose project, and the two of them share
+`tests-integration`, so they stay in order. The main images build beside the platform bring-up. The
+job builds the orchestrator API image during setup through the layer cache of
+`services/api/Dockerfile`, on a builder of its own, and the proof starts its stack from that image.
+That image's `org.codegen.runner_proof_checkout` label must name the checkout, and Compose builds the
+image itself if the job did not. The harness's waits poll every half second with their own timeouts.
+Nothing frees runner disk first: the runner starts with far more free space than the proof's images
+take. The evidence's `timeline` (`tests/runner/timeline.py`) gives every stage, wait and executor
+command its start, end and thread, and every command record carries both too. What remains is mostly
+the real installs and, in the coexistence leg, the product's own 60-second timers: the post waits for
+the next tg-channels poll slot and the reminder for the second reminders slot after it.
 
 ### Docker layer cache
 

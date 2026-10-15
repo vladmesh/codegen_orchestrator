@@ -831,9 +831,7 @@ PLANNED_EVERYTHING = {
 PLANNED_NOTHING = {"service-legs": "[]", "integration-legs": "[]", "service-image-imports": "false"}
 
 
-def _run_gate(
-    runner, results, outputs=None, plan=None, ref="refs/pull/1/merge", event="pull_request"
-):
+def _run_gate(runner, results, outputs=None, plan=None, ref="refs/pull/1/merge"):
     outputs = outputs or {}
     needs = {
         job: {"result": results.get(job, "success"), "outputs": outputs.get(job, {})}
@@ -861,7 +859,6 @@ def _run_gate(
         script,
         NEEDS_JSON=json.dumps(needs, indent=2),
         GITHUB_REF=ref,
-        GITHUB_EVENT_NAME=event,
         GITHUB_JOB="merge-gate",
         **planned,
     )
@@ -926,7 +923,6 @@ def test_the_gate_requires_the_import_check_on_main(runner):
         {"service-image-imports": "skipped"},
         plan={**PLANNED_NOTHING, "service-image-imports": "true"},
         ref="refs/heads/main",
-        event="push",
     )
 
     assert result.returncode == 1
@@ -938,7 +934,6 @@ def test_the_gate_fails_a_skipped_dind_suite_on_main(runner):
         runner,
         {"web-checks": "skipped", "test-backend-dind-integration": "skipped"},
         ref="refs/heads/main",
-        event="push",
     )
 
     assert result.returncode == 1
@@ -946,42 +941,15 @@ def test_the_gate_fails_a_skipped_dind_suite_on_main(runner):
 
 
 @pytest.mark.parametrize("result", ["skipped", "failure", "cancelled"])
-def test_the_gate_fails_a_runner_proof_that_did_not_pass_on_main(runner, result):
-    """No plan or path filter skips the runner proof on main: anything but success is red."""
+def test_the_gate_fails_a_runner_proof_that_did_not_pass(runner, result):
+    """No plan, path filter or event skips the runner proof: anything but success is red."""
     result_of = {"runner-proof": result, "web-checks": "skipped"}
-
-    gate = _run_gate(runner, result_of, ref="refs/heads/main", event="push")
-
-    assert gate.returncode == 1
-    assert f"runner-proof: {result}" in gate.stdout
-
-
-def test_the_gate_passes_a_pull_request_without_the_runner_proof(runner):
-    result_of = {"runner-proof": "skipped", "web-checks": "skipped"}
     result_of["test-backend-dind-integration"] = "skipped"
 
     gate = _run_gate(runner, result_of)
 
-    assert gate.returncode == 0, gate.stdout + gate.stderr
-    assert "runner-proof: skipped" in gate.stdout
-
-
-@pytest.mark.parametrize("result", ["failure", "cancelled"])
-def test_the_gate_fails_a_pull_request_runner_proof_that_ran_and_did_not_pass(runner, result):
-    result_of = {"runner-proof": result, "web-checks": "skipped"}
-    result_of["test-backend-dind-integration"] = "skipped"
-
-    assert _run_gate(runner, result_of).returncode == 1
-
-
-def test_the_gate_fails_a_dispatched_run_that_skipped_the_runner_proof(runner):
-    """Only a pull request run may leave the runner proof out."""
-    result_of = {"runner-proof": "skipped", "web-checks": "skipped"}
-    result_of["test-backend-dind-integration"] = "skipped"
-
-    gate = _run_gate(runner, result_of, ref="refs/heads/feature", event="workflow_dispatch")
-
     assert gate.returncode == 1
+    assert f"runner-proof: {result}" in gate.stdout
 
 
 def test_the_gate_fails_on_a_lint_failure(runner):

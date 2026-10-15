@@ -14,6 +14,9 @@ services:
       dockerfile: services/api/Dockerfile
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+      # The proof refuses an image that names another checkout (activated_snapshot_proof.py).
+      labels:
+        org.codegen.runner_proof_checkout: ${RUNNER_ORCHESTRATOR_SHA:?}
     command: ["/entrypoint.sh"]
     environment:
       - DEFAULT_AGENT_TYPE=claude

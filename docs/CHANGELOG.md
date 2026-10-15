@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-15
 
-- Runner Proof runs on main pushes only: its coexistence leg waits on the product's minute timers past
-  7 minutes. Its evidence times every stage, and product CI runs beside the deployment and scenario.
+- Runner Proof legs finish in about 6 and 8 minutes instead of 10 and 13: product CI runs beside the
+  deployment, the API image comes from the layer cache, and the evidence times every stage.
 
 ## 2026-10-14
 
