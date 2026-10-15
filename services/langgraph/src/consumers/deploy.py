@@ -15,7 +15,6 @@ import structlog
 
 from shared.allocation_disposition import attempt_disposition, may_terminate_story
 from shared.clients.github import WorkflowCancellationUnprovenError
-from shared.config_store import ConfigStore
 from shared.contracts.dto.application import (
     DEFAULT_APPLICATION_RESERVED_RAM_MB,
     ApplicationStatus,
@@ -40,6 +39,7 @@ from shared.redis import RedisStreamClient
 
 from ..allocations import AllocationError
 from ..clients.api import api_client
+from ..config.system_config import system_config
 from ..deploy_fence import DeployFence, DeployFenceLost, DeployWrite
 from ..runtime_identity import project_runtime_slug
 from ..subgraphs.devops import create_devops_subgraph
@@ -56,22 +56,14 @@ from .deploy_result_handler import (
 
 logger = structlog.get_logger(__name__)
 
-_config: ConfigStore | None = None
+DEPLOY_CONFIG_CACHE_TTL_SECONDS = 30
 
 #: A Run in one of these has recorded its outcome; the API refuses to rewrite it.
 _TERMINAL_RUN_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
 
 
 def _deploy_lock_ttl() -> int:
-    global _config  # noqa: PLW0603
-    if _config is None:
-        import os
-
-        api_base_url = os.getenv("API_BASE_URL")
-        if not api_base_url:
-            raise RuntimeError("API_BASE_URL is not set")
-        _config = ConfigStore(api_base_url)
-    return _config.get_int("deploy.deploy_lock_ttl", default=3600)
+    return system_config().get_int("deploy.deploy_lock_ttl", default=3600)
 
 
 class AccessTargetUnresolvedError(Exception):
@@ -1179,6 +1171,7 @@ def main():
         service_name="deploy-worker",
         queue=DEPLOY_QUEUE,
         process_fn=process_deploy_job,
+        system_config_ttl=DEPLOY_CONFIG_CACHE_TTL_SECONDS,
     )
 
 

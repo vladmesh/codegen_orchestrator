@@ -40,7 +40,6 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import TypeAdapter
 import structlog
 
-from shared.config_store import ConfigStore
 from shared.contracts.dto.qa_verification import QAVerificationFacts
 from shared.contracts.queues.po import (
     POInputMessage,
@@ -76,6 +75,7 @@ from ..agents.po.tools_shared import init_po_clients
 from ..catalog_product_settings import po_catalog_context
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
+from ..config.system_config import system_config
 from ..llm import ChannelChainModel, LLMAgent, LLMAlerts, build_agent_llm, load_channel_chain
 from .po_story_gate import ProactiveStoryGate
 
@@ -121,14 +121,14 @@ async def load_po_llms(settings: Settings, alerts: LLMAlerts | None = None) -> P
     )
 
 
-def load_summarization_config(api_base_url: str) -> SummarizationConfig:
-    """Read the required PO summarization tuning from system config.
+def load_summarization_config() -> SummarizationConfig:
+    """Read the required PO summarization tuning from the process system config.
 
     Operational tuning has one production source of truth. Missing keys,
     malformed values, and an unavailable config API are startup failures rather
     than reasons to silently change summarization policy.
     """
-    config = ConfigStore(api_base_url)
+    config = system_config()
     config.validate_required(list(SUMMARIZATION_CONFIG_KEYS))
     return SummarizationConfig(
         max_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[0]),
@@ -247,9 +247,7 @@ async def run_po_consumer(
 ) -> None:
     """Main loop: read po:input, invoke PO graph, write po:response:*."""
     settings = get_settings()
-    effective_summarization = summarization_config or load_summarization_config(
-        settings.api_base_url
-    )
+    effective_summarization = summarization_config or load_summarization_config()
     effective_llms = llms or await load_po_llms(settings)
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()

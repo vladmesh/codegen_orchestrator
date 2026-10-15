@@ -13,7 +13,9 @@ async def run():
     api = SchedulerAPIClient()
     stream = RedisStreamClient()
     await stream.connect()
-    startup.init_config({"scheduler.service_template_source", "scheduler.service_template_ref"})
+    await startup.init_config(
+        {"scheduler.service_template_source", "scheduler.service_template_ref"}
+    )
     read = api.get_tasks_by_status
 
     async def selected(status):

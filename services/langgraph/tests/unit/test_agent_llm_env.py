@@ -136,6 +136,7 @@ class TestPoStartupSignal:
         # OpenRouter key reaching them (a local .env) would otherwise never return.
         with (
             patch.object(main, "_po_missing_env", return_value=["PO_LLM_API_KEY"]),
+            patch.object(main, "start_system_config", AsyncMock()),
             patch.object(main, "listen_provisioner_triggers", _idle),
             patch.object(main, "listen_worker_events", _idle),
             patch.object(main, "run_openrouter_balance_check", _idle),
@@ -174,6 +175,7 @@ class TestPoStartupSignal:
         with (
             patch.object(main, "_po_missing_env", return_value=[]),
             patch.object(main, "get_settings", return_value=settings),
+            patch.object(main, "start_system_config", AsyncMock()),
             patch.object(
                 po,
                 "load_summarization_config",

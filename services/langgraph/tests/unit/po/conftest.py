@@ -23,7 +23,7 @@ def _fixed_po_summarization_config(monkeypatch):
     monkeypatch.setattr(
         po_consumer,
         "load_summarization_config",
-        lambda _api_base_url: po_consumer.SummarizationConfig(
+        lambda: po_consumer.SummarizationConfig(
             max_tokens=1,
             trigger_tokens=1,
             max_summary_tokens=1,

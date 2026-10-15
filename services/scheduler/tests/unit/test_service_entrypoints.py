@@ -6,10 +6,10 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 import yaml
 
-from shared.config_store import ConfigStore
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -38,28 +38,49 @@ def test_pipeline_does_not_require_maintenance_or_infrastructure_config():
     assert "scheduler.server_sync_interval" not in startup.PIPELINE_REQUIRED_KEYS
 
 
-def test_pipeline_validates_only_its_own_config(monkeypatch):
+async def test_pipeline_validates_only_its_own_config(monkeypatch):
     from src import startup
 
-    store = ConfigStore("http://api:8000")
-    store._client = MagicMock()
+    def config_response(_request: httpx.Request) -> httpx.Response:
+        body = [{"key": key, "value": 1} for key in startup.PIPELINE_REQUIRED_KEYS]
+        return httpx.Response(200, json=body)
 
-    def config_response(path, **_kwargs):
-        key = path.removeprefix("system-configs/")
-        if key in startup.PIPELINE_REQUIRED_KEYS:
-            response = MagicMock(status_code=200)
-            response.json.return_value = {"key": key, "value": 1}
-            return response
-        return MagicMock(status_code=404)
-
-    store._client.get_raw.side_effect = config_response
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "shared.clients.internal_api.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(config_response), **kwargs),
+    )
     monkeypatch.setenv("API_BASE_URL", "http://api:8000")
-    monkeypatch.setattr(startup, "ConfigStore", MagicMock(return_value=store))
+    monkeypatch.setattr(startup, "config", None)
 
-    startup.init_config(startup.PIPELINE_REQUIRED_KEYS)
+    await startup.init_config(startup.PIPELINE_REQUIRED_KEYS)
 
     with pytest.raises(RuntimeError, match="scheduler.github_sync_missing_threshold"):
-        startup.init_config(startup.MAINTENANCE_REQUIRED_KEYS)
+        await startup.init_config(startup.MAINTENANCE_REQUIRED_KEYS)
+
+
+class _Refresher:
+    """Stands in for the process ConfigStore: records that its refresher ran and stopped."""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.stopped = asyncio.Event()
+
+    async def refresh_forever(self):
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.stopped.set()
+
+
+@pytest.fixture
+def config_refresher(monkeypatch) -> _Refresher:
+    from src import startup
+
+    refresher = _Refresher()
+    monkeypatch.setattr(startup, "config", refresher)
+    return refresher
 
 
 def test_compose_runs_independent_scheduler_processes():
@@ -138,7 +159,7 @@ def test_infra_stack_waits_for_scheduler_health():
 
 
 @pytest.mark.asyncio
-async def test_unexpected_worker_exit_cancels_its_process_siblings():
+async def test_unexpected_worker_exit_cancels_its_process_siblings(config_refresher):
     from src import runtime
 
     sibling_stopped = asyncio.Event()
@@ -158,6 +179,32 @@ async def test_unexpected_worker_exit_cancels_its_process_siblings():
         )
 
     assert sibling_stopped.is_set()
+    assert config_refresher.stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_one_config_refresher_runs_beside_the_workers(
+    config_refresher, tmp_path, monkeypatch
+):
+    from src import runtime
+
+    refreshing_while_working = asyncio.Event()
+
+    async def worker():
+        await config_refresher.started.wait()
+        refreshing_while_working.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "READINESS_PATH", tmp_path / "scheduler-ready")
+    service = asyncio.create_task(
+        runtime.run_workers([("worker", worker)], service_name="scheduler-pipeline")
+    )
+    await asyncio.wait_for(refreshing_while_working.wait(), timeout=1)
+
+    service.cancel()
+    await service
+
+    assert config_refresher.stopped.is_set()
 
 
 @pytest.mark.asyncio
@@ -206,7 +253,9 @@ async def test_periodic_loop_cycles_do_not_share_a_correlation_id():
 
 
 @pytest.mark.asyncio
-async def test_readiness_marker_is_current_and_removed_on_stop(tmp_path, monkeypatch):
+async def test_readiness_marker_is_current_and_removed_on_stop(
+    tmp_path, monkeypatch, config_refresher
+):
     from src import runtime
 
     marker = tmp_path / "scheduler-ready"

@@ -24,7 +24,7 @@ async def initialize_configs(required_keys: Collection[str], *, service_name: st
     READINESS_PATH.unlink(missing_ok=True)
     while True:
         try:
-            startup.init_config(required_keys)
+            await startup.init_config(required_keys)
             logger.info("system_configs_validated", service=service_name)
             return
         except ConfigStoreUnavailableError as exc:
@@ -77,8 +77,11 @@ async def run_workers(
     *,
     service_name: str,
 ) -> None:
-    """Run one process's loops and close every sibling when one exits."""
-    tasks = [asyncio.create_task(worker(), name=name) for name, worker in workers]
+    """Run one process's loops beside its config refresher; close every sibling when one exits."""
+    tasks = [
+        asyncio.create_task(startup.get_config().refresh_forever(), name="config_refresh"),
+        *(asyncio.create_task(worker(), name=name) for name, worker in workers),
+    ]
     try:
         logger.info(
             "service_workers_started", service=service_name, workers=[t.get_name() for t in tasks]

@@ -86,6 +86,7 @@ from ..llm import (
     retry_cannot_fix,
     unconfigured_channel_env,
 )
+from ..llm.alerts import ALERT_CONFIG_CACHE_TTL_SECONDS
 from ..llm.chain import ChannelUsage
 from ..planning_module_jobs import (
     PlanningModuleFacts,
@@ -1769,6 +1770,7 @@ def main():
         queue=ARCHITECT_QUEUE,
         process_fn=process_architect_job,
         group=ARCHITECT_GROUP,
+        system_config_ttl=ALERT_CONFIG_CACHE_TTL_SECONDS,
     )
 
 

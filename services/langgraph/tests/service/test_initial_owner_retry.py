@@ -153,7 +153,9 @@ async def failed_source(api, stream, project, story, owner, route):
 
 
 @pytest.mark.asyncio
-async def test_terminal_cancelled_owner_deploy_exhausts_and_can_retry(public_project, real_redis):
+async def test_terminal_cancelled_owner_deploy_exhausts_and_can_retry(
+    public_project, real_redis, deploy_worker_config
+):
     async with asyncio.timeout(90):
         api, stream, project, story = public_project
         owner = await api.get(f"users/{(await api.get(f'projects/{project}'))['owner_id']}")
@@ -212,7 +214,7 @@ async def test_terminal_cancelled_owner_deploy_exhausts_and_can_retry(public_pro
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["retry", "cancelled"])
 async def test_policy_zero_before_native_exhaustion_stops_without_a_command(
-    public_project, real_redis, route
+    public_project, real_redis, route, deploy_worker_config
 ):
     async with asyncio.timeout(90):
         api, stream, project, story = public_project

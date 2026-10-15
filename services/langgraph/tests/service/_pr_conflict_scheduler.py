@@ -78,7 +78,7 @@ class SyntheticGitHub:
 
 
 async def exercise():
-    startup.init_config(["scheduler.ci_failure_log_excerpt_lines"])
+    await startup.init_config(["scheduler.ci_failure_log_excerpt_lines"])
     api = ScopedAPI()
     stream = RedisStreamClient()
     await stream.connect()

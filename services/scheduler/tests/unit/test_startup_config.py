@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -100,9 +100,10 @@ def test_bounded_stale_keys_are_a_small_explicit_cadence_allowlist():
     assert not startup.BOUNDED_STALE_KEYS & critical_keys
 
 
-def test_init_config_applies_bounded_stale_only_to_safe_owned_keys(monkeypatch):
+async def test_init_config_applies_bounded_stale_only_to_safe_owned_keys(monkeypatch):
     monkeypatch.setenv("API_BASE_URL", "http://api:8000")
-    store = MagicMock()
+    monkeypatch.setattr(startup, "config", None)
+    store = MagicMock(refresh=AsyncMock())
     factory = MagicMock(return_value=store)
     monkeypatch.setattr(startup, "ConfigStore", factory)
 
@@ -111,7 +112,7 @@ def test_init_config_applies_bounded_stale_only_to_safe_owned_keys(monkeypatch):
         "deploy.max_deploy_retries",
     }
 
-    assert startup.init_config(owned_keys) is store
+    assert await startup.init_config(owned_keys) is store
 
     factory.assert_called_once_with(
         "http://api:8000",
@@ -121,74 +122,118 @@ def test_init_config_applies_bounded_stale_only_to_safe_owned_keys(monkeypatch):
             )
         },
     )
-    store.validate_required.assert_called_once_with(sorted(owned_keys))
+    assert store.mock_calls == [call.refresh(), call.validate_required(sorted(owned_keys))]
 
 
 class _ConfigResponder:
-    """Answers the config read the store sends through the shared transport."""
+    """Answers the batch config read the store sends through the shared transport."""
 
     def __init__(self):
+        self.requests: list[httpx.Request] = []
         self.status_code = 200
-        self.json_body = {"key": "scheduler.dispatch_interval_seconds", "value": 30}
+        self.values: dict = {"scheduler.dispatch_interval_seconds": 30}
         self.error = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
         if self.error is not None:
             raise self.error
-        return httpx.Response(self.status_code, json=self.json_body)
+        body = [{"key": key, "value": value} for key, value in self.values.items()]
+        return httpx.Response(self.status_code, json=body)
 
 
 def _config_transport(responder):
-    """Route the store's sync client through `responder` instead of the network."""
-    real_client = httpx.Client
+    """Route the store's async client through `responder` instead of the network."""
+    real_client = httpx.AsyncClient
 
     def factory(**kwargs):
         return real_client(transport=httpx.MockTransport(responder), **kwargs)
 
-    return patch("shared.clients.internal_api.httpx.Client", factory)
+    return patch("shared.clients.internal_api.httpx.AsyncClient", factory)
 
 
-def test_dispatch_interval_survives_a_short_config_api_outage(monkeypatch):
+class _Clock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch) -> _Clock:
+    fake = _Clock()
+    monkeypatch.setattr("shared.config_store.time.monotonic", fake)
+    return fake
+
+
+async def test_loop_interval_accessors_read_the_startup_snapshot_without_http(
+    monkeypatch, tmp_path
+):
+    responder = _ConfigResponder()
+    responder.values = dict.fromkeys(startup.PIPELINE_REQUIRED_KEYS, 7)
+    monkeypatch.setenv("API_BASE_URL", "http://api:8000")
+    monkeypatch.setattr(startup, "config", None)
+    monkeypatch.setattr(runtime, "READINESS_PATH", tmp_path / "scheduler-ready")
+
+    with _config_transport(responder):
+        await runtime.initialize_configs(
+            startup.PIPELINE_REQUIRED_KEYS, service_name="scheduler-pipeline"
+        )
+        for _ in range(5):
+            assert task_dispatcher._dispatch_interval() == 7
+            assert _max_deploy_retries() == 7
+
+    assert [request.url.path for request in responder.requests] == ["/api/system-configs/"]
+
+
+async def test_dispatch_interval_survives_a_short_config_api_outage(monkeypatch, clock):
     """A cadence-only key may use its bounded last-known value."""
     responder = _ConfigResponder()
 
     with _config_transport(responder):
         store = ConfigStore(
             "http://api:8000",
-            cache_ttl=0,
             stale_policies=startup._stale_policies_for({"scheduler.dispatch_interval_seconds"}),
         )
         monkeypatch.setattr(startup, "config", store)
+        await store.refresh()
 
         assert task_dispatcher._dispatch_interval() == 30
 
+        clock.now += 60
         responder.error = httpx.ConnectError("connection refused")
+        with pytest.raises(ConfigStoreUnavailableError):
+            await store.refresh()
         assert task_dispatcher._dispatch_interval() == 30
 
 
-def test_deploy_retry_limit_fails_closed_when_config_api_goes_away(monkeypatch):
+async def test_deploy_retry_limit_fails_closed_when_config_api_goes_away(monkeypatch, clock):
     """Behavior-changing retry policy never inherits the cadence fallback."""
     responder = _ConfigResponder()
-    responder.json_body = {"key": "deploy.max_deploy_retries", "value": 3}
+    responder.values = {"deploy.max_deploy_retries": 3}
 
     with _config_transport(responder):
         store = ConfigStore(
             "http://api:8000",
-            cache_ttl=0,
             stale_policies=startup._stale_policies_for({"deploy.max_deploy_retries"}),
         )
         monkeypatch.setattr(startup, "config", store)
+        await store.refresh()
 
         assert _max_deploy_retries() == 3
 
+        clock.now += 60
         responder.error = httpx.ConnectError("connection refused")
+        with pytest.raises(ConfigStoreUnavailableError):
+            await store.refresh()
         with pytest.raises(ConfigStoreUnavailableError, match="unavailable"):
             _max_deploy_retries()
 
 
-def test_dispatch_interval_still_fails_loudly_when_the_key_is_gone(monkeypatch):
+async def test_dispatch_interval_still_fails_loudly_when_the_key_is_gone(monkeypatch):
     responder = _ConfigResponder()
-    responder.status_code = 404
+    responder.values = {}
 
     with _config_transport(responder):
         store = ConfigStore(
@@ -196,6 +241,7 @@ def test_dispatch_interval_still_fails_loudly_when_the_key_is_gone(monkeypatch):
             stale_policies=startup._stale_policies_for({"scheduler.dispatch_interval_seconds"}),
         )
         monkeypatch.setattr(startup, "config", store)
+        await store.refresh()
 
         with pytest.raises(KeyError, match="not found"):
             task_dispatcher._dispatch_interval()
@@ -207,7 +253,7 @@ async def test_startup_retries_config_validation_until_api_is_available(monkeypa
     marker = tmp_path / "scheduler-ready"
     marker.write_text("stale-process")
 
-    def validate_configs(_required_keys):
+    async def validate_configs(_required_keys):
         nonlocal attempts
         attempts += 1
         if attempts == 1:

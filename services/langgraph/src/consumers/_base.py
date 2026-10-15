@@ -45,6 +45,8 @@ from shared.queues import WORKER_GROUP
 from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 
 from ..clients.api import api_client
+from ..config.settings import get_settings
+from ..config.system_config import start_system_config, stop_system_config
 from ._live_work import execute_live_work, live_work_active
 
 logger = structlog.get_logger(__name__)
@@ -400,6 +402,7 @@ async def run_queue_worker(
     slots_config_key: str | None = None,
     default_slots: int = DEFAULT_QUEUE_SLOTS,
     is_draining: DrainCheck | None = None,
+    system_config_ttl: float | None = None,
 ) -> None:
     """Generic worker loop for Redis Stream queue consumption.
 
@@ -414,6 +417,8 @@ async def run_queue_worker(
             cannot be read at all.
         is_draining: Optional durable operator decision that stops new claims
             while already-started jobs continue to settle.
+        system_config_ttl: Snapshot TTL of the process system config, started
+            before the first claim. Omitted means this consumer reads none.
     """
     global _shutdown
     _shutdown = False
@@ -421,6 +426,9 @@ async def run_queue_worker(
     setup_logging(service_name=service_name)
 
     consumer_name = _consumer_name(service_name)
+
+    if system_config_ttl is not None:
+        await start_system_config(get_settings().api_base_url, cache_ttl=system_config_ttl)
 
     redis = RedisStreamClient()
     await redis.connect()
@@ -517,6 +525,7 @@ async def run_queue_worker(
         await _drain_in_flight(in_flight, service_name)
         await redis.close()
         await api_client.close()
+        await stop_system_config()
         logger.info(f"{service_name}_shutdown")
 
 
@@ -529,6 +538,7 @@ def start_worker(
     slots_config_key: str | None = None,
     default_slots: int = DEFAULT_QUEUE_SLOTS,
     is_draining: DrainCheck | None = None,
+    system_config_ttl: float | None = None,
 ) -> None:
     """Entry point: register signal handlers and run the worker loop.
 
@@ -540,6 +550,7 @@ def start_worker(
         slots_config_key: System-config key holding this consumer's slot count
         default_slots: Slot count used until configuration answers
         is_draining: Optional durable operator decision that stops new claims.
+        system_config_ttl: Snapshot TTL of the process system config, if it reads one.
     """
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
@@ -553,5 +564,6 @@ def start_worker(
             slots_config_key=slots_config_key,
             default_slots=default_slots,
             is_draining=is_draining,
+            system_config_ttl=system_config_ttl,
         )
     )

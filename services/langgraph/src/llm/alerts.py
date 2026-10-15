@@ -35,10 +35,10 @@ from typing import Any
 from redis.asyncio import Redis
 import structlog
 
-from shared.config_store import ConfigStore
 from shared.contracts.dto.llm_channel import LLMChannel
 from shared.notifications import AdminDeliveryResult, deliver_to_admins
 
+from ..config.system_config import system_config
 from .errors import ChannelAttempt, ChannelFailureClass
 
 logger = structlog.get_logger(__name__)
@@ -50,8 +50,8 @@ DEFAULT_REALERT_WINDOW_HOURS = 6.0
 #: round trips around it. Past this the alert is abandoned as failed.
 ALERT_DEADLINE_SECONDS = 30.0
 
-#: System config is read far less often than a model is called.
-_CONFIG_CACHE_TTL_SECONDS = 300
+#: Snapshot TTL of a process whose system-config readers are these alerts.
+ALERT_CONFIG_CACHE_TTL_SECONDS = 300
 
 _MISSING = object()
 
@@ -92,12 +92,6 @@ _SUBSCRIPTION_CHANNELS = frozenset({LLMChannel.CODEX, LLMChannel.CLAUDE})
 def subscriptions_down(attempts: Sequence[ChannelAttempt]) -> bool:
     """Whether this call already failed on both subscription channels."""
     return _SUBSCRIPTION_CHANNELS <= {attempt.channel for attempt in attempts}
-
-
-@cache
-def system_config(api_base_url: str) -> ConfigStore:
-    """One `ConfigStore` per process for the LLM alert keys."""
-    return ConfigStore(api_base_url, cache_ttl=_CONFIG_CACHE_TTL_SECONDS)
 
 
 def config_number(config: Any, key: str, default: float, *, minimum: float = 0.0) -> float:
@@ -159,7 +153,7 @@ class LLMAlerts:
         """Alerts over the process's Redis (``redis`` if given) and its system config."""
         return cls(
             (lambda: redis) if redis is not None else (lambda: _redis_client(settings.redis_url)),
-            lambda: system_config(settings.api_base_url),
+            system_config,
         )
 
     @property
@@ -324,7 +318,7 @@ class LLMAlerts:
             )
 
     async def config_number(self, key: str, default: float) -> float:
-        """A system-config number read off the event loop; see `config_number`."""
+        """A system-config number from the process snapshot; see `config_number`."""
         try:
             config = self._config()
         except Exception as exc:  # noqa: BLE001 - no config source means the default
@@ -335,7 +329,7 @@ class LLMAlerts:
                 error_type=type(exc).__name__,
             )
             return default
-        return await asyncio.to_thread(config_number, config, key, default)
+        return config_number(config, key, default)
 
     @staticmethod
     def _schedule(alert: Coroutine[Any, Any, AlertOutcome]) -> None:

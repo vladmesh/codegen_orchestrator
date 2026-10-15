@@ -20,6 +20,7 @@ from shared.queues import PO_INPUT_QUEUE
 
 from .clients.api import api_client
 from .config.settings import get_settings
+from .config.system_config import start_system_config
 from .llm import (
     LLMAgent,
     LLMAlerts,
@@ -28,6 +29,7 @@ from .llm import (
     log_channel_readiness,
     unconfigured_channel_env,
 )
+from .llm.alerts import ALERT_CONFIG_CACHE_TTL_SECONDS
 from .llm.openrouter import run_openrouter_balance_check
 from .provisioner import listen_provisioner_triggers
 from .worker_events import listen_worker_events
@@ -55,23 +57,24 @@ async def run_worker() -> None:
     """Run the LangGraph worker loop."""
     po_missing = await _po_missing_env()
     settings = get_settings()
+    if not po_missing and not settings.checkpoint_database_url:
+        raise RuntimeError(
+            "CHECKPOINT_DATABASE_URL is required when the PO consumer is enabled; "
+            "refusing to start with non-durable conversation state"
+        )
+    # The alert TTL: the PO reads its tuning once below, the alerts for the process lifetime.
+    await start_system_config(settings.api_base_url, cache_ttl=ALERT_CONFIG_CACHE_TTL_SECONDS)
     # One alert sender for every chain of this process and the balance check.
     alerts = LLMAlerts.from_settings(settings)
     summarization_config = None
     po_llms = None
     if not po_missing:
-        if not settings.checkpoint_database_url:
-            raise RuntimeError(
-                "CHECKPOINT_DATABASE_URL is required when the PO consumer is enabled; "
-                "refusing to start with non-durable conversation state"
-            )
-
         # Validate every PO-only startup dependency before unrelated background
         # loops begin. Operational summarization tuning is required system config;
         # an unavailable/malformed source is not an env-fallback mode.
         from .consumers.po import load_po_llms, load_summarization_config
 
-        summarization_config = load_summarization_config(settings.api_base_url)
+        summarization_config = load_summarization_config()
         po_llms = await load_po_llms(settings, alerts)
 
     tasks = [
