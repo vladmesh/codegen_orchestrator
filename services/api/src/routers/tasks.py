@@ -62,6 +62,7 @@ class _TaskFilters:
         source_brainstorm_id: str | None = Query(None),
         repository_id: str | None = Query(None),
         story_id: str | None = Query(None),
+        install_state: str | None = Query(None),
         since: datetime | None = Query(None),
         limit: int | None = Query(None, ge=1),
         sort: str | None = Query(None),
@@ -72,6 +73,7 @@ class _TaskFilters:
         self.source_brainstorm_id = source_brainstorm_id
         self.repository_id = repository_id
         self.story_id = story_id
+        self.install_state = install_state
         self.since = since
         self.limit = limit
         self.sort = sort
@@ -199,6 +201,8 @@ async def list_tasks(
         query = query.where(Task.repository_id == filters.repository_id)
     if filters.story_id:
         query = query.where(Task.story_id == filters.story_id)
+    if filters.install_state:
+        query = query.where(Task.install_operation["state"].as_string() == filters.install_state)
     if filters.since:
         query = query.where(Task.updated_at >= filters.since)
 

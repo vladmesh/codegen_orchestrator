@@ -524,19 +524,14 @@ async def _dispatch_install(api_client, redis_client, task, log) -> bool:
 
 async def _recover_catalog_installs(api_client):
     tasks = [
-        *await api_client.get_tasks_by_status(TaskStatus.IN_DEV),
-        *await api_client.get_tasks_by_status(TaskStatus.CANCELLED),
+        *await api_client.get_open_install_tasks(TaskStatus.IN_DEV),
+        *await api_client.get_open_install_tasks(TaskStatus.CANCELLED),
     ]
     for running in tasks:
-        if (
-            running.type is TaskType.INSTALL
-            and running.install_operation is not None
-            and running.install_operation.state == "running"
-        ):
-            try:
-                await api_client.catalog_install_command(running.id, InstallCommand(action="admit"))
-            except Exception:
-                logger.exception("catalog_install_recovery_observation_failed", task_id=running.id)
+        try:
+            await api_client.catalog_install_command(running.id, InstallCommand(action="admit"))
+        except Exception:
+            logger.exception("catalog_install_recovery_observation_failed", task_id=running.id)
 
 
 async def task_dispatcher_loop() -> None:

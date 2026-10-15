@@ -52,7 +52,7 @@ from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, S
 from shared.contracts.dto.state_wait import StateWaitExpiryCommand, StateWaitExpiryRead
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.story_failure import StoryFailure
-from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.contracts.dto.task import TaskDTO, TaskEventDTO, TaskType
 from shared.contracts.dto.temporary_access import (
     QA_ROUTING_PENDING,
     TemporaryAccessGrantCreate,
@@ -674,6 +674,15 @@ class SchedulerAPIClient(RunAPIClientMixin, InternalAPIClient):
 
     async def get_tasks_by_status(self, status: str) -> list[TaskDTO]:
         resp = await self.request("GET", "tasks/", params={"status": status})
+        return [TaskDTO.model_validate(t) for t in resp.json()]
+
+    async def get_open_install_tasks(self, status: str) -> list[TaskDTO]:
+        """Install tasks in `status` whose install operation is still running."""
+        resp = await self.request(
+            "GET",
+            "tasks/",
+            params={"status": status, "type": TaskType.INSTALL, "install_state": "running"},
+        )
         return [TaskDTO.model_validate(t) for t in resp.json()]
 
     async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
