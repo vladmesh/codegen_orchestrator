@@ -169,6 +169,8 @@ GATE_PLANNED_SKIPS = {
     "test-integration": ("PLANNED_INTEGRATION_LEGS", "[]"),
     "service-image-imports": ("PLANNED_SERVICE_IMAGE_IMPORTS", "false"),
 }
+# job -> the only event whose run may skip it; the job runs on every other gated run.
+GATE_EVENT_SKIPS = {"runner-proof": "pull_request"}
 PLANNED_SKIP_OUTPUTS = {
     "test-service": "service-legs",
     "test-integration": "integration-legs",
@@ -245,6 +247,12 @@ LINT_GATED_JOBS = (
     "test-backend-dind-integration",
 )
 LINT_GATE_CONDITIONS = ("needs.lint.result == 'success'", "needs.ci-contract.result == 'success'")
+# The runner proof is main-push only: its coexistence leg outlasts the pull request jobs.
+RUNNER_PROOF_CONDITIONS = (
+    "github.event_name == 'push'",
+    "github.ref == 'refs/heads/main'",
+    *LINT_GATE_CONDITIONS,
+)
 
 # --- Docker layer cache --------------------------------------------------------------
 #
@@ -1936,12 +1944,29 @@ def assert_gate(jobs: dict[str, Any]) -> None:
         rule = f'{job_name}) [ "${{{variable}}}" = "{planned_nothing}" ] ;;'
         if rule not in script:
             fail(f"merge-gate must accept a skipped {job_name} only when the plan says so")
+    for job_name, event in GATE_EVENT_SKIPS.items():
+        rule = f'{job_name}) [ "${{GITHUB_EVENT_NAME}}" = "{event}" ] ;;'
+        if rule not in script:
+            fail(f"merge-gate must accept a skipped {job_name} only on a {event} run")
     if INFRA_MARKER_PATTERN not in script:
         fail("merge-gate must repeat every infrastructure marker of its needs")
     if INFRA_MARKER_ANNOTATION not in script or "GITHUB_STEP_SUMMARY" not in script:
         fail("merge-gate must repeat the markers in its log and its summary")
     if script.find(INFRA_MARKER_PATTERN) > script.rfind('echo "Required CI gate failed"'):
         fail("merge-gate must repeat the markers before it exits on its verdict")
+
+
+def assert_runner_proof(jobs: dict[str, Any]) -> None:
+    """Both runner proof legs run on every push to main, after lint and the contract."""
+    job = require_job(jobs, "runner-proof")
+    condition = " ".join(str(job.get("if", "")).split())
+    for required in RUNNER_PROOF_CONDITIONS:
+        if required not in condition:
+            fail(f"runner-proof is missing required condition: {required}")
+    if job.get("continue-on-error"):
+        fail("runner-proof must fail its run, not report advisory")
+    if matrix_values(job, "leg") != {"fresh", "coexistence"}:
+        fail("runner-proof must run the fresh and coexistence legs")
 
 
 def assert_template_compatibility(jobs: dict[str, Any]) -> None:
@@ -1988,6 +2013,7 @@ def main() -> None:
     assert_service_image_imports(jobs)
     assert_layer_cache(jobs)
     assert_template_compatibility(jobs)
+    assert_runner_proof(jobs)
     assert_gate(jobs)
     for workflow_path in (
         WORKFLOW,

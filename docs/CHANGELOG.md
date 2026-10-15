@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-15
+
+- Runner Proof runs on main pushes only: its coexistence leg waits on the product's minute timers past
+  7 minutes. Its evidence times every stage, and product CI runs beside the deployment and scenario.
+
 ## 2026-10-14
 
 - Image builds and worker launches are quieter: apt-get stages declare `ARG DEBIAN_FRONTEND=noninteractive`

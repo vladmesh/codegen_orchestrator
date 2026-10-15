@@ -829,6 +829,28 @@ def test_a_skip_the_gate_accepts_without_the_plan_fails_the_gate(gate):
         gate.assert_gate(jobs)
 
 
+def test_a_gate_that_accepts_a_skipped_runner_proof_on_main_fails_the_contract(gate):
+    jobs = gate.load_workflow()["jobs"]
+    check = gate.step_by_name(jobs["merge-gate"], "Check required jobs")
+    check["run"] = check["run"].replace(
+        'runner-proof) [ "${GITHUB_EVENT_NAME}" = "pull_request" ] ;;',
+        "runner-proof) return 0 ;;",
+    )
+
+    with pytest.raises(SystemExit, match="skipped runner-proof only on a pull_request run"):
+        gate.assert_gate(jobs)
+
+
+def test_a_runner_proof_that_is_not_held_to_main_pushes_fails_the_contract(gate):
+    jobs = gate.load_workflow()["jobs"]
+    jobs["runner-proof"]["if"] = (
+        "needs.lint.result == 'success' && needs.ci-contract.result == 'success'"
+    )
+
+    with pytest.raises(SystemExit, match="github.event_name == 'push'"):
+        gate.assert_runner_proof(jobs)
+
+
 def test_a_skip_read_from_another_output_fails_the_gate(gate):
     jobs = gate.load_workflow()["jobs"]
     check = gate.step_by_name(jobs["merge-gate"], "Check required jobs")
