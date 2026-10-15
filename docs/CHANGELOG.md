@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-15
 
+- admin-frontend's nginx resolves upstreams per request, so a late or missing api, worker-manager or
+  grafana answers 502 instead of stopping nginx; architect starts only once api and redis are healthy.
 - The API sends user timestamps with a UTC designator and the admin UI reads timezone-less API times as UTC,
   so `Last seen` is right in any browser zone; a `pending://` repository shows as not created yet.
 - `GET /tasks/` takes `install_state`, and catalog-install recovery lists only running installs in
