@@ -703,3 +703,59 @@ async def test_an_authorized_glue_handoff_replays_without_a_second_repair(
 
     assert replay["outcome"] == "refused" and first["outcome"] == "settled"
     assert await _graph(async_client, install_task) == graph
+
+
+@pytest.mark.asyncio
+async def test_the_task_list_keeps_only_installs_whose_operation_is_running(
+    install_task, async_client, db_session
+):
+    await claimed(async_client, install_task)
+    cancelled = await async_client.delete(f"/api/tasks/{install_task['id']}")
+    assert cancelled.status_code == 200, cancelled.text
+    running = cancelled.json()["install_operation"]
+    assert running["state"] == "running"
+
+    def row(kind, status, task_type="install", state="running"):
+        task_id = f"{kind}-{uuid.uuid4().hex[:8]}"
+        operation = None if state is None else {**running, "task_id": task_id, "state": state}
+        db_session.add(
+            Task(
+                id=task_id,
+                project_id=uuid.UUID(install_task["project_id"]),
+                story_id=install_task["story_id"],
+                repository_id=install_task["repository_id"],
+                type=task_type,
+                title=kind,
+                status=status,
+                install=payload() if task_type == "install" else None,
+                install_operation=operation,
+            )
+        )
+        return task_id
+
+    settled = [
+        row(f"settled-{state}", "cancelled", state=state)
+        for state in ("queued", "published", "refused", "recovery_required")
+    ]
+    feature = row("feature", "cancelled", task_type="feature")
+    no_operation = row("no-operation", "cancelled", state=None)
+    in_dev = row("in-dev", "in_dev")
+    await db_session.commit()
+
+    async def listed(**filters):
+        response = await async_client.get(
+            "/api/tasks/", params={"project_id": install_task["project_id"], **filters}
+        )
+        assert response.status_code == 200, response.text
+        return {task["id"] for task in response.json()}
+
+    assert await listed(status="cancelled", type="install", install_state="running") == {
+        install_task["id"]
+    }
+    assert await listed(status="in_dev", type="install", install_state="running") == {in_dev}
+    assert await listed(status="cancelled", type="install") == {
+        install_task["id"],
+        *settled,
+        no_operation,
+    }
+    assert await listed(status="cancelled") == {install_task["id"], *settled, no_operation, feature}

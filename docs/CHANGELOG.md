@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-15
 
+- `GET /tasks/` takes `install_state`, and catalog-install recovery lists only running installs in
+  `in_dev` and `cancelled` instead of every task in both statuses on each dispatcher cycle.
 - Runner Proof legs take about 5 and 7 minutes instead of 10 and 13: product CI runs beside the
   deployment, the API image comes from the layer cache, and the evidence times every stage.
 - The Architect plan guard reads a `kit add` in a code span or fenced block to its line end, so
