@@ -165,7 +165,7 @@ async def test_periodic_loop_cycles_do_not_share_a_correlation_id():
     import structlog
 
     from shared.contracts.queues.architect import ArchitectMessage
-    from shared.log_config import ensure_correlation_id
+    from shared.log_config import ensure_correlation_id, set_correlation_id
     from src import runtime
 
     class Stop(Exception):
@@ -184,6 +184,7 @@ async def test_periodic_loop_cycles_do_not_share_a_correlation_id():
 
     redis_client = MagicMock(connect=AsyncMock(), close=AsyncMock())
     structlog.contextvars.clear_contextvars()
+    set_correlation_id("startup")
     try:
         with pytest.raises(Stop):
             await runtime.periodic_loop(
@@ -200,6 +201,7 @@ async def test_periodic_loop_cycles_do_not_share_a_correlation_id():
     finally:
         structlog.contextvars.clear_contextvars()
 
+    assert "startup" not in published
     assert len(set(published)) == 2
 
 

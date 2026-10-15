@@ -51,22 +51,21 @@ async def periodic_loop(
 ) -> None:
     """Run one Redis-backed periodic worker with a stable lifecycle.
 
-    Each cycle ends with its message context unbound, so the next cycle's messages
-    never inherit a correlation id the previous one bound.
+    Each cycle starts with the message context unbound, so its messages never inherit
+    a correlation id bound before it, at startup or by the previous cycle.
     """
     redis_client = redis_factory()
     await redis_client.connect()
     logger.info(started_event, interval=interval())
     try:
         while True:
+            unbind_message_context()
             try:
                 fields = await cycle(redis_client)
                 if cycle_event is not None:
                     logger.info(cycle_event, **dict(fields or {}))
             except Exception:
                 logger.exception(error_event)
-            finally:
-                unbind_message_context()
             await sleep(interval())
     finally:
         await redis_client.close()

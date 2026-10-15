@@ -1,0 +1,25 @@
+2026-10-08T10:00:00.1234567Z ##[group]Run ./.github/actions/free-runner-disk
+2026-10-08T10:00:01.1234567Z removing toolchain 0
+2026-10-08T10:00:02.1234567Z removing toolchain 1
+2026-10-08T10:00:03.1234567Z removing toolchain 2
+2026-10-08T10:00:04.1234567Z removing toolchain 3
+2026-10-08T10:00:05.1234567Z removing toolchain 4
+2026-10-08T10:00:06.1234567Z ##[error]The action 'Free runner disk' has timed out after 3 minutes.
+2026-10-08T10:00:07.1234567Z ##[group]Run actions/upload-artifact@v4
+2026-10-08T10:00:08.1234567Z with:
+2026-10-08T10:00:09.1234567Z   name: reports
+2026-10-08T10:00:10.1234567Z   path: reports/
+2026-10-08T10:00:11.1234567Z   if-no-files-found: error
+2026-10-08T10:00:12.1234567Z ##[endgroup]
+2026-10-08T10:00:13.1234567Z ##[error]No files were found with the provided path: reports/. No artifacts will be uploaded.
+2026-10-08T10:00:14.1234567Z Post job cleanup.
+2026-10-08T10:00:15.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 0
+2026-10-08T10:00:16.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 1
+2026-10-08T10:00:17.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 2
+2026-10-08T10:00:18.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 3
+2026-10-08T10:00:19.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 4
+2026-10-08T10:00:20.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 5
+2026-10-08T10:00:21.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 6
+2026-10-08T10:00:22.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 7
+2026-10-08T10:00:23.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 8
+2026-10-08T10:00:24.1234567Z [command]/usr/bin/git config --local --unset-all http.extraheader 9

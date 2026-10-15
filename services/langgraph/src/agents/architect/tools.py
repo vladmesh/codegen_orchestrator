@@ -77,10 +77,14 @@ def reset_task_chain() -> None:
 #: One `kit add` invocation, up to where a command written in prose ends: a closing
 #: backtick, a line end, a shell separator, a comma or parenthesis, or a full stop.
 _KIT_ADD = re.compile(r"(?<![\w-])kit\s+add\b(?P<arguments>(?:[^`\n;|&,().]|\.(?=\S))*)")
+#: A fenced code block, closed by its fence or the end of the text.
+_FENCED_BLOCK = re.compile(
+    r"^[ \t]*```[^\n]*\n(?P<code>.*?)(?:^[ \t]*```[ \t]*$|\Z)", re.MULTILINE | re.DOTALL
+)
 #: An inline code span, whose text is a command and not prose.
 _CODE_SPAN = re.compile(r"`(?P<code>[^`\n]*)`")
-#: One `kit add` invocation inside a code span, up to the span's end or a shell separator.
-_KIT_ADD_IN_CODE = re.compile(r"(?<![\w-])kit\s+add\b(?P<arguments>[^;|&]*)")
+#: One `kit add` invocation inside code, up to its line end or a shell separator.
+_KIT_ADD_IN_CODE = re.compile(r"(?<![\w-])kit\s+add\b(?P<arguments>[^;|&\n]*)")
 #: A wheel file named anywhere, outside any `kit add` too.
 _WHEEL_FILE = re.compile(r"[\w.+-]+\.whl\b", re.IGNORECASE)
 #: A kit package distribution installed past `kit add`, e.g. `uv add codegen-kit-reminders`.
@@ -97,16 +101,16 @@ _ARTIFACT_REFUSAL = (
 def _kit_add_invocations(text: str) -> list[str]:
     """The argument text of every `kit add` in the text.
 
-    Inside a code span it runs to the span's end or a shell separator; in prose it ends
-    where `_KIT_ADD` ends a sentence.
+    Inside a fenced block or a code span it runs to its line end or a shell separator;
+    in prose it ends where `_KIT_ADD` ends a sentence.
     """
-    in_code = [
-        match.group("arguments")
-        for span in _CODE_SPAN.finditer(text)
-        for match in _KIT_ADD_IN_CODE.finditer(span.group("code"))
-    ]
+    code = [block.group("code") for block in _FENCED_BLOCK.finditer(text)]
+    text = _FENCED_BLOCK.sub("\n", text)
+    code += [span.group("code") for span in _CODE_SPAN.finditer(text)]
     prose = _CODE_SPAN.sub(" ", text)
-    return in_code + [match.group("arguments") for match in _KIT_ADD.finditer(prose)]
+    return [
+        match.group("arguments") for part in code for match in _KIT_ADD_IN_CODE.finditer(part)
+    ] + [match.group("arguments") for match in _KIT_ADD.finditer(prose)]
 
 
 def _kit_add_arguments(arguments: str) -> argparse.Namespace | str:
