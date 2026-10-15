@@ -30,7 +30,7 @@ jobs:
       - name: Render the released producer without tooling overrides
         timeout-minutes: 9
         run: uv run python -m scripts.render_template_fixture --output-dir "$RUNNER_TEMP/fixture"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         timeout-minutes: 1
         with:
           name: released-template-fixture
@@ -58,7 +58,7 @@ jobs:
           cp services/langgraph/requirements.lock "$RUNNER_TEMP/locks/services/langgraph/requirements.lock"
           git diff --stat -- uv.lock services/langgraph/requirements.lock | tee "$RUNNER_TEMP/locks/diffstat.txt"
           git rev-parse HEAD > "$RUNNER_TEMP/locks/candidate_sha.txt"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         timeout-minutes: 1
         with:
           name: resolved-locks
