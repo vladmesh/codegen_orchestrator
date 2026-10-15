@@ -43,6 +43,18 @@ async def start_system_config(api_base_url: str, *, cache_ttl: float) -> ConfigS
     return store
 
 
+async def stop_system_config() -> None:
+    """Stop the refresher and release the store, if started; reads raise until the next start."""
+    global _store, _refresher  # noqa: PLW0603 - one store per process
+    if _refresher is not None:
+        _refresher.cancel()
+        await asyncio.gather(_refresher, return_exceptions=True)
+    if _store is not None:
+        await _store.close()
+    _store = None
+    _refresher = None
+
+
 def _refresher_stopped(task: asyncio.Task[None]) -> None:
     # Reads then fail closed once the snapshot outlives its TTL; this names the cause.
     if not task.cancelled() and task.exception() is not None:

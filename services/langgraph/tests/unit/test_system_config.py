@@ -52,10 +52,7 @@ async def fresh_process(monkeypatch):
     monkeypatch.setattr(process_config, "_refresher", None)
     monkeypatch.setattr(deploy, "system_config", process_config.system_config)
     yield
-    refresher = process_config._refresher
-    if refresher is not None:
-        refresher.cancel()
-        await asyncio.gather(refresher, return_exceptions=True)
+    await process_config.stop_system_config()
 
 
 async def _start(cache_ttl: float = 30):
@@ -116,3 +113,5 @@ async def test_a_consumer_process_starts_its_system_config_before_consuming(
         )
 
     assert responder.paths == ["/api/system-configs/"]
+    with pytest.raises(RuntimeError, match="not started"):
+        deploy._deploy_lock_ttl()

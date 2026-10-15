@@ -46,7 +46,7 @@ from shared.redis import DLQ_FAILURE_VALIDATION, RedisStreamClient
 
 from ..clients.api import api_client
 from ..config.settings import get_settings
-from ..config.system_config import start_system_config
+from ..config.system_config import start_system_config, stop_system_config
 from ._live_work import execute_live_work, live_work_active
 
 logger = structlog.get_logger(__name__)
@@ -525,6 +525,7 @@ async def run_queue_worker(
         await _drain_in_flight(in_flight, service_name)
         await redis.close()
         await api_client.close()
+        await stop_system_config()
         logger.info(f"{service_name}_shutdown")
 
 
