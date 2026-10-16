@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- The admin Journey page shows the story's task board, its stage timeline with waits and total, and passport secrets
+  split into user, platform and unclassified names, all from the polled `JourneyDetail`.
 - `users.created_at` and `users.last_seen` are stored as UTC `timestamptz` and served with a UTC designator;
   the admin users pages label it "Last activity" and refetch every minute.
 - The product passport lists config secret names as `user_secrets`, `platform_secrets` or `unclassified_secrets`

@@ -119,7 +119,12 @@ export function focusStage(steps: JourneyStep[]): JourneyStage {
 export function formatDuration(fromIso: string | null, toIso: string | null, now: number): string {
   const from = ms(fromIso)
   if (from === null) return '—'
-  const minutes = Math.round(((ms(toIso) ?? now) - from) / 60_000)
+  return formatSeconds(((ms(toIso) ?? now) - from) / 1000)
+}
+
+/** A span in whole minutes, hours or days, the scale every console duration uses. */
+export function formatSeconds(seconds: number): string {
+  const minutes = Math.round(seconds / 60)
   if (minutes < 1) return '<1 min'
   if (minutes < 60) return `${minutes} min`
   const hours = Math.floor(minutes / 60)

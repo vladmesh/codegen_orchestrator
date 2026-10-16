@@ -6,6 +6,8 @@ import { api } from '@/lib/api'
 import { cn, formatDate } from '@/lib/utils'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Passport } from '@/components/console/Passport'
+import { StageTimeline } from '@/components/console/StageTimeline'
+import { TaskBoard } from '@/components/console/TaskBoard'
 import type { JourneyDetail, JourneyStage, JourneyStep, StepStatus } from '@/types/api'
 import {
   STAGE_ACTORS,
@@ -256,6 +258,11 @@ export function JourneyPage() {
         <aside className="bg-zinc-950/60 p-4" aria-live="polite">
           <StepDetail step={currentStep} now={now} />
         </aside>
+      </div>
+
+      <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_360px]">
+        <TaskBoard board={journey.data.task_board} now={now} />
+        <StageTimeline timeline={journey.data.timeline} now={now} />
       </div>
 
       <LinkedPullRequests links={linkedPullRequests(journey.data.links)} />

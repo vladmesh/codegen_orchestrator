@@ -15,6 +15,25 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <span className="text-sm text-muted-foreground">{children}</span>
 }
 
+function SecretGroup({ title, names, empty }: { title: string; names: string[]; empty: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-xs text-muted-foreground">{title}</div>
+      {names.length === 0 ? (
+        <Empty>{empty}</Empty>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {names.map((name) => (
+            <Chip key={name} kind="secret" title={`${title} (name only)`}>
+              {name}
+            </Chip>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** What a product is built from, what it connects to and where it runs. */
 export function Passport({ passport }: { passport: ProductPassport }) {
   return (
@@ -51,15 +70,11 @@ export function Passport({ passport }: { passport: ProductPassport }) {
         )}
       </Column>
       <Column title="Connected">
-        <div className="flex flex-wrap gap-1.5">
-          {passport.user_secrets.map((name) => (
-            <Chip key={name} kind="secret" title="user secret (name only)">
-              {name}
-            </Chip>
-          ))}
-        </div>
-        {passport.user_secrets.length === 0 && <Empty>No user keys</Empty>}
-        <span className="text-xs text-muted-foreground">Platform services: not integrated yet</span>
+        <SecretGroup title="User secrets" names={passport.user_secrets} empty="No user keys" />
+        <SecretGroup title="Platform keys" names={passport.platform_secrets} empty="No platform keys" />
+        {passport.unclassified_secrets.length > 0 && (
+          <SecretGroup title="Not yet classified" names={passport.unclassified_secrets} empty="None" />
+        )}
       </Column>
       <Column title="Runs on">
         {passport.containers.length === 0 ? (
