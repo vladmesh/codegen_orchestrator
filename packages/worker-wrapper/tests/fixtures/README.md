@@ -27,3 +27,23 @@ Only these values were replaced: `session_id` with a fixed placeholder UUID, eve
 sequential placeholder UUIDs, the thinking block's `signature` with `signature-removed`, the
 scratch repository path with `/workspace`, and `memory_paths` and `messaging_socket_path` with
 neutral paths. Every other byte is as captured. The stream carries no credential.
+
+## `codex_0.144.6_exec_stream.jsonl`
+
+A hand-written stdout of one `codex exec --json` turn of Codex CLI 0.144.6, the
+`CODEX_CLI_VERSION` pinned in `services/worker-manager/images/worker-base-codex/Dockerfile`, in
+the argument shape `CodexRunner.build_command` produces for a developer turn: `codex exec --json
+--sandbox danger-full-access -c <shell_environment_policy> <prompt>`. It is not a capture: no
+API key or dedicated Codex profile was reachable, and a shared refreshable profile must never run
+it. Every event follows the types the CLI serialises at the release tag `rust-v0.144.6`
+(commit `5d1fbf26c43abc65a203928b2e31561cb039e06d` of `github.com/openai/codex`):
+`codex-rs/exec/src/exec_events.rs` (`ThreadEvent`, `ThreadItemDetails` and their payloads) and
+`codex-rs/exec/src/event_processor_with_jsonl_output.rs` (`item_<n>` ids, the in-progress
+`item.started` and the terminal `item.completed` of a command, a completed-only `file_change`,
+and `turn.completed` with its usage). A command's `command` is the shell argv joined with
+`shlex_join` (`codex-rs/app-server-protocol/src/protocol/v2/item.rs`).
+
+The turn reads `TASK.md`, runs `echo hello-from-bash`, adds `/workspace/notes.txt`, runs a `cat`
+that exits 1, answers with an agent message and completes. Nothing was stripped; the
+`thread_id` is a fixed placeholder UUID and the workspace path is `/workspace`. The stream
+carries no credential.

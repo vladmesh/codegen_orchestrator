@@ -196,6 +196,11 @@ class TestAQaExecutorNeedsNoRepository:
         # Dummy credential for mocked authentication.
         assert env["QA_CAPABILITY_TOKEN"] == "run-token"  # noqa: S105
 
+    async def test_it_is_told_the_qa_run_its_live_log_belongs_to(self, qa_worker):
+        wrapper, _, _ = await qa_worker()
+
+        assert _executor_run(wrapper)["environment"]["WORKER_QA_RUN_ID"] == "attempt-qa-run-1"
+
     async def test_it_gets_no_project_network_of_its_own(self, qa_worker):
         wrapper, _, _ = await qa_worker()
 
@@ -365,6 +370,7 @@ class TestItReachesOnlyItsAllowlist:
             )
 
         assert wrapper.run_container.await_args.kwargs["network"] == "codegen_worker"
+        assert "WORKER_QA_RUN_ID" not in wrapper.run_container.await_args.kwargs["environment"]
         wrapper.inspect_network.assert_not_awaited()
 
 

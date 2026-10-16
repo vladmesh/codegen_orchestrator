@@ -33,6 +33,8 @@ class WorkerContainerConfig:
     workspace_host_path: str | None = None
     transcript_host_path: str | None = None
     transcript_max_bytes: int = 5 * 1024 * 1024
+    # Set only on a QA executor: the QA Run its live log lines are keyed by.
+    qa_run_id: str | None = None
 
     def to_env_vars(
         self,
@@ -59,6 +61,9 @@ class WorkerContainerConfig:
             "WORKER_AUTH_MODE": self.auth_mode,
         }
         env.update({"WORKER_BROKER_URL": broker_url, "WORKER_BROKER_TOKEN": broker_token})
+
+        if self.qa_run_id is not None:
+            env["WORKER_QA_RUN_ID"] = self.qa_run_id
 
         if self.worker_type != "qa":
             env["WORKER_TRANSCRIPT_DIR"] = TRANSCRIPT_MOUNT

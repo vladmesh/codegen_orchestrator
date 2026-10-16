@@ -918,6 +918,8 @@ class WorkerManager:
                     None if is_qa_worker else settings.WORKER_TRANSCRIPT_STORAGE_PATH
                 ),
                 transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
+                # A QA executor's ownership attempt is the QA Run row it serves.
+                qa_run_id=ownership.attempt_id if is_qa_worker else None,
             )
             await asyncio.to_thread(self._prune_transcripts)
 

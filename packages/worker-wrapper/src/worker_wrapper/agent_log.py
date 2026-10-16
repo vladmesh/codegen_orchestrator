@@ -1,4 +1,4 @@
-"""The Claude CLI's ``stream-json`` events as the attempt's live log lines."""
+"""A coding agent's JSON event stdout as the run's live log lines."""
 
 from __future__ import annotations
 
@@ -27,8 +27,10 @@ FILE_WRITING_TOOLS = {
     "NotebookEdit": "notebook_path",
 }
 
+TURN_SUCCESS_TEXT = "turn ended: success"
 
-class ClaudeLiveLog:
+
+class AgentLiveLog:
     """Write an ``agent_log_line`` event for each recognised stream event as its bytes arrive.
 
     Every text is redacted with ``environment`` and then bounded; tool output never
@@ -41,7 +43,6 @@ class ClaudeLiveLog:
         self._environment = environment
         self._seq = 0
         self._pending = bytearray()
-        self._tool_names: dict[str, str] = {}
 
     def feed(self, chunk: bytes) -> None:
         """Take the next stdout bytes and log every event line they complete."""
@@ -72,6 +73,33 @@ class ClaudeLiveLog:
             self._write(kind, text)
 
     def _entries(self, event: dict[str, Any]) -> Iterator[tuple[AgentLogKind, str]]:
+        raise NotImplementedError
+
+    def _write(self, kind: AgentLogKind, text: str) -> None:
+        # Redaction comes first: a bound cut through a secret would leave a prefix
+        # the redactor no longer recognises.
+        text = redact_transcript(text, self._environment)
+        if len(text) > AGENT_LOG_TEXT_MAX_CHARS:
+            text = text[: AGENT_LOG_TEXT_MAX_CHARS - 1] + "…"
+        line = AgentLogLine(
+            attempt_id=self._attempt_id,
+            task_id=self._task_id,
+            seq=self._seq,
+            kind=kind,
+            text=text,
+        )
+        self._seq += 1
+        logger.info(AGENT_LOG_LINE_EVENT, **line.model_dump(mode="json"))
+
+
+class ClaudeLiveLog(AgentLiveLog):
+    """The Claude CLI's ``stream-json`` events as live log lines."""
+
+    def __init__(self, *, attempt_id: str, task_id: str | None, environment: dict[str, str]):
+        super().__init__(attempt_id=attempt_id, task_id=task_id, environment=environment)
+        self._tool_names: dict[str, str] = {}
+
+    def _entries(self, event: dict[str, Any]) -> Iterator[tuple[AgentLogKind, str]]:
         event_type = event.get("type")
         if event_type == "assistant":
             for block in _content_blocks(event):
@@ -82,7 +110,7 @@ class ClaudeLiveLog:
                     kind = AgentLogKind.ERR if block.get("is_error") is True else AgentLogKind.OK
                     yield kind, self._tool_names.get(str(block.get("tool_use_id")), "tool")
         elif event_type == "result":
-            yield AgentLogKind.STEP, _turn_end(event)
+            yield AgentLogKind.STEP, _claude_turn_end(event)
 
     def _assistant_entries(self, block: dict[str, Any]) -> Iterator[tuple[AgentLogKind, str]]:
         if block.get("type") == "text":
@@ -104,21 +132,43 @@ class ClaudeLiveLog:
             if isinstance(path, str):
                 yield AgentLogKind.FILE, path
 
-    def _write(self, kind: AgentLogKind, text: str) -> None:
-        # Redaction comes first: a bound cut through a secret would leave a prefix
-        # the redactor no longer recognises.
-        text = redact_transcript(text, self._environment)
-        if len(text) > AGENT_LOG_TEXT_MAX_CHARS:
-            text = text[: AGENT_LOG_TEXT_MAX_CHARS - 1] + "…"
-        line = AgentLogLine(
-            attempt_id=self._attempt_id,
-            task_id=self._task_id,
-            seq=self._seq,
-            kind=kind,
-            text=text,
-        )
-        self._seq += 1
-        logger.info(AGENT_LOG_LINE_EVENT, **line.model_dump(mode="json"))
+
+class CodexLiveLog(AgentLiveLog):
+    """``codex exec --json`` events as live log lines; command output never reaches one."""
+
+    def _entries(self, event: dict[str, Any]) -> Iterator[tuple[AgentLogKind, str]]:
+        event_type = event.get("type")
+        item = event.get("item")
+        if event_type == "item.started" and isinstance(item, dict):
+            command = item.get("command")
+            if item.get("type") == "command_execution" and isinstance(command, str):
+                yield AgentLogKind.CMD, command
+        elif event_type == "item.completed" and isinstance(item, dict):
+            yield from _codex_completed_item(item)
+        elif event_type == "turn.completed":
+            yield AgentLogKind.STEP, TURN_SUCCESS_TEXT
+        elif event_type == "turn.failed":
+            error = event.get("error")
+            message = error.get("message") if isinstance(error, dict) else None
+            yield AgentLogKind.STEP, f"turn ended: error ({message})"
+        elif event_type == "error":
+            yield AgentLogKind.STEP, f"error: {event.get('message')}"
+
+
+def _codex_completed_item(item: dict[str, Any]) -> Iterator[tuple[AgentLogKind, str]]:
+    item_type = item.get("type")
+    if item_type == "agent_message":
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            yield AgentLogKind.INFO, text
+    elif item_type == "command_execution":
+        exit_code = item.get("exit_code")
+        kind = AgentLogKind.OK if exit_code == 0 else AgentLogKind.ERR
+        yield kind, f"exit code {exit_code if isinstance(exit_code, int) else 'unknown'}"
+    elif item_type == "file_change" and item.get("status") == "completed":
+        for change in item.get("changes") or []:
+            if isinstance(change, dict) and isinstance(change.get("path"), str):
+                yield AgentLogKind.FILE, change["path"]
 
 
 def _content_blocks(event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -129,8 +179,8 @@ def _content_blocks(event: dict[str, Any]) -> list[dict[str, Any]]:
     return [block for block in content if isinstance(block, dict)]
 
 
-def _turn_end(result: dict[str, Any]) -> str:
+def _claude_turn_end(result: dict[str, Any]) -> str:
     subtype = result.get("subtype")
     if result.get("is_error") is False and subtype == "success":
-        return "turn ended: success"
+        return TURN_SUCCESS_TEXT
     return f"turn ended: error ({subtype})" if isinstance(subtype, str) else "turn ended: error"

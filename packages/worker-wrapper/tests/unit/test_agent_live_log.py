@@ -1,4 +1,4 @@
-"""A Claude run's stream-json stdout becomes redacted, bounded live log lines while it runs."""
+"""An agent run's JSON event stdout becomes redacted, bounded live log lines while it runs."""
 
 import asyncio
 import json
@@ -9,17 +9,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from conftest import FakePipe
 import pytest
 from structlog.testing import capture_logs
-from worker_wrapper.agent_log import ClaudeLiveLog
+from worker_wrapper.agent_log import ClaudeLiveLog, CodexLiveLog
 from worker_wrapper.config import WorkerWrapperConfig
+from worker_wrapper.runners.codex import CodexRunner
 from worker_wrapper.wrapper import WorkerWrapper
 
 from shared.contracts.dto.agent_log import AGENT_LOG_TEXT_MAX_CHARS, AgentLogLine
 
-STREAM = Path(__file__).resolve().parents[1] / "fixtures" / "claude_code_2.1.278_stream.jsonl"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+STREAM = FIXTURES / "claude_code_2.1.278_stream.jsonl"
+CODEX_STREAM = FIXTURES / "codex_0.144.6_exec_stream.jsonl"
 TURN = {"request_id": "req-1", "attempt_id": "attempt-1", "task_id": "task-1", "prompt": "go"}
+QA_TURN = {"request_id": "qa-1", "prompt": "explore"}
 
 
-def _wrapper(tmp_path) -> tuple[WorkerWrapper, MagicMock]:
+def _wrapper(tmp_path, agent_type: str = "claude", **config) -> tuple[WorkerWrapper, MagicMock]:
     broker = MagicMock()
     broker.get_session = AsyncMock(return_value=None)
     broker.set_session = AsyncMock()
@@ -27,8 +31,11 @@ def _wrapper(tmp_path) -> tuple[WorkerWrapper, MagicMock]:
         broker_url="http://worker-broker:8001",
         broker_token="x" * 43,
         worker_id="dev-live-1",
-        agent_type="claude",
+        agent_type=agent_type,
+        # Codex in api_key mode runs without the shared host-profile lock.
+        auth_mode="api_key" if agent_type == "codex" else "host_session",
         transcript_dir=str(tmp_path),
+        **config,
     )
     return WorkerWrapper(config=config, broker_client=broker), broker
 
@@ -66,8 +73,8 @@ def _lines(logs: list[dict]) -> list[AgentLogLine]:
     ]
 
 
-def _fed(*chunks: bytes) -> list[AgentLogLine]:
-    live_log = ClaudeLiveLog(attempt_id="attempt-1", task_id=None, environment={})
+def _fed(*chunks: bytes, live_log_type=ClaudeLiveLog, environment=None) -> list[AgentLogLine]:
+    live_log = live_log_type(attempt_id="attempt-1", task_id=None, environment=environment or {})
     with capture_logs() as logs:
         for chunk in chunks:
             live_log.feed(chunk)
@@ -181,19 +188,164 @@ async def test_seq_continues_across_the_auto_resume(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_turn_without_an_attempt_logs_no_line(tmp_path):
-    wrapper, _ = _wrapper(tmp_path)
+@pytest.mark.parametrize(
+    ("agent_type", "stream", "worker_type"),
+    [
+        ("claude", STREAM, "developer"),
+        ("codex", CODEX_STREAM, "developer"),
+        ("claude", STREAM, "qa"),
+        ("codex", CODEX_STREAM, "qa"),
+    ],
+)
+async def test_a_turn_without_an_attempt_or_qa_run_logs_no_line(
+    tmp_path, agent_type, stream, worker_type
+):
+    wrapper, _ = _wrapper(tmp_path, agent_type, worker_type=worker_type)
 
     with (
         capture_logs() as logs,
         patch(
             "worker_wrapper.wrapper.asyncio.create_subprocess_exec",
-            AsyncMock(return_value=_process(STREAM.read_bytes())),
+            AsyncMock(return_value=_process(stream.read_bytes())),
         ),
     ):
-        await wrapper.execute_agent({"request_id": "qa-1", "prompt": "explore"})
+        await wrapper.execute_agent(QA_TURN)
 
     assert _lines(logs) == []
+
+
+@pytest.mark.asyncio
+async def test_the_codex_stream_maps_to_typed_lines_without_command_output(tmp_path):
+    wrapper, _ = _wrapper(tmp_path, "codex")
+
+    with (
+        capture_logs() as logs,
+        patch(
+            "worker_wrapper.wrapper.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=_process(CODEX_STREAM.read_bytes())),
+        ) as spawn,
+    ):
+        await wrapper.execute_agent(TURN)
+
+    assert list(spawn.await_args.args) == CodexRunner().build_command(
+        prompt=wrapper._resolve_prompt(TURN)
+    )
+    lines = _lines(logs)
+    assert [(line.seq, line.kind, line.text) for line in lines] == [
+        (0, "cmd", "/bin/bash -lc 'cat TASK.md'"),
+        (1, "ok", "exit code 0"),
+        (2, "cmd", "/bin/bash -lc 'echo hello-from-bash'"),
+        (3, "ok", "exit code 0"),
+        (4, "file", "/workspace/notes.txt"),
+        (5, "cmd", "/bin/bash -lc 'cat notes.txt missing.txt'"),
+        (6, "err", "exit code 1"),
+        (7, "info", 'Done: echoed hello-from-bash and created notes.txt with "first".'),
+        (8, "step", "turn ended: success"),
+    ]
+    assert {(line.attempt_id, line.task_id) for line in lines} == {("attempt-1", "task-1")}
+    emitted = "\n".join(line.text for line in lines)
+    for aggregated_output in ("# Task", "containing first", "No such file or directory"):
+        assert aggregated_output not in emitted
+    assert wrapper._agent_stdout_tail is None
+    assert wrapper._effort_metrics == {}
+
+
+@pytest.mark.asyncio
+async def test_a_secret_from_the_agent_environment_is_redacted_in_a_codex_command(tmp_path):
+    wrapper, _ = _wrapper(tmp_path, "codex")
+    secret = "sk-proj-codex-live-log-secret-value"  # noqa: S105
+    command = f"/bin/bash -lc 'echo {secret} > key.txt'"
+    started = {
+        "type": "item.started",
+        "item": {"id": "item_1", "type": "command_execution", "command": command},
+    }
+
+    with (
+        capture_logs() as logs,
+        patch.dict(os.environ, {"CODEX_API_KEY": secret}),
+        patch(
+            "worker_wrapper.wrapper.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=_process(_events(started))),
+        ) as spawn,
+    ):
+        await wrapper.execute_agent(TURN)
+
+    assert spawn.await_args.kwargs["env"]["CODEX_API_KEY"] == secret
+    assert [(line.kind, line.text) for line in _lines(logs)] == [
+        ("cmd", "/bin/bash -lc 'echo [redacted] > key.txt'")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("agent_type", "stream"), [("codex", CODEX_STREAM), ("claude", STREAM)])
+async def test_a_qa_turn_logs_its_lines_under_the_qa_run(tmp_path, agent_type, stream):
+    wrapper, _ = _wrapper(tmp_path, agent_type, worker_type="qa", qa_run_id="qa-run-1")
+
+    with (
+        capture_logs() as logs,
+        patch(
+            "worker_wrapper.wrapper.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=_process(stream.read_bytes())),
+        ),
+    ):
+        await wrapper.execute_agent(QA_TURN)
+
+    lines = _lines(logs)
+    assert lines[-1].text == "turn ended: success"
+    assert {(line.attempt_id, line.task_id) for line in lines} == {("qa-run-1", None)}
+
+
+def test_codex_failures_end_in_a_redacted_bounded_step():
+    secret = "sk-proj-codex-turn-failure-secret"  # noqa: S105
+    lines = _fed(
+        _events(
+            {"type": "error", "message": f"stream disconnected; key {secret}"},
+            {"type": "turn.failed", "error": {"message": "x" * (AGENT_LOG_TEXT_MAX_CHARS * 2)}},
+        ),
+        live_log_type=CodexLiveLog,
+        environment={"OPENAI_API_KEY": secret},
+    )
+
+    assert [line.kind for line in lines] == ["step", "step"]
+    assert lines[0].text == "error: stream disconnected; key [redacted]"
+    assert lines[1].text.startswith("turn ended: error (xxx")
+    assert len(lines[1].text) == AGENT_LOG_TEXT_MAX_CHARS
+    assert lines[1].text.endswith("…")
+
+
+def test_codex_reasoning_usage_and_unknown_events_log_nothing():
+    lines = _fed(
+        _events(
+            {"type": "thread.started", "thread_id": "t-1"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {"id": "i0", "type": "reasoning", "text": "hm"}},
+            {"type": "item.updated", "item": {"id": "i1", "type": "todo_list", "items": []}},
+            {"type": "item.completed", "item": {"id": "i2", "type": "error", "message": "warn"}},
+            {"type": "item.started", "item": {"id": "i3", "type": "mcp_tool_call"}},
+            {
+                "type": "item.completed",
+                "item": {"id": "i4", "type": "file_change", "changes": [], "status": "completed"},
+            },
+            {"type": "thread.usage", "usage": {"input_tokens": 1}},
+        ),
+        live_log_type=CodexLiveLog,
+    )
+
+    assert lines == []
+
+
+def test_a_codex_file_change_logs_each_applied_path():
+    def change(status: str, *paths: str) -> dict:
+        changes = [{"path": path, "kind": "update"} for path in paths]
+        item = {"id": "i", "type": "file_change", "changes": changes, "status": status}
+        return {"type": "item.completed", "item": item}
+
+    lines = _fed(
+        _events(change("completed", "a.py", "b.py"), change("failed", "c.py")),
+        live_log_type=CodexLiveLog,
+    )
+
+    assert [(line.kind, line.text) for line in lines] == [("file", "a.py"), ("file", "b.py")]
 
 
 def test_an_event_split_across_reads_is_logged_once_it_is_complete():

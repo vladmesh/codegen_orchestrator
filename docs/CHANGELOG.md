@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- Codex workers run `codex exec --json` and QA executors log too: Codex events and QA turns emit the same
+  redacted `agent_log_line`, QA lines keyed by the QA Run id worker-manager passes as `WORKER_QA_RUN_ID`.
 - A Claude developer worker reads `stream-json` and logs a redacted, bounded `agent_log_line` (`AgentLogLine`)
   per message, command, file write, tool result and turn end while it runs.
 - A Claude worker's `agent_stdout_tail` and non-zero-exit error carry only the stream's final `result` event,

@@ -28,7 +28,7 @@ from shared.contracts.queues.worker_result import (
 )
 from shared.contracts.vocab import AgentType
 
-from .agent_log import ClaudeLiveLog
+from .agent_log import AgentLiveLog, ClaudeLiveLog, CodexLiveLog
 from .broker import WorkerBrokerClient
 from .compose_proxy import (
     COMPOSE_COMMAND_ENV,
@@ -259,7 +259,7 @@ class WorkerWrapper:
         self._stop_reason: WorkerStopReason | None = None
         self._agent_limit_seconds: int | None = None
         self._compose_proxy_path: str | None = None
-        self._live_log: ClaudeLiveLog | None = None
+        self._live_log: AgentLiveLog | None = None
 
     def _prepare_codex_profile_lock(self) -> None:
         """Establish the shared profile lock at startup, before any Codex turn runs.
@@ -1045,7 +1045,7 @@ class WorkerWrapper:
             return None
 
     @staticmethod
-    async def _read_agent_output(proc, live_log: ClaudeLiveLog | None) -> tuple[bytes, bytes]:
+    async def _read_agent_output(proc, live_log: AgentLiveLog | None) -> tuple[bytes, bytes]:
         """Read both pipes to EOF and then reap the leader, as ``communicate()`` does.
 
         Stdout is read as the agent writes it, so ``live_log`` logs each event before exit.
@@ -1070,7 +1070,7 @@ class WorkerWrapper:
         proc,
         *,
         timeout_seconds: int | None = None,
-        live_log: ClaudeLiveLog | None = None,
+        live_log: AgentLiveLog | None = None,
     ) -> tuple[bytes, bytes, bool, bool]:
         """Run the agent to completion, its result boundary, or its limit.
 
@@ -1367,12 +1367,7 @@ class WorkerWrapper:
         )
 
         agent_env = self._build_agent_env(wrapper_env)
-        if self.config.agent_type == AgentType.CLAUDE and data.get("attempt_id"):
-            self._live_log = ClaudeLiveLog(
-                attempt_id=data["attempt_id"],
-                task_id=data.get("task_id"),
-                environment=wrapper_env,
-            )
+        self._live_log = self._new_live_log(data, wrapper_env)
 
         # A refresh-capable profile can be shared by stand cells and production
         # workers. Keep its advisory lock for the entire CLI process so refresh
@@ -1432,6 +1427,22 @@ class WorkerWrapper:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
                 await self.broker.set_session(captured_session_id)
 
+    def _new_live_log(
+        self, data: dict[str, Any], environment: dict[str, str]
+    ) -> AgentLiveLog | None:
+        """The turn's live log, keyed by the QA Run id on a QA executor, else the turn's attempt.
+
+        A turn without either key, or an agent without a JSON event stream, logs no line.
+        """
+        attempt_id = self.config.qa_run_id if self.is_qa_executor else data.get("attempt_id")
+        if not attempt_id:
+            return None
+        live_logs = {AgentType.CLAUDE: ClaudeLiveLog, AgentType.CODEX: CodexLiveLog}
+        live_log = live_logs.get(self.config.agent_type)
+        if live_log is None:
+            return None
+        return live_log(attempt_id=attempt_id, task_id=data.get("task_id"), environment=environment)
+
     def _reportable_stdout(self, stdout: str) -> str:
         """The stdout a result or error may carry: a Claude stream's final result event only.
 
@@ -1453,7 +1464,7 @@ class WorkerWrapper:
         proc,
         *,
         timeout_seconds: int | None = None,
-        live_log: ClaudeLiveLog | None = None,
+        live_log: AgentLiveLog | None = None,
     ) -> tuple[str, str, bool, bool]:
         """Where the completion barrier and cost capture meet, for every CLI run.
 

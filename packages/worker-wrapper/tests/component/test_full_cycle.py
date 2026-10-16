@@ -109,14 +109,15 @@ class TestWorkerWrapperComponent:
             result = await wrapper.execute_agent({"content": "not part of the command"})
 
         assert result is None
-        assert mock_exec.call_args.args[:4] == (
+        assert mock_exec.call_args.args[:5] == (
             "codex",
             "exec",
+            "--json",
             "--sandbox",
             "danger-full-access",
         )
-        assert mock_exec.call_args.args[4] == "-c"
-        assert "WORKER_BROKER_TOKEN" in mock_exec.call_args.args[5]
-        assert "TASK.md" in mock_exec.call_args.args[6]
-        assert "not part of the command" not in mock_exec.call_args.args[6]
+        assert mock_exec.call_args.args[5] == "-c"
+        assert "WORKER_BROKER_TOKEN" in mock_exec.call_args.args[6]
+        assert "TASK.md" in mock_exec.call_args.args[7]
+        assert "not part of the command" not in mock_exec.call_args.args[7]
         assert wrapper._agent_stdout_tail is None
