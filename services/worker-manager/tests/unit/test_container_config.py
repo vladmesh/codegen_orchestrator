@@ -1,11 +1,73 @@
-import pytest
+import json
+import logging
 
+import pytest
+import structlog
+
+from shared.contracts.dto.agent_log import AGENT_LOG_LINE_EVENT, AgentLogKind, AgentLogWriter
+from shared.log_config import setup_logging
 from src.container_config import WorkerContainerConfig
 
 BROKER_ARGS = {
     "broker_url": "http://worker-broker:8001",
     "broker_token": "x" * 43,
 }
+
+
+@pytest.fixture
+def restored_logging():
+    """Give back the process-wide logging configuration `setup_logging` replaces."""
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    yield
+    structlog.reset_defaults()
+    structlog.contextvars.clear_contextvars()
+    root.handlers[:] = handlers
+    root.setLevel(level)
+
+
+def _worker(worker_type: str) -> WorkerContainerConfig:
+    return WorkerContainerConfig(
+        worker_id=f"{worker_type}-1",
+        worker_type=worker_type,
+        agent_type="claude",
+        capabilities=[],
+        qa_run_id="qa-run-1" if worker_type == "qa" else None,
+    )
+
+
+@pytest.mark.parametrize("worker_type", ["developer", "qa"])
+def test_every_worker_type_logs_json_as_the_worker_wrapper(worker_type):
+    env = _worker(worker_type).to_env_vars(**BROKER_ARGS)
+
+    assert env["LOG_FORMAT"] == "json"
+    assert env["SERVICE_NAME"] == "worker-wrapper"
+
+
+@pytest.mark.parametrize("worker_type", ["developer", "qa"])
+def test_worker_environment_writes_agent_log_lines_as_json_objects(
+    worker_type, monkeypatch, capsys, restored_logging
+):
+    env = _worker(worker_type).to_env_vars(**BROKER_ARGS)
+    monkeypatch.setenv("LOG_FORMAT", env["LOG_FORMAT"])
+    monkeypatch.setenv("SERVICE_NAME", env["SERVICE_NAME"])
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    setup_logging()
+    # A cached module logger would keep this configuration into later tests.
+    structlog.configure(cache_logger_on_first_use=False)
+
+    AgentLogWriter(attempt_id="attempt-1", task_id="task-1", secrets=[]).write(
+        AgentLogKind.CMD, "make test"
+    )
+
+    entries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    [line] = [entry for entry in entries if entry["event"] == AGENT_LOG_LINE_EVENT]
+    assert line["attempt_id"] == "attempt-1"
+    assert line["task_id"] == "task-1"
+    assert line["seq"] == 0
+    assert line["kind"] == "cmd"
+    assert line["text"] == "make test"
+    assert line["service"] == "worker-wrapper"
 
 
 class TestWorkerContainerConfig:
