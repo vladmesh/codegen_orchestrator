@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- The admin Journey page shows the story's repository at its head: a collapsible tree with changed files marked
+  and each change's diff, polled every 30 s while the story runs.
+- A worker page's live log keeps polling through a failed worker read and stops only once the worker read answers 404.
 - The admin Journey and worker pages show the live agent log, polled every 3 s while the run can write; the
   Workers list names each worker's current task and story, linked to their pages.
 - The admin Journey page shows the story's task board, its stage timeline with waits and total, and passport secrets

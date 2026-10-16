@@ -1084,3 +1084,49 @@ export interface LiveLogResponse {
   unavailable: LiveLogUnavailable | null
   omitted_attempts: number
 }
+
+export interface RepositoryRef {
+  owner: string
+  name: string
+}
+
+export interface RepositoryHead {
+  source: 'pull_request' | 'branch'
+  ref: string
+  sha: string
+}
+
+export type ChangedFileStatus = 'added' | 'removed' | 'modified' | 'renamed' | 'copied' | 'changed' | 'unchanged'
+
+export interface ChangedFile {
+  path: string
+  status: ChangedFileStatus
+  additions: number
+  deletions: number
+  /** Null when GitHub renders no patch: a binary file or a diff too large to show. */
+  patch: string | null
+  /** The patch was cut at the read's patch length bound. */
+  truncated: boolean
+}
+
+export type RepositoryUnavailableReason = 'no_repository' | 'no_story_branch' | 'github_unavailable'
+
+export interface RepositoryUnavailable {
+  reason: RepositoryUnavailableReason
+  /** For `github_unavailable`: GitHub's status code, or the exception class of the failure. */
+  detail: string | null
+}
+
+export interface JourneyRepository {
+  /** Null only for `no_repository`. */
+  repository: RepositoryRef | null
+  head: RepositoryHead | null
+  /** Every file path of the tree at `head.sha`, sorted. */
+  files: string[]
+  changes: ChangedFile[]
+  omitted_changes: number
+  /** False when `omitted_changes` is a lower bound: a branch comparison at GitHub's file cap. */
+  omitted_changes_exact: boolean
+  /** Null when GitHub answered; otherwise `head` is null and `files` and `changes` empty. */
+  unavailable: RepositoryUnavailable | null
+}

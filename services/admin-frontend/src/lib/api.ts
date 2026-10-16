@@ -1,6 +1,6 @@
 const BASE_URL = '/api'
 
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number
 
   constructor(status: number, message: string) {
