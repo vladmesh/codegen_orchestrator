@@ -12,12 +12,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
 import json
+import os
 import uuid
 
 import httpx
 import structlog
 
 from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.contracts.dto.agent_log import AgentLogKind, AgentLogWriter
 from shared.contracts.dto.capability_preview import CapabilityPlan, CapabilityRoute
 from shared.contracts.dto.catalog_install import is_replan_note, replan_reopened
 from shared.contracts.dto.llm_channel import LLMChannelConfig
@@ -50,11 +52,13 @@ from shared.contracts.dto.story_planning import (
 from shared.contracts.dto.task import TaskDTO, TaskEventType, TaskStatus, TaskType
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
+from shared.diagnostics import environment_secrets
 from shared.notifications import notify_admins_best_effort
 from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
+from ..agents.architect.live_log import ArchitectLiveLog
 from ..agents.architect.tools import (
     create_install_task,
     plan_install,
@@ -114,6 +118,16 @@ PLANNING_HEARTBEAT_INTERVAL = PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS / 3
 #: the error log becomes its record. Small: the plan already stands.
 PLANNING_OUTCOME_ATTEMPTS = 3
 PLANNING_OUTCOME_RETRY_DELAY = 1.0
+
+#: The outcome a claimed attempt's terminal live log step names when its plan was admitted.
+PLANNING_ADMITTED = "admitted"
+
+#: Why a claimed attempt was not admitted; the first four also head its recorded failure.
+CAPABILITY_PLAN_REFUSED = "CapabilityPlanRefused"
+KIT_CATALOG_UNAVAILABLE = "KitCatalogUnavailable"
+CATALOG_INSTALL_REFUSED = "CatalogInstallRefused"
+PRODUCT_BRIEF_COVERAGE_INCOMPLETE = "ProductBriefCoverageIncomplete"
+SCAFFOLD_NOT_READY = "ScaffoldNotReady"
 
 
 class ReturnedRequirementsNoticeError(RuntimeError):
@@ -1280,7 +1294,9 @@ async def _delay_for_catalog(
     The planning retry the API schedules plans it again once the catalog answers,
     so an unreadable catalog delays the plan instead of changing it.
     """
-    error = f"KitCatalogUnavailable: {catalog.source}: {catalog.failure.value}, {catalog.detail}"
+    error = (
+        f"{KIT_CATALOG_UNAVAILABLE}: {catalog.source}: {catalog.failure.value}, {catalog.detail}"
+    )
     log.warning(
         "architect_planning_delayed_for_catalog",
         failure=catalog.failure.value,
@@ -1298,7 +1314,7 @@ async def _refuse_replanned_install(
     msg: ArchitectMessage, refusal: str, planning: _PlanningAttempt | None, usage, log
 ) -> dict:
     """A package the current catalog no longer installs: parked for a person, no task."""
-    error = f"CatalogInstallRefused: {refusal}"
+    error = f"{CATALOG_INSTALL_REFUSED}: {refusal}"
     log.error("architect_replanned_install_refused", refusal=refusal)
     if planning is not None:
         await _release_planning_attempt(planning, log)
@@ -1406,20 +1422,30 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
     """
     story_status = story.status
     planning: _PlanningAttempt | None = None
+    live_log: AgentLogWriter | None = None
+    ending: str | BaseException | None = None
     try:
         planning, early_result = await _claim_planning_attempt(msg, redis, log)
         if early_result is not None:
             return early_result
+        if planning is not None:
+            live_log = AgentLogWriter(
+                attempt_id=planning.planning_attempt_id,
+                task_id=None,
+                secrets=environment_secrets(os.environ),
+            )
 
         tasks = await api_client.get_tasks_by_story(msg.story_id)
         capability_plan = None
         if planning is not None and planning.brief.content.capabilities is not None:
             capability_plan = await api_client.get_capability_plan(planning.brief_id)
             if capability_plan is None:
+                ending = _not_admitted(CAPABILITY_PLAN_REFUSED)
                 return await _refuse_capability_plan(
                     msg, "capability_plan_missing", planning, usage, log
                 )
             if capability_plan.activation != CATALOG_ACTIVATION:
+                ending = _not_admitted(CAPABILITY_PLAN_REFUSED)
                 return await _refuse_capability_plan(
                     msg, "catalog_provenance_mismatch", planning, usage, log
                 )
@@ -1428,11 +1454,14 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             # A stored plan is planned from its own activated snapshot or not at all:
             # never from a remembered catalog, and never as agent programming instead.
             if catalog.failure in TERMINAL_CATALOG_FAILURES:
+                ending = _not_admitted(CAPABILITY_PLAN_REFUSED)
                 return await _refuse_capability_plan(
                     msg, f"catalog_{catalog.failure.value}", planning, usage, log
                 )
+            ending = _not_admitted(KIT_CATALOG_UNAVAILABLE)
             return await _delay_for_catalog(msg, catalog, planning, usage, log)
         if not isinstance(catalog, KitCatalog) and _catalog_dependent(tasks):
+            ending = _not_admitted(KIT_CATALOG_UNAVAILABLE)
             return await _delay_for_catalog(msg, catalog, planning, usage, log)
         replanned = await _replanned_install_packages(story, tasks)
         if replanned:
@@ -1445,7 +1474,9 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
                     msg, replanned, catalog, planning, usage, log
                 )
             if refusal is not None:
+                ending = _not_admitted(CATALOG_INSTALL_REFUSED)
                 return refusal
+            ending = PLANNING_ADMITTED
             await _start_reopened_story(msg, story_status, log)
             await _report_planning_success(msg, usage, planning, log)
             await _notify_returned_requirements_of_plan(planning, msg, redis, log)
@@ -1464,22 +1495,27 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
                     msg, capability_plan, catalog, planning, usage, log
                 )
             if isinstance(planned, dict) and "status" in planned:
+                ending = _not_admitted(CAPABILITY_PLAN_REFUSED)
                 return planned
             installs, covered, selected_module_jobs = planned
             if not _needs_model(capability_plan, planning, covered):
                 # Every requirement is a module the stored plan installs: nothing is left
                 # for a model to decide, so none is asked.
-                return await _finish_plan(msg, story_status, usage, planning, redis, log)
+                finished = await _finish_plan(msg, story_status, usage, planning, redis, log)
+                ending = _admission_ending(finished)
+                return finished
         elif isinstance(catalog, KitCatalog):
             try:
                 selected_module_jobs = module_job_contracts(
                     catalog, selected_install_closures(tasks), facts=planning_facts
                 )
             except InstallRefusal as error:
+                ending = _not_admitted(CATALOG_INSTALL_REFUSED)
                 return await _refuse_replanned_install(msg, str(error), planning, usage, log)
         if scaffold_deferred:
             scaffold_result = await _await_scaffold_before_model(msg, planning, log)
             if scaffold_result is not None:
+                ending = _not_admitted(SCAFFOLD_NOT_READY)
                 return scaffold_result
         alerts = LLMAlerts.from_settings(settings, redis=redis.redis)
         graph = create_architect_graph(
@@ -1531,6 +1567,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
         }
 
         config = {
+            "callbacks": [] if live_log is None else [ArchitectLiveLog(live_log)],
             "configurable": {
                 "thread_id": str(uuid.uuid4()),
                 "planning_module_facts": planning_facts,
@@ -1540,7 +1577,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
         async with heartbeat:
             result = await graph.ainvoke(initial_state, config=config)
 
-        return await _finish_plan(
+        finished = await _finish_plan(
             msg,
             story_status,
             usage,
@@ -1549,13 +1586,17 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             log,
             message_count=len(result.get("messages", [])),
         )
+        ending = _admission_ending(finished)
+        return finished
 
-    except (ReturnedRequirementsNoticeError, PlanningFailureUnrecordedError):
+    except (ReturnedRequirementsNoticeError, PlanningFailureUnrecordedError) as e:
         # The plan is admitted and nothing is released again; only the notice is
         # owed. Or the failure could not be written on the story. Either way,
         # leaving the entry unacknowledged is what replays it.
+        ending = e
         raise
     except Exception as e:
+        ending = e
         log.error(
             "architect_job_failed",
             error=str(e),
@@ -1571,6 +1612,36 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             msg, e, retriable=not retry_cannot_fix(e), usage=usage, planning=planning, log=log
         )
         return _failed_result(str(e), recorded)
+    except BaseException as e:
+        ending = e
+        raise
+    finally:
+        if live_log is not None:
+            _end_planning_live_log(live_log, ending)
+
+
+def _not_admitted(reason_class: str) -> str:
+    return f"not admitted ({reason_class})"
+
+
+def _admission_ending(finished: dict) -> str:
+    """The outcome `_finish_plan` reached: admitted, or an incomplete plan."""
+    match finished["status"]:
+        case "success":
+            return PLANNING_ADMITTED
+        case "incomplete":
+            return _not_admitted(PRODUCT_BRIEF_COVERAGE_INCOMPLETE)
+        case status:
+            raise ValueError(f"unexpected planning finish status: {status}")
+
+
+def _end_planning_live_log(live_log: AgentLogWriter, ending: str | BaseException | None) -> None:
+    """Write the claimed attempt's one terminal step from the outcome its exit named."""
+    if ending is None:
+        raise RuntimeError("a claimed planning attempt ended without naming its outcome")
+    if isinstance(ending, BaseException):
+        ending = f"error ({type(ending).__name__})"
+    live_log.write(AgentLogKind.STEP, f"planning ended: {ending}")
 
 
 async def _finish_plan(  # noqa: PLR0913 — one planning run's outcome
@@ -1591,7 +1662,7 @@ async def _finish_plan(  # noqa: PLR0913 — one planning run's outcome
             # next run may dispose of what this one left undisposed.
             await _report_planning_failure(
                 msg,
-                f"ProductBriefCoverageIncomplete: {refusal['error']}",
+                f"{PRODUCT_BRIEF_COVERAGE_INCOMPLETE}: {refusal['error']}",
                 retriable=True,
                 usage=usage,
                 planning=planning,
@@ -1625,7 +1696,7 @@ async def _refuse_capability_plan(
     a person decides, because planning it any other way would change what the user
     confirmed.
     """
-    error = f"CapabilityPlanRefused: {refusal}"
+    error = f"{CAPABILITY_PLAN_REFUSED}: {refusal}"
     log.error("architect_capability_plan_refused", refusal=refusal)
     if planning is not None:
         await _release_planning_attempt(planning, log)

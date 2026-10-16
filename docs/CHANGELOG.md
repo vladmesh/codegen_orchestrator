@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- A claimed architect planning attempt logs the redacted `agent_log_line` stream, ending with one step that
+  names whether it was admitted; the shared `AgentLogWriter` serves it and the worker wrapper.
 - Codex workers run `codex exec --json` and QA executors log too: Codex events and QA turns emit the same
   redacted `agent_log_line`, QA lines keyed by the QA Run id worker-manager passes as `WORKER_QA_RUN_ID`.
 - A Claude developer worker reads `stream-json` and logs a redacted, bounded `agent_log_line` (`AgentLogLine`)
