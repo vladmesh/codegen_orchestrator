@@ -143,7 +143,7 @@ async def test_the_stream_maps_to_typed_lines_without_tool_output(tmp_path):
 @pytest.mark.asyncio
 async def test_a_secret_from_the_agent_environment_is_redacted_in_a_command(tmp_path):
     wrapper, _ = _wrapper(tmp_path)
-    secret = "sk-ant-live-log-secret-value"
+    secret = "sk-ant-live-log-secret-value"  # noqa: S105
 
     with (
         capture_logs() as logs,
