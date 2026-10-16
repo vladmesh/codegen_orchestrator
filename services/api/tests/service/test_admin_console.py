@@ -230,6 +230,17 @@ async def test_journey_detail_lays_out_the_story_and_its_passport(async_client, 
         ("feature", "done", "planned", ["failed", "completed"]),
         ("install", "done", "planned", []),
     ]
+    timeline = body["timeline"]
+    assert [(s["label"], s["state"]) for s in timeline["stages"]] == [
+        ("architect", "running"),
+        ("engineering 1", "done"),
+        ("engineering 2", "done"),
+        ("deploy 1", "done"),
+        ("scaffold", "unrecorded"),
+        ("merge", "unrecorded"),
+    ]
+    assert timeline["total_seconds"] is None
+    assert timeline["total_unavailable"] == "no_passed_qa"
     assert steps["install"]["facts"] == [
         {"label": "package", "value": "reminders 1.3.0"},
         {"label": "library", "value": "textparse 0.1.0"},

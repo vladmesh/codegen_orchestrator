@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- The Journey read model carries `timeline`: each architect, scaffold, engineering, CI, merge, deploy and QA
+  stage's recorded start and end, the waits between them, and the total from brief confirmed to QA passed.
 - Each story `ci_runs` entry records the run's `started_at` and `completed_at`, and the scaffolder records
   `scaffold_started_at` and `scaffold_finished_at` in project config, so every story stage has a start and end.
 - `GET /admin/v2/journeys/{id}/repository` reads a story's repository tree at its PR or branch head and its bounded
