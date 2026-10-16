@@ -24,6 +24,7 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
 from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.models import (
     Application,
     Deployment,
@@ -60,6 +61,10 @@ from .schemas.admin_console import (
     Severity,
     StepStatus,
     StoryLinkView,
+    TaskBoardAttempt,
+    TaskBoardColumn,
+    TaskBoardEntry,
+    TaskOrigin,
     TopologyResponse,
 )
 from .schemas.utc import assume_utc
@@ -343,6 +348,75 @@ def build_steps(  # noqa: C901, PLR0912, PLR0915  # one linear walk over the eig
             )
         )
     return steps
+
+
+TASK_COLUMN: dict[TaskStatus, TaskBoardColumn] = {
+    TaskStatus.BACKLOG: TaskBoardColumn.BACKLOG,
+    TaskStatus.TODO: TaskBoardColumn.BACKLOG,
+    TaskStatus.IN_DEV: TaskBoardColumn.IN_DEVELOPMENT,
+    TaskStatus.BLOCKED: TaskBoardColumn.IN_DEVELOPMENT,
+    TaskStatus.WAITING_HUMAN_REVIEW: TaskBoardColumn.IN_DEVELOPMENT,
+    TaskStatus.WAITING_RESOURCES: TaskBoardColumn.IN_DEVELOPMENT,
+    TaskStatus.IN_CI: TaskBoardColumn.CI,
+    TaskStatus.TESTING: TaskBoardColumn.CI,
+    TaskStatus.DONE: TaskBoardColumn.DONE,
+    TaskStatus.FAILED: TaskBoardColumn.DONE,
+    TaskStatus.CANCELLED: TaskBoardColumn.DONE,
+}
+
+
+def task_origin(task: Any) -> TaskOrigin:
+    """A fix task carries the failure that created it; any other task was planned."""
+    metadata = task.failure_metadata or {}
+    if "ci_failure" in metadata:
+        return TaskOrigin.CI_FIX
+    if "qa_failure" in metadata:
+        return TaskOrigin.QA_FIX
+    return TaskOrigin.PLANNED
+
+
+def task_board_attempt(number: int, run: Any) -> TaskBoardAttempt:
+    """Raises when the run metadata does not validate as `AttemptTurnMetadata`."""
+    attempt = run_attempt(run)
+    return TaskBoardAttempt(
+        number=number,
+        run_id=attempt.id,
+        status=attempt.status,
+        worker_id=AttemptTurnMetadata.from_run_metadata(run.run_metadata).worker_id,
+        actor=attempt.actor,
+        started_at=attempt.started_at,
+        finished_at=attempt.finished_at,
+    )
+
+
+def build_task_board(tasks: Sequence[Any], runs: Sequence[Any]) -> list[TaskBoardEntry]:
+    """Every task of a story, oldest first, with its engineering runs as numbered attempts."""
+    runs_by_task: dict[str, list[Any]] = defaultdict(list)
+    for run in sorted(runs, key=lambda r: _aware(r.started_at or r.created_at)):
+        if run.type == RunType.ENGINEERING.value and run.task_id is not None:
+            runs_by_task[run.task_id].append(run)
+
+    board: list[TaskBoardEntry] = []
+    for task in sorted(tasks, key=lambda t: (_aware(t.created_at), t.id)):
+        attempts = [
+            task_board_attempt(number, run)
+            for number, run in enumerate(runs_by_task[task.id], start=1)
+        ]
+        status = TaskStatus(task.status)
+        board.append(
+            TaskBoardEntry(
+                task_id=task.id,
+                title=task.title,
+                type=task.type,
+                status=status,
+                column=TASK_COLUMN[status],
+                origin=task_origin(task),
+                attempts=attempts,
+                worker_id=attempts[-1].worker_id if attempts else None,
+                attempt_count=len(attempts),
+            )
+        )
+    return board
 
 
 def link_view(link: Any) -> StoryLinkView:
@@ -665,6 +739,7 @@ async def load_journey(db: AsyncSession, story_id: str) -> JourneyDetail | None:
         steps=build_steps(story, brief, tasks, runs),
         passport=passports[project.id],
         links=[link_view(link) for link in links],
+        task_board=build_task_board(tasks, runs),
     )
 
 

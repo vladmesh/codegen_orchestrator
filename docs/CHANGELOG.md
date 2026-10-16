@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- The Journey read model carries `task_board`: each story task in a Backlog, In development, CI or Done
+  column, its origin (planned, CI fix, QA fix) and its engineering attempts with their workers.
 - Worker-manager starts developer and QA workers with `LOG_FORMAT=json` and `SERVICE_NAME=worker-wrapper`,
   so their `agent_log_line` events reach Loki as JSON and the worker parts of the live logs fill.
 - The admin console API reads the live agent log back from Loki for one story or one worker

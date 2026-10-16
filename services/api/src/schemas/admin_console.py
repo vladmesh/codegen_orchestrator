@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.contracts.dto.agent_log import AgentLogKind
 from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
+from shared.contracts.dto.task import TaskStatus, TaskType
 
 
 class _ConsoleModel(BaseModel):
@@ -145,6 +146,47 @@ class StoryLinkView(_ConsoleModel):
     created_at: datetime
 
 
+class TaskBoardColumn(StrEnum):
+    BACKLOG = "backlog"
+    IN_DEVELOPMENT = "in_development"
+    CI = "ci"
+    DONE = "done"
+
+
+class TaskOrigin(StrEnum):
+    """Why a task exists: planned with the story, or a fix after a failed CI or QA run."""
+
+    PLANNED = "planned"
+    CI_FIX = "ci_fix"
+    QA_FIX = "qa_fix"
+
+
+class TaskBoardAttempt(_ConsoleModel):
+    """One engineering run of a task; ``number`` counts from 1 in start order."""
+
+    number: int = Field(ge=1)
+    run_id: str
+    status: str
+    worker_id: str | None
+    actor: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class TaskBoardEntry(_ConsoleModel):
+    task_id: str
+    title: str
+    type: TaskType
+    status: TaskStatus
+    column: TaskBoardColumn
+    origin: TaskOrigin
+    #: Oldest first.
+    attempts: list[TaskBoardAttempt]
+    #: The worker of the latest attempt; null with no attempt or none recorded on it yet.
+    worker_id: str | None
+    attempt_count: int = Field(ge=0)
+
+
 class JourneyDetail(_ConsoleModel):
     summary: JourneySummary
     request: str | None
@@ -154,6 +196,8 @@ class JourneyDetail(_ConsoleModel):
     passport: ProductPassport
     #: Pull requests an operator or automation linked to the story, oldest first.
     links: list[StoryLinkView]
+    #: Every task of the story, oldest first.
+    task_board: list[TaskBoardEntry]
 
 
 class PlacementView(_ConsoleModel):
@@ -288,5 +332,9 @@ __all__ = [
     "StoryLinkKind",
     "StoryLinkView",
     "StepStatus",
+    "TaskBoardAttempt",
+    "TaskBoardColumn",
+    "TaskBoardEntry",
+    "TaskOrigin",
     "TopologyResponse",
 ]

@@ -222,6 +222,14 @@ async def test_journey_detail_lays_out_the_story_and_its_passport(async_client, 
         "verify": "skipped",
     }
     assert [a["status"] for a in steps["build"]["attempts"]] == ["failed", "completed"]
+    board = [
+        (e["type"], e["column"], e["origin"], [a["status"] for a in e["attempts"]])
+        for e in body["task_board"]
+    ]
+    assert board == [
+        ("feature", "done", "planned", ["failed", "completed"]),
+        ("install", "done", "planned", []),
+    ]
     assert steps["install"]["facts"] == [
         {"label": "package", "value": "reminders 1.3.0"},
         {"label": "library", "value": "textparse 0.1.0"},
