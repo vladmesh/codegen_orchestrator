@@ -35,6 +35,9 @@ from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
 from tests.unit.architect_kit_catalog import CatalogBrief, CatalogPlanApi, plan_story
 from tests.unit.factories import make_admission, make_project, make_repository
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 CHANNELS = capability_id("tg-channels")
 PREVIEW_ID = "preview-" + "c" * 24
 

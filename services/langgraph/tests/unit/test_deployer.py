@@ -22,6 +22,9 @@ from src.subgraphs.devops.image_gate import ImagesNotPublishedError
 from tests.unit.deploy_fences import held_deploy_fence
 from tests.unit.factories import make_repository
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 PINNED_SHA = "c" * 40
 BUILT_SHA = "b" * 40
 PIN_TAG = deploy_pin_tag(BUILT_SHA)

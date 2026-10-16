@@ -48,6 +48,9 @@ from src.consumers.qa import (
     process_qa_job,
 )
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 # Criteria with a prose line — not decidable over HTTP, so QA hands these to the
 # central agent. Tests that want the HTTP path override this.
 AGENT_CRITERIA = "- GET /health returns 200\n- GET /api/weather returns forecast"

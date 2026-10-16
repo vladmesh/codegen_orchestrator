@@ -45,6 +45,9 @@ from tests.unit.synthetic_buyer.fakes import (
     post_event,
 )
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 
 def _codegen_sends(h) -> list[str]:
     return [e[2] for e in h.telegram.events if e[0] == "send" and e[1] == CODEGEN.username]
