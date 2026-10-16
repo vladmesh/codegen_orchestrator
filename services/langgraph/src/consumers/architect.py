@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
 import json
+import os
 import uuid
 
 import httpx
@@ -50,11 +51,13 @@ from shared.contracts.dto.story_planning import (
 from shared.contracts.dto.task import TaskDTO, TaskEventType, TaskStatus, TaskType
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
+from shared.diagnostics import environment_secrets
 from shared.notifications import notify_admins_best_effort
 from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
+from ..agents.architect.live_log import ArchitectLiveLog
 from ..agents.architect.tools import (
     create_install_task,
     plan_install,
@@ -1531,6 +1534,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
         }
 
         config = {
+            "callbacks": [ArchitectLiveLog(secrets=environment_secrets(os.environ))],
             "configurable": {
                 "thread_id": str(uuid.uuid4()),
                 "planning_module_facts": planning_facts,

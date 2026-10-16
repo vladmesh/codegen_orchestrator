@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 import re
 
 from pydantic import ValidationError
@@ -14,6 +14,7 @@ _AUTHORIZATION = re.compile(
     r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?(?:basic|bearer|token)\s+)[^\s\"',}\]]+"
 )
 _BASE64_VALUE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{16,}={0,2}(?![A-Za-z0-9+/_-])")
+_SECRET_NAME = re.compile(r"(?:key|secret|token|password|credential|authorization)", re.I)
 
 
 def _contains_encoded_secret(encoded: str, secrets: tuple[str, ...]) -> bool:
@@ -43,6 +44,11 @@ def redact_diagnostic(value: object, *, secrets: Iterable[str] = ()) -> str:
     text = _TELEGRAM_BOT_API_URL.sub(r"\1[redacted]", text)
     text = _URL_USERINFO.sub(r"\g<scheme>[redacted]@", text)
     return _AUTHORIZATION.sub(r"\1[redacted]", text)
+
+
+def environment_secrets(environment: Mapping[str, str]) -> list[str]:
+    """Return the non-empty values of the variables whose names mark them as secret."""
+    return [value for name, value in environment.items() if value and _SECRET_NAME.search(name)]
 
 
 def safe_validation_errors(exc: ValidationError) -> list[dict]:

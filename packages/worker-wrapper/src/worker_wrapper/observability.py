@@ -5,22 +5,19 @@ from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 import json
 from pathlib import Path
-import re
 from typing import Any
 
 import structlog
 
 from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
-from shared.diagnostics import redact_diagnostic
+from shared.diagnostics import environment_secrets, redact_diagnostic
 
-_SECRET_NAME = re.compile(r"(?:key|secret|token|password|credential|authorization)", re.I)
 logger = structlog.get_logger(__name__)
 
 
 def redact_transcript(text: str, environment: dict[str, str]) -> str:
     """Apply the diagnostic redaction policy plus values carried in secret env vars."""
-    secrets = [value for name, value in environment.items() if value and _SECRET_NAME.search(name)]
-    return redact_diagnostic(text, secrets=secrets)
+    return redact_diagnostic(text, secrets=environment_secrets(environment))
 
 
 def extract_effort_metrics(stdout: str, stderr: str, agent_type: str) -> dict[str, Any]:

@@ -221,9 +221,11 @@ refuse before minting. `GitHubCredentialResponse` contains a transient SecretStr
 explicitly serialized only at this no-store response boundary. App keys, minting
 and repository-scoped caching with a five-minute margin remain on the platform.
 
-A Claude or Codex turn writes its live agent log to the wrapper's stdout while the
-CLI runs: one structlog event `agent_log_line` per recognised event, its fields an
-`AgentLogLine` (`shared/contracts/dto/agent_log.py`). Its `attempt_id` is the
+An agent run writes its live agent log while it runs: one structlog event
+`agent_log_line` per line, its fields an `AgentLogLine` written by `AgentLogWriter`
+(`shared/contracts/dto/agent_log.py`), which redacts each text with the producer's
+secret values, then bounds it to `AGENT_LOG_TEXT_MAX_CHARS`. A Claude or Codex turn
+writes one line per recognised event to the wrapper's stdout. Its `attempt_id` is the
 turn's `attempt_id` on a developer worker and the QA Run id on a QA executor, which
 worker-manager passes only to QA executors as `WORKER_QA_RUN_ID` (the QA ownership's
 `attempt_id`); a turn with neither logs no line. Claude's `stream-json`: assistant
@@ -233,10 +235,17 @@ result is `step`. Codex's `codex exec --json`: a completed `agent_message` is `i
 a started `command_execution` is `cmd`, its completion is `ok` or `err` by exit code
 with the exit code as text, an applied `file_change` is one `file` per path,
 `turn.completed`, `turn.failed` and `error` are `step`, and reasoning, usage and other
-events log nothing. Tool and command output never reaches a line. Text is redacted
-with the wrapper environment, then bounded to `AGENT_LOG_TEXT_MAX_CHARS`; `seq`
-counts across the first run and the auto-resume. Promtail ships the line to Loki
-under the container's `worker_id`.
+events log nothing. Tool and command output never reaches a line. The wrapper's
+secret values are its environment's secret-named variables; `seq` counts across the
+first run and the auto-resume. Promtail ships the line to Loki under the container's
+`worker_id`. The architect's planning graph in the langgraph service writes lines
+keyed by the claimed `planning_attempt_id`, with `task_id` null, as each graph node
+finishes: model text is `info`, each tool call is `cmd` with the tool name and its JSON
+arguments, each tool result is `err` when the tool raised or answered an `error` object
+and `ok` otherwise, with the tool name as text, and the graph's end is `step`
+(`planning ended: success` or `planning ended: error (<exception class>)`). A run with
+no claimed attempt logs no line. Its secret values are the secret-named variables of
+the langgraph environment, and the lines reach Loki with `compose_service=langgraph`.
 
 `WorkerFailedResult.execution` carries wrapper-owned pre-agent auth refusal as
 `pre_agent_refused/repository_auth_unavailable`. The worker client preserves it

@@ -6,18 +6,8 @@ from collections.abc import Iterator
 import json
 from typing import Any
 
-import structlog
-
-from shared.contracts.dto.agent_log import (
-    AGENT_LOG_LINE_EVENT,
-    AGENT_LOG_TEXT_MAX_CHARS,
-    AgentLogKind,
-    AgentLogLine,
-)
-
-from .observability import redact_transcript
-
-logger = structlog.get_logger(__name__)
+from shared.contracts.dto.agent_log import AgentLogKind, AgentLogWriter
+from shared.diagnostics import environment_secrets
 
 #: File-writing Claude tools and the input field naming the file each one writes.
 FILE_WRITING_TOOLS = {
@@ -38,10 +28,9 @@ class AgentLiveLog:
     """
 
     def __init__(self, *, attempt_id: str, task_id: str | None, environment: dict[str, str]):
-        self._attempt_id = attempt_id
-        self._task_id = task_id
-        self._environment = environment
-        self._seq = 0
+        self._writer = AgentLogWriter(
+            attempt_id=attempt_id, task_id=task_id, secrets=environment_secrets(environment)
+        )
         self._pending = bytearray()
 
     def feed(self, chunk: bytes) -> None:
@@ -70,26 +59,10 @@ class AgentLiveLog:
         if not isinstance(event, dict):
             return
         for kind, text in self._entries(event):
-            self._write(kind, text)
+            self._writer.write(kind, text)
 
     def _entries(self, event: dict[str, Any]) -> Iterator[tuple[AgentLogKind, str]]:
         raise NotImplementedError
-
-    def _write(self, kind: AgentLogKind, text: str) -> None:
-        # Redaction comes first: a bound cut through a secret would leave a prefix
-        # the redactor no longer recognises.
-        text = redact_transcript(text, self._environment)
-        if len(text) > AGENT_LOG_TEXT_MAX_CHARS:
-            text = text[: AGENT_LOG_TEXT_MAX_CHARS - 1] + "…"
-        line = AgentLogLine(
-            attempt_id=self._attempt_id,
-            task_id=self._task_id,
-            seq=self._seq,
-            kind=kind,
-            text=text,
-        )
-        self._seq += 1
-        logger.info(AGENT_LOG_LINE_EVENT, **line.model_dump(mode="json"))
 
 
 class ClaudeLiveLog(AgentLiveLog):
