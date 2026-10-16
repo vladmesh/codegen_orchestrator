@@ -16,6 +16,9 @@ WORKER_PIDS_LIMIT = 256
 # looking for them reads back off the container's mounts.
 TRANSCRIPT_MOUNT = "/artifacts/worker-transcripts"
 
+# The service name worker-wrapper's JSON log lines carry.
+WORKER_SERVICE_NAME = "worker-wrapper"
+
 
 @dataclass
 class WorkerContainerConfig:
@@ -59,6 +62,9 @@ class WorkerContainerConfig:
             # The worker validates its own agent state against the mode it was
             # created with: host_session needs a mounted session, api_key does not.
             "WORKER_AUTH_MODE": self.auth_mode,
+            # Promtail parses every container's lines with one json stage, live log lines included.
+            "LOG_FORMAT": "json",
+            "SERVICE_NAME": WORKER_SERVICE_NAME,
         }
         env.update({"WORKER_BROKER_URL": broker_url, "WORKER_BROKER_TOKEN": broker_token})
 

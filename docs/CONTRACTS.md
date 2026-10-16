@@ -237,8 +237,10 @@ with the exit code as text, an applied `file_change` is one `file` per path,
 `turn.completed`, `turn.failed` and `error` are `step`, and reasoning, usage and other
 events log nothing. Tool and command output never reaches a line. The wrapper's
 secret values are its environment's secret-named variables; `seq` counts across the
-first run and the auto-resume. Promtail ships the line to Loki under the container's
-`worker_id`. The langgraph architect writes a claimed planning attempt's lines keyed
+first run and the auto-resume. Every worker container logs JSON, started with
+`LOG_FORMAT=json` and `SERVICE_NAME=worker-wrapper`, and Promtail ships each line to
+Loki under the container's `worker_id`.
+The langgraph architect writes a claimed planning attempt's lines keyed
 by its `planning_attempt_id`, with `task_id` null. While its graph runs, as each node
 finishes: model text is `info`, each tool call is `cmd` with the tool name and its JSON
 arguments, and each tool result is `err` when the tool raised or answered an `error`

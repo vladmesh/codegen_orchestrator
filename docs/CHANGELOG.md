@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- Worker-manager starts developer and QA workers with `LOG_FORMAT=json` and `SERVICE_NAME=worker-wrapper`,
+  so their `agent_log_line` events reach Loki as JSON and the worker parts of the live logs fill.
 - The admin console API reads the live agent log back from Loki for one story or one worker
   (`/admin/v2/journeys/{id}/live-log`, `/admin/v2/workers/{id}/live-log`), naming why when Loki cannot answer.
 - A claimed architect planning attempt logs the redacted `agent_log_line` stream, ending with one step that
