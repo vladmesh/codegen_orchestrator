@@ -43,6 +43,9 @@ from src.agents.po.tools_stories import (
     reopen_story,
 )
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 BOT_TOKEN = fake_bot_token(123456789)
 
 

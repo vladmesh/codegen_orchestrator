@@ -13,7 +13,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from shared.tests import source_index
+
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
 
 ROOT = Path(__file__).resolve().parents[2]
 

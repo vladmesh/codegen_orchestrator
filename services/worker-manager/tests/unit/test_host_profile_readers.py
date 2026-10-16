@@ -45,6 +45,9 @@ from src.codex_profile_v01446 import (
 )
 from src.host_profile import JSON_PARSE_FAILURE, MAX_JSON_BYTES, load_json
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 ROOT_DIR = Path(__file__).resolve().parents[4]
 ACCESS_SECRET = "sk-ant-oat01-SYNTHETIC-ACCESS"  # noqa: S105 - synthetic fixture

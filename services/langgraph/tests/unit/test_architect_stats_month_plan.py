@@ -35,6 +35,9 @@ from tests.unit.architect_stats_month import (
 )
 from tests.unit.test_architect_graph import _ScriptedToolCallingModel
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 ASK_BACK_RULE = (
     "The bot never stores input it does not recognize as a different kind of record: it asks "
     "the user back what they meant."

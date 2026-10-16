@@ -16,6 +16,9 @@ from shared.clients.github import (
     WorkflowNotFoundError,
 )
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 
 @pytest.fixture
 def mock_env():

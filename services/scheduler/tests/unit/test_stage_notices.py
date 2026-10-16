@@ -38,6 +38,9 @@ from src.tasks.supervisor.stage_notices import (
     supervise_stage_notices,
 )
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 STORY_ID = "story-stage-1"
 QUIET_MINUTES = 60
 T0 = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)

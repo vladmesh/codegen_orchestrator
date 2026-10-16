@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 SCRIPT = Path(__file__).resolve().parents[1] / "check-ci-gate.py"
 
 

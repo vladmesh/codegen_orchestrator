@@ -6,6 +6,9 @@ import pytest
 from shared.clients.github import GitHubAppClient
 from shared.clients.github._actions import _failure_log_excerpt
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 
 @pytest.mark.parametrize(
     "name, retained",

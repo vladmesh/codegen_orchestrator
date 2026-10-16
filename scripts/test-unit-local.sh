@@ -19,9 +19,9 @@
 #
 # The host profile is what a weak control host runs: at most UNIT_JOBS suites at a
 # time (default 2), `-m "not ci_only"` on every suite, and no live-offline suite.
-# Tests marked ci_only, docker, ansible, privileged, kit_gate, subprocess or slow run
-# in CI only, and every other host-profile test must finish within 0.5 s. CI runs this
-# script without --host, so its coverage does not shrink. Budget for the whole
+# Tests marked ci_only, docker, ansible, privileged, kit_gate, subprocess, slow or
+# cpu_heavy run in CI only, and every other host-profile test must finish within 0.5 s.
+# CI runs this script without --host, so its coverage does not shrink. Budget for the whole
 # profile: 300 s or less and 1.5 GB or less peak RSS at 2 jobs (docs/TESTING.md).
 # The 0.5 s budget applies in the full profile too, to the same tests: CI fails a heavy
 # unmarked test instead of leaving it to the next host run.
@@ -95,8 +95,8 @@ TIMEOUT_ARGS=(
     --timeout-method=thread
 )
 # The markers plugin makes every sub-marker (docker, ansible, privileged, kit_gate,
-# subprocess, slow) imply ci_only, so the host profile deselects the whole family with
-# one expression. The budget plugin (scripts/unit_test_budget.py) fails a test outside
+# subprocess, slow, cpu_heavy) imply ci_only, so the host profile deselects the whole
+# family with one expression. The budget plugin (scripts/unit_test_budget.py) fails a test outside
 # that family that takes longer than UNIT_TEST_BUDGET_SECONDS (setup+call+teardown), in
 # every suite the host profile runs, in both profiles.
 UNIT_TEST_BUDGET_SECONDS=0.5

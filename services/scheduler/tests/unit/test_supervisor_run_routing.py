@@ -66,6 +66,9 @@ from shared.tests.server_admission_cases import (
     admission_case_server,
 )
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 _WAITING_SECRET_RESULT = {
     "deploy_outcome": DeployOutcome.WAITING_FOR_USER_SECRET.value,
     "error_details": "Missing secrets: TELEGRAM_BOT_TOKEN",

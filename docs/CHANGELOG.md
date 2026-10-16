@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   per message, command, file write, tool result and turn end while it runs.
 - A Claude worker's `agent_stdout_tail` and non-zero-exit error carry only the stream's final `result` event,
   so tool output stays out of the result and the developer node reads the CLI's model again.
+- The heaviest host-profile test modules carry a new `cpu_heavy` ci_only sub-marker, so `python -m shared`
+  fits its 240 s CPU budget with headroom again while CI still runs them.
 
 ## 2026-10-15
 

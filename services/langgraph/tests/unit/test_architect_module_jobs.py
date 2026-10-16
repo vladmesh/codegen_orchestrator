@@ -14,6 +14,9 @@ from src.kit_catalog import install_snapshot
 from src.planning_module_jobs import PlanningModuleFacts, module_job_contracts
 from tests.unit.factories import make_task
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 
 @pytest.fixture
 def criteria_api(monkeypatch):
