@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Passport } from '@/components/console/Passport'
 import { StageTimeline } from '@/components/console/StageTimeline'
 import { TaskBoard } from '@/components/console/TaskBoard'
+import { LiveLog } from '@/components/console/LiveLog'
 import type { JourneyDetail, JourneyStage, JourneyStep, StepStatus } from '@/types/api'
 import {
   STAGE_ACTORS,
@@ -22,6 +23,7 @@ import {
   type BarTone,
   type LinkedPullRequest,
 } from './journeyView'
+import { isTerminalStory } from './liveLogView'
 
 const knobStyles: Record<StepStatus, string> = {
   done: 'border-teal-400 bg-teal-400 text-zinc-950',
@@ -259,6 +261,11 @@ export function JourneyPage() {
           <StepDetail step={currentStep} now={now} />
         </aside>
       </div>
+
+      <LiveLog
+        path={`/admin/v2/journeys/${summary.story_id}/live-log`}
+        live={!isTerminalStory(summary.status)}
+      />
 
       <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_360px]">
         <TaskBoard board={journey.data.task_board} now={now} />

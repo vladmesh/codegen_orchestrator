@@ -449,6 +449,7 @@ export interface StoryCreate {
 export interface WorkerSummary {
   id: string
   status: string
+  story_id: string | null
   project_id: string | null
   repo_id: string | null
   workspace_path: string | null
@@ -1061,4 +1062,25 @@ export interface ConsoleKpis {
 export interface Attention {
   kpis: ConsoleKpis
   items: AttentionItem[]
+}
+
+export type LiveLogSource = 'architect' | 'developer' | 'qa' | 'worker'
+
+export type LiveLogKind = 'step' | 'info' | 'cmd' | 'file' | 'ok' | 'err'
+
+export type LiveLogUnavailable = 'log_store_not_configured' | 'log_store_query_failed' | 'log_store_timed_out'
+
+export interface LiveLogLine {
+  at: string
+  source: LiveLogSource
+  attempt_id: string
+  seq: number
+  kind: LiveLogKind
+  text: string
+}
+
+export interface LiveLogResponse {
+  lines: LiveLogLine[]
+  unavailable: LiveLogUnavailable | null
+  omitted_attempts: number
 }

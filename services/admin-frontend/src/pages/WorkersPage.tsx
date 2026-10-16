@@ -1,13 +1,59 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api } from '@/lib/api'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { relativeTime } from '@/lib/utils'
-import type { EngineeringConsumerDrain, WorkerSummary } from '@/types/api'
+import type { EngineeringConsumerDrain, Run, Story, Task, WorkerSummary } from '@/types/api'
 import { requestEngineeringConsumerDrain, requestEngineeringConsumerResume } from './engineeringConsumerDrain'
+import {
+  lookupOf,
+  runTaskIds,
+  workerLookupIds,
+  workerWorkRow,
+  type Lookup,
+  type WorkerWorkCell,
+  type WorkerWorkLookups,
+} from './workerWork'
 
 function inventoryFact(value: string | null | undefined, error: string | null | undefined, absent = 'none') {
   return value ?? error ?? absent
+}
+
+function WorkCell({ cell }: { cell: WorkerWorkCell }) {
+  if (cell.href) {
+    return (
+      <Link to={cell.href} className="text-primary hover:underline">
+        {cell.text}
+      </Link>
+    )
+  }
+  return <span className={cell.state === 'failed' ? 'text-red-400' : 'text-muted-foreground'}>{cell.text}</span>
+}
+
+function useWorkerWorkLookups(workers: WorkerSummary[]): WorkerWorkLookups {
+  const { runIds, storyIds } = workerLookupIds(workers)
+  const runs = useQueries({
+    queries: runIds.map((id) => ({ queryKey: ['run', id], queryFn: () => api.get<Run>(`/runs/${id}`) })),
+  })
+  const runTasks = new Map<string, Lookup<string | null>>(
+    runIds.map((id, i) => [id, lookupOf({ data: runs[i].data?.task_id, isError: runs[i].isError })]),
+  )
+  const taskIds = runTaskIds(runTasks)
+  const tasks = useQueries({
+    queries: taskIds.map((id) => ({ queryKey: ['task', id], queryFn: () => api.get<Task>(`/tasks/${id}`) })),
+  })
+  const stories = useQueries({
+    queries: storyIds.map((id) => ({ queryKey: ['story', id], queryFn: () => api.get<Story>(`/stories/${id}`) })),
+  })
+  return {
+    runTasks,
+    taskTitles: new Map<string, Lookup<string>>(
+      taskIds.map((id, i) => [id, lookupOf({ data: tasks[i].data?.title, isError: tasks[i].isError })]),
+    ),
+    storyTitles: new Map<string, Lookup<string>>(
+      storyIds.map((id, i) => [id, lookupOf({ data: stories[i].data?.title, isError: stories[i].isError })]),
+    ),
+  }
 }
 
 export function WorkersPage() {
@@ -17,6 +63,7 @@ export function WorkersPage() {
     queryFn: () => api.raw<WorkerSummary[]>('/wm-api/workers/'),
     refetchInterval: 5_000,
   })
+  const lookups = useWorkerWorkLookups(workers ?? [])
   const drainQuery = useQuery({
     queryKey: ['engineering-consumer-drain'],
     queryFn: () => api.get<EngineeringConsumerDrain>('/engineering-consumer/drain'),
@@ -75,6 +122,8 @@ export function WorkersPage() {
             <thead className="border-b border-border bg-muted/50">
               <tr>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Worker</th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Task</th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Story</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Container</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Agent</th>
@@ -87,58 +136,67 @@ export function WorkersPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {(workers ?? []).map((w) => (
-                <tr key={w.id} className="hover:bg-muted/30">
-                  <td className="px-4 py-3">
-                    <Link
-                      to={`/workers/${w.id}`}
-                      className="font-mono text-sm font-medium text-primary hover:underline"
-                    >
-                      {w.id.slice(0, 12)}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={w.status.toLowerCase()} />
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {inventoryFact(w.container?.state, w.container_error, 'absent')}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {inventoryFact(w.agent_process_status, w.agent_process_status_error, 'absent')}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {w.active_turn_lease?.request_id.slice(0, 12) ?? w.active_turn_lease_error ?? 'none'}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {w.story_bindings.length
-                      ? w.story_bindings.map((story) => story.slice(0, 8)).join(', ')
-                      : inventoryFact(null, w.story_bindings_error)}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {w.attempt_run
-                      ? `${w.attempt_run.status}: ${w.attempt_run.id.slice(0, 12)}`
-                      : inventoryFact(null, w.attempt_run_error)}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {w.waiting_attempt ? `${w.waiting_attempt.run_status}: ${w.waiting_attempt.run_id.slice(0, 12)}` : w.waiting_attempt_error ?? 'none'}
-                  </td>
-                  <td className="px-4 py-3">
-                    {w.project_id ? (
+              {(workers ?? []).map((w) => {
+                const work = workerWorkRow(w, lookups)
+                return (
+                  <tr key={w.id} className="hover:bg-muted/30">
+                    <td className="px-4 py-3">
                       <Link
-                        to={`/projects/${w.project_id}`}
-                        className="text-primary hover:underline"
+                        to={`/workers/${w.id}`}
+                        className="font-mono text-sm font-medium text-primary hover:underline"
                       >
-                        {w.project_id.slice(0, 8)}
+                        {w.id.slice(0, 12)}
                       </Link>
-                    ) : (
-                      <span className="text-muted-foreground">-</span>
-                    )}
-                  </td>
-                  <td className="max-w-xs truncate px-4 py-3 text-red-400">
-                    {w.error ?? ''}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="max-w-xs px-4 py-3">
+                      <WorkCell cell={work.task} />
+                    </td>
+                    <td className="max-w-xs px-4 py-3">
+                      <WorkCell cell={work.story} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={w.status.toLowerCase()} />
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-foreground">
+                      {inventoryFact(w.container?.state, w.container_error, 'absent')}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-foreground">
+                      {inventoryFact(w.agent_process_status, w.agent_process_status_error, 'absent')}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-foreground">
+                      {w.active_turn_lease?.request_id.slice(0, 12) ?? w.active_turn_lease_error ?? 'none'}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-foreground">
+                      {w.story_bindings.length
+                        ? w.story_bindings.map((story) => story.slice(0, 8)).join(', ')
+                        : inventoryFact(null, w.story_bindings_error)}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-foreground">
+                      {w.attempt_run
+                        ? `${w.attempt_run.status}: ${w.attempt_run.id.slice(0, 12)}`
+                        : inventoryFact(null, w.attempt_run_error)}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-foreground">
+                      {w.waiting_attempt ? `${w.waiting_attempt.run_status}: ${w.waiting_attempt.run_id.slice(0, 12)}` : w.waiting_attempt_error ?? 'none'}
+                    </td>
+                    <td className="px-4 py-3">
+                      {w.project_id ? (
+                        <Link
+                          to={`/projects/${w.project_id}`}
+                          className="text-primary hover:underline"
+                        >
+                          {w.project_id.slice(0, 8)}
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="max-w-xs truncate px-4 py-3 text-red-400">
+                      {w.error ?? ''}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

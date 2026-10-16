@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- The admin Journey and worker pages show the live agent log, polled every 3 s while the run can write; the
+  Workers list names each worker's current task and story, linked to their pages.
 - The admin Journey page shows the story's task board, its stage timeline with waits and total, and passport secrets
   split into user, platform and unclassified names, all from the polled `JourneyDetail`.
 - `users.created_at` and `users.last_seen` are stored as UTC `timestamptz` and served with a UTC designator;
