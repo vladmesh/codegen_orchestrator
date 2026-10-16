@@ -26,16 +26,18 @@ def _stream(*results: str) -> str:
 
 
 def test_stream_result_evidence_equals_the_single_document_form() -> None:
-    """The captured final-result event yields the same evidence inside its stream."""
-    document = (FIXTURES / "claude_code_2.1.278_result.json").read_text(encoding="utf-8")
+    """The captured stream yields the evidence its final result event gives as a lone document."""
     stream = (FIXTURES / "claude_code_2.1.278_stream.jsonl").read_text(encoding="utf-8")
+    document = stream.strip().splitlines()[-1]
 
     from_stream = extract_effort_metrics(stream.strip(), "", "claude")["claude_evidence"]
-    from_document = extract_effort_metrics(document.strip(), "", "claude")["claude_evidence"]
+    from_document = extract_effort_metrics(document, "", "claude")["claude_evidence"]
 
     assert from_stream == from_document
-    assert from_stream.cost_microusd == 56_448
+    assert from_stream.cost_microusd == 66_572
     assert from_stream.model == "claude-sonnet-5"
+    assert (from_stream.input_tokens, from_stream.output_tokens) == (6, 603)
+    assert (from_stream.cache_read_tokens, from_stream.cache_write_tokens) == (76_931, 11_286)
 
 
 def test_a_stream_without_a_result_event_leaves_cost_unknown() -> None:

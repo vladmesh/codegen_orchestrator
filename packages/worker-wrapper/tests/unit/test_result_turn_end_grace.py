@@ -198,6 +198,10 @@ def _fixture_evidence():
     return _extract_claude_evidence(FIXTURE.read_text(encoding="utf-8"))["claude_evidence"]
 
 
+def _stream_evidence():
+    return _extract_claude_evidence(STREAM.read_text(encoding="utf-8"))["claude_evidence"]
+
+
 def _no_fence_left(workspace: Path) -> bool:
     return not any((workspace / ".git" / lock).exists() for lock in FENCE_LOCKS)
 
@@ -227,13 +231,13 @@ async def test_a_turn_that_ends_inside_the_grace_keeps_its_provider_cost(tmp_pat
     assert isinstance(published, WorkerCompletedResult)
     assert published.commit_sha == head
     assert git(origin, "rev-parse", BRANCH) == head
-    assert published.claude_evidence == _fixture_evidence()
-    assert published.claude_evidence.cost_microusd == 56_448
+    assert published.claude_evidence == _stream_evidence()
+    assert published.claude_evidence.cost_microusd == 66_572
     ledger = EngineeringAttemptLedgerInput.model_validate(
         {"claude_evidence": parse_worker_result(published.model_dump(mode="json")).claude_evidence}
     )
     assert ledger.cost_source == "provider_reported"
-    assert ledger.cost_microusd == 56_448
+    assert ledger.cost_microusd == 66_572
     assert _no_fence_left(workspace)
 
 
@@ -261,7 +265,7 @@ async def test_late_git_after_the_result_cannot_change_what_the_turn_reports(tmp
     assert git(origin, "rev-parse", BRANCH) == reported
     assert isinstance(published, WorkerCompletedResult)
     assert published.commit_sha == reported
-    assert published.claude_evidence == _fixture_evidence()
+    assert published.claude_evidence == _stream_evidence()
     assert _no_fence_left(workspace)
 
 
@@ -388,7 +392,7 @@ async def test_auto_resume_evidence_replaces_the_first_runs(tmp_path):
         wrapper._git_auth_preflight = MagicMock(return_value=True)
         assert await wrapper._attempt_auto_resume({"request_id": "req-1"}) is True
 
-    assert wrapper._effort_metrics == {"claude_evidence": _fixture_evidence()}
+    assert wrapper._effort_metrics == {"claude_evidence": _stream_evidence()}
 
 
 @pytest.mark.asyncio
@@ -413,5 +417,5 @@ async def test_a_qa_claude_executor_delivers_its_evidence_in_the_output_payload(
         await wrapper.process_message("1-0", {"request_id": "qa-1", "prompt": "explore"})
 
     payload = broker.submit_output.await_args[0][1].model_dump(mode="json")
-    assert payload["claude_evidence"] == _fixture_evidence().model_dump(mode="json")
-    assert payload["claude_evidence"]["cost_microusd"] == 56_448
+    assert payload["claude_evidence"] == _stream_evidence().model_dump(mode="json")
+    assert payload["claude_evidence"]["cost_microusd"] == 66_572

@@ -119,23 +119,22 @@ async def test_the_stream_maps_to_typed_lines_without_tool_output(tmp_path):
 
     lines = _lines(logs)
     assert [(line.seq, line.kind, line.text) for line in lines] == [
-        (0, "info", "I'll read the task, create hello.txt and report the result."),
-        (1, "ok", "Read"),
-        (2, "file", "hello.txt"),
+        (0, "cmd", "echo hello-from-bash"),
+        (1, "ok", "Bash"),
+        (2, "file", "/workspace/notes.txt"),
         (3, "ok", "Write"),
+        (4, "file", "/workspace/notes.txt"),
+        (5, "ok", "Edit"),
         (
-            4,
-            "cmd",
-            "curl -s -X POST http://localhost:9090/result -H 'Content-Type: application/json' "
-            '-d \'{"success": true, "summary": "created hello.txt"}\'',
+            6,
+            "info",
+            'Done: echoed the string, created notes.txt with "first", then edited it to "second".',
         ),
-        (5, "ok", "Bash"),
-        (6, "info", 'Done — created hello.txt with "hello" and reported success.'),
         (7, "step", "turn ended: success"),
     ]
     assert {(line.attempt_id, line.task_id) for line in lines} == {("attempt-1", "task-1")}
     emitted = " ".join(line.text for line in lines)
-    for tool_output in ("Create hello.txt containing hello", "File created", "accepted"):
+    for tool_output in ("File created successfully", "has been updated successfully", "-first"):
         assert tool_output not in emitted
     broker.set_session.assert_awaited_once_with("00000000-0000-4000-8000-000000000001")
 
