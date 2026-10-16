@@ -358,7 +358,8 @@ class ActionsMixin:
                 Prevents picking up runs from a different commit (e.g. scaffold).
 
         Returns:
-            Workflow run dict with keys: id, status, conclusion, html_url
+            Workflow run dict with keys: id, status, conclusion, html_url,
+            created_at, head_sha, run_started_at, updated_at
             None if no runs found (or all runs are stale)
         """
         token = await self.get_token(owner, repo)
@@ -401,6 +402,8 @@ class ActionsMixin:
             "html_url": run["html_url"],
             "created_at": run["created_at"],
             "head_sha": run.get("head_sha"),
+            "run_started_at": run.get("run_started_at"),
+            "updated_at": run["updated_at"],
         }
 
     async def list_unfinished_workflow_runs(

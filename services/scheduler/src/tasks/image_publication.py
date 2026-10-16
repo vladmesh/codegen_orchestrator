@@ -66,6 +66,8 @@ class PublicationVerdict:
     ci_status: str | None = None
     ci_conclusion: str | None = None
     ci_run_url: str | None = None
+    ci_started_at: str | None = None
+    ci_completed_at: str | None = None
     failed_jobs: tuple[dict, ...] = ()
     details_unavailable_reason: str | None = None
 
@@ -76,6 +78,8 @@ class PublicationVerdict:
             "ci_status": self.ci_status,
             "ci_conclusion": self.ci_conclusion,
             "ci_run_url": self.ci_run_url,
+            "ci_started_at": self.ci_started_at,
+            "ci_completed_at": self.ci_completed_at,
             "failed_jobs": list(self.failed_jobs),
             "details_unavailable_reason": self.details_unavailable_reason,
             "detail": self.detail,
@@ -102,6 +106,14 @@ def _redacted_failed_jobs(failed_jobs: list[dict], *, secrets: tuple[str, ...]) 
             )
         redacted.append(item)
     return tuple(redacted)
+
+
+def ci_run_times(run: dict) -> dict:
+    """A workflow run's start and, once it has completed, its end, as GitHub's UTC stamps."""
+    return {
+        "ci_started_at": run.get("run_started_at"),
+        "ci_completed_at": run.get("updated_at") if run["status"] == _COMPLETED_STATUS else None,
+    }
 
 
 def _elapsed_seconds(since: datetime, now: datetime) -> float:
@@ -187,6 +199,7 @@ async def image_publication_for_commit(
                 ci_status=run["status"],
                 ci_conclusion=run.get("conclusion"),
                 ci_run_url=run.get("html_url"),
+                **ci_run_times(run),
             )
         return PublicationVerdict(
             state=ImagePublication.PENDING,
@@ -195,6 +208,7 @@ async def image_publication_for_commit(
             ci_status=run["status"],
             ci_conclusion=run.get("conclusion"),
             ci_run_url=run.get("html_url"),
+            **ci_run_times(run),
         )
 
     if run.get("conclusion") == _PUBLISHED_CONCLUSION:
@@ -205,6 +219,7 @@ async def image_publication_for_commit(
             ci_status=run["status"],
             ci_conclusion=run.get("conclusion"),
             ci_run_url=run.get("html_url"),
+            **ci_run_times(run),
         )
 
     unavailable_reason = None
@@ -237,6 +252,7 @@ async def image_publication_for_commit(
         ci_status=run["status"],
         ci_conclusion=run.get("conclusion"),
         ci_run_url=run.get("html_url"),
+        **ci_run_times(run),
         failed_jobs=failed_jobs,
         details_unavailable_reason=unavailable_reason,
     )

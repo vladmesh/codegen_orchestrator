@@ -35,6 +35,7 @@ from .image_publication import (
     ImagePublication,
     PublicationVerdict,
     _redacted_failed_jobs,
+    ci_run_times,
     image_publication_for_commit,
 )
 from .owner_notifications import deliver_owed_notification, owe_story_owner_notification
@@ -303,6 +304,8 @@ def _updated_generated_product_timeline(
             "url": verdict.ci_run_url,
             "status": verdict.ci_status,
             "conclusion": verdict.ci_conclusion,
+            "started_at": verdict.ci_started_at,
+            "completed_at": verdict.ci_completed_at,
             "branch": branch,
             "head_sha": head_sha,
             "failed_jobs": list(verdict.failed_jobs),
@@ -381,6 +384,8 @@ def _updated_generated_product_timeline(
                 "ci_status": current_run["status"],
                 "ci_conclusion": current_run["conclusion"],
                 "ci_run_url": current_run["url"],
+                "ci_started_at": current_run["started_at"],
+                "ci_completed_at": current_run["completed_at"],
                 "failed_jobs": current_run["failed_jobs"],
                 "details_unavailable_reason": current_run["details_unavailable_reason"],
             }
@@ -481,6 +486,7 @@ async def _handle_failed_run(  # noqa: PLR0913 — one CI run's context, each pa
         ci_status=run.get("status"),
         ci_conclusion=run.get("conclusion"),
         ci_run_url=run_url or None,
+        **ci_run_times(run),
         failed_jobs=tuple(failed_jobs),
         details_unavailable_reason=unavailable_reason,
     )

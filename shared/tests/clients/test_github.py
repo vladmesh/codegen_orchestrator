@@ -440,6 +440,34 @@ async def test_get_latest_workflow_run_empty_runs_returns_none(authed_client):
             assert result is None
 
 
+@pytest.mark.asyncio
+async def test_get_latest_workflow_run_carries_the_run_start_and_last_update(authed_client):
+    owner, repo = "my-org", "my-repo"
+    started = datetime.fromtimestamp(1_790_000_000, UTC)
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
+    payload = {
+        "id": 7,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/my-org/my-repo/actions/runs/7",
+        "created_at": started.strftime(stamp),
+        "run_started_at": started.strftime(stamp),
+        "updated_at": (started + timedelta(minutes=5)).strftime(stamp),
+        "head_sha": "a" * 40,
+    }
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/workflows/ci.yml/runs").mock(
+                return_value=httpx.Response(200, json={"workflow_runs": [payload]})
+            )
+
+            result = await authed_client.get_latest_workflow_run(owner, repo, "ci.yml")
+
+    assert result["run_started_at"] == payload["run_started_at"]
+    assert result["updated_at"] == payload["updated_at"]
+
+
 # --- rerun_failed_jobs tests ---
 
 

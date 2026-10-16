@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- Each story `ci_runs` entry records the run's `started_at` and `completed_at`, and the scaffolder records
+  `scaffold_started_at` and `scaffold_finished_at` in project config, so every story stage has a start and end.
 - `GET /admin/v2/journeys/{id}/repository` reads a story's repository tree at its PR or branch head and its bounded
   diff through the GitHub App, naming why when there is no repository, no story head, or GitHub fails.
 - The Journey read model carries `task_board`: each story task in a Backlog, In development, CI or Done
