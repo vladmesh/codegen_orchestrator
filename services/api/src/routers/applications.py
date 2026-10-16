@@ -2,7 +2,6 @@
 
 from datetime import UTC, datetime
 import secrets
-from urllib.parse import urlparse
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -48,6 +47,7 @@ from ..dependencies import (
     require_internal_or_admin,
 )
 from ..domain.ports import PortAllocationExhaustedError, allocate_next_port
+from ..github_repo_url import parse_github_repo_url
 from ..schemas import (
     ApplicationCreate,
     ApplicationHealthHistoryCreate,
@@ -68,7 +68,6 @@ from ._recipients import ProjectRecipient, resolve_project_chat_id
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/applications", tags=["applications"])
-_GITHUB_REPO_PATH_PARTS = 2
 
 
 def _deploy_handoff_metadata(message: DeployMessage, *, application_id: int) -> dict:
@@ -536,24 +535,9 @@ def stage_undeploy(
     return run, msg
 
 
-def _parse_github_repo_url(git_url: str) -> tuple[str, str]:
-    if git_url.startswith("git@github.com:"):
-        path = git_url.removeprefix("git@github.com:")
-    else:
-        parsed = urlparse(git_url)
-        if parsed.netloc != "github.com":
-            raise ValueError(f"Repository URL is not a GitHub URL: {git_url}")
-        path = parsed.path.lstrip("/")
-
-    parts = path.rstrip("/").removesuffix(".git").split("/")
-    if len(parts) != _GITHUB_REPO_PATH_PARTS or not all(parts):
-        raise ValueError(f"Repository URL does not identify owner/repo: {git_url}")
-    return parts[0], parts[1]
-
-
 async def _resolve_admin_deploy_head_sha(repo: Repository) -> str:
     try:
-        owner, repo_name = _parse_github_repo_url(repo.git_url)
+        owner, repo_name = parse_github_repo_url(repo.git_url)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

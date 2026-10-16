@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- `GET /admin/v2/journeys/{id}/repository` reads a story's repository tree at its PR or branch head and its bounded
+  diff through the GitHub App, naming why when there is no repository, no story head, or GitHub fails.
 - The Journey read model carries `task_board`: each story task in a Backlog, In development, CI or Done
   column, its origin (planned, CI fix, QA fix) and its engineering attempts with their workers.
 - Worker-manager starts developer and QA workers with `LOG_FORMAT=json` and `SERVICE_NAME=worker-wrapper`,

@@ -156,6 +156,25 @@ class ReposMixin:
         comparison = resp.json()
         return comparison["ahead_by"] > 0 and bool(comparison["files"])
 
+    async def compare_commits(self, owner: str, repo: str, base: str, head: str) -> list[dict]:
+        """The files changed from the merge base of ``base`` and ``head`` to ``head``.
+
+        Each item is GitHub's file entry (``filename``, ``status``, ``additions``,
+        ``deletions``, ``patch`` when GitHub renders one); GitHub lists at most 300 files.
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/compare/"
+            f"{quote(base, safe='')}...{quote(head, safe='')}",
+            headers=headers,
+        )
+        return resp.json()["files"]
+
     async def delete_repo(self, owner: str, repo: str) -> bool:
         """Delete a repository.
 

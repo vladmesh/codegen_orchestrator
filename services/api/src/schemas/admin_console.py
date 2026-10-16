@@ -307,14 +307,89 @@ class LiveLogResponse(_ConsoleModel):
     omitted_attempts: int = Field(ge=0)
 
 
+class RepositoryRef(_ConsoleModel):
+    owner: str
+    name: str
+
+
+class RepositoryHeadSource(StrEnum):
+    """Where the story's head commit was read from."""
+
+    PULL_REQUEST = "pull_request"
+    BRANCH = "branch"
+
+
+class RepositoryHead(_ConsoleModel):
+    source: RepositoryHeadSource
+    ref: str
+    sha: str
+
+
+class ChangedFileStatus(StrEnum):
+    """GitHub's status of a file in a comparison."""
+
+    ADDED = "added"
+    REMOVED = "removed"
+    MODIFIED = "modified"
+    RENAMED = "renamed"
+    COPIED = "copied"
+    CHANGED = "changed"
+    UNCHANGED = "unchanged"
+
+
+class ChangedFile(_ConsoleModel):
+    path: str
+    status: ChangedFileStatus
+    additions: int = Field(ge=0)
+    deletions: int = Field(ge=0)
+    #: Null when GitHub renders no patch: a binary file or a diff too large to show.
+    patch: str | None
+    #: The patch was cut at the read's patch length bound.
+    truncated: bool
+
+
+class RepositoryUnavailableReason(StrEnum):
+    """Why a story's repository read returned no head, files or changes."""
+
+    NO_REPOSITORY = "no_repository"
+    NO_STORY_BRANCH = "no_story_branch"
+    GITHUB_UNAVAILABLE = "github_unavailable"
+
+
+class RepositoryUnavailable(_ConsoleModel):
+    reason: RepositoryUnavailableReason
+    #: For ``github_unavailable``: GitHub's status code, or the exception class of the failure.
+    detail: str | None
+
+
+class JourneyRepository(_ConsoleModel):
+    """The story's product repository at its head and the diff of the story's own changes."""
+
+    #: Null only for ``no_repository``.
+    repository: RepositoryRef | None
+    head: RepositoryHead | None
+    #: Every file path of the tree at ``head.sha``, sorted.
+    files: list[str]
+    changes: list[ChangedFile]
+    #: How many changed files fell beyond the read's file bound and were not returned.
+    omitted_changes: int = Field(ge=0)
+    #: False when ``omitted_changes`` is a lower bound: a branch comparison at GitHub's file cap.
+    omitted_changes_exact: bool
+    #: Null when GitHub answered; otherwise ``head`` is null and ``files`` and ``changes`` empty.
+    unavailable: RepositoryUnavailable | None
+
+
 __all__ = [
     "AttentionItem",
+    "ChangedFile",
+    "ChangedFileStatus",
     "AttentionResponse",
     "ConsoleKpis",
     "ContainerView",
     "Fact",
     "JourneyAttempt",
     "JourneyDetail",
+    "JourneyRepository",
     "JourneyStage",
     "JourneyStep",
     "JourneySummary",
@@ -327,6 +402,11 @@ __all__ = [
     "PlatformServiceView",
     "ProductPassport",
     "ProductView",
+    "RepositoryHead",
+    "RepositoryHeadSource",
+    "RepositoryRef",
+    "RepositoryUnavailable",
+    "RepositoryUnavailableReason",
     "Severity",
     "StoryLinkCreate",
     "StoryLinkKind",

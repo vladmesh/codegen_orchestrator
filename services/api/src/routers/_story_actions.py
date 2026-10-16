@@ -83,6 +83,7 @@ from ..dependencies import (
     is_internal_service,
     require_internal_or_admin,
 )
+from ..github_repo_url import parse_github_repo_url
 from ..infrastructure_park import (
     SCAFFOLD_ERROR_KEY,
     WORKSPACE_ENSURE_AUDIT_SUBJECT,
@@ -410,9 +411,7 @@ async def _repair_admission_evidence(
 async def _observe_dirty_pr(
     story: Story, repository: Repository, command: PRConflictRepairCommand
 ) -> tuple[str, str, str]:
-    from .applications import _parse_github_repo_url
-
-    owner, repo = _parse_github_repo_url(repository.git_url)
+    owner, repo = parse_github_repo_url(repository.git_url)
     try:
         async with PR_CONFLICT_GITHUB() as github:
             pr = await github.get_pull_request(owner, repo, command.pr_number)
