@@ -9,6 +9,7 @@ import { Passport } from '@/components/console/Passport'
 import { StageTimeline } from '@/components/console/StageTimeline'
 import { TaskBoard } from '@/components/console/TaskBoard'
 import { LiveLog } from '@/components/console/LiveLog'
+import { RepositoryPanel } from '@/components/console/RepositoryPanel'
 import type { JourneyDetail, JourneyStage, JourneyStep, StepStatus } from '@/types/api'
 import {
   STAGE_ACTORS,
@@ -185,6 +186,7 @@ export function JourneyPage() {
   const current = selected ?? focusStage(steps)
   const currentStep = steps.find((s) => s.stage === current) ?? steps[0]
   const reached = progressIndex(steps)
+  const live = !isTerminalStory(summary.status)
 
   return (
     <div className="space-y-5">
@@ -262,10 +264,9 @@ export function JourneyPage() {
         </aside>
       </div>
 
-      <LiveLog
-        path={`/admin/v2/journeys/${summary.story_id}/live-log`}
-        live={!isTerminalStory(summary.status)}
-      />
+      <LiveLog path={`/admin/v2/journeys/${summary.story_id}/live-log`} live={live} />
+
+      <RepositoryPanel storyId={summary.story_id} live={live} />
 
       <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_360px]">
         <TaskBoard board={journey.data.task_board} now={now} />

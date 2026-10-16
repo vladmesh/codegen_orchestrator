@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { WorkspaceBrowser } from '@/components/workspace'
 import { LiveLog } from '@/components/console/LiveLog'
+import { workerLogLive } from '@/pages/liveLogView'
 import type {
   WorkerDetail,
   WorkerLogsResponse,
@@ -26,12 +27,13 @@ export function WorkerDetailPage() {
   const setActiveTab = (tab: Tab) => setSearchParams({ tab }, { replace: true })
   const [confirmKill, setConfirmKill] = useState(false)
 
-  const { data: worker, isLoading, isError } = useQuery({
+  const workerQuery = useQuery({
     queryKey: ['worker', id],
     queryFn: () => api.raw<WorkerDetail>(`/wm-api/workers/${id}`),
     enabled: !!id,
     refetchInterval: 5_000,
   })
+  const { data: worker, isLoading } = workerQuery
 
   const killMutation = useMutation({
     mutationFn: () => api.rawDelete<void>(`/wm-api/workers/${id}`),
@@ -178,8 +180,7 @@ export function WorkerDetailPage() {
         </Card>
       )}
 
-      {/* A failed worker read keeps its last data on screen; the log stays readable but stops polling. */}
-      <LiveLog path={`/admin/v2/workers/${worker.id}/live-log`} live={!isError} />
+      <LiveLog path={`/admin/v2/workers/${worker.id}/live-log`} live={workerLogLive(workerQuery)} />
 
       {/* Tabs */}
       <div className="border-b border-border">

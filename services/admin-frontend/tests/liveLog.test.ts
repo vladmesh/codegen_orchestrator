@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { ApiError } from '../src/lib/api.ts'
 import type { LiveLogKind, LiveLogLine, LiveLogSource, LiveLogUnavailable, StoryStatus } from '../src/types/api.ts'
 import {
   isTerminalStory,
@@ -8,6 +9,7 @@ import {
   liveLogRows,
   omittedMessage,
   unavailableMessage,
+  workerLogLive,
 } from '../src/pages/liveLogView.ts'
 
 const T0 = 1_700_000_000_000
@@ -96,4 +98,17 @@ test('only completed, failed and archived stories are terminal', () => {
   for (const [status, terminal] of Object.entries(statuses) as [StoryStatus, boolean][]) {
     assert.equal(isTerminalStory(status), terminal, status)
   }
+})
+
+test('a worker log polls through a transient failed read and stops on a 404', () => {
+  const worker = { id: 'w-1' }
+  assert.equal(workerLogLive({ data: worker, error: null }), true)
+  assert.equal(workerLogLive({ data: worker, error: new ApiError(503, '503 Service Unavailable') }), true)
+  assert.equal(workerLogLive({ data: worker, error: new TypeError('Failed to fetch') }), true)
+  assert.equal(workerLogLive({ data: worker, error: new ApiError(404, '404 Not Found') }), false)
+})
+
+test('a worker log never polls before the worker read has answered', () => {
+  assert.equal(workerLogLive({ data: undefined, error: null }), false)
+  assert.equal(workerLogLive({ data: undefined, error: new ApiError(500, '500 Internal Server Error') }), false)
 })

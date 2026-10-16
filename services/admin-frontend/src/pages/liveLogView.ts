@@ -1,4 +1,5 @@
 import type { LiveLogKind, LiveLogLine, LiveLogSource, LiveLogUnavailable, StoryStatus } from '../types/api'
+import { ApiError } from '../lib/api.ts'
 import { parseApiTime } from '../lib/utils.ts'
 
 /** How often an open live log asks for new lines while its run can still write them. */
@@ -13,6 +14,15 @@ export function isTerminalStory(status: StoryStatus): boolean {
 /** The live log's refetch interval: polls while its run can write, stops once it cannot. */
 export function liveLogInterval(live: boolean): number | false {
   return live ? LIVE_LOG_POLL_MS : false
+}
+
+/**
+ * Whether a worker's live log polls: once the worker read has answered, until the latest read
+ * answers 404. Any other failed read keeps the worker on screen and the log polling.
+ */
+export function workerLogLive(worker: { data: unknown; error: Error | null }): boolean {
+  if (worker.data === undefined) return false
+  return !(worker.error instanceof ApiError && worker.error.status === 404)
 }
 
 const SOURCE_TAGS: Record<LiveLogSource, string> = {
