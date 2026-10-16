@@ -113,15 +113,21 @@ def _extract_claude_evidence(stdout: str) -> dict[str, Any]:
     return {"claude_evidence": evidence}
 
 
-def _last_claude_result(stdout: str) -> dict[str, Any] | None:
+def last_claude_result_line(stdout: str) -> str | None:
+    """The last ``type=result`` event line of a Claude ``stream-json`` stdout, verbatim."""
     for line in reversed(stdout.splitlines()):
         try:
-            event = json.loads(line, parse_float=Decimal)
+            event = json.loads(line)
         except json.JSONDecodeError:
             continue
         if isinstance(event, dict) and event.get("type") == "result":
-            return event
+            return line
     return None
+
+
+def _last_claude_result(stdout: str) -> dict[str, Any] | None:
+    line = last_claude_result_line(stdout)
+    return None if line is None else json.loads(line, parse_float=Decimal)
 
 
 def _nonnegative_int(value: Any) -> int | None:
