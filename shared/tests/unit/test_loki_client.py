@@ -135,3 +135,27 @@ def test_an_unknown_direction_is_refused():
     now = datetime.now(UTC)
     with pytest.raises(ValueError, match="unknown Loki direction"):
         asyncio.run(client.query_range('{a="b"}', now, now, direction="sideways"))
+
+
+async def test_range_bounds_are_sent_as_exact_epoch_nanoseconds():
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"data": {"result": []}})
+
+    client = LokiClient(base_url="http://loki:3100")
+    client._client = httpx.AsyncClient(
+        base_url="http://loki:3100", transport=httpx.MockTransport(answer)
+    )
+    start = datetime.fromtimestamp(1_711_000_000, UTC)
+    end = start + timedelta(seconds=1, microseconds=900_123)
+
+    await client.query_range('{a="b"}', start, end)
+
+    assert sent[0].url.params["start"] == "1711000000000000000"
+    assert sent[0].url.params["end"] == "1711000001900123000"

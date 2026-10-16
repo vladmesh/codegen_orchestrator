@@ -5,7 +5,6 @@ engineering and QA Run ids; a worker's lines are those carrying its Loki label `
 """
 
 import asyncio
-from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 import os
@@ -98,7 +97,7 @@ def _loki_time(nanoseconds: int) -> datetime:
 def live_log_lines(
     entries: Iterable[dict], sources: Mapping[str, LiveLogSource]
 ) -> list[LiveLogLine]:
-    """Loki entries as console lines, oldest first, the lines of one attempt in ``seq`` order."""
+    """Loki entries as console lines ordered by ``at``, ties by ``attempt_id`` then ``seq``."""
     lines = []
     for entry in entries:
         fields = {name: entry[name] for name in AgentLogLine.model_fields}
@@ -113,18 +112,7 @@ def live_log_lines(
                 text=line.text,
             )
         )
-    lines.sort(key=lambda line: (line.at, line.attempt_id, line.seq))
-    # Producers stamp lines in different containers, so one attempt's Loki times may tie or
-    # disagree with its seq; each attempt's slots are refilled in seq order.
-    slots: dict[str, list[int]] = defaultdict(list)
-    for index, line in enumerate(lines):
-        slots[line.attempt_id].append(index)
-    ordered = list(lines)
-    for indexes in slots.values():
-        by_seq = sorted((lines[index] for index in indexes), key=lambda line: line.seq)
-        for index, line in zip(indexes, by_seq, strict=True):
-            ordered[index] = line
-    return ordered
+    return sorted(lines, key=lambda line: (line.at, line.attempt_id, line.seq))
 
 
 async def read_agent_log_entries(

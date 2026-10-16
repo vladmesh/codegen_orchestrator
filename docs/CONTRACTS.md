@@ -260,8 +260,8 @@ ids, from the story's creation to now; an unknown story is 404. Past
 `omitted_attempts` counts the rest. `GET /api/admin/v2/workers/{worker_id}/live-log`
 selects the events of the container labelled `worker_id` within Loki's retention.
 Both answer `LiveLogResponse`: at most `LIVE_LOG_LINE_LIMIT` of the newest lines,
-oldest first, each attempt's lines in `seq` order, each line its Loki time `at`, its
-`source`, `attempt_id`, `seq`, `kind` and `text`. A story line's `source` is
+each with its own Loki time `at`, its `source`, `attempt_id`, `seq`, `kind` and
+`text`, ordered by `at` oldest first, ties by `attempt_id` then `seq`. A story line's `source` is
 `architect`, `developer` or `qa` by the id set its attempt belongs to; a worker line's
 is `developer` or `qa` by its Run's type, or `worker` when no Run has that id.
 `unavailable` is null when Loki answered; an unset `LOKI_URL`, a failed query or one

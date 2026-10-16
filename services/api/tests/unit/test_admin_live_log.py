@@ -24,7 +24,7 @@ from src.database import get_async_session
 from src.main import app
 from src.schemas.admin_console import LiveLogUnavailable
 
-T0 = datetime(2026, 10, 7, 14, 0, tzinfo=UTC)
+T0 = datetime.fromtimestamp(1_780_000_000, UTC)
 NOW = T0 + timedelta(hours=2)
 
 
@@ -148,15 +148,14 @@ async def test_a_story_with_an_unsafe_run_id_raises_before_asking_loki(monkeypat
     client.query_range.assert_not_awaited()
 
 
-async def test_story_lines_map_to_their_source_and_keep_seq_order(monkeypatch):
+async def test_story_lines_map_to_their_source_in_loki_timestamp_order(monkeypatch):
     monkeypatch.setenv("LOKI_URL", "http://loki:3100")
     entries = _loki_entries(
         _line(BASE_NS + 5 * SECOND, "qa-1", 0, "step", compose_service=""),
-        # One attempt's lines arrive with Loki times that disagree with their seq.
-        _line(BASE_NS + 2 * SECOND, "eng-1", 1, "cmd"),
+        # One attempt's Loki times disagree with its seq: the time decides.
+        _line(BASE_NS + 3 * SECOND + 1500, "eng-1", 1, "file"),
+        _line(BASE_NS + 3 * SECOND, "eng-1", 2, "ok"),
         _line(BASE_NS + 2 * SECOND, "eng-1", 0, "info"),
-        _line(BASE_NS + 3 * SECOND, "eng-1", 3, "ok"),
-        _line(BASE_NS + 3 * SECOND + 1500, "eng-1", 2, "file"),
         _line(BASE_NS, "plan-a", 0, "step", compose_service="langgraph"),
     )
     client = _fake_loki(entries)
@@ -172,12 +171,17 @@ async def test_story_lines_map_to_their_source_and_keep_seq_order(monkeypatch):
     assert [(line.source.value, line.attempt_id, line.seq) for line in result.lines] == [
         ("architect", "plan-a", 0),
         ("developer", "eng-1", 0),
-        ("developer", "eng-1", 1),
         ("developer", "eng-1", 2),
-        ("developer", "eng-1", 3),
+        ("developer", "eng-1", 1),
         ("qa", "qa-1", 0),
     ]
-    assert result.lines[0].at == at(10)
+    assert [line.at for line in result.lines] == [
+        at(10),
+        at(10) + timedelta(seconds=2),
+        at(10) + timedelta(seconds=3),
+        at(10) + timedelta(seconds=3, microseconds=1),
+        at(10) + timedelta(seconds=5),
+    ]
     kwargs = client.query_range.await_args.kwargs
     assert client.query_range.await_args.args[0] == story_live_log_query(
         ["plan-a", "plan-b", "eng-1", "qa-1"]
@@ -186,6 +190,26 @@ async def test_story_lines_map_to_their_source_and_keep_seq_order(monkeypatch):
     assert kwargs["direction"] == "backward"
     assert kwargs["limit"] == admin_live_log.LIVE_LOG_LINE_LIMIT
     client.close.assert_awaited_once()
+
+
+async def test_lines_at_one_loki_time_are_ordered_by_attempt_then_seq(monkeypatch):
+    monkeypatch.setenv("LOKI_URL", "http://loki:3100")
+    entries = _loki_entries(
+        _line(BASE_NS, "plan-a", 5),
+        _line(BASE_NS, "eng-1", 1),
+        _line(BASE_NS, "eng-1", 0),
+    )
+    client = _fake_loki(entries)
+    session = _story_session([_run("eng-1", "engineering", 5)])
+
+    with patch("src.admin_live_log.LokiClient", return_value=client):
+        result = await read_story_live_log(session, "st-1", now=NOW)
+
+    assert [(line.attempt_id, line.seq) for line in result.lines] == [
+        ("eng-1", 0),
+        ("eng-1", 1),
+        ("plan-a", 5),
+    ]
 
 
 async def test_a_story_beyond_the_id_cap_queries_its_newest_ids_and_counts_the_rest(monkeypatch):
@@ -299,7 +323,7 @@ async def test_the_live_log_routes_answer_with_utc_lines_and_404_an_unknown_stor
     assert found.json() == {
         "lines": [
             {
-                "at": "2026-10-07T14:10:00Z",
+                "at": at(10).isoformat().replace("+00:00", "Z"),
                 "source": "developer",
                 "attempt_id": "eng-1",
                 "seq": 0,

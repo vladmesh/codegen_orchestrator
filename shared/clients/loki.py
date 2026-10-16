@@ -1,12 +1,19 @@
 """Loki HTTP client — LogQL range queries over Loki's HTTP API."""
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 import os
 
 import httpx
 import structlog
 
 logger = structlog.get_logger()
+
+_EPOCH = datetime.fromtimestamp(0, UTC)
+
+
+def _epoch_ns(moment: datetime) -> str:
+    """``moment`` as exact integer epoch nanoseconds; a naive ``moment`` raises ``TypeError``."""
+    return str((moment - _EPOCH) // timedelta(microseconds=1) * 1000)
 
 
 def _get_env(key: str) -> str:
@@ -57,8 +64,8 @@ class LokiClient:
             raise ValueError(f"unknown Loki direction {direction!r}")
         params = {
             "query": query,
-            "start": str(int(start.timestamp())),
-            "end": str(int(end.timestamp())),
+            "start": _epoch_ns(start),
+            "end": _epoch_ns(end),
             "limit": str(limit),
             "direction": direction,
         }
