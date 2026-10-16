@@ -92,6 +92,15 @@ def test_parse_response_adds_labels():
     assert entries[2]["_labels"]["compose_service"] == "tg_bot"
 
 
+def test_parse_response_keeps_each_lines_loki_timestamp():
+    entries = LokiClient._parse_response(SAMPLE_LOKI_RESPONSE)
+    assert [entry["_ts"] for entry in entries] == [
+        1711000000000000000,
+        1711000001000000000,
+        1711000002000000000,
+    ]
+
+
 def test_parse_response_handles_non_json_lines():
     data = {
         "data": {

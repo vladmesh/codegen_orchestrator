@@ -251,6 +251,24 @@ class>)`. A run with no claimed attempt logs no line. Its secret values are the
 secret-named variables of the langgraph environment, and the lines reach Loki with
 `compose_service=langgraph`.
 
+The admin console reads the log back from Loki (`services/api/src/admin_live_log.py`).
+`GET /api/admin/v2/journeys/{story_id}/live-log` selects the `agent_log_line` events
+whose `attempt_id` is one of the story's planning attempt ids (its brief's, its tasks'
+and its requirement coverages' `planning_attempt_id`), engineering Run ids or QA Run
+ids, from the story's creation to now; an unknown story is 404. Past
+`LIVE_LOG_ATTEMPT_ID_CAP` ids, the newest by creation time are read and
+`omitted_attempts` counts the rest. `GET /api/admin/v2/workers/{worker_id}/live-log`
+selects the events of the container labelled `worker_id` within Loki's retention.
+Both answer `LiveLogResponse`: at most `LIVE_LOG_LINE_LIMIT` of the newest lines,
+oldest first, each attempt's lines in `seq` order, each line its Loki time `at`, its
+`source`, `attempt_id`, `seq`, `kind` and `text`. A story line's `source` is
+`architect`, `developer` or `qa` by the id set its attempt belongs to; a worker line's
+is `developer` or `qa` by its Run's type, or `worker` when no Run has that id.
+`unavailable` is null when Loki answered; an unset `LOKI_URL`, a failed query or one
+slower than `LOKI_READ_TIMEOUT_SECONDS` gives `log_store_not_configured`,
+`log_store_query_failed` or `log_store_timed_out` with no lines. An id that fails
+`safe_log_id` is never interpolated into LogQL: the read fails with a 500.
+
 `WorkerFailedResult.execution` carries wrapper-owned pre-agent auth refusal as
 `pre_agent_refused/repository_auth_unavailable`. The worker client preserves it
 through the developer result and terminal Run so the existing supervisor parks

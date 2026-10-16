@@ -13,6 +13,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from shared.contracts.dto.agent_log import AgentLogKind
 from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
 
 
@@ -226,6 +227,42 @@ class AttentionResponse(_ConsoleModel):
     items: list[AttentionItem]
 
 
+class LiveLogSource(StrEnum):
+    """Which agent wrote a live log line, from the id set its ``attempt_id`` belongs to."""
+
+    ARCHITECT = "architect"
+    DEVELOPER = "developer"
+    QA = "qa"
+    #: A worker's line whose ``attempt_id`` matches no Run.
+    WORKER = "worker"
+
+
+class LiveLogUnavailable(StrEnum):
+    """Why a live log read returned no lines from the log store."""
+
+    NOT_CONFIGURED = "log_store_not_configured"
+    QUERY_FAILED = "log_store_query_failed"
+    TIMED_OUT = "log_store_timed_out"
+
+
+class LiveLogLine(_ConsoleModel):
+    at: datetime
+    source: LiveLogSource
+    attempt_id: str
+    seq: int = Field(ge=0)
+    kind: AgentLogKind
+    text: str
+
+
+class LiveLogResponse(_ConsoleModel):
+    #: Oldest to newest; the lines of one attempt in ``seq`` order.
+    lines: list[LiveLogLine]
+    #: Null when Loki answered; otherwise ``lines`` is empty.
+    unavailable: LiveLogUnavailable | None
+    #: How many of the story's oldest attempt ids fell beyond the query cap and were not read.
+    omitted_attempts: int = Field(ge=0)
+
+
 __all__ = [
     "AttentionItem",
     "AttentionResponse",
@@ -237,6 +274,10 @@ __all__ = [
     "JourneyStage",
     "JourneyStep",
     "JourneySummary",
+    "LiveLogLine",
+    "LiveLogResponse",
+    "LiveLogSource",
+    "LiveLogUnavailable",
     "PackageRef",
     "PlacementView",
     "PlatformServiceView",

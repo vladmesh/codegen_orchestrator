@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- The admin console API reads the live agent log back from Loki for one story or one worker
+  (`/admin/v2/journeys/{id}/live-log`, `/admin/v2/workers/{id}/live-log`), naming why when Loki cannot answer.
 - A claimed architect planning attempt logs the redacted `agent_log_line` stream, ending with one step that
   names whether it was admitted; the shared `AgentLogWriter` serves it and the worker wrapper.
 - Codex workers run `codex exec --json` and QA executors log too: Codex events and QA turns emit the same

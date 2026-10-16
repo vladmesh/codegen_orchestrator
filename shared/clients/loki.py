@@ -49,7 +49,8 @@ class LokiClient:
     ) -> list[dict]:
         """Execute a LogQL range query and return parsed log entries.
 
-        Returns a flat list of parsed JSON log lines from all streams.
+        Returns a flat list of parsed JSON log lines from all streams, each with its
+        stream labels under ``_labels`` and its Loki timestamp in nanoseconds under ``_ts``.
         ``direction="backward"`` makes ``limit`` keep the newest lines.
         """
         if direction not in {"forward", "backward"}:
@@ -98,12 +99,13 @@ class LokiClient:
         entries: list[dict] = []
         for stream in data["data"]["result"]:
             labels = stream["stream"]
-            for _ts, line in stream["values"]:
+            for ts, line in stream["values"]:
                 try:
                     parsed = json.loads(line)
                 except (json.JSONDecodeError, TypeError):
                     parsed = {"raw": line}
                 parsed["_labels"] = labels
+                parsed["_ts"] = int(ts)
                 entries.append(parsed)
         return entries
 
