@@ -892,8 +892,10 @@ authorizes a new stand session.
 `services/langgraph/tests/unit/synthetic_buyer/` exercises the fresh operator driver through
 in-process Telegram, API, repository, persona, platform and clock ports. Time advances only
 through the fake clock; no socket, server, process, container or real wait is used. Controlled
-HTTP transports and Telethon-shaped clients exercise the adapters. These tests run through
-`python -m shared` in the native host profile, with its 0.5 s per-test and 240 s CPU budgets.
+HTTP transports and Telethon-shaped clients exercise the adapters. `test_controller.py` is
+`cpu_heavy`, so it runs in CI only (`fast-checks`, suite `langgraph`). Every other module there
+runs through `python -m shared` in the native host profile, with its 0.5 s per-test and 240 s CPU
+budgets.
 
 Controller harnesses pass a per-harness capture to `EvidenceStore.write_text`: every native
 save still redacts, serializes and renders its report. The capture retains every JSON/report
