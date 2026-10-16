@@ -38,6 +38,8 @@ class CodexRunner(AgentRunner):
         command = [
             "codex",
             "exec",
+            # One JSON event per stdout line, the source of the turn's live log.
+            "--json",
             "--sandbox",
             "danger-full-access",
         ]

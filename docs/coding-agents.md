@@ -41,15 +41,16 @@ Codex is available for developer workers and is the default central exploratory-
 `0.144.6`; the wrapper runs it non-interactively:
 
 ```bash
-codex exec --sandbox danger-full-access \
+codex exec --json --sandbox danger-full-access \
   "Read TASK.md and WORKER_INSTRUCTIONS.md, then complete the task described in TASK.md."
 ```
 
 The task is in `/workspace/TASK.md`, and the shared developer instructions are
 in `/workspace/WORKER_INSTRUCTIONS.md` — not in the product's own `AGENTS.md`,
 which is a tracked file of the Copier kit and belongs to the product. The agent must report success or failure through
-`POST http://localhost:9090/result`. CLI stdout and stderr are diagnostics and
-are neither accepted as the business result nor persisted for Codex workers.
+`POST http://localhost:9090/result`. CLI stdout is the `--json` event stream, read
+only into the live agent log (`docs/CONTRACTS.md`); stdout and stderr are otherwise
+diagnostics and are neither accepted as the business result nor persisted for Codex workers.
 Codex's own sandbox is off because the container already is one, and the two
 cannot nest: `workspace-write` puts every file operation through Codex's bwrap
 helper, which needs a user namespace the worker container does not have. Codex

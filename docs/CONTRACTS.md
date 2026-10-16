@@ -221,15 +221,22 @@ refuse before minting. `GitHubCredentialResponse` contains a transient SecretStr
 explicitly serialized only at this no-store response boundary. App keys, minting
 and repository-scoped caching with a five-minute margin remain on the platform.
 
-A Claude developer turn that carries `attempt_id` writes its live agent log to the
-wrapper's stdout while the CLI runs: one structlog event `agent_log_line` per
-recognised `stream-json` event, its fields an `AgentLogLine`
-(`shared/contracts/dto/agent_log.py`). Assistant text is `info`, a Bash call is
-`cmd`, an Edit/Write/MultiEdit/NotebookEdit call is `file` with its path, a tool
-result is `ok` or `err` by its error flag and never carries tool output, and the
-final result is `step`. Text is redacted with the wrapper environment, then bounded
-to `AGENT_LOG_TEXT_MAX_CHARS`; `seq` counts across the first run and the auto-resume.
-Promtail ships the line to Loki under the container's `worker_id`.
+A Claude or Codex turn writes its live agent log to the wrapper's stdout while the
+CLI runs: one structlog event `agent_log_line` per recognised event, its fields an
+`AgentLogLine` (`shared/contracts/dto/agent_log.py`). Its `attempt_id` is the
+turn's `attempt_id` on a developer worker and the QA Run id on a QA executor, which
+worker-manager passes only to QA executors as `WORKER_QA_RUN_ID` (the QA ownership's
+`attempt_id`); a turn with neither logs no line. Claude's `stream-json`: assistant
+text is `info`, a Bash call is `cmd`, an Edit/Write/MultiEdit/NotebookEdit call is
+`file` with its path, a tool result is `ok` or `err` by its error flag, and the final
+result is `step`. Codex's `codex exec --json`: a completed `agent_message` is `info`,
+a started `command_execution` is `cmd`, its completion is `ok` or `err` by exit code
+with the exit code as text, an applied `file_change` is one `file` per path,
+`turn.completed`, `turn.failed` and `error` are `step`, and reasoning, usage and other
+events log nothing. Tool and command output never reaches a line. Text is redacted
+with the wrapper environment, then bounded to `AGENT_LOG_TEXT_MAX_CHARS`; `seq`
+counts across the first run and the auto-resume. Promtail ships the line to Loki
+under the container's `worker_id`.
 
 `WorkerFailedResult.execution` carries wrapper-owned pre-agent auth refusal as
 `pre_agent_refused/repository_auth_unavailable`. The worker client preserves it

@@ -26,6 +26,11 @@ class WorkerWrapperConfig(BaseSettings):
         validation_alias="WORKER_TYPE",
         description="developer | qa",
     )
+    qa_run_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The QA Run a qa executor serves; its live log lines carry it as attempt_id",
+    )
     auth_mode: str = Field(
         default="host_session",
         description="How the agent authenticates: host_session, api_key, or stand_token",

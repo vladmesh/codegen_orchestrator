@@ -72,6 +72,7 @@ class TestCodexRunner:
         assert cmd == [
             "codex",
             "exec",
+            "--json",
             "--sandbox",
             "danger-full-access",
             "-c",
@@ -91,6 +92,7 @@ class TestCodexRunner:
         assert cmd == [
             "codex",
             "exec",
+            "--json",
             "--sandbox",
             "danger-full-access",
             "--skip-git-repo-check",
