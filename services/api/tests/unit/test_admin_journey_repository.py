@@ -41,11 +41,12 @@ class FakeSession:
 class FakeGitHub:
     """Answers like GitHub for one repository and records what it was asked."""
 
-    def __init__(self, *, pr=None, branch_sha=None, files=None, error=None):
+    def __init__(self, *, pr=None, branch_sha=None, files=None, error=None, repo_error=None):
         self.pr = pr
         self.branch_sha = branch_sha
         self.files = files if files is not None else [_file("src/app.py")]
         self.error = error
+        self.repo_error = repo_error
         self.calls = []
 
     async def __aenter__(self):
@@ -69,6 +70,9 @@ class FakeGitHub:
         return await self._answer(("ref", owner, repo, ref), self.branch_sha)
 
     async def get_repo(self, owner, repo):
+        if self.repo_error is not None:
+            self.calls.append(("repo", owner, repo))
+            raise self.repo_error
         return await self._answer(("repo", owner, repo), SimpleNamespace(default_branch="main"))
 
     async def list_repo_files_recursive(self, owner, repo, ref):
@@ -85,11 +89,12 @@ def _file(path, patch="@@ -1 +1 @@\n-a\n+b", status="modified"):
     return item
 
 
-def _pr(*, merged):
+def _pr(*, merged, changed_files=1):
     return {
         "number": 7,
         "state": "closed" if merged else "open",
-        "merged_at": "2026-01-01T00:00:00Z" if merged else None,
+        "merged": merged,
+        "changed_files": changed_files,
         "base": {"ref": "main", "sha": BASE_SHA},
         "head": {"ref": "story/st-1", "sha": HEAD_SHA},
     }
@@ -122,6 +127,7 @@ async def test_a_story_with_a_pull_request_compares_its_base_with_its_head(merge
     }
     assert result.files == TREE
     assert [change.path for change in result.changes] == ["src/app.py"]
+    assert (result.omitted_changes, result.omitted_changes_exact) == (0, True)
     assert ("compare", "acme", "shop", BASE_SHA, HEAD_SHA) in github.calls
     assert ("tree", "acme", "shop", HEAD_SHA) in github.calls
 
@@ -151,7 +157,40 @@ async def test_a_story_without_a_pull_request_or_branch_has_no_head():
     assert result.unavailable.reason is RepositoryUnavailableReason.NO_STORY_BRANCH
     assert (result.head, result.files, result.changes) == (None, [], [])
     assert result.repository.name == "shop"
-    assert [call[0] for call in github.calls] == ["ref"]
+    assert [call[0] for call in github.calls] == ["repo", "ref"]
+
+
+async def test_a_repository_github_does_not_serve_is_unavailable_before_any_story_branch():
+    github = FakeGitHub(branch_sha=None, repo_error=_status_error(404))
+
+    result = await _read(_session(), github)
+
+    assert result.unavailable.model_dump() == {
+        "reason": RepositoryUnavailableReason.GITHUB_UNAVAILABLE,
+        "detail": "404",
+    }
+    assert [call[0] for call in github.calls] == ["repo"]
+
+
+async def test_a_pull_request_counts_omitted_changes_exactly_from_its_changed_files():
+    listed = [_file(f"f{index}.py") for index in range(300)]
+    github = FakeGitHub(pr=_pr(merged=True, changed_files=450), files=listed)
+
+    result = await _read(_session(pr_number=7), github)
+
+    assert len(result.changes) == admin_journey_repository.CHANGED_FILE_LIMIT
+    assert result.omitted_changes == 450 - admin_journey_repository.CHANGED_FILE_LIMIT
+    assert result.omitted_changes_exact is True
+
+
+async def test_a_branch_comparison_at_the_github_file_cap_counts_a_lower_bound():
+    cap = admin_journey_repository.GITHUB_COMPARE_FILE_CAP
+    github = FakeGitHub(branch_sha=HEAD_SHA, files=[_file(f"f{index}.py") for index in range(cap)])
+
+    result = await _read(_session(), github)
+
+    assert result.omitted_changes == cap - admin_journey_repository.CHANGED_FILE_LIMIT
+    assert result.omitted_changes_exact is False
 
 
 async def test_changes_are_bounded_and_a_file_without_a_patch_has_a_null_patch(monkeypatch):
@@ -196,7 +235,7 @@ async def test_changes_are_bounded_and_a_file_without_a_patch_has_a_null_patch(m
             "truncated": False,
         },
     ]
-    assert result.omitted_changes == 2
+    assert (result.omitted_changes, result.omitted_changes_exact) == (2, True)
 
 
 async def test_a_project_without_a_primary_repository_reads_nothing_from_github():
@@ -289,6 +328,7 @@ async def test_the_repository_route_answers_admins_and_404s_an_unknown_story(_se
             }
         ],
         "omitted_changes": 0,
+        "omitted_changes_exact": True,
         "unavailable": None,
     }
     assert missing.status_code == 404

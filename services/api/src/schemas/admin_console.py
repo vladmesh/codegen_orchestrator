@@ -373,6 +373,8 @@ class JourneyRepository(_ConsoleModel):
     changes: list[ChangedFile]
     #: How many changed files fell beyond the read's file bound and were not returned.
     omitted_changes: int = Field(ge=0)
+    #: False when ``omitted_changes`` is a lower bound: a branch comparison at GitHub's file cap.
+    omitted_changes_exact: bool
     #: Null when GitHub answered; otherwise ``head`` is null and ``files`` and ``changes`` empty.
     unavailable: RepositoryUnavailable | None
 
