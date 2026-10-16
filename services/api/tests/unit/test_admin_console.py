@@ -11,10 +11,12 @@ from pydantic import ValidationError
 import pytest
 
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
+from shared.contracts.dto.task import TaskStatus
 from src.admin_console import (
     attention_items,
     build_passports,
     build_steps,
+    build_task_board,
     median_lead_time_minutes,
     platform_service_views,
     scope_attention,
@@ -29,6 +31,8 @@ from src.schemas.admin_console import (
     Severity,
     StepStatus,
     StoryLinkCreate,
+    TaskBoardColumn,
+    TaskOrigin,
     TopologyResponse,
 )
 
@@ -93,6 +97,17 @@ BRIEF = SimpleNamespace(id="pb-1", revision=3, created_at=at(1), confirmed_at=at
 INSTALL = {
     "package": {"name": "reminders", "version": "1.3.0"},
     "libraries": [{"name": "textparse", "version": "0.1.0"}],
+}
+
+
+CLAUDE_DECISION = {
+    EXECUTOR_DECISION_METADATA_KEY: {
+        "attempt_kind": "engineering",
+        "agent_type": "claude",
+        "source": "api_default",
+        "policy_version": "v2",
+        "reason": "default executor",
+    }
 }
 
 
@@ -230,15 +245,7 @@ def test_running_attempt_keeps_its_step_open():
                     "running",
                     7,
                     None,
-                    run_metadata={
-                        EXECUTOR_DECISION_METADATA_KEY: {
-                            "attempt_kind": "engineering",
-                            "agent_type": "claude",
-                            "source": "api_default",
-                            "policy_version": "v2",
-                            "reason": "default executor",
-                        }
-                    },
+                    run_metadata=CLAUDE_DECISION,
                 )
             ],
         )
@@ -247,6 +254,134 @@ def test_running_attempt_keeps_its_step_open():
     assert build.status is StepStatus.ACTIVE
     assert build.finished_at is None
     assert build.attempts[0].actor == "claude"
+
+
+def test_every_task_status_has_its_board_column():
+    expected = {
+        TaskStatus.BACKLOG: TaskBoardColumn.BACKLOG,
+        TaskStatus.TODO: TaskBoardColumn.BACKLOG,
+        TaskStatus.IN_DEV: TaskBoardColumn.IN_DEVELOPMENT,
+        TaskStatus.BLOCKED: TaskBoardColumn.IN_DEVELOPMENT,
+        TaskStatus.WAITING_HUMAN_REVIEW: TaskBoardColumn.IN_DEVELOPMENT,
+        TaskStatus.WAITING_RESOURCES: TaskBoardColumn.IN_DEVELOPMENT,
+        TaskStatus.IN_CI: TaskBoardColumn.CI,
+        TaskStatus.TESTING: TaskBoardColumn.CI,
+        TaskStatus.DONE: TaskBoardColumn.DONE,
+        TaskStatus.FAILED: TaskBoardColumn.DONE,
+        TaskStatus.CANCELLED: TaskBoardColumn.DONE,
+    }
+    assert set(expected) == set(TaskStatus)
+
+    statuses = list(TaskStatus)
+    board = build_task_board(
+        [task(f"t-{s}", status=s.value, minutes=i) for i, s in enumerate(statuses)], []
+    )
+
+    assert [(e.status, e.column) for e in board] == [(s, expected[s]) for s in statuses]
+
+
+def test_a_fix_task_names_the_failed_run_kind_that_created_it():
+    board = build_task_board(
+        [
+            task("t-qa-fix", type="fix", minutes=3, failure_metadata={"qa_failure": {"run": "qa"}}),
+            task("t-ci-fix", type="fix", minutes=2, failure_metadata={"ci_failure": {"job": "x"}}),
+            task("t-plan", minutes=1, failure_metadata={"reason": "parked once"}),
+        ],
+        [],
+    )
+
+    assert [(e.task_id, e.origin) for e in board] == [
+        ("t-plan", TaskOrigin.PLANNED),
+        ("t-ci-fix", TaskOrigin.CI_FIX),
+        ("t-qa-fix", TaskOrigin.QA_FIX),
+    ]
+
+
+def test_task_attempts_are_its_engineering_runs_numbered_oldest_first_with_their_workers():
+    board = build_task_board(
+        [task("t-1", status="in_ci")],
+        [
+            run(
+                "eng-2",
+                "engineering",
+                "completed",
+                11,
+                15,
+                task_id="t-1",
+                run_metadata={**CLAUDE_DECISION, "worker_id": "w-2"},
+            ),
+            run("dep-1", "deploy", "completed", 19, 22, task_id="t-1"),
+            run("eng-other", "engineering", "completed", 1, 2, task_id="t-other"),
+            run(
+                "eng-1",
+                "engineering",
+                "failed",
+                7,
+                10,
+                task_id="t-1",
+                run_metadata={"worker_id": "w-1"},
+                started_at=at(7).replace(tzinfo=None),
+            ),
+        ],
+    )
+
+    [entry] = board
+    assert [(a.number, a.run_id, a.status, a.worker_id, a.actor) for a in entry.attempts] == [
+        (1, "eng-1", "failed", "w-1", None),
+        (2, "eng-2", "completed", "w-2", "claude"),
+    ]
+    assert (entry.worker_id, entry.attempt_count) == ("w-2", 2)
+    first = entry.model_dump(mode="json")["attempts"][0]
+    assert (first["started_at"], first["finished_at"]) == (
+        "2026-10-07T14:07:00Z",
+        "2026-10-07T14:10:00Z",
+    )
+
+
+def test_a_planned_task_without_an_attempt_has_no_worker():
+    [entry] = build_task_board([task("t-1", status="todo")], [])
+
+    assert entry.origin is TaskOrigin.PLANNED
+    assert (entry.attempts, entry.worker_id, entry.attempt_count) == ([], None, 0)
+
+
+def test_a_run_with_no_worker_recorded_yet_has_a_null_worker():
+    [entry] = build_task_board(
+        [task("t-1", status="in_dev")],
+        [
+            run(
+                "eng-1",
+                "engineering",
+                "running",
+                7,
+                None,
+                task_id="t-1",
+                run_metadata=CLAUDE_DECISION,
+            )
+        ],
+    )
+
+    [attempt] = entry.attempts
+    assert (attempt.worker_id, attempt.actor, attempt.finished_at) == (None, "claude", None)
+    assert (entry.worker_id, entry.attempt_count) == (None, 1)
+
+
+def test_a_damaged_worker_record_on_a_run_raises():
+    with pytest.raises(ValidationError):
+        build_task_board(
+            [task("t-1", status="in_dev")],
+            [
+                run(
+                    "eng-1",
+                    "engineering",
+                    "running",
+                    7,
+                    None,
+                    task_id="t-1",
+                    run_metadata={"worker_id": 7},
+                )
+            ],
+        )
 
 
 def test_stage_for_prefers_what_the_story_waits_on():

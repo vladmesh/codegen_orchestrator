@@ -932,6 +932,32 @@ export interface StoryLink {
   created_at: string
 }
 
+export type TaskBoardColumn = 'backlog' | 'in_development' | 'ci' | 'done'
+
+export type TaskOrigin = 'planned' | 'ci_fix' | 'qa_fix'
+
+export interface TaskBoardAttempt {
+  number: number
+  run_id: string
+  status: string
+  worker_id: string | null
+  actor: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface TaskBoardEntry {
+  task_id: string
+  title: string
+  type: 'create' | 'feature' | 'fix' | 'refactor' | 'install'
+  status: TaskStatus
+  column: TaskBoardColumn
+  origin: TaskOrigin
+  attempts: TaskBoardAttempt[]
+  worker_id: string | null
+  attempt_count: number
+}
+
 export interface JourneyDetail {
   summary: JourneySummary
   request: string | null
@@ -940,6 +966,7 @@ export interface JourneyDetail {
   steps: JourneyStep[]
   passport: ProductPassport
   links: StoryLink[]
+  task_board: TaskBoardEntry[]
 }
 
 export interface PlacementView {
