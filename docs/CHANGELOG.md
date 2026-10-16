@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- `users.created_at` and `users.last_seen` are stored as UTC `timestamptz` and served with a UTC designator;
+  the admin users pages label it "Last activity" and refetch every minute.
 - The product passport lists config secret names as `user_secrets`, `platform_secrets` or `unclassified_secrets`
   by the latest deploy's environment contract, which `DeployRunResult.user_secret_keys` now records.
 - The Attention feed lists a `ci` item, linked to the story's Journey, while a story's latest CI run on its

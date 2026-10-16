@@ -5,6 +5,7 @@ import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate, relativeTime } from '@/lib/utils'
 import type { User, Project } from '@/types/api'
+import { USER_ACTIVITY_REFETCH_MS } from './UsersPage'
 
 export function UserDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -13,6 +14,7 @@ export function UserDetailPage() {
     queryKey: ['user', id],
     queryFn: () => api.get<User>(`/users/${id}`),
     enabled: !!id,
+    refetchInterval: USER_ACTIVITY_REFETCH_MS,
   })
 
   const { data: projects } = useQuery({
@@ -53,7 +55,7 @@ export function UserDetailPage() {
           <p className="mt-1 text-foreground">{user.username ? `@${user.username}` : '—'}</p>
         </Card>
         <Card>
-          <p className="text-sm text-muted-foreground">Last seen</p>
+          <p className="text-sm text-muted-foreground">Last activity</p>
           <p className="mt-1 text-foreground">{relativeTime(user.last_seen)}</p>
         </Card>
         <Card>
