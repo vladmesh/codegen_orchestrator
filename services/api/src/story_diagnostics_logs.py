@@ -37,11 +37,17 @@ LOKI_READ_TIMEOUT_SECONDS = 10.0
 _SAFE_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 
+def safe_log_id(value: str) -> str:
+    """``value`` unchanged when it may be interpolated into LogQL; ``ValueError`` otherwise."""
+    if not _SAFE_ID.match(value):
+        raise ValueError(f"{value!r} is not a safe log search id")
+    return value
+
+
 def story_log_query(story_id: str, project_id: str) -> str:
     """The LogQL selecting error/warning lines that mention the story or project."""
     for value in (story_id, project_id):
-        if not _SAFE_ID.match(value):
-            raise ValueError(f"{value!r} is not a safe log search id")
+        safe_log_id(value)
     return f'{{compose_service=~".+"}} |~ "{story_id}|{project_id}" | json | level=~"error|warning"'
 
 

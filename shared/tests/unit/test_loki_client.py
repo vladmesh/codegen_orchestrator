@@ -92,6 +92,15 @@ def test_parse_response_adds_labels():
     assert entries[2]["_labels"]["compose_service"] == "tg_bot"
 
 
+def test_parse_response_keeps_each_lines_loki_timestamp():
+    entries = LokiClient._parse_response(SAMPLE_LOKI_RESPONSE)
+    assert [entry["_ts"] for entry in entries] == [
+        1711000000000000000,
+        1711000001000000000,
+        1711000002000000000,
+    ]
+
+
 def test_parse_response_handles_non_json_lines():
     data = {
         "data": {
@@ -126,3 +135,27 @@ def test_an_unknown_direction_is_refused():
     now = datetime.now(UTC)
     with pytest.raises(ValueError, match="unknown Loki direction"):
         asyncio.run(client.query_range('{a="b"}', now, now, direction="sideways"))
+
+
+async def test_range_bounds_are_sent_as_exact_epoch_nanoseconds():
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"data": {"result": []}})
+
+    client = LokiClient(base_url="http://loki:3100")
+    client._client = httpx.AsyncClient(
+        base_url="http://loki:3100", transport=httpx.MockTransport(answer)
+    )
+    start = datetime.fromtimestamp(1_711_000_000, UTC)
+    end = start + timedelta(seconds=1, microseconds=900_123)
+
+    await client.query_range('{a="b"}', start, end)
+
+    assert sent[0].url.params["start"] == "1711000000000000000"
+    assert sent[0].url.params["end"] == "1711000001900123000"

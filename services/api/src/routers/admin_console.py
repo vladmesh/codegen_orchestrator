@@ -9,13 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import Story, StoryLink
 
-from .. import admin_console
+from .. import admin_console, admin_live_log
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
 from ..schemas.admin_console import (
     AttentionResponse,
     JourneyDetail,
     JourneySummary,
+    LiveLogResponse,
     StoryLinkCreate,
     StoryLinkView,
     TopologyResponse,
@@ -52,6 +53,16 @@ async def journey(story_id: str, db: AsyncSession = Depends(get_async_session)) 
     return detail
 
 
+@router.get("/journeys/{story_id}/live-log", response_model=LiveLogResponse)
+async def journey_live_log(
+    story_id: str, db: AsyncSession = Depends(get_async_session)
+) -> LiveLogResponse:
+    live_log = await admin_live_log.read_story_live_log(db, story_id)
+    if live_log is None:
+        raise HTTPException(status_code=404, detail="Story not found")
+    return live_log
+
+
 @router.post(
     "/journeys/{story_id}/links",
     response_model=StoryLinkView,
@@ -81,6 +92,13 @@ async def remove_journey_link(
         raise HTTPException(status_code=404, detail="Link not found")
     await db.delete(link)
     await db.commit()
+
+
+@router.get("/workers/{worker_id}/live-log", response_model=LiveLogResponse)
+async def worker_live_log(
+    worker_id: str, db: AsyncSession = Depends(get_async_session)
+) -> LiveLogResponse:
+    return await admin_live_log.read_worker_live_log(db, worker_id)
 
 
 @router.get("/topology", response_model=TopologyResponse)
