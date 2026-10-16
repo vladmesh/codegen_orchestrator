@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - A Claude developer worker reads `stream-json` and logs a redacted, bounded `agent_log_line` (`AgentLogLine`)
   per message, command, file write, tool result and turn end while it runs.
+- A Claude worker's `agent_stdout_tail` and non-zero-exit error carry only the stream's final `result` event,
+  so tool output stays out of the result and the developer node reads the CLI's model again.
 
 ## 2026-10-15
 

@@ -7,6 +7,7 @@ and correctly passes repo_id to request_spawn for workspace mounting.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import uuid
@@ -892,6 +893,25 @@ def test_reported_model_reads_claude_json_before_stderr() -> None:
     output = '{"modelUsage": {"claude-sonnet-4-20250514": {}}}\n--- stderr ---\nwarning'
 
     assert DeveloperNode._reported_model(output) == "claude-sonnet-4-20250514"
+
+
+def test_reported_model_reads_the_result_event_of_a_claude_stream() -> None:
+    from src.nodes.developer import DeveloperNode
+
+    stream = (
+        Path(__file__).resolve().parents[4]
+        / "packages"
+        / "worker-wrapper"
+        / "tests"
+        / "fixtures"
+        / "claude_code_2.1.278_stream.jsonl"
+    )
+    result_event = stream.read_text(encoding="utf-8").strip().splitlines()[-1]
+
+    assert DeveloperNode._reported_model(result_event) == "claude-sonnet-5"
+    assert DeveloperNode._reported_model(f"{result_event}\n--- stderr ---\nwarn") == (
+        "claude-sonnet-5"
+    )
 
 
 class _CommitGraph:

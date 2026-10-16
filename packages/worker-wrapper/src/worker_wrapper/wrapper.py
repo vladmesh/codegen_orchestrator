@@ -38,7 +38,7 @@ from .compose_proxy import (
 from .config import WorkerWrapperConfig
 from .http_server import ResultHttpServer, ResultRefused
 from .injected_paths import instruction_filename, offending_paths, write_git_exclude
-from .observability import extract_effort_metrics, save_transcript
+from .observability import extract_effort_metrics, last_claude_result_line, save_transcript
 
 logger = structlog.get_logger(__name__)
 
@@ -92,6 +92,7 @@ QA_WORKER_TYPE = "qa"
 PARTIAL_OUTPUT_GRACE_SECONDS = 30
 RESULT_STOP_GRACE_SECONDS = 1
 AGENT_STDOUT_READ_BYTES = 64 * 1024
+AGENT_OUTPUT_TAIL_CHARS = 10_000
 
 # How long a Claude CLI may keep running after a valid HTTP result to end its
 # own turn. Only a CLI that ends its turn prints the one `type=result` document
@@ -1409,11 +1410,7 @@ class WorkerWrapper:
         if self.config.agent_type == AgentType.CODEX:
             self._agent_stdout_tail = None
         else:
-            max_tail = 10_000
-            combined = stdout
-            if stderr:
-                combined = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
-            self._agent_stdout_tail = combined[-max_tail:] if combined else None
+            self._agent_stdout_tail = self._output_tail(stdout, stderr)
 
         if limit_exceeded:
             # Everything the agent produced before it was stopped is already on
@@ -1425,7 +1422,7 @@ class WorkerWrapper:
             logger.error("agent_process_failed", exit_code=proc.returncode)
             if self.config.agent_type == AgentType.CODEX:
                 raise RuntimeError(f"Codex agent process failed with code {proc.returncode}")
-            detail = stderr or stdout or "no output"
+            detail = stderr or self._reportable_stdout(stdout) or "no output"
             raise RuntimeError(f"Agent process failed with code {proc.returncode}: {detail}")
 
         # Capture session_id from Claude CLI JSON output
@@ -1434,6 +1431,22 @@ class WorkerWrapper:
             if captured_session_id:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
                 await self.broker.set_session(captured_session_id)
+
+    def _reportable_stdout(self, stdout: str) -> str:
+        """The stdout a result or error may carry: a Claude stream's final result event only.
+
+        Earlier stream events hold raw tool output, which only the redacted transcript keeps.
+        """
+        if self.config.agent_type == AgentType.CLAUDE:
+            return last_claude_result_line(stdout) or ""
+        return stdout
+
+    def _output_tail(self, stdout: str, stderr: str) -> str | None:
+        """One agent process's bounded ``agent_stdout_tail``, None when it printed nothing."""
+        reportable = self._reportable_stdout(stdout)
+        if stderr:
+            reportable = f"{reportable}\n--- stderr ---\n{stderr}" if reportable else stderr
+        return reportable[-AGENT_OUTPUT_TAIL_CHARS:] or None
 
     async def _finish_agent_process(
         self,
@@ -1544,13 +1557,9 @@ class WorkerWrapper:
                 )
                 self._transcript_path = transcript
                 self._transcript_truncated = self._transcript_truncated or truncated
-            max_tail = 10_000
-            combined = stdout
-            if stderr:
-                combined = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
-            if combined:
-                prev = self._agent_stdout_tail or ""
-                self._agent_stdout_tail = (prev + "\n--- resume ---\n" + combined)[-max_tail:]
+            # The resumed result event reports the session's cumulative turn, so it
+            # replaces the first run's tail as it replaces its cost evidence.
+            self._agent_stdout_tail = self._output_tail(stdout, stderr)
 
             return True
         except Exception:

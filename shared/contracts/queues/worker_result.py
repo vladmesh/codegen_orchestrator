@@ -64,7 +64,7 @@ class _WorkerResultBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     worker_report: str | None = None  # REPORT.md contents, if the worker wrote one
-    agent_stdout_tail: str | None = None  # last ~10KB of agent stdout/stderr
+    agent_stdout_tail: str | None = None  # Claude: its final result event and stderr, last 10 KB
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
