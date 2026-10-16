@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import FakePipe
 import pytest
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import AgentTurnLimitExceeded, WorkerWrapper
@@ -38,16 +39,13 @@ class TestTheLimitKeepsTheWork:
         """An agent that writes, then never exits until it is killed."""
         killed = asyncio.Event()
 
-        async def communicate():
-            await killed.wait()
-            return partial_stdout, b"partial stderr"
-
         async def wait():
             await killed.wait()
             return -9
 
         proc = MagicMock()
-        proc.communicate = communicate
+        proc.stdout = FakePipe(partial_stdout, killed)
+        proc.stderr = FakePipe(b"partial stderr", killed)
         proc.returncode = -9
         proc.pid = pid
         proc.kill = MagicMock(side_effect=lambda: killed.set())
@@ -142,15 +140,11 @@ class TestTheLimitKeepsTheWork:
         wrapper, _ = _make_wrapper()
         wrapper._result_event = asyncio.Event()
         descendant_killed = asyncio.Event()
-
-        async def communicate():
-            await descendant_killed.wait()
-            return b"leader exited", b""
-
         proc = MagicMock()
         proc.pid = 4321
         proc.returncode = 0
-        proc.communicate = communicate
+        proc.stdout = FakePipe(b"leader exited", descendant_killed)
+        proc.stderr = FakePipe(b"", descendant_killed)
         proc.wait = AsyncMock(return_value=0)
         signals: list[int] = []
 
@@ -187,10 +181,6 @@ class TestTheLimitKeepsTheWork:
         wrapper._transcript_path = str(initial_transcript)
         killed = asyncio.Event()
 
-        async def communicate():
-            await killed.wait()
-            return b"resume result", b""
-
         async def wait():
             await killed.wait()
             return -9
@@ -198,7 +188,8 @@ class TestTheLimitKeepsTheWork:
         proc = MagicMock()
         proc.pid = 4321
         proc.returncode = -9
-        proc.communicate = communicate
+        proc.stdout = FakePipe(b"resume result", killed)
+        proc.stderr = FakePipe(b"", killed)
         proc.wait = wait
         signals: list[int] = []
 
@@ -246,7 +237,8 @@ class TestTheLimitKeepsTheWork:
         wrapper, _ = _make_wrapper()
         wrapper._result_event = TrackingEvent()
         proc = MagicMock()
-        proc.communicate = AsyncMock(return_value=(b"done", b""))
+        proc.stdout = FakePipe(b"done")
+        proc.stderr = FakePipe()
         proc.wait = AsyncMock(return_value=0)
 
         stdout, stderr, limit_exceeded, stopped_after_result = await wrapper._collect_agent_output(

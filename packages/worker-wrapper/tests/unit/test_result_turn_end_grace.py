@@ -1,8 +1,9 @@
 """A Claude turn keeps its provider-reported cost through the result completion barrier.
 
 The agent here is a real process standing in for the Claude CLI. It commits its work in a
-real checkout, posts its result to the wrapper's real HTTP endpoint and then prints the
-final-result document captured from the pinned Claude Code (see ``tests/fixtures``). The
+real checkout, posts its result to the wrapper's real HTTP endpoint and then prints a
+stream-json stdout ending in the final-result event captured from the pinned Claude Code
+(see ``tests/fixtures``). The
 wrapper then pushes the commit to a real bare origin and reads it back. Nothing between
 the endpoint and the published result is mocked.
 """
@@ -14,6 +15,7 @@ import subprocess
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import FakePipe
 import pytest
 from worker_wrapper import wrapper as wrapper_module
 from worker_wrapper.config import WorkerWrapperConfig
@@ -32,7 +34,9 @@ from shared.contracts.worker_turn import WorkerTurnInput
 # Every test here starts processes: CI runs this file, the host profile skips it.
 pytestmark = pytest.mark.subprocess
 
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "claude_code_2.1.278_result.json"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+FIXTURE = FIXTURES / "claude_code_2.1.278_result.json"
+STREAM = FIXTURES / "claude_code_2.1.278_stream.jsonl"
 BRANCH = "story/story-1"
 FENCE_LOCKS = ("index.lock", "HEAD.lock", f"refs/heads/{BRANCH}.lock")
 
@@ -158,7 +162,7 @@ async def _run_turn(wrapper: WorkerWrapper, tmp_path: Path, scenario: str, *, gr
             str(agent),
             scenario,
             str(wrapper._http_server.port),
-            str(FIXTURE),
+            str(STREAM),
             str(tmp_path / "attempts.json"),
             cwd=wrapper_module.WORKSPACE_DIR,
             **kwargs,
@@ -323,15 +327,12 @@ async def test_a_fence_that_cannot_be_taken_stops_the_agent_at_once(tmp_path, ch
     proc.returncode = -9
     killed = asyncio.Event()
 
-    async def hang():
-        await killed.wait()
-        return b"", b""
-
     async def wait():
         await killed.wait()
         return -9
 
-    proc.communicate = hang
+    proc.stdout = FakePipe(b"", killed)
+    proc.stderr = FakePipe(b"", killed)
     proc.wait = wait
     signals: list[int] = []
 
@@ -373,7 +374,8 @@ async def test_auto_resume_evidence_replaces_the_first_runs(tmp_path):
     resumed = MagicMock()
     resumed.pid = 4321
     resumed.returncode = 0
-    resumed.communicate = AsyncMock(return_value=(FIXTURE.read_bytes(), b""))
+    resumed.stdout = FakePipe(STREAM.read_bytes())
+    resumed.stderr = FakePipe()
     resumed.wait = AsyncMock(return_value=0)
 
     with (
@@ -396,7 +398,8 @@ async def test_a_qa_claude_executor_delivers_its_evidence_in_the_output_payload(
     qa_agent = MagicMock()
     qa_agent.pid = 4321
     qa_agent.returncode = 0
-    qa_agent.communicate = AsyncMock(return_value=(FIXTURE.read_bytes(), b""))
+    qa_agent.stdout = FakePipe(STREAM.read_bytes())
+    qa_agent.stderr = FakePipe()
     qa_agent.wait = AsyncMock(return_value=0)
 
     with (

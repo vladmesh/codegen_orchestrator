@@ -11,3 +11,11 @@ turn. The CLI exited 1.65 s after the POST; two more captures exited 1.84 s and 
 
 The only change is redaction: `session_id` and `uuid` are replaced with fixed placeholder UUIDs.
 The document carries no credential and no filesystem path.
+
+## `claude_code_2.1.278_stream.jsonl`
+
+The same turn as the `--output-format stream-json --verbose` stdout the wrapper reads: one event per
+line. The last line is `claude_code_2.1.278_result.json` byte for byte, which is the CLI's final
+`result` event in both output forms. The lines before it are written by hand in the CLI's
+stream-json event shape (`system` init, `assistant` text and `tool_use` blocks, `user`
+`tool_result` blocks) and are not a capture; they carry no credential.

@@ -22,8 +22,8 @@ class TestClaudeRunner:
         # Should contain flags.
         assert "-p" in cmd
         assert "Create hello.py" in cmd
-        assert "--output-format" in cmd
-        assert "json" in cmd
+        assert cmd[cmd.index("--output-format") + 1] == "stream-json"
+        assert "--verbose" in cmd
 
         # Session resumption
         assert "--resume" in cmd

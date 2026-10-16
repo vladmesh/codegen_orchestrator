@@ -11,6 +11,7 @@ import json
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import FakePipe
 import pytest
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
@@ -312,12 +313,8 @@ class TestStdoutCapture:
         config = _make_config(agent_type="codex")
         wrapper = WorkerWrapper(config=config, broker_client=_make_broker_mock())
         process = MagicMock(returncode=1)
-        process.communicate = AsyncMock(
-            return_value=(
-                f"stdout {raw_diagnostic}".encode(),
-                f"stderr {raw_diagnostic}".encode(),
-            )
-        )
+        process.stdout = FakePipe(f"stdout {raw_diagnostic}".encode())
+        process.stderr = FakePipe(f"stderr {raw_diagnostic}".encode())
         process.wait = AsyncMock(return_value=1)
 
         wrapper.broker.get_session.return_value = "unused"
