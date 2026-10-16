@@ -1,9 +1,9 @@
-"""pytest plugin: the ci_only marker family, one umbrella and six reasons.
+"""pytest plugin: the ci_only marker family, one umbrella and seven reasons.
 
 `scripts/test-unit-local.sh` loads it (`-p scripts.ci_only_markers`) for every suite.
 A test that a weak control host must not run carries `ci_only`, or one of the
 sub-markers that name why: `docker`, `ansible`, `privileged`, `kit_gate`,
-`subprocess` and `slow(reason=...)`. Each
+`subprocess`, `slow(reason=...)` and `cpu_heavy`. Each
 sub-marker implies the umbrella, so the host profile's `-m "not ci_only"` deselects
 the whole family. CI runs the runner without that expression, so every marked test
 still runs there. The markers are registered in the root `pyproject.toml` and in
@@ -29,6 +29,7 @@ CI_ONLY_SUB_MARKERS = {
     "kit_gate": "runs the product kit's toolchain gate (generate, ruff, xenon, deptry)",
     "subprocess": "starts many processes (bash scripts, git, make, python children)",
     "slow": "needs more than the 0.5 s unit budget; slow(reason=...) says why",
+    "cpu_heavy": "its tests together cost seconds of host CPU, though each fits the 0.5 s budget",
 }
 CI_ONLY_FAMILY = frozenset({CI_ONLY, *CI_ONLY_SUB_MARKERS})
 

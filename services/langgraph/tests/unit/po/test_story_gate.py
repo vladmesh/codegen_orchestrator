@@ -28,6 +28,9 @@ from shared.queues import PO_PROACTIVE_QUEUE
 from src.consumers.po import _handle_message
 from src.consumers.po_story_gate import story_told_key
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 CHAT = "1015926438"
 STORY = "story-stuck"
 T0 = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)

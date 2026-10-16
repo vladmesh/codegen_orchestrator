@@ -44,6 +44,9 @@ from tests.unit.factories import (
 )
 from tests.unit.test_architect_consumer import _FakeBriefBoundary, _FakeRedis
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 STORY_ID = "story-replan"
 OLD_INSTALL = "task-install-old"
 UNAVAILABLE = KitCatalogUnavailable(

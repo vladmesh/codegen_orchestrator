@@ -12,6 +12,9 @@ from src.catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal
 from src.kit_catalog import install_snapshot
 from src.planning_module_jobs import PlanningModuleFacts, module_job_contracts, plan_module_install
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 
 def test_equal_injected_snapshots_resolve_once_without_sharing_mutable_results(
     activated_kit_catalog, monkeypatch

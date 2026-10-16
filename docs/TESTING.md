@@ -328,9 +328,10 @@ The `ci_only` marker family keeps heavy tests out of the host profile while CI s
 loaded by the runner): `docker` (real docker CLI, such as `docker compose config`), `ansible` (real
 ansible-core), `privileged` (root or sudo, changes the machine), `kit_gate` (the product kit's
 generate/ruff/xenon/deptry gate), `subprocess` (starts many processes: bash scripts with fake
-`docker`, real `git`, `make`, python children) and `slow(reason=...)` (needs more than the 0.5 s
-budget; the reason is required). All seven are registered in the root `pyproject.toml` and every
-service `pytest.ini`, under `--strict-markers`.
+`docker`, real `git`, `make`, python children), `slow(reason=...)` (needs more than the 0.5 s
+budget; the reason is required) and `cpu_heavy` (a module whose tests each fit the 0.5 s budget but
+together cost seconds of the host profile's CPU budget). All eight are registered in the root
+`pyproject.toml` and every service `pytest.ini`, under `--strict-markers`.
 
 | Marked test | Marker | CI job that runs it |
 |---|---|---|
@@ -348,6 +349,8 @@ service `pytest.ini`, under `--strict-markers`.
 | api `test_commit_publication.py`; shared `unit/test_ssh_keys.py`; scripts `test_service_image_imports.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suites `api`, `shared`, `scripts`) |
 | langgraph `llm/test_channel_chain.py`, `llm/test_cli_packaging.py` (fake `codex`/`claude` CLI turns); worker-wrapper integration `test_no_injected_artifacts.py` (git) | `subprocess` (module) | `fast-checks`: `make test-unit` (suites `langgraph`, `worker-wrapper-integration`) |
 | scaffolder component `test_catalog_install.py` | `subprocess` (module) | `fast-checks`: `make test-unit` (suite `scaffolder-component`) |
+| langgraph `synthetic_buyer/test_controller.py`, `test_architect_capability_plan.py`, `test_architect_module_jobs.py`, `test_architect_consumer.py`, `test_architect_finance_bot_plan.py`, `test_architect_kit_catalog_plan.py`, `test_architect_replanned_install.py`, `test_architect_stats_month_plan.py`, `test_planning_module_facts.py`, `test_capability_preview.py`, `test_catalog_install.py`, `test_deployer.py`, `consumers/test_deploy_fence.py`, `po/test_story_gate.py`, `po/test_tools.py`, `test_qa_consumer.py`, `test_qa_deterministic_probes.py` | `cpu_heavy` (module) | `fast-checks`: `make test-unit` (suite `langgraph`) |
+| scheduler `test_supervisor_run_routing.py`, `test_stage_notices.py`; worker-manager `test_host_profile_readers.py`; scripts `test_check_ci_gate.py`; shared `unit/test_internal_api_transport.py`, `unit/test_github_actions_evidence.py`, `clients/test_github.py`; repo `test_planning_retry_single_publisher.py`, `test_service_harness_import_boundary.py` | `cpu_heavy` (module) | `fast-checks`: `make test-unit` (suites `scheduler`, `worker-manager`, `scripts`, `shared`, `repo`) |
 | every other test that starts a process (`subprocess`), and single tests over 0.5 s (`slow`, each names its reason) | `subprocess` or `slow` | `fast-checks`: `make test-unit` (the suite that holds it) |
 | `tests/live` offline (`live-offline` suite) | whole suite | `fast-checks`: `make test-unit` (suite `live-offline`) |
 

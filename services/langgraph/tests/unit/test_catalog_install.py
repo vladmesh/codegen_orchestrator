@@ -17,6 +17,9 @@ from src.agents.architect import tools
 from src.catalog_install import InstallRefusal, plan_install_payload
 from src.kit_catalog import installable
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 DATA = Path(__file__).parent / "fixtures" / "catalog-install"
 
 

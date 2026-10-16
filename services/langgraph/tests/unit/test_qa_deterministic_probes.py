@@ -62,6 +62,9 @@ from src.consumers.qa import (
     process_qa_job,
 )
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 TARGET = QATarget(
     server_ip="1.2.3.4",
     ssh_user="root",

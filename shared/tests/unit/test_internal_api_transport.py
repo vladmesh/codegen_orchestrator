@@ -22,6 +22,9 @@ from shared.clients.internal_api import InternalAPIClient, InternalAPISyncClient
 from shared.log_config.correlation import clear_context, get_correlation_id, set_correlation_id
 from shared.tests import source_index
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 REPO_ROOT = Path(__file__).parents[3]
 SERVICES = REPO_ROOT / "services"
 SHARED = REPO_ROOT / "shared"

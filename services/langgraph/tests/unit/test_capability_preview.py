@@ -29,6 +29,9 @@ from src.capability_feasibility import platform_cannot
 from src.capability_preview import PreviewRefused, capability_id, capability_offers, resolve_preview
 from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 PROJECT = uuid.UUID("7e1b5b1e-2a51-4e0e-9a59-16b39c6c3f01")
 CHANNELS = capability_id("tg-channels")
 REMINDERS = capability_id("reminders")

@@ -36,6 +36,9 @@ from tests.unit.factories import (
     make_task,
 )
 
+# Its tests together cost seconds of CPU: CI runs this file, the host profile skips it.
+pytestmark = pytest.mark.cpu_heavy
+
 # Default project response (ACTIVE = scaffold done, no waiting)
 _ACTIVE_PROJECT = make_project(status=ProjectStatus.ACTIVE, config={})
 
