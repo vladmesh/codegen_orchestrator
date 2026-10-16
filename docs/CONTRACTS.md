@@ -238,14 +238,18 @@ with the exit code as text, an applied `file_change` is one `file` per path,
 events log nothing. Tool and command output never reaches a line. The wrapper's
 secret values are its environment's secret-named variables; `seq` counts across the
 first run and the auto-resume. Promtail ships the line to Loki under the container's
-`worker_id`. The architect's planning graph in the langgraph service writes lines
-keyed by the claimed `planning_attempt_id`, with `task_id` null, as each graph node
+`worker_id`. The langgraph architect writes a claimed planning attempt's lines keyed
+by its `planning_attempt_id`, with `task_id` null. While its graph runs, as each node
 finishes: model text is `info`, each tool call is `cmd` with the tool name and its JSON
-arguments, each tool result is `err` when the tool raised or answered an `error` object
-and `ok` otherwise, with the tool name as text, and the graph's end is `step`
-(`planning ended: success` or `planning ended: error (<exception class>)`). A run with
-no claimed attempt logs no line. Its secret values are the secret-named variables of
-the langgraph environment, and the lines reach Loki with `compose_service=langgraph`.
+arguments, and each tool result is `err` when the tool raised or answered an `error`
+object and `ok` otherwise, with the tool name as text. The consumer then ends every
+claimed attempt, graph or no graph, with exactly one `step` naming its outcome:
+`planning ended: admitted`, `planning ended: not admitted (<reason class>)` with one
+of `ProductBriefCoverageIncomplete`, `CapabilityPlanRefused`, `KitCatalogUnavailable`,
+`CatalogInstallRefused` or `ScaffoldNotReady`, or `planning ended: error (<exception
+class>)`. A run with no claimed attempt logs no line. Its secret values are the
+secret-named variables of the langgraph environment, and the lines reach Loki with
+`compose_service=langgraph`.
 
 `WorkerFailedResult.execution` carries wrapper-owned pre-agent auth refusal as
 `pre_agent_refused/repository_auth_unavailable`. The worker client preserves it

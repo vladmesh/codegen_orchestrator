@@ -16,9 +16,11 @@ import uuid
 
 import httpx
 import pytest
+from structlog.testing import capture_logs
 import yaml
 
 from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.contracts.dto.agent_log import AGENT_LOG_LINE_EVENT
 from shared.contracts.dto.capability_preview import (
     BriefCapabilities,
     CapabilityPlan,
@@ -282,6 +284,40 @@ async def test_a_catalog_that_is_not_the_activated_snapshot_parks_the_story(
     [report] = api.planning_reports
     assert report.retriable is False
     assert f"CapabilityPlanRefused: catalog_{failure.value}" in report.failure.detail
+
+
+def _live_log(logs: list[dict]) -> list[tuple[str, str, str]]:
+    return [
+        (entry["attempt_id"], entry["kind"], entry["text"])
+        for entry in logs
+        if entry["event"] == AGENT_LOG_LINE_EVENT
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_plan_admitted_without_a_model_ends_its_attempt_with_one_step(
+    module_brief,
+):
+    brief, plan = module_brief
+
+    with capture_logs() as logs:
+        result = await _plan(_PlanApi(brief, plan))
+
+    assert result["status"] == "success", result
+    assert _live_log(logs) == [("plan-live", "step", "planning ended: admitted")]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_stored_plan_ends_its_attempt_with_one_not_admitted_step(module_brief):
+    brief, _plan_stored = module_brief
+
+    with capture_logs() as logs:
+        result = await _plan(_PlanApi(brief, None))
+
+    assert result["status"] == "failed"
+    assert _live_log(logs) == [
+        ("plan-live", "step", "planning ended: not admitted (CapabilityPlanRefused)")
+    ]
 
 
 @pytest.mark.asyncio
