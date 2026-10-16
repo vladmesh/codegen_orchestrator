@@ -221,6 +221,16 @@ refuse before minting. `GitHubCredentialResponse` contains a transient SecretStr
 explicitly serialized only at this no-store response boundary. App keys, minting
 and repository-scoped caching with a five-minute margin remain on the platform.
 
+A Claude developer turn that carries `attempt_id` writes its live agent log to the
+wrapper's stdout while the CLI runs: one structlog event `agent_log_line` per
+recognised `stream-json` event, its fields an `AgentLogLine`
+(`shared/contracts/dto/agent_log.py`). Assistant text is `info`, a Bash call is
+`cmd`, an Edit/Write/MultiEdit/NotebookEdit call is `file` with its path, a tool
+result is `ok` or `err` by its error flag and never carries tool output, and the
+final result is `step`. Text is redacted with the wrapper environment, then bounded
+to `AGENT_LOG_TEXT_MAX_CHARS`; `seq` counts across the first run and the auto-resume.
+Promtail ships the line to Loki under the container's `worker_id`.
+
 `WorkerFailedResult.execution` carries wrapper-owned pre-agent auth refusal as
 `pre_agent_refused/repository_auth_unavailable`. The worker client preserves it
 through the developer result and terminal Run so the existing supervisor parks

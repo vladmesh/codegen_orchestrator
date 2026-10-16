@@ -28,6 +28,7 @@ from shared.contracts.queues.worker_result import (
 )
 from shared.contracts.vocab import AgentType
 
+from .agent_log import ClaudeLiveLog
 from .broker import WorkerBrokerClient
 from .compose_proxy import (
     COMPOSE_COMMAND_ENV,
@@ -90,6 +91,7 @@ QA_WORKER_TYPE = "qa"
 # read of what it had written before it was.
 PARTIAL_OUTPUT_GRACE_SECONDS = 30
 RESULT_STOP_GRACE_SECONDS = 1
+AGENT_STDOUT_READ_BYTES = 64 * 1024
 
 # How long a Claude CLI may keep running after a valid HTTP result to end its
 # own turn. Only a CLI that ends its turn prints the one `type=result` document
@@ -256,6 +258,7 @@ class WorkerWrapper:
         self._stop_reason: WorkerStopReason | None = None
         self._agent_limit_seconds: int | None = None
         self._compose_proxy_path: str | None = None
+        self._live_log: ClaudeLiveLog | None = None
 
     def _prepare_codex_profile_lock(self) -> None:
         """Establish the shared profile lock at startup, before any Codex turn runs.
@@ -346,6 +349,7 @@ class WorkerWrapper:
         logger.info("processing_task", msg_id=msg_id)
         self._stop_reason = None
         self._agent_limit_seconds = None
+        self._live_log = None
         await self._run_turn(msg_id, data)
 
     async def _run_turn(self, msg_id: str, data: dict):
@@ -1039,8 +1043,33 @@ class WorkerWrapper:
             logger.warning("git_branch_failed", error=str(e))
             return None
 
+    @staticmethod
+    async def _read_agent_output(proc, live_log: ClaudeLiveLog | None) -> tuple[bytes, bytes]:
+        """Read both pipes to EOF and then reap the leader, as ``communicate()`` does.
+
+        Stdout is read as the agent writes it, so ``live_log`` logs each event before exit.
+        """
+
+        async def read_stdout() -> bytes:
+            chunks: list[bytes] = []
+            while chunk := await proc.stdout.read(AGENT_STDOUT_READ_BYTES):
+                chunks.append(chunk)
+                if live_log is not None:
+                    live_log.feed(chunk)
+            if live_log is not None:
+                live_log.close()
+            return b"".join(chunks)
+
+        stdout, stderr = await asyncio.gather(read_stdout(), proc.stderr.read())
+        await proc.wait()
+        return stdout, stderr
+
     async def _collect_agent_output(
-        self, proc, *, timeout_seconds: int | None = None
+        self,
+        proc,
+        *,
+        timeout_seconds: int | None = None,
+        live_log: ClaudeLiveLog | None = None,
     ) -> tuple[bytes, bytes, bool, bool]:
         """Run the agent to completion, its result boundary, or its limit.
 
@@ -1049,10 +1078,10 @@ class WorkerWrapper:
         process group before the process can make a later commit and turn the
         already-reported SHA into stale provenance. A Claude CLI is first given
         ``RESULT_TURN_END_GRACE_SECONDS`` under ``_result_fence`` to end its turn
-        and print its cost document. On either stop path the same
-        ``communicate()`` is awaited, preserving its transcript.
+        and print its cost document. On either stop path the same output read
+        is awaited, preserving its transcript.
         """
-        collecting = asyncio.ensure_future(proc.communicate())
+        collecting = asyncio.ensure_future(self._read_agent_output(proc, live_log))
         leader_wait = asyncio.ensure_future(proc.wait())
         result_event = getattr(self, "_result_event", None)
         result_wait = (
@@ -1076,7 +1105,7 @@ class WorkerWrapper:
                 result_wait.cancel()
                 with suppress(asyncio.CancelledError):
                     await result_wait
-            # `communicate()` only proves pipe EOF, not that a daemonized child
+            # Pipe EOF does not prove that a daemonized child
             # has stopped mutating the checkout. Reap the session regardless.
             await self._stop_agent_process_group(proc)
             with suppress(asyncio.CancelledError):
@@ -1337,6 +1366,12 @@ class WorkerWrapper:
         )
 
         agent_env = self._build_agent_env(wrapper_env)
+        if self.config.agent_type == AgentType.CLAUDE and data.get("attempt_id"):
+            self._live_log = ClaudeLiveLog(
+                attempt_id=data["attempt_id"],
+                task_id=data.get("task_id"),
+                environment=wrapper_env,
+            )
 
         # A refresh-capable profile can be shared by stand cells and production
         # workers. Keep its advisory lock for the entire CLI process so refresh
@@ -1357,7 +1392,7 @@ class WorkerWrapper:
                 start_new_session=True,
             )
             stdout, stderr, limit_exceeded, stopped_after_result = await self._finish_agent_process(
-                proc
+                proc, live_log=self._live_log
             )
         self._transcript_path, self._transcript_truncated = save_transcript(
             self.config.transcript_dir,
@@ -1401,7 +1436,11 @@ class WorkerWrapper:
                 await self.broker.set_session(captured_session_id)
 
     async def _finish_agent_process(
-        self, proc, *, timeout_seconds: int | None = None
+        self,
+        proc,
+        *,
+        timeout_seconds: int | None = None,
+        live_log: ClaudeLiveLog | None = None,
     ) -> tuple[str, str, bool, bool]:
         """Where the completion barrier and cost capture meet, for every CLI run.
 
@@ -1424,7 +1463,9 @@ class WorkerWrapper:
             stderr_bytes,
             limit_exceeded,
             stopped_after_result,
-        ) = await self._collect_agent_output(proc, timeout_seconds=timeout_seconds)
+        ) = await self._collect_agent_output(
+            proc, timeout_seconds=timeout_seconds, live_log=live_log
+        )
         stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
         stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
         self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
@@ -1479,7 +1520,9 @@ class WorkerWrapper:
                 stderr,
                 limit_exceeded,
                 _stopped_after_result,
-            ) = await self._finish_agent_process(proc, timeout_seconds=resume_timeout)
+            ) = await self._finish_agent_process(
+                proc, timeout_seconds=resume_timeout, live_log=self._live_log
+            )
             if limit_exceeded:
                 logger.error("auto_resume_timed_out", worker_id=self.config.worker_id)
                 return False
@@ -1610,35 +1653,12 @@ class WorkerWrapper:
             logger.warning("task_archive_failed", error=str(e))
 
     def _extract_session_id_from_output(self, stdout: str) -> str | None:
-        """
-        Extract session_id from Claude CLI JSON output.
-
-        Claude CLI with --output-format json returns:
-        {
-            "type": "result",
-            "session_id": "uuid-here",
-            ...
-        }
-        """
-        try:
-            # stdout may contain multiple JSON objects (streaming), find the result one
-            # Try parsing the whole output first
-            data = json.loads(stdout)
-            if isinstance(data, dict) and "session_id" in data:
-                return data["session_id"]
-        except json.JSONDecodeError:
-            # Try to find JSON objects line by line
-            for line in stdout.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    if isinstance(data, dict) and "session_id" in data:
-                        return data["session_id"]
-                except json.JSONDecodeError:
-                    continue
-        except Exception as e:
-            logger.warning("failed_to_extract_session_id", error=str(e))
-
+        """The ``session_id`` of the first Claude ``stream-json`` event that names one."""
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and "session_id" in event:
+                return event["session_id"]
         return None

@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-16
+
+- A Claude developer worker reads `stream-json` and logs a redacted, bounded `agent_log_line` (`AgentLogLine`)
+  per message, command, file write, tool result and turn end while it runs.
+
 ## 2026-10-15
 
 - The promtail log-level test feeds an unasserted last stdin entry, since promtail's dry-run logger can exit

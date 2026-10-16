@@ -1,9 +1,12 @@
 import json
+from pathlib import Path
 
 import pytest
 from worker_wrapper.observability import extract_effort_metrics, redact_transcript, save_transcript
 
 from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 
 def test_missing_usage_is_kept_absent() -> None:
@@ -11,14 +14,45 @@ def test_missing_usage_is_kept_absent() -> None:
     assert extract_effort_metrics("not json", "", "codex") == {}
 
 
-def test_extracts_usage_from_indented_claude_json() -> None:
-    """Claude CLI writes one multi-line JSON result, not JSONL."""
-    stdout = """{
-      "type": "result",
-      "total_cost_usd": 0.0123,
-      "usage": {"input_tokens": 120, "output_tokens": 30},
-      "modelUsage": {"claude-sonnet-4-20250514": {"inputTokens": 120}}
-    }"""
+def _stream(*results: str) -> str:
+    """A Claude stream-json stdout whose events before ``results`` carry no evidence."""
+    return "\n".join(
+        (
+            '{"type":"system","subtype":"init","session_id":"s-1","model":"claude-sonnet-5"}',
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}',
+            *results,
+        )
+    )
+
+
+def test_stream_result_evidence_equals_the_single_document_form() -> None:
+    """The captured stream yields the evidence its final result event gives as a lone document."""
+    stream = (FIXTURES / "claude_code_2.1.278_stream.jsonl").read_text(encoding="utf-8")
+    document = stream.strip().splitlines()[-1]
+
+    from_stream = extract_effort_metrics(stream.strip(), "", "claude")["claude_evidence"]
+    from_document = extract_effort_metrics(document, "", "claude")["claude_evidence"]
+
+    assert from_stream == from_document
+    assert from_stream.cost_microusd == 66_572
+    assert from_stream.model == "claude-sonnet-5"
+    assert (from_stream.input_tokens, from_stream.output_tokens) == (6, 603)
+    assert (from_stream.cache_read_tokens, from_stream.cache_write_tokens) == (76_931, 11_286)
+
+
+def test_a_stream_without_a_result_event_leaves_cost_unknown() -> None:
+    stream = (FIXTURES / "claude_code_2.1.278_stream.jsonl").read_text(encoding="utf-8")
+    without_result = "\n".join(stream.strip().splitlines()[:-1])
+
+    assert extract_effort_metrics(without_result, "", "claude") == {}
+
+
+def test_extracts_usage_from_the_stream_result_event() -> None:
+    stdout = _stream(
+        '{"type":"result","total_cost_usd":0.0123,'
+        '"usage":{"input_tokens":120,"output_tokens":30},'
+        '"modelUsage":{"claude-sonnet-4-20250514":{"inputTokens":120}}}'
+    )
 
     metrics = extract_effort_metrics(stdout, "", "claude")
     assert isinstance(metrics["claude_evidence"], ClaudeResultEvidence)
@@ -35,17 +69,11 @@ def test_extracts_usage_from_indented_claude_json() -> None:
 
 
 def test_claude_evidence_uses_decimal_micro_usd_and_forwards_cache_tokens() -> None:
-    stdout = """{
-      "type": "result",
-      "model": "claude-opus-4-1",
-      "total_cost_usd": 0.0123455,
-      "usage": {
-        "input_tokens": 120,
-        "output_tokens": 30,
-        "cache_read_input_tokens": 40,
-        "cache_creation_input_tokens": 50
-      }
-    }"""
+    stdout = _stream(
+        '{"type":"result","model":"claude-opus-4-1","total_cost_usd":0.0123455,'
+        '"usage":{"input_tokens":120,"output_tokens":30,'
+        '"cache_read_input_tokens":40,"cache_creation_input_tokens":50}}'
+    )
 
     metrics = extract_effort_metrics(stdout, "", "claude")
     assert isinstance(metrics["claude_evidence"], ClaudeResultEvidence)
@@ -62,11 +90,10 @@ def test_claude_evidence_uses_decimal_micro_usd_and_forwards_cache_tokens() -> N
 
 
 def test_claude_malformed_money_keeps_valid_usage_as_unknown() -> None:
-    stdout = """{
-      "type": "result",
-      "total_cost_usd": "not-a-number",
-      "usage": {"input_tokens": 120, "output_tokens": 30}
-    }"""
+    stdout = _stream(
+        '{"type":"result","total_cost_usd":"not-a-number",'
+        '"usage":{"input_tokens":120,"output_tokens":30}}'
+    )
 
     evidence = extract_effort_metrics(stdout, "", "claude")["claude_evidence"]
     assert isinstance(evidence, ClaudeResultEvidence)
@@ -75,15 +102,16 @@ def test_claude_malformed_money_keeps_valid_usage_as_unknown() -> None:
     assert evidence.cost_microusd is None
 
 
-def test_claude_multiple_json_records_are_not_combined() -> None:
-    stdout = "\n".join(
-        (
-            '{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1}}',
-            '{"type":"result","usage":{"output_tokens":2}}',
-        )
+def test_claude_result_records_are_not_combined() -> None:
+    """Only the final result event is read; an earlier one lends it no cost or usage."""
+    stdout = _stream(
+        '{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1}}',
+        '{"type":"result","usage":{"output_tokens":2}}',
     )
 
-    assert extract_effort_metrics(stdout, "", "claude") == {}
+    evidence = extract_effort_metrics(stdout, "", "claude")["claude_evidence"]
+    assert (evidence.input_tokens, evidence.output_tokens) == (None, 2)
+    assert evidence.cost_microusd is None
 
 
 def test_factory_retains_only_one_typed_result_object_without_money() -> None:

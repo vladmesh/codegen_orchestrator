@@ -4,6 +4,7 @@ import os
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import FakePipe
 import pytest
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import (
@@ -43,7 +44,8 @@ def _fake_subprocess(stdout: bytes = b"", stderr: bytes = b""):
         captured.update(kwargs)
         captured["args"] = args
         proc = AsyncMock()
-        proc.communicate = AsyncMock(return_value=(stdout, stderr))
+        proc.stdout = FakePipe(stdout)
+        proc.stderr = FakePipe(stderr)
         proc.returncode = 0
         proc.kill = AsyncMock()
         proc.wait = AsyncMock()
@@ -261,7 +263,8 @@ class TestAgentSubprocessEnv:
 
         async def fake_exec(*args, **kwargs):
             proc = AsyncMock()
-            proc.communicate = AsyncMock(return_value=(b'{"result":"auth failed"}', b""))
+            proc.stdout = FakePipe(b'{"result":"auth failed"}')
+            proc.stderr = FakePipe()
             proc.returncode = 1
             proc.kill = AsyncMock()
             proc.wait = AsyncMock()

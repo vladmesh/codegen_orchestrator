@@ -10,7 +10,16 @@ class ClaudeRunner(AgentRunner):
     session_id: str | None = None
 
     def build_command(self, prompt: str) -> list[str]:
-        cmd = ["claude", "--dangerously-skip-permissions", "-p", prompt, "--output-format", "json"]
+        cmd = [
+            "claude",
+            "--dangerously-skip-permissions",
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            # The CLI refuses stream-json in print mode without it.
+            "--verbose",
+        ]
         if self.session_id:
             cmd.extend(["--resume", self.session_id])
         return cmd

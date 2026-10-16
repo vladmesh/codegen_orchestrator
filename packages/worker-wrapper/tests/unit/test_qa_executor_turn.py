@@ -14,6 +14,7 @@ import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import FakePipe
 import pytest
 from worker_wrapper.broker import BrokerMessage
 from worker_wrapper.config import WorkerWrapperConfig
@@ -254,7 +255,8 @@ async def _agent_child_env(wrapper: WorkerWrapper, container_env: dict[str, str]
     async def fake_exec(*args, **kwargs):
         captured.update(kwargs)
         proc = AsyncMock()
-        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.stdout = FakePipe()
+        proc.stderr = FakePipe()
         proc.returncode = 0
         proc.kill = AsyncMock()
         proc.wait = AsyncMock()
@@ -317,7 +319,8 @@ class TestTheQaAgentChildProcessCanReachItsBackend:
         async def fake_exec(*args, **kwargs):
             captured["cmd"] = args
             proc = AsyncMock()
-            proc.communicate = AsyncMock(return_value=(b"", b""))
+            proc.stdout = FakePipe()
+            proc.stderr = FakePipe()
             proc.returncode = 0
             return proc
 

@@ -26,7 +26,7 @@ def redact_transcript(text: str, environment: dict[str, str]) -> str:
 def extract_effort_metrics(stdout: str, stderr: str, agent_type: str) -> dict[str, Any]:
     """Return provider-reported usage, leaving unavailable values absent.
 
-    Claude's JSON result has an exact-cost evidence contract. Factory accepts
+    Claude's final stream result has an exact-cost evidence contract. Factory accepts
     only one whole ``type=result`` JSON document, retaining its non-negative
     model and usage facts without interpreting money. Codex's non-interactive
     output has no stable usage contract, so it intentionally returns no facts.
@@ -82,17 +82,14 @@ def _extract_factory_evidence(stdout: str) -> dict[str, Any]:
 
 
 def _extract_claude_evidence(stdout: str) -> dict[str, Any]:
-    """Parse exactly one documented Claude final-result JSON object.
+    """Read every fact from the last ``type=result`` event of a Claude ``stream-json`` stdout.
 
-    Claude emits one JSON document, rather than JSONL. Parsing it as a whole
-    ensures a cost from one record cannot be paired with usage from another.
-    ``parse_float=Decimal`` is required before converting USD to micro-USD.
+    One event supplies cost and usage together, so a cost is never paired with
+    another record's usage. ``parse_float=Decimal`` is required before converting
+    USD to micro-USD.
     """
-    try:
-        payload = json.loads(stdout, parse_float=Decimal)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(payload, dict) or payload.get("type") != "result":
+    payload = _last_claude_result(stdout)
+    if payload is None:
         return {}
 
     usage = payload.get("usage")
@@ -114,6 +111,17 @@ def _extract_claude_evidence(stdout: str) -> dict[str, Any]:
         cost_microusd=_micro_usd(payload.get("total_cost_usd")),
     )
     return {"claude_evidence": evidence}
+
+
+def _last_claude_result(stdout: str) -> dict[str, Any] | None:
+    for line in reversed(stdout.splitlines()):
+        try:
+            event = json.loads(line, parse_float=Decimal)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            return event
+    return None
 
 
 def _nonnegative_int(value: Any) -> int | None:
