@@ -1034,7 +1034,7 @@ export interface Topology {
 export type Severity = 'critical' | 'warning' | 'info'
 
 export interface AttentionItem {
-  kind: 'task' | 'story' | 'incident' | 'application' | 'queue'
+  kind: 'task' | 'story' | 'incident' | 'application' | 'queue' | 'ci'
   severity: Severity
   title: string
   detail: string | null

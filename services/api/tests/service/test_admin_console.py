@@ -343,3 +343,32 @@ async def test_attention_lists_the_parked_task_and_the_degraded_container(async_
         i["kind"] == "application" and i["server_handle"] == product["server"].handle for i in items
     )
     assert response.json()["kpis"]["degraded_containers"] >= 1
+
+
+async def test_attention_lists_the_failed_ci_of_an_open_story(async_client, db_session, product):
+    parked_id = product["waiting"].story_id
+    parked = await db_session.get(Story, parked_id)
+    parked.pr_number = 15
+    parked.generated_product_timeline = {
+        "ci_runs": [
+            {
+                "id": 901,
+                "status": "completed",
+                "conclusion": "failure",
+                "failed_jobs": [{"name": "unit"}],
+                "started_at": at(30).isoformat(),
+                "completed_at": at(34).isoformat(),
+            }
+        ]
+    }
+    await db_session.commit()
+
+    response = await async_client.get(
+        "/api/admin/v2/attention", params={"project_id": str(product["project"].id)}
+    )
+
+    assert response.status_code == 200
+    [item] = [i for i in response.json()["items"] if i["kind"] == "ci"]
+    assert item["story_id"] == parked_id
+    assert item["title"] == "CI failed on PR #15: Cats"
+    assert item["detail"] == "unit"

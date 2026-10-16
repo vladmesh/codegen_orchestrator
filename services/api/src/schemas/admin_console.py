@@ -300,7 +300,7 @@ class Severity(StrEnum):
 
 
 class AttentionItem(_ConsoleModel):
-    kind: Literal["task", "story", "incident", "application", "queue"]
+    kind: Literal["task", "story", "incident", "application", "queue", "ci"]
     severity: Severity
     title: str
     detail: str | None

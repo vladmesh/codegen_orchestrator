@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- The Attention feed lists a `ci` item, linked to the story's Journey, while a story's latest CI run on its
+  pull request has failed; a later run with any other conclusion clears it.
 - The Journey read model carries `timeline`: each architect, scaffold, engineering, CI, merge, deploy and QA
   stage's recorded start and end, the waits between them, and the total from brief confirmed to QA passed.
 - Each story `ci_runs` entry records the run's `started_at` and `completed_at`, and the scaffolder records

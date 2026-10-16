@@ -735,9 +735,10 @@ def attention_items(
     incidents: Sequence[Any],
     applications: Sequence[tuple[Any, uuid.UUID | None]],
     queue_issues: Sequence[str],
+    ci_stories: Sequence[Any],
 ) -> list[AttentionItem]:
     """Everything that needs an operator, most severe and most recent first."""
-    items: list[AttentionItem] = []
+    items: list[AttentionItem] = ci_attention_items(titles, ci_stories)
     for task in tasks:
         items.append(
             AttentionItem(
@@ -831,6 +832,61 @@ def attention_items(
     epoch = datetime.min.replace(tzinfo=UTC)
     items.sort(key=lambda i: i.since or epoch, reverse=True)
     items.sort(key=lambda i: _SEVERITY_ORDER[i.severity])
+    return items
+
+
+_CI_QUIET_STORY = {StoryStatus.COMPLETED, StoryStatus.ARCHIVED}
+
+
+def _latest_ci_run(story: Any) -> dict | None:
+    """The story's latest recorded CI run; raises when `ci_runs` is not a list of objects.
+
+    Runs without a recorded start predate start capture, so they order first, by list position.
+    """
+    timeline = story.generated_product_timeline
+    if not isinstance(timeline, dict):
+        raise ValueError(f"story {story.id} generated_product_timeline is not an object")
+    runs = timeline["ci_runs"]
+    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
+        raise ValueError(f"story {story.id} ci_runs is not a list of objects")
+    epoch = datetime.min.replace(tzinfo=UTC)
+    ordered = sorted(
+        runs,
+        key=lambda run: (
+            run.get("started_at") is not None,
+            _recorded_instant(run.get("started_at")) or epoch,
+        ),
+    )
+    return ordered[-1] if ordered else None
+
+
+def ci_attention_items(titles: dict[uuid.UUID, str], stories: Sequence[Any]) -> list[AttentionItem]:
+    """One item per open story whose latest CI run on its pull request failed."""
+    items: list[AttentionItem] = []
+    for story in stories:
+        if story.status in _CI_QUIET_STORY:
+            continue
+        latest = _latest_ci_run(story)
+        if latest is None or latest["conclusion"] != "failure":
+            continue
+        if story.pr_number is None:
+            raise ValueError(f"story {story.id} has CI runs but no pull request number")
+        completed = _recorded_instant(latest.get("completed_at"))
+        items.append(
+            AttentionItem(
+                kind="ci",
+                severity=Severity.WARNING,
+                title=f"CI failed on PR #{story.pr_number}: {story.title}",
+                detail=_preview(", ".join(job["name"] for job in latest["failed_jobs"])),
+                since=completed or _aware(story.updated_at),
+                project_id=story.project_id,
+                project_title=titles.get(story.project_id),
+                story_id=story.id,
+                task_id=None,
+                application_id=None,
+                server_handle=None,
+            )
+        )
     return items
 
 
@@ -1068,6 +1124,17 @@ async def build_attention(
             .limit(ATTENTION_ROW_LIMIT)
         )
     ).all()
+    ci_stories = (
+        await db.scalars(
+            select(Story)
+            .where(
+                Story.status.not_in([s.value for s in _CI_QUIET_STORY]),
+                Story.generated_product_timeline["ci_runs"].as_string().is_not(None),
+            )
+            .order_by(Story.updated_at.desc())
+            .limit(ATTENTION_ROW_LIMIT)
+        )
+    ).all()
     incidents = (
         await db.scalars(
             select(Incident)
@@ -1088,7 +1155,9 @@ async def build_attention(
             .limit(ATTENTION_ROW_LIMIT)
         )
     ).all()
-    project_ids = {r.project_id for r in [*tasks, *stories]} | {pid for _, pid in sick if pid}
+    project_ids = {r.project_id for r in [*tasks, *stories, *ci_stories]} | {
+        pid for _, pid in sick if pid
+    }
     titles = dict(
         (
             await db.execute(select(Project.id, Project.title).where(Project.id.in_(project_ids)))
@@ -1130,7 +1199,9 @@ async def build_attention(
         )
     ).all()
     items = scope_attention(
-        attention_items(titles, tasks, stories, incidents, sick, queues.issues), since, project_id
+        attention_items(titles, tasks, stories, incidents, sick, queues.issues, ci_stories),
+        since,
+        project_id,
     )
     return AttentionResponse(
         kpis=ConsoleKpis(
