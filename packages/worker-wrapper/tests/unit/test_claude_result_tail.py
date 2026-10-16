@@ -134,12 +134,12 @@ async def test_a_failed_exit_without_a_result_event_reports_no_output(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_the_auto_resume_appends_only_its_own_result_event(tmp_path, monkeypatch):
+async def test_a_resume_without_a_result_event_or_stderr_leaves_no_tail(tmp_path, monkeypatch):
     wrapper = _wrapper(tmp_path, monkeypatch)
     wrapper.broker.get_session.side_effect = [None, "session-1"]
-    resumed = {"type": "result", "subtype": "success", "is_error": False}
-    resume_stream = _events(_tool_result(MARKER), resumed)
 
-    result, _ = await _turn(wrapper, _process(STREAM.read_bytes()), _process(resume_stream))
+    result, _ = await _turn(
+        wrapper, _process(STREAM.read_bytes()), _process(_events(_tool_result(MARKER)))
+    )
 
-    assert result.agent_stdout_tail == f"{RESULT_LINE}\n--- resume ---\n{json.dumps(resumed)}"
+    assert result.agent_stdout_tail is None

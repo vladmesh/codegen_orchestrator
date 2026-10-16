@@ -1410,8 +1410,7 @@ class WorkerWrapper:
         if self.config.agent_type == AgentType.CODEX:
             self._agent_stdout_tail = None
         else:
-            combined = self._output_tail(stdout, stderr)
-            self._agent_stdout_tail = combined[-AGENT_OUTPUT_TAIL_CHARS:] if combined else None
+            self._agent_stdout_tail = self._output_tail(stdout, stderr)
 
         if limit_exceeded:
             # Everything the agent produced before it was stopped is already on
@@ -1442,11 +1441,12 @@ class WorkerWrapper:
             return last_claude_result_line(stdout) or ""
         return stdout
 
-    def _output_tail(self, stdout: str, stderr: str) -> str:
+    def _output_tail(self, stdout: str, stderr: str) -> str | None:
+        """One agent process's bounded ``agent_stdout_tail``, None when it printed nothing."""
         reportable = self._reportable_stdout(stdout)
-        if not stderr:
-            return reportable
-        return f"{reportable}\n--- stderr ---\n{stderr}" if reportable else stderr
+        if stderr:
+            reportable = f"{reportable}\n--- stderr ---\n{stderr}" if reportable else stderr
+        return reportable[-AGENT_OUTPUT_TAIL_CHARS:] or None
 
     async def _finish_agent_process(
         self,
@@ -1557,12 +1557,9 @@ class WorkerWrapper:
                 )
                 self._transcript_path = transcript
                 self._transcript_truncated = self._transcript_truncated or truncated
-            combined = self._output_tail(stdout, stderr)
-            if combined:
-                prev = self._agent_stdout_tail or ""
-                self._agent_stdout_tail = (prev + "\n--- resume ---\n" + combined)[
-                    -AGENT_OUTPUT_TAIL_CHARS:
-                ]
+            # The resumed result event reports the session's cumulative turn, so it
+            # replaces the first run's tail as it replaces its cost evidence.
+            self._agent_stdout_tail = self._output_tail(stdout, stderr)
 
             return True
         except Exception:
