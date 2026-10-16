@@ -4,10 +4,13 @@ import { api } from '@/lib/api'
 import { relativeTime } from '@/lib/utils'
 import type { User } from '@/types/api'
 
+export const USER_ACTIVITY_REFETCH_MS = 60_000
+
 export function UsersPage() {
   const { data: users, isLoading } = useQuery({
     queryKey: ['users'],
     queryFn: () => api.get<User[]>('/users/'),
+    refetchInterval: USER_ACTIVITY_REFETCH_MS,
   })
 
   return (
@@ -25,7 +28,7 @@ export function UsersPage() {
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Username</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Telegram ID</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Role</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Last seen</th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Last activity</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">

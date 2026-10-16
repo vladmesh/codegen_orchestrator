@@ -1,10 +1,10 @@
 """User schemas."""
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.base import TimestampedDTO
-
-from .utc import UtcDatetime
 
 
 class UserBase(BaseModel):
@@ -35,6 +35,5 @@ class UserRead(UserBase, TimestampedDTO):
 
     id: int
     is_admin: bool
-    created_at: UtcDatetime
-    last_seen: UtcDatetime
+    last_seen: datetime
     model_config = ConfigDict(from_attributes=True)

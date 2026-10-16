@@ -173,7 +173,7 @@ async def upsert_user(
         user.last_name = user_in.last_name
         if user_in.is_admin is not None:
             user.is_admin = user_in.is_admin
-        user.last_seen = datetime.utcnow()
+        user.last_seen = datetime.now(UTC)
     elif _is_owner_registration(user_in.telegram_id, is_internal) or not _requires_promo(
         is_internal, x_telegram_id
     ):
