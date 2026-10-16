@@ -9,12 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import Story, StoryLink
 
-from .. import admin_console, admin_live_log
+from .. import admin_console, admin_journey_repository, admin_live_log
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
 from ..schemas.admin_console import (
     AttentionResponse,
     JourneyDetail,
+    JourneyRepository,
     JourneySummary,
     LiveLogResponse,
     StoryLinkCreate,
@@ -61,6 +62,16 @@ async def journey_live_log(
     if live_log is None:
         raise HTTPException(status_code=404, detail="Story not found")
     return live_log
+
+
+@router.get("/journeys/{story_id}/repository", response_model=JourneyRepository)
+async def journey_repository(
+    story_id: str, db: AsyncSession = Depends(get_async_session)
+) -> JourneyRepository:
+    repository = await admin_journey_repository.read_story_repository(db, story_id)
+    if repository is None:
+        raise HTTPException(status_code=404, detail="Story not found")
+    return repository
 
 
 @router.post(
