@@ -187,6 +187,61 @@ class TaskBoardEntry(_ConsoleModel):
     attempt_count: int = Field(ge=0)
 
 
+class TimelineStageKind(StrEnum):
+    """A measured stage of a story, declared in the order unrecorded stages sort."""
+
+    ARCHITECT = "architect"
+    SCAFFOLD = "scaffold"
+    ENGINEERING = "engineering"
+    CI = "ci"
+    MERGE = "merge"
+    DEPLOY = "deploy"
+    QA = "qa"
+
+
+class TimelineStageState(StrEnum):
+    DONE = "done"
+    #: A recorded start without a recorded end.
+    RUNNING = "running"
+    #: No recorded start.
+    UNRECORDED = "unrecorded"
+
+
+class TimelineStage(_ConsoleModel):
+    kind: TimelineStageKind
+    #: The kind, numbered per kind in start order for kinds that repeat: `engineering 2`, `CI 1`.
+    label: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    #: Null unless `done`; a merge is an instant of duration 0.
+    duration_seconds: float | None = Field(ge=0)
+    state: TimelineStageState
+
+
+class TimelineWait(_ConsoleModel):
+    """A gap with no stage running, from the latest end so far to the next stage's start."""
+
+    after: str
+    before: str
+    seconds: float = Field(gt=0)
+
+
+class TimelineTotalUnavailable(StrEnum):
+    NO_BRIEF = "no_brief"
+    BRIEF_NOT_CONFIRMED = "brief_not_confirmed"
+    NO_PASSED_QA = "no_passed_qa"
+
+
+class JourneyTimeline(_ConsoleModel):
+    #: Timed stages by start, then unrecorded stages in kind order.
+    stages: list[TimelineStage]
+    waits: list[TimelineWait]
+    #: From the brief's confirmation to the end of the first passed QA run.
+    total_seconds: float | None
+    #: Null exactly when `total_seconds` is set.
+    total_unavailable: TimelineTotalUnavailable | None
+
+
 class JourneyDetail(_ConsoleModel):
     summary: JourneySummary
     request: str | None
@@ -198,6 +253,7 @@ class JourneyDetail(_ConsoleModel):
     links: list[StoryLinkView]
     #: Every task of the story, oldest first.
     task_board: list[TaskBoardEntry]
+    timeline: JourneyTimeline
 
 
 class PlacementView(_ConsoleModel):
@@ -393,6 +449,7 @@ __all__ = [
     "JourneyStage",
     "JourneyStep",
     "JourneySummary",
+    "JourneyTimeline",
     "LiveLogLine",
     "LiveLogResponse",
     "LiveLogSource",
@@ -416,5 +473,10 @@ __all__ = [
     "TaskBoardColumn",
     "TaskBoardEntry",
     "TaskOrigin",
+    "TimelineStage",
+    "TimelineStageKind",
+    "TimelineStageState",
+    "TimelineTotalUnavailable",
+    "TimelineWait",
     "TopologyResponse",
 ]

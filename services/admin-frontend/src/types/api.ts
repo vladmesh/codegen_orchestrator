@@ -958,6 +958,34 @@ export interface TaskBoardEntry {
   attempt_count: number
 }
 
+export type TimelineStageKind = 'architect' | 'scaffold' | 'engineering' | 'ci' | 'merge' | 'deploy' | 'qa'
+
+export type TimelineStageState = 'done' | 'running' | 'unrecorded'
+
+export interface TimelineStage {
+  kind: TimelineStageKind
+  label: string
+  started_at: string | null
+  finished_at: string | null
+  duration_seconds: number | null
+  state: TimelineStageState
+}
+
+export interface TimelineWait {
+  after: string
+  before: string
+  seconds: number
+}
+
+export type TimelineTotalUnavailable = 'no_brief' | 'brief_not_confirmed' | 'no_passed_qa'
+
+export interface JourneyTimeline {
+  stages: TimelineStage[]
+  waits: TimelineWait[]
+  total_seconds: number | null
+  total_unavailable: TimelineTotalUnavailable | null
+}
+
 export interface JourneyDetail {
   summary: JourneySummary
   request: string | null
@@ -967,6 +995,7 @@ export interface JourneyDetail {
   passport: ProductPassport
   links: StoryLink[]
   task_board: TaskBoardEntry[]
+  timeline: JourneyTimeline
 }
 
 export interface PlacementView {

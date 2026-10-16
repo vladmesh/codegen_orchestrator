@@ -22,8 +22,10 @@ from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentStatus, IncidentType
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import QARunResult
 from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
 from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.models import (
     Application,
@@ -53,6 +55,7 @@ from .schemas.admin_console import (
     JourneyStage,
     JourneyStep,
     JourneySummary,
+    JourneyTimeline,
     PackageRef,
     PlacementView,
     PlatformServiceView,
@@ -65,6 +68,11 @@ from .schemas.admin_console import (
     TaskBoardColumn,
     TaskBoardEntry,
     TaskOrigin,
+    TimelineStage,
+    TimelineStageKind,
+    TimelineStageState,
+    TimelineTotalUnavailable,
+    TimelineWait,
     TopologyResponse,
 )
 from .schemas.utc import assume_utc
@@ -419,6 +427,180 @@ def build_task_board(tasks: Sequence[Any], runs: Sequence[Any]) -> list[TaskBoar
     return board
 
 
+_TIMELINE_RUN_KIND = {
+    RunType.ENGINEERING.value: TimelineStageKind.ENGINEERING,
+    RunType.DEPLOY.value: TimelineStageKind.DEPLOY,
+    RunType.QA.value: TimelineStageKind.QA,
+}
+_TIMELINE_LABEL = {
+    TimelineStageKind.ARCHITECT: "architect",
+    TimelineStageKind.SCAFFOLD: "scaffold",
+    TimelineStageKind.ENGINEERING: "engineering",
+    TimelineStageKind.CI: "CI",
+    TimelineStageKind.MERGE: "merge",
+    TimelineStageKind.DEPLOY: "deploy",
+    TimelineStageKind.QA: "QA",
+}
+_NUMBERED_KINDS = {
+    TimelineStageKind.ENGINEERING,
+    TimelineStageKind.CI,
+    TimelineStageKind.DEPLOY,
+    TimelineStageKind.QA,
+}
+_KIND_ORDER = {kind: index for index, kind in enumerate(TimelineStageKind)}
+
+_Span = tuple[TimelineStageKind, datetime | None, datetime | None]
+
+
+def _recorded_instant(value: object) -> datetime | None:
+    """A time recorded as an ISO-8601 string, as UTC; None when absent. Anything else raises."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"recorded time {value!r} is not an ISO-8601 string")
+    return assume_utc(datetime.fromisoformat(value))
+
+
+def _story_spans(story: Any, brief: Any | None, project: Any, runs: Sequence[Any]) -> list[_Span]:
+    spans: list[_Span] = [
+        (
+            TimelineStageKind.ARCHITECT,
+            _aware(brief.confirmed_at) if brief is not None else None,
+            _aware(brief.coverage_admitted_at) if brief is not None else None,
+        )
+    ]
+    config = project.config or {}
+    scaffold_start = _recorded_instant(config.get("scaffold_started_at"))
+    scaffold_end = _recorded_instant(config.get("scaffold_finished_at"))
+    # A project is scaffolded once, for its first story; a later story did not wait on it.
+    if scaffold_start is None or scaffold_start >= _aware(story.created_at):
+        # A rerun stamps a new start and leaves the earlier attempt's finish until it ends.
+        if scaffold_start and scaffold_end and scaffold_end < scaffold_start:
+            scaffold_end = None
+        spans.append((TimelineStageKind.SCAFFOLD, scaffold_start, scaffold_end))
+
+    timeline = story.generated_product_timeline or {}
+    for ci_run in timeline.get("ci_runs") or []:
+        spans.append(
+            (
+                TimelineStageKind.CI,
+                _recorded_instant(ci_run.get("started_at")),
+                _recorded_instant(ci_run.get("completed_at")),
+            )
+        )
+    merged = _recorded_instant((timeline.get("pull_request") or {}).get("merged_at"))
+    spans.append((TimelineStageKind.MERGE, merged, merged))
+    for run in sorted(runs, key=lambda r: _aware(r.created_at)):
+        kind = _TIMELINE_RUN_KIND[run.type]
+        spans.append((kind, _aware(run.started_at), _aware(run.completed_at)))
+    return spans
+
+
+def _timeline_stage(
+    kind: TimelineStageKind, number: int, started: datetime | None, finished: datetime | None
+) -> TimelineStage:
+    label = _TIMELINE_LABEL[kind]
+    if kind in _NUMBERED_KINDS:
+        label = f"{label} {number}"
+    if started is None:
+        state, duration = TimelineStageState.UNRECORDED, None
+    elif finished is None:
+        state, duration = TimelineStageState.RUNNING, None
+    else:
+        state, duration = TimelineStageState.DONE, (finished - started).total_seconds()
+    return TimelineStage(
+        kind=kind,
+        label=label,
+        started_at=started,
+        finished_at=finished,
+        duration_seconds=duration,
+        state=state,
+    )
+
+
+def _timeline_waits(timed: Sequence[TimelineStage]) -> list[TimelineWait]:
+    """Positive gaps between the latest end so far and each next start.
+
+    A running stage has no end yet, so it covers every later start.
+    """
+    waits: list[TimelineWait] = []
+    latest: TimelineStage | None = None
+    open_stage = False
+    for stage in timed:
+        if latest is not None and not open_stage and stage.started_at > latest.finished_at:
+            waits.append(
+                TimelineWait(
+                    after=latest.label,
+                    before=stage.label,
+                    seconds=(stage.started_at - latest.finished_at).total_seconds(),
+                )
+            )
+        if stage.finished_at is None:
+            open_stage = True
+        elif latest is None or stage.finished_at > latest.finished_at:
+            latest = stage
+    return waits
+
+
+def _first_qa_pass(runs: Sequence[Any]) -> datetime | None:
+    """The earliest recorded end of a passed QA run; every completed QA result must validate."""
+    passes = [
+        _aware(run.completed_at)
+        for run in runs
+        if run.type == RunType.QA.value
+        and run.status == RunStatus.COMPLETED.value
+        and QARunResult.model_validate(run.result).qa_outcome is QAOutcome.PASSED
+        and run.completed_at is not None
+    ]
+    return min(passes, default=None)
+
+
+def build_timeline(
+    story: Any, brief: Any | None, project: Any, runs: Sequence[Any]
+) -> JourneyTimeline:
+    """Each stage's recorded start and end, the waits between stages, and the story's total.
+
+    A missing time leaves its stage `unrecorded`; a recorded time that is not ISO-8601 raises.
+    """
+    spans = _story_spans(story, brief, project, runs)
+    by_kind: dict[TimelineStageKind, list[_Span]] = defaultdict(list)
+    for span in spans:
+        by_kind[span[0]].append(span)
+    stages: list[TimelineStage] = []
+    for kind, kind_spans in by_kind.items():
+        # A stable sort keeps unrecorded spans of one kind in recorded order, after the timed.
+        kind_spans.sort(key=lambda s: (s[1] is None, s[1] or datetime.min.replace(tzinfo=UTC)))
+        stages.extend(
+            _timeline_stage(kind, number, started, finished)
+            for number, (_, started, finished) in enumerate(kind_spans, start=1)
+        )
+    timed = sorted(
+        (s for s in stages if s.started_at is not None),
+        key=lambda s: (s.started_at, _KIND_ORDER[s.kind]),
+    )
+    unrecorded = sorted(
+        (s for s in stages if s.started_at is None), key=lambda s: _KIND_ORDER[s.kind]
+    )
+
+    passed_at = _first_qa_pass(runs)
+    total: float | None = None
+    if brief is None:
+        unavailable: TimelineTotalUnavailable | None = TimelineTotalUnavailable.NO_BRIEF
+    elif brief.confirmed_at is None:
+        unavailable = TimelineTotalUnavailable.BRIEF_NOT_CONFIRMED
+    elif passed_at is None:
+        unavailable = TimelineTotalUnavailable.NO_PASSED_QA
+    else:
+        unavailable = None
+        total = (passed_at - _aware(brief.confirmed_at)).total_seconds()
+    return JourneyTimeline(
+        stages=[*timed, *unrecorded],
+        waits=_timeline_waits(timed),
+        total_seconds=total,
+        total_unavailable=unavailable,
+    )
+
+
 def link_view(link: Any) -> StoryLinkView:
     return StoryLinkView(
         id=link.id,
@@ -740,6 +922,7 @@ async def load_journey(db: AsyncSession, story_id: str) -> JourneyDetail | None:
         passport=passports[project.id],
         links=[link_view(link) for link in links],
         task_board=build_task_board(tasks, runs),
+        timeline=build_timeline(story, brief, project, runs),
     )
 
 
