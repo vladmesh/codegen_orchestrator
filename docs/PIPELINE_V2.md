@@ -97,7 +97,9 @@ floating, so a scaffold is reproducible. Which repositories may be rendered at a
 older `service-template`; see
 [CONTRACTS.md](CONTRACTS.md#the-template-a-project-is-scaffolded-from).
 
-**Outputs**: GitHub repo with full scaffolded project, workspace on disk, tree in DB
+**Outputs**: GitHub repo with full scaffolded project, workspace on disk, tree in DB, and
+`scaffold_started_at` / `scaffold_finished_at` (ISO-8601 UTC, `Z`) in the project's config, the
+finish written on success and on failure
 
 **Key property**: workspace persists on disk at `/data/workspaces/{repo_id}/`.
 This same directory is mounted into worker containers later.

@@ -190,9 +190,12 @@ and distinct `ci.yml` Runs the scheduler observed through its existing GitHub Ap
 credential. A failed story-branch run is merged there before its CI-fix task is
 created, the Story is retried, or exhausted attempts park it for human review;
 the task retains the same run URL and identity, branch/head, conclusion, failed
-jobs and steps, bounded redacted excerpt, and named unavailability. Repeated
-polls and later default-branch publication observations merge positive facts by
-run id without duplicates. Missed captures and detail-unavailability claims are
+jobs and steps, bounded redacted excerpt, and named unavailability. Each run
+entry also carries `started_at` (GitHub's `run_started_at`) and `completed_at`
+(GitHub's `updated_at`, set only once the run's status is `completed`), both
+ISO-8601 UTC with the `Z` designator. Repeated polls and later default-branch
+publication observations merge positive facts by run id without duplicates, so
+an observation without a time keeps the recorded one. Missed captures and detail-unavailability claims are
 recomputed from the current merged observation rather than retained after the
 fact becomes available.
 A terminal publication failure also copies its evidence into `quarantine_reason`.

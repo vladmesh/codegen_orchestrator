@@ -1,6 +1,6 @@
 """Unit tests for poll_merged_prs — exact PR lookup via story.pr_number."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
@@ -17,7 +17,11 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.user import UserDTO
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.queues import PO_INPUT_QUEUE
-from src.tasks.image_publication import ImagePublication, PublicationVerdict
+from src.tasks.image_publication import (
+    ImagePublication,
+    PublicationVerdict,
+    image_publication_for_commit,
+)
 from src.tasks.pr_poller import (
     _failure_fingerprint,
     _handle_failed_run,
@@ -129,6 +133,103 @@ def test_generated_product_timeline_repoll_keeps_richer_run_evidence():
         {"name": "unit", "failed_steps": ["Run pytest"]}
     ]
     assert timeline["ci_runs"][0]["details_unavailable_reason"] is None
+
+
+_CI_STARTED = datetime.fromtimestamp(1_790_000_000, UTC)
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _timed_ci_run(status: str, conclusion: str | None, **times: str) -> dict:
+    return {
+        "id": 900,
+        "status": status,
+        "conclusion": conclusion,
+        "html_url": "https://github.com/org/my-repo/actions/runs/900",
+        "head_sha": "merge-sha",
+        **times,
+    }
+
+
+async def _observe_ci_run(timeline: dict | None, run: dict) -> dict:
+    github = AsyncMock()
+    github.get_latest_workflow_run = AsyncMock(return_value=run)
+    verdict = await image_publication_for_commit(
+        github, "org", "my-repo", "merge-sha", waiting_since=None
+    )
+    return _updated_generated_product_timeline(
+        timeline,
+        {"number": 42, "state": "closed", "head": {"sha": "head-sha"}},
+        verdict,
+        branch="main",
+        head_sha="merge-sha",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_in_progress_ci_run_records_its_start_and_no_end():
+    timeline = await _observe_ci_run(
+        None,
+        _timed_ci_run(
+            "in_progress",
+            None,
+            run_started_at=_stamp(_CI_STARTED),
+            updated_at=_stamp(_CI_STARTED + timedelta(minutes=2)),
+        ),
+    )
+
+    [run] = timeline["ci_runs"]
+    assert run["started_at"] == _stamp(_CI_STARTED)
+    assert run["completed_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_same_ci_run_completed_adds_its_end():
+    completed = _CI_STARTED + timedelta(minutes=7)
+    timeline = await _observe_ci_run(
+        None,
+        _timed_ci_run(
+            "in_progress",
+            None,
+            run_started_at=_stamp(_CI_STARTED),
+            updated_at=_stamp(_CI_STARTED + timedelta(minutes=2)),
+        ),
+    )
+
+    timeline = await _observe_ci_run(
+        timeline,
+        _timed_ci_run(
+            "completed",
+            "success",
+            run_started_at=_stamp(_CI_STARTED),
+            updated_at=_stamp(completed),
+        ),
+    )
+
+    [run] = timeline["ci_runs"]
+    assert (run["started_at"], run["completed_at"]) == (_stamp(_CI_STARTED), _stamp(completed))
+    assert timeline["latest_ci_observation"]["ci_completed_at"] == _stamp(completed)
+
+
+@pytest.mark.asyncio
+async def test_a_later_ci_observation_without_times_keeps_the_recorded_ones():
+    completed = _CI_STARTED + timedelta(minutes=7)
+    timeline = await _observe_ci_run(
+        None,
+        _timed_ci_run(
+            "completed",
+            "success",
+            run_started_at=_stamp(_CI_STARTED),
+            updated_at=_stamp(completed),
+        ),
+    )
+
+    timeline = await _observe_ci_run(timeline, _timed_ci_run("completed", "success"))
+
+    [run] = timeline["ci_runs"]
+    assert (run["started_at"], run["completed_at"]) == (_stamp(_CI_STARTED), _stamp(completed))
 
 
 def test_pr_ci_failure_then_merge_clears_resolved_missed_captures():
@@ -1123,6 +1224,8 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
             "url": "https://github.com/org/my-repo/actions/runs/101",
             "status": "completed",
             "conclusion": "failure",
+            "started_at": None,
+            "completed_at": None,
             "branch": "story/story-1",
             "head_sha": "sha-101",
             "failed_jobs": [
@@ -1470,6 +1573,8 @@ async def test_no_deploy_run_exists_while_the_projects_ci_is_still_building(mock
             "url": "https://github.com/org/my-repo/actions/runs/900",
             "status": "in_progress",
             "conclusion": None,
+            "started_at": None,
+            "completed_at": None,
             "branch": "main",
             "head_sha": "e" * 40,
             "failed_jobs": [],

@@ -1,6 +1,7 @@
 """Tests for scaffolder consumer."""
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,6 +37,25 @@ def _make_project(**overrides) -> ProjectDTO:
 
 # Shared env dict for tests needing GITHUB_ORG
 _GITHUB_ENV = {"GITHUB_ORG": "project-factory-organization"}
+
+_SCAFFOLD_STARTED = datetime.fromtimestamp(1_790_000_000, UTC)
+_SCAFFOLD_FINISHED = _SCAFFOLD_STARTED + timedelta(minutes=4)
+
+
+def _scaffold_clock():
+    return patch("src.consumer._utc_now", side_effect=[_SCAFFOLD_STARTED, _SCAFFOLD_FINISHED])
+
+
+def _recorded_scaffold_times(api) -> dict[str, datetime]:
+    """The scaffold times written to the project config, each a UTC instant with Z."""
+    times = {}
+    for call in api.patch_project_config.await_args_list:
+        for key in ("scaffold_started_at", "scaffold_finished_at"):
+            if key in call.kwargs["values"]:
+                stamp = call.kwargs["values"][key]
+                assert stamp.endswith("Z")
+                times[key] = datetime.fromisoformat(stamp)
+    return times
 
 
 @pytest.fixture
@@ -139,7 +159,11 @@ class TestProcessScaffoldJob:
 
         assert result == {"status": "failed", "error": "scaffold execution lease expired"}
         mock_redis.redis.zrem.assert_awaited_once()
-        mock_api.patch_project_config.assert_not_awaited()
+        assert not [
+            call
+            for call in mock_api.patch_project_config.await_args_list
+            if "scaffold_error" in call.kwargs["values"]
+        ]
 
     @pytest.mark.asyncio
     async def test_success_updates_status_and_tree(
@@ -190,8 +214,12 @@ class TestProcessScaffoldJob:
         )
 
         # Should have saved tree without replacing unrelated config.
-        mock_api.patch_project_config.assert_called_once()
-        assert "tree" in mock_api.patch_project_config.call_args.kwargs["values"]
+        tree_writes = [
+            call
+            for call in mock_api.patch_project_config.await_args_list
+            if "tree" in call.kwargs["values"]
+        ]
+        assert len(tree_writes) == 1
 
     @pytest.mark.asyncio
     async def test_scaffold_failure_leaves_project_as_draft(
@@ -350,7 +378,11 @@ class TestProcessScaffoldJob:
             result = await process_scaffold_job(valid_job_data, mock_redis)
 
         assert result["status"] == "success"
-        failure_config = mock_api.patch_project_config.await_args_list[-1].kwargs["values"]
+        [failure_config] = [
+            call.kwargs["values"]
+            for call in mock_api.patch_project_config.await_args_list
+            if "repo_auto_merge_verification" in call.kwargs["values"]
+        ]
         assert failure_config["repo_auto_merge_verification"]["status"] == "failed"
         notify.assert_awaited_once()
 
@@ -371,9 +403,9 @@ class TestProcessScaffoldJob:
         ):
             assert (await process_scaffold_job(valid_job_data, mock_redis))["status"] == "success"
 
-        assert (
-            "repo_auto_merge_verification"
-            in mock_api.patch_project_config.await_args.kwargs["remove"]
+        assert any(
+            "repo_auto_merge_verification" in call.kwargs.get("remove", [])
+            for call in mock_api.patch_project_config.await_args_list
         )
 
     @pytest.mark.asyncio
@@ -516,9 +548,78 @@ class TestProcessScaffoldJobEnsureMode:
             result = await process_scaffold_job(valid_job_data, mock_redis)
 
         assert result["status"] == "failed"
-        mock_api.patch_project_config.assert_awaited_once_with(
-            "proj-123", values={"scaffold_error": "GitHub is unreachable"}
-        )
+        assert [
+            call.kwargs["values"]["scaffold_error"]
+            for call in mock_api.patch_project_config.await_args_list
+            if "scaffold_error" in call.kwargs["values"]
+        ] == ["GitHub is unreachable"]
+
+    @pytest.mark.asyncio
+    async def test_full_mode_exception_records_scaffold_start_and_end(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        mock_github.create_repo.side_effect = RuntimeError("GitHub is unreachable")
+        mock_api.get_stories_by_project.return_value = []
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+            _scaffold_clock(),
+        ):
+            assert (await process_scaffold_job(valid_job_data, mock_redis))["status"] == "failed"
+
+        assert _recorded_scaffold_times(mock_api) == {
+            "scaffold_started_at": _SCAFFOLD_STARTED,
+            "scaffold_finished_at": _SCAFFOLD_FINISHED,
+        }
+
+    @pytest.mark.asyncio
+    async def test_failed_scaffold_records_its_start_and_end(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        mock_api.get_stories_by_project.return_value = []
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
+            patch(
+                "src.consumer.run_scaffold",
+                return_value=ScaffoldResult(success=False, error="copier crashed"),
+            ),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+            _scaffold_clock(),
+        ):
+            assert (await process_scaffold_job(valid_job_data, mock_redis))["status"] == "failed"
+
+        assert _recorded_scaffold_times(mock_api) == {
+            "scaffold_started_at": _SCAFFOLD_STARTED,
+            "scaffold_finished_at": _SCAFFOLD_FINISHED,
+        }
+
+    @pytest.mark.asyncio
+    async def test_successful_scaffold_records_its_start_and_end(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.GitHubAppClient", return_value=mock_github),
+            patch(
+                "src.consumer.run_scaffold",
+                return_value=ScaffoldResult(success=True, tree=".\n-- src"),
+            ),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+            _scaffold_clock(),
+        ):
+            assert (await process_scaffold_job(valid_job_data, mock_redis))["status"] == "success"
+
+        assert _recorded_scaffold_times(mock_api) == {
+            "scaffold_started_at": _SCAFFOLD_STARTED,
+            "scaffold_finished_at": _SCAFFOLD_FINISHED,
+        }
 
     @pytest.mark.asyncio
     async def test_full_mode_calls_run_scaffold(

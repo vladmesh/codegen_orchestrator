@@ -90,6 +90,8 @@ class AuthenticatedGitHubFixture(GitHubAppClient):
                             "conclusion": "success",
                             "html_url": "https://github.com/fixture/public/actions/runs/12345",
                             "created_at": datetime.now(UTC).isoformat(),
+                            "run_started_at": datetime.now(UTC).isoformat(),
+                            "updated_at": datetime.now(UTC).isoformat(),
                             "head_sha": os.environ["PUBLIC_DEPLOY_BUILT"],
                         }
                     ]

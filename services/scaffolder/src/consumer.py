@@ -6,6 +6,7 @@ Run standalone: python -m src.main
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import os
 from pathlib import Path
 import signal
@@ -99,6 +100,15 @@ async def _finish_scaffold_work(redis: RedisStreamClient, project_id: str, token
     await redis.redis.zrem(scaffold_leases_key(project_id), token)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _scaffold_time() -> str:
+    """Now as an ISO-8601 UTC instant with the Z designator."""
+    return _utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _handle_shutdown(signum, _frame):
     global _shutdown
     logger.info("shutdown_signal_received", signal=signum)
@@ -144,6 +154,10 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     settings = get_settings()
 
     try:
+        if msg.mode == "full":
+            await api.patch_project_config(
+                msg.project_id, values={"scaffold_started_at": _scaffold_time()}
+            )
         # One GitHub HTTP pool spans every GitHub call of this operation and is
         # closed on success, failure and cancellation alike.
         async with GitHubAppClient() as github:
@@ -168,6 +182,8 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         log.error("scaffold_job_lease_lost")
         if msg.mode == "ensure":
             await _record_scaffold_error(msg, error, api, log)
+        elif msg.mode == "full":
+            await _record_scaffold_finished(msg, api, log)
         return {"status": "failed", "error": error}
     except Exception as exc:
         if msg.mode == "install":
@@ -264,6 +280,9 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
 
         await _verify_repo_auto_merge(msg, github, api, org, project_config, log)
 
+        await api.patch_project_config(
+            msg.project_id, values={"scaffold_finished_at": _scaffold_time()}
+        )
         await api.update_project_status(msg.project_id, ProjectStatus.ACTIVE)
         log.info("scaffold_job_success")
         return {"status": "success"}
@@ -274,7 +293,10 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     try:
         await api.patch_project_config(
             msg.project_id,
-            values={"scaffold_error": result.error or "unknown error"},
+            values={
+                "scaffold_error": result.error or "unknown error",
+                "scaffold_finished_at": _scaffold_time(),
+            },
         )
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
@@ -535,16 +557,29 @@ async def _process_install_mode(msg, repo_full_name, github, github_token, api, 
 
 
 async def _record_scaffold_error(msg, error: str, api, log) -> None:
-    """Record a failed ensure on the project.
+    """Record a failed ensure or full scaffold on the project.
 
     `scaffold_error` stops scaffold_trigger re-running ensure every cycle, and
     the API's dispatch admission parks each story with a todo task on it. The
-    operator's infrastructure retry is what removes it.
+    operator's infrastructure retry is what removes it. A full scaffold also
+    records when it ended.
     """
+    values = {"scaffold_error": error}
+    if msg.mode == "full":
+        values["scaffold_finished_at"] = _scaffold_time()
     try:
-        await api.patch_project_config(msg.project_id, values={"scaffold_error": error})
+        await api.patch_project_config(msg.project_id, values=values)
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
+
+
+async def _record_scaffold_finished(msg, api, log) -> None:
+    try:
+        await api.patch_project_config(
+            msg.project_id, values={"scaffold_finished_at": _scaffold_time()}
+        )
+    except Exception:
+        log.warning("failed_to_record_scaffold_finished", exc_info=True)
 
 
 async def _update_project_on_success(msg, result, api, settings, log) -> dict:
