@@ -6,7 +6,7 @@ stage without evidence is `pending` or `skipped`, never guessed done.
 """
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from statistics import median
 from typing import Any
@@ -22,7 +22,7 @@ from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentStatus, IncidentType
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import QARunResult
+from shared.contracts.dto.run_result import DeployRunResult, QARunResult
 from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
 from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.contracts.queues.qa import QAOutcome
@@ -632,6 +632,24 @@ def journey_summary(story: Any, project_title: str) -> JourneySummary:
     )
 
 
+def split_secrets(
+    secret_keys: Iterable[str], user_secret_keys: Collection[str] | None
+) -> tuple[list[str], list[str], list[str]]:
+    """Sorted (user, platform, unclassified) key names of a project's config secrets.
+
+    `user_secret_keys` is the latest recorded contract classification, None when
+    no deploy recorded one: every key is then unclassified.
+    """
+    keys = sorted(secret_keys)
+    if user_secret_keys is None:
+        return [], [], keys
+    return (
+        [k for k in keys if k in user_secret_keys],
+        [k for k in keys if k not in user_secret_keys],
+        [],
+    )
+
+
 def build_passports(
     projects: Sequence[Any],
     install_tasks: Sequence[Any],
@@ -639,6 +657,7 @@ def build_passports(
     applications: Sequence[Any],
     ports: Sequence[Any],
     deployments: Sequence[Any],
+    deploy_runs: Sequence[Any],
 ) -> dict[uuid.UUID, ProductPassport]:
     """One passport per project from bulk-loaded rows; no per-project queries."""
     packages: dict[uuid.UUID, dict[str, PackageRef]] = defaultdict(dict)
@@ -676,15 +695,26 @@ def build_passports(
             )
         )
 
+    classification: dict[uuid.UUID, list[str]] = {}
+    for run in sorted(deploy_runs, key=lambda r: _aware(r.created_at)):
+        result = DeployRunResult.model_validate(run.result)
+        if result.secrets_classified:
+            classification[run.project_id] = result.user_secret_keys
+
     passports: dict[uuid.UUID, ProductPassport] = {}
     for project in projects:
         config = project.config or {}
+        # Key names only: values stay encrypted in config and never leave the API here.
+        user, platform, unclassified = split_secrets(
+            (config.get("secrets") or {}).keys(), classification.get(project.id)
+        )
         passports[project.id] = ProductPassport(
             modules=list(config.get("modules") or []),
             packages=sorted(packages[project.id].values(), key=lambda p: (p.kind, p.name)),
             containers=containers[project.id],
-            # Key names only: values stay encrypted in config and never leave the API here.
-            user_secrets=sorted((config.get("secrets") or {}).keys()),
+            user_secrets=user,
+            platform_secrets=platform,
+            unclassified_secrets=unclassified,
         )
     return passports
 
@@ -934,7 +964,18 @@ async def _project_passports(
             )
         )
     ).all()
-    return build_passports(projects, install_tasks, repositories, applications, ports, deployments)
+    deploy_runs = (
+        await db.scalars(
+            select(Run).where(
+                Run.project_id.in_(ids),
+                Run.type == RunType.DEPLOY.value,
+                Run.result["user_secret_keys"].as_string().is_not(None),
+            )
+        )
+    ).all()
+    return build_passports(
+        projects, install_tasks, repositories, applications, ports, deployments, deploy_runs
+    )
 
 
 async def list_journeys(

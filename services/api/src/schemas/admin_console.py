@@ -104,12 +104,18 @@ class ContainerView(_ConsoleModel):
 
 
 class ProductPassport(_ConsoleModel):
-    """What a product is built from, what it is connected to and where it runs."""
+    """What a product is built from, what it is connected to and where it runs.
+
+    Secret key names, never values, split by the product's environment contract as
+    its latest classified deploy recorded it; all are unclassified before any such deploy.
+    """
 
     modules: list[str]
     packages: list[PackageRef]
     containers: list[ContainerView]
     user_secrets: list[str]
+    platform_secrets: list[str]
+    unclassified_secrets: list[str]
 
 
 class StoryLinkKind(StrEnum):

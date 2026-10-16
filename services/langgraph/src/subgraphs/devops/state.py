@@ -61,6 +61,8 @@ class DevOpsState(TypedDict):
     # Output (returned to parent). Each entry is a serialized MissingUserSecret
     # ({"key", "description"}) so the scheduler can name secrets to the user.
     missing_user_secrets: list[dict]
+    # Contract keys declared as user secrets; None until a contract is resolved.
+    user_secret_keys: list[str] | None
     deployment_result: dict | None
     deployed_url: str | None
     smoke_result: dict | None

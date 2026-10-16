@@ -11,9 +11,16 @@ pair — see `RunDTO._check_result_matches_type`.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from shared.contracts.dto.commit_publication import CommitPublication
 from shared.contracts.dto.engineering import EngineeringStatus
@@ -178,6 +185,23 @@ class DeployRunResult(BaseModel):
     #: Empty is the ordinary case: a standalone deploy, a story with no brief,
     #: or a brief that confirmed no settings.
     settings_seed: list[SettingSeedOutcome] = Field(default_factory=list)
+    #: Sorted keys the resolved environment contract declares as user secrets. A
+    #: result is classified only when a writer set this field, so a deploy that
+    #: resolved no contract stores no key, while a contract without user secrets
+    #: stores an empty list.
+    user_secret_keys: list[str] = Field(default_factory=list)
+
+    @property
+    def secrets_classified(self) -> bool:
+        """Whether this result records the contract's user-secret classification."""
+        return "user_secret_keys" in self.model_fields_set
+
+    @model_serializer(mode="wrap")
+    def _omit_unclassified(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if not self.secrets_classified:
+            data.pop("user_secret_keys", None)
+        return data
 
     @property
     def settings_seed_failures(self) -> tuple[SettingsSeedFailureKind, ...]:

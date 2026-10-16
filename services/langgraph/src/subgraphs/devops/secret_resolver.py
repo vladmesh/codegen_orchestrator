@@ -255,6 +255,9 @@ class SecretResolverNode(FunctionalNode):
             "secret_values": resolved.secret_values,
             "non_secret_values": resolved.non_secret_values,
             "missing_user_secrets": [m.model_dump() for m in resolved.missing_user],
+            "user_secret_keys": sorted(
+                key for key, entry in contract.entries.items() if isinstance(entry, UserSecretEntry)
+            ),
             "resolution_outcome": (
                 DeployOutcome.WAITING_FOR_USER_SECRET if resolved.missing_user else None
             ),

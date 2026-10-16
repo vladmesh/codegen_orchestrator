@@ -153,6 +153,38 @@ async def test_fictional_package_issues_persists_registers_and_reuses_key(node, 
     assert len(admin.keys) == 1
 
 
+async def test_resolver_records_only_the_user_secret_keys_of_the_contract(node):
+    entries = {
+        **_entries(),
+        **yaml.safe_load("""
+USER_TOKEN:
+  source: user_secret
+  environments: [production]
+  required: true
+  consumers: [api]
+  description: User token
+BOT_USERNAME:
+  source: user_secret
+  environments: [production]
+  required: false
+  consumers: [tg_bot]
+  description: Bot username
+APP_SECRET_KEY:
+  source: generated_secret
+  environments: [production]
+  required: true
+APP_ENV:
+  source: derived
+  environments: [production]
+  required: true
+"""),
+    }
+
+    result = await node.run(_state(entries))
+
+    assert result["user_secret_keys"] == ["BOT_USERNAME", "USER_TOKEN"]
+
+
 async def test_revoked_stored_key_rotates_before_registration(node, admin):
     first = await node.run(_state(_entries()))
     old = first["secret_values"]["KEY"]

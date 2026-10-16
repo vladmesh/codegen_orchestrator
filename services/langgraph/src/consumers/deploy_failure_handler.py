@@ -20,6 +20,7 @@ from ..clients.api import api_client
 from ..deploy_fence import DeployFence, DeployWrite
 from ._events import publish_callback_event
 from ._live_work import live_work_unsettled
+from .deploy_result_handler import user_secret_classification
 
 logger = structlog.get_logger(__name__)
 
@@ -37,13 +38,15 @@ async def _handle_deploy_failure(  # noqa: PLR0913
     deploy_outcome: DeployOutcome = DeployOutcome.RETRY,
     deploy_fix_attempt: int = 0,
     missing_user_secrets: list[MissingUserSecret] | None = None,
+    user_secret_keys: list[str] | None = None,
 ) -> dict:
     """Update run status/result on deploy failure.
 
     Stores deploy_outcome and error_details in run.result for
     the dispatcher to read and route story lifecycle. On a
     WAITING_FOR_USER_SECRET outcome, `missing_user_secrets` carries the
-    structured keys the scheduler asks the user for.
+    structured keys the scheduler asks the user for. `user_secret_keys` is the
+    resolved contract's classification, None when no contract was resolved.
     """
     if deploy_outcome is DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED:
         error_msg = bounded_diagnostic(error_msg)
@@ -52,6 +55,7 @@ async def _handle_deploy_failure(  # noqa: PLR0913
         error_details=error_msg,
         deploy_fix_attempt=deploy_fix_attempt,
         missing_user_secrets=missing_user_secrets or [],
+        **user_secret_classification(user_secret_keys),
     )
     await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(

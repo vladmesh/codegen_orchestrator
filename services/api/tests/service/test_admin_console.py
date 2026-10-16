@@ -6,6 +6,8 @@ import uuid
 import pytest
 from sqlalchemy import delete
 
+from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.queues.deploy import DeployOutcome
 from shared.models import (
     Application,
     Deployment,
@@ -43,7 +45,10 @@ async def product(db_session):
         status="active",
         initiating_run_id=f"run-init-{suffix}",
         owner_id=owner_id,
-        config={"modules": ["backend", "tg_bot"], "secrets": {"OPENWEATHER_KEY": "enc"}},
+        config={
+            "modules": ["backend", "tg_bot"],
+            "secrets": {"OPENWEATHER_KEY": "enc", "PLATFORM_KEY": "enc"},
+        },
     )
     server = Server(handle=f"vps-{suffix}", host=f"{suffix}.test", public_ip="10.9.0.1")
     repo = Repository(
@@ -149,6 +154,9 @@ async def product(db_session):
             story_id=story.id,
             started_at=at(19),
             completed_at=at(22),
+            result=DeployRunResult(
+                deploy_outcome=DeployOutcome.SUCCESS, user_secret_keys=["OPENWEATHER_KEY"]
+            ).model_dump(mode="json"),
         ),
     ]
     db_session.add_all([brief, install, feature, waiting])
@@ -248,6 +256,8 @@ async def test_journey_detail_lays_out_the_story_and_its_passport(async_client, 
     passport = body["passport"]
     assert passport["modules"] == ["backend", "tg_bot"]
     assert passport["user_secrets"] == ["OPENWEATHER_KEY"]
+    assert passport["platform_secrets"] == ["PLATFORM_KEY"]
+    assert passport["unclassified_secrets"] == []
     assert passport["containers"] == [
         {
             "name": "backend",
