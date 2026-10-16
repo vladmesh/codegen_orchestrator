@@ -479,7 +479,7 @@ def test_attention_puts_critical_first_then_most_recent():
     )
 
     items = attention_items(
-        titles, tasks, stories, incidents, [(app_row, PROJECT)], ["engineering:queue lag"]
+        titles, tasks, stories, incidents, [(app_row, PROJECT)], ["engineering:queue lag"], []
     )
 
     assert [(i.kind, i.severity) for i in items] == [
@@ -510,7 +510,7 @@ def test_attention_scope_keeps_one_project_and_recent_items():
             server_handle="vps-ams-2",
         )
     ]
-    items = attention_items({}, tasks, [], incidents, [], ["engineering:queue lag"])
+    items = attention_items({}, tasks, [], incidents, [], ["engineering:queue lag"], [])
 
     recent = scope_attention(items, at(0), None)
     assert sorted(i.task_id or i.kind for i in recent) == ["incident", "queue", "t-new", "t-other"]
@@ -518,6 +518,79 @@ def test_attention_scope_keeps_one_project_and_recent_items():
     scoped = scope_attention(items, at(0), PROJECT)
     assert [i.task_id for i in scoped] == ["t-new"]
     assert scope_attention(items, None, None) == items
+
+
+def ci_run(run_id, conclusion, start=None, end=None, jobs=()):
+    return {
+        "id": run_id,
+        "url": f"https://github.com/org/repo/actions/runs/{run_id}",
+        "status": "completed",
+        "conclusion": conclusion,
+        "failed_jobs": [{"name": name, "failed_steps": []} for name in jobs],
+        **({"started_at": at(start).isoformat()} if start is not None else {}),
+        **({"completed_at": at(end).isoformat()} if end is not None else {}),
+    }
+
+
+def ci_story(*runs, **overrides):
+    return story(
+        **{
+            "status": "pr_review",
+            "generated_product_timeline": {"ci_runs": list(runs)},
+            **overrides,
+        }
+    )
+
+
+def test_attention_names_the_failed_jobs_of_a_story_whose_latest_ci_failed():
+    stories = [
+        ci_story(ci_run(2, "failure", 40, 47, ["lint", "unit"]), ci_run(1, "success", 30, 35))
+    ]
+
+    [item] = attention_items({PROJECT: "weather-cats"}, [], [], [], [], [], stories)
+
+    assert item.kind == "ci"
+    assert item.severity == Severity.WARNING
+    assert item.title == "CI failed on PR #14: Weather posts"
+    assert item.detail == "lint, unit"
+    assert item.since == at(47)
+    assert (item.story_id, item.project_id, item.project_title) == ("st-1", PROJECT, "weather-cats")
+
+
+def test_attention_drops_a_ci_failure_once_a_later_run_concludes_otherwise():
+    green = ci_story(ci_run(1, "failure", 10, 15, ["unit"]), ci_run(2, "success", 20, 25))
+    pending = ci_story(ci_run(1, "failure", 10, 15, ["unit"]), ci_run(2, None, 20))
+    done = ci_story(ci_run(1, "failure", 10, 15, ["unit"]), status="completed")
+
+    assert attention_items({}, [], [], [], [], [], [green, pending, done]) == []
+
+
+def test_attention_orders_untimed_ci_runs_by_position_and_dates_them_by_the_story():
+    failing = ci_story(ci_run(1, "success"), ci_run(2, "failure", jobs=["e2e"]), updated_at=at(50))
+    recovered = ci_story(ci_run(1, "failure", jobs=["e2e"]), ci_run(2, "success"))
+
+    [item] = attention_items({}, [], [], [], [], [], [failing, recovered])
+
+    assert (item.detail, item.since) == ("e2e", at(50))
+
+
+def test_attention_scope_keeps_the_ci_items_of_one_project():
+    other = uuid.UUID("00000000-0000-0000-0000-0000000000bb")
+    stories = [
+        ci_story(ci_run(1, "failure", 10, 15, ["unit"])),
+        ci_story(ci_run(1, "failure", 10, 15, ["unit"]), id="st-2", project_id=other),
+    ]
+    items = attention_items({}, [], [], [], [], [], stories)
+
+    assert [i.story_id for i in scope_attention(items, None, other)] == ["st-2"]
+
+
+@pytest.mark.parametrize("ci_runs", ["failure", [["failure"]], None])
+def test_attention_refuses_malformed_ci_runs(ci_runs):
+    malformed = story(status="pr_review", generated_product_timeline={"ci_runs": ci_runs})
+
+    with pytest.raises(ValueError, match="ci_runs"):
+        attention_items({}, [], [], [], [], [], [malformed])
 
 
 def test_platform_services_join_declared_and_used_with_their_products():
