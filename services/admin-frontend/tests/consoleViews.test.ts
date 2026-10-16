@@ -98,7 +98,7 @@ function product(id: string, title: string, overrides: Partial<ProductView['pass
     slug: title,
     status: 'active',
     latest_story_id: null,
-    passport: { modules: ['backend', 'tg_bot'], packages: [], containers: [], user_secrets: [], ...overrides },
+    passport: { modules: ['backend', 'tg_bot'], packages: [], containers: [], user_secrets: [], platform_secrets: [], unclassified_secrets: [], ...overrides },
   }
 }
 

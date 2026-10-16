@@ -13,6 +13,7 @@ from shared.contracts.dto.product_brief import (
     ProductBriefContent,
     ProductBriefRead,
 )
+from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
     GrantIntent,
@@ -509,3 +510,56 @@ async def test_deploy_worker_missing_secrets_fails(
 
     assert result["status"] == "failed"
     assert "missing" in result["error"].lower()
+
+
+@pytest.mark.parametrize(
+    ("subgraph_result", "classified"),
+    [
+        (
+            {
+                "deployed_url": "http://1.2.3.4:8080",
+                "deployment_result": {},
+                "smoke_result": {"status": "pass", "checks": []},
+                "user_secret_keys": ["TELEGRAM_BOT_TOKEN"],
+            },
+            ["TELEGRAM_BOT_TOKEN"],
+        ),
+        (
+            {
+                "deployed_url": None,
+                "missing_user_secrets": [{"key": "TELEGRAM_BOT_TOKEN", "description": "Token"}],
+                "resolution_outcome": DeployOutcome.WAITING_FOR_USER_SECRET,
+                "user_secret_keys": ["TELEGRAM_BOT_TOKEN"],
+                "errors": [],
+            },
+            ["TELEGRAM_BOT_TOKEN"],
+        ),
+        (
+            {
+                "deployed_url": None,
+                "resolution_outcome": DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                "user_secret_keys": None,
+                "errors": ["environment contract is invalid"],
+            },
+            None,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_deploy_result_records_the_resolved_contracts_user_secret_keys(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph, subgraph_result, classified
+):
+    mock_devops_subgraph.ainvoke = AsyncMock(return_value=subgraph_result)
+
+    from src.consumers.deploy import process_deploy_job
+
+    await process_deploy_job(_job(), mock_redis)
+
+    stored = [
+        c.kwargs["json"]["result"]
+        for c in mock_api.patch.call_args_list
+        if c.args[0] == "runs/deploy-smoke-1" and "result" in c.kwargs["json"]
+    ][-1]
+    result = DeployRunResult.model_validate(stored)
+    assert result.secrets_classified is (classified is not None)
+    assert result.user_secret_keys == (classified or [])

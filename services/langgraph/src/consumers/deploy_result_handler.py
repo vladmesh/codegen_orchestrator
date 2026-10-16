@@ -43,6 +43,14 @@ _USERS_GRANT_CAPABILITY = "USERS_GRANT_CAPABILITY"
 _SETTINGS_WRITE_CAPABILITY = "SETTINGS_WRITE_CAPABILITY"  # noqa: S105
 
 
+def user_secret_classification(user_secret_keys: list[str] | None) -> dict[str, list[str]]:
+    """`DeployRunResult` fields recording the resolved contract's user-secret keys.
+
+    Empty when the deploy resolved no contract, so its result stays unclassified.
+    """
+    return {} if user_secret_keys is None else {"user_secret_keys": user_secret_keys}
+
+
 async def _handle_smoke_failure(  # noqa: PLR0913
     *,
     result: dict,
@@ -81,6 +89,7 @@ async def _handle_smoke_failure(  # noqa: PLR0913
         smoke_result=smoke_result,
         error_details=smoke_details,
         deploy_fix_attempt=msg.deploy_fix_attempt,
+        **user_secret_classification(result.get("user_secret_keys")),
     )
     await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
@@ -238,6 +247,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
         bot_username=result.get("bot_username"),
         settings_seed=settings_seed,
         deploy_fix_attempt=msg.deploy_fix_attempt,
+        **user_secret_classification(result.get("user_secret_keys")),
     )
     await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
@@ -530,6 +540,7 @@ async def _handle_owner_access_failure(  # noqa: PLR0913
                 bot_username=result.get("bot_username"),
                 error_details=reason,
                 deploy_fix_attempt=deploy_fix_attempt,
+                **user_secret_classification(result.get("user_secret_keys")),
             ).model_dump(mode="json"),
         },
     )
@@ -584,6 +595,7 @@ async def _handle_settings_seed_failure(  # noqa: PLR0913
         error_details=f"settings_seed:{failure_detail}",
         settings_seed=settings_seed,
         deploy_fix_attempt=deploy_fix_attempt,
+        **user_secret_classification(result.get("user_secret_keys")),
     )
     error_msg = f"Deployed service did not accept confirmed settings: {failure_detail}"
     logger.warning(

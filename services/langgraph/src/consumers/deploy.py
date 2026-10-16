@@ -52,6 +52,7 @@ from .deploy_precheck import _run_deploy_precheck
 from .deploy_result_handler import (
     _handle_deploy_success,
     _handle_smoke_failure,
+    user_secret_classification,
 )
 
 logger = structlog.get_logger(__name__)
@@ -251,6 +252,7 @@ def _build_subgraph_input(
         "secret_values": {},
         "non_secret_values": {},
         "missing_user_secrets": [],
+        "user_secret_keys": None,
         "deployment_result": None,
         "deployed_url": None,
         "smoke_result": None,
@@ -413,6 +415,7 @@ async def _deploy_failure_terminal(
     *,
     deploy_outcome: DeployOutcome = DeployOutcome.RETRY,
     missing_user_secrets: list[MissingUserSecret] | None = None,
+    user_secret_keys: list[str] | None = None,
 ) -> DeployTerminal:
     """Persist one classified deploy failure and wrap its worker response."""
     response = await _handle_deploy_failure(
@@ -426,6 +429,7 @@ async def _deploy_failure_terminal(
         deploy_outcome=deploy_outcome,
         deploy_fix_attempt=msg.deploy_fix_attempt,
         missing_user_secrets=missing_user_secrets,
+        user_secret_keys=user_secret_keys,
         fence=fence,
     )
     return DeployTerminal(response)
@@ -892,6 +896,7 @@ async def _route_deploy_result(
                     deploy_outcome=DeployOutcome.CANCELLED,
                     action=msg.action,
                     deployment_result=result.get("deployment_result"),
+                    **user_secret_classification(result.get("user_secret_keys")),
                 ).model_dump(mode="json"),
             },
         )
@@ -952,6 +957,7 @@ async def _route_deploy_result(
                 f"Missing secrets: {', '.join(missing_keys)}",
                 deploy_outcome=DeployOutcome.WAITING_FOR_USER_SECRET,
                 missing_user_secrets=missing,
+                user_secret_keys=result.get("user_secret_keys"),
             )
         ).response
 
@@ -965,6 +971,7 @@ async def _route_deploy_result(
                 fence,
                 "; ".join(errors),
                 deploy_outcome=typed_outcome,
+                user_secret_keys=result.get("user_secret_keys"),
             )
         ).response
 
@@ -977,6 +984,7 @@ async def _route_deploy_result(
             fence,
             "; ".join(errors),
             deploy_outcome=DeployOutcome.RETRY,
+            user_secret_keys=result.get("user_secret_keys"),
         )
     ).response
 

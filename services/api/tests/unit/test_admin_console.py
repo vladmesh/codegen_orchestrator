@@ -11,7 +11,9 @@ from pydantic import ValidationError
 import pytest
 
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
+from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.queues.deploy import DeployOutcome
 from src.admin_console import (
     attention_items,
     build_passports,
@@ -425,7 +427,7 @@ def test_passport_lists_published_packages_container_ports_and_secret_names_only
     ]
 
     passport = build_passports(
-        [project], [published, refused], [repo], [app_row], [port], deployments
+        [project], [published, refused], [repo], [app_row], [port], deployments, []
     )[PROJECT]
 
     assert passport.modules == ["backend", "tg_bot"]
@@ -439,8 +441,70 @@ def test_passport_lists_published_packages_container_ports_and_secret_names_only
         8102,
         "a91f3c2",
     )
-    assert passport.user_secrets == ["OPENWEATHER_KEY", "TELEGRAM_TOKEN"]
+    assert passport.unclassified_secrets == ["OPENWEATHER_KEY", "TELEGRAM_TOKEN"]
     assert "ciphertext" not in passport.model_dump_json()
+
+
+BOT_SECRETS = dict.fromkeys(
+    ("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME", "PLATFORM_KEY", "POSTGRES_PASSWORD"),
+    "ciphertext",
+)
+
+
+def deploy_run(run_id, start, result):
+    return run(run_id, "deploy", "completed", start, start + 1, project_id=PROJECT, result=result)
+
+
+def classified(*user_secret_keys):
+    return DeployRunResult(
+        deploy_outcome=DeployOutcome.SUCCESS, user_secret_keys=list(user_secret_keys)
+    ).model_dump(mode="json")
+
+
+def secret_groups(*deploy_runs):
+    project = SimpleNamespace(id=PROJECT, config={"secrets": BOT_SECRETS})
+    passport = build_passports([project], [], [], [], [], [], deploy_runs)[PROJECT]
+    return passport.user_secrets, passport.platform_secrets, passport.unclassified_secrets
+
+
+def test_passport_splits_secrets_by_the_classified_deploy():
+    run_ = deploy_run("dep-1", 0, classified("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME"))
+
+    assert secret_groups(run_) == (
+        ["TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME"],
+        ["PLATFORM_KEY", "POSTGRES_PASSWORD"],
+        [],
+    )
+
+
+def test_passport_leaves_secrets_unclassified_when_the_deploy_recorded_no_classification():
+    stored_without_field = {"deploy_outcome": "success", "deployed_url": "https://bot.test"}
+
+    assert secret_groups(deploy_run("dep-1", 0, stored_without_field)) == (
+        [],
+        [],
+        sorted(BOT_SECRETS),
+    )
+
+
+def test_passport_counts_every_secret_as_platform_when_the_contract_has_no_user_secrets():
+    assert secret_groups(deploy_run("dep-1", 0, classified())) == (
+        [],
+        sorted(BOT_SECRETS),
+        [],
+    )
+
+
+def test_passport_takes_the_latest_classified_deploy():
+    older = deploy_run("dep-1", 0, classified("TELEGRAM_BOT_TOKEN"))
+    latest = deploy_run("dep-2", 10, classified("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME"))
+    unclassified_after = deploy_run("dep-3", 20, {"deploy_outcome": "cancelled"})
+
+    assert secret_groups(latest, unclassified_after, older) == (
+        ["TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME"],
+        ["PLATFORM_KEY", "POSTGRES_PASSWORD"],
+        [],
+    )
 
 
 def test_attention_puts_critical_first_then_most_recent():

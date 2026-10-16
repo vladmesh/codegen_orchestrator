@@ -919,6 +919,8 @@ export interface ProductPassport {
   packages: PackageRef[]
   containers: ContainerView[]
   user_secrets: string[]
+  platform_secrets: string[]
+  unclassified_secrets: string[]
 }
 
 export type StoryLinkKind = 'module_proposal'

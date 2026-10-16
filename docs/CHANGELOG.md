@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-16
 
+- The product passport lists config secret names as `user_secrets`, `platform_secrets` or `unclassified_secrets`
+  by the latest deploy's environment contract, which `DeployRunResult.user_secret_keys` now records.
 - The Attention feed lists a `ci` item, linked to the story's Journey, while a story's latest CI run on its
   pull request has failed; a later run with any other conclusion clears it.
 - The Journey read model carries `timeline`: each architect, scaffold, engineering, CI, merge, deploy and QA
