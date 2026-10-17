@@ -6,8 +6,9 @@ import uuid
 import pytest
 from sqlalchemy import delete
 
-from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.dto.run_result import DeployRunResult, QARunResult
 from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.queues.qa import QAOutcome
 from shared.models import (
     Application,
     Deployment,
@@ -289,7 +290,13 @@ async def test_a_started_and_completed_qa_run_shows_its_duration_on_the_journey(
 
     started = await async_client.post(f"/api/runs/{run_id}/start")
     assert started.json()["started"] is True
-    completed = await async_client.patch(f"/api/runs/{run_id}", json={"status": "completed"})
+    completed = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={
+            "status": "completed",
+            "result": QARunResult(qa_outcome=QAOutcome.PASSED).model_dump(mode="json"),
+        },
+    )
     assert completed.status_code == 200, completed.text
 
     response = await async_client.get(f"/api/admin/v2/journeys/{product['story'].id}")
