@@ -957,6 +957,8 @@ async def start_run(
 
     Starting a run that is already running is the same answer, so a worker
     retrying after a lost response is not refused its own start.
+
+    The first accepted start stamps `started_at`; a refused start never does.
     """
     run, fenced = await _lock_launch_context(run_id, db)
     if fenced or run.status in _TERMINAL_RUN_STATUSES:
@@ -965,6 +967,8 @@ async def start_run(
         return DeployRunStart(run_id=run_id, started=False, run_status=RunStatus(run.status))
 
     run.status = RunStatus.RUNNING.value
+    if run.started_at is None:
+        run.started_at = datetime.now(UTC)
     await db.commit()
     return DeployRunStart(run_id=run_id, started=True, run_status=RunStatus.RUNNING)
 
