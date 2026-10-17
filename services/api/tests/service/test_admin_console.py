@@ -6,8 +6,9 @@ import uuid
 import pytest
 from sqlalchemy import delete
 
-from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.dto.run_result import DeployRunResult, QARunResult
 from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.queues.qa import QAOutcome
 from shared.models import (
     Application,
     Deployment,
@@ -270,6 +271,40 @@ async def test_journey_detail_lays_out_the_story_and_its_passport(async_client, 
             "deployed_sha": "a91f3c2",
         }
     ]
+
+
+async def test_a_started_and_completed_qa_run_shows_its_duration_on_the_journey(
+    async_client, db_session, product
+):
+    run_id = f"qa-{uuid.uuid4().hex[:8]}"
+    db_session.add(
+        Run(
+            id=run_id,
+            type="qa",
+            status="queued",
+            project_id=product["project"].id,
+            story_id=product["story"].id,
+        )
+    )
+    await db_session.commit()
+
+    started = await async_client.post(f"/api/runs/{run_id}/start")
+    assert started.json()["started"] is True
+    completed = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={
+            "status": "completed",
+            "result": QARunResult(qa_outcome=QAOutcome.PASSED).model_dump(mode="json"),
+        },
+    )
+    assert completed.status_code == 200, completed.text
+
+    response = await async_client.get(f"/api/admin/v2/journeys/{product['story'].id}")
+    assert response.status_code == 200, response.text
+    [qa] = [s for s in response.json()["timeline"]["stages"] if s["kind"] == "qa"]
+    assert (qa["label"], qa["state"]) == ("QA 1", "done")
+    assert qa["duration_seconds"] is not None
+    assert qa["duration_seconds"] >= 0
 
 
 MODULE_PR = "https://github.com/vladmesh/codegen-product-kit/pull/42"

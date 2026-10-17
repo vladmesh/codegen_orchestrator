@@ -83,6 +83,7 @@ async def test_a_cancelled_run_cannot_be_started(async_client: AsyncClient):
     run = await async_client.get(f"/api/runs/{run_id}")
     assert run.json()["status"] == "cancelled"
     assert run.json()["completed_at"] is not None
+    assert run.json()["started_at"] is None
     claimed = await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
     assert claimed.json()["granted"] is False
 
@@ -106,12 +107,26 @@ async def test_starting_a_live_run_twice_is_the_same_answer(async_client: AsyncC
     run_id = await _deploy_run(async_client, run_status="queued")
 
     first = await async_client.post(f"/api/runs/{run_id}/start")
+    first_stamp = (await async_client.get(f"/api/runs/{run_id}")).json()["started_at"]
     second = await async_client.post(f"/api/runs/{run_id}/start")
 
     assert first.json()["started"] is True
     assert second.json()["started"] is True
     run = await async_client.get(f"/api/runs/{run_id}")
     assert run.json()["status"] == "running"
+    assert run.json()["started_at"] == first_stamp
+
+
+@pytest.mark.asyncio
+async def test_the_first_start_records_when_the_run_started(async_client: AsyncClient):
+    run_id = await _deploy_run(async_client, run_status="queued")
+    assert (await async_client.get(f"/api/runs/{run_id}")).json()["started_at"] is None
+
+    before = datetime.now(UTC)
+    await async_client.post(f"/api/runs/{run_id}/start")
+
+    started_at = (await async_client.get(f"/api/runs/{run_id}")).json()["started_at"]
+    assert before <= datetime.fromisoformat(started_at) <= datetime.now(UTC)
 
 
 @pytest.mark.asyncio

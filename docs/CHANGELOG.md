@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Kit 14fa729c (core 2.6.0) is the scaffold, tooling and catalog pin, so a new product's bot registry
   takes a text handler and inline callbacks besides commands.
+- `POST /api/runs/{id}/start` stamps `started_at` on the first accepted start, so deploy and QA runs
+  show a duration on the Journey timeline instead of "not recorded".
 
 ## 2026-10-16
 
