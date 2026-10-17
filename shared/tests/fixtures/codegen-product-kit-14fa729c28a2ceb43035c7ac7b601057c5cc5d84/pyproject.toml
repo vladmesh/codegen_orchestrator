@@ -5,7 +5,7 @@ description = "A product generated with codegen-product-kit"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git@7b547c69e508d8e49d2cbab54efcab1df7fc2270",
+    "codegen-kit-tooling @ git+https://github.com/vladmesh/codegen-product-kit.git@14fa729c28a2ceb43035c7ac7b601057c5cc5d84",
 ]
 
 [dependency-groups]

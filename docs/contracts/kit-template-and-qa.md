@@ -21,13 +21,12 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by an immutable
 commit of that repository and no longer from `service-template`.
-The production boundary is kit main commit `7b547c69e508d8e49d2cbab54efcab1df7fc2270`
-(kit card 57, merged-main Runner 38024429552 green on it; a generated users write commits
-before it acknowledges). Rendered at a commit, Copier
-records `_commit` in `git describe` form (`packages/tg-channels/v0.1.2-14-g7b547c6`);
+The production boundary is kit main commit `14fa729c28a2ceb43035c7ac7b601057c5cc5d84`.
+Rendered at a commit, Copier
+records `_commit` in `git describe` form (`packages/tg-channels/v0.1.2-17-g14fa729`);
 `shared.contracts.template.recorded_template_commit_matches` and the install probe accept
 exactly the pin itself or that form of it. The matching
-`shared/tests/fixtures/codegen-product-kit-7b547c69e508d8e49d2cbab54efcab1df7fc2270` tree is
+`shared/tests/fixtures/codegen-product-kit-14fa729c28a2ceb43035c7ac7b601057c5cc5d84` tree is
 its `backend,tg_bot` Copier render. The root `codegen-kit-tooling` dependency, the LangGraph
 requirement and their locks resolve the same commit; the locks are the CI producer's output
 (`.github/workflows/template-fixture.yml`, job `locks`), never hand edits.
@@ -44,12 +43,14 @@ The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
 after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs, as since the
 kit's [0.6.3 release](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md).
 
-This commit carries core facade `2.5.0`, protocol `1` and tooling distribution `0.1.0`:
-the core-owned product `language` setting, one authoritative bot command registry, and the
-typed `kit check-install` preflight, on top of generic platform environment sources and
-finite bilingual binding v2 (v1 unchanged).
-The retained fixture was rendered in [CI run 38025911432](https://github.com/vladmesh/codegen_orchestrator/actions/runs/38025911432);
-[producer hashes](../evidence/catalog-install-fixture.json) cover every tracked file and the saved answers.
+This commit carries core facade `2.6.0`, protocol `1` and tooling distribution `0.1.0`:
+the core-owned product `language` setting, one authoritative bot registry for the product's
+commands, inline callbacks and text handler (the generated product's `services/tg_bot/AGENTS.md`,
+"Command registry", owns its forms), a generated users write that commits before it
+acknowledges, and the typed `kit check-install` preflight, on top of generic platform
+environment sources and finite bilingual binding v2 (v1 unchanged).
+The retained fixture's [producer hashes](../evidence/catalog-install-fixture.json) cover every
+tracked file and the saved answers.
 
 Failed Actions evidence keeps the earliest root diagnostic and final error in at most
 `scheduler.ci_failure_log_excerpt_lines` data lines (40), plus at most two omission separators.
