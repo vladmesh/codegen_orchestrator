@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-17
+
+- Kit 14fa729c (core 2.6.0) is the scaffold, tooling and catalog pin, so a new product's bot registry
+  takes a text handler and inline callbacks besides commands.
+
 ## 2026-10-16
 
 - The admin Journey page shows the story's repository at its head: a collapsible tree with changed files marked

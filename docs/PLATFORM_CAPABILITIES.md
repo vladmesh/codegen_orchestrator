@@ -2,7 +2,7 @@
 
 <!-- Generated from docs/platform_capabilities.yaml by `python -m scripts.platform_capabilities`; edit the YAML, not this file. -->
 
-**Version 25, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
+**Version 26, status: owner-reviewed (product list agreed by the owner 2026-09-28).**
 
 What a product built by this orchestrator can have and what it cannot, with the workaround where one exists. The PO reads the product part of the same source on every turn; the Architect reads the technical part.
 
@@ -33,7 +33,7 @@ What a product built by this orchestrator can have and what it cannot, with the 
 
 ## Technical detail
 
-Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `7b547c69e508d8e49d2cbab54efcab1df7fc2270`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
+Derived from the kit `gh:vladmesh/codegen-product-kit` at commit `14fa729c28a2ceb43035c7ac7b601057c5cc5d84`. The release pinned in `scheduler.service_template_ref`. `gh:vladmesh/service-template` is still an admitted Copier source, but no new product is scaffolded from it.
 
 Code it was read from:
 
@@ -58,7 +58,7 @@ Code it was read from:
 
 #### Add a catalog capability
 
-How: One INSTALL of a stored plan or plan_install closure on core-2.5.0 backend,tg_bot, a draft's after scaffold. Per attempt: own story-head checkout, kit check-install, kit add at the catalog commit, validate, head to PR/CI/deploy. Kit-named product glue gets one repair task first; other glue a task after.
+How: One INSTALL of a stored plan or plan_install closure on core-2.6.0 backend,tg_bot, a draft's after scaffold. Per attempt: own story-head checkout, kit check-install, kit add at the catalog commit, validate, head to PR/CI/deploy. Kit-named product glue gets one repair task first; other glue a task after.
 
 #### Plain HTTP self links
 
@@ -128,7 +128,7 @@ Why: Postgres/Redis host ports are allocated but unpublished; compose/firewall e
 
 Why: Nothing snapshots or copies the `db_data` volume; it lives only on the product's server.
 
-### Kit at 7b547c69e508
+### Kit at 14fa729c28a2
 
 Modules:
 

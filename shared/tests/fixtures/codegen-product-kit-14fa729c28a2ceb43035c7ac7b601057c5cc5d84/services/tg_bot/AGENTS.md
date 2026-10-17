@@ -124,17 +124,62 @@ apply through product files, or `incompatible` with a stable reason code.
 ## Command registry
 
 `src/generated/commands.py` is the only registration point: access in group -1, core `/start`
-and `/command`, product `COMMANDS` from `src/commands.py`, bound module commands, then the core
-unknown-input reply. Declare product commands only as `ProductCommand("name", handler)` entries
-and run `make generate-from-spec`. Collisions, reserved names, other declaration forms and any
-direct `add_handler`/`CommandHandler`/`MessageHandler` use, or any access to the application's
-`handlers` registry (also through an alias such as `bot = context.application`), fail
-generation and `make lint`. Keep `ApplicationBuilder().application_class(commands.CoreApplication)`
-in `src/main.py`: registration refuses another application class and seals the registry field.
-Callbacks keep bounded opaque context for ten minutes, tied to initiating user/chat/action,
-and are consumed before any await. Restart/expiry requires rerunning the command. Commands
-and callbacks always call `request_as_telegram_user` with the real update user, never an owner
-from callback data. Generated mutations use one attempt to avoid automatic repeated effects.
+and `/command`, product commands, product callbacks, bound module commands and callbacks, the
+product text handler, then the core unknown-input reply. The product declares its input in
+`src/commands.py`, then runs `make generate-from-spec`:
+
+```python
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+from services.tg_bot.src.generated.commands import (
+    ProductCallback,
+    ProductCommand,
+    ProductText,
+    callback_data,
+    callback_payload,
+)
+
+
+async def handle_list(update, context) -> None: ...
+
+
+async def add_item(update, context) -> None:
+    item_id = await save_item(update.message.text)  # Product logic.
+    button = InlineKeyboardButton("Bought", callback_data=callback_data("bought", item_id))
+    await update.message.reply_text("Added", reply_markup=InlineKeyboardMarkup([[button]]))
+
+
+async def mark_bought(update, context) -> None:
+    await update.callback_query.answer()
+    await mark_item_bought(callback_payload(update))  # Product logic.
+
+
+COMMANDS = (ProductCommand("list", handle_list),)
+TEXT = ProductText(add_item)
+CALLBACKS = (ProductCallback("bought", mark_bought),)
+```
+
+- `COMMANDS` (required): a tuple of `ProductCommand("name", handler)`.
+- `TEXT` (optional): the one `ProductText(handler)` for every non-command text message. Without
+  it core answers text with the unknown-input reply; commands nobody declared always get that
+  reply.
+- `CALLBACKS` (optional): a tuple of `ProductCallback("name", handler)`. Build each button's
+  `callback_data` with `callback_data("name", payload)`, which yields `p:<name>:<payload>` within
+  Telegram's 64 bytes; module bindings own `b1:` data, so the namespaces never meet. In the
+  handler read the payload with `callback_payload(update)` and answer the query. The payload is
+  user-visible client data: re-check ownership through the backend, never trust it as identity.
+
+Names match `[a-z][a-z0-9_]*`, at most 32 characters. Collisions, reserved names, other
+declaration forms and any direct `add_handler`/`CommandHandler`/`MessageHandler` use, or any
+access to the application's `handlers` registry (also through an alias such as
+`bot = context.application`), fail generation and `make lint`. Keep
+`ApplicationBuilder().application_class(commands.CoreApplication)` in `src/main.py`:
+registration refuses another application class and seals the registry field.
+Module binding callbacks keep bounded opaque context for ten minutes, tied to initiating
+user/chat/action, and are consumed before any await. Restart/expiry requires rerunning the
+command. Commands and callbacks always call `request_as_telegram_user` with the real update
+user, never an owner from callback data. Generated mutations use one attempt to avoid automatic
+repeated effects.
 
 The relay owns a separate subscriber broker, started/stopped through bot hooks. It consumes
 declared Redis streams in `events:tg_bot` from first-start `0-0`, with persistent seven-day

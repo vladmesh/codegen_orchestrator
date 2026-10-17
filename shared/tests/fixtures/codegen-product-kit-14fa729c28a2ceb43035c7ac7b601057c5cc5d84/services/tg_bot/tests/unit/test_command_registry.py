@@ -35,7 +35,8 @@ def test_registry_registers_access_commands_then_core_fallback() -> None:
     registered = [sorted(item.commands)[0] for item in group if isinstance(item, CommandHandler)]
     assert registered == [item["command"] for item in commands.COMMANDS]
     assert isinstance(group[-1], MessageHandler)
-    assert sum(isinstance(item, MessageHandler) for item in group) == 1
+    # The product's optional text handler is the only other one.
+    assert sum(isinstance(item, MessageHandler) for item in group) == 1 + commands.PRODUCT_TEXT
 
 
 def test_registered_handlers_are_final() -> None:

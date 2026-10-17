@@ -7,12 +7,15 @@
 
 Built-in, product and bound module commands come from the validated host contract, in this
 order, and unknown commands or text are answered by core in the core ``language`` setting.
-Declare a product command as ``ProductCommand("name", handler)`` in ``COMMANDS`` of
-``services/tg_bot/src/commands.py`` and run ``make generate-from-spec``; product CI fails when
-this file and the declarations disagree. The bot is built with
-``ApplicationBuilder().application_class(CoreApplication)``. After registration the handler
-groups, every registered handler and the application's ``handlers`` field itself are final:
-adding, removing, replacing or deleting one raises CommandRegistryError.
+In ``services/tg_bot/src/commands.py`` the product declares commands as
+``COMMANDS = (ProductCommand("name", handler), ...)``, optionally its one non-command text
+handler as ``TEXT = ProductText(handler)`` and its inline buttons as
+``CALLBACKS = (ProductCallback("name", handler), ...)`` with ``callback_data("name", payload)``;
+then it runs ``make generate-from-spec``. Product CI fails when this file and the declarations
+disagree. The bot is built with ``ApplicationBuilder().application_class(CoreApplication)``.
+After registration the handler groups, every registered handler and the application's
+``handlers`` field itself are final: adding, removing, replacing or deleting one raises
+CommandRegistryError.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 import importlib
+from types import ModuleType
 from typing import Any, NoReturn
 
 from telegram import Update
@@ -52,6 +56,12 @@ UNKNOWN = {
     "ru": "Не понимаю это сообщение. Доступные команды: {commands}",
     "en": "I don't understand this message. Available commands: {commands}",
 }
+PRODUCT_TEXT = False
+PRODUCT_CALLBACKS: tuple[str, ...] = ()
+#: Product callback data is ``p:<name>:<payload>``; module bindings own ``b1:``.
+CALLBACK_PREFIX = "p:"
+#: Telegram's limit on an inline button's ``callback_data``, in UTF-8 bytes.
+MAX_CALLBACK_DATA = 64
 
 Handler = Callable[[Any, Any], Coroutine[Any, Any, None]]
 
@@ -59,6 +69,24 @@ Handler = Callable[[Any, Any], Coroutine[Any, Any, None]]
 @dataclass(frozen=True)
 class ProductCommand:
     """One product-owned Telegram command, declared in ``COMMANDS`` of the product module."""
+
+    name: str
+    handler: Handler
+
+
+@dataclass(frozen=True)
+class ProductText:
+    """The product's one non-command text handler, declared as ``TEXT`` of the product module."""
+
+    handler: Handler
+
+
+@dataclass(frozen=True)
+class ProductCallback:
+    """One product inline-button callback, declared in ``CALLBACKS`` of the product module.
+
+    It receives the callback queries whose data ``callback_data(name, payload)`` built.
+    """
 
     name: str
     handler: Handler
@@ -77,21 +105,67 @@ def module_commands() -> list[str]:
     return [item["command"] for item in COMMANDS if item["owner"].startswith("package:")]
 
 
-def product_handlers() -> dict[str, Handler]:
-    """Load product handlers and refuse any declaration the registry does not hold."""
+def callback_data(name: str, payload: str = "") -> str:
+    """Return the ``callback_data`` that routes a button press to product callback ``name``."""
+    if name not in PRODUCT_CALLBACKS:
+        raise CommandRegistryError(f"{name!r} is not a declared product callback")
+    data = f"{CALLBACK_PREFIX}{name}:{payload}"
+    if len(data.encode()) > MAX_CALLBACK_DATA:
+        raise ValueError(f"callback data {data!r} exceeds {MAX_CALLBACK_DATA} bytes")
+    return data
+
+
+def callback_payload(update: Any) -> str:
+    """Return the payload of a product callback query, as given to ``callback_data``."""
+    data: str = update.callback_query.data
+    name, _, payload = data.removeprefix(CALLBACK_PREFIX).partition(":")
+    if not data.startswith(CALLBACK_PREFIX) or name not in PRODUCT_CALLBACKS:
+        raise CommandRegistryError(f"{data!r} is not product callback data")
+    return payload
+
+
+def _product_module() -> ModuleType | None:
     try:
-        module = importlib.import_module(PRODUCT_MODULE)
+        return importlib.import_module(PRODUCT_MODULE)
     except ModuleNotFoundError as error:
         if error.name != PRODUCT_MODULE:
             raise
-        declared: list[Any] = []
-    else:
-        declared = list(getattr(module, "COMMANDS", ()))
+        return None
+
+
+def product_handlers() -> dict[str, Handler]:
+    """Load product handlers and refuse any declaration the registry does not hold."""
+    declared = list(getattr(_product_module(), "COMMANDS", ()))
     if any(not isinstance(item, ProductCommand) for item in declared):
         raise CommandRegistryError("product COMMANDS entries must be ProductCommand values")
     if [item.name for item in declared] != owned_by("product"):
         raise CommandRegistryError(
             "product commands differ from the generated registry; run make generate-from-spec"
+        )
+    return {item.name: item.handler for item in declared}
+
+
+def product_text() -> Handler | None:
+    """Load the product text handler and refuse one the registry does not hold."""
+    declared = getattr(_product_module(), "TEXT", None)
+    if declared is not None and not isinstance(declared, ProductText):
+        raise CommandRegistryError("product TEXT must be a ProductText value")
+    if (declared is not None) != PRODUCT_TEXT:
+        raise CommandRegistryError(
+            "the product text handler differs from the generated registry; "
+            "run make generate-from-spec"
+        )
+    return declared.handler if declared is not None else None
+
+
+def product_callbacks() -> dict[str, Handler]:
+    """Load product callbacks and refuse any declaration the registry does not hold."""
+    declared = list(getattr(_product_module(), "CALLBACKS", ()))
+    if any(not isinstance(item, ProductCallback) for item in declared):
+        raise CommandRegistryError("product CALLBACKS entries must be ProductCallback values")
+    if tuple(item.name for item in declared) != PRODUCT_CALLBACKS:
+        raise CommandRegistryError(
+            "product callbacks differ from the generated registry; run make generate-from-spec"
         )
     return {item.name: item.handler for item in declared}
 
@@ -220,7 +294,7 @@ def register(
     bindings: Any,
     client_factory: Any = None,
 ) -> None:
-    """Register access, every registry command and the core unknown-input fallback."""
+    """Register access, every registry command and product input, then the core fallback."""
     if not isinstance(application, CoreApplication) or application._registry_sealed():
         raise CommandRegistryError(
             "build the bot with ApplicationBuilder().application_class(CoreApplication) and "
@@ -229,13 +303,21 @@ def register(
     if sorted(builtins) != sorted(owned_by("core")):
         raise CommandRegistryError(f"core built-ins must be exactly {owned_by('core')}")
     handlers = {**builtins, **product_handlers()}
+    text = product_text()
+    callbacks = product_callbacks()
     application.add_handler(TypeHandler(Update, access), group=-1)
     for item in COMMANDS:
         if item["owner"] in ("core", "product"):
             application.add_handler(CommandHandler(item["command"], handlers[item["command"]]))
+    # Before module bindings, so no module callback can take product callback data.
+    for name, handler in callbacks.items():
+        pattern = f"^{CALLBACK_PREFIX}{name}:"
+        application.add_handler(CallbackQueryHandler(handler, pattern=pattern))
     modules = _ModuleApplication(application, module_commands())
     bindings.register(modules, client_factory)
     modules.finish()
+    if text is not None:
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
 
     async def unknown(update: Any, context: Any) -> None:
         if update.effective_message is not None:

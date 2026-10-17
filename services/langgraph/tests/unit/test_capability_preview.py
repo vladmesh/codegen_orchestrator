@@ -85,7 +85,7 @@ def test_a_public_channel_capability_resolves_to_the_published_closure(activated
     assert install.binding.resource == "codegen_kit_tg_channels:bindings/default.yaml"
     assert install.catalog == CATALOG_ACTIVATION.source()
     assert install.catalog_digest == CATALOG_ACTIVATION.catalog_digest
-    assert install.core_version == CATALOG_ACTIVATION.core_version == "2.5.0"
+    assert install.core_version == CATALOG_ACTIVATION.core_version == "2.6.0"
     assert preview.technical.activation == CATALOG_ACTIVATION
 
 
