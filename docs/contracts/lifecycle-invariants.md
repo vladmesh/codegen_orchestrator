@@ -216,18 +216,31 @@ allocations it is not deployed: a revoke completes `SUCCESS`, because the access
 went with the deployment, and a grant fails `owner_access_proof_failed` through
 the ordinary grant retry. A grant, target or allocation set that cannot be read
 fails either operation closed with `owner_access_proof_failed`, never as that
-proof. For a deployed target the consumer decrypts the project's stored
-`USERS_GRANT_CAPABILITY` in memory, re-reads the record, requires its project,
-target, identity, head SHA, in-flight status and own Run id, checks the deploy
-lock with nothing awaited before the product call, and calls only the target
-base URL's `/users/grant` or `/users/revoke` and `/users/access` readback. A
-grant needs the identity active, a revoke inactive with no proof failure; an
-absent or undecryptable capability, a refusal or an unverified readback fails
-`owner_access_proof_failed` with a bounded reason and never mints a capability.
-A cleanup whose message carries `fence_active_deploys` first proves every
-unfinished `deploy.yml` run of the repository stopped (`fence_active_deploys`
-in the deployer module) and fails the same way when it cannot, since the deploy
-lock does not stop a GitHub run already dispatched by an earlier grant.
+proof. Either marker key in the Run metadata, even with a null value, makes the
+Run such an operation. Before its first external write the operation takes its
+Run's dispatch claim (`claim_dispatch`), the same locked admission a deploy takes
+before GitHub, and renews it before each later external write; a withdrawal or a
+lapsed lease that wins any renewal ends the Run `cancelled` with no further
+external write, so a withdrawn operation never changes access. A revoke owes a
+stop of earlier grant workflows when its message carries `fence_active_deploys`
+or when the record's grant Run crossed the dispatch boundary without completing
+`SUCCESS` (`shared.temporary_access_cleanup.grant_workflow_may_still_act`); the
+scheduler derives the flag from the same Run on every revoke publication, and the
+consumer re-derives it, so no retry or redispatch loses it. The stop proves every
+unfinished `deploy.yml` run of the repository stopped (`fence_active_deploys`),
+renewing admission and checking the deploy lock immediately before each
+cancellation request; it fails `owner_access_proof_failed` when a run cannot be
+proved stopped, and a lost lock ends the Run `deploy_lock_lost`. Only then may a
+revoke of an undeployed target record `SUCCESS`. For a deployed target the
+consumer decrypts the project's stored `USERS_GRANT_CAPABILITY` in memory,
+renews admission, re-reads the record and requires its project, target, base
+URL, identity, head SHA, in-flight status and own Run id, checks the lease and
+then the deploy lock with nothing awaited before the product call, and calls only
+the target base URL's `/users/grant` or `/users/revoke` and `/users/access`
+readback. A grant needs the identity active, a revoke inactive with no proof
+failure; an absent or undecryptable capability, a refusal or an unverified
+readback fails `owner_access_proof_failed` with a bounded reason and never mints
+a capability. The terminal Run outcome is written last.
 Both target columns are NOT NULL: every record has
 a target. The target lock and partial unique index scope contention to
 `(project_id, target_application_id)`.

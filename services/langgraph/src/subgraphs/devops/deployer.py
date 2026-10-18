@@ -11,6 +11,7 @@ import structlog
 from shared.clients.github import (
     GitHubAppClient,
     RegistrySecretsNotRefreshedError,
+    RequestGuard,
     deploy_pin_tag,
     registry_repository_secrets,
 )
@@ -75,7 +76,7 @@ class DeployDispatchWithdrawnError(RuntimeError):
     """
 
 
-def _require_live_lease(claim: DeployDispatchClaim | None, moment: datetime) -> None:
+def require_live_lease(claim: DeployDispatchClaim | None, moment: datetime) -> None:
     """Refuse to dispatch once the claim's deadline has passed.
 
     Holding the boundary is a lease, not a possession, and this is the promise
@@ -105,12 +106,50 @@ def _require_live_lease(claim: DeployDispatchClaim | None, moment: datetime) -> 
     )
 
 
+async def claim_dispatch(
+    run_id: str | None, deploy_fence: DeployFence
+) -> DeployDispatchClaim | None:
+    """Take the dispatch boundary, or refuse to cross it.
+
+    Called immediately before every call that starts work outside the system,
+    on GitHub Actions or a temporary-access effect. The claim is itself a
+    write, so it checks the project deploy lock first; the effect that follows
+    checks again after the claim returns.
+    A plain read of the run status cannot do this job: between reading it and
+    dispatching, a revoke can cancel the run, see no Actions run to fence,
+    clear the value and finish, and only then does this deploy write the
+    value back. The claim and that cancellation are decided against the same
+    locked row, so one of them loses and knows it.
+
+    Raises:
+        DeployDispatchWithdrawnError: the run was stopped first. Nothing was
+            dispatched and nothing needs stopping outside.
+        DeployFenceLost: another deploy holds the project's deploy lock now.
+    """
+    await deploy_fence.ensure_held(DeployWrite.WORKFLOW_DISPATCH)
+    if not run_id:
+        return None
+    claim = await api_client.claim_deploy_dispatch(run_id)
+    if not claim.granted:
+        logger.info(
+            "deploy_dispatch_withdrawn",
+            run_id=run_id,
+            run_status=claim.run_status.value,
+        )
+        raise DeployDispatchWithdrawnError(
+            f"deploy run {run_id} was {claim.run_status.value} before it was dispatched"
+        )
+    return claim
+
+
 async def fence_active_deploys(
     github: GitHubAppClient,
     owner: str,
     repo: str,
     project_id: str,
     deploy_fence: DeployFence,
+    *,
+    admit: RequestGuard | None = None,
 ) -> list[int]:
     """Stop every deploy run that could still write what the caller replaces.
 
@@ -119,10 +158,20 @@ async def fence_active_deploys(
     a dispatch already in flight can still be accepted afterwards: whoever needs
     an old value gone confirms that by reading the deployed service. An unproven
     stop raises `DeployFenceUnprovenError` rather than allowing a claim of removal.
+
+    Each cancellation request is preceded by `admit`, when given, and then by the
+    deploy-lock check, so the lock check is the last await before every write.
+    Their own refusals (`DeployFenceLost`, a withdrawn dispatch) propagate as is.
     """
+
+    async def guard() -> None:
+        if admit is not None:
+            await admit()
+        await deploy_fence.ensure_held(DeployWrite.WORKFLOW_FENCE)
+
     await deploy_fence.ensure_held(DeployWrite.WORKFLOW_FENCE)
     try:
-        fenced = await github.fence_workflow(owner, repo, DEPLOY_WORKFLOW)
+        fenced = await github.fence_workflow(owner, repo, DEPLOY_WORKFLOW, guard=guard)
     except Exception as e:
         if type(e).__name__ not in _CANCELLATION_ERRORS:
             raise
@@ -341,8 +390,8 @@ class DeployerNode(FunctionalNode):
 
             # A rerun restarts the same external effect, so it crosses the same
             # boundary and asks the same question first.
-            claim = await self._claim_dispatch(deploy_run_id, deploy_fence)
-            _require_live_lease(claim, datetime.now(UTC))
+            claim = await claim_dispatch(deploy_run_id, deploy_fence)
+            require_live_lease(claim, datetime.now(UTC))
             # The claim is an API round trip the lock can expire during.
             await deploy_fence.ensure_held(DeployWrite.WORKFLOW_DISPATCH)
             await github.rerun_failed_jobs(owner, repo, run_id)
@@ -444,11 +493,11 @@ class DeployerNode(FunctionalNode):
 
             # Last thing before the deploy leaves the system. After this the run
             # exists on GitHub Actions and can only be stopped there.
-            claim = await self._claim_dispatch(run_id, deploy_fence)
+            claim = await claim_dispatch(run_id, deploy_fence)
 
             # Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
-            _require_live_lease(claim, dispatch_time)
+            require_live_lease(claim, dispatch_time)
             # The claim is an API round trip the lock can expire during, so the
             # dispatch itself checks again with nothing awaited in between.
             await deploy_fence.ensure_held(DeployWrite.WORKFLOW_DISPATCH)
@@ -544,40 +593,6 @@ class DeployerNode(FunctionalNode):
             return False
         run = await api_client.get(f"runs/{run_id}")
         return run.get("status") == "cancelled"
-
-    async def _claim_dispatch(
-        self, run_id: str | None, deploy_fence: DeployFence
-    ) -> DeployDispatchClaim | None:
-        """Take the dispatch boundary, or refuse to cross it.
-
-        Called immediately before every call that starts work on GitHub Actions.
-        The claim is itself a write, so it checks the project deploy lock first;
-        the dispatch or rerun that follows checks again after the claim returns.
-        A plain read of the run status cannot do this job: between reading it and
-        dispatching, a revoke can cancel the run, see no Actions run to fence,
-        clear the value and finish, and only then does this deploy write the
-        value back. The claim and that cancellation are decided against the same
-        locked row, so one of them loses and knows it.
-
-        Raises:
-            DeployDispatchWithdrawnError: the run was stopped first. Nothing was
-                dispatched and nothing needs stopping outside.
-            DeployFenceLost: another deploy holds the project's deploy lock now.
-        """
-        await deploy_fence.ensure_held(DeployWrite.WORKFLOW_DISPATCH)
-        if not run_id:
-            return None
-        claim = await api_client.claim_deploy_dispatch(run_id)
-        if not claim.granted:
-            logger.info(
-                "deploy_dispatch_withdrawn",
-                run_id=run_id,
-                run_status=claim.run_status.value,
-            )
-            raise DeployDispatchWithdrawnError(
-                f"deploy run {run_id} was {claim.run_status.value} before it was dispatched"
-            )
-        return claim
 
     @staticmethod
     async def _published_images(

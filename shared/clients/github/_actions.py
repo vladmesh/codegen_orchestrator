@@ -8,6 +8,8 @@ import httpx
 from shared.log_config import get_logger
 
 from ._base import (
+    RequestGuard,
+    RequestGuardRefusedError,
     WorkflowCancellationUnprovenError,
     WorkflowCancelledError,
     WorkflowNotFoundError,
@@ -481,6 +483,7 @@ class ActionsMixin:
         *,
         timeout_seconds: int = 300,
         poll_interval: int = 5,
+        guard: RequestGuard | None = None,
     ) -> list[int]:
         """Stop every run of *workflow_file* that exists now, and return the ones stopped.
 
@@ -495,6 +498,10 @@ class ActionsMixin:
         way to GitHub is accepted afterwards and this cannot see it. A caller that
         needs a value gone confirms that by reading the deployed service and
         repeating itself; this only makes the wait shorter.
+
+        `guard` is awaited immediately before each cancellation request, and its
+        own exception is raised unchanged: a caller that may no longer write
+        stops here, and that is not an unproven cancellation.
 
         Raises:
             WorkflowCancellationUnprovenError: at least one run could not be
@@ -512,10 +519,12 @@ class ActionsMixin:
         for run in active:
             run_id = run["id"]
             try:
-                await self.cancel_workflow_run(owner, repo, run_id)
+                await self.cancel_workflow_run(owner, repo, run_id, guard=guard)
                 await self._wait_for_terminal_workflow_run(
                     owner, repo, run_id, timeout_seconds, poll_interval
                 )
+            except RequestGuardRefusedError as refused:
+                raise refused.error from None
             except Exception as exc:
                 raise WorkflowCancellationUnprovenError(
                     f"Workflow {workflow_file} run {run_id} in {owner}/{repo} could not be "
@@ -807,7 +816,9 @@ class ActionsMixin:
                 raise WorkflowCancelledError(f"Workflow {workflow_file} cancelled by teardown")
             await asyncio.sleep(poll_interval)
 
-    async def cancel_workflow_run(self, owner: str, repo: str, run_id: int) -> None:
+    async def cancel_workflow_run(
+        self, owner: str, repo: str, run_id: int, *, guard: RequestGuard | None = None
+    ) -> None:
         """Request GitHub Actions to stop one known workflow run."""
         token = await self.get_token(owner, repo)
         try:
@@ -818,6 +829,7 @@ class ActionsMixin:
                     "Authorization": f"token {token}",
                     "Accept": "application/vnd.github+json",
                 },
+                guard=guard,
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != httpx.codes.CONFLICT:

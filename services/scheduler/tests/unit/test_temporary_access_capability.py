@@ -2,13 +2,13 @@
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from structlog.testing import capture_logs
 
-from shared.contracts.dto.deploy_dispatch import DispatchWithdrawal
+from shared.contracts.dto.deploy_dispatch import DISPATCH_CLAIMED_AT_KEY, DispatchWithdrawal
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, DeploySkipReason, QABlockerCategory
 from shared.contracts.dto.temporary_access import (
@@ -74,9 +74,11 @@ def _operation_run(
     outcome: DeployOutcome | None = None,
     age_minutes: int = 0,
     skipped_reason: DeploySkipReason | None = None,
+    run_metadata: dict | None = None,
 ):
     return SimpleNamespace(
         status=status,
+        run_metadata=run_metadata or {},
         result=(
             SimpleNamespace(deploy_outcome=outcome, skipped_reason=skipped_reason)
             if outcome is not None
@@ -455,7 +457,13 @@ async def test_cleanup_transitions_then_withdraws_and_fences_an_old_grant_dispat
     # redeploy has to ask for again.
     api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
-    api.get_run_if_missing_returns_none.return_value = _operation_run(RunStatus.COMPLETED)
+    api.get_run_if_missing_returns_none.side_effect = [
+        # The QA run has ended, so cleanup starts.
+        _operation_run(RunStatus.COMPLETED),
+        # The grant Run as the withdrawal left it: it had crossed the dispatch
+        # boundary and is now cancelled with its workflow possibly still running.
+        _operation_run(RunStatus.CANCELLED, run_metadata={DISPATCH_CLAIMED_AT_KEY: "t"}),
+    ]
     api.withdraw_deploy_dispatch.return_value = SimpleNamespace(
         outcome=DispatchWithdrawal.ALREADY_DISPATCHED
     )
@@ -766,7 +774,7 @@ async def test_revoke_that_found_no_deployment_settles_revoked_without_retry() -
     api = AsyncMock()
     api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.get_run_if_missing_returns_none.return_value = SimpleNamespace(
-        status=RunStatus.COMPLETED, created_at=datetime.now(UTC)
+        status=RunStatus.COMPLETED, created_at=datetime.now(UTC), run_metadata={}
     )
     api.withdraw_deploy_dispatch.return_value = SimpleNamespace(
         outcome=DispatchWithdrawal.ALREADY_DISPATCHED
@@ -807,3 +815,94 @@ async def test_revoke_that_found_no_deployment_settles_revoked_without_retry() -
     assert counts["revoked"] == 1
     assert counts["revoke_failed"] == 0
     assert counts["escalated"] == 0
+
+
+def _revoking(**overrides) -> TemporaryAccessGrantDTO:
+    return _grant(
+        status=TemporaryAccessStatus.REVOKING,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+        revoke_run_id="temporary-access-revoke-1",
+        revoke_attempts=1,
+        **overrides,
+    )
+
+
+#: The grant Run after a withdrawal found it already dispatched: claimed, cancelled.
+_DISPATCHED_GRANT_RUN = _operation_run(
+    RunStatus.CANCELLED, run_metadata={DISPATCH_CLAIMED_AT_KEY: "2026-10-18T09:00:00+00:00"}
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "revoke_run",
+    [
+        pytest.param(
+            _operation_run(RunStatus.FAILED, outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED),
+            id="unproven-stop-failure-retry",
+        ),
+        pytest.param(
+            _operation_run(RunStatus.CANCELLED, outcome=DeployOutcome.CANCELLED),
+            id="lock-conflict-redispatch",
+        ),
+    ],
+)
+async def test_every_revoke_retry_keeps_the_earlier_grant_workflow_obligation(revoke_run) -> None:
+    """A retry is fenced again although the grant Run withdraws as already terminal."""
+    from src.tasks.temporary_access import _counts, _settle_revoke
+
+    grant = _revoking()
+    api = AsyncMock()
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
+    runs = {"temporary-access-revoke-1": revoke_run, grant.grant_run_id: _DISPATCHED_GRANT_RUN}
+    api.get_run_if_missing_returns_none = AsyncMock(side_effect=runs.get)
+    api.withdraw_deploy_dispatch.return_value = SimpleNamespace(
+        outcome=DispatchWithdrawal.ALREADY_TERMINAL
+    )
+    api.update_temporary_access_grant = AsyncMock(
+        side_effect=lambda grant_id, update: grant.model_copy(
+            update=update.model_dump(exclude_unset=True)
+        )
+    )
+    redis = AsyncMock()
+    counts = _counts()
+
+    await _settle_revoke(api, redis, grant, counts, MagicMock())
+
+    [(queue, published)] = [call.args for call in redis.publish_message.await_args_list]
+    assert queue == DEPLOY_QUEUE
+    assert published.fence_active_deploys is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("grant_run", "fenced"),
+    [
+        pytest.param(
+            _operation_run(
+                RunStatus.COMPLETED,
+                outcome=DeployOutcome.SUCCESS,
+                run_metadata={DISPATCH_CLAIMED_AT_KEY: "t"},
+            ),
+            False,
+            id="dispatched-and-finished",
+        ),
+        pytest.param(_operation_run(RunStatus.CANCELLED), False, id="withdrawn-before-dispatch"),
+        pytest.param(None, True, id="grant-run-missing"),
+    ],
+)
+async def test_a_revoke_is_fenced_unless_the_grant_run_proves_no_workflow_can_act(
+    grant_run, fenced
+) -> None:
+    from src.tasks.temporary_access import _counts, _redispatch_revoke_without_effect
+
+    grant = _revoking()
+    api = AsyncMock()
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
+    api.get_run_if_missing_returns_none = AsyncMock(return_value=grant_run)
+    redis = AsyncMock()
+
+    await _redispatch_revoke_without_effect(api, redis, grant, _counts())
+
+    api.get_run_if_missing_returns_none.assert_awaited_once_with(grant.grant_run_id)
+    assert redis.publish_message.await_args.args[1].fence_active_deploys is fenced

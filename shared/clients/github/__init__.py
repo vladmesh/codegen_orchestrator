@@ -7,6 +7,8 @@ from ._actions import (
 )
 from ._base import (
     GitHubAppClientBase,
+    RequestGuard,
+    RequestGuardRefusedError,
     WorkflowCancellationUnprovenError,
     WorkflowCancelledError,
     WorkflowNotFoundError,
@@ -51,6 +53,8 @@ __all__ = [
     "UNFINISHED_WORKFLOW_RUN_STATUSES",
     "WorkflowRunListingIncompleteError",
     "GitHubAppClient",
+    "RequestGuard",
+    "RequestGuardRefusedError",
     "deploy_pin_tag",
     "WorkflowCancelledError",
     "WorkflowCancellationUnprovenError",

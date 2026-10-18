@@ -1,24 +1,27 @@
 """A temporary QA grant or revoke calls the target's users-core capability and deploys nothing.
 
 These drive `process_deploy_job` with the scheduler's operation message. The API,
-the allocation reads, GitHub and the deployed product are fakes at their
-boundaries; the product speaks HTTP through `httpx.MockTransport`, so what the
-capability client sends is the assertion.
+including the Run's dispatch claim and withdrawal, the allocation reads, GitHub
+Actions and the deployed product are fakes at their boundaries. The product
+speaks HTTP through `httpx.MockTransport` and GitHub through `respx`, so the real
+capability client and the real workflow fence are what is exercised.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+import respx
 from structlog.testing import capture_logs
 
-from shared.clients.github import WorkflowCancellationUnprovenError
+from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.deploy_dispatch import DISPATCH_CLAIMED_AT_KEY, DeployDispatchClaim
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.temporary_access import (
@@ -145,10 +148,45 @@ class FakeApi:
         self.other_writes: list[tuple[str, dict]] = []
         self.allocation_reads: list[int] = []
         self.get_users_grant_intent = AsyncMock()
+        self.events: list[str] = []
+        self.on_allocation_read = None
+        # The grant Run of a revoke's record: finished by default, so no earlier
+        # workflow is owed a stop.
+        self.runs = {
+            self.grant.grant_run_id: make_run(
+                id=self.grant.grant_run_id,
+                status=RunStatus.COMPLETED,
+                result=DeployRunResult(deploy_outcome=DeployOutcome.SUCCESS),
+            )
+        }
 
-    async def get_run(self, task_id: str):
-        assert task_id == TASK_ID
-        return make_run(id=TASK_ID, status=self.run_status, run_metadata=self.run_metadata)
+    async def get_run(self, run_id: str):
+        if run_id == TASK_ID:
+            return make_run(id=TASK_ID, status=self.run_status, run_metadata=self.run_metadata)
+        if run_id not in self.runs:
+            request = httpx.Request("GET", f"http://api/runs/{run_id}")
+            raise httpx.HTTPStatusError(
+                "404", request=request, response=httpx.Response(404, request=request)
+            )
+        return self.runs[run_id]
+
+    async def claim_deploy_dispatch(self, run_id: str) -> DeployDispatchClaim:
+        """The locked dispatch claim: refused once the Run is terminal."""
+        assert run_id == TASK_ID
+        granted = self.run_status is RunStatus.RUNNING
+        self.events.append("claim" if granted else "claim-refused")
+        if granted:
+            self.run_metadata[DISPATCH_CLAIMED_AT_KEY] = _NOW.isoformat()
+        return DeployDispatchClaim(
+            run_id=run_id,
+            granted=granted,
+            run_status=self.run_status,
+            lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+
+    def withdraw(self) -> None:
+        """What `POST /runs/{id}/dispatch-withdraw` does to a Run not yet terminal."""
+        self.run_status = RunStatus.CANCELLED
 
     async def start_run(self, task_id: str):
         self.run_status = RunStatus.RUNNING
@@ -167,6 +205,8 @@ class FakeApi:
 
     async def get_application_allocations(self, application_id: int):
         self.allocation_reads.append(application_id)
+        if self.on_allocation_read is not None:
+            self.on_allocation_read()
         return self.allocations[application_id]
 
     async def get_server(self, handle: str):
@@ -196,10 +236,12 @@ class FakeProduct:
         self.base_urls: list[str] = []
         self.refuse: str | None = None
         self.access_payload: object | None = None
+        self.events: list[str] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
+        self.events.append(path)
         if path == self.refuse:
             return httpx.Response(500)
         if path == "/users/grant":
@@ -221,6 +263,53 @@ class FakeProduct:
 
     def calls(self) -> list[tuple[str, str]]:
         return [(request.method, request.url.path) for request in self.requests]
+
+
+class FakeGitHub:
+    """GitHub Actions of the product repository: run listing, cancellation, run status.
+
+    A cancelled run reports completed on its next read, so the fence never waits.
+    """
+
+    def __init__(self, events: list[str]) -> None:
+        self.runs: dict[int, str] = {}
+        self.events = events
+        self.requests: list[tuple[str, str]] = []
+        self.refuse_cancel = False
+        self.on_list = None
+        self.on_cancel = None
+
+    def client(self) -> GitHubAppClient:
+        client = GitHubAppClient()
+        client.get_token = AsyncMock(return_value="github-token")
+        return client
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        self.requests.append((request.method, path))
+        if path.endswith("/actions/workflows/deploy.yml/runs"):
+            status = request.url.params["status"]
+            if self.on_list is not None:
+                self.on_list()
+            listed = [{"id": i, "status": s} for i, s in self.runs.items() if s == status]
+            return httpx.Response(200, json={"workflow_runs": listed})
+        if path.endswith("/cancel"):
+            run_id = int(path.split("/")[-2])
+            self.events.append(f"cancel:{run_id}")
+            if self.refuse_cancel:
+                return httpx.Response(422)
+            self.runs[run_id] = "completed"
+            if self.on_cancel is not None:
+                self.on_cancel(run_id)
+            return httpx.Response(202)
+        run_id = int(path.rsplit("/", 1)[-1])
+        return httpx.Response(200, json={"id": run_id, "status": self.runs[run_id]})
+
+    def cancels(self) -> list[int]:
+        return [int(path.split("/")[-2]) for _, path in self.requests if path.endswith("/cancel")]
+
+    def writes(self) -> list[tuple[str, str]]:
+        return [(method, path) for method, path in self.requests if method != "GET"]
 
 
 class LockRedis:
@@ -252,11 +341,14 @@ def operation_env():
     def build(operation: str, *, secrets: dict | None = None, stored: bool = True):
         if stored and secrets is None:
             secrets = encrypt_dict({"USERS_GRANT_CAPABILITY": CAPABILITY})
+        api = FakeApi(operation, secrets=secrets)
+        product = FakeProduct(active=operation == "revoke")
+        product.events = api.events
         return SimpleNamespace(
             operation=operation,
-            api=FakeApi(operation, secrets=secrets),
-            product=FakeProduct(active=operation == "revoke"),
-            github=AsyncMock(),
+            api=api,
+            product=product,
+            github=FakeGitHub(api.events),
             devops=MagicMock(),
             precheck=AsyncMock(return_value=None),
             stream=AsyncMock(redis=LockRedis()),
@@ -288,17 +380,20 @@ async def _process(env, **message) -> dict:
         patch("src.consumers.deploy_failure_handler.api_client", env.api),
         patch("src.consumers.deploy_result_handler.api_client", env.api),
         patch("src.consumers.temporary_access_operation.api_client", env.api),
+        patch("src.subgraphs.devops.deployer.api_client", env.api),
         patch("src.allocations.api_client", env.api),
         patch("src.allocations.get_settings", return_value=settings),
         patch("src.consumers.deploy.create_devops_subgraph", env.devops),
         patch("src.consumers.deploy._run_deploy_precheck", env.precheck),
-        patch("src.consumers.deploy.GitHubAppClient", return_value=env.github),
+        patch("src.consumers.deploy.GitHubAppClient", side_effect=env.github.client),
         patch(
             "src.consumers.temporary_access_operation.GeneratedServiceGrantClient",
             side_effect=env.product.client,
         ),
+        respx.mock(assert_all_called=False) as github,
         capture_logs() as logs,
     ):
+        github.route(host="api.github.com").mock(side_effect=env.github.handle)
         result = await process_deploy_job(job, env.stream)
     env.logs = logs
     return result
@@ -317,8 +412,7 @@ def _proves_operation(write: dict) -> bool:
 def _assert_deployed_nothing(env) -> None:
     env.devops.assert_not_called()
     env.precheck.assert_not_awaited()
-    env.github.trigger_workflow_dispatch.assert_not_called()
-    env.github.set_repository_secrets.assert_not_called()
+    assert all(path.endswith("/cancel") for _, path in env.github.writes())
     assert env.api.other_writes == []
 
 
@@ -546,52 +640,6 @@ async def test_an_unproved_readback_fails_retryably_without_the_capability(
 
 
 @pytest.mark.asyncio
-async def test_a_flagged_cleanup_proves_earlier_workflows_stopped_before_revoking(operation_env):
-    env = operation_env("revoke")
-    order = []
-    env.github.fence_workflow = AsyncMock(side_effect=lambda *args: order.append("fence") or [7])
-    original = env.product.handle
-    env.product.handle = lambda request: order.append(request.url.path) or original(request)
-
-    result = await _process(env, fence_active_deploys=True)
-
-    assert result["status"] == "success"
-    env.github.fence_workflow.assert_awaited_once_with("org", "product", "deploy.yml")
-    assert order == ["fence", "/users/revoke", "/users/access"]
-    assert _proves_operation(env.api.run_writes[0])
-    _assert_deployed_nothing(env)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("deployed", [True, False], ids=["deployed", "undeployed"])
-async def test_an_unproven_workflow_stop_fails_the_cleanup_before_any_effect(
-    operation_env, deployed
-):
-    env = operation_env("revoke")
-    if not deployed:
-        env.api.allocations[TARGET_APPLICATION_ID] = []
-    env.github.fence_workflow = AsyncMock(
-        side_effect=WorkflowCancellationUnprovenError("run 7 could not be proven terminal")
-    )
-
-    await _process(env, fence_active_deploys=True)
-
-    assert env.product.requests == []
-    _assert_retryable_failure(env, "could not be proven stopped")
-    _assert_deployed_nothing(env)
-
-
-@pytest.mark.asyncio
-async def test_an_unflagged_operation_starts_no_github_work(operation_env):
-    env = operation_env("revoke")
-
-    await _process(env)
-
-    env.github.fence_workflow.assert_not_called()
-    assert env.github.method_calls == []
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "conflict",
     [
@@ -620,3 +668,187 @@ async def test_conflicting_access_metadata_fails_closed_without_deploying(operat
     assert env.api.allocation_reads == []
     _assert_retryable_failure(env, "does not match")
     _assert_deployed_nothing(env)
+
+
+def _lose_lock(env) -> None:
+    env.stream.redis.value = "another-deploy"
+
+
+def _assert_lock_lost(env, result: dict) -> None:
+    assert result["reason"] == DeployOutcome.DEPLOY_LOCK_LOST.value
+    [write] = env.api.run_writes
+    assert write["result"]["deploy_outcome"] == DeployOutcome.DEPLOY_LOCK_LOST.value
+
+
+def _assert_withdrawn(env, result: dict) -> None:
+    assert result["status"] == "cancelled"
+    [write] = env.api.run_writes
+    assert write["status"] == RunStatus.CANCELLED.value
+    assert write["result"]["deploy_outcome"] == DeployOutcome.CANCELLED.value
+
+
+@pytest.mark.asyncio
+async def test_a_flagged_cleanup_stops_each_earlier_workflow_before_revoking(operation_env):
+    env = operation_env("revoke")
+    env.github.runs = {41: "in_progress", 42: "queued"}
+
+    result = await _process(env, fence_active_deploys=True)
+
+    assert result["status"] == "success"
+    assert sorted(env.github.cancels()) == [41, 42]
+    events = env.api.events
+    cancels = [index for index, event in enumerate(events) if event.startswith("cancel:")]
+    # Every cancellation is the first write after a renewed admission.
+    assert all(events[index - 1] == "claim" for index in cancels)
+    assert events[-3:] == ["claim", "/users/revoke", "/users/access"]
+    assert max(cancels) < events.index("/users/revoke")
+    assert _proves_operation(env.api.run_writes[0])
+    _assert_deployed_nothing(env)
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_after_listing_cancels_nothing(operation_env):
+    env = operation_env("revoke")
+    env.github.runs = {41: "in_progress", 42: "queued"}
+    env.github.on_list = lambda: _lose_lock(env)
+
+    result = await _process(env, fence_active_deploys=True)
+
+    assert env.github.writes() == []
+    assert env.product.requests == []
+    _assert_lock_lost(env, result)
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_between_cancellations_stops_the_next_one(operation_env):
+    env = operation_env("revoke")
+    env.github.runs = {41: "in_progress", 42: "queued"}
+    env.github.on_cancel = lambda run_id: _lose_lock(env)
+
+    result = await _process(env, fence_active_deploys=True)
+
+    assert len(env.github.cancels()) == 1
+    assert env.product.requests == []
+    _assert_lock_lost(env, result)
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawal_between_cancellations_stops_the_next_one_and_the_revoke(
+    operation_env,
+):
+    env = operation_env("revoke")
+    env.github.runs = {41: "in_progress", 42: "queued"}
+    env.github.on_cancel = lambda run_id: env.api.withdraw()
+
+    result = await _process(env, fence_active_deploys=True)
+
+    assert len(env.github.cancels()) == 1
+    assert env.product.requests == []
+    _assert_withdrawn(env, result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deployed", [True, False], ids=["deployed", "undeployed"])
+@pytest.mark.parametrize("source", ["message-flag", "grant-run-evidence"])
+async def test_an_unproven_workflow_stop_fails_the_cleanup_before_any_effect(
+    operation_env, deployed, source
+):
+    env = operation_env("revoke")
+    if not deployed:
+        env.api.allocations[TARGET_APPLICATION_ID] = []
+    env.api.runs[env.api.grant.grant_run_id] = _dispatched_grant_run(env)
+    env.github.runs = {7: "in_progress"}
+    env.github.refuse_cancel = True
+
+    await _process(env, fence_active_deploys=source == "message-flag")
+
+    assert env.product.requests == []
+    _assert_retryable_failure(env, "could not be proven stopped")
+    _assert_deployed_nothing(env)
+
+
+@pytest.mark.asyncio
+async def test_an_operation_owing_no_stop_starts_no_github_work(operation_env):
+    env = operation_env("revoke")
+    env.github.runs = {7: "in_progress"}
+
+    result = await _process(env)
+
+    assert result["status"] == "success"
+    assert env.github.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "deployed"),
+    [("grant", True), ("revoke", True), ("revoke", False)],
+    ids=["grant", "revoke", "revoke-undeployed"],
+)
+async def test_a_withdrawal_during_the_target_read_prevents_every_effect(
+    operation_env, operation, deployed
+):
+    env = operation_env(operation)
+    if not deployed:
+        env.api.allocations[TARGET_APPLICATION_ID] = []
+    env.api.on_allocation_read = env.api.withdraw
+
+    result = await _process(env, fence_active_deploys=True)
+
+    assert "claim-refused" in env.api.events
+    assert env.product.requests == []
+    assert env.github.writes() == []
+    _assert_withdrawn(env, result)
+
+
+def _dispatched_grant_run(env):
+    """The grant Run as a withdrawal leaves one that had crossed GitHub dispatch."""
+    return make_run(
+        id=env.api.grant.grant_run_id,
+        status=RunStatus.CANCELLED,
+        run_metadata={DISPATCH_CLAIMED_AT_KEY: _NOW.isoformat()},
+    )
+
+
+def _redeliver(env) -> None:
+    """The next revoke Run of the same record, as a retry publishes it."""
+    env.api.run_status = RunStatus.QUEUED
+    env.api.run_writes.clear()
+    env.api.events.clear()
+    env.api.grant_reads = 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deployed", [True, False], ids=["deployed", "undeployed"])
+@pytest.mark.parametrize("first_attempt", ["unproven-stop", "lock-conflict"])
+async def test_a_cleanup_retry_still_stops_the_earlier_grant_workflow(
+    operation_env, deployed, first_attempt
+):
+    """The retry arrives without the message flag; the grant Run still owes the stop."""
+    env = operation_env("revoke")
+    if not deployed:
+        env.api.allocations[TARGET_APPLICATION_ID] = []
+    env.api.runs[env.api.grant.grant_run_id] = _dispatched_grant_run(env)
+    env.github.runs = {7: "in_progress"}
+    if first_attempt == "unproven-stop":
+        env.github.refuse_cancel = True
+    else:
+        env.stream.redis.value = "another-deploy"
+
+    first = await _process(env, fence_active_deploys=True)
+
+    assert first["status"] in {"failed", "cancelled"}
+    assert not any(_proves_operation(write) for write in env.api.run_writes if "result" in write)
+    assert env.github.runs == {7: "in_progress"}
+    assert env.product.requests == []
+
+    _redeliver(env)
+    env.github.refuse_cancel = False
+    env.stream.redis.value = None
+
+    result = await _process(env)
+
+    assert result["status"] == "success"
+    assert env.github.runs == {7: "completed"}
+    if deployed:
+        assert env.api.events.index("cancel:7") < env.api.events.index("/users/revoke")
+    assert _proves_operation(env.api.run_writes[-1])
