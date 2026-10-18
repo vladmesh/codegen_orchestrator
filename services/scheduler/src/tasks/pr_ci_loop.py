@@ -32,7 +32,8 @@ async def poll_pr_ci_once(api_client, redis_client: RedisStreamClient) -> dict[s
     return {"prs_merged": merged, "ci_failures_routed": ci_failures}
 
 
-async def pr_ci_loop() -> None:
+async def pr_ci_loop(*, wake: asyncio.Event) -> None:
+    """Route merged PRs and CI failures on their own cadence; `wake` runs the sweep early."""
     from ..clients.api import api_client
 
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
@@ -48,4 +49,5 @@ async def pr_ci_loop() -> None:
         stopped_event="pr_ci_stopped",
         redis_factory=RedisStreamClient,
         sleep=asyncio.sleep,
+        wake=wake,
     )

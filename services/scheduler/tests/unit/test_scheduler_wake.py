@@ -216,7 +216,7 @@ async def test_rejected_payloads_neither_wake_nor_stop_the_listener(monkeypatch)
     await broker.subscribed()
 
     for payload in (
-        '{"target": "pr_ci"}',
+        '{"target": "worker_reconciliation"}',
         '{"target": "story_completion", "story_id": "story-1"}',
         "not json",
         b'{"target": "story_completion"}',

@@ -33,7 +33,7 @@ async def test_pr_ci_loop_polls_both_paths_and_closes_redis(monkeypatch):
     monkeypatch.setattr(pr_ci_loop, "_pr_ci_interval", lambda: 30)
 
     with pytest.raises(asyncio.CancelledError):
-        await pr_ci_loop.pr_ci_loop()
+        await pr_ci_loop.pr_ci_loop(wake=asyncio.Event())
 
     redis.connect.assert_awaited_once()
     redis.close.assert_awaited_once()
@@ -67,7 +67,7 @@ async def test_pr_merge_failure_does_not_skip_ci_failure_routing(monkeypatch):
     monkeypatch.setattr(pr_ci_loop, "_pr_ci_interval", lambda: 30)
 
     with pytest.raises(asyncio.CancelledError):
-        await pr_ci_loop.pr_ci_loop()
+        await pr_ci_loop.pr_ci_loop(wake=asyncio.Event())
 
     merged.assert_awaited_once()
     failures.assert_awaited_once()

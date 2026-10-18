@@ -11,8 +11,8 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - Message: the JSON body of `SchedulerWakeHint` in `shared/contracts/queues/scheduler_wake.py`,
   for example `{"target":"story_completion"}`. `target` is a `SchedulerWakeTarget`; no other
   field is accepted.
-- Targets: `story_completion`, `task_dispatcher`, `lifecycle_supervision`, `temporary_access` and
-  `qa_routing`; each wakes only the loop of that name.
+- Targets: `story_completion`, `task_dispatcher`, `lifecycle_supervision`, `temporary_access`,
+  `qa_routing` and `pr_ci`; each wakes only the loop of that name.
 - A hint carries routing only: no credentials, ids, correlation metadata or business state. It
   grants no permission to transition a Story, Task or Run and never invokes a business action.
 - Producers publish with `shared.redis.scheduler_wake.publish_scheduler_wake` after the durable
@@ -27,6 +27,7 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 | `lifecycle_supervision` | api Run update `PATCH /runs/{id}` on the first typed success of an ordinary story deploy | scheduler-pipeline `lifecycle_supervision` loop |
 | `temporary_access` | api Run update `PATCH /runs/{id}` on the first readback proof of a temporary-access grant or revoke operation, and on a QA Run's first terminal state | scheduler-pipeline `temporary_access` loop |
 | `qa_routing` | api Run update `PATCH /runs/{id}` on a story-scoped QA Run's first terminal state | scheduler-pipeline `qa_routing` loop |
+| `pr_ci` | api Story transition `POST /stories/{id}/pr_review` | scheduler-pipeline `pr_ci` loop |
 
 ## Producers
 
@@ -165,6 +166,28 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - Every other write QA routing acts on still waits for the interval: a story reaching TESTING after
   its QA Run turned terminal, a queued QA handoff awaiting recovery, an invalid stored result, and
   every recovery, operator or direct-database write.
+
+### `pr_ci`
+
+- `POST /stories/{id}/pr_review` publishes one `pr_ci` hint for every committed entry into
+  `pr_review`, a later work cycle's entry included, on the initialized Redis client right after
+  its own `db.commit()` returns and before the response refresh. The transition rules refuse a
+  repeat from `pr_review` and every other invalid source status, so a refused request, a replay and
+  a failed commit publish nothing. No other Story update or transition publishes it.
+- The sender reads no GitHub state and no record beyond the locked Story. Story completion stores
+  the exact PR number before it calls this route, so the hint also covers a PR whose CI finished
+  before the entry committed.
+- The awakened cycle runs the unchanged `poll_pr_ci_once`: `poll_merged_prs` then
+  `poll_ci_failures`, each with its own error isolation. They still read the current PR, checks and
+  images from GitHub against the stored PR number and story branch, and own every merge, refusal,
+  deploy and CI-fix decision; the hint merges, deploys and routes nothing.
+- A Redis or socket error on publish is logged as `pr_ci_wake_failed` with the story id and the
+  error type only; the committed transition and its response are unchanged. Cancellation
+  propagates. There is no retry.
+- Every GitHub-side change still waits for the interval: CI completing with success or failure, a
+  PR becoming mergeable, behind or conflicted, a merge, and the published images of a merge
+  commit. No authenticated ingress for GitHub events exists, so this loop receives no hint from
+  GitHub.
 
 ## Listener
 
