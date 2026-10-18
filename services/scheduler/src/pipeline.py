@@ -29,17 +29,21 @@ async def main() -> None:
     setup_logging(service_name="scheduler-pipeline")
     logger.info("scheduler_pipeline_started")
     await runtime.initialize_configs(PIPELINE_REQUIRED_KEYS, service_name="scheduler-pipeline")
+    task_dispatcher_wake = asyncio.Event()
     story_completion_wake = asyncio.Event()
     await runtime.run_workers(
         [
-            ("task_dispatcher", task_dispatcher_loop),
+            ("task_dispatcher", partial(task_dispatcher_loop, wake=task_dispatcher_wake)),
             ("scaffold", scaffold_loop),
             ("story_completion", partial(story_completion_loop, wake=story_completion_wake)),
             (
                 "scheduler_wake",
                 partial(
                     scheduler_wake_listener,
-                    {SchedulerWakeTarget.STORY_COMPLETION: story_completion_wake},
+                    {
+                        SchedulerWakeTarget.TASK_DISPATCHER: task_dispatcher_wake,
+                        SchedulerWakeTarget.STORY_COMPLETION: story_completion_wake,
+                    },
                 ),
             ),
             ("lifecycle_supervision", lifecycle_supervision_loop),

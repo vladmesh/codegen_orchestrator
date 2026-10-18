@@ -11,11 +11,18 @@ from shared.contracts.queues.scheduler_wake import (
 )
 
 
-def test_a_published_hint_parses_back_to_its_target():
-    wire = SchedulerWakeHint(target=SchedulerWakeTarget.STORY_COMPLETION).model_dump_json()
+@pytest.mark.parametrize(
+    ("target", "wire_target"),
+    [
+        (SchedulerWakeTarget.STORY_COMPLETION, "story_completion"),
+        (SchedulerWakeTarget.TASK_DISPATCHER, "task_dispatcher"),
+    ],
+)
+def test_a_published_hint_parses_back_to_its_target(target, wire_target):
+    wire = SchedulerWakeHint(target=target).model_dump_json()
 
-    assert json.loads(wire) == {"target": "story_completion"}
-    assert parse_scheduler_wake_hint(wire).target is SchedulerWakeTarget.STORY_COMPLETION
+    assert json.loads(wire) == {"target": wire_target}
+    assert parse_scheduler_wake_hint(wire).target is target
 
 
 @pytest.mark.parametrize(
@@ -23,6 +30,7 @@ def test_a_published_hint_parses_back_to_its_target():
     [
         ('{"target": "pr_ci"}', "invalid"),
         ('{"target": "STORY_COMPLETION"}', "invalid"),
+        ('{"target": "TASK_DISPATCHER"}', "invalid"),
         ('{"target": 0}', "invalid"),
         ("{}", "invalid"),
         ('{"target": "story_completion", "story_id": "story-1"}', "invalid"),

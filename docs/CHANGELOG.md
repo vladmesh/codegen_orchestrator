@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-18
 
+- Product Brief admission publishes a `task_dispatcher` wake hint after committing a nonempty release,
+  so the dispatcher's Event-enabled loop asks admission about the released Tasks without the interval.
 - QA Telegram probes, button presses and the `/start` preflight return once the bot's response stays
   unchanged for 3 s; the wait stays the upper bound and silence still runs to it.
 - A QA temporary-access grant or revoke calls the target's users-core capability with the stored

@@ -19,6 +19,7 @@ class SchedulerWakeTarget(StrEnum):
     """Scheduler loops that accept a wake hint."""
 
     STORY_COMPLETION = "story_completion"
+    TASK_DISPATCHER = "task_dispatcher"
 
 
 class SchedulerWakeHint(BaseModel):
