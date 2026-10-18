@@ -330,7 +330,6 @@ async def test_pipeline_starts_without_loki(monkeypatch):
         "story_supervision",
     ]
     assert workers["scaffold"] is pipeline.scaffold_loop
-    assert workers["pr_ci"] is pipeline.pr_ci_loop
     assert workers["worker_reconciliation"] is pipeline.worker_reconciliation_loop
     assert workers["owner_notifications"] is pipeline.owner_notification_loop
     assert workers["story_supervision"] is pipeline.story_supervision_loop
@@ -345,6 +344,7 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     from src import pipeline
     from src.tasks import (
         lifecycle_supervision_loop,
+        pr_ci_loop,
         qa_routing_loop,
         scheduler_wake_listener,
         story_completion_loop,
@@ -391,6 +391,10 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     monkeypatch.setattr(qa_routing_loop, "RedisStreamClient", broker.client)
     monkeypatch.setattr(qa_routing_loop, "supervise_testing_stories", record("qa_routing", {}))
     monkeypatch.setattr(qa_routing_loop, "_qa_routing_interval", lambda: 3600)
+    monkeypatch.setattr(pr_ci_loop, "RedisStreamClient", broker.client)
+    monkeypatch.setattr(pr_ci_loop, "poll_merged_prs", record("merged_prs", 0))
+    monkeypatch.setattr(pr_ci_loop, "poll_ci_failures", record("ci_failures", 0))
+    monkeypatch.setattr(pr_ci_loop, "_pr_ci_interval", lambda: 3600)
     monkeypatch.setattr(scheduler_wake_listener, "_reconnect_interval", lambda: 3600)
     await pipeline.main()
     workers = dict(run_workers.await_args.args[0])
@@ -401,6 +405,7 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
         asyncio.create_task(workers["lifecycle_supervision"]()),
         asyncio.create_task(workers["temporary_access"]()),
         asyncio.create_task(workers["qa_routing"]()),
+        asyncio.create_task(workers["pr_ci"]()),
         asyncio.create_task(
             workers["scheduler_wake"](redis_factory=broker.client, sleep=Timers().sleep)
         ),
@@ -408,35 +413,34 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     await broker.subscribed()
     await settle()
     assert sorted(journal) == sorted(
-        ["complete", "dispatch", "recover", "temporary_access", "qa_routing", *lifecycle_sweeps]
+        [
+            "complete",
+            "dispatch",
+            "recover",
+            "temporary_access",
+            "qa_routing",
+            "merged_prs",
+            "ci_failures",
+            *lifecycle_sweeps,
+        ]
     )
     publisher = broker.client()
     await publisher.connect()
 
-    journal.clear()
-    await publish_scheduler_wake(publisher, SchedulerWakeTarget.TASK_DISPATCHER)
-    await settle()
-    assert journal == ["dispatch", "recover"]
-
-    journal.clear()
-    await publish_scheduler_wake(publisher, SchedulerWakeTarget.STORY_COMPLETION)
-    await settle()
-    assert journal == ["complete"]
-
-    journal.clear()
-    await publish_scheduler_wake(publisher, SchedulerWakeTarget.LIFECYCLE_SUPERVISION)
-    await settle()
-    assert journal == lifecycle_sweeps
-
-    journal.clear()
-    await publish_scheduler_wake(publisher, SchedulerWakeTarget.TEMPORARY_ACCESS)
-    await settle()
-    assert journal == ["temporary_access"]
-
-    journal.clear()
-    await publish_scheduler_wake(publisher, SchedulerWakeTarget.QA_ROUTING)
-    await settle()
-    assert journal == ["qa_routing"]
+    hinted_steps = {
+        SchedulerWakeTarget.TASK_DISPATCHER: ["dispatch", "recover"],
+        SchedulerWakeTarget.STORY_COMPLETION: ["complete"],
+        SchedulerWakeTarget.LIFECYCLE_SUPERVISION: lifecycle_sweeps,
+        SchedulerWakeTarget.TEMPORARY_ACCESS: ["temporary_access"],
+        SchedulerWakeTarget.QA_ROUTING: ["qa_routing"],
+        SchedulerWakeTarget.PR_CI: ["merged_prs", "ci_failures"],
+    }
+    assert set(hinted_steps) == set(SchedulerWakeTarget)
+    for target, steps in hinted_steps.items():
+        journal.clear()
+        await publish_scheduler_wake(publisher, target)
+        await settle()
+        assert journal == steps, target
 
     for task in tasks:
         task.cancel()

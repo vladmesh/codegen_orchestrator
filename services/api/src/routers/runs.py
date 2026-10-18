@@ -7,7 +7,6 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, ValidationError
-from redis.exceptions import RedisError
 from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -41,7 +40,6 @@ from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Project, Run, User
 from shared.redis.client import RedisStreamClient
-from shared.redis.scheduler_wake import publish_scheduler_wake
 
 from ..database import get_async_session
 from ..dependencies import (
@@ -57,6 +55,7 @@ from ..engineering_budget_admission import (
 )
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..owner_notification_settlement import preserve_po_settlement
+from ..scheduler_wake import publish_wake
 from ..schemas import RunCreate, RunRead, RunUpdate
 
 logger = structlog.get_logger()
@@ -677,7 +676,7 @@ async def _wake_on_first_deploy_proof(
     """Hint the owning sweep once a deploy Run's first success proof has committed."""
     target = _first_proof_wake(before, _deploy_proof(run))
     if target is not None:
-        await _publish_wake(target, run, redis)
+        await publish_wake(redis, target, run_id=run.id, story_id=run.story_id)
 
 
 def _holds_terminal_qa(run: Run) -> bool:
@@ -694,27 +693,11 @@ async def _wake_on_first_qa_terminal(
     if terminal_before or not _holds_terminal_qa(run):
         return
     if run.story_id is not None:
-        await _publish_wake(SchedulerWakeTarget.QA_ROUTING, run, redis)
-    await _publish_wake(SchedulerWakeTarget.TEMPORARY_ACCESS, run, redis)
-
-
-async def _publish_wake(target: SchedulerWakeTarget, run: Run, redis: RedisStreamClient) -> None:
-    """Publish one hint after the Run's commit; a lost hint waits for the sweep's interval."""
-    try:
-        receivers = await publish_scheduler_wake(redis, target)
-    except (RedisError, OSError) as exc:
-        logger.warning(
-            f"{target.value}_wake_failed",
-            run_id=run.id,
-            story_id=run.story_id,
-            error_type=type(exc).__name__,
+        await publish_wake(
+            redis, SchedulerWakeTarget.QA_ROUTING, run_id=run.id, story_id=run.story_id
         )
-        return
-    logger.info(
-        f"{target.value}_wake_published",
-        run_id=run.id,
-        story_id=run.story_id,
-        receivers=receivers,
+    await publish_wake(
+        redis, SchedulerWakeTarget.TEMPORARY_ACCESS, run_id=run.id, story_id=run.story_id
     )
 
 

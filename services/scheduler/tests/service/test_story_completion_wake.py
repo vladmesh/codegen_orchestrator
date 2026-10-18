@@ -8,6 +8,7 @@ from _scheduler_wake_service import (
     BACKSTOP_SECONDS,
     WAIT_SECONDS,
     call_api,
+    story_in_repository,
     wake_channel_subscribed,
 )
 import pytest
@@ -45,51 +46,19 @@ class _GitHub:
 
 
 async def _story_with_task_in_dev(api_client, repo_name: str) -> tuple[str, str]:
-    telegram_id = uuid.uuid4().int % 1_000_000_000
-    await call_api(
-        api_client,
-        "POST",
-        "users/",
-        json={"telegram_id": telegram_id, "username": f"wake-{telegram_id}"},
-    )
-    project_id = str(uuid.uuid4())
-    await call_api(
-        api_client,
-        "POST",
-        "projects/",
-        json={
-            "id": project_id,
-            "title": "Completion wake",
-            "initiating_run_id": f"init-{uuid.uuid4().hex}",
-            "config": {},
-        },
-        headers={"X-Telegram-ID": str(telegram_id)},
-    )
-    await call_api(
-        api_client,
-        "POST",
-        "repositories/",
-        json={
-            "project_id": project_id,
-            "name": repo_name,
-            "git_url": f"https://github.com/test-org/{repo_name}",
-        },
-    )
-    story = await call_api(
-        api_client, "POST", "stories/", json={"project_id": project_id, "title": "Wake"}
-    )
+    project_id, story_id = await story_in_repository(api_client, repo_name, "Completion wake")
     task = await call_api(
         api_client,
         "POST",
         "tasks/",
         json={
             "project_id": project_id,
-            "story_id": story["id"],
+            "story_id": story_id,
             "title": "Engineering",
             "status": "todo",
         },
     )
-    await call_api(api_client, "POST", f"stories/{story['id']}/start", json={"actor": "test"})
+    await call_api(api_client, "POST", f"stories/{story_id}/start", json={"actor": "test"})
     await call_api(
         api_client,
         "POST",
@@ -97,7 +66,7 @@ async def _story_with_task_in_dev(api_client, repo_name: str) -> tuple[str, str]
         params={"to_status": "in_dev"},
         json={"actor": "test"},
     )
-    return story["id"], task["id"]
+    return story_id, task["id"]
 
 
 @pytest.mark.asyncio

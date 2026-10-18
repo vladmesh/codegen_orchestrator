@@ -29,6 +29,7 @@ from shared.contracts.dto.story import (
 from shared.contracts.dto.story_planning import dispatch_owed_record
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAOutcome
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.models import WorkAdmissionAudit
 from shared.models.application import Application
@@ -51,6 +52,7 @@ from ..dependencies import (
 )
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..owner_notification_settlement import preserve_po_settlement
+from ..scheduler_wake import publish_wake
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
     StoryAccept,
@@ -1153,12 +1155,15 @@ async def pr_review_story(
     story_id: str,
     body: StoryTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
 ) -> StoryRead:
+    """Move the Story to PR review; once that has committed, the PR/CI sweep is woken."""
     body = body or StoryTransition()
     story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.PR_REVIEW)
     await db.commit()
+    await publish_wake(redis, SchedulerWakeTarget.PR_CI, story_id=story.id)
     await db.refresh(story)
 
     logger.info("story_pr_review", story_id=story.id, actor=body.actor)
