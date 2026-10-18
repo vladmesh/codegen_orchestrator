@@ -7,7 +7,9 @@ from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
 
+from shared.redis.client import RedisStreamClient
 from src.database import get_async_session
+from src.dependencies import get_redis_client
 from src.main import app
 
 
@@ -104,6 +106,9 @@ def _mock_session(scalar_one_or_none=None, scalars_all=None):
 
 @pytest.fixture(autouse=True)
 def _cleanup_overrides():
+    # These tasks are storyless, so a route that wakes the completion sweep never
+    # touches this never-connected client; a stray publish fails loudly.
+    app.dependency_overrides[get_redis_client] = lambda: RedisStreamClient("redis://unused")
     yield
     app.dependency_overrides.clear()
 

@@ -1,4 +1,4 @@
-"""A story-completion hint on real Redis runs the next sweep long before its backstop."""
+"""An API done transition wakes the real-Redis completion sweep long before its backstop."""
 
 import asyncio
 import os
@@ -8,7 +8,6 @@ import pytest
 
 from shared.contracts.queues.scheduler_wake import SCHEDULER_WAKE_CHANNEL, SchedulerWakeTarget
 from shared.redis import RedisStreamClient
-from shared.redis.scheduler_wake import publish_scheduler_wake
 
 BACKSTOP_SECONDS = 3600
 WAIT_SECONDS = 15
@@ -113,9 +112,7 @@ async def _subscribed(redis_client: RedisStreamClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_published_hint_sweeps_a_newly_done_story_before_the_backstop(
-    api_client, monkeypatch
-):
+async def test_an_api_done_transition_sweeps_its_story_before_the_backstop(api_client, monkeypatch):
     from src.tasks import scheduler_wake_listener, story_completion, story_completion_loop
 
     repo_name = f"wake-{uuid.uuid4().hex[:10]}"
@@ -136,8 +133,8 @@ async def test_a_published_hint_sweeps_a_newly_done_story_before_the_backstop(
     story_id, task_id = await _story_with_task_in_dev(api_client, repo_name)
 
     wake = asyncio.Event()
-    publisher = RedisStreamClient(os.environ["REDIS_URL"])
-    await publisher.connect()
+    observer = RedisStreamClient(os.environ["REDIS_URL"])
+    await observer.connect()
     listener = asyncio.create_task(
         scheduler_wake_listener.scheduler_wake_listener(
             {SchedulerWakeTarget.STORY_COMPLETION: wake}
@@ -145,7 +142,7 @@ async def test_a_published_hint_sweeps_a_newly_done_story_before_the_backstop(
     )
     loop = None
     try:
-        await _subscribed(publisher)
+        await _subscribed(observer)
         loop = asyncio.create_task(story_completion_loop.story_completion_loop(wake=wake))
         await asyncio.wait_for(cycles.get(), WAIT_SECONDS)
         assert (await _call(api_client, "GET", f"stories/{story_id}"))["status"] == "in_progress"
@@ -158,9 +155,7 @@ async def test_a_published_hint_sweeps_a_newly_done_story_before_the_backstop(
                 params={"to_status": hop},
                 json={"actor": "engineering-worker"},
             )
-        assert cycles.empty()
 
-        assert await publish_scheduler_wake(publisher, SchedulerWakeTarget.STORY_COMPLETION) == 1
         assert await asyncio.wait_for(cycles.get(), WAIT_SECONDS) == 1
 
         story = await _call(api_client, "GET", f"stories/{story_id}")
@@ -172,4 +167,4 @@ async def test_a_published_hint_sweeps_a_newly_done_story_before_the_backstop(
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await publisher.close()
+        await observer.close()

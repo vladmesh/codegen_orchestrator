@@ -32,7 +32,7 @@ from ._product_brief_helpers import (
     take_task_for_plan_fenced_update,
 )
 from ._resource_wait_actions import resource_wait_router
-from ._task_actions import action_router
+from ._task_actions import action_router, wake_story_completion
 from ._task_helpers import (
     apply_cancellation,
     commit_or_raise_fk,
@@ -331,6 +331,7 @@ async def update_task(
 async def cancel_task(
     task_id: str,
     db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
 ) -> TaskRead:
     task = await get_task_for_update(task_id, db)
     # The transition itself lives in `apply_cancellation`, which the Product
@@ -339,6 +340,7 @@ async def cancel_task(
         return to_read(task)
 
     await db.commit()
+    await wake_story_completion(task, redis)
     await db.refresh(task)
 
     logger.info("task_cancelled", task_id=task.id)

@@ -7,9 +7,11 @@ import sys
 # Ensure /app is in path so 'src' can be imported
 sys.path.append("/app")
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 import importlib.util
 from pathlib import Path
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -23,6 +25,11 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
     safe_executor_diagnostic_reason,
+)
+from shared.contracts.queues.scheduler_wake import (
+    SCHEDULER_WAKE_CHANNEL,
+    SchedulerWakeTarget,
+    parse_scheduler_wake_hint,
 )
 from shared.contracts.vocab import AgentType
 from shared.tests.executor_diagnostic_cases import host_profile_for_reason
@@ -52,6 +59,45 @@ async def redis_client() -> AsyncGenerator[Redis, None]:
     client = Redis.from_url(REDIS_URL)
     yield client
     await client.aclose()
+
+
+WAKE_WAIT_SECONDS = 5
+
+
+class WakeHints:
+    """A native subscription to `scheduler:wake`, read up to a fence this test publishes."""
+
+    def __init__(self, redis: Redis, pubsub, fence: str) -> None:
+        self.redis = redis
+        self.pubsub = pubsub
+        self.fence = fence
+
+    async def published(self) -> list[SchedulerWakeTarget]:
+        """Hints published since the previous call; Redis delivers them before the fence."""
+        await self.redis.publish(self.fence, "fence")
+        hints = []
+        async with asyncio.timeout(WAKE_WAIT_SECONDS):
+            while True:
+                message = await self.pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=WAKE_WAIT_SECONDS
+                )
+                if message is None:
+                    continue
+                if message["channel"].decode() == self.fence:
+                    return hints
+                hints.append(parse_scheduler_wake_hint(message["data"].decode()).target)
+
+
+@pytest.fixture
+async def wake_hints(redis_client: Redis) -> AsyncGenerator[WakeHints, None]:
+    fence = f"scheduler-wake-test-fence:{uuid.uuid4().hex}"
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(SCHEDULER_WAKE_CHANNEL, fence)
+    for _ in range(2):
+        confirmation = await pubsub.get_message(timeout=WAKE_WAIT_SECONDS)
+        assert confirmation is not None and confirmation["type"] == "subscribe"
+    yield WakeHints(redis_client, pubsub, fence)
+    await pubsub.aclose()
 
 
 @pytest.fixture(scope="function")
