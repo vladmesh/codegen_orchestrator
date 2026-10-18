@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import json
 
-# Overall deadline for collecting the bot's final visible state after a probe.
+# Upper bound for collecting the bot's visible state after a probe.
 TELEGRAM_REPLY_TIMEOUT = 15
 TELEGRAM_MAX_REPLY_TIMEOUT = 60
 # Bound polling against the shared QA account while still reading exactly at the
 # collection deadline.
 TELEGRAM_POLL_INTERVAL = 2
+# Once the bot has responded, collection ends after its visible response stays
+# unchanged this long. Quiet is an observation boundary, not a final answer.
+TELEGRAM_QUIET_WINDOW = 3
 MAX_REPLIES = 10
 # The child gets connection and teardown room beyond its answer-collection
 # deadline. Keep this larger than TELEGRAM_REPLY_TIMEOUT.
@@ -39,7 +42,7 @@ def telegram_probe_process_timeout(wait_seconds: int) -> int:
 
 
 def _script_helpers() -> str:
-    """The self-contained serializer shared by the message and callback scripts."""
+    """The self-contained serializer and collector shared by the message and callback scripts."""
     return """\
 def encode_callback_data(value):
     if value is None:
@@ -92,6 +95,37 @@ def received_replies(client, bot, minimum_id):
 def newest_message_id(client, bot):
     messages = client.get_messages(bot, limit=1)
     return messages[0].id if messages else 0
+""" + settling_collector_source()
+
+
+def settling_collector_source() -> str:
+    """Script source of ``collect_until_settled(observe, responded, wait, poll)``.
+
+    It polls ``observe()`` until ``responded`` has held for any observation and the
+    observation has stayed equal for the quiet window, or until ``wait`` seconds
+    pass, and always returns right after an observation.
+    """
+    return f"""\
+def collect_until_settled(observe, responded, wait, poll):
+    deadline = time.monotonic() + wait
+    last = None
+    has_responded = False
+    while True:
+        observed = observe()
+        now = time.monotonic()
+        if observed != last:
+            last = observed
+            changed_at = now
+        has_responded = has_responded or responded(observed)
+        if now >= deadline:
+            return
+        wake = min(now + poll, deadline)
+        if has_responded:
+            settled_at = changed_at + {TELEGRAM_QUIET_WINDOW}
+            if now >= settled_at:
+                return
+            wake = min(wake, settled_at)
+        time.sleep(wake - now)
 """
 
 
@@ -137,16 +171,10 @@ def build_bot_message_script(
         f"    sent = client.send_message(bot, {json.dumps(message)})\n"
         "    result['delivered'] = True\n"
         "    result['message_id'] = sent.id\n"
-        f"    deadline = time.monotonic() + {wait_seconds}\n"
-        "    last_replies = []\n"
-        "    while True:\n"
-        "        now = time.monotonic()\n"
+        "    def observe():\n"
         "        result['replies'] = received_replies(client, bot, sent.id)\n"
-        "        if result['replies'] != last_replies:\n"
-        "            last_replies = result['replies']\n"
-        "        if now >= deadline:\n"
-        "            break\n"
-        "        time.sleep(min(POLL_INTERVAL, deadline - now))\n"
+        "        return result['replies']\n"
+        f"    collect_until_settled(observe, bool, {wait_seconds}, POLL_INTERVAL)\n"
         "except Exception as exc:\n"
         "    result['error'] = type(exc).__name__ + ': ' + str(exc)\n"
         "finally:\n"
@@ -225,24 +253,18 @@ def build_bot_callback_script(
         "        'alert': bool(getattr(answer, 'alert', False)),\n"
         "        'url': getattr(answer, 'url', None),\n"
         "    }\n"
-        f"    deadline = time.monotonic() + {wait_seconds}\n"
-        "    last_replies = []\n"
-        "    last_post_press_message = pre_press_message\n"
-        "    while True:\n"
-        "        now = time.monotonic()\n"
+        "    def observe():\n"
         "        result['replies'] = received_replies(client, bot, reply_baseline)\n"
         "        post_press = client.get_messages(bot, ids=message.id)\n"
         "        result['post_press_message'] = (\n"
         "            message_evidence(post_press)\n"
         "            if post_press is not None and not post_press.out else None\n"
         "        )\n"
-        "        if (result['replies'] != last_replies\n"
-        "                or result['post_press_message'] != last_post_press_message):\n"
-        "            last_replies = result['replies']\n"
-        "            last_post_press_message = result['post_press_message']\n"
-        "        if now >= deadline:\n"
-        "            break\n"
-        "        time.sleep(min(POLL_INTERVAL, deadline - now))\n"
+        "        return result['replies'], result['post_press_message']\n"
+        "    def responded(observed):\n"
+        "        replies, post_press_message = observed\n"
+        "        return bool(replies) or post_press_message != pre_press_message\n"
+        f"    collect_until_settled(observe, responded, {wait_seconds}, POLL_INTERVAL)\n"
         "except Exception as exc:\n"
         "    result['error'] = type(exc).__name__ + ': ' + str(exc)\n"
         "finally:\n"

@@ -164,7 +164,7 @@ def _fake_bot(monkeypatch, action, wait):
                 return original
             if limit == 1:
                 return [original]
-            return [final, photo, progress] if clock[0] >= 20 else [progress]
+            return [final, photo, progress][2 - (clock[0] >= 2) - (clock[0] >= 4) :]
 
     modules = {
         "telethon.sync": {"TelegramClient": Client},
@@ -185,12 +185,14 @@ def _fake_bot(monkeypatch, action, wait):
     output = StringIO()
     with redirect_stdout(output):
         exec(script, {})  # noqa: S102 - exercise the generated child script
-    return QATelegramProbeEvidence.model_validate(parse_bot_probe_result(output.getvalue()))
+    evidence = parse_bot_probe_result(output.getvalue())
+    return QATelegramProbeEvidence.model_validate(evidence), clock[0]
 
 
 @pytest.mark.parametrize("action", ["message", "callback"])
-def test_long_wait_collects_progress_delayed_photo_and_messages(monkeypatch, action):
-    evidence = _fake_bot(monkeypatch, action, 60)
+def test_progress_photo_and_answer_settle_well_inside_a_long_wait(monkeypatch, action):
+    evidence, elapsed = _fake_bot(monkeypatch, action, 60)
+    assert elapsed == 7
     assert [reply.id for reply in evidence.replies] == [11, 12, 13]
     assert evidence.replies[1].caption == "The cards"
     assert evidence.replies[2].text == "Your answer"

@@ -688,6 +688,16 @@ reports which path settled the Run and claims nothing about the executor.
 Telegram message and callback tools accept an integer collection wait of 1–60 seconds,
 default 15; their child process timeout is that wait plus 30 seconds. Invalid waits
 return a typed `invalid_wait` refusal without delivery or a run blocker.
+The wait is an upper bound. The tool polls every 2 seconds and returns once a bot
+response has stayed unchanged for a 3-second quiet window, or at the wait, with a
+final read before returning. A message probe's response is any bot message after the
+sent one; a button press's response is a message after the press or a change to the
+pressed message. A new message or a change to the serialized text, caption, media type
+or button markup restarts the window; a callback answer alone, even a non-empty one
+that is kept as evidence, does not. Silence runs to the wait. Quiet ends observation;
+it does not prove a final answer, and a reply sent after the tool returned is absent
+from its evidence. The `/start` access preflight settles the same way on its replies
+with a 10-second bound, and a refusal seen in any read still blocks the run.
 At the single runner settlement point, an executor-declared `product` cause is
 always preserved. Settlement moves only failed `qa_capability` / `qa_tooling`
 rows to unverified; brief text and optional `telegram_step` evidence never

@@ -112,8 +112,11 @@ def _bot_section(bot_username: str) -> str:
   every resulting bot reply, plus post-press evidence for the clicked message
   so an edit-in-place is observable.
 - The collection wait defaults to 15 seconds; choose an integer from 1 to 60.
-  Use a longer wait when a reply says work continues (pending/progress) or a
-  callback starts work. Judge the final answer after the chosen collection wait.
+  It is an upper bound: a call returns once the bot's replies (and, for a
+  button, the pressed message) stay unchanged for 3 seconds, and silence runs
+  to the wait. Use a longer wait when the bot needs longer for its first reply.
+  Quiet is not a final answer: a reply sent after the call returned is not in
+  its evidence, so a pending/progress reply is not the bot's final answer.
   An invalid wait returns a typed refusal and sends nothing; correct the value.
 - For a Telegram check, include `telegram_step` from the tool's result in its
   verdict row. This ties the check to the recorded input and collected replies.

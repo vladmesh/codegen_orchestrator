@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-18
+
+- QA Telegram probes, button presses and the `/start` preflight return once the bot's response stays
+  unchanged for 3 s; the wait stays the upper bound and silence still runs to it.
+
 ## 2026-10-17
 
 - Kit 14fa729c (core 2.6.0) is the scaffold, tooling and catalog pin, so a new product's bot registry

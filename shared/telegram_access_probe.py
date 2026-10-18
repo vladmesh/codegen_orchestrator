@@ -19,9 +19,11 @@ import os
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
+from shared.telegram_bot_probe import settling_collector_source
 
 # How long the probe waits for the bot to answer /start before calling it silence.
 TELEGRAM_ACCESS_PROBE_TIMEOUT = 10
+TELEGRAM_ACCESS_PROBE_POLL_INTERVAL = 1
 
 DENIAL_MARKER = "telegram_access_denied:"
 IDENTITY_MISMATCH_MARKER = "telegram_identity_mismatch:"
@@ -64,7 +66,8 @@ def build_access_probe_script(bot_username: str) -> str:
 
     Exit 0 means the bot answered something other than a refusal, exit 2 a
     refusal, exit 3 the wrong Telegram account. The account is checked first: a
-    probe run from another identity would answer a question nobody asked.
+    probe run from another identity would answer a question nobody asked. A
+    refusal seen in any observation exits 2 before the answers settle.
     """
     return (
         "import os\n"
@@ -72,7 +75,8 @@ def build_access_probe_script(bot_username: str) -> str:
         "from telethon.sessions import StringSession\n"
         "import sys\n"
         "import time\n"
-        "client = TelegramClient(StringSession(os.environ['TELETHON_SESSION']), "
+        + settling_collector_source()
+        + "client = TelegramClient(StringSession(os.environ['TELETHON_SESSION']), "
         "int(os.environ['TELETHON_API_ID']), os.environ['TELETHON_API_HASH'])\n"
         "client.start()\n"
         "try:\n"
@@ -83,10 +87,9 @@ def build_access_probe_script(bot_username: str) -> str:
         "        sys.exit(3)\n"
         f"    bot = client.get_entity('@{bot_username}')\n"
         "    sent = client.send_message(bot, '/start')\n"
-        f"    deadline = time.monotonic() + {TELEGRAM_ACCESS_PROBE_TIMEOUT}\n"
-        "    while time.monotonic() < deadline:\n"
-        "        replies = client.get_messages(bot, min_id=sent.id, limit=5)\n"
-        "        for reply in replies:\n"
+        "    def observe():\n"
+        "        answers = []\n"
+        "        for reply in client.get_messages(bot, min_id=sent.id, limit=5):\n"
         "            if reply.out or reply.id <= sent.id:\n"
         "                continue\n"
         "            text = (reply.raw_text or reply.message or '').strip()\n"
@@ -97,7 +100,10 @@ def build_access_probe_script(bot_username: str) -> str:
         "            if denied:\n"
         f"                print('{DENIAL_MARKER}' + text[:500])\n"
         "                sys.exit(2)\n"
-        "        time.sleep(1)\n"
+        "            answers.append((reply.id, text))\n"
+        "        return answers\n"
+        f"    collect_until_settled(observe, bool, {TELEGRAM_ACCESS_PROBE_TIMEOUT}, "
+        f"{TELEGRAM_ACCESS_PROBE_POLL_INTERVAL})\n"
         f"    print('{PROBE_PASSED_MARKER}')\n"
         "finally:\n"
         "    client.disconnect()"
