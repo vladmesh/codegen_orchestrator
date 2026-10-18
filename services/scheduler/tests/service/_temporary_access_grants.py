@@ -4,6 +4,7 @@ import uuid
 
 import httpx
 
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan, TemporaryAccessRequest
 from shared.contracts.dto.run_result import DeployRunResult, DeploySkipReason, QARunResult
 from shared.contracts.dto.temporary_access import TemporaryAccessStatus
 from shared.contracts.queues.deploy import DeployOutcome
@@ -54,8 +55,8 @@ class OnlyGrant:
         return getattr(self._api, name)
 
 
-async def target_with_qa_run(client: RawAPI) -> tuple[str, int, str]:
-    """A running application with a successful deployment record and a queued QA run."""
+async def _running_target(client: RawAPI) -> tuple[str, int]:
+    """A project's running application with a successful deployment record."""
     suffix = uuid.uuid4().hex[:8]
     telegram_id = uuid.uuid4().int % 1_000_000_000
     user = await client.post(
@@ -119,10 +120,16 @@ async def target_with_qa_run(client: RawAPI) -> tuple[str, int, str]:
         },
     )
     assert deployment.status_code == httpx.codes.CREATED, deployment.text
+    return project_id, application_id
+
+
+async def target_with_qa_run(client: RawAPI) -> tuple[str, int, str]:
+    """A running application with a successful deployment record and a queued QA run."""
+    project_id, application_id = await _running_target(client)
     qa = await client.post(
         "/api/work-admission/paid-runs",
         json={
-            "id": f"qa-proof-{suffix}",
+            "id": f"qa-proof-{uuid.uuid4().hex[:8]}",
             "type": "qa",
             "project_id": project_id,
             "run_metadata": {"application_id": application_id},
@@ -130,6 +137,45 @@ async def target_with_qa_run(client: RawAPI) -> tuple[str, int, str]:
     )
     assert qa.status_code == httpx.codes.OK, qa.text
     return project_id, application_id, qa.json()["run_id"]
+
+
+async def story_target_with_qa_run(client: RawAPI) -> tuple[str, int, str, str]:
+    """A TESTING story on a running target, and its queued QA run carrying the handoff plan."""
+    project_id, application_id = await _running_target(client)
+    story = await client.post("/api/stories/", json={"project_id": project_id, "title": "QA"})
+    assert story.status_code == httpx.codes.CREATED, story.text
+    story_id = story.json()["id"]
+    for action in ("start", "deploy", "test"):
+        moved = await client.post(f"/api/stories/{story_id}/{action}")
+        assert moved.is_success, moved.text
+    qa_run_id = f"qa-story-{uuid.uuid4().hex[:8]}"
+    # Completing the story on a passed verdict reads the deployed address from this plan.
+    handoff = QAHandoffPlan(
+        qa_message=QAMessage(
+            story_id=story_id,
+            project_id=project_id,
+            initiating_run_id=f"deploy-{qa_run_id}",
+            deployed_url=TARGET_URL,
+            application_id=application_id,
+            acceptance_criteria="the bot answers /start",
+            run_id=qa_run_id,
+        ),
+        access=TemporaryAccessRequest(
+            target_application_id=application_id, target_base_url=TARGET_URL, head_sha=HEAD_SHA
+        ),
+    ).model_dump(mode="json")
+    qa = await client.post(
+        "/api/work-admission/paid-runs",
+        json={
+            "id": qa_run_id,
+            "type": "qa",
+            "project_id": project_id,
+            "story_id": story_id,
+            "run_metadata": {"application_id": application_id, QA_HANDOFF_KEY: handoff},
+        },
+    )
+    assert qa.status_code == httpx.codes.OK, qa.text
+    return project_id, application_id, story_id, qa_run_id
 
 
 async def grant_for(client: RawAPI, qa_run_id: str) -> dict:

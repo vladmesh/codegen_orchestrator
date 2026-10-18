@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-18
 
+- `PATCH /runs/{id}` publishes `qa_routing` and `temporary_access` wake hints after a QA Run's first
+  terminal state commits, so the story verdict routes and access cleanup starts without the interval.
 - `PATCH /runs/{id}` publishes a `temporary_access` wake hint after committing a grant or revoke
   operation's first readback proof, so the sweep releases QA or closes the grant without the interval.
 - `PATCH /runs/{id}` publishes a `lifecycle_supervision` wake hint after committing an ordinary story

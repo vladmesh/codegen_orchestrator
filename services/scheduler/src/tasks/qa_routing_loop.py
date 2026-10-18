@@ -18,8 +18,8 @@ def _qa_routing_interval() -> int:
     return startup.get_config().get_int("scheduler.dispatch_interval_seconds")
 
 
-async def qa_routing_loop() -> None:
-    """Route durable testing state without depending on dispatcher call order."""
+async def qa_routing_loop(*, wake: asyncio.Event) -> None:
+    """Route durable testing state independent of dispatcher order; `wake` runs it early."""
     from ..clients.api import api_client
 
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
@@ -35,4 +35,5 @@ async def qa_routing_loop() -> None:
         stopped_event="qa_routing_stopped",
         redis_factory=RedisStreamClient,
         sleep=asyncio.sleep,
+        wake=wake,
     )

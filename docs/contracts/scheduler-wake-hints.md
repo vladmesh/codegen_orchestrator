@@ -11,8 +11,8 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - Message: the JSON body of `SchedulerWakeHint` in `shared/contracts/queues/scheduler_wake.py`,
   for example `{"target":"story_completion"}`. `target` is a `SchedulerWakeTarget`; no other
   field is accepted.
-- Targets: `story_completion`, `task_dispatcher`, `lifecycle_supervision` and `temporary_access`;
-  each wakes only the loop of that name.
+- Targets: `story_completion`, `task_dispatcher`, `lifecycle_supervision`, `temporary_access` and
+  `qa_routing`; each wakes only the loop of that name.
 - A hint carries routing only: no credentials, ids, correlation metadata or business state. It
   grants no permission to transition a Story, Task or Run and never invokes a business action.
 - Producers publish with `shared.redis.scheduler_wake.publish_scheduler_wake` after the durable
@@ -25,7 +25,8 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 | `story_completion` | api Task routes `POST /tasks/{id}/complete`, `POST /tasks/{id}/transition`, `DELETE /tasks/{id}`; langgraph engineering success settlement (`handle_engineering_success`) | scheduler-pipeline `story_completion` loop |
 | `task_dispatcher` | api Product Brief admission `POST /product-briefs/{id}/admit` | scheduler-pipeline `task_dispatcher` loop |
 | `lifecycle_supervision` | api Run update `PATCH /runs/{id}` on the first typed success of an ordinary story deploy | scheduler-pipeline `lifecycle_supervision` loop |
-| `temporary_access` | api Run update `PATCH /runs/{id}` on the first readback proof of a temporary-access grant or revoke operation | scheduler-pipeline `temporary_access` loop |
+| `temporary_access` | api Run update `PATCH /runs/{id}` on the first readback proof of a temporary-access grant or revoke operation, and on a QA Run's first terminal state | scheduler-pipeline `temporary_access` loop |
+| `qa_routing` | api Run update `PATCH /runs/{id}` on a story-scoped QA Run's first terminal state | scheduler-pipeline `qa_routing` loop |
 
 ## Producers
 
@@ -121,15 +122,49 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
   and never refuses or fails a write.
 - The langgraph deploy consumer records an operation's proof through this route, so this hint
   covers it; it publishes no hint of its own.
+- A QA Run's first terminal state publishes this hint too, with or without a story, as
+  [QA terminal state](#qa-terminal-state) describes.
 - The awakened cycle runs the unchanged `supervise_temporary_access` sweep. It still reads each
   grant's current operation Run, expiry and QA state, so a proof of a superseded operation settles
   nothing; the hint grants, revokes and releases nothing.
 - A Redis or socket error on publish is logged as `temporary_access_wake_failed` with the run id,
   the story id and the error type only; the committed Run and its response are unchanged.
   Cancellation propagates. There is no retry.
-- Every other write the sweep acts on still waits for the interval: grant creation, a QA Run
-  reaching a terminal status, a failed, cancelled, skipped, missing or stale operation, an expired
-  grant, a `revoke_failed` record awaiting retry or escalation, and every drain or recovery write.
+- Every other write the sweep acts on still waits for the interval: grant creation, a failed,
+  cancelled, skipped, missing or stale operation, an expired grant, a `revoke_failed` record
+  awaiting retry or escalation, the QA routing transition an escalation waits for, and every drain
+  or recovery write.
+
+### QA terminal state
+
+- `PATCH /runs/{id}` publishes when the request gives a `qa` Run its first terminal state: the
+  locked row before the update is `queued` or `running`, and the final row is `completed`, `failed`
+  or `cancelled`. It publishes `qa_routing` when the Run has a `story_id`, then `temporary_access`
+  whether or not it has one. A storyless QA Run has no story to route, but its grant still owes
+  cleanup.
+- The hints announce a committed terminal state, not a valid verdict: a cancellation without a
+  result publishes both, and the result's shape is never read. A result written while the Run is
+  still running publishes nothing until a later request makes the Run terminal.
+- The route publishes on the initialized Redis client right after its own `db.commit()` returns
+  and before the response refresh. A terminal replay, a metadata- or accounting-only update, a
+  nonterminal update, another Run type, a refused request (a late verdict on a recorded QA outcome
+  included) and a failed commit publish nothing. The classification reads only the Run row: it
+  never reads the Story or the grant, never touches `qa_routed_at`, and never refuses or fails a
+  write.
+- The langgraph QA consumer and every other terminal writer of a QA Run record it through this
+  route, so these hints cover them; none publishes a hint of its own.
+- The awakened `qa_routing` cycle runs the unchanged `supervise_testing_stories` sweep, which reads
+  each TESTING story's latest QA Run and routes its verdict; only that story transition writes
+  `qa_routed_at`. The awakened `temporary_access` cycle starts the grant's cleanup on its own. The
+  two loops keep no order between them; an exhausted cleanup's escalation still waits for
+  `qa_routed_at`.
+- Each target is published on its own: a Redis or socket error is logged as
+  `qa_routing_wake_failed` or `temporary_access_wake_failed` with the run id, the story id and the
+  error type only, and the other target is still attempted. The committed Run and its response are
+  unchanged. Cancellation propagates and skips any remaining target. There is no retry.
+- Every other write QA routing acts on still waits for the interval: a story reaching TESTING after
+  its QA Run turned terminal, a queued QA handoff awaiting recovery, an invalid stored result, and
+  every recovery, operator or direct-database write.
 
 ## Listener
 
