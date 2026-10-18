@@ -319,6 +319,52 @@ async def test_an_authenticated_malformed_delivery_is_refused_without_echo(
     ]
 
 
+COMPLETED_PREFIX = '{"action": "completed", "workflow_run": {"id": 7, "status": "completed"'
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize(
+    ("event", "template"),
+    [
+        ("workflow_run", COMPLETED_PREFIX + '}, "extra": %s}'),
+        ("workflow_run", COMPLETED_PREFIX + ', "metrics": {"ratio": [%s]}}}'),
+        ("workflow_run", '{"action": "in_progress", "extra": %s}'),
+        ("ping", '{"zen": "z", "extra": %s}'),
+        ("ping", '{"hook": {"config": {"ratio": %s}}}'),
+        ("push", '{"ref": "refs/heads/main", "extra": %s}'),
+    ],
+    ids=["completed-top", "completed-nested", "ignored-action", "ping-top", "ping-nested", "push"],
+)
+async def test_a_non_json_numeric_constant_is_refused_before_any_publication(
+    journal, redis, event, template, constant
+):
+    body = (template % constant).encode()
+
+    with capture_logs() as logs:
+        refusal = await refused(redis, body, headers(body, event=event))
+
+    assert (refusal.status_code, refusal.detail) == (400, MALFORMED)
+    assert journal == []
+    assert logs == [
+        {
+            "event": "github_webhook_refused",
+            "log_level": "warning",
+            "reason": "payload_not_json",
+            "status_code": 400,
+        }
+    ]
+
+
+async def test_constant_names_as_strings_and_ordinary_numbers_remain_valid(journal, redis):
+    body = (
+        COMPLETED_PREFIX + ', "conclusion": "NaN"}, "labels": ["Infinity", "-Infinity"],'
+        ' "numbers": [0, -1, 1.5e308, -2.5E-3, 12345678901234567890]}'
+    ).encode()
+
+    assert (await deliver(redis, body)).status_code == 204
+    assert journal == [WAKE]
+
+
 @pytest.mark.parametrize("pairs", [[], [("x-github-event", "workflow_run")] * 2])
 async def test_a_missing_or_duplicate_event_header_is_refused(journal, redis, pairs):
     body = encode(delivery())

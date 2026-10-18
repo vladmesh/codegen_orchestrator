@@ -76,9 +76,14 @@ def _is_json_media_type(request: Request) -> bool:
     return name.strip().lower() == "charset" and value.strip().strip('"').lower() == "utf-8"
 
 
+def _refuse_non_json_constant(name: str) -> None:
+    # Python's decoder accepts NaN and the infinities, which RFC 8259 JSON does not.
+    raise ValueError("non-JSON numeric constant")
+
+
 def _json_object(body: bytes) -> dict:
     try:
-        payload = json.loads(body.decode("utf-8"))
+        payload = json.loads(body.decode("utf-8"), parse_constant=_refuse_non_json_constant)
     except (ValueError, RecursionError):
         raise _refuse(status.HTTP_400_BAD_REQUEST, "payload_not_json", _MALFORMED) from None
     if not isinstance(payload, dict):
