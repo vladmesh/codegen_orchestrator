@@ -1030,7 +1030,10 @@ class TestDeployerFencesEarlierRuns:
         result = await deployer.run({**base_state, "fence_active_deploys": True})
 
         assert order == ["secrets", "fence", "dispatch"]
-        gh.fence_workflow.assert_awaited_once_with("my-org", "my-repo", "deploy.yml")
+        gh.fence_workflow.assert_awaited_once()
+        assert gh.fence_workflow.await_args.args == ("my-org", "my-repo", "deploy.yml")
+        # Each cancellation is guarded by the deploy lock (test_deploy_workflow_fence.py).
+        assert callable(gh.fence_workflow.await_args.kwargs["guard"])
         assert result["deployment_result"]["status"] == "success"
 
     @pytest.mark.asyncio
