@@ -15,6 +15,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   hints are lossy and coalesced, the interval stays the backstop, and nothing publishes one yet.
 - A successful story engineering settlement publishes the `story_completion` wake hint after its Run,
   Task and `iteration_end` writes return, so the PR sweep starts without waiting for its interval.
+- The api Task complete, transition and cancel routes publish the `story_completion` wake hint after
+  committing a story Task's `done` or `cancelled`, which also covers liveness replay of a finished Run.
 
 ## 2026-10-17
 

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import func, select
 
 from shared.contracts.dto.task import TaskDTO
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Run, Story, Task
 from shared.queues import ENGINEERING_QUEUE, WORKER_COMMANDS
 
@@ -416,6 +417,25 @@ async def test_cancelled_queued_operation_releases_without_starting(install_task
         token=LEASE_OWNER,
     )
     assert claim["outcome"] == "settled" and claim["operation"]["state"] == "refused"
+
+
+@pytest.mark.asyncio
+async def test_an_install_cancel_transition_wakes_completion_once(
+    install_task, async_client, wake_hints
+):
+    await command(async_client, install_task, "admit")
+    await wake_hints.published()
+    cancel = f"/api/tasks/{install_task['id']}/transition?to_status=cancelled"
+
+    cancelled = await post(async_client, cancel)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["install_operation"]["state"] == "refused"
+    assert await wake_hints.published() == [SchedulerWakeTarget.STORY_COMPLETION]
+
+    await post(async_client, cancel)
+    assert await wake_hints.published() == []
+    task = (await async_client.get(f"/api/tasks/{install_task['id']}")).json()
+    assert task["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -20,9 +21,11 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis.client import RedisStreamClient
+from shared.redis.scheduler_wake import publish_scheduler_wake
 
 from ..attempt_disposition import require_automatic_task
 from ..database import get_async_session
@@ -96,6 +99,28 @@ _COMPLETE_PATH: dict[str, list[str]] = {
 }
 
 
+async def wake_story_completion(task: Task, redis: RedisStreamClient) -> None:
+    """Hint the completion sweep once a story Task's done or cancelled change has committed."""
+    if task.story_id is None:
+        return
+    try:
+        receivers = await publish_scheduler_wake(redis, SchedulerWakeTarget.STORY_COMPLETION)
+    except (RedisError, OSError) as exc:
+        logger.warning(
+            "story_completion_wake_failed",
+            task_id=task.id,
+            story_id=task.story_id,
+            error_type=type(exc).__name__,
+        )
+        return
+    logger.info(
+        "story_completion_wake_published",
+        task_id=task.id,
+        story_id=task.story_id,
+        receivers=receivers,
+    )
+
+
 async def _release_pre_handoff_failure(run_id: str, db: AsyncSession) -> None:
     """Close the unpublished Run and release its hold in one transaction."""
     await db.rollback()
@@ -161,6 +186,7 @@ async def complete_task(
     task_id: str,
     body: TaskTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
 ) -> TaskRead:
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
@@ -169,6 +195,7 @@ async def complete_task(
     await apply_task_completion(task, body.actor, body.details, db)
 
     await db.commit()
+    await wake_story_completion(task, redis)
     await db.refresh(task)
 
     logger.info("task_completed", task_id=task.id)
@@ -573,13 +600,16 @@ async def transition_task(
     to_status: str = Query(...),
     body: TaskTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
 ) -> TaskRead:
     body = body or TaskTransition()
     task = await get_task_for_update(task_id, db)
     if task.type == "install":
         if to_status == TaskStatus.CANCELLED.value:
-            await apply_cancellation(task, db)
+            cancelled = await apply_cancellation(task, db)
             await db.commit()
+            if cancelled:
+                await wake_story_completion(task, redis)
             await db.refresh(task)
             return to_read(task)
         await require_automatic_task(task, db)
@@ -603,6 +633,8 @@ async def transition_task(
     task.status = to_status
     await create_status_event(task, old_status, to_status, body.actor, body.details, db)
     await db.commit()
+    if to_status in {TaskStatus.DONE, TaskStatus.CANCELLED}:
+        await wake_story_completion(task, redis)
     await db.refresh(task)
 
     logger.info("task_transitioned", task_id=task.id, from_s=old_status, to_s=to_status)

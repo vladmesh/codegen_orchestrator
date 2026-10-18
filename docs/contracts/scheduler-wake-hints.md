@@ -21,10 +21,21 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 
 | Target | Logical producer | Consumer |
 |---|---|---|
-| `story_completion` | langgraph engineering success settlement (`handle_engineering_success`) | scheduler-pipeline `story_completion` loop |
+| `story_completion` | api Task routes `POST /tasks/{id}/complete`, `POST /tasks/{id}/transition`, `DELETE /tasks/{id}`; langgraph engineering success settlement (`handle_engineering_success`) | scheduler-pipeline `story_completion` loop |
 
 ## Producers
 
+- The api Task routes publish one `story_completion` hint when the request moves a story-scoped Task
+  to `done` or `cancelled`: `complete`, a `transition` to either status (the install cancellation
+  branch included) and `DELETE`. The route publishes on the initialized Redis client right after its
+  own `db.commit()` returns and before the response refresh. A storyless Task, an intermediate hop,
+  a refused request, a failed commit and an already-cancelled no-op publish nothing. The shared
+  `apply_task_completion` and `apply_cancellation` never publish, because their callers own the
+  transaction.
+- Liveness replay of a finished Run and success settlement with a planning Task reach `done`
+  through the `transition` route, so its hint covers them; success settlement still publishes its
+  own hint after its later writes. The two hints coalesce in the loop and either one alone is
+  enough, because the sweep reads only durable Story, Task and Run state.
 - Engineering success settlement publishes one `story_completion` hint for a story-scoped attempt
   with a commit, on the consumer's connected Redis client. It publishes after the terminal Run
   `completed` write returns and, with a planning Task, after the `in_ci`, `testing`, `done`
@@ -32,12 +43,13 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - The Task transitions and event write stay best-effort: after one fails the hint is still
   published, and the sweep acts only on what committed. A storyless success, a failed terminal Run
   write and every rejected, failed or gave-up outcome publish nothing.
-- A Redis or socket error on publish is logged as `story_completion_wake_failed` with the story id
-  and error type only; the settlement result, callbacks, deploy and durable data are unchanged.
-  Cancellation propagates.
-- Every other write that can make a Story eligible still waits for the interval: liveness replay of
-  a finished Run, dispatch admission completing a finished Run, catalog install publication and
-  recovery, commit recovery, the Task complete and cancel routes, and PR conflict repair settlement.
+- A Redis or socket error on publish is logged as `story_completion_wake_failed` with the story id,
+  the task id on the api, and the error type only; the committed response or settlement result,
+  callbacks, deploy and durable data are unchanged. Cancellation propagates. There is no retry.
+- Every other write that can make a Story eligible still waits for the interval: dispatch admission
+  completing a finished Run, catalog install publication and recovery, commit recovery, PR conflict
+  repair settlement, non-success deploy-fix settlement, the Product Brief takeover cancellation and
+  every other Task mutation outside the routes above.
 
 ## Listener
 
