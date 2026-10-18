@@ -22,7 +22,7 @@ from structlog.testing import capture_logs
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DISPATCH_CLAIMED_AT_KEY, DeployDispatchClaim
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantDTO,
@@ -116,6 +116,26 @@ def _allocations(application_id: int) -> list[dict]:
     ]
 
 
+def _grant_run(
+    grant: TemporaryAccessGrantDTO,
+    run_id: str,
+    status: RunStatus,
+    *,
+    claimed: bool = False,
+    succeeded: bool = False,
+):
+    """A grant operation Run of `grant`, as the scheduler created it and its worker left it."""
+    metadata = {"temporary_access_grant_id": grant.id, "temporary_access_operation": "grant"}
+    if claimed:
+        metadata[DISPATCH_CLAIMED_AT_KEY] = _NOW.isoformat()
+    return make_run(
+        id=run_id,
+        status=status,
+        run_metadata=metadata,
+        result=DeployRunResult(deploy_outcome=DeployOutcome.SUCCESS) if succeeded else None,
+    )
+
+
 class FakeApi:
     """The API slice an access operation reads and writes, with the Run kept like the API.
 
@@ -150,25 +170,27 @@ class FakeApi:
         self.get_users_grant_intent = AsyncMock()
         self.events: list[str] = []
         self.on_allocation_read = None
-        # The grant Run of a revoke's record: finished by default, so no earlier
-        # workflow is owed a stop.
-        self.runs = {
-            self.grant.grant_run_id: make_run(
-                id=self.grant.grant_run_id,
-                status=RunStatus.COMPLETED,
-                result=DeployRunResult(deploy_outcome=DeployOutcome.SUCCESS),
-            )
-        }
+        # The record's grant operation Runs: its current one finished, unclaimed,
+        # so by default no earlier workflow is owed a stop.
+        self.history = [
+            _grant_run(self.grant, self.grant.grant_run_id, RunStatus.COMPLETED, succeeded=True)
+        ]
+        self.history_unreadable = False
 
     async def get_run(self, run_id: str):
-        if run_id == TASK_ID:
-            return make_run(id=TASK_ID, status=self.run_status, run_metadata=self.run_metadata)
-        if run_id not in self.runs:
-            request = httpx.Request("GET", f"http://api/runs/{run_id}")
+        assert run_id == TASK_ID
+        return make_run(id=TASK_ID, status=self.run_status, run_metadata=self.run_metadata)
+
+    async def list_project_runs(self, project_id: str, run_type: RunType):
+        """`GET runs/?project_id&run_type`: the whole set, this operation Run included."""
+        assert (project_id, run_type) == (PROJECT_ID, RunType.DEPLOY)
+        if self.history_unreadable:
+            request = httpx.Request("GET", "http://api/runs/")
             raise httpx.HTTPStatusError(
-                "404", request=request, response=httpx.Response(404, request=request)
+                "503", request=request, response=httpx.Response(503, request=request)
             )
-        return self.runs[run_id]
+        operation_run = make_run(id=TASK_ID, status=self.run_status, run_metadata=self.run_metadata)
+        return [operation_run, *self.history]
 
     async def claim_deploy_dispatch(self, run_id: str) -> DeployDispatchClaim:
         """The locked dispatch claim: refused once the Run is terminal."""
@@ -756,7 +778,7 @@ async def test_an_unproven_workflow_stop_fails_the_cleanup_before_any_effect(
     env = operation_env("revoke")
     if not deployed:
         env.api.allocations[TARGET_APPLICATION_ID] = []
-    env.api.runs[env.api.grant.grant_run_id] = _dispatched_grant_run(env)
+    env.api.history = [_dispatched_grant_run(env)]
     env.github.runs = {7: "in_progress"}
     env.github.refuse_cancel = True
 
@@ -800,12 +822,10 @@ async def test_a_withdrawal_during_the_target_read_prevents_every_effect(
     _assert_withdrawn(env, result)
 
 
-def _dispatched_grant_run(env):
-    """The grant Run as a withdrawal leaves one that had crossed GitHub dispatch."""
-    return make_run(
-        id=env.api.grant.grant_run_id,
-        status=RunStatus.CANCELLED,
-        run_metadata={DISPATCH_CLAIMED_AT_KEY: _NOW.isoformat()},
+def _dispatched_grant_run(env, run_id: str | None = None):
+    """A grant Run as a withdrawal leaves one that had crossed GitHub dispatch."""
+    return _grant_run(
+        env.api.grant, run_id or env.api.grant.grant_run_id, RunStatus.CANCELLED, claimed=True
     )
 
 
@@ -827,7 +847,7 @@ async def test_a_cleanup_retry_still_stops_the_earlier_grant_workflow(
     env = operation_env("revoke")
     if not deployed:
         env.api.allocations[TARGET_APPLICATION_ID] = []
-    env.api.runs[env.api.grant.grant_run_id] = _dispatched_grant_run(env)
+    env.api.history = [_dispatched_grant_run(env)]
     env.github.runs = {7: "in_progress"}
     if first_attempt == "unproven-stop":
         env.github.refuse_cancel = True
@@ -852,3 +872,80 @@ async def test_a_cleanup_retry_still_stops_the_earlier_grant_workflow(
     if deployed:
         assert env.api.events.index("cancel:7") < env.api.events.index("/users/revoke")
     assert _proves_operation(env.api.run_writes[-1])
+
+
+#: The released grant operation the scheduler replaced; its workflow is still running.
+PREDECESSOR_RUN_ID = "temporary-access-grant-a"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deployed", [True, False], ids=["deployed", "undeployed"])
+@pytest.mark.parametrize("replacement", ["unclaimed", "completed"])
+async def test_a_cleanup_after_a_replaced_grant_still_stops_the_predecessors_workflow(
+    operation_env, deployed, replacement
+):
+    """Replacement B is the record's grant Run now; admitted A's workflow can still act."""
+    env = operation_env("revoke")
+    if not deployed:
+        env.api.allocations[TARGET_APPLICATION_ID] = []
+    grant = env.api.grant
+    current = (
+        _grant_run(grant, grant.grant_run_id, RunStatus.CANCELLED)
+        if replacement == "unclaimed"
+        else _grant_run(
+            grant, grant.grant_run_id, RunStatus.COMPLETED, claimed=True, succeeded=True
+        )
+    )
+    env.api.history = [current, _dispatched_grant_run(env, PREDECESSOR_RUN_ID)]
+    env.github.runs = {7: "in_progress"}
+    env.github.refuse_cancel = True
+
+    first = await _process(env)
+
+    assert env.github.cancels() == [7]
+    assert env.github.runs == {7: "in_progress"}
+    assert env.product.requests == []
+    assert first["status"] == "failed"
+    _assert_retryable_failure(env, "could not be proven stopped")
+
+    # A restart or retry recomputes the obligation from the same history.
+    _redeliver(env)
+    env.github.refuse_cancel = False
+
+    result = await _process(env)
+
+    assert result["status"] == "success"
+    assert env.github.runs == {7: "completed"}
+    if deployed:
+        assert env.api.events.index("cancel:7") < env.api.events.index("/users/revoke")
+    assert _proves_operation(env.api.run_writes[-1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deployed", [True, False], ids=["deployed", "undeployed"])
+async def test_an_unreadable_run_history_never_proves_cleanup(operation_env, deployed):
+    env = operation_env("revoke")
+    if not deployed:
+        env.api.allocations[TARGET_APPLICATION_ID] = []
+    env.api.history_unreadable = True
+
+    result = await _process(env)
+
+    assert result["status"] == "failed"
+    assert env.product.requests == []
+    assert env.github.requests == []
+    [write] = env.api.run_writes
+    assert not _proves_operation(write)
+
+
+@pytest.mark.asyncio
+async def test_a_history_without_the_current_grant_run_owes_the_stop(operation_env):
+    env = operation_env("revoke")
+    env.api.history = []
+    env.github.runs = {7: "in_progress"}
+
+    result = await _process(env)
+
+    assert result["status"] == "success"
+    assert env.github.cancels() == [7]
+    assert env.api.events.index("cancel:7") < env.api.events.index("/users/revoke")

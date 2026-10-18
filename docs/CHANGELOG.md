@@ -10,7 +10,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 - A QA temporary-access grant or revoke calls the target's users-core capability with the stored
   `USERS_GRANT_CAPABILITY` instead of redeploying the product, so QA access no longer costs a deploy.
 - A temporary-access operation takes its Run's dispatch claim before any external write, and every revoke
-  re-derives the earlier-workflow stop from the grant Run, so withdrawal or retry cannot skip either.
+  re-derives the earlier-workflow stop from all the grant's Runs, so withdrawal or retry cannot skip either.
 
 ## 2026-10-17
 

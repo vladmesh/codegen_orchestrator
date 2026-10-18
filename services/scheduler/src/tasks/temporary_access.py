@@ -23,7 +23,7 @@ from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis import RedisStreamClient
-from shared.temporary_access_cleanup import grant_workflow_may_still_act
+from shared.temporary_access_cleanup import grant_cleanup_owes_workflow_stop
 
 from .. import startup
 
@@ -236,11 +236,12 @@ async def _publish_operation(
 
     The consumer calls the target's users-core capability directly. The message
     also names the commit the target's own deployment record says it runs. Every
-    revoke re-derives from the grant Run whether an earlier grant workflow must be
-    stopped first, so no retry or redispatch loses that obligation.
+    revoke re-derives from the record's whole grant Run history whether an earlier
+    grant workflow must be stopped first, so no retry, replacement or redispatch
+    loses that obligation.
     """
-    fence_active_deploys = operation == "revoke" and grant_workflow_may_still_act(
-        await api_client.get_run_if_missing_returns_none(grant.grant_run_id)
+    fence_active_deploys = operation == "revoke" and await grant_cleanup_owes_workflow_stop(
+        api_client, grant
     )
     deployed_commit_sha = await api_client.latest_deployed_commit_sha(grant.target_application_id)
     if not deployed_commit_sha:

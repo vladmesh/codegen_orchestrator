@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from shared.contracts.dto.run import RunDTO, RunUpdate
+from shared.contracts.dto.run import RunDTO, RunType, RunUpdate
 
 
 def _run_update_payload(update: RunUpdate | Mapping[str, Any]) -> dict[str, Any]:
@@ -27,6 +27,13 @@ class RunAPIClientMixin:
     async def get_run(self, run_id: str) -> RunDTO:
         response = await self.request("GET", f"runs/{run_id}")  # type: ignore[attr-defined]
         return RunDTO.model_validate(response.json())
+
+    async def list_project_runs(self, project_id: str, run_type: RunType) -> list[RunDTO]:
+        """Every Run of one project and type, newest first; the API returns the whole set."""
+        response = await self.request(  # type: ignore[attr-defined]
+            "GET", "runs/", params={"project_id": project_id, "run_type": run_type.value}
+        )
+        return [RunDTO.model_validate(row) for row in response.json()]
 
     async def update_run(self, run_id: str, update: RunUpdate | Mapping[str, Any]) -> None:
         await self.request(  # type: ignore[attr-defined]

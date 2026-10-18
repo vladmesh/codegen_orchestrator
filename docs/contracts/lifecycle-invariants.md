@@ -222,11 +222,15 @@ Run's dispatch claim (`claim_dispatch`), the same locked admission a deploy take
 before GitHub, and renews it before each later external write; a withdrawal or a
 lapsed lease that wins any renewal ends the Run `cancelled` with no further
 external write, so a withdrawn operation never changes access. A revoke owes a
-stop of earlier grant workflows when its message carries `fence_active_deploys`
-or when the record's grant Run crossed the dispatch boundary without completing
-`SUCCESS` (`shared.temporary_access_cleanup.grant_workflow_may_still_act`); the
-scheduler derives the flag from the same Run on every revoke publication, and the
-consumer re-derives it, so no retry or redispatch loses it. The stop proves every
+stop of earlier grant workflows when its message carries `fence_active_deploys`,
+when any grant operation Run of the record crossed the dispatch boundary without
+completing `SUCCESS`, or when the record's current grant Run is missing from that
+history (`shared.temporary_access_cleanup.grant_cleanup_owes_workflow_stop`). The
+history is the project's complete deploy Run listing filtered by the Run
+metadata's grant id and operation, so replacing the record's grant Run does not
+hide a predecessor; an unreadable listing fails the revoke. The scheduler derives
+the flag this way on every revoke publication and the consumer re-derives it, so
+no retry, replacement or redispatch loses it. The stop proves every
 unfinished `deploy.yml` run of the repository stopped (`fence_active_deploys`),
 renewing admission and checking the deploy lock immediately before each
 cancellation request; it fails `owner_access_proof_failed` when a run cannot be

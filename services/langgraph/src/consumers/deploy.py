@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 import structlog
 
 from shared.allocation_disposition import attempt_disposition, may_terminate_story
@@ -40,7 +39,7 @@ from shared.contracts.queues.deploy import (
 from shared.contracts.service_ports import DEPLOY_INFRA_PORT_SERVICES
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
-from shared.temporary_access_cleanup import grant_workflow_may_still_act
+from shared.temporary_access_cleanup import grant_cleanup_owes_workflow_stop
 
 from ..allocations import AllocationError
 from ..clients.api import api_client
@@ -704,7 +703,7 @@ async def _run_temporary_access_operation(
         logger.warning("temporary_access_target_unresolved", task_id=msg.task_id, error=str(error))
         return await _access_failure_response(msg, redis, fence, str(error))
     must_fence = msg.fence_active_deploys or (
-        operation == "revoke" and await _earlier_grant_workflow_may_act(grant)
+        operation == "revoke" and await grant_cleanup_owes_workflow_stop(api_client, grant)
     )
 
     try:
@@ -769,21 +768,6 @@ async def _run_temporary_access_operation(
         project_id=msg.project_id,
     )
     return live_work_settled({"status": "success", "operation": operation})
-
-
-async def _earlier_grant_workflow_may_act(grant: TemporaryAccessGrantDTO) -> bool:
-    """Whether the record's grant Run may have left a deploy workflow that can still write.
-
-    A Run that cannot be found proves nothing; any other unreadable answer raises,
-    so the operation fails retryably instead of skipping the stop.
-    """
-    try:
-        grant_run = await api_client.get_run(grant.grant_run_id)
-    except httpx.HTTPStatusError as error:
-        if error.response.status_code != httpx.codes.NOT_FOUND:
-            raise
-        grant_run = None
-    return grant_workflow_may_still_act(grant_run)
 
 
 async def _record_access_withdrawn(

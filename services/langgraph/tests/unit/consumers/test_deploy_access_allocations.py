@@ -22,6 +22,7 @@ import pytest
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantDTO,
     TemporaryAccessRevokeReason,
@@ -288,6 +289,20 @@ def _use_access_operation(deploy_api, operation: str) -> None:
         )
     )
     deploy_api.get_temporary_access_grant = AsyncMock(return_value=grant)
+    # The record's grant Run finished without crossing dispatch: no stop is owed.
+    deploy_api.list_project_runs = AsyncMock(
+        return_value=[
+            make_run(
+                id=grant.grant_run_id,
+                status=RunStatus.COMPLETED,
+                result=DeployRunResult(deploy_outcome=DeployOutcome.SUCCESS),
+                run_metadata={
+                    "temporary_access_grant_id": grant.id,
+                    "temporary_access_operation": "grant",
+                },
+            )
+        ]
+    )
 
 
 def _run_patches(deploy_api) -> list[dict]:
