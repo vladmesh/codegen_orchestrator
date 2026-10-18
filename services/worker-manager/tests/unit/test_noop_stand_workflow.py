@@ -360,12 +360,14 @@ def test_image_identity_and_auth_selection_execute_real_workflow(tmp_path, comma
 def test_noop_precreate_without_sessions_still_requires_ssh(tmp_path):
     script = steps()["Validate pre-create credentials"]["run"]
     key = "-----BEGIN PRIVATE KEY-----\nZmFrZQ==\n-----END PRIVATE KEY-----"
-    result = run(script, tmp_path, SUITE="mega-noop", SSH_PRIVATE_KEY=key)
+    # Every suite starts the API, so even the no-model path needs its webhook secret.
+    api = {"GITHUB_WEBHOOK_SECRET": "ab" * 32}
+    result = run(script, tmp_path, SUITE="mega-noop", SSH_PRIVATE_KEY=key, **api)
     assert result.returncode == 0, result.stderr
-    result = run(script, tmp_path, SUITE="mega-noop")
+    result = run(script, tmp_path, SUITE="mega-noop", **api)
     assert result.returncode != 0
     assert "SSH material" in result.stdout
-    result = run(script, tmp_path, SUITE="mega-live", SSH_PRIVATE_KEY=key)
+    result = run(script, tmp_path, SUITE="mega-live", SSH_PRIVATE_KEY=key, **api)
     assert result.returncode != 0
     assert "Claude token" in result.stdout
     assert "Telethon session" in result.stdout
