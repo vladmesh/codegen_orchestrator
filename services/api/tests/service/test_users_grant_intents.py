@@ -1,6 +1,7 @@
 """Service coverage for the durable intent lifecycle, separate from Runs."""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import uuid
 
@@ -89,8 +90,11 @@ async def test_public_caller_cannot_write_trusted_merged_deploy_observation(asyn
 
 
 class _PublishRedis:
+    """The initialized client's stream publish and its native Pub/Sub publish, unsubscribed."""
+
     def __init__(self, error: Exception | None = None) -> None:
         self.publish_message = AsyncMock(side_effect=error)
+        self.redis = SimpleNamespace(publish=AsyncMock(return_value=0))
 
 
 @pytest.fixture(autouse=True)
