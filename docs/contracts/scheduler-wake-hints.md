@@ -221,14 +221,18 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
   socket error is logged as `pr_ci_wake_failed` with the error type only and the delivery is still
   answered 204, so GitHub does not redeliver a hint the interval covers. Zero receivers is a
   published hint. Cancellation propagates. There is no retry.
-- No GitHub delivery reaches this route yet. Activation needs, in order: a random secret generated
-  and provisioned as `GITHUB_WEBHOOK_SECRET` (for example `openssl rand -hex 32`, held only in the
-  deployment secret store); the deploy workflow writing it into the API's environment, without
-  which the API refuses to start; public HTTPS routing of exactly `POST /api/webhooks/github` to the
-  API that preserves the body and headers; the GitHub App's webhook URL and that secret, its
+- No GitHub delivery reaches this route yet. The deploy and stand workflows write the
+  `GH_WEBHOOK_SECRET` secret of their GitHub Environment into the API's environment as
+  `GITHUB_WEBHOOK_SECRET` and refuse to proceed without it
+  ([GitHub Integration](../DEPLOY.md#github-integration)). Activation still needs, in order: a
+  dedicated random value (32 random bytes as hex, `openssl rand -hex 32`) provisioned as
+  `GH_WEBHOOK_SECRET` in each Environment that runs the API, held only there and never in
+  model-visible text or artifacts; public HTTPS routing of exactly `POST /api/webhooks/github` to
+  the API that preserves the body and headers; the GitHub App's webhook URL and that secret, its
   `workflow_run` event subscription and its Actions read permission; and evidence of a delivery
   answered 204 followed by an awakened `pr_ci` sweep. To disable it, remove the route from the
-  public proxy or the App's subscription; the interval sweep keeps recovering every completion.
+  public proxy or the App's subscription and keep the secret provisioned, since the API still
+  requires it; the interval sweep keeps recovering every completion.
 
 ## Listener
 

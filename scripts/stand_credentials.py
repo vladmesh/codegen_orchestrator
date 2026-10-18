@@ -14,6 +14,7 @@ import base64
 from collections.abc import Mapping
 from datetime import UTC, datetime
 import os
+import re
 
 from shared.stand_credentials import (
     CLAUDE_MINIMUM_TTL,  # noqa: F401 - retained script-level validator API
@@ -24,6 +25,10 @@ from shared.stand_credentials import (
 
 TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
 PRIVATE_KEY_MINIMUM_LINES = 3
+# Every suite starts the API, which refuses to start without this secret. The
+# rendered .stand.env line keeps only one token Compose cannot reinterpret.
+WEBHOOK_SECRET_ENV_VAR = "GITHUB_WEBHOOK_SECRET"  # noqa: S105 - a variable name
+_WEBHOOK_SECRET_SHAPE = re.compile(r"[A-Za-z0-9._~+/=-]+")
 
 
 def _ssh_private_key_looks_usable(value: str | None) -> bool:
@@ -68,6 +73,14 @@ def validate_precreate_credentials(
         failures.append(
             CredentialFailure(
                 "Telethon session", f"is unavailable: missing {', '.join(missing_telethon)}"
+            )
+        )
+    if not _WEBHOOK_SECRET_SHAPE.fullmatch(environment.get(WEBHOOK_SECRET_ENV_VAR, "")):
+        failures.append(
+            CredentialFailure(
+                "GitHub webhook secret",
+                f"is missing or not one token of letters, digits and ._~+/=-: "
+                f"{WEBHOOK_SECRET_ENV_VAR} (stand environment secret GH_WEBHOOK_SECRET)",
             )
         )
     if not _ssh_private_key_looks_usable(environment.get("SSH_PRIVATE_KEY")):

@@ -172,14 +172,17 @@ def test_steps_that_change_the_host_keep_their_single_shot_behaviour(name: str):
 FAKE_SSH = """#!/usr/bin/env bash
 set -uo pipefail
 echo call >> "${FAKE_SSH_DIR}/calls"
+printf '%s\\0' "$@" >> "${FAKE_SSH_DIR}/args"
 remote="${@: -1}"
 sh -c "${remote}"
 """
 
 
-def _render(script: str, deploy_path: Path) -> str:
+def _render(script: str, deploy_path: Path, values: dict[str, str] | None = None) -> str:
     def value(match: re.Match) -> str:
         expression = match.group(1)
+        if values and expression in values:
+            return values[expression]
         if expression == "env.DEPLOY_PATH":
             return str(deploy_path)
         if expression == "env.RELEASE_PENDING":
@@ -209,8 +212,10 @@ def host(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _run_step(name: str, host: Path) -> subprocess.CompletedProcess[str]:
-    script = _render(_steps()[name]["run"], host / "deploy")
+def _run_step(
+    name: str, host: Path, values: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    script = _render(_steps()[name]["run"], host / "deploy", values)
     return subprocess.run(
         ["bash", "-c", script],
         cwd=REPO_ROOT,
@@ -249,6 +254,73 @@ def test_the_env_file_is_written_whole_and_private(host: Path):
     assert "ENVEOF" not in env_file.read_text()
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
     assert _calls(host) == 1
+
+
+WEBHOOK_SECRET = "c0ffee" * 10 + "c0ff"  # noqa: S105 - synthetic 32 bytes as hex
+
+
+def test_the_webhook_secret_reaches_the_api_env_exactly_and_never_the_output(host: Path):
+    result = _run_step("Write .env to server", host, {"secrets.GH_WEBHOOK_SECRET": WEBHOOK_SECRET})
+
+    assert result.returncode == 0, result.stderr
+    lines = (host / "deploy" / ".env").read_text().splitlines()
+    assert [line for line in lines if line.startswith("GITHUB_WEBHOOK_SECRET=")] == [
+        f"GITHUB_WEBHOOK_SECRET={WEBHOOK_SECRET}"
+    ]
+    assert WEBHOOK_SECRET not in result.stdout + result.stderr
+    assert WEBHOOK_SECRET not in (host / "args").read_text()
+
+
+def _validate_required_secrets(
+    tmp_path: Path, contour: str, webhook_secret: str
+) -> subprocess.CompletedProcess[str]:
+    step = _steps()["Validate required secrets"]
+    environment = {name: f"value-of-{name}" for name in step["env"]}
+    environment["REQUIRED_GH_WEBHOOK_SECRET"] = webhook_secret
+    return subprocess.run(
+        ["bash", "-c", _render(step["run"], tmp_path, {"inputs.environment": contour})],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": "/usr/bin:/bin", **environment},
+    )
+
+
+@pytest.mark.parametrize("contour", ["production", "stand"])
+def test_each_contour_accepts_a_one_token_webhook_secret_without_printing_it(
+    tmp_path: Path, contour: str
+):
+    result = _validate_required_secrets(tmp_path, contour, WEBHOOK_SECRET)
+
+    assert result.returncode == 0, result.stderr
+    assert WEBHOOK_SECRET not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("contour", ["production", "stand"])
+def test_a_missing_webhook_secret_is_named_before_any_host_write(tmp_path: Path, contour: str):
+    result = _validate_required_secrets(tmp_path, contour, "")
+
+    assert result.returncode == 1
+    assert f"Missing required secrets or variables for {contour}: GH_WEBHOOK_SECRET" in (
+        result.stderr
+    )
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    ["   ", "two words", "token\nENVEOF\nINJECTED=1", "$(touch executed)", "a#b", "it's"],
+    ids=["blank", "space", "heredoc-break", "command", "comment", "quote"],
+)
+def test_an_unsafe_webhook_secret_is_refused_by_name_and_never_run(tmp_path: Path, unsafe: str):
+    result = _validate_required_secrets(tmp_path, "stand", unsafe)
+
+    assert result.returncode == 1
+    assert "GH_WEBHOOK_SECRET for stand must be one token" in result.stderr
+    assert "its value is not shown" in result.stderr
+    if unsafe.strip():
+        assert unsafe not in result.stdout + result.stderr
+    assert not (tmp_path / "executed").exists()
 
 
 def test_the_written_env_passes_its_contour_check(host: Path):

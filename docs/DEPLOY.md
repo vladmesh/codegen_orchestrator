@@ -139,7 +139,8 @@ authentication.
 ### Ephemeral stand authentication
 
 Before the lifecycle preflight can create a machine, the ephemeral BitLaunch
-stand validates Telethon material, the bootstrap private key, and the
+stand validates Telethon material, the bootstrap private key, the API's webhook
+secret (`GH_WEBHOOK_SECRET`, see [GitHub Integration](#github-integration)), and the
 operator-supplied, timezone-aware `CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT` metadata
 for the opaque annual Claude OAuth token. Missing, malformed, expired, or
 near-expiry Claude material refuses without rendering credentials. The GitHub
@@ -382,11 +383,18 @@ either `openrouter_balance` (the balance and whether an alert was sent) or
 | `GH_APP_PRIVATE_KEY` | GitHub App private key PEM (written to `/opt/secrets/github_app.pem`) |
 | `GH_ORG` | GitHub organization name |
 | `GHCR_TOKEN` | GitHub token with `packages:read` scope (for pulling worker images) |
-| `GITHUB_WEBHOOK_SECRET` | Random secret GitHub signs webhook deliveries with; required by the API, which refuses to start without a nonblank value. No other key derives it |
+| `GH_WEBHOOK_SECRET` | Random secret GitHub signs webhook deliveries with, written into the server `.env` as `GITHUB_WEBHOOK_SECRET`. The API refuses to start without a nonblank value. No other key derives it |
 
-The deploy workflow does not write `GITHUB_WEBHOOK_SECRET` into the server `.env` yet, so a
-deploy of the API needs that wiring and the provisioned secret first. Activation of the webhook is
-described in [GitHub workflow completion](contracts/scheduler-wake-hints.md#github-workflow-completion).
+GitHub refuses secret names that start with `GITHUB_`, so the API's `GITHUB_WEBHOOK_SECRET` is
+the `GH_WEBHOOK_SECRET` secret of each GitHub Environment that runs the API: the operator
+provisions a dedicated value separately in `production` and in `stand`. Use 32 random bytes as hex
+(`openssl rand -hex 32`); a value must be one token of letters, digits and `._~+/=-`. Keep it out of
+model-visible text, issues, logs and artifacts. Deploy refuses a missing or unsafe value by name,
+without printing it, before it writes `.env`. `stand-e2e.yml` refuses it the same way before any
+paid step, renders it into the stand API's `.env`, and holds it as a protected value of its
+service-tail redaction and both artifact admissions. Provisioning it activates no webhook; what
+activation still needs is in
+[GitHub workflow completion](contracts/scheduler-wake-hints.md#github-workflow-completion).
 
 `GH_ORG` is the name of the *secret* only. The rename stopped at the secret: the deploy workflow
 writes it into the server `.env` as `GITHUB_ORG=${{ secrets.GH_ORG }}`

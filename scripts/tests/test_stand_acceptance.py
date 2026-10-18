@@ -10,6 +10,7 @@ import pytest
 from scripts.stand_acceptance import (
     ADMISSION_MARKER,
     PROTECTED_STAND_SECRET_NAMES,
+    ProtectedEnvironmentError,
     _emit_admission_diagnostics,
     admit_artifact,
     admit_artifact_from_environment,
@@ -1305,6 +1306,42 @@ def test_admission_refuses_a_missing_protected_environment_value_with_a_named_sa
         "marker": ADMISSION_MARKER,
         "status": "rejected",
     }
+
+
+def test_a_leaked_webhook_secret_is_refused_and_its_name_alone_is_admissible(tmp_path):
+    webhook_secret = "9e3a" * 16
+    environment = {**_protected_environment(), "GITHUB_WEBHOOK_SECRET": webhook_secret}
+    protected_values = protected_values_from_environment(environment, suite="mega-noop")
+    leaked = tmp_path / "leaked"
+    _final_candidate(leaked, f"api | hmac key {webhook_secret} in a traceback\n")
+    leaked_status = tmp_path / "leaked.json"
+    safe = tmp_path / "safe"
+    _final_candidate(
+        safe,
+        "api | GITHUB_WEBHOOK_SECRET is configured\n"
+        "api | github_webhook_refused reason=signature_mismatch status=403\n"
+        "ORCHESTRATOR_HOSTNAME=stand.example.test\n",
+    )
+
+    assert not admit_artifact(leaked, status_path=leaked_status, protected_values=protected_values)
+    assert admit_artifact(
+        safe, status_path=tmp_path / "safe.json", protected_values=protected_values
+    )
+    assert json.loads(leaked_status.read_text(encoding="utf-8"))["issues"] == [
+        {"path": "run.log", "reason": "candidate contains a supplied protected value"}
+    ]
+    assert webhook_secret not in leaked_status.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("suite", ["mega-noop", "mega-live"])
+def test_admission_requires_the_webhook_secret_for_every_suite(suite):
+    environment = _protected_environment()
+    environment["GITHUB_WEBHOOK_SECRET"] = ""
+
+    with pytest.raises(ProtectedEnvironmentError) as refused:
+        protected_values_from_environment(environment, suite=suite)
+
+    assert refused.value.missing == ("GITHUB_WEBHOOK_SECRET",)
 
 
 def test_rejected_admission_emits_only_safe_reason_and_relative_path_to_the_summary(

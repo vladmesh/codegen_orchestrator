@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from scripts.stand_credentials import (
     CLAUDE_MINIMUM_TTL,
     validate_precreate_credentials,
 )
+
+WEBHOOK_SECRET = "5f0c" * 16  # noqa: S105 - synthetic 32 bytes as hex
 
 
 def _environment(now: datetime) -> dict[str, str]:
@@ -20,6 +24,7 @@ def _environment(now: datetime) -> dict[str, str]:
         "SSH_PRIVATE_KEY": (
             "-----BEGIN OPENSSH PRIVATE KEY-----\ndGVzdA==\n-----END OPENSSH PRIVATE KEY-----"
         ),
+        "GITHUB_WEBHOOK_SECRET": WEBHOOK_SECRET,
     }
 
 
@@ -110,3 +115,33 @@ def test_opaque_claude_token_refuses_missing_and_expired_expiry_metadata():
     assert [(failure.name, failure.detail) for failure in failures] == [
         ("Claude token", "is expired")
     ]
+
+
+@pytest.mark.parametrize("suite", ["mega-noop", "mega-live", None])
+@pytest.mark.parametrize(
+    "value", ["", "   ", "two words", "one\nINJECTED=1", "$(touch pwned)", "quoted'value"]
+)
+def test_every_suite_refuses_a_missing_or_unsafe_webhook_secret_by_name_only(suite, value):
+    now = datetime(2026, 8, 28, tzinfo=UTC)
+    environment = {**_environment(now), "GITHUB_WEBHOOK_SECRET": value}
+    if value == "":
+        del environment["GITHUB_WEBHOOK_SECRET"]
+
+    failures = validate_precreate_credentials(environment, now=now, suite=suite)
+
+    assert [failure.name for failure in failures] == ["GitHub webhook secret"]
+    assert "GITHUB_WEBHOOK_SECRET" in failures[0].detail
+    assert "GH_WEBHOOK_SECRET" in failures[0].detail
+    if value.strip():
+        assert value not in failures[0].detail
+
+
+@pytest.mark.parametrize("value", [WEBHOOK_SECRET, "aGVsbG8tc3RhbmQ=", "a-b_c.d~e+f/g="])
+def test_a_suite_without_model_sessions_still_accepts_a_one_token_webhook_secret(value):
+    now = datetime(2026, 8, 28, tzinfo=UTC)
+    environment = {
+        "SSH_PRIVATE_KEY": _environment(now)["SSH_PRIVATE_KEY"],
+        "GITHUB_WEBHOOK_SECRET": value,
+    }
+
+    assert validate_precreate_credentials(environment, now=now, suite="mega-noop") == []

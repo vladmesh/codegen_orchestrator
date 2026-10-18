@@ -190,6 +190,8 @@ jobs:
           TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
           TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          # GitHub refuses secret names starting with GITHUB_; the deploy stores it the same way.
+          GITHUB_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
           python3 -m scripts.stand_credentials --suite "${SUITE}"
@@ -636,6 +638,7 @@ jobs:
           GRAFANA_DB_PASSWORD: ${{ secrets.GRAFANA_DB_PASSWORD }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
+          GITHUB_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
           STAND_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT }}
           HOST_CODEX_HOME: /opt/secrets/stand-codex
@@ -678,7 +681,7 @@ jobs:
               "REGISTRY_USER", "REGISTRY_PASSWORD", "REGISTRY_PASSWORD_HASH", "LOKI_PUSH_USER",
               "LOKI_PUSH_PASSWORD", "LOKI_PUSH_PASSWORD_HASH", "LOKI_URL", "ADMIN_USER",
               "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
-              "WORKER_BROKER_INTERNAL_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "HOST_CODEX_HOME", "HOST_CODEX_VALIDATION_PATH", "PO_LLM_MODEL",
+              "WORKER_BROKER_INTERNAL_TOKEN", "GITHUB_WEBHOOK_SECRET", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "HOST_CODEX_HOME", "HOST_CODEX_VALIDATION_PATH", "PO_LLM_MODEL",
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
               "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR", "DEFAULT_AGENT_TYPE",
               "TELEGRAM_MAX_CONCURRENT_UPDATES",
@@ -925,6 +928,8 @@ jobs:
             # The QA session lives in the qa-worker env file, not in the api
             # environment, so the redactor is handed it by name: -e NAME takes
             # the value from this shell, never from a command line.
+            # It is the only pair allowed empty: any other named value missing
+            # from the api environment fails the redaction path closed.
             qa_env=./.qa-worker.env
             TELETHON_API_HASH=; TELETHON_SESSION=
             if [ -f "${qa_env}" ]; then
@@ -932,13 +937,13 @@ jobs:
               TELETHON_SESSION=$(sed -n "s/^TELETHON_SESSION=//p" "${qa_env}")
             fi
             export TELETHON_API_HASH TELETHON_SESSION
-            protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY TELETHON_API_HASH TELETHON_SESSION"
+            protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN GITHUB_WEBHOOK_SECRET PO_LLM_API_KEY ARCHITECT_LLM_API_KEY TELETHON_API_HASH TELETHON_SESSION"
             services_out="${diagnostics_dir}/provisioning-services.log"
             services_partial="${services_out}.partial"
             rm -f "${services_partial}"
             if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler-infrastructure 2>&1 | \
               ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" -e TELETHON_API_HASH -e TELETHON_SESSION api \
-              python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
+              python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); optional={\"TELETHON_API_HASH\", \"TELETHON_SESSION\"}; missing=[name for name in names if name not in optional and not os.environ.get(name, \"\").strip()]; missing and sys.exit(\"missing redaction values: \" + \" \".join(missing)); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
               > "${services_partial}"; then
               mv "${services_partial}" "${services_out}"
             else
@@ -1206,6 +1211,8 @@ jobs:
                 # The QA session lives in the qa-worker env file, not in the api
                 # environment, so the redactor is handed it by name: -e NAME takes
                 # the value from this shell, never from a command line.
+                # It is the only pair allowed empty: any other named value missing
+                # from the api environment fails the redaction path closed.
                 qa_env=./.qa-worker.env
                 TELETHON_API_HASH=; TELETHON_SESSION=
                 if [ -f "${qa_env}" ]; then
@@ -1213,7 +1220,7 @@ jobs:
                   TELETHON_SESSION=$(sed -n "s/^TELETHON_SESSION=//p" "${qa_env}")
                 fi
                 export TELETHON_API_HASH TELETHON_SESSION
-                protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY TELETHON_API_HASH TELETHON_SESSION"
+                protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN GITHUB_WEBHOOK_SECRET PO_LLM_API_KEY ARCHITECT_LLM_API_KEY TELETHON_API_HASH TELETHON_SESSION"
                 out=/root/e2e-runs/suite-services.log
                 partial="${out}.partial"
                 rm -f "${partial}"
@@ -1225,7 +1232,7 @@ jobs:
                      engineering-worker worker-manager worker-broker api \
                      qa-worker deploy-worker 2>&1 | \
                    ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" -e TELETHON_API_HASH -e TELETHON_SESSION api \
-                   python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
+                   python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); optional={\"TELETHON_API_HASH\", \"TELETHON_SESSION\"}; missing=[name for name in names if name not in optional and not os.environ.get(name, \"\").strip()]; missing and sys.exit(\"missing redaction values: \" + \" \".join(missing)); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
                    > "${partial}"; then
                   mv "${partial}" "${out}"
                 else
@@ -1306,6 +1313,7 @@ jobs:
           GRAFANA_DB_PASSWORD: ${{ secrets.GRAFANA_DB_PASSWORD }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
+          GITHUB_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
           STAND_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           PO_LLM_API_KEY: ${{ secrets.PO_LLM_API_KEY }}
           ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
@@ -1452,6 +1460,7 @@ jobs:
           GRAFANA_DB_PASSWORD: ${{ secrets.GRAFANA_DB_PASSWORD }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
+          GITHUB_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
           STAND_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           PO_LLM_API_KEY: ${{ secrets.PO_LLM_API_KEY }}
           ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
