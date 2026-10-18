@@ -6,8 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 import uuid
 
-from httpx import ASGITransport, AsyncClient
-from internal_caller import INTERNAL_HEADERS
+from fastapi import HTTPException
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.exc import OperationalError
@@ -18,9 +17,8 @@ from shared.contracts.queues.scheduler_wake import (
     SchedulerWakeTarget,
     parse_scheduler_wake_hint,
 )
-from src.database import get_async_session
-from src.dependencies import get_redis_client
-from src.main import app
+from src.routers._task_actions import complete_task, transition_task
+from src.routers.tasks import cancel_task
 
 STORY_ID = "story-wake"
 TASK_ID = "task-wake"
@@ -90,9 +88,6 @@ class Session:
             raise self.failure
         self.journal.append(("commit", self.task.status))
 
-    async def rollback(self) -> None:
-        self.journal.append(("rollback",))
-
     async def refresh(self, row) -> None:
         self.journal.append(("refresh",))
 
@@ -118,195 +113,181 @@ class NativeRedis:
         return self.receivers
 
 
-@pytest.fixture(autouse=True)
-def _cleanup_overrides():
-    yield
-    app.dependency_overrides.clear()
-
-
 @pytest.fixture
 def journal() -> list:
     return []
 
 
 @pytest.fixture
-def redis(journal) -> NativeRedis:
-    native = NativeRedis(journal)
-    app.dependency_overrides[get_redis_client] = lambda: SimpleNamespace(redis=native)
-    return native
+def native(journal) -> NativeRedis:
+    return NativeRedis(journal)
 
 
-def use_session(session: Session) -> Session:
-    async def override():
-        yield session
-
-    app.dependency_overrides[get_async_session] = override
-    return session
+@pytest.fixture
+def redis(native) -> SimpleNamespace:
+    return SimpleNamespace(redis=native)
 
 
-async def call(method: str, path: str, **kwargs):
-    async with AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False),
-        base_url="http://test",
-        headers=INTERNAL_HEADERS,
-    ) as client:
-        return await client.request(method, path, **kwargs)
+def complete(session, redis):
+    return complete_task(TASK_ID, db=session, redis=redis)
 
 
 def transition(to_status: str):
-    return call("POST", f"/api/tasks/{TASK_ID}/transition", params={"to_status": to_status})
+    return lambda session, redis: transition_task(
+        TASK_ID, to_status=to_status, db=session, redis=redis
+    )
+
+
+def delete(session, redis):
+    return cancel_task(TASK_ID, db=session, redis=redis)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status", "request_", "events"),
+    ("status", "route", "events"),
     [
-        ("in_dev", lambda: call("POST", f"/api/tasks/{TASK_ID}/complete"), 3),
-        ("testing", lambda: transition("done"), 1),
-        ("in_ci", lambda: transition("cancelled"), 1),
-        ("todo", lambda: call("DELETE", f"/api/tasks/{TASK_ID}"), 1),
+        ("in_dev", complete, 3),
+        ("testing", transition("done"), 1),
+        ("in_ci", transition("cancelled"), 1),
+        ("todo", delete, 1),
     ],
     ids=["complete", "transition-done", "transition-cancelled", "delete"],
 )
 async def test_a_story_task_reaching_a_terminal_status_wakes_after_its_commit(
-    journal, redis, status, request_, events
+    journal, redis, status, route, events
 ):
-    session = use_session(Session(journal, make_task(status=status)))
+    session = Session(journal, make_task(status=status))
 
-    response = await request_()
+    read = await route(session, redis)
 
-    assert response.status_code == 200, response.text  # noqa: PLR2004
-    terminal = response.json()["status"]
-    assert terminal in {"done", "cancelled"}
-    assert journal == [("commit", terminal), WAKE, ("refresh",)]
+    assert read.status in {"done", "cancelled"}
+    assert journal == [("commit", read.status), WAKE, ("refresh",)]
     assert len(session.added) == events
 
 
 @pytest.mark.asyncio
 async def test_an_install_cancellation_wakes_after_its_commit(journal, redis):
-    use_session(Session(journal, make_task(status="todo", type="install")))
+    session = Session(journal, make_task(status="todo", type="install"))
 
-    response = await transition("cancelled")
+    read = await transition("cancelled")(session, redis)
 
-    assert response.status_code == 200, response.text  # noqa: PLR2004
-    assert response.json()["status"] == "cancelled"
+    assert read.status == "cancelled"
     assert journal == [("commit", "cancelled"), WAKE, ("refresh",)]
 
 
 @pytest.mark.asyncio
 async def test_an_already_cancelled_install_publishes_nothing(journal, redis):
-    use_session(Session(journal, make_task(status="cancelled", type="install")))
+    session = Session(journal, make_task(status="cancelled", type="install"))
 
-    response = await transition("cancelled")
+    read = await transition("cancelled")(session, redis)
 
-    assert response.status_code == 200, response.text  # noqa: PLR2004
+    assert read.status == "cancelled"
     assert WAKE not in journal
 
 
 @pytest.mark.asyncio
 async def test_an_already_cancelled_task_delete_publishes_nothing(journal, redis):
-    use_session(Session(journal, make_task(status="cancelled")))
+    session = Session(journal, make_task(status="cancelled"))
 
-    response = await call("DELETE", f"/api/tasks/{TASK_ID}")
+    read = await delete(session, redis)
 
-    assert response.status_code == 200, response.text  # noqa: PLR2004
+    assert read.status == "cancelled"
     assert journal == []
 
 
 @pytest.mark.asyncio
 async def test_a_held_commit_holds_the_wake(journal, redis):
-    session = use_session(Session(journal, make_task(status="testing")))
+    session = Session(journal, make_task(status="testing"))
     session.hold = asyncio.Event()
 
-    request = asyncio.create_task(call("POST", f"/api/tasks/{TASK_ID}/complete"))
+    request = asyncio.create_task(complete(session, redis))
     await asyncio.wait_for(session.held.wait(), 1)
     assert journal == []
 
     session.hold.set()
-    response = await request
+    read = await request
 
-    assert response.status_code == 200  # noqa: PLR2004
+    assert read.status == "done"
     assert journal == [("commit", "done"), WAKE, ("refresh",)]
 
 
 @pytest.mark.asyncio
 async def test_a_failed_commit_publishes_nothing(journal, redis):
-    session = use_session(Session(journal, make_task(status="testing")))
+    session = Session(journal, make_task(status="testing"))
     session.failure = OperationalError("COMMIT", {}, Exception("connection lost"))
 
-    response = await call("POST", f"/api/tasks/{TASK_ID}/complete")
+    with pytest.raises(OperationalError):
+        await complete(session, redis)
 
-    assert response.status_code == 500  # noqa: PLR2004
-    assert WAKE not in journal
+    assert journal == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status", "story_status", "request_", "code"),
+    ("status", "story_status", "route", "code"),
     [
-        ("backlog", "in_progress", lambda: call("POST", f"/api/tasks/{TASK_ID}/complete"), 422),
-        ("in_dev", "in_progress", lambda: transition("done"), 422),
-        ("testing", "waiting_human_review", lambda: transition("done"), 409),
-        ("done", "in_progress", lambda: transition("cancelled"), 422),
+        ("backlog", "in_progress", complete, 422),
+        ("in_dev", "in_progress", transition("done"), 422),
+        ("testing", "waiting_human_review", transition("done"), 409),
+        ("done", "in_progress", transition("cancelled"), 422),
     ],
     ids=["complete-invalid", "transition-invalid", "admission-fenced", "cancel-invalid"],
 )
 async def test_a_refused_operation_neither_commits_nor_wakes(
-    journal, redis, status, story_status, request_, code
+    journal, redis, status, story_status, route, code
 ):
-    use_session(Session(journal, make_task(status=status), story_status=story_status))
+    session = Session(journal, make_task(status=status), story_status=story_status)
 
-    response = await request_()
+    with pytest.raises(HTTPException) as refused:
+        await route(session, redis)
 
-    assert response.status_code == code, response.text
+    assert refused.value.status_code == code
     assert journal == []
 
 
 @pytest.mark.asyncio
 async def test_an_intermediate_hop_commits_without_waking(journal, redis):
-    use_session(Session(journal, make_task(status="in_dev")))
+    session = Session(journal, make_task(status="in_dev"))
 
-    response = await transition("in_ci")
+    read = await transition("in_ci")(session, redis)
 
-    assert response.status_code == 200  # noqa: PLR2004
+    assert read.status == "in_ci"
     assert journal == [("commit", "in_ci"), ("refresh",)]
 
 
 @pytest.mark.asyncio
 async def test_a_storyless_task_completes_without_waking(journal, redis):
-    use_session(Session(journal, make_task(status="testing", story_id=None)))
+    session = Session(journal, make_task(status="testing", story_id=None))
 
-    response = await call("POST", f"/api/tasks/{TASK_ID}/complete")
+    read = await complete(session, redis)
 
-    assert response.status_code == 200  # noqa: PLR2004
+    assert read.status == "done"
     assert journal == [("commit", "done"), ("refresh",)]
 
 
 @pytest.mark.asyncio
-async def test_a_hint_without_receivers_is_still_a_success(journal, redis):
-    use_session(Session(journal, make_task(status="testing")))
-    redis.receivers = 0
+async def test_a_hint_without_receivers_is_still_a_success(journal, redis, native):
+    session = Session(journal, make_task(status="testing"))
+    native.receivers = 0
 
-    response = await transition("done")
+    read = await transition("done")(session, redis)
 
-    assert response.status_code == 200  # noqa: PLR2004
-    assert response.json()["status"] == "done"
-    assert WAKE in journal
+    assert read.status == "done"
+    assert journal == [("commit", "done"), WAKE, ("refresh",)]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure", [RedisConnectionError("redis://:secret@redis:6379"), OSError("socket closed")]
 )
-async def test_a_failed_publish_loses_only_the_hint(journal, redis, failure):
-    session = use_session(Session(journal, make_task(status="testing")))
-    redis.failure = failure
+async def test_a_failed_publish_loses_only_the_hint(journal, redis, native, failure):
+    session = Session(journal, make_task(status="testing"))
+    native.failure = failure
 
     with capture_logs() as logs:
-        response = await call("POST", f"/api/tasks/{TASK_ID}/complete")
+        read = await complete(session, redis)
 
-    assert response.status_code == 200  # noqa: PLR2004
-    assert response.json()["status"] == "done"
+    assert read.status == "done"
     assert journal == [("commit", "done"), ("refresh",)]
     assert len(session.added) == 1
     [failed] = [log for log in logs if log["event"] == "story_completion_wake_failed"]
@@ -320,12 +301,12 @@ async def test_a_failed_publish_loses_only_the_hint(journal, redis, failure):
 
 
 @pytest.mark.asyncio
-async def test_cancellation_during_publish_propagates(journal, redis):
-    use_session(Session(journal, make_task(status="testing")))
-    redis.hold = asyncio.Event()
+async def test_cancellation_during_publish_propagates(journal, redis, native):
+    session = Session(journal, make_task(status="testing"))
+    native.hold = asyncio.Event()
 
-    request = asyncio.create_task(call("POST", f"/api/tasks/{TASK_ID}/complete"))
-    await asyncio.wait_for(redis.held.wait(), 1)
+    request = asyncio.create_task(complete(session, redis))
+    await asyncio.wait_for(native.held.wait(), 1)
 
     request.cancel()
     with pytest.raises(asyncio.CancelledError):
