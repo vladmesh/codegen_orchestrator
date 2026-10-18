@@ -37,6 +37,7 @@ Feature-specific invariants live in focused guides. Read this index first, then 
 | Generated-product template/package installation and QA | [Generated product kit and QA contracts](contracts/kit-template-and-qa.md) |
 | Runtime lifecycle/security invariants | [Lifecycle and security invariants](contracts/lifecycle-invariants.md) |
 | Managed target reconciliation/readiness | [Managed target readiness](contracts/managed-target-readiness.md) |
+| Scheduler loop wake hints over native Pub/Sub | [Scheduler wake hints](contracts/scheduler-wake-hints.md) |
 
 ## Canonical vocabularies
 
@@ -69,6 +70,10 @@ are repository-relative.
 | `po:input` | `po-consumer` | `queues/po.py` | bot and system producers | PO consumer |
 | `po:response:{request_id}` | direct response | `queues/po.py` | PO consumer | telegram-bot |
 | `po:proactive` | `tg-bot-proactive` | `queues/po.py` | PO notification tools | telegram-bot |
+
+The native Pub/Sub channel `scheduler:wake` (`queues/scheduler_wake.py`) is not a queue: its
+lossy hints only shorten a scheduler-pipeline loop's wait, see
+[Scheduler wake hints](contracts/scheduler-wake-hints.md).
 
 ### Recipient and PO rules
 

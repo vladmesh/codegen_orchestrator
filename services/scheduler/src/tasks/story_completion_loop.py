@@ -18,8 +18,8 @@ def _story_completion_interval() -> int:
     return startup.get_config().get_int("scheduler.dispatch_interval_seconds")
 
 
-async def story_completion_loop() -> None:
-    """Complete eligible stories from durable task/story state."""
+async def story_completion_loop(*, wake: asyncio.Event) -> None:
+    """Complete eligible stories from durable task/story state, early when `wake` is set."""
     from ..clients.api import api_client
 
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
@@ -35,4 +35,5 @@ async def story_completion_loop() -> None:
         stopped_event="story_completion_stopped",
         redis_factory=RedisStreamClient,
         sleep=asyncio.sleep,
+        wake=wake,
     )

@@ -315,19 +315,73 @@ async def test_pipeline_starts_without_loki(monkeypatch):
     initialize.assert_awaited_once_with(
         pipeline.PIPELINE_REQUIRED_KEYS, service_name="scheduler-pipeline"
     )
-    workers = run_workers.await_args.args[0]
-    assert [(name, worker) for name, worker in workers] == [
-        ("task_dispatcher", pipeline.task_dispatcher_loop),
-        ("scaffold", pipeline.scaffold_loop),
-        ("story_completion", pipeline.story_completion_loop),
-        ("lifecycle_supervision", pipeline.lifecycle_supervision_loop),
-        ("qa_routing", pipeline.qa_routing_loop),
-        ("pr_ci", pipeline.pr_ci_loop),
-        ("worker_reconciliation", pipeline.worker_reconciliation_loop),
-        ("temporary_access", pipeline.temporary_access_loop),
-        ("owner_notifications", pipeline.owner_notification_loop),
-        ("story_supervision", pipeline.story_supervision_loop),
+    workers = dict(run_workers.await_args.args[0])
+    assert list(workers) == [
+        "task_dispatcher",
+        "scaffold",
+        "story_completion",
+        "scheduler_wake",
+        "lifecycle_supervision",
+        "qa_routing",
+        "pr_ci",
+        "worker_reconciliation",
+        "temporary_access",
+        "owner_notifications",
+        "story_supervision",
     ]
+    assert workers["task_dispatcher"] is pipeline.task_dispatcher_loop
+    assert workers["scaffold"] is pipeline.scaffold_loop
+    assert workers["lifecycle_supervision"] is pipeline.lifecycle_supervision_loop
+    assert workers["qa_routing"] is pipeline.qa_routing_loop
+    assert workers["pr_ci"] is pipeline.pr_ci_loop
+    assert workers["worker_reconciliation"] is pipeline.worker_reconciliation_loop
+    assert workers["temporary_access"] is pipeline.temporary_access_loop
+    assert workers["owner_notifications"] is pipeline.owner_notification_loop
+    assert workers["story_supervision"] is pipeline.story_supervision_loop
+
+
+@pytest.mark.asyncio
+async def test_pipeline_routes_a_story_completion_hint_to_its_loop(monkeypatch):
+    from _wake_doubles import Broker, Timers, settle
+
+    from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
+    from shared.redis.scheduler_wake import publish_scheduler_wake
+    from src import pipeline
+    from src.tasks import scheduler_wake_listener, story_completion_loop
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    broker = Broker()
+    complete = AsyncMock(return_value=0)
+    run_workers = AsyncMock()
+    monkeypatch.setattr(pipeline.runtime, "initialize_configs", AsyncMock())
+    monkeypatch.setattr(pipeline.runtime, "run_workers", run_workers)
+    monkeypatch.setattr(story_completion_loop, "RedisStreamClient", broker.client)
+    monkeypatch.setattr(story_completion_loop, "complete_stories", complete)
+    monkeypatch.setattr(story_completion_loop, "_story_completion_interval", lambda: 3600)
+    monkeypatch.setattr(scheduler_wake_listener, "_reconnect_interval", lambda: 3600)
+    await pipeline.main()
+    workers = dict(run_workers.await_args.args[0])
+
+    tasks = [
+        asyncio.create_task(workers["story_completion"]()),
+        asyncio.create_task(
+            workers["scheduler_wake"](redis_factory=broker.client, sleep=Timers().sleep)
+        ),
+    ]
+    await broker.subscribed()
+    await settle()
+    assert complete.await_count == 1
+
+    publisher = broker.client()
+    await publisher.connect()
+    await publish_scheduler_wake(publisher, SchedulerWakeTarget.STORY_COMPLETION)
+    await settle()
+
+    assert complete.await_count == 2
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -364,6 +418,7 @@ async def test_worker_inventory_is_complete_and_disjoint(monkeypatch):
         "temporary_access",
         "owner_notifications",
         "story_supervision",
+        "scheduler_wake",
         "server_sync",
         "health_checker",
         "provisioner_results",

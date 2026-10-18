@@ -1,9 +1,11 @@
 """Pipeline scheduler service entry point."""
 
 import asyncio
+from functools import partial
 
 import structlog
 
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.log_config import setup_logging
 
 from . import runtime
@@ -13,6 +15,7 @@ from .tasks.owner_notification_loop import owner_notification_loop
 from .tasks.pr_ci_loop import pr_ci_loop
 from .tasks.qa_routing_loop import qa_routing_loop
 from .tasks.scaffold_loop import scaffold_loop
+from .tasks.scheduler_wake_listener import scheduler_wake_listener
 from .tasks.story_completion_loop import story_completion_loop
 from .tasks.story_supervision_loop import story_supervision_loop
 from .tasks.task_dispatcher import task_dispatcher_loop
@@ -26,11 +29,19 @@ async def main() -> None:
     setup_logging(service_name="scheduler-pipeline")
     logger.info("scheduler_pipeline_started")
     await runtime.initialize_configs(PIPELINE_REQUIRED_KEYS, service_name="scheduler-pipeline")
+    story_completion_wake = asyncio.Event()
     await runtime.run_workers(
         [
             ("task_dispatcher", task_dispatcher_loop),
             ("scaffold", scaffold_loop),
-            ("story_completion", story_completion_loop),
+            ("story_completion", partial(story_completion_loop, wake=story_completion_wake)),
+            (
+                "scheduler_wake",
+                partial(
+                    scheduler_wake_listener,
+                    {SchedulerWakeTarget.STORY_COMPLETION: story_completion_wake},
+                ),
+            ),
             ("lifecycle_supervision", lifecycle_supervision_loop),
             ("qa_routing", qa_routing_loop),
             ("pr_ci", pr_ci_loop),

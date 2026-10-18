@@ -67,7 +67,7 @@ async def test_story_completion_loop_continues_after_failure_and_owns_redis(monk
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await story_completion_loop.story_completion_loop()
+        await story_completion_loop.story_completion_loop(wake=asyncio.Event())
 
     assert complete.await_count == 2
     complete.assert_awaited_with(api, redis)
