@@ -5,10 +5,10 @@ foreign deploying story handed to QA here would hold a paid-work slot another te
 """
 
 import asyncio
-import json
 import os
 import uuid
 
+from _qa_queue import qa_messages_for
 from _scheduler_wake_service import (
     BACKSTOP_SECONDS,
     WAIT_SECONDS,
@@ -23,7 +23,6 @@ from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
-from shared.queues import QA_QUEUE
 from shared.redis import RedisStreamClient
 from shared.tests.ssh_key_fixtures import fleet_private_key
 
@@ -115,11 +114,6 @@ async def _qa_runs(api_client, story_id: str) -> list[dict]:
     )
 
 
-async def _qa_messages_for(redis_client: RedisStreamClient, qa_run_id: str) -> int:
-    entries = await redis_client.redis.xrange(QA_QUEUE)
-    return sum(1 for _, fields in entries if json.loads(fields["data"])["run_id"] == qa_run_id)
-
-
 async def _settle_qa(api_client, story_id: str) -> None:
     """Cancel the QA Run the handoff started, so later suites keep their paid-work slot."""
     for run in await _qa_runs(api_client, story_id):
@@ -186,7 +180,7 @@ async def test_a_deploy_success_hands_its_story_to_qa_before_the_backstop(api_cl
         [qa_run] = await _qa_runs(api_client, story_id)
         assert qa_run["run_metadata"]["deploy_run_id"] == run_id
         assert qa_run["run_metadata"][QA_DISPATCHED_AT_KEY]
-        assert await _qa_messages_for(observer, qa_run["id"]) == 1
+        assert await qa_messages_for(observer, qa_run["id"]) == 1
         assert not wakes[SchedulerWakeTarget.STORY_COMPLETION].is_set()
         assert not wakes[SchedulerWakeTarget.TASK_DISPATCHER].is_set()
     finally:

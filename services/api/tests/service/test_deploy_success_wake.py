@@ -2,6 +2,7 @@
 
 import uuid
 
+from _api_calls import call_api
 from httpx import AsyncClient
 import pytest
 from sqlalchemy import select
@@ -19,18 +20,12 @@ SUCCESS = DeployRunResult(
 ).model_dump(mode="json")
 
 
-async def _call(client: AsyncClient, method: str, path: str, status: int = 200, **kwargs):
-    response = await client.request(method, path, **kwargs)
-    assert response.status_code == status, response.text
-    return response.json()
-
-
 async def _running_deploy(
     client: AsyncClient, *, story: bool = True, metadata: dict | None = None
 ) -> str:
     story_id = None
     if story:
-        created = await _call(
+        created = await call_api(
             client,
             "POST",
             "/api/stories/",
@@ -38,7 +33,7 @@ async def _running_deploy(
             json={"project_id": TASK_TEST_PROJECT_ID, "title": "Deploy wake"},
         )
         story_id = created["id"]
-    run = await _call(
+    run = await call_api(
         client,
         "POST",
         "/api/runs/",
@@ -51,12 +46,12 @@ async def _running_deploy(
             "run_metadata": metadata or {},
         },
     )
-    await _call(client, "PATCH", f"/api/runs/{run['id']}", json={"status": "running"})
+    await call_api(client, "PATCH", f"/api/runs/{run['id']}", json={"status": "running"})
     return run["id"]
 
 
 async def _succeed(client: AsyncClient, run_id: str) -> dict:
-    return await _call(
+    return await call_api(
         client, "PATCH", f"/api/runs/{run_id}", json={"status": "completed", "result": SUCCESS}
     )
 
@@ -80,7 +75,7 @@ async def test_the_first_success_publishes_one_hint_after_its_proof_committed(
     assert await _committed(db_engine, run_id) == ("completed", SUCCESS)
 
     await _succeed(async_client, run_id)
-    await _call(
+    await call_api(
         async_client,
         "PATCH",
         f"/api/runs/{run_id}",
@@ -94,10 +89,10 @@ async def test_a_late_success_of_a_cancelled_deploy_publishes(
     async_client, _tasks_project, wake_hints, db_engine
 ):
     run_id = await _running_deploy(async_client)
-    await _call(async_client, "PATCH", f"/api/runs/{run_id}", json={"status": "cancelled"})
+    await call_api(async_client, "PATCH", f"/api/runs/{run_id}", json={"status": "cancelled"})
     assert await wake_hints.published() == []
 
-    await _call(async_client, "PATCH", f"/api/runs/{run_id}", json={"result": SUCCESS})
+    await call_api(async_client, "PATCH", f"/api/runs/{run_id}", json={"result": SUCCESS})
 
     assert await wake_hints.published() == LIFECYCLE_SUPERVISION
     assert await _committed(db_engine, run_id) == ("cancelled", SUCCESS)
