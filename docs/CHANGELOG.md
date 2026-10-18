@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-18
 
+- The two multi-attempt temporary-access cleanup recovery families run in the LangGraph service shard,
+  so their double `process_deploy_job` passes no longer exceed the 0.5 s unit budget.
 - Product Brief admission publishes a `task_dispatcher` wake hint after committing a nonempty release,
   so the dispatcher's Event-enabled loop asks admission about the released Tasks without the interval.
 - QA Telegram probes, button presses and the `/start` preflight return once the bot's response stays
