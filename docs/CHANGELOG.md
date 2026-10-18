@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-18
 
+- `PATCH /runs/{id}` publishes a `temporary_access` wake hint after committing a grant or revoke
+  operation's first readback proof, so the sweep releases QA or closes the grant without the interval.
 - `PATCH /runs/{id}` publishes a `lifecycle_supervision` wake hint after committing an ordinary story
   deploy's first typed success, so the deploy supervisor hands the story to QA without the interval.
 - The two multi-attempt temporary-access cleanup recovery families run in the LangGraph service shard,

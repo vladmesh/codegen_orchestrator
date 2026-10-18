@@ -21,6 +21,7 @@ class SchedulerWakeTarget(StrEnum):
     STORY_COMPLETION = "story_completion"
     TASK_DISPATCHER = "task_dispatcher"
     LIFECYCLE_SUPERVISION = "lifecycle_supervision"
+    TEMPORARY_ACCESS = "temporary_access"
 
 
 class SchedulerWakeHint(BaseModel):
