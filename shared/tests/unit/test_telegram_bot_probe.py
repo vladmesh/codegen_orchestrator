@@ -665,6 +665,24 @@ def test_generated_callback_edits_of_the_pressed_message_reset_the_quiet_window(
     assert client.reads == [0, 2, 4, 5]
 
 
+def test_generated_callback_settles_after_an_edit_restores_the_original_message(monkeypatch):
+    """A response once observed still qualifies after the pressed message reverts."""
+    clock = _virtual_clock(monkeypatch)
+    client, original = _callback_bot(
+        clock,
+        pressed=lambda now: original if now >= 2 else _bot_message(7, "Loading"),
+        chat=lambda _now: [],
+    )
+
+    evidence = _press(monkeypatch, client, wait_seconds=60)
+
+    assert evidence["error"] is None
+    assert evidence["post_press_message"]["text"] == "Choose"
+    assert evidence["post_press_message"]["reply_markup"]["buttons"][0]["text"] == "Career"
+    assert client.reads == [0, 2, 4, 5]
+    assert clock.now == 5
+
+
 @pytest.mark.parametrize("answer", [None, "Loading your reading"])
 def test_generated_callback_acknowledgement_alone_runs_to_the_deadline(monkeypatch, answer):
     """An unchanged pressed message and a callback answer are not a bot response."""

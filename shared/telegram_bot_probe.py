@@ -101,24 +101,26 @@ def newest_message_id(client, bot):
 def settling_collector_source() -> str:
     """Script source of ``collect_until_settled(observe, responded, wait, poll)``.
 
-    It polls ``observe()`` until ``responded`` holds and the observation has stayed
-    equal for the quiet window, or until ``wait`` seconds pass, and always returns
-    right after an observation.
+    It polls ``observe()`` until ``responded`` has held for any observation and the
+    observation has stayed equal for the quiet window, or until ``wait`` seconds
+    pass, and always returns right after an observation.
     """
     return f"""\
 def collect_until_settled(observe, responded, wait, poll):
     deadline = time.monotonic() + wait
     last = None
+    has_responded = False
     while True:
         observed = observe()
         now = time.monotonic()
         if observed != last:
             last = observed
             changed_at = now
+        has_responded = has_responded or responded(observed)
         if now >= deadline:
             return
         wake = min(now + poll, deadline)
-        if responded(observed):
+        if has_responded:
             settled_at = changed_at + {TELEGRAM_QUIET_WINDOW}
             if now >= settled_at:
                 return
