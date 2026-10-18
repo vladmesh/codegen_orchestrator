@@ -48,11 +48,14 @@ async def periodic_loop(
     stopped_event: str,
     redis_factory: Callable[[], RedisStreamClient] = RedisStreamClient,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    wake: asyncio.Event | None = None,
 ) -> None:
     """Run one Redis-backed periodic worker with a stable lifecycle.
 
     Each cycle starts with the message context unbound, so its messages never inherit
-    a correlation id bound before it, at startup or by the previous cycle.
+    a correlation id bound before it, at startup or by the previous cycle. With `wake`,
+    the wait after a cycle also ends when the event is set; a set during a cycle or
+    before the wait still runs one prompt follow-up cycle.
     """
     redis_client = redis_factory()
     await redis_client.connect()
@@ -60,16 +63,34 @@ async def periodic_loop(
     try:
         while True:
             unbind_message_context()
+            if wake is not None:
+                wake.clear()
             try:
                 fields = await cycle(redis_client)
                 if cycle_event is not None:
                     logger.info(cycle_event, **dict(fields or {}))
             except Exception:
                 logger.exception(error_event)
-            await sleep(interval())
+            if wake is None:
+                await sleep(interval())
+            else:
+                await _wait_for_wake(wake, sleep(interval()))
     finally:
         await redis_client.close()
         logger.info(stopped_event)
+
+
+async def _wait_for_wake(wake: asyncio.Event, timer: Awaitable[None]) -> None:
+    """Return when `wake` is set or `timer` finishes, cancelling and awaiting the other."""
+    waiters = {asyncio.ensure_future(wake.wait()), asyncio.ensure_future(timer)}
+    try:
+        done, _pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+    for waiter in done:
+        waiter.result()
 
 
 async def run_workers(

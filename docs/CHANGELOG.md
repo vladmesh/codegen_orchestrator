@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   `USERS_GRANT_CAPABILITY` instead of redeploying the product, so QA access no longer costs a deploy.
 - A temporary-access operation takes its Run's dispatch claim before any external write, and every revoke
   re-derives the earlier-workflow stop from all the grant's Runs, so withdrawal or retry cannot skip either.
+- scheduler-pipeline's `story_completion` loop also wakes on a native Pub/Sub hint on `scheduler:wake`;
+  hints are lossy and coalesced, the interval stays the backstop, and nothing publishes one yet.
 
 ## 2026-10-17
 
