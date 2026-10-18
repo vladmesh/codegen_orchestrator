@@ -4,15 +4,19 @@ import asyncio
 import os
 import uuid
 
+from _scheduler_wake_service import (
+    BACKSTOP_SECONDS,
+    WAIT_SECONDS,
+    call_api,
+    wake_channel_subscribed,
+)
 import pytest
 
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.queues.scheduler_wake import SCHEDULER_WAKE_CHANNEL, SchedulerWakeTarget
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis import RedisStreamClient
 
-BACKSTOP_SECONDS = 3600
-WAIT_SECONDS = 15
 _REQUIREMENT = {
     "id": "r1",
     "text": "It stores a book",
@@ -56,23 +60,17 @@ class _RecordingRedis:
         return [m.planning_task_id for queue, m in self.messages if queue == ENGINEERING_QUEUE]
 
 
-async def _call(api_client, method: str, path: str, **kwargs) -> dict:
-    response = await api_client.request(method, path, **kwargs)
-    assert response.is_success, response.text
-    return response.json()
-
-
 async def _planned_brief_task(api_client) -> tuple[str, str, str]:
     """A brief whose plan covers its one requirement with one unreleased Task."""
     telegram_id = uuid.uuid4().int % 1_000_000_000
-    await _call(
+    await call_api(
         api_client,
         "POST",
         "users/",
         json={"telegram_id": telegram_id, "username": f"dispatch-wake-{telegram_id}"},
     )
     project_id = str(uuid.uuid4())
-    await _call(
+    await call_api(
         api_client,
         "POST",
         "projects/",
@@ -85,11 +83,11 @@ async def _planned_brief_task(api_client) -> tuple[str, str, str]:
         },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
-    story = await _call(
+    story = await call_api(
         api_client, "POST", "stories/", json={"project_id": project_id, "title": "Wake"}
     )
-    await _call(api_client, "POST", f"stories/{story['id']}/start", json={"actor": "test"})
-    brief = await _call(
+    await call_api(api_client, "POST", f"stories/{story['id']}/start", json={"actor": "test"})
+    brief = await call_api(
         api_client,
         "POST",
         "product-briefs/",
@@ -100,18 +98,20 @@ async def _planned_brief_task(api_client) -> tuple[str, str, str]:
             "request_id": f"req-{uuid.uuid4().hex}",
         },
     )
-    await _call(
+    await call_api(
         api_client,
         "POST",
         f"product-briefs/{brief['id']}/confirm",
         json={"request_id": f"conf-{uuid.uuid4().hex}", "content": _CONTENT},
     )
-    await _call(
+    await call_api(
         api_client, "POST", f"product-briefs/{brief['id']}/story", json={"story_id": story["id"]}
     )
-    claim = await _call(api_client, "POST", f"product-briefs/{brief['id']}/planning-attempts/claim")
+    claim = await call_api(
+        api_client, "POST", f"product-briefs/{brief['id']}/planning-attempts/claim"
+    )
     attempt = claim["planning_attempt_id"]
-    task = await _call(
+    task = await call_api(
         api_client,
         "POST",
         "tasks/",
@@ -125,7 +125,7 @@ async def _planned_brief_task(api_client) -> tuple[str, str, str]:
         },
     )
     assert task["dispatch_admitted"] is False
-    await _call(
+    await call_api(
         api_client,
         "PUT",
         f"product-briefs/{brief['id']}/coverage/r1",
@@ -134,23 +134,14 @@ async def _planned_brief_task(api_client) -> tuple[str, str, str]:
     return brief["id"], attempt, task["id"]
 
 
-async def _subscribed(redis_client: RedisStreamClient) -> None:
-    async with asyncio.timeout(WAIT_SECONDS):
-        while True:
-            [(_channel, count)] = await redis_client.redis.pubsub_numsub(SCHEDULER_WAKE_CHANNEL)
-            if count:
-                return
-            await asyncio.sleep(0.05)
-
-
 async def _settle_dispatched(api_client, task_id: str) -> None:
     """Take the Task out of dispatch and cancel its paid Run, so later suites keep their slot."""
     for run in await api_client.list_runs(task_id=task_id, run_type=RunType.ENGINEERING.value):
         if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
             await api_client.update_run(run.id, {"status": RunStatus.CANCELLED.value})
-    task = await _call(api_client, "GET", f"tasks/{task_id}")
+    task = await call_api(api_client, "GET", f"tasks/{task_id}")
     if task["status"] not in ("done", "cancelled"):
-        await _call(api_client, "DELETE", f"tasks/{task_id}")
+        await call_api(api_client, "DELETE", f"tasks/{task_id}")
 
 
 @pytest.mark.asyncio
@@ -180,15 +171,15 @@ async def test_a_brief_admission_dispatches_its_released_task_before_the_backsto
     listener = asyncio.create_task(scheduler_wake_listener.scheduler_wake_listener(wakes))
     loop = None
     try:
-        await _subscribed(observer)
+        await wake_channel_subscribed(observer)
         loop = asyncio.create_task(
             task_dispatcher.task_dispatcher_loop(wake=wakes[SchedulerWakeTarget.TASK_DISPATCHER])
         )
         await asyncio.wait_for(cycles.get(), WAIT_SECONDS)
         assert task_id not in queues.engineering_task_ids()
-        assert (await _call(api_client, "GET", f"tasks/{task_id}"))["status"] == "todo"
+        assert (await call_api(api_client, "GET", f"tasks/{task_id}"))["status"] == "todo"
 
-        admitted = await _call(
+        admitted = await call_api(
             api_client,
             "POST",
             f"product-briefs/{brief_id}/admit",
@@ -199,7 +190,7 @@ async def test_a_brief_admission_dispatches_its_released_task_before_the_backsto
         await asyncio.wait_for(cycles.get(), WAIT_SECONDS)
 
         assert queues.engineering_task_ids().count(task_id) == 1
-        task = await _call(api_client, "GET", f"tasks/{task_id}")
+        task = await call_api(api_client, "GET", f"tasks/{task_id}")
         assert task["dispatch_admitted"] is True
         assert task["status"] == "in_dev"
         assert not wakes[SchedulerWakeTarget.STORY_COMPLETION].is_set()

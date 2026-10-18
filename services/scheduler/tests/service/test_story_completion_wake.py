@@ -4,13 +4,17 @@ import asyncio
 import os
 import uuid
 
+from _scheduler_wake_service import (
+    BACKSTOP_SECONDS,
+    WAIT_SECONDS,
+    call_api,
+    wake_channel_subscribed,
+)
 import pytest
 
-from shared.contracts.queues.scheduler_wake import SCHEDULER_WAKE_CHANNEL, SchedulerWakeTarget
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.redis import RedisStreamClient
 
-BACKSTOP_SECONDS = 3600
-WAIT_SECONDS = 15
 BRANCH_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -40,22 +44,16 @@ class _GitHub:
         return {"number": 7, "node_id": "PR_wake", "head": {"ref": head, "sha": BRANCH_SHA}}
 
 
-async def _call(api_client, method: str, path: str, **kwargs) -> dict:
-    response = await api_client.request(method, path, **kwargs)
-    assert response.is_success, response.text
-    return response.json()
-
-
 async def _story_with_task_in_dev(api_client, repo_name: str) -> tuple[str, str]:
     telegram_id = uuid.uuid4().int % 1_000_000_000
-    await _call(
+    await call_api(
         api_client,
         "POST",
         "users/",
         json={"telegram_id": telegram_id, "username": f"wake-{telegram_id}"},
     )
     project_id = str(uuid.uuid4())
-    await _call(
+    await call_api(
         api_client,
         "POST",
         "projects/",
@@ -67,7 +65,7 @@ async def _story_with_task_in_dev(api_client, repo_name: str) -> tuple[str, str]
         },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
-    await _call(
+    await call_api(
         api_client,
         "POST",
         "repositories/",
@@ -77,10 +75,10 @@ async def _story_with_task_in_dev(api_client, repo_name: str) -> tuple[str, str]
             "git_url": f"https://github.com/test-org/{repo_name}",
         },
     )
-    story = await _call(
+    story = await call_api(
         api_client, "POST", "stories/", json={"project_id": project_id, "title": "Wake"}
     )
-    task = await _call(
+    task = await call_api(
         api_client,
         "POST",
         "tasks/",
@@ -91,8 +89,8 @@ async def _story_with_task_in_dev(api_client, repo_name: str) -> tuple[str, str]
             "status": "todo",
         },
     )
-    await _call(api_client, "POST", f"stories/{story['id']}/start", json={"actor": "test"})
-    await _call(
+    await call_api(api_client, "POST", f"stories/{story['id']}/start", json={"actor": "test"})
+    await call_api(
         api_client,
         "POST",
         f"tasks/{task['id']}/transition",
@@ -100,15 +98,6 @@ async def _story_with_task_in_dev(api_client, repo_name: str) -> tuple[str, str]
         json={"actor": "test"},
     )
     return story["id"], task["id"]
-
-
-async def _subscribed(redis_client: RedisStreamClient) -> None:
-    async with asyncio.timeout(WAIT_SECONDS):
-        while True:
-            [(_channel, count)] = await redis_client.redis.pubsub_numsub(SCHEDULER_WAKE_CHANNEL)
-            if count:
-                return
-            await asyncio.sleep(0.05)
 
 
 @pytest.mark.asyncio
@@ -139,13 +128,13 @@ async def test_an_api_done_transition_sweeps_its_story_before_the_backstop(api_c
     listener = asyncio.create_task(scheduler_wake_listener.scheduler_wake_listener(wakes))
     loop = None
     try:
-        await _subscribed(observer)
+        await wake_channel_subscribed(observer)
         loop = asyncio.create_task(story_completion_loop.story_completion_loop(wake=wake))
         await asyncio.wait_for(cycles.get(), WAIT_SECONDS)
-        assert (await _call(api_client, "GET", f"stories/{story_id}"))["status"] == "in_progress"
+        assert (await call_api(api_client, "GET", f"stories/{story_id}"))["status"] == "in_progress"
 
         for hop in ("in_ci", "testing", "done"):
-            await _call(
+            await call_api(
                 api_client,
                 "POST",
                 f"tasks/{task_id}/transition",
@@ -155,7 +144,7 @@ async def test_an_api_done_transition_sweeps_its_story_before_the_backstop(api_c
 
         assert await asyncio.wait_for(cycles.get(), WAIT_SECONDS) == 1
 
-        story = await _call(api_client, "GET", f"stories/{story_id}")
+        story = await call_api(api_client, "GET", f"stories/{story_id}")
         assert story["status"] == "pr_review"
         assert story["pr_number"] == 7
         assert github.pull_requests == [f"story/{story_id}"]
