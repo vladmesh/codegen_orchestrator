@@ -79,6 +79,7 @@ CLEAN_ENV=(
     TELEGRAM_MAX_CONCURRENT_UPDATES="8"
     INTERNAL_API_KEY="test-internal-key"
     LK_JWT_SECRET="test-lk-jwt-secret"
+    GITHUB_WEBHOOK_SECRET="test-github-webhook-secret"
     DEFAULT_AGENT_TYPE="claude"
     DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test"
 )

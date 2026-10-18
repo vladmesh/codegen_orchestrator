@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-18
 
+- `POST /api/webhooks/github` publishes a `pr_ci` wake hint for an HMAC-signed `workflow_run`
+  completion; the API now requires `GITHUB_WEBHOOK_SECRET`, and public routing is not active yet.
 - `POST /stories/{id}/pr_review` publishes a `pr_ci` wake hint after its commit, so the PR/CI sweep
   reads a new PR review at once; GitHub CI completion still waits for the interval.
 - `PATCH /runs/{id}` publishes `qa_routing` and `temporary_access` wake hints after a QA Run's first

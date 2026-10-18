@@ -132,10 +132,15 @@ async def test_every_route_outside_the_allowlist_refuses_an_anonymous_caller(met
 
 
 @pytest.mark.asyncio
-async def test_the_allowlist_is_exactly_the_three_routes_it_is_allowed_to_be():
+async def test_the_allowlist_is_exactly_the_four_routes_it_is_allowed_to_be():
     """Widening the allowlist is a decision, not a refactor. It shows up here."""
     assert ANONYMOUS_ROUTES == frozenset(
-        {("GET", "/"), ("GET", "/health"), ("POST", "/api/lk/auth/token")}
+        {
+            ("GET", "/"),
+            ("GET", "/health"),
+            ("POST", "/api/lk/auth/token"),
+            ("POST", "/api/webhooks/github"),
+        }
     )
 
 

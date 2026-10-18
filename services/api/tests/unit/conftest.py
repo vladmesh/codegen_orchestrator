@@ -13,6 +13,7 @@ os.environ.setdefault(
     "SECRETS_ENCRYPTION_KEY", "wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc="
 )  # Valid Fernet key for tests only
 os.environ.setdefault("LK_JWT_SECRET", "unit-test-lk-jwt-secret")
+os.environ.setdefault("GITHUB_WEBHOOK_SECRET", "unit-test-github-webhook-secret")
 
 from pathlib import Path  # noqa: E402
 

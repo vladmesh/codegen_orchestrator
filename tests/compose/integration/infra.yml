@@ -47,6 +47,7 @@ services:
       - WORKER_MANAGER_URL=http://worker-manager:8000
       - REDIS_URL=redis://redis:6379/0
       - LK_JWT_SECRET=test-lk-jwt-secret
+      - GITHUB_WEBHOOK_SECRET=test-github-webhook-secret
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
       db:

@@ -17,6 +17,7 @@ services:
       - ENVIRONMENT=test
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret
+      - GITHUB_WEBHOOK_SECRET=test-github-webhook-secret
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
       - DEFAULT_AGENT_TYPE=codex
     depends_on:
@@ -98,6 +99,7 @@ services:
       - ENVIRONMENT=test
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret
+      - GITHUB_WEBHOOK_SECRET=test-github-webhook-secret
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
       - DEFAULT_AGENT_TYPE=factory
     depends_on:

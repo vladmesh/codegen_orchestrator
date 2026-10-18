@@ -69,6 +69,7 @@ services:
       - SYSTEM_CONFIGS_TEST_OVERLAY=/app/scripts/system_configs.service_test.yaml
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret-for-service-tests
+      - GITHUB_WEBHOOK_SECRET=test-github-webhook-secret-for-service-tests
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
     depends_on:
       db:
@@ -96,6 +97,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret-for-service-tests
+      - GITHUB_WEBHOOK_SECRET=test-github-webhook-secret-for-service-tests
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
     depends_on:
       control-api:

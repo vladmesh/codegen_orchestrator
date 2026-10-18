@@ -96,6 +96,7 @@ IMPORT_ENV = {
     "DEFAULT_AGENT_TYPE": "claude",
     "GITHUB_APP_ID": "12345",
     "GITHUB_APP_PRIVATE_KEY_PATH": "/dev/null",
+    "GITHUB_WEBHOOK_SECRET": "test-github-webhook-secret",
     "HEALTH_CHECK_INTERVAL": "60",
     "INTERNAL_API_KEY": "test-internal-key",
     "LK_DOMAIN": "https://lk.test.example.com",

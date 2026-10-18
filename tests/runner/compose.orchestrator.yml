@@ -27,6 +27,7 @@ services:
       - SEED_SYSTEM_CONFIGS_ON_START=true
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=runner-proof-lk-jwt-secret
+      - GITHUB_WEBHOOK_SECRET=runner-proof-github-webhook-secret
       - INTERNAL_API_KEY=${RUNNER_INTERNAL_API_KEY:?}
     ports:
       - "127.0.0.1:${RUNNER_API_PORT:?}:8000"
