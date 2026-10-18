@@ -1898,6 +1898,7 @@ NOT_NEEDED_ON_STAND = {
 }
 QA_WORKER_ENV = "/opt/codegen_orchestrator/.qa-worker.env"
 TELETHON_NAMES = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
+WEBHOOK_SECRET = "4b1d" * 16  # synthetic 32 bytes as hex
 
 
 def _render_script(step: dict) -> str:
@@ -1950,6 +1951,7 @@ def test_every_validated_credential_is_rendered_for_the_stand_or_named_as_not_ne
         "SSH_PRIVATE_KEY": (
             "-----BEGIN OPENSSH PRIVATE KEY-----\ndGVzdA==\n-----END OPENSSH PRIVATE KEY-----"
         ),
+        "GITHUB_WEBHOOK_SECRET": WEBHOOK_SECRET,
     }
     validated = steps["Validate pre-create credentials"]["env"]
     assert set(valid) == set(validated) - {"SUITE"}
@@ -2267,6 +2269,7 @@ def test_the_service_tail_redaction_removes_a_session_looking_value(tmp_path, wh
             "PATH": os.environ["PATH"],
             "PYTHONPATH": str(WORKFLOW.parents[2]),
             "STAND_DIAGNOSTIC_SECRET_NAMES": names,
+            "GITHUB_WEBHOOK_SECRET": WEBHOOK_SECRET,
             "TELETHON_API_HASH": handed_hash,
             "TELETHON_SESSION": handed_session,
         },
@@ -2285,6 +2288,215 @@ def test_the_qa_session_is_a_protected_value_of_every_artifact_admission():
     assert {"TELETHON_API_HASH", "TELETHON_SESSION"} <= PROTECTED_STAND_SECRET_NAMES
     # TELETHON_API_ID is an application number, not a credential: never a needle.
     assert "TELETHON_API_ID" not in PROTECTED_STAND_SECRET_NAMES
+
+
+def _api_protected_environment(names: str) -> dict[str, str]:
+    """Synthetic api-container values for every named credential but the QA pair."""
+    return {name: f"protected-{name}" for name in names.split() if not name.startswith("TELETHON_")}
+
+
+@pytest.mark.parametrize("suite", ["mega-noop", "mega-brief", "mega-live"])
+def test_the_precreate_step_stops_every_suite_on_a_missing_webhook_secret(tmp_path, suite):
+    step = _steps()["Validate pre-create credentials"]
+    environment = {name: f"value-of-{name}" for name in step["env"]}
+    environment.update(
+        SUITE=suite,
+        GITHUB_WEBHOOK_SECRET="",
+        SSH_PRIVATE_KEY=(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\ndGVzdA==\n-----END OPENSSH PRIVATE KEY-----"
+        ),
+    )
+    result = subprocess.run(  # noqa: S603
+        ["bash", "-c", step["run"]],
+        cwd=WORKFLOW.parents[2],
+        env={"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", **environment},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "FAIL GitHub webhook secret" in result.stdout
+    assert "GITHUB_WEBHOOK_SECRET" in result.stdout
+    assert step["env"]["GITHUB_WEBHOOK_SECRET"] == "${{ secrets.GH_WEBHOOK_SECRET }}"  # noqa: S105
+
+
+@pytest.mark.parametrize("model_sessions", ["true", "false"])
+def test_the_rendered_stand_env_hands_the_api_the_exact_webhook_secret(tmp_path, model_sessions):
+    result = _run_render(
+        tmp_path,
+        qa_telethon="false",
+        MODEL_SESSIONS=model_sessions,
+        GITHUB_WEBHOOK_SECRET=WEBHOOK_SECRET,
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = (tmp_path / ".stand.env").read_text().splitlines()
+    assert [line for line in lines if line.startswith("GITHUB_WEBHOOK_SECRET=")] == [
+        f"GITHUB_WEBHOOK_SECRET={WEBHOOK_SECRET}"
+    ]
+    assert WEBHOOK_SECRET not in (tmp_path / ".stand-qa-worker.env").read_text()
+    assert WEBHOOK_SECRET not in result.stdout + result.stderr
+
+
+def test_the_renderer_refuses_a_missing_webhook_secret_before_writing_anything(tmp_path):
+    result = _run_render(
+        tmp_path, qa_telethon="false", MODEL_SESSIONS="false", GITHUB_WEBHOOK_SECRET=""
+    )
+
+    assert result.returncode != 0
+    assert "missing required stand configuration: GITHUB_WEBHOOK_SECRET" in result.stderr
+    assert not (tmp_path / ".stand.env").exists()
+
+
+FAKE_STAND_HOST_DOCKER = """#!/usr/bin/env bash
+# `compose logs` prints the canned tail; `compose exec SERVICE CMD` runs CMD with the
+# api container's environment plus each -e NAME[=VALUE] the caller handed it.
+set -euo pipefail
+shift
+while [ "$1" = "-f" ]; do shift 2; done
+case "$1" in
+    logs) cat "${FAKE_SERVICE_TAIL}" ;;
+    exec)
+        shift
+        handed=()
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                -T) shift ;;
+                -e)
+                    name="$2"
+                    case "${name}" in
+                        *=*) handed+=("${name}") ;;
+                        *) handed+=("${name}=${!name-}") ;;
+                    esac
+                    shift 2
+                    ;;
+                *) break ;;
+            esac
+        done
+        shift
+        mapfile -t api < "${FAKE_API_ENVIRONMENT}"
+        exec env -i PATH="${PATH}" PYTHONPATH="${FAKE_PYTHONPATH}" "${api[@]}" "${handed[@]}" "$@"
+        ;;
+esac
+"""
+
+
+def _service_tail_collection(script: str, out_dir: Path) -> str:
+    """The stand-host shell from the tail collection's compose line to its fallback."""
+    lines = script.splitlines()
+    qa_env = next(i for i, line in enumerate(lines) if line.strip() == "qa_env=./.qa-worker.env")
+    start = max(i for i in range(qa_env) if lines[i].strip().startswith('COMPOSE="docker '))
+    collect = next(
+        i for i in range(qa_env, len(lines)) if lines[i].strip().startswith("if ${COMPOSE} logs")
+    )
+    indent = lines[collect][: len(lines[collect]) - len(lines[collect].lstrip())]
+    end = next(i for i in range(collect + 1, len(lines)) if lines[i] == f"{indent}fi")
+    fragment = textwrap.dedent("\n".join(lines[start : end + 1]))
+    return f"diagnostics_dir={out_dir}\nwait_status=0\n" + fragment.replace(
+        "/root/e2e-runs", str(out_dir)
+    )
+
+
+def _collect_service_tails(tmp_path: Path, which: int, api_environment: dict[str, str]):
+    binaries = tmp_path / "bin"
+    _write_executable(binaries / "docker", FAKE_STAND_HOST_DOCKER)
+    _write_executable(binaries / "python", f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    out_dir = tmp_path / "e2e-runs"
+    out_dir.mkdir()
+    tail = tmp_path / "tail.log"
+    tail.write_text(
+        f"api | webhook hmac key {WEBHOOK_SECRET} in a traceback\n"
+        "api | GITHUB_WEBHOOK_SECRET is configured\n"
+        "api | github_webhook_refused reason=signature_mismatch status=403\n"
+        "api | ORCHESTRATOR_HOSTNAME=stand.example.test\n"
+    )
+    (tmp_path / "api.env").write_text(
+        "".join(f"{name}={value}\n" for name, value in api_environment.items())
+    )
+    script = _service_tail_collection(_remote_redaction_scripts()[which], out_dir)
+    result = subprocess.run(  # noqa: S603
+        ["bash", "-c", f"set -euo pipefail\n{script}"],
+        cwd=tmp_path,
+        env={
+            "PATH": f"{binaries}:/usr/bin:/bin",
+            "FAKE_SERVICE_TAIL": str(tail),
+            "FAKE_API_ENVIRONMENT": str(tmp_path / "api.env"),
+            "FAKE_PYTHONPATH": str(WORKFLOW.parents[2]),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    (collected,) = (path for path in out_dir.iterdir() if path.name.endswith("services.log"))
+    assert not list(out_dir.glob("*.partial"))
+    return collected.read_text(), result
+
+
+def _api_environment_with_webhook_secret(which: int) -> dict[str, str]:
+    script = _remote_redaction_scripts()[which]
+    names = re.search(r'protected_names="([^"]*)"', script).group(1)
+    assert "GITHUB_WEBHOOK_SECRET" in names.split()
+    return {**_api_protected_environment(names), "GITHUB_WEBHOOK_SECRET": WEBHOOK_SECRET}
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["provisioning-tails", "suite-failure-tails"])
+def test_the_service_tails_redact_the_webhook_secret_and_keep_safe_lines(tmp_path, which):
+    collected, result = _collect_service_tails(
+        tmp_path, which, _api_environment_with_webhook_secret(which)
+    )
+
+    assert WEBHOOK_SECRET not in collected + result.stdout + result.stderr
+    assert "api | webhook hmac key [redacted] in a traceback\n" in collected
+    assert "api | GITHUB_WEBHOOK_SECRET is configured\n" in collected
+    assert "github_webhook_refused reason=signature_mismatch status=403" in collected
+    assert "ORCHESTRATOR_HOSTNAME=stand.example.test" in collected
+
+
+@pytest.mark.parametrize("webhook_secret", [None, "   "], ids=["absent", "blank"])
+@pytest.mark.parametrize("which", [0, 1], ids=["provisioning-tails", "suite-failure-tails"])
+def test_service_tails_without_the_webhook_secret_publish_only_the_refusal(
+    tmp_path, which, webhook_secret
+):
+    environment = _api_environment_with_webhook_secret(which)
+    if webhook_secret is None:
+        del environment["GITHUB_WEBHOOK_SECRET"]
+    else:
+        environment["GITHUB_WEBHOOK_SECRET"] = webhook_secret
+
+    collected, result = _collect_service_tails(tmp_path, which, environment)
+
+    assert WEBHOOK_SECRET not in collected
+    assert "the redaction path did not complete" in collected
+    assert "github_webhook_refused" not in collected
+    assert "missing redaction value: GITHUB_WEBHOOK_SECRET" in result.stderr
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["provisioning-tails", "suite-failure-tails"])
+def test_service_tails_without_another_protected_value_still_redact_the_webhook_secret(
+    tmp_path, which
+):
+    environment = _api_environment_with_webhook_secret(which)
+    del environment["INTERNAL_API_KEY"]
+
+    collected, result = _collect_service_tails(tmp_path, which, environment)
+
+    assert "the redaction path did not complete" not in collected
+    assert WEBHOOK_SECRET not in collected + result.stdout + result.stderr
+    assert "api | webhook hmac key [redacted] in a traceback\n" in collected
+    assert "github_webhook_refused reason=signature_mismatch status=403" in collected
+
+
+def test_the_webhook_secret_is_a_protected_value_of_every_artifact_admission():
+    workflow = _workflow()
+    final_admission = {step["name"]: step for step in workflow["jobs"]["cleanup"]["steps"]}[
+        "Admit final artifact"
+    ]
+
+    assert "GITHUB_WEBHOOK_SECRET" in PROTECTED_STAND_SECRET_NAMES
+    for step in (_steps()["Admit cleanup handoff"], final_admission):
+        assert step["env"]["GITHUB_WEBHOOK_SECRET"] == "${{ secrets.GH_WEBHOOK_SECRET }}"  # noqa: S105
 
 
 def _run_codex_auth_persist(tmp_path: Path, step: dict, gh_failures: int) -> tuple:

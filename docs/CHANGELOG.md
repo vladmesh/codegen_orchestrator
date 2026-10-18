@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-18
 
+- Deploy and `stand-e2e.yml` write the `GH_WEBHOOK_SECRET` Environment secret into the API's `.env`
+  as `GITHUB_WEBHOOK_SECRET`, refuse a missing or unsafe value first, and redact it from stand evidence.
 - `POST /api/webhooks/github` publishes a `pr_ci` wake hint for an HMAC-signed `workflow_run`
   completion; the API now requires `GITHUB_WEBHOOK_SECRET`, and public routing is not active yet.
 - `POST /stories/{id}/pr_review` publishes a `pr_ci` wake hint after its commit, so the PR/CI sweep

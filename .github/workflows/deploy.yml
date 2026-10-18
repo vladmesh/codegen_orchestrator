@@ -156,6 +156,9 @@ jobs:
           REQUIRED_ORCHESTRATOR_PUBLIC_IP: ${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
           REQUIRED_GH_ORG: ${{ secrets.GH_ORG }}
           REQUIRED_WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
+          # GitHub refuses secret names starting with GITHUB_, so the API's
+          # GITHUB_WEBHOOK_SECRET is stored as GH_WEBHOOK_SECRET, like GH_ORG.
+          REQUIRED_GH_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
           # Policy, not a credential, so it is an environment variable. Compose
           # refuses to start without it; failing here stops before the host is touched.
           REQUIRED_DEFAULT_AGENT_TYPE: ${{ vars.DEFAULT_AGENT_TYPE }}
@@ -176,6 +179,7 @@ jobs:
             REQUIRED_ORCHESTRATOR_PUBLIC_IP \
             REQUIRED_GH_ORG \
             REQUIRED_WORKER_BROKER_INTERNAL_TOKEN \
+            REQUIRED_GH_WEBHOOK_SECRET \
             REQUIRED_DEFAULT_AGENT_TYPE
           do
             if [ -z "${!name}" ]; then
@@ -185,6 +189,14 @@ jobs:
           if [ "${#missing[@]}" -ne 0 ]; then
             printf 'Missing required secrets or variables for %s: %s\n' \
               "${{ inputs.environment }}" "${missing[*]}" >&2
+            exit 1
+          fi
+          # The webhook secret is written verbatim into the server .env, so only one
+          # token that neither the remote heredoc nor Compose's env-file parser can
+          # reinterpret is accepted. Hex, base64 and base64url qualify.
+          if [[ ! "${REQUIRED_GH_WEBHOOK_SECRET}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+            printf 'GH_WEBHOOK_SECRET for %s must be one token of letters, digits and ._~+/=- (for example openssl rand -hex 32); its value is not shown\n' \
+              "${{ inputs.environment }}" >&2
             exit 1
           fi
 
@@ -338,6 +350,9 @@ jobs:
           # GitHub
           GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
           GITHUB_ORG=${{ secrets.GH_ORG }}
+          # Required by the API. Validate required secrets refused any value that is
+          # not one safe token, so it lands here as data.
+          GITHUB_WEBHOOK_SECRET=${{ secrets.GH_WEBHOOK_SECRET }}
 
           # Telegram
           # Same inheritance, worse consequence: two long-polling clients on one
