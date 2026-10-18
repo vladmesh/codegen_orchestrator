@@ -21,7 +21,25 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 
 | Target | Logical producer | Consumer |
 |---|---|---|
-| `story_completion` | none yet: no business transition publishes a hint | scheduler-pipeline `story_completion` loop |
+| `story_completion` | langgraph engineering success settlement (`handle_engineering_success`) | scheduler-pipeline `story_completion` loop |
+
+## Producers
+
+- Engineering success settlement publishes one `story_completion` hint for a story-scoped attempt
+  with a commit, on the consumer's connected Redis client. It publishes after the terminal Run
+  `completed` write returns and, with a planning Task, after the `in_ci`, `testing`, `done`
+  transitions and the `iteration_end` event write return; callbacks and the direct deploy follow it.
+- The Task transitions and event write stay best-effort: after one fails the hint is still
+  published, and the sweep acts only on what committed. A storyless success, a failed terminal Run
+  write and every rejected, failed or gave-up outcome publish nothing.
+- A Redis or socket error on publish is logged as `story_completion_wake_failed` with the story id
+  and error type only; the settlement result, callbacks, deploy and durable data are unchanged.
+  Cancellation propagates.
+- Every other write that can make a Story eligible still waits for the interval: liveness replay of
+  a finished Run, dispatch admission completing a finished Run, catalog install publication and
+  recovery, commit recovery, the Task complete and cancel routes, and PR conflict repair settlement.
+
+## Listener
 
 scheduler-pipeline runs one `scheduler_wake` listener beside its loops under the same
 supervisor. It must hold an event for every target in the vocabulary, or it refuses to start.

@@ -408,6 +408,7 @@ class TestHandleSuccessWorkerLifecycle:
         redis_mock = MagicMock()
         redis_mock.redis = MagicMock()
         redis_mock.redis.xadd = AsyncMock()
+        redis_mock.redis.publish = AsyncMock(return_value=0)
 
         await _handle_engineering_success(
             EngineeringSuccessParams(
