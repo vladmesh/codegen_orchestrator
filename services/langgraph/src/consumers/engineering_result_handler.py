@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 
 import httpx
+from redis.exceptions import RedisError
 import structlog
 
 from shared.contracts.dto.commit_publication import CommitPublication
@@ -26,6 +27,7 @@ from shared.contracts.dto.run_result import (
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode, bounded_diagnostic
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.contracts.queues.worker_result import WorkerStopReason
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
@@ -35,6 +37,7 @@ from shared.pr_conflict_repair import settle_pr_repair_attempt
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
 from shared.redis.client import decode_redis_fields
+from shared.redis.scheduler_wake import publish_scheduler_wake
 
 from ..clients.api import api_client
 from ..clients.story_worker_registry import set_story_worker
@@ -227,6 +230,18 @@ def _attempt_execution_patch(
     if execution is not None:
         metadata.update(AttemptTurnMetadata(execution=execution).as_run_metadata())
     return {"run_metadata": metadata}
+
+
+async def _wake_story_completion(redis: RedisStreamClient, story_id: str) -> None:
+    """Ask the completion sweep to reread durable state now; a lost hint waits for its interval."""
+    try:
+        receivers = await publish_scheduler_wake(redis, SchedulerWakeTarget.STORY_COMPLETION)
+    except (RedisError, OSError) as exc:
+        logger.warning(
+            "story_completion_wake_failed", story_id=story_id, error_type=type(exc).__name__
+        )
+        return
+    logger.info("story_completion_wake_published", story_id=story_id, receivers=receivers)
 
 
 class StoryStopError(RuntimeError):
@@ -731,6 +746,8 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                 "summary": f"Engineering run {task_id} completed",
             },
         )
+    if story_id:
+        await _wake_story_completion(redis, story_id)
 
     effective_skip_deploy = skip_deploy or bool(planning_task_id)
 

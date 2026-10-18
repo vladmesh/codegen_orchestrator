@@ -13,6 +13,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   re-derives the earlier-workflow stop from all the grant's Runs, so withdrawal or retry cannot skip either.
 - scheduler-pipeline's `story_completion` loop also wakes on a native Pub/Sub hint on `scheduler:wake`;
   hints are lossy and coalesced, the interval stays the backstop, and nothing publishes one yet.
+- A successful story engineering settlement publishes the `story_completion` wake hint after its Run,
+  Task and `iteration_end` writes return, so the PR sweep starts without waiting for its interval.
 
 ## 2026-10-17
 
