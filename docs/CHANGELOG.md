@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-18
 
+- `PATCH /runs/{id}` publishes a `lifecycle_supervision` wake hint after committing an ordinary story
+  deploy's first typed success, so the deploy supervisor hands the story to QA without the interval.
 - The two multi-attempt temporary-access cleanup recovery families run in the LangGraph service shard,
   so their double `process_deploy_job` passes no longer exceed the 0.5 s unit budget.
 - Product Brief admission publishes a `task_dispatcher` wake hint after committing a nonempty release,

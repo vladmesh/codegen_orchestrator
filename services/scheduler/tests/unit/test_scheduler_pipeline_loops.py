@@ -183,7 +183,7 @@ async def test_lifecycle_supervision_loop_owns_redis_lifecycle(monkeypatch):
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await lifecycle_supervision_loop.lifecycle_supervision_loop()
+        await lifecycle_supervision_loop.lifecycle_supervision_loop(wake=asyncio.Event())
 
     cycle.assert_awaited_once_with(api, redis)
     redis.connect.assert_awaited_once()

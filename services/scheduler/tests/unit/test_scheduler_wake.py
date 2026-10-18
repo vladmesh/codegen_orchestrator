@@ -13,6 +13,7 @@ from shared.redis.scheduler_wake import publish_scheduler_wake
 
 STORY_COMPLETION = SchedulerWakeTarget.STORY_COMPLETION
 TASK_DISPATCHER = SchedulerWakeTarget.TASK_DISPATCHER
+LIFECYCLE_SUPERVISION = SchedulerWakeTarget.LIFECYCLE_SUPERVISION
 
 
 def receivers(**events: asyncio.Event) -> dict[SchedulerWakeTarget, asyncio.Event]:
@@ -308,8 +309,18 @@ async def test_cancelling_the_listener_closes_pubsub_and_client_once(monkeypatch
     ("wakes", "missing"),
     [
         ({}, "story_completion"),
-        ({STORY_COMPLETION: asyncio.Event()}, "task_dispatcher"),
-        ({TASK_DISPATCHER: asyncio.Event()}, "story_completion"),
+        (
+            {TASK_DISPATCHER: asyncio.Event(), LIFECYCLE_SUPERVISION: asyncio.Event()},
+            "story_completion",
+        ),
+        (
+            {STORY_COMPLETION: asyncio.Event(), LIFECYCLE_SUPERVISION: asyncio.Event()},
+            "task_dispatcher",
+        ),
+        (
+            {STORY_COMPLETION: asyncio.Event(), TASK_DISPATCHER: asyncio.Event()},
+            "lifecycle_supervision",
+        ),
     ],
 )
 async def test_the_listener_refuses_a_target_without_a_receiver(wakes, missing):

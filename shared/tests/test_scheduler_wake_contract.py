@@ -16,6 +16,7 @@ from shared.contracts.queues.scheduler_wake import (
     [
         (SchedulerWakeTarget.STORY_COMPLETION, "story_completion"),
         (SchedulerWakeTarget.TASK_DISPATCHER, "task_dispatcher"),
+        (SchedulerWakeTarget.LIFECYCLE_SUPERVISION, "lifecycle_supervision"),
     ],
 )
 def test_a_published_hint_parses_back_to_its_target(target, wire_target):
@@ -31,6 +32,7 @@ def test_a_published_hint_parses_back_to_its_target(target, wire_target):
         ('{"target": "pr_ci"}', "invalid"),
         ('{"target": "STORY_COMPLETION"}', "invalid"),
         ('{"target": "TASK_DISPATCHER"}', "invalid"),
+        ('{"target": "LIFECYCLE_SUPERVISION"}', "invalid"),
         ('{"target": 0}', "invalid"),
         ("{}", "invalid"),
         ('{"target": "story_completion", "story_id": "story-1"}', "invalid"),
