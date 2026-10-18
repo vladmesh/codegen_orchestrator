@@ -11,8 +11,8 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - Message: the JSON body of `SchedulerWakeHint` in `shared/contracts/queues/scheduler_wake.py`,
   for example `{"target":"story_completion"}`. `target` is a `SchedulerWakeTarget`; no other
   field is accepted.
-- Targets: `story_completion`, `task_dispatcher` and `lifecycle_supervision`; each wakes only the
-  loop of that name.
+- Targets: `story_completion`, `task_dispatcher`, `lifecycle_supervision` and `temporary_access`;
+  each wakes only the loop of that name.
 - A hint carries routing only: no credentials, ids, correlation metadata or business state. It
   grants no permission to transition a Story, Task or Run and never invokes a business action.
 - Producers publish with `shared.redis.scheduler_wake.publish_scheduler_wake` after the durable
@@ -25,6 +25,7 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 | `story_completion` | api Task routes `POST /tasks/{id}/complete`, `POST /tasks/{id}/transition`, `DELETE /tasks/{id}`; langgraph engineering success settlement (`handle_engineering_success`) | scheduler-pipeline `story_completion` loop |
 | `task_dispatcher` | api Product Brief admission `POST /product-briefs/{id}/admit` | scheduler-pipeline `task_dispatcher` loop |
 | `lifecycle_supervision` | api Run update `PATCH /runs/{id}` on the first typed success of an ordinary story deploy | scheduler-pipeline `lifecycle_supervision` loop |
+| `temporary_access` | api Run update `PATCH /runs/{id}` on the first readback proof of a temporary-access grant or revoke operation | scheduler-pipeline `temporary_access` loop |
 
 ## Producers
 
@@ -85,7 +86,7 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
   intermediate status, a terminal write without a result, a non-success or malformed result,
   another Run type, a storyless Run, a refused request and a failed commit publish nothing. The
   classification never refuses or fails a write.
-- A temporary-access grant or revoke Run publishes nothing: `temporary_access_grant_id` or
+- A temporary-access grant or revoke Run never publishes this hint: `temporary_access_grant_id` or
   `temporary_access_operation` as a key of the stored or the final metadata, with a null value or
   cleared by the update, names the `temporary_access` loop as the owner of its proof.
 - The langgraph deploy consumer records its success through this route before its callbacks, so
@@ -97,9 +98,38 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
   id, the story id and the error type only; the committed Run and its response are unchanged.
   Cancellation propagates. There is no retry.
 - Every other write that lifecycle supervision acts on still waits for the interval: a
-  non-success deploy outcome, temporary-access grant and revoke proof, a queued deploy handoff
-  awaiting recovery, a stuck, failed or resource-waiting Task, an awaited user secret, and every
-  recovery, direct-database, install, repair or takeover write.
+  non-success deploy outcome, a queued deploy handoff awaiting recovery, a stuck, failed or
+  resource-waiting Task, an awaited user secret, and every recovery, direct-database, install,
+  repair or takeover write.
+
+### `temporary_access`
+
+- `PATCH /runs/{id}` publishes one `temporary_access` hint when the request gives a temporary-access
+  operation Run its first readback proof: the locked row before the update lacks, and the final row
+  holds, `deploy` type, status `completed` and a result that validates as `DeployRunResult` with
+  `deploy_outcome` `success` and no `skipped_reason`, the proof the sweep and the grant transitions
+  accept. A status and result written in two requests publish on the second. A `story_id` is not
+  required; the operation Runs the sweep persists are storyless.
+- Both rows must carry the same marker pair: `temporary_access_grant_id` a nonempty string and
+  `temporary_access_operation` exactly `grant` or `revoke`. A missing, null or malformed key, and a
+  pair the update adds, rebinds, changes or clears, publishes nothing.
+- The route publishes on the initialized Redis client right after its own `db.commit()` returns
+  and before the response refresh. An identical terminal replay, a metadata-only update, an
+  intermediate, failed or cancelled status, a terminal write without a result, a skipped, non-success
+  or malformed result, another Run type, an ordinary deploy, a refused request and a failed commit
+  publish nothing. The classification reads only the Run row: it never reads or locks the grant,
+  and never refuses or fails a write.
+- The langgraph deploy consumer records an operation's proof through this route, so this hint
+  covers it; it publishes no hint of its own.
+- The awakened cycle runs the unchanged `supervise_temporary_access` sweep. It still reads each
+  grant's current operation Run, expiry and QA state, so a proof of a superseded operation settles
+  nothing; the hint grants, revokes and releases nothing.
+- A Redis or socket error on publish is logged as `temporary_access_wake_failed` with the run id,
+  the story id and the error type only; the committed Run and its response are unchanged.
+  Cancellation propagates. There is no retry.
+- Every other write the sweep acts on still waits for the interval: grant creation, a QA Run
+  reaching a terminal status, a failed, cancelled, skipped, missing or stale operation, an expired
+  grant, a `revoke_failed` record awaiting retry or escalation, and every drain or recovery write.
 
 ## Listener
 

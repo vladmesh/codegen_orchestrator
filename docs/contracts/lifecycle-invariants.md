@@ -244,7 +244,9 @@ the target base URL's `/users/grant` or `/users/revoke` and `/users/access`
 readback. A grant needs the identity active, a revoke inactive with no proof
 failure; an absent or undecryptable capability, a refusal or an unverified
 readback fails `owner_access_proof_failed` with a bounded reason and never mints
-a capability. The terminal Run outcome is written last.
+a capability. The terminal Run outcome is written last. Its first readback proof wakes the
+scheduler's `temporary_access` sweep early ([wake hint](scheduler-wake-hints.md#temporary_access));
+only that sweep settles the grant.
 Both target columns are NOT NULL: every record has
 a target. The target lock and partial unique index scope contention to
 `(project_id, target_application_id)`.

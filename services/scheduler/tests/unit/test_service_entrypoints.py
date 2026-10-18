@@ -333,7 +333,6 @@ async def test_pipeline_starts_without_loki(monkeypatch):
     assert workers["qa_routing"] is pipeline.qa_routing_loop
     assert workers["pr_ci"] is pipeline.pr_ci_loop
     assert workers["worker_reconciliation"] is pipeline.worker_reconciliation_loop
-    assert workers["temporary_access"] is pipeline.temporary_access_loop
     assert workers["owner_notifications"] is pipeline.owner_notification_loop
     assert workers["story_supervision"] is pipeline.story_supervision_loop
 
@@ -350,6 +349,7 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
         scheduler_wake_listener,
         story_completion_loop,
         task_dispatcher,
+        temporary_access_loop,
     )
 
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
@@ -383,6 +383,11 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     for sweep in lifecycle_sweeps:
         monkeypatch.setattr(lifecycle_supervision_loop, sweep, record(sweep, {}))
     monkeypatch.setattr(lifecycle_supervision_loop, "_lifecycle_supervision_interval", lambda: 3600)
+    monkeypatch.setattr(temporary_access_loop, "RedisStreamClient", broker.client)
+    monkeypatch.setattr(
+        temporary_access_loop, "supervise_temporary_access", record("temporary_access", {})
+    )
+    monkeypatch.setattr(temporary_access_loop, "_temporary_access_interval", lambda: 3600)
     monkeypatch.setattr(scheduler_wake_listener, "_reconnect_interval", lambda: 3600)
     await pipeline.main()
     workers = dict(run_workers.await_args.args[0])
@@ -391,13 +396,16 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
         asyncio.create_task(workers["task_dispatcher"]()),
         asyncio.create_task(workers["story_completion"]()),
         asyncio.create_task(workers["lifecycle_supervision"]()),
+        asyncio.create_task(workers["temporary_access"]()),
         asyncio.create_task(
             workers["scheduler_wake"](redis_factory=broker.client, sleep=Timers().sleep)
         ),
     ]
     await broker.subscribed()
     await settle()
-    assert sorted(journal) == sorted(["complete", "dispatch", "recover", *lifecycle_sweeps])
+    assert sorted(journal) == sorted(
+        ["complete", "dispatch", "recover", "temporary_access", *lifecycle_sweeps]
+    )
     publisher = broker.client()
     await publisher.connect()
 
@@ -415,6 +423,11 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     await publish_scheduler_wake(publisher, SchedulerWakeTarget.LIFECYCLE_SUPERVISION)
     await settle()
     assert journal == lifecycle_sweeps
+
+    journal.clear()
+    await publish_scheduler_wake(publisher, SchedulerWakeTarget.TEMPORARY_ACCESS)
+    await settle()
+    assert journal == ["temporary_access"]
 
     for task in tasks:
         task.cancel()

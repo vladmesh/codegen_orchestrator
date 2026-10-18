@@ -360,7 +360,7 @@ async def test_temporary_access_loop_continues_after_sweep_failure_and_closes_re
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await temporary_access_loop.temporary_access_loop()
+        await temporary_access_loop.temporary_access_loop(wake=asyncio.Event())
 
     assert sweep.await_count == 2
     log.exception.assert_called_once_with("temporary_access_cycle_error")
@@ -397,7 +397,7 @@ async def test_temporary_access_loop_logs_zero_count_cycle(monkeypatch):
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await temporary_access_loop.temporary_access_loop()
+        await temporary_access_loop.temporary_access_loop(wake=asyncio.Event())
 
     log.info.assert_any_call("temporary_access_cycle", **counts)
 

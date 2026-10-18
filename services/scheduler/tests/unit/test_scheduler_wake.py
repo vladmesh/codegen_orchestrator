@@ -14,6 +14,7 @@ from shared.redis.scheduler_wake import publish_scheduler_wake
 STORY_COMPLETION = SchedulerWakeTarget.STORY_COMPLETION
 TASK_DISPATCHER = SchedulerWakeTarget.TASK_DISPATCHER
 LIFECYCLE_SUPERVISION = SchedulerWakeTarget.LIFECYCLE_SUPERVISION
+TEMPORARY_ACCESS = SchedulerWakeTarget.TEMPORARY_ACCESS
 
 
 def receivers(**events: asyncio.Event) -> dict[SchedulerWakeTarget, asyncio.Event]:
@@ -310,16 +311,36 @@ async def test_cancelling_the_listener_closes_pubsub_and_client_once(monkeypatch
     [
         ({}, "story_completion"),
         (
-            {TASK_DISPATCHER: asyncio.Event(), LIFECYCLE_SUPERVISION: asyncio.Event()},
+            {
+                TASK_DISPATCHER: asyncio.Event(),
+                LIFECYCLE_SUPERVISION: asyncio.Event(),
+                TEMPORARY_ACCESS: asyncio.Event(),
+            },
             "story_completion",
         ),
         (
-            {STORY_COMPLETION: asyncio.Event(), LIFECYCLE_SUPERVISION: asyncio.Event()},
+            {
+                STORY_COMPLETION: asyncio.Event(),
+                LIFECYCLE_SUPERVISION: asyncio.Event(),
+                TEMPORARY_ACCESS: asyncio.Event(),
+            },
             "task_dispatcher",
         ),
         (
-            {STORY_COMPLETION: asyncio.Event(), TASK_DISPATCHER: asyncio.Event()},
+            {
+                STORY_COMPLETION: asyncio.Event(),
+                TASK_DISPATCHER: asyncio.Event(),
+                TEMPORARY_ACCESS: asyncio.Event(),
+            },
             "lifecycle_supervision",
+        ),
+        (
+            {
+                STORY_COMPLETION: asyncio.Event(),
+                TASK_DISPATCHER: asyncio.Event(),
+                LIFECYCLE_SUPERVISION: asyncio.Event(),
+            },
+            "temporary_access",
         ),
     ],
 )

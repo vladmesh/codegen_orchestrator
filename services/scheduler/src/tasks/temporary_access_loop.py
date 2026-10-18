@@ -18,8 +18,8 @@ def _temporary_access_interval() -> int:
     return startup.get_config().get_int("scheduler.dispatch_interval_seconds")
 
 
-async def temporary_access_loop() -> None:
-    """Sweep temporary access on its own cadence and failure boundary."""
+async def temporary_access_loop(*, wake: asyncio.Event) -> None:
+    """Sweep temporary access on its own cadence and failure boundary; `wake` runs it early."""
     from ..clients.api import api_client
 
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
@@ -35,4 +35,5 @@ async def temporary_access_loop() -> None:
         stopped_event="temporary_access_stopped",
         redis_factory=RedisStreamClient,
         sleep=asyncio.sleep,
+        wake=wake,
     )

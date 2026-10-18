@@ -75,6 +75,7 @@ _OUTCOME_FIELDS = ("status", "result", "error_message")
 # Temporary-access grant and revoke Runs are deploys owned by the temporary-access
 # sweep; either key names that owner, even with a null value.
 _TEMPORARY_ACCESS_METADATA_KEYS = ("temporary_access_grant_id", "temporary_access_operation")
+_TEMPORARY_ACCESS_OPERATIONS = frozenset({"grant", "revoke"})
 
 # Largest page the QA grant selection will hand out at once. The page bounds one
 # response, never the coverage: the caller walks pages from a cursor until one
@@ -612,56 +613,86 @@ def _has_recorded_outcome(run: Run) -> bool:
     )
 
 
-class _DeploySuccessProof(NamedTuple):
-    """What one Run row says about the lifecycle wake: its proof and its owner."""
+class _DeployProof(NamedTuple):
+    """What one Run row says about the deploy wakes: each owner's success proof and its marker."""
 
-    proved: bool
+    story_success: bool
+    operation_success: bool
     temporary_access: bool
+    operation: tuple[str, str] | None
 
 
-def _deploy_success_proof(run: Run) -> _DeploySuccessProof:
+def _deploy_proof(run: Run) -> _DeployProof:
     metadata = run.run_metadata or {}
-    return _DeploySuccessProof(
-        proved=_holds_story_deploy_success(run),
+    result = _typed_deploy_result(run)
+    success = result is not None and result.deploy_outcome is DeployOutcome.SUCCESS
+    return _DeployProof(
+        story_success=success and run.story_id is not None and run.status in _TERMINAL_RUN_STATUSES,
+        # The readback proof the temporary-access sweep and grant transitions accept.
+        operation_success=success
+        and run.status == RunStatus.COMPLETED.value
+        and result.skipped_reason is None,
         temporary_access=any(key in metadata for key in _TEMPORARY_ACCESS_METADATA_KEYS),
+        operation=_temporary_access_operation(metadata),
     )
 
 
-def _holds_story_deploy_success(run: Run) -> bool:
-    """Whether a story deploy row holds the terminal typed success its supervisor routes."""
-    if run.type != RunType.DEPLOY.value or run.story_id is None:
-        return False
-    if run.status not in _TERMINAL_RUN_STATUSES or run.result is None:
-        return False
+def _typed_deploy_result(run: Run) -> DeployRunResult | None:
+    if run.type != RunType.DEPLOY.value or run.result is None:
+        return None
     try:
-        result = DeployRunResult.model_validate(run.result)
+        return DeployRunResult.model_validate(run.result)
     except ValidationError:
-        return False
-    return result.deploy_outcome is DeployOutcome.SUCCESS
+        return None
 
 
-async def _wake_on_first_deploy_success(
-    before: _DeploySuccessProof, run: Run, redis: RedisStreamClient
+def _temporary_access_operation(metadata: object) -> tuple[str, str] | None:
+    """The row's grant id and operation, or None unless both are well formed."""
+    if not isinstance(metadata, dict):
+        return None
+    grant_id = metadata.get("temporary_access_grant_id")
+    operation = metadata.get("temporary_access_operation")
+    if not isinstance(grant_id, str) or not grant_id:
+        return None
+    if not isinstance(operation, str) or operation not in _TEMPORARY_ACCESS_OPERATIONS:
+        return None
+    return grant_id, operation
+
+
+def _first_proof_wake(before: _DeployProof, after: _DeployProof) -> SchedulerWakeTarget | None:
+    """The sweep that owns the success proof this write gave the Run first, if any."""
+    if before.temporary_access or after.temporary_access:
+        proved = after.operation_success and not before.operation_success
+        if proved and after.operation is not None and after.operation == before.operation:
+            return SchedulerWakeTarget.TEMPORARY_ACCESS
+        return None
+    if after.story_success and not before.story_success:
+        return SchedulerWakeTarget.LIFECYCLE_SUPERVISION
+    return None
+
+
+async def _wake_on_first_deploy_proof(
+    before: _DeployProof, run: Run, redis: RedisStreamClient
 ) -> None:
-    """Hint the lifecycle sweep once an ordinary story deploy's first success has committed.
+    """Hint the owning sweep once a deploy Run's first success proof has committed.
 
     A lost hint waits for the sweep's interval.
     """
-    after = _deploy_success_proof(run)
-    if before.proved or not after.proved or before.temporary_access or after.temporary_access:
+    target = _first_proof_wake(before, _deploy_proof(run))
+    if target is None:
         return
     try:
-        receivers = await publish_scheduler_wake(redis, SchedulerWakeTarget.LIFECYCLE_SUPERVISION)
+        receivers = await publish_scheduler_wake(redis, target)
     except (RedisError, OSError) as exc:
         logger.warning(
-            "lifecycle_supervision_wake_failed",
+            f"{target.value}_wake_failed",
             run_id=run.id,
             story_id=run.story_id,
             error_type=type(exc).__name__,
         )
         return
     logger.info(
-        "lifecycle_supervision_wake_published",
+        f"{target.value}_wake_published",
         run_id=run.id,
         story_id=run.story_id,
         receivers=receivers,
@@ -791,11 +822,12 @@ async def update_run(
     writers take turns, so the second one sees the first one's answer and is
     refused by the same rules that exist to refuse it.
 
-    Once the first terminal typed success of an ordinary story deploy has committed,
-    the lifecycle supervision loop is woken.
+    Once a deploy Run's first typed success has committed, the sweep that owns that
+    proof is woken: lifecycle supervision for an ordinary story deploy, temporary
+    access for a grant or revoke operation.
     """
     run, story, task = await _lock_terminal_context(run_id, db)
-    proof_before = _deploy_success_proof(run)
+    proof_before = _deploy_proof(run)
 
     # Only services acting for themselves, and admins, can update runs
     actor = await resolve_actor(
@@ -934,7 +966,7 @@ async def update_run(
     await _settle_terminal_accounting(run, engineering_attempt, qa_accounting, db)
 
     await db.commit()
-    await _wake_on_first_deploy_success(proof_before, run, redis)
+    await _wake_on_first_deploy_proof(proof_before, run, redis)
     await db.refresh(run)
 
     logger.info(
