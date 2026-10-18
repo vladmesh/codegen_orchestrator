@@ -7,7 +7,9 @@ from io import StringIO
 import json
 import sys
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+
+import pytest
 
 from shared.telegram_bot_probe import (
     PROBE_RESULT_MARKER,
@@ -214,12 +216,7 @@ def test_generated_message_serializer_keeps_media_markup_and_link_preview_text(m
             return None
 
     _install_telethon(monkeypatch, FakeClient)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 2))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    _virtual_clock(monkeypatch)
 
     stdout = StringIO()
     with redirect_stdout(stdout):
@@ -347,12 +344,7 @@ def test_generated_callback_uses_a_pre_press_baseline_and_records_an_edit(monkey
             return None
 
     _install_telethon(monkeypatch, FakeClient, callback_request=Request)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 2))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    _virtual_clock(monkeypatch)
 
     stdout = StringIO()
     with redirect_stdout(stdout):
@@ -376,533 +368,66 @@ def test_generated_callback_uses_a_pre_press_baseline_and_records_an_edit(monkey
     assert evidence["post_press_message"]["text"] == "Details opened"
 
 
-def test_generated_callback_collects_an_interim_and_later_answer(monkeypatch):
-    class KeyboardButtonCallback:
-        def __init__(self, text, data):
-            self.text = text
-            self.data = data
+class MessageMediaPhoto:
+    pass
 
-    class Row:
-        def __init__(self, *buttons):
-            self.buttons = buttons
 
-    class ReplyInlineMarkup:
-        def __init__(self, *rows):
-            self.rows = rows
+class KeyboardButtonCallback:
+    def __init__(self, text, data):
+        self.text = text
+        self.data = data
 
-    class Request:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
 
-    def bot_message(identifier, text, *, markup=None):
-        return type(
-            "Message",
-            (),
-            {
-                "id": identifier,
-                "out": False,
-                "raw_text": text,
-                "message": text,
-                "media": None,
-                "reply_markup": markup,
-            },
-        )()
+class Row:
+    def __init__(self, *buttons):
+        self.buttons = buttons
 
-    original = bot_message(
-        7,
-        "Choose",
-        markup=ReplyInlineMarkup(Row(KeyboardButtonCallback("Career", b"career"))),
+
+class ReplyInlineMarkup:
+    def __init__(self, *rows):
+        self.rows = rows
+
+
+class CallbackRequest:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class _Clock:
+    """Virtual monotonic time that the generated script reads and advances by sleeping."""
+
+    def __init__(self):
+        self.now = 0
+        self.sleeps: list[float] = []
+
+    def sleep(self, seconds):
+        assert seconds > 0
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _virtual_clock(monkeypatch) -> _Clock:
+    clock = _Clock()
+    monkeypatch.setattr(time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(time, "sleep", clock.sleep)
+    monkeypatch.setenv("TELETHON_SESSION", "session")
+    monkeypatch.setenv("TELETHON_API_ID", "123")
+    monkeypatch.setenv("TELETHON_API_HASH", "hash")
+    return clock
+
+
+def _bot_message(identifier, text, *, media=None, markup=None):
+    return SimpleNamespace(
+        id=identifier, out=False, raw_text=text, message=text, media=media, reply_markup=markup
     )
-    interim = bot_message(10, "Working on it")
-    answer = bot_message(11, "Your career reading")
 
-    class FakeClient:
-        def __init__(self, *_args):
-            self.callback_sent = False
-            self.reply_reads = 0
 
-        def start(self):
-            return None
+def _message_bot(clock, chat):
+    """A bot whose replies after the probe's message 10 are ``chat(now)``, oldest first."""
 
-        def get_entity(self, _username):
-            return "fortune-bot"
+    class Client:
+        reads: list[float] = []
 
-        def get_messages(self, _bot, *, ids=None, min_id=None, limit=None):
-            if ids == 7:
-                return original
-            if limit == 1:
-                return [original]
-            assert min_id == 7
-            self.reply_reads += 1
-            replies = ([interim], [answer, interim], [answer, interim], [answer, interim])
-            return replies[self.reply_reads - 1]
-
-        def __call__(self, _request):
-            self.callback_sent = True
-            return type("Answer", (), {"message": None, "alert": False, "url": None})()
-
-        def disconnect(self):
-            return None
-
-    _install_telethon(monkeypatch, FakeClient, callback_request=Request)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3, 10))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-
-    stdout = StringIO()
-    with redirect_stdout(stdout):
-        exec(  # noqa: S102 - generated probe source
-            build_bot_callback_script(
-                "fortune_bot",
-                7,
-                "Y2FyZWVy",
-                button_text="Career",
-                wait_seconds=10,
-            ),
-            {"__name__": "telegram_callback_script"},
-        )
-
-    evidence = parse_bot_probe_result(stdout.getvalue())
-
-    assert evidence["error"] is None
-    assert [reply["text"] for reply in evidence["replies"]] == [
-        "Working on it",
-        "Your career reading",
-    ]
-
-
-def test_generated_callback_keeps_polling_until_an_interim_edit_is_final(monkeypatch):
-    class KeyboardButtonCallback:
-        def __init__(self, text, data):
-            self.text = text
-            self.data = data
-
-    class Row:
-        def __init__(self, *buttons):
-            self.buttons = buttons
-
-    class ReplyInlineMarkup:
-        def __init__(self, *rows):
-            self.rows = rows
-
-    class Request:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    def bot_message(text, *, markup=None):
-        return type(
-            "Message",
-            (),
-            {
-                "id": 7,
-                "out": False,
-                "raw_text": text,
-                "message": text,
-                "media": None,
-                "reply_markup": markup,
-            },
-        )()
-
-    original = bot_message(
-        "Choose",
-        markup=ReplyInlineMarkup(Row(KeyboardButtonCallback("Career", b"career"))),
-    )
-    interim = bot_message("Working on it")
-    answer = bot_message("Your career reading")
-
-    class FakeClient:
-        def __init__(self, *_args):
-            self.callback_sent = False
-            self.post_press_reads = 0
-
-        def start(self):
-            return None
-
-        def get_entity(self, _username):
-            return "fortune-bot"
-
-        def get_messages(self, _bot, *, ids=None, min_id=None, limit=None):
-            if ids == 7:
-                if not self.callback_sent:
-                    return original
-                self.post_press_reads += 1
-                return (interim, answer, answer, answer)[self.post_press_reads - 1]
-            if limit == 1:
-                return [original]
-            assert min_id == 7
-            return []
-
-        def __call__(self, _request):
-            self.callback_sent = True
-            return type("Answer", (), {"message": None, "alert": False, "url": None})()
-
-        def disconnect(self):
-            return None
-
-    _install_telethon(monkeypatch, FakeClient, callback_request=Request)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3, 10))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-
-    stdout = StringIO()
-    with redirect_stdout(stdout):
-        exec(  # noqa: S102 - generated probe source
-            build_bot_callback_script(
-                "fortune_bot",
-                7,
-                "Y2FyZWVy",
-                button_text="Career",
-                wait_seconds=10,
-            ),
-            {"__name__": "telegram_callback_script"},
-        )
-
-    evidence = parse_bot_probe_result(stdout.getvalue())
-
-    assert evidence["error"] is None
-    assert evidence["post_press_message"]["text"] == "Your career reading"
-
-
-def test_generated_message_collects_a_later_photo_reply(monkeypatch):
-    class MessageMediaPhoto:
-        pass
-
-    def bot_message(identifier, text, *, media=None):
-        return type(
-            "Message",
-            (),
-            {
-                "id": identifier,
-                "out": False,
-                "raw_text": text,
-                "message": text,
-                "media": media,
-                "reply_markup": None,
-            },
-        )()
-
-    interim = bot_message(11, "Working on it")
-    photo = bot_message(12, "The cards", media=MessageMediaPhoto())
-
-    class FakeClient:
-        def __init__(self, *_args):
-            self.reply_reads = 0
-
-        def start(self):
-            return None
-
-        def get_entity(self, _username):
-            return "fortune-bot"
-
-        def send_message(self, _bot, _message):
-            return type("Sent", (), {"id": 10})()
-
-        def get_messages(self, _bot, *, min_id, limit):
-            assert (min_id, limit) == (10, 10)
-            self.reply_reads += 1
-            replies = ([interim], [photo, interim], [photo, interim], [photo, interim])
-            return replies[self.reply_reads - 1]
-
-        def disconnect(self):
-            return None
-
-    _install_telethon(monkeypatch, FakeClient)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3, 10))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-
-    stdout = StringIO()
-    with redirect_stdout(stdout):
-        exec(  # noqa: S102 - generated probe source
-            build_bot_message_script("fortune_bot", "/reading", wait_seconds=10),
-            {"__name__": "telegram_probe_script"},
-        )
-
-    evidence = parse_bot_probe_result(stdout.getvalue())
-
-    assert evidence["error"] is None
-    assert [reply["id"] for reply in evidence["replies"]] == [11, 12]
-    assert evidence["replies"][1]["caption"] == "The cards"
-    assert evidence["replies"][1]["media_type"] == "MessageMediaPhoto"
-
-
-def test_generated_message_keeps_polling_to_the_deadline_after_one_reply(monkeypatch):
-    reply = type(
-        "Message",
-        (),
-        {
-            "id": 11,
-            "out": False,
-            "raw_text": "One answer",
-            "message": "One answer",
-            "media": None,
-            "reply_markup": None,
-        },
-    )()
-
-    class FakeClient:
-        instance = None
-
-        def __init__(self, *_args):
-            self.reply_reads = 0
-            FakeClient.instance = self
-
-        def start(self):
-            return None
-
-        def get_entity(self, _username):
-            return "fortune-bot"
-
-        def send_message(self, _bot, _message):
-            return type("Sent", (), {"id": 10})()
-
-        def get_messages(self, _bot, *, min_id, limit):
-            assert (min_id, limit) == (10, 10)
-            self.reply_reads += 1
-            return [reply]
-
-        def disconnect(self):
-            return None
-
-    _install_telethon(monkeypatch, FakeClient)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3, 10))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    sleeps: list[int] = []
-    monkeypatch.setattr(time, "sleep", sleeps.append)
-
-    stdout = StringIO()
-    with redirect_stdout(stdout):
-        exec(  # noqa: S102 - generated probe source
-            build_bot_message_script("fortune_bot", "/reading", wait_seconds=10),
-            {"__name__": "telegram_probe_script"},
-        )
-
-    evidence = parse_bot_probe_result(stdout.getvalue())
-
-    assert evidence["replies"][0]["text"] == "One answer"
-    assert FakeClient.instance.reply_reads == 4
-    assert sleeps == [2, 2, 2]
-
-
-def test_generated_message_collects_a_reply_well_after_the_old_quiet_window(monkeypatch):
-    def bot_message(identifier, text):
-        return type(
-            "Message",
-            (),
-            {
-                "id": identifier,
-                "out": False,
-                "raw_text": text,
-                "message": text,
-                "media": None,
-                "reply_markup": None,
-            },
-        )()
-
-    interim = bot_message(11, "Working on it")
-    answer = bot_message(12, "Your career reading")
-
-    class FakeClient:
-        def __init__(self, *_args):
-            self.reply_reads = 0
-
-        def start(self):
-            return None
-
-        def get_entity(self, _username):
-            return "fortune-bot"
-
-        def send_message(self, _bot, _message):
-            return type("Sent", (), {"id": 10})()
-
-        def get_messages(self, _bot, *, min_id, limit):
-            assert (min_id, limit) == (10, 10)
-            self.reply_reads += 1
-            replies = ([interim], [interim], [interim], [answer, interim], [answer, interim])
-            return replies[self.reply_reads - 1]
-
-        def disconnect(self):
-            return None
-
-    _install_telethon(monkeypatch, FakeClient)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3, 10, 15))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-
-    stdout = StringIO()
-    with redirect_stdout(stdout):
-        exec(  # noqa: S102 - generated probe source
-            build_bot_message_script("fortune_bot", "/reading", wait_seconds=15),
-            {"__name__": "telegram_probe_script"},
-        )
-
-    evidence = parse_bot_probe_result(stdout.getvalue())
-
-    assert evidence["error"] is None
-    assert [reply["text"] for reply in evidence["replies"]] == [
-        "Working on it",
-        "Your career reading",
-    ]
-
-
-def test_generated_message_honors_an_extended_deadline_without_early_exit(monkeypatch):
-    def bot_message(identifier, text):
-        return type(
-            "Message",
-            (),
-            {
-                "id": identifier,
-                "out": False,
-                "raw_text": text,
-                "message": text,
-                "media": None,
-                "reply_markup": None,
-            },
-        )()
-
-    interim = bot_message(11, "Working on it")
-    answer = bot_message(12, "Your career reading")
-
-    class FakeClient:
-        def __init__(self, *_args):
-            self.reply_reads = 0
-
-        def start(self):
-            return None
-
-        def get_entity(self, _username):
-            return "fortune-bot"
-
-        def send_message(self, _bot, _message):
-            return type("Sent", (), {"id": 10})()
-
-        def get_messages(self, _bot, *, min_id, limit):
-            assert (min_id, limit) == (10, 10)
-            self.reply_reads += 1
-            return [answer, interim] if self.reply_reads == 4 else [interim]
-
-        def disconnect(self):
-            return None
-
-    _install_telethon(monkeypatch, FakeClient)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 14, 15, 20))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-
-    stdout = StringIO()
-    with redirect_stdout(stdout):
-        exec(  # noqa: S102 - generated probe source
-            build_bot_message_script("fortune_bot", "/reading", wait_seconds=20),
-            {"__name__": "telegram_probe_script"},
-        )
-
-    evidence = parse_bot_probe_result(stdout.getvalue())
-
-    assert evidence["error"] is None
-    assert [reply["text"] for reply in evidence["replies"]] == [
-        "Working on it",
-        "Your career reading",
-    ]
-
-
-def test_generated_message_reads_the_final_state_at_the_deadline(monkeypatch):
-    def bot_message(identifier, text):
-        return type(
-            "Message",
-            (),
-            {
-                "id": identifier,
-                "out": False,
-                "raw_text": text,
-                "message": text,
-                "media": None,
-                "reply_markup": None,
-            },
-        )()
-
-    interim = bot_message(11, "Working on it")
-    answer = bot_message(12, "Your career reading")
-
-    class FakeClient:
-        def __init__(self, *_args):
-            self.reply_reads = 0
-
-        def start(self):
-            return None
-
-        def get_entity(self, _username):
-            return "fortune-bot"
-
-        def send_message(self, _bot, _message):
-            return type("Sent", (), {"id": 10})()
-
-        def get_messages(self, _bot, *, min_id, limit):
-            assert (min_id, limit) == (10, 10)
-            self.reply_reads += 1
-            return [answer, interim] if self.reply_reads == 5 else [interim]
-
-        def disconnect(self):
-            return None
-
-    _install_telethon(monkeypatch, FakeClient)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3, 14, 15))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-
-    stdout = StringIO()
-    with redirect_stdout(stdout):
-        exec(  # noqa: S102 - generated probe source
-            build_bot_message_script("fortune_bot", "/reading", wait_seconds=15),
-            {"__name__": "telegram_probe_script"},
-        )
-
-    evidence = parse_bot_probe_result(stdout.getvalue())
-
-    assert [reply["text"] for reply in evidence["replies"]] == [
-        "Working on it",
-        "Your career reading",
-    ]
-
-
-def test_generated_message_keeps_the_newest_replies_at_the_evidence_bound(monkeypatch):
-    replies = [
-        type(
-            "Message",
-            (),
-            {
-                "id": identifier,
-                "out": False,
-                "raw_text": f"Reply {identifier}",
-                "message": f"Reply {identifier}",
-                "media": None,
-                "reply_markup": None,
-            },
-        )()
-        for identifier in range(11, 23)
-    ]
-
-    class FakeClient:
         def __init__(self, *_args):
             pass
 
@@ -913,34 +438,247 @@ def test_generated_message_keeps_the_newest_replies_at_the_evidence_bound(monkey
             return "fortune-bot"
 
         def send_message(self, _bot, _message):
-            return type("Sent", (), {"id": 10})()
+            return SimpleNamespace(id=10)
 
         def get_messages(self, _bot, *, min_id, limit):
             assert min_id == 10
-            # Telethon returns newest-first and applies the requested limit.
-            return list(reversed(replies))[:limit]
+            Client.reads.append(clock.now)
+            return list(reversed(chat(clock.now)))[:limit]
 
         def disconnect(self):
             return None
 
-    _install_telethon(monkeypatch, FakeClient)
-    monkeypatch.setenv("TELETHON_SESSION", "session")
-    monkeypatch.setenv("TELETHON_API_ID", "123")
-    monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 2, 10))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    return Client
 
+
+def _probe(monkeypatch, client, *, wait_seconds) -> dict:
+    _install_telethon(monkeypatch, client)
     stdout = StringIO()
     with redirect_stdout(stdout):
         exec(  # noqa: S102 - generated probe source
-            build_bot_message_script("fortune_bot", "/reading", wait_seconds=10),
+            build_bot_message_script("fortune_bot", "/reading", wait_seconds=wait_seconds),
             {"__name__": "telegram_probe_script"},
         )
+    return parse_bot_probe_result(stdout.getvalue())
 
-    evidence = parse_bot_probe_result(stdout.getvalue())
+
+def _callback_bot(clock, *, pressed, chat, answer=None):
+    """Message 7 offers one button; after the press it reads ``pressed(now)``.
+
+    The newest message before the press is 9; ``chat(now)`` is what follows it.
+    """
+    original = _bot_message(
+        7, "Choose", markup=ReplyInlineMarkup(Row(KeyboardButtonCallback("Career", b"career")))
+    )
+
+    class Client:
+        reads: list[float] = []
+
+        def __init__(self, *_args):
+            self.pressed = False
+
+        def start(self):
+            return None
+
+        def get_entity(self, _username):
+            return "fortune-bot"
+
+        def get_messages(self, _bot, *, ids=None, min_id=None, limit=None):
+            if ids == 7:
+                return pressed(clock.now) if self.pressed else original
+            if limit == 1:
+                return [SimpleNamespace(id=9)]
+            assert min_id == 9
+            Client.reads.append(clock.now)
+            return list(reversed(chat(clock.now)))
+
+        def __call__(self, request):
+            assert request.kwargs == {"peer": "fortune-bot", "msg_id": 7, "data": b"career"}
+            self.pressed = True
+            return SimpleNamespace(message=answer, alert=False, url=None)
+
+        def disconnect(self):
+            return None
+
+    return Client, original
+
+
+def _press(monkeypatch, client, *, wait_seconds) -> dict:
+    _install_telethon(monkeypatch, client, callback_request=CallbackRequest)
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        exec(  # noqa: S102 - generated probe source
+            build_bot_callback_script(
+                "fortune_bot", 7, "Y2FyZWVy", button_text="Career", wait_seconds=wait_seconds
+            ),
+            {"__name__": "telegram_callback_script"},
+        )
+    return parse_bot_probe_result(stdout.getvalue())
+
+
+def test_generated_message_returns_once_one_reply_stays_unchanged_for_the_quiet_window(
+    monkeypatch,
+):
+    clock = _virtual_clock(monkeypatch)
+    client = _message_bot(clock, lambda _now: [_bot_message(11, "One answer")])
+
+    evidence = _probe(monkeypatch, client, wait_seconds=15)
+
+    assert [reply["text"] for reply in evidence["replies"]] == ["One answer"]
+    assert client.reads == [0, 2, 3]
+    assert clock.sleeps == [2, 1]
+
+
+def test_generated_message_silence_runs_to_the_deadline_and_reads_it(monkeypatch):
+    clock = _virtual_clock(monkeypatch)
+    client = _message_bot(clock, lambda _now: [])
+
+    evidence = _probe(monkeypatch, client, wait_seconds=15)
+
+    assert evidence["delivered"] is True
+    assert evidence["replies"] == []
+    assert client.reads == [0, 2, 4, 6, 8, 10, 12, 14, 15]
+    assert clock.now == 15
+
+
+def test_generated_message_successive_replies_reset_the_quiet_window(monkeypatch):
+    clock = _virtual_clock(monkeypatch)
+    interim = _bot_message(11, "Working on it")
+    photo = _bot_message(12, "The cards", media=MessageMediaPhoto())
+    answer = _bot_message(13, "Your reading")
+    client = _message_bot(
+        clock, lambda now: [interim, photo, answer][: 1 + (now >= 2) + (now >= 4)]
+    )
+
+    evidence = _probe(monkeypatch, client, wait_seconds=60)
+
+    assert [reply["id"] for reply in evidence["replies"]] == [11, 12, 13]
+    assert evidence["replies"][1]["caption"] == "The cards"
+    assert evidence["replies"][1]["media_type"] == "MessageMediaPhoto"
+    assert client.reads == [0, 2, 4, 6, 7]
+
+
+def test_generated_message_edits_of_text_media_and_markup_reset_the_quiet_window(monkeypatch):
+    clock = _virtual_clock(monkeypatch)
+
+    def chat(now):
+        if now < 2:
+            return [_bot_message(11, "Loading")]
+        markup = ReplyInlineMarkup(
+            Row(KeyboardButtonCallback("Again" if now >= 6 else "More", b"more"))
+        )
+        if now < 4:
+            return [_bot_message(11, "The cards", media=MessageMediaPhoto())]
+        return [_bot_message(11, "The cards", media=MessageMediaPhoto(), markup=markup)]
+
+    client = _message_bot(clock, chat)
+
+    evidence = _probe(monkeypatch, client, wait_seconds=60)
+
+    (reply,) = evidence["replies"]
+    assert reply["caption"] == "The cards"
+    assert reply["reply_markup"]["buttons"][0]["text"] == "Again"
+    assert client.reads == [0, 2, 4, 6, 8, 9]
+
+
+def test_generated_message_does_not_collect_a_reply_after_a_completed_quiet_window(
+    monkeypatch,
+):
+    clock = _virtual_clock(monkeypatch)
+    interim = _bot_message(11, "Working on it")
+    answer = _bot_message(12, "Your reading")
+    client = _message_bot(clock, lambda now: [interim, answer] if now >= 10 else [interim])
+
+    evidence = _probe(monkeypatch, client, wait_seconds=15)
+
+    assert [reply["text"] for reply in evidence["replies"]] == ["Working on it"]
+    assert clock.now == 3
+
+
+def test_generated_message_short_wait_ends_before_the_quiet_window(monkeypatch):
+    clock = _virtual_clock(monkeypatch)
+    client = _message_bot(clock, lambda _now: [_bot_message(11, "One answer")])
+
+    evidence = _probe(monkeypatch, client, wait_seconds=1)
+
+    assert [reply["id"] for reply in evidence["replies"]] == [11]
+    assert client.reads == [0, 1]
+    assert clock.sleeps == [1]
+
+
+def test_generated_message_replies_changing_through_the_deadline_are_read_at_it(monkeypatch):
+    clock = _virtual_clock(monkeypatch)
+    client = _message_bot(
+        clock,
+        lambda now: [_bot_message(identifier, "tick") for identifier in range(11, 12 + int(now))],
+    )
+
+    evidence = _probe(monkeypatch, client, wait_seconds=5)
+
+    assert [reply["id"] for reply in evidence["replies"]] == list(range(11, 17))
+    assert client.reads == [0, 2, 4, 5]
+
+
+def test_generated_message_keeps_the_newest_replies_at_the_evidence_bound(monkeypatch):
+    clock = _virtual_clock(monkeypatch)
+    replies = [_bot_message(identifier, f"Reply {identifier}") for identifier in range(11, 23)]
+    client = _message_bot(clock, lambda _now: replies)
+
+    evidence = _probe(monkeypatch, client, wait_seconds=10)
 
     assert [reply["id"] for reply in evidence["replies"]] == list(range(13, 23))
+
+
+def test_generated_callback_replies_after_the_press_settle_before_the_deadline(monkeypatch):
+    clock = _virtual_clock(monkeypatch)
+    interim = _bot_message(10, "Working on it")
+    answer = _bot_message(11, "Your career reading")
+    client, original = _callback_bot(
+        clock,
+        pressed=lambda _now: original,
+        chat=lambda now: [interim, answer] if now >= 2 else [interim],
+    )
+
+    evidence = _press(monkeypatch, client, wait_seconds=10)
+
+    assert evidence["error"] is None
+    assert [reply["text"] for reply in evidence["replies"]] == [
+        "Working on it",
+        "Your career reading",
+    ]
+    assert client.reads == [0, 2, 4, 5]
+
+
+def test_generated_callback_edits_of_the_pressed_message_reset_the_quiet_window(monkeypatch):
+    clock = _virtual_clock(monkeypatch)
+    client, _original = _callback_bot(
+        clock,
+        pressed=lambda now: _bot_message(7, "Your career reading" if now >= 2 else "Working on it"),
+        chat=lambda _now: [],
+    )
+
+    evidence = _press(monkeypatch, client, wait_seconds=10)
+
+    assert evidence["error"] is None
+    assert evidence["replies"] == []
+    assert evidence["post_press_message"]["text"] == "Your career reading"
+    assert client.reads == [0, 2, 4, 5]
+
+
+@pytest.mark.parametrize("answer", [None, "Loading your reading"])
+def test_generated_callback_acknowledgement_alone_runs_to_the_deadline(monkeypatch, answer):
+    """An unchanged pressed message and a callback answer are not a bot response."""
+    clock = _virtual_clock(monkeypatch)
+    client, original = _callback_bot(
+        clock, pressed=lambda _now: original, chat=lambda _now: [], answer=answer
+    )
+
+    evidence = _press(monkeypatch, client, wait_seconds=10)
+
+    assert evidence["delivered"] is True
+    assert evidence["callback"] == {"text": answer, "alert": False, "url": None}
+    assert evidence["post_press_message"]["text"] == "Choose"
+    assert client.reads == [0, 2, 4, 6, 8, 10]
 
 
 def _install_telethon(monkeypatch, client, *, callback_request=None):

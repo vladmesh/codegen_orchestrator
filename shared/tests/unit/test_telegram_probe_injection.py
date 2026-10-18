@@ -62,7 +62,7 @@ class StringSession:
 import base64, os, time
 from telethon import record
 
-# Advance the child's clock to the validated one-second deadline before its
+# Put the child's clock at the validated one-second deadline right after its
 # first collection read. The security checks need one poll, not real sleep.
 _ticks = iter((0, 1))
 time.monotonic = lambda: next(_ticks)
