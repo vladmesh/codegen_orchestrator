@@ -1,12 +1,12 @@
 """API service configuration.
 
 Requires: DATABASE_URL, REDIS_URL, WORKER_MANAGER_URL, LK_JWT_SECRET,
-INTERNAL_API_KEY, DEFAULT_AGENT_TYPE
+INTERNAL_API_KEY, GITHUB_WEBHOOK_SECRET, DEFAULT_AGENT_TYPE
 """
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator
 
 from shared.config import (
     BaseSettings,
@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Internal service token — sent by workers, scheduler, langgraph as X-Internal-Key
     internal_api_key: str = internal_api_key_field()
 
+    # Signs GitHub webhook deliveries; a dedicated credential no other key derives.
+    github_webhook_secret: SecretStr = Field(alias="GITHUB_WEBHOOK_SECRET", repr=False)
+
     # Project creation resolves this at request time, so deployments can change
     # the developer-worker default without changing the PO request contract.
     default_agent_type: AgentType = default_agent_type_field()
@@ -48,6 +51,13 @@ class Settings(BaseSettings):
     # commas (e.g. `feeds=https://platform.example/feeds`). Core keeps no service
     # registry; empty shows none beyond the ones deployed products already use.
     platform_services: str = Field(default="", alias="PLATFORM_SERVICES")
+
+    @field_validator("github_webhook_secret")
+    @classmethod
+    def _refuse_blank_webhook_secret(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("GITHUB_WEBHOOK_SECRET must not be empty or whitespace")
+        return value
 
     def get_platform_services(self) -> dict[str, str]:
         """Parse the declared platform services into name → base URL."""

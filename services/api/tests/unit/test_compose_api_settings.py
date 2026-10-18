@@ -39,6 +39,7 @@ def test_api_compose_provides_required_worker_manager_connectivity(
         "WORKER_MANAGER_URL",
         "LK_JWT_SECRET",
         "INTERNAL_API_KEY",
+        "GITHUB_WEBHOOK_SECRET",
         "DEFAULT_AGENT_TYPE",
     ):
         monkeypatch.delenv(key, raising=False)

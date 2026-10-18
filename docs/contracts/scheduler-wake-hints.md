@@ -27,7 +27,7 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 | `lifecycle_supervision` | api Run update `PATCH /runs/{id}` on the first typed success of an ordinary story deploy | scheduler-pipeline `lifecycle_supervision` loop |
 | `temporary_access` | api Run update `PATCH /runs/{id}` on the first readback proof of a temporary-access grant or revoke operation, and on a QA Run's first terminal state | scheduler-pipeline `temporary_access` loop |
 | `qa_routing` | api Run update `PATCH /runs/{id}` on a story-scoped QA Run's first terminal state | scheduler-pipeline `qa_routing` loop |
-| `pr_ci` | api Story transition `POST /stories/{id}/pr_review` | scheduler-pipeline `pr_ci` loop |
+| `pr_ci` | api Story transition `POST /stories/{id}/pr_review`; api GitHub receiver `POST /api/webhooks/github` on a signed `workflow_run` completion | scheduler-pipeline `pr_ci` loop |
 
 ## Producers
 
@@ -184,10 +184,51 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - A Redis or socket error on publish is logged as `pr_ci_wake_failed` with the story id and the
   error type only; the committed transition and its response are unchanged. Cancellation
   propagates. There is no retry.
-- Every GitHub-side change still waits for the interval: CI completing with success or failure, a
-  PR becoming mergeable, behind or conflicted, a merge, and the published images of a merge
-  commit. No authenticated ingress for GitHub events exists, so this loop receives no hint from
-  GitHub.
+- The [GitHub receiver](#github-workflow-completion) publishes one `pr_ci` hint for each signed
+  `workflow_run` completion it accepts. Every other GitHub-side change still waits for the
+  interval: a PR becoming mergeable, behind or conflicted, a merge, and the published images of a
+  merge commit, as does every completion that receiver never gets.
+
+### GitHub workflow completion
+
+- `POST /api/webhooks/github` is the one route the API's application gate leaves to its handler
+  besides the anonymous ones. The handler authenticates every delivery by its own signature; a
+  valid `X-Internal-Key` or LK bearer on the request changes nothing.
+- The body is read as a stream and refused with 413 once it passes 1 MiB (1,048,576 bytes),
+  whatever `Content-Length` says. Exactly one `X-Hub-Signature-256` header of `sha256=` and 64 hex
+  digits must equal the HMAC-SHA256 of the unchanged body bytes under `GITHUB_WEBHOOK_SECRET`,
+  compared with `hmac.compare_digest` before any parsing; a missing, malformed, repeated or
+  mismatching signature is a 403 that publishes nothing.
+- An authenticated delivery must have a single `Content-Type` of `application/json`, optionally
+  with `charset=utf-8`, or it is a 415. Its body must be a UTF-8 JSON object and it must carry one
+  `X-GitHub-Event` header, or it is a 400. A signed `ping` and every other event are answered 204
+  and publish nothing.
+- A `workflow_run` delivery's `action` must be a string. For `completed`, `workflow_run` must be an
+  object with a positive integer `id` and `status` `completed` (`GitHubWorkflowRunCompleted` in
+  `services/api/src/schemas/github_webhook.py`); otherwise it is a 400. Every other member is
+  ignored, so GitHub may add fields. A valid completion of any conclusion publishes one `pr_ci`
+  hint and is answered 204; every other action is answered 204 and publishes nothing.
+- The payload is never business evidence. Its PR, branch, SHA, repository, installation and
+  conclusion select no record and authorize no merge, deploy or fix; the route writes nothing, calls
+  no scheduler code and fetches nothing from GitHub. The awakened sweep reads current Story, PR,
+  check and image state as it does on its interval.
+- There is no delivery ledger: a replayed, duplicated or reordered completion publishes again and
+  the loop's Event coalesces it, and a delivery that never arrives waits for the interval.
+- Refusal bodies carry a fixed `detail` only. A refusal is logged as `github_webhook_refused` with a
+  server-owned `reason` and the status code, an ignored delivery as `github_webhook_ignored` with a
+  server-owned `event_kind`; no header, payload, signature or exception text is logged or echoed.
+- Publication uses the same best-effort publisher with `source=github_workflow_run`: a Redis or
+  socket error is logged as `pr_ci_wake_failed` with the error type only and the delivery is still
+  answered 204, so GitHub does not redeliver a hint the interval covers. Zero receivers is a
+  published hint. Cancellation propagates. There is no retry.
+- No GitHub delivery reaches this route yet. Activation needs, in order: a random secret generated
+  and provisioned as `GITHUB_WEBHOOK_SECRET` (for example `openssl rand -hex 32`, held only in the
+  deployment secret store); the deploy workflow writing it into the API's environment, without
+  which the API refuses to start; public HTTPS routing of exactly `POST /api/webhooks/github` to the
+  API that preserves the body and headers; the GitHub App's webhook URL and that secret, its
+  `workflow_run` event subscription and its Actions read permission; and evidence of a delivery
+  answered 204 followed by an awakened `pr_ci` sweep. To disable it, remove the route from the
+  public proxy or the App's subscription; the interval sweep keeps recovering every completion.
 
 ## Listener
 

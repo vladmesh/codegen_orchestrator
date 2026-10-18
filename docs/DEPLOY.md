@@ -296,7 +296,8 @@ that names no user is unrestricted, as before. `resolve_actor` in
 
 Without the key or an explicitly authorized LK bearer, nothing reaches a handler: every route
 except `GET /`, `GET /health` and `POST /api/lk/auth/token` is closed by
-`require_authenticated_caller`. `X-Internal-Key` may enter the authenticated service surface;
+`require_authenticated_caller`; `POST /api/webhooks/github` is left to its handler, which requires
+a GitHub signature instead. `X-Internal-Key` may enter the authenticated service surface;
 an LK bearer may enter only routes that declare a second bearer-aware owner/admin/current-user
 dependency. Routes without one are internal-only by default. So the key is required by internal
 services such as `make seed`, the scripts under `infra/scripts/` and the admin frontend's nginx
@@ -381,6 +382,11 @@ either `openrouter_balance` (the balance and whether an alert was sent) or
 | `GH_APP_PRIVATE_KEY` | GitHub App private key PEM (written to `/opt/secrets/github_app.pem`) |
 | `GH_ORG` | GitHub organization name |
 | `GHCR_TOKEN` | GitHub token with `packages:read` scope (for pulling worker images) |
+| `GITHUB_WEBHOOK_SECRET` | Random secret GitHub signs webhook deliveries with; required by the API, which refuses to start without a nonblank value. No other key derives it |
+
+The deploy workflow does not write `GITHUB_WEBHOOK_SECRET` into the server `.env` yet, so a
+deploy of the API needs that wiring and the provisioned secret first. Activation of the webhook is
+described in [GitHub workflow completion](contracts/scheduler-wake-hints.md#github-workflow-completion).
 
 `GH_ORG` is the name of the *secret* only. The rename stopped at the secret: the deploy workflow
 writes it into the server `.env` as `GITHUB_ORG=${{ secrets.GH_ORG }}`

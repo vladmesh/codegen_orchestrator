@@ -350,6 +350,10 @@ ANONYMOUS_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # its caller has nothing to authenticate with yet. The one-time token in
         # the body is the secret, and the handler verifies it against Redis.
         ("POST", "/api/lk/auth/token"),
+        # GitHub cannot hold our credentials. The handler authenticates every
+        # delivery by its HMAC signature over the raw body, and an internal key
+        # or bearer on the request never stands in for that signature.
+        ("POST", "/api/webhooks/github"),
     }
 )
 

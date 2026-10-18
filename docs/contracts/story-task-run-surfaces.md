@@ -230,6 +230,7 @@ completed result.
 | System config | `services/api/src/schemas/system_config.py` | corresponding API routers | API-local system-config payloads are not shared DTOs |
 | Telegram binding | `shared/contracts/dto/telegram.py` | `routers/projects.py` | token binding is fail-closed and stores the verified bot identity |
 | API analytics payloads | `services/api/src/schemas/analytics.py` | `routers/analytics.py` | these API-local models have no shared duplicate |
+| GitHub `workflow_run` delivery | `services/api/src/schemas/github_webhook.py` | `routers/github_webhooks.py` | a minimal projection of GitHub's payload read only after its HMAC signature verifies; it selects no record and only wakes the `pr_ci` loop, see [GitHub workflow completion](scheduler-wake-hints.md#github-workflow-completion) |
 | Promo-code and port allocation payloads | `services/api/src/schemas/promo_code.py`, `schemas/port_allocation.py` | promo-code and allocation routes | route ownership determines admission and visibility |
 
 ### Shared DTO foundations

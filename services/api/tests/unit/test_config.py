@@ -58,3 +58,30 @@ def test_blank_internal_api_key_is_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="INTERNAL_API_KEY"):
         Settings(_env_file=None)
+
+
+def test_missing_github_webhook_secret_is_rejected(monkeypatch):
+    """Webhook authentication has no disabled mode: a missing secret fails startup."""
+    monkeypatch.delenv("GITHUB_WEBHOOK_SECRET", raising=False)
+
+    with pytest.raises(ValueError, match="GITHUB_WEBHOOK_SECRET"):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("value", ["", " ", "\t\n "])
+def test_blank_github_webhook_secret_is_rejected(monkeypatch, value):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", value)
+
+    with pytest.raises(ValueError, match="GITHUB_WEBHOOK_SECRET"):
+        Settings(_env_file=None)
+
+
+def test_github_webhook_secret_is_masked_outside_verification(monkeypatch):
+    value = "synthetic-webhook-signing-value"
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.github_webhook_secret.get_secret_value() == value
+    for rendered in (repr(settings), str(settings), settings.model_dump_json()):
+        assert value not in rendered
