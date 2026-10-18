@@ -2,14 +2,11 @@
 
 import uuid
 
-from _api_calls import call_api
+from _api_calls import call_api, committed_run_outcome
 from httpx import AsyncClient
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
-from shared.models import Run
 
 ROUTING_AND_CLEANUP = [SchedulerWakeTarget.QA_ROUTING, SchedulerWakeTarget.TEMPORARY_ACCESS]
 CLEANUP = [SchedulerWakeTarget.TEMPORARY_ACCESS]
@@ -84,12 +81,6 @@ async def _running_qa_run(client: AsyncClient, *, story: bool) -> str:
     return run_id
 
 
-async def _committed(db_engine, run_id: str) -> tuple[str, dict | None]:
-    async with AsyncSession(db_engine) as session:
-        row = (await session.execute(select(Run.status, Run.result).where(Run.id == run_id))).one()
-        return row.status, row.result
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("terminal", "late"), TERMINAL_WRITES)
 async def test_the_first_terminal_state_publishes_routing_and_cleanup_after_its_commit(
@@ -102,12 +93,12 @@ async def test_the_first_terminal_state_publishes_routing_and_cleanup_after_its_
 
     assert await wake_hints.published() == ROUTING_AND_CLEANUP
     committed = (terminal["status"], terminal.get("result"))
-    assert await _committed(db_engine, run_id) == committed
+    assert await committed_run_outcome(db_engine, run_id) == committed
 
     await call_api(async_client, "PATCH", f"/api/runs/{run_id}", json=terminal)
     await call_api(async_client, "PATCH", f"/api/runs/{run_id}", 409, json=late)
     assert await wake_hints.published() == []
-    assert await _committed(db_engine, run_id) == committed
+    assert await committed_run_outcome(db_engine, run_id) == committed
 
 
 @pytest.mark.asyncio
@@ -121,7 +112,10 @@ async def test_a_storyless_qa_run_publishes_only_its_cleanup_hint(
     await call_api(async_client, "PATCH", f"/api/runs/{run_id}", json=terminal)
 
     assert await wake_hints.published() == CLEANUP
-    assert await _committed(db_engine, run_id) == (terminal["status"], terminal.get("result"))
+    assert await committed_run_outcome(db_engine, run_id) == (
+        terminal["status"],
+        terminal.get("result"),
+    )
 
     await call_api(async_client, "PATCH", f"/api/runs/{run_id}", 409, json=late)
     assert await wake_hints.published() == []

@@ -2,16 +2,13 @@
 
 import uuid
 
-from _api_calls import call_api
+from _api_calls import call_api, committed_run_outcome
 from httpx import AsyncClient
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.run_result import DeployRunResult, DeploySkipReason
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
-from shared.models import Run
 
 TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 LIFECYCLE_SUPERVISION = [SchedulerWakeTarget.LIFECYCLE_SUPERVISION]
@@ -65,12 +62,6 @@ async def _succeed(client: AsyncClient, run_id: str) -> dict:
     )
 
 
-async def _committed(db_engine, run_id: str) -> tuple[str, dict | None]:
-    async with AsyncSession(db_engine) as session:
-        row = (await session.execute(select(Run.status, Run.result).where(Run.id == run_id))).one()
-        return row.status, row.result
-
-
 @pytest.mark.asyncio
 async def test_the_first_success_publishes_one_hint_after_its_proof_committed(
     async_client, _tasks_project, wake_hints, db_engine
@@ -81,7 +72,7 @@ async def test_the_first_success_publishes_one_hint_after_its_proof_committed(
     await _succeed(async_client, run_id)
 
     assert await wake_hints.published() == LIFECYCLE_SUPERVISION
-    assert await _committed(db_engine, run_id) == ("completed", SUCCESS)
+    assert await committed_run_outcome(db_engine, run_id) == ("completed", SUCCESS)
 
     await _succeed(async_client, run_id)
     await call_api(
@@ -104,7 +95,7 @@ async def test_a_late_success_of_a_cancelled_deploy_publishes(
     await call_api(async_client, "PATCH", f"/api/runs/{run_id}", json={"result": SUCCESS})
 
     assert await wake_hints.published() == LIFECYCLE_SUPERVISION
-    assert await _committed(db_engine, run_id) == ("cancelled", SUCCESS)
+    assert await committed_run_outcome(db_engine, run_id) == ("cancelled", SUCCESS)
 
 
 @pytest.mark.asyncio
@@ -126,7 +117,7 @@ async def test_storyless_and_temporary_access_successes_publish_nothing(
     await _succeed(async_client, run_id)
 
     assert await wake_hints.published() == []
-    assert await _committed(db_engine, run_id) == ("completed", SUCCESS)
+    assert await committed_run_outcome(db_engine, run_id) == ("completed", SUCCESS)
 
 
 @pytest.mark.asyncio
@@ -140,7 +131,7 @@ async def test_a_proved_storyless_operation_publishes_one_temporary_access_hint(
     await _succeed(async_client, run_id)
 
     assert await wake_hints.published() == TEMPORARY_ACCESS
-    assert await _committed(db_engine, run_id) == ("completed", SUCCESS)
+    assert await committed_run_outcome(db_engine, run_id) == ("completed", SUCCESS)
 
     await _succeed(async_client, run_id)
     await call_api(
@@ -178,4 +169,4 @@ async def test_an_unproved_or_unbound_operation_success_publishes_nothing(
     await call_api(async_client, "PATCH", f"/api/runs/{run_id}", json=update)
 
     assert await wake_hints.published() == []
-    assert await _committed(db_engine, run_id) == ("completed", update["result"])
+    assert await committed_run_outcome(db_engine, run_id) == ("completed", update["result"])
