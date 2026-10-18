@@ -105,6 +105,41 @@ def _require_live_lease(claim: DeployDispatchClaim | None, moment: datetime) -> 
     )
 
 
+async def fence_active_deploys(
+    github: GitHubAppClient,
+    owner: str,
+    repo: str,
+    project_id: str,
+    deploy_fence: DeployFence,
+) -> list[int]:
+    """Stop every deploy run that could still write what the caller replaces.
+
+    The project deploy lock only serialises consumers, and it expires; a GitHub
+    Actions run it started does not stop when it does. GitHub is asynchronous, so
+    a dispatch already in flight can still be accepted afterwards: whoever needs
+    an old value gone confirms that by reading the deployed service. An unproven
+    stop raises `DeployFenceUnprovenError` rather than allowing a claim of removal.
+    """
+    await deploy_fence.ensure_held(DeployWrite.WORKFLOW_FENCE)
+    try:
+        fenced = await github.fence_workflow(owner, repo, DEPLOY_WORKFLOW)
+    except Exception as e:
+        if type(e).__name__ not in _CANCELLATION_ERRORS:
+            raise
+        raise DeployFenceUnprovenError(
+            f"an earlier {DEPLOY_WORKFLOW} run in {owner}/{repo} could not be proven stopped: {e}"
+        ) from e
+    if fenced:
+        logger.info(
+            "deploy_fenced_active_runs",
+            project_id=project_id,
+            owner=owner,
+            repo=repo,
+            run_ids=fenced,
+        )
+    return fenced
+
+
 async def _create_deployment_record(
     project_id: str,
     service_name: str,
@@ -375,49 +410,6 @@ class DeployerNode(FunctionalNode):
             )
             return e
         return None
-
-    async def _fence_active_deploys(
-        self,
-        github: GitHubAppClient,
-        owner: str,
-        repo: str,
-        project_id: str,
-        deploy_fence: DeployFence,
-    ) -> list[int]:
-        """Stop every deploy run that could still write the payload this one replaced.
-
-        The project deploy lock only serialises consumers, and it expires; the
-        GitHub Actions run it started does not stop when it does. So a deploy that
-        exists to remove a value stops the runs that can still write the old one:
-        called after the new payload is in the repository secrets, it covers the
-        runs that already read the old payload, while the write itself covers
-        everything created afterwards.
-
-        Together they make the window small, not empty. GitHub is asynchronous
-        and not ours, so a dispatch already in flight can still be accepted after
-        all of this. Whoever needs the old value gone confirms that by reading
-        the deployed service; this only shortens the wait. An unproven stop
-        refuses the deploy rather than reporting a removal it cannot claim.
-        """
-        await deploy_fence.ensure_held(DeployWrite.WORKFLOW_FENCE)
-        try:
-            fenced = await github.fence_workflow(owner, repo, DEPLOY_WORKFLOW)
-        except Exception as e:
-            if type(e).__name__ not in _CANCELLATION_ERRORS:
-                raise
-            raise DeployFenceUnprovenError(
-                f"an earlier {DEPLOY_WORKFLOW} run in {owner}/{repo} could not be proven "
-                f"stopped: {e}"
-            ) from e
-        if fenced:
-            logger.info(
-                "deploy_fenced_active_runs",
-                project_id=project_id,
-                owner=owner,
-                repo=repo,
-                run_ids=fenced,
-            )
-        return fenced
 
     async def _dispatch_and_wait(
         self,
@@ -797,7 +789,7 @@ class DeployerNode(FunctionalNode):
             # removal by reading the deployed service.
             if state.get("fence_active_deploys"):
                 try:
-                    await self._fence_active_deploys(github, owner, repo, project_id, deploy_fence)
+                    await fence_active_deploys(github, owner, repo, project_id, deploy_fence)
                 except DeployRefusedError as e:
                     logger.error(
                         "deploy_fence_unproven",

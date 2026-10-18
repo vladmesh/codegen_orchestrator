@@ -26,13 +26,11 @@ import pytest
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.dto.product_brief import InitialSetting, ProductBriefContent
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.temporary_access import TemporaryAccessStatus
 from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY, GrantIntent, GrantIntentKind
 from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
 from src.clients.product_settings import SettingSeedProof
 from src.clients.users_grant import GrantProof
 from src.deploy_fence import DeployFence, DeployFenceLost, DeployWrite
-from tests.unit.deploy_fences import held_deploy_fence
 from tests.unit.factories import (
     make_product_brief,
     make_project,
@@ -673,57 +671,3 @@ async def test_two_claims_of_one_job_never_share_a_token():
         await first.ensure_held(DeployWrite.RUN_STATE)
     await first.release()
     assert await redis.get(second.lock_key) == second.token
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["grant", "revoke"])
-async def test_no_temporary_access_operation_is_made_after_the_lock_is_lost(monkeypatch, operation):
-    """A QA capability redeploy writes the identity's access only under its lock."""
-    from src.consumers.deploy_result_handler import _handle_deploy_success
-    from tests.unit.consumers.test_deploy_routing import _make_deploy_msg, _temporary_grant
-
-    grant = (
-        _temporary_grant()
-        if operation == "grant"
-        else _temporary_grant(
-            status=TemporaryAccessStatus.REVOKING, revoke_run_id="temporary-access-grant-1"
-        )
-    )
-    fence = held_deploy_fence(project_id="proj-1", task_id=grant.grant_run_id)
-    loss = LockLoss(DeployWrite.PRODUCT_ACCESS)
-    loss.install(monkeypatch)
-
-    with (
-        patch("src.consumers.deploy_result_handler.api_client") as api,
-        patch("src.consumers.deploy_result_handler.GeneratedServiceGrantClient") as client,
-        pytest.raises(DeployFenceLost),
-    ):
-        api.get_temporary_access_grant = AsyncMock(return_value=grant)
-        api.patch = AsyncMock()
-        await _handle_deploy_success(
-            result={
-                "deployed_url": grant.target_base_url,
-                "secret_values": {"USERS_GRANT_CAPABILITY": "capability"},
-            },
-            smoke_result=None,
-            task_id=grant.grant_run_id,
-            project_id="proj-1",
-            project=make_project(),
-            callback_stream="",
-            telegram_chat_id="",
-            story_id="",
-            redis=AsyncMock(),
-            msg=_make_deploy_msg(task_id=grant.grant_run_id),
-            fence=fence,
-            application_id=grant.target_application_id,
-            temporary_access_grant=grant,
-            temporary_access_operation=operation,
-        )
-
-    assert loss.fired
-    # The grant was re-read first; the remote grant or revoke was never made.
-    api.get_temporary_access_grant.assert_awaited_once_with(grant.id)
-    client.return_value.grant_and_resolve.assert_not_called()
-    client.return_value.revoke_and_resolve.assert_not_called()
-    api.patch.assert_not_awaited()
-    assert await fence.redis.get(fence.lock_key) == OTHER_DEPLOY

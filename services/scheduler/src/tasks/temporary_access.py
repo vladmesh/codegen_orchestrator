@@ -234,13 +234,10 @@ async def _publish_operation(
     *,
     fence_active_deploys: bool = False,
 ) -> None:
-    """Redeploy the running artifact to write or take away the QA capability.
+    """Queue one grant or revoke operation Run for the deploy consumer.
 
-    The grant records the story commit it belongs to; what has to be redeployed
-    is the artifact the target is running, and only the target's own deployment
-    record says which commit that is. Reading it here rather than reusing
-    `grant.head_sha` is the difference between redeploying the same images and
-    asking for images of a commit whose CI never published any.
+    The consumer calls the target's users-core capability directly. The message
+    also names the commit the target's own deployment record says it runs.
     """
     deployed_commit_sha = await api_client.latest_deployed_commit_sha(grant.target_application_id)
     if not deployed_commit_sha:

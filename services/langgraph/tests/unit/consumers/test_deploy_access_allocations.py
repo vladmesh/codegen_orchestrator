@@ -2,9 +2,7 @@
 
 These drive `process_deploy_job` end to end against the real allocation code in
 `src.allocations`, backed by an in-memory allocation table instead of the API.
-What the table ends up holding is the assertion: on 2026-09-25 a QA revoke that
-arrived after the suite undeployed its target re-created all four ports, failed
-its precheck, and left the application owning allocations nothing runs on.
+What the table ends up holding is the assertion.
 
 The allocations read are always those of the grant's recorded target
 application. A repository can hold one application per server, and the product
@@ -29,6 +27,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessStatus,
 )
 from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
+from shared.crypto import encrypt_dict
 from tests.unit.factories import (
     make_project,
     make_repository,
@@ -232,7 +231,13 @@ def deploy_api():
         api.get_run = AsyncMock(return_value=make_run(id=TASK_ID))
         api.start_run = AsyncMock(return_value=make_run_start(run_id=TASK_ID))
         api.get_project = AsyncMock(
-            return_value=make_project(config={"modules": ["backend"], "estimated_ram_mb": 512})
+            return_value=make_project(
+                config={
+                    "modules": ["backend"],
+                    "estimated_ram_mb": 512,
+                    "secrets": encrypt_dict({"USERS_GRANT_CAPABILITY": "capability-value"}),
+                }
+            )
         )
         api.get_primary_repository = AsyncMock(
             return_value=make_repository(id=REPO_ID, git_url="https://github.com/org/p")
@@ -293,7 +298,8 @@ async def _process(table: AllocationTable, redis, deploy_api, action: str = "fea
     with (
         patch("src.allocations.api_client", table),
         patch("src.allocations.get_settings", return_value=settings),
-        patch("src.consumers.deploy_result_handler.GeneratedServiceGrantClient") as client,
+        patch("src.consumers.temporary_access_operation.api_client", deploy_api),
+        patch("src.consumers.temporary_access_operation.GeneratedServiceGrantClient") as client,
     ):
         client.return_value.grant_and_resolve = AsyncMock(
             return_value=SimpleNamespace(active=True, failure=None)
@@ -354,7 +360,7 @@ async def test_grant_without_deployment_fails_through_grant_failure_without_allo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["grant", "revoke"])
-async def test_access_operation_on_a_deployment_reads_its_allocations_and_proceeds(
+async def test_access_operation_on_a_deployment_reads_its_allocations_and_calls_the_product(
     redis, deploy_api, precheck, devops, operation
 ):
     _use_access_operation(deploy_api, operation)
@@ -367,13 +373,13 @@ async def test_access_operation_on_a_deployment_reads_its_allocations_and_procee
 
     assert table.allocations == _deployed_allocations()
     table.allocate_next_port.assert_not_awaited()
-    precheck.assert_awaited_once()
-    allocated_resources = precheck.await_args.args[0]
-    assert sorted(entry["port"] for entry in allocated_resources.values()) == [8000, 8001, 8002]
-    devops.return_value.ainvoke.assert_awaited_once()
+    table.get_application_allocations.assert_awaited_once_with(TARGET_APPLICATION_ID)
+    precheck.assert_not_awaited()
+    devops.assert_not_called()
     assert result["status"] == "success"
     [recorded] = _run_patches(deploy_api)
     assert recorded["status"] == RunStatus.COMPLETED.value
+    assert recorded["result"]["application_id"] == TARGET_APPLICATION_ID
 
 
 @pytest.mark.asyncio
@@ -415,13 +421,12 @@ async def test_revoke_of_a_deployed_target_ignores_an_undeployed_sibling_listed_
     result = await _process(table, redis, deploy_api)
 
     table.get_application_allocations.assert_awaited_once_with(TARGET_APPLICATION_ID)
-    precheck.assert_awaited_once()
-    allocated_resources = precheck.await_args.args[0]
-    assert {entry["application_id"] for entry in allocated_resources.values()} == {
-        TARGET_APPLICATION_ID
-    }
-    devops.return_value.ainvoke.assert_awaited_once()
+    precheck.assert_not_awaited()
+    devops.assert_not_called()
+    assert result["status"] == "success"
     assert result.get("reason") != "not_deployed"
+    [recorded] = _run_patches(deploy_api)
+    assert recorded["result"]["application_id"] == TARGET_APPLICATION_ID
     table.allocate_next_port.assert_not_awaited()
 
 

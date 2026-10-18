@@ -201,26 +201,39 @@ older active deploys instead of allowing an earlier run to restore the value.
 Canonical contracts: `dto/temporary_access.py` and `dto/qa_ssh_grant.py`.
 
 Persist the immutable QA identity and exact deployed-service target before the
-capability operation is dispatched. The post-health deploy worker resolves the
-generated capability only in `secret_values`, then proves grant or revoke with
-the matching access readback. A grant or revoke only ever acts on an existing
-deployment of the grant's recorded `target_application_id`: the deploy consumer
-reads that application's allocations and never creates any
-(`existing_application_allocations`), and never asks the repository for "its"
-application, since a repository can hold one per server. When the target exists
-and holds no allocations it is not deployed: a revoke completes `SUCCESS` with
-no precheck, SSH or DevOps run, because the access went with the deployment, and
-the reconciler closes the grant as for any proved revoke; a grant fails
-`owner_access_proof_failed` through the ordinary grant retry. A grant, target or
-allocation set that cannot be read fails either operation closed with
-`owner_access_proof_failed`, never as that proof. Both target columns are NOT NULL: every record has
+capability operation is dispatched. The operation is a DEPLOY Run whose metadata
+names the grant and `grant` or `revoke`; the deploy consumer validates it after
+the deploy-lock claim and handles it before any product deploy preparation:
+malformed or conflicting access metadata (a grant intent, a lifecycle action)
+fails `owner_access_proof_failed` and never falls through to a product deploy.
+It deploys nothing: no checkout, environment contract, secret generation or
+persistence, GitHub secret or workflow dispatch, SSH, smoke, settings seeding or
+`service_deployments` row. It reads only the grant's recorded
+`target_application_id` and that application's existing allocations
+(`existing_application_allocations`), never the repository's "its" application,
+since a repository can hold one per server. When the target exists and holds no
+allocations it is not deployed: a revoke completes `SUCCESS`, because the access
+went with the deployment, and a grant fails `owner_access_proof_failed` through
+the ordinary grant retry. A grant, target or allocation set that cannot be read
+fails either operation closed with `owner_access_proof_failed`, never as that
+proof. For a deployed target the consumer decrypts the project's stored
+`USERS_GRANT_CAPABILITY` in memory, re-reads the record, requires its project,
+target, identity, head SHA, in-flight status and own Run id, checks the deploy
+lock with nothing awaited before the product call, and calls only the target
+base URL's `/users/grant` or `/users/revoke` and `/users/access` readback. A
+grant needs the identity active, a revoke inactive with no proof failure; an
+absent or undecryptable capability, a refusal or an unverified readback fails
+`owner_access_proof_failed` with a bounded reason and never mints a capability.
+A cleanup whose message carries `fence_active_deploys` first proves every
+unfinished `deploy.yml` run of the repository stopped (`fence_active_deploys`
+in the deployer module) and fails the same way when it cannot, since the deploy
+lock does not stop a GitHub run already dispatched by an earlier grant.
+Both target columns are NOT NULL: every record has
 a target. The target lock and partial unique index scope contention to
 `(project_id, target_application_id)`.
 Cancelled deploy-lock or fence operations are redispatched against their stored
 target without consuming a grant or revoke proof budget; failed, missing, and
-stale operations remain independently bounded. Immediately before either remote
-operation, the executor re-reads the record and requires its own Run id and
-matching in-flight state. Recovery changes that durable operation authority
+stale operations remain independently bounded. Recovery changes that durable operation authority
 before withdrawing the predecessor and dispatching fenced cleanup, so a delayed
 grant cannot restore access after revoke proof. Cancelled revoke redispatches
 retain their attempt budget only before the absolute unrevoked deadline.
