@@ -534,8 +534,8 @@ async def _recover_catalog_installs(api_client):
             logger.exception("catalog_install_recovery_observation_failed", task_id=running.id)
 
 
-async def task_dispatcher_loop() -> None:
-    """Periodically dispatch admitted engineering tasks."""
+async def task_dispatcher_loop(*, wake: asyncio.Event) -> None:
+    """Periodically dispatch admitted engineering tasks, early when `wake` is set."""
     from ..clients.api import api_client
 
     async def cycle(redis_client: RedisStreamClient) -> dict[str, object]:
@@ -553,4 +553,5 @@ async def task_dispatcher_loop() -> None:
         stopped_event="task_dispatcher_stopped",
         redis_factory=RedisStreamClient,
         sleep=asyncio.sleep,
+        wake=wake,
     )

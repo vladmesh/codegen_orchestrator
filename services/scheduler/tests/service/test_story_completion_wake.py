@@ -132,14 +132,11 @@ async def test_an_api_done_transition_sweeps_its_story_before_the_backstop(api_c
     monkeypatch.setattr(story_completion_loop, "complete_stories", observed_cycle)
     story_id, task_id = await _story_with_task_in_dev(api_client, repo_name)
 
-    wake = asyncio.Event()
+    wakes = {target: asyncio.Event() for target in SchedulerWakeTarget}
+    wake = wakes[SchedulerWakeTarget.STORY_COMPLETION]
     observer = RedisStreamClient(os.environ["REDIS_URL"])
     await observer.connect()
-    listener = asyncio.create_task(
-        scheduler_wake_listener.scheduler_wake_listener(
-            {SchedulerWakeTarget.STORY_COMPLETION: wake}
-        )
-    )
+    listener = asyncio.create_task(scheduler_wake_listener.scheduler_wake_listener(wakes))
     loop = None
     try:
         await _subscribed(observer)

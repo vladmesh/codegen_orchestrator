@@ -30,6 +30,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
+from redis.exceptions import RedisError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,11 +65,19 @@ from shared.contracts.dto.story_planning import (
     failed_record,
     planned_record,
 )
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.models import ProductBrief, Project, RequirementCoverage, Story, Task
 from shared.product_brief_text import render_full_brief_sections
+from shared.redis.client import RedisStreamClient
+from shared.redis.scheduler_wake import publish_scheduler_wake
 
 from ..database import get_async_session
-from ..dependencies import _optional_bearer_scheme, is_internal_service, require_service_actor
+from ..dependencies import (
+    _optional_bearer_scheme,
+    get_redis_client,
+    is_internal_service,
+    require_service_actor,
+)
 from ._product_brief_helpers import (
     attempt_heartbeat_is_fresh,
     load_brief_for_update,
@@ -137,6 +146,26 @@ def _require_planning_subject(brief: ProductBrief) -> str:
             detail="planning requires a confirmed Product Brief bound to a story",
         )
     return brief.story_id
+
+
+async def _wake_task_dispatcher(brief_id: str, story_id: str, redis: RedisStreamClient) -> None:
+    """Hint the dispatcher once a release has committed; a lost hint waits for the interval."""
+    try:
+        receivers = await publish_scheduler_wake(redis, SchedulerWakeTarget.TASK_DISPATCHER)
+    except (RedisError, OSError) as exc:
+        logger.warning(
+            "task_dispatcher_wake_failed",
+            brief_id=brief_id,
+            story_id=story_id,
+            error_type=type(exc).__name__,
+        )
+        return
+    logger.info(
+        "task_dispatcher_wake_published",
+        brief_id=brief_id,
+        story_id=story_id,
+        receivers=receivers,
+    )
 
 
 def _must_requirement_ids(brief: ProductBrief) -> set[str]:
@@ -706,6 +735,7 @@ async def admit_product_brief_coverage(
     db: AsyncSession = Depends(get_async_session),
     internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+    redis: RedisStreamClient = Depends(get_redis_client),
 ) -> ProductBriefAdmissionRead:
     """Cross the coverage-to-dispatch boundary once, in one transaction.
 
@@ -717,7 +747,8 @@ async def admit_product_brief_coverage(
 
     The admission that releases the plan also records the story's `planned`
     outcome with the LLM channels the command names, in the same transaction:
-    a released plan always says which channel planned it.
+    a released plan always says which channel planned it. Once that transaction
+    has committed a nonempty release, the task dispatcher is woken.
     """
     brief = await load_brief_for_update(brief_id, db)
     await _authorize(brief.project_id, x_telegram_id, db, internal, credentials)
@@ -840,6 +871,8 @@ async def admit_product_brief_coverage(
             now=brief.coverage_admitted_at,
         ).model_dump(mode="json")
     await db.commit()
+    if released:
+        await _wake_task_dispatcher(brief.id, story_id, redis)
     await db.refresh(brief)
     logger.info(
         "product_brief_admitted",

@@ -31,6 +31,7 @@ from shared.contracts.dto.product_brief import (
     ProductBriefAdmissionOutcome,
     ProductBriefPlanningAttemptOutcome,
 )
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.models import ProductBrief, RequirementCoverage, Task
 
 BRIEFS_URL = "/api/product-briefs"
@@ -208,7 +209,7 @@ async def _go_stale(db_session: AsyncSession, brief_id: str) -> None:
 
 @pytest.mark.asyncio
 async def test_admitting_twice_releases_the_plan_exactly_once(
-    async_client: AsyncClient, db_session: AsyncSession
+    async_client: AsyncClient, db_session: AsyncSession, wake_hints
 ):
     """A retry of a succeeded admission is a replay, not a second release."""
     project_id = await _project(async_client, await _owner(async_client))
@@ -226,6 +227,7 @@ async def test_admitting_twice_releases_the_plan_exactly_once(
     assert first.status_code == HTTPStatus.OK, first.text
     assert first.json()["outcome"] == ProductBriefAdmissionOutcome.ADMITTED
     assert sorted(first.json()["released_task_ids"]) == sorted([first_task, second_task])
+    assert await wake_hints.published() == [SchedulerWakeTarget.TASK_DISPATCHER]
 
     second = await _admit(async_client, brief_id, attempt)
     assert second.status_code == HTTPStatus.OK, second.text
@@ -233,16 +235,21 @@ async def test_admitting_twice_releases_the_plan_exactly_once(
     # Nothing released twice, and the boundary keeps the instant it was crossed.
     assert second.json()["released_task_ids"] == []
     assert second.json()["coverage_admitted_at"] == first.json()["coverage_admitted_at"]
+    assert await wake_hints.published() == []
 
     for task_id in (first_task, second_task):
         task = await db_session.get(Task, task_id)
         await db_session.refresh(task)
         assert task.dispatch_admitted is True
+    brief = await db_session.get(ProductBrief, brief_id)
+    await db_session.refresh(brief)
+    assert brief.coverage_admitted_at is not None
+    assert brief.planning_attempt_active is False
 
 
 @pytest.mark.asyncio
 async def test_an_incomplete_brief_names_its_missing_requirements_and_releases_nothing(
-    async_client: AsyncClient, db_session: AsyncSession
+    async_client: AsyncClient, db_session: AsyncSession, wake_hints
 ):
     """An undisposed requirement is a gap, and the answer says which one."""
     project_id = await _project(async_client, await _owner(async_client))
@@ -258,6 +265,7 @@ async def test_an_incomplete_brief_names_its_missing_requirements_and_releases_n
     assert answer.json()["outcome"] == ProductBriefAdmissionOutcome.INCOMPLETE
     assert answer.json()["missing_requirement_ids"] == ["r2"]
     assert answer.json()["released_task_ids"] == []
+    assert await wake_hints.published() == []
     task = await db_session.get(Task, task_id)
     await db_session.refresh(task)
     assert task.dispatch_admitted is False
@@ -288,7 +296,7 @@ async def test_a_returned_requirement_is_a_disposition(async_client: AsyncClient
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("superseded", [False, True])
 async def test_fully_returned_taskless_plan_retries_the_same_confirmed_brief(
-    async_client: AsyncClient, db_session: AsyncSession, legacy: bool, superseded: bool
+    async_client: AsyncClient, db_session: AsyncSession, wake_hints, legacy: bool, superseded: bool
 ):
     project_id = await _project(async_client, await _owner(async_client))
     brief_id, story_id, attempt = await _planned_brief(async_client, project_id)
@@ -331,6 +339,7 @@ async def test_fully_returned_taskless_plan_retries_the_same_confirmed_brief(
         assert admitted.json()["released_task_ids"] == []
         replay = await _admit(async_client, brief_id, attempt)
         assert replay.json()["outcome"] == ProductBriefAdmissionOutcome.ALREADY_ADMITTED
+        assert await wake_hints.published() == []
     parked = await async_client.get(f"/api/stories/{story_id}")
     assert parked.json()["status"] == "waiting_human_review"
     assert parked.json()["planning"]["state"] == "parked"
@@ -491,7 +500,7 @@ async def test_a_fresh_claim_is_not_reissued_and_a_stale_one_is_taken_over(
 
 @pytest.mark.asyncio
 async def test_a_superseded_planner_can_neither_record_coverage_nor_admit(
-    async_client: AsyncClient, db_session: AsyncSession
+    async_client: AsyncClient, db_session: AsyncSession, wake_hints
 ):
     """A planning retry cannot release a duplicate plan, from either direction."""
     project_id = await _project(async_client, await _owner(async_client))
@@ -506,6 +515,7 @@ async def test_a_superseded_planner_can_neither_record_coverage_nor_admit(
     assert refused_coverage.status_code == HTTPStatus.CONFLICT, refused_coverage.text
     refused_admit = await _admit(async_client, brief_id, first_attempt)
     assert refused_admit.status_code == HTTPStatus.CONFLICT, refused_admit.text
+    assert await wake_hints.published() == []
     # It cannot plan any more work into the story either.
     refused_task = await async_client.post(
         "/api/tasks/",

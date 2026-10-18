@@ -12,6 +12,12 @@ from shared.contracts.queues.scheduler_wake import SCHEDULER_WAKE_CHANNEL, Sched
 from shared.redis.scheduler_wake import publish_scheduler_wake
 
 STORY_COMPLETION = SchedulerWakeTarget.STORY_COMPLETION
+TASK_DISPATCHER = SchedulerWakeTarget.TASK_DISPATCHER
+
+
+def receivers(**events: asyncio.Event) -> dict[SchedulerWakeTarget, asyncio.Event]:
+    """One event per target; the named ones are the test's, the rest are fresh."""
+    return {target: events.get(target.value, asyncio.Event()) for target in SchedulerWakeTarget}
 
 
 def start_loop(cycles: Cycles, timers: Timers, wake: asyncio.Event, *, interval=lambda: 30):
@@ -187,15 +193,16 @@ async def test_cancelling_a_waiting_loop_closes_redis_once_and_leaves_no_helper_
 
 
 @pytest.mark.asyncio
-async def test_a_published_story_completion_hint_wakes_its_loop(monkeypatch):
-    broker, wake = Broker(), asyncio.Event()
-    listener = start_listener(broker, Timers(), {STORY_COMPLETION: wake}, monkeypatch)
+@pytest.mark.parametrize("target", list(SchedulerWakeTarget))
+async def test_a_published_hint_wakes_only_its_own_loop(monkeypatch, target):
+    broker, wakes = Broker(), receivers()
+    listener = start_listener(broker, Timers(), wakes, monkeypatch)
     await broker.subscribed()
 
-    assert await publish(broker) == 1
+    assert await publish(broker, target) == 1
     await settle()
 
-    assert wake.is_set()
+    assert {name for name, wake in wakes.items() if wake.is_set()} == {target}
     await stop(listener)
 
 
@@ -206,7 +213,7 @@ async def test_rejected_payloads_neither_wake_nor_stop_the_listener(monkeypatch)
     log = MagicMock()
     monkeypatch.setattr(scheduler_wake_listener, "logger", log)
     broker, wake = Broker(), asyncio.Event()
-    listener = start_listener(broker, Timers(), {STORY_COMPLETION: wake}, monkeypatch)
+    listener = start_listener(broker, Timers(), receivers(story_completion=wake), monkeypatch)
     await broker.subscribed()
 
     for payload in (
@@ -236,7 +243,9 @@ async def test_a_listener_outage_reconnects_after_the_interval_while_the_backsto
     broker, wake = Broker(), asyncio.Event()
     broker.connect_failures = 1
     listener_timers, cycles, loop_timers = Timers(), Cycles(), Timers()
-    listener = start_listener(broker, listener_timers, {STORY_COMPLETION: wake}, monkeypatch)
+    listener = start_listener(
+        broker, listener_timers, receivers(story_completion=wake), monkeypatch
+    )
     loop, _client, _log = start_loop(cycles, loop_timers, wake)
     await settle()
 
@@ -260,7 +269,7 @@ async def test_a_listener_outage_reconnects_after_the_interval_while_the_backsto
 async def test_a_dropped_subscription_closes_its_resources_and_resubscribes(monkeypatch):
     broker, wake = Broker(), asyncio.Event()
     timers = Timers()
-    listener = start_listener(broker, timers, {STORY_COMPLETION: wake}, monkeypatch)
+    listener = start_listener(broker, timers, receivers(story_completion=wake), monkeypatch)
     first = await broker.subscribed()
 
     broker.drop_connections()
@@ -282,7 +291,7 @@ async def test_a_dropped_subscription_closes_its_resources_and_resubscribes(monk
 @pytest.mark.asyncio
 async def test_cancelling_the_listener_closes_pubsub_and_client_once(monkeypatch):
     broker = Broker()
-    listener = start_listener(broker, Timers(), {STORY_COMPLETION: asyncio.Event()}, monkeypatch)
+    listener = start_listener(broker, Timers(), receivers(), monkeypatch)
     pubsub = await broker.subscribed()
 
     listener.cancel()
@@ -295,8 +304,16 @@ async def test_cancelling_the_listener_closes_pubsub_and_client_once(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_the_listener_refuses_a_target_without_a_receiver():
+@pytest.mark.parametrize(
+    ("wakes", "missing"),
+    [
+        ({}, "story_completion"),
+        ({STORY_COMPLETION: asyncio.Event()}, "task_dispatcher"),
+        ({TASK_DISPATCHER: asyncio.Event()}, "story_completion"),
+    ],
+)
+async def test_the_listener_refuses_a_target_without_a_receiver(wakes, missing):
     from src.tasks.scheduler_wake_listener import scheduler_wake_listener
 
-    with pytest.raises(ValueError, match="story_completion"):
-        await scheduler_wake_listener({})
+    with pytest.raises(ValueError, match=missing):
+        await scheduler_wake_listener(wakes)

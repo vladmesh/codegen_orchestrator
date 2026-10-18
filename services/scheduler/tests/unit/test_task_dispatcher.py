@@ -286,7 +286,7 @@ async def test_dispatcher_loop_owns_only_engineering_dispatch(monkeypatch):
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await task_dispatcher.task_dispatcher_loop()
+        await task_dispatcher.task_dispatcher_loop(wake=asyncio.Event())
 
     dispatch.assert_awaited_once_with(api, redis)
     log.info.assert_any_call("dispatcher_cycle", tasks_dispatched=3)
@@ -319,7 +319,7 @@ async def test_dispatcher_loop_continues_after_dispatch_failure(monkeypatch):
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await task_dispatcher.task_dispatcher_loop()
+        await task_dispatcher.task_dispatcher_loop(wake=asyncio.Event())
 
     assert dispatch.await_count == 2
     log.exception.assert_called_once_with("dispatcher_cycle_error")
@@ -432,7 +432,7 @@ async def test_dispatcher_tick_does_not_sweep_owed_owner_notifications(monkeypat
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await task_dispatcher.task_dispatcher_loop()
+        await task_dispatcher.task_dispatcher_loop(wake=asyncio.Event())
 
     sweep.assert_not_awaited()
     api.list_runs_owing_owner_notification.assert_not_awaited()
@@ -546,7 +546,7 @@ async def test_notification_sweep_failure_and_dispatcher_tick_failure_isolate_ea
     )
 
     loops = [
-        asyncio.create_task(task_dispatcher.task_dispatcher_loop()),
+        asyncio.create_task(task_dispatcher.task_dispatcher_loop(wake=asyncio.Event())),
         asyncio.create_task(owner_notification_loop.owner_notification_loop()),
     ]
     try:
@@ -603,7 +603,7 @@ async def test_dispatcher_tick_does_not_run_story_supervision(monkeypatch):
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await task_dispatcher.task_dispatcher_loop()
+        await task_dispatcher.task_dispatcher_loop(wake=asyncio.Event())
 
     watchdog.assert_not_awaited()
     notices.assert_not_awaited()
@@ -757,7 +757,7 @@ async def test_story_supervision_failure_and_dispatcher_tick_failure_isolate_eac
     )
 
     loops = [
-        asyncio.create_task(task_dispatcher.task_dispatcher_loop()),
+        asyncio.create_task(task_dispatcher.task_dispatcher_loop(wake=asyncio.Event())),
         asyncio.create_task(story_supervision_loop.story_supervision_loop()),
     ]
     try:

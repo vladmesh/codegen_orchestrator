@@ -19,7 +19,9 @@ one transaction, on rows taken for update, it either names the must-requirements
 still undisposed (`incomplete`, releasing nothing) or stamps
 `coverage_admitted_at`, releases the tasks planned under the presented attempt
 and closes it (`admitted`). A second call is a replay, not a rival: it answers
-`already_admitted` and releases nothing twice.
+`already_admitted` and releases nothing twice. Once a release of at least one Task
+has committed, the step publishes the lossy `task_dispatcher`
+[wake hint](scheduler-wake-hints.md); the dispatcher's interval sweep stays the recovery path.
 
 An attempt that returns every must-requirement and has no Tasks in its release
 set is admitted as a completed disposition, but records `parked` planning

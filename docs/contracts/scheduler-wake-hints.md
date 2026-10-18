@@ -11,7 +11,7 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - Message: the JSON body of `SchedulerWakeHint` in `shared/contracts/queues/scheduler_wake.py`,
   for example `{"target":"story_completion"}`. `target` is a `SchedulerWakeTarget`; no other
   field is accepted.
-- Targets: `story_completion` only.
+- Targets: `story_completion` and `task_dispatcher`; each wakes only the loop of that name.
 - A hint carries routing only: no credentials, ids, correlation metadata or business state. It
   grants no permission to transition a Story, Task or Run and never invokes a business action.
 - Producers publish with `shared.redis.scheduler_wake.publish_scheduler_wake` after the durable
@@ -22,8 +22,11 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 | Target | Logical producer | Consumer |
 |---|---|---|
 | `story_completion` | api Task routes `POST /tasks/{id}/complete`, `POST /tasks/{id}/transition`, `DELETE /tasks/{id}`; langgraph engineering success settlement (`handle_engineering_success`) | scheduler-pipeline `story_completion` loop |
+| `task_dispatcher` | api Product Brief admission `POST /product-briefs/{id}/admit` | scheduler-pipeline `task_dispatcher` loop |
 
 ## Producers
+
+### `story_completion`
 
 - The api Task routes publish one `story_completion` hint when the request moves a story-scoped Task
   to `done` or `cancelled`: `complete`, a `transition` to either status (the install cancellation
@@ -51,6 +54,22 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
   repair settlement, non-success deploy-fix settlement, the Product Brief takeover cancellation and
   every other Task mutation outside the routes above.
 
+### `task_dispatcher`
+
+- Product Brief admission publishes one `task_dispatcher` hint when its transaction released a
+  nonempty set of Tasks: on the initialized Redis client, right after its own `db.commit()`
+  returns and before the response refresh. An `already_admitted` replay, an `incomplete` answer, a
+  refused request, a failed commit and an admission that released no Task (the fully returned
+  taskless park included) publish nothing. Coverage writes, confirmation and claims never publish.
+- The awakened cycle runs the unchanged `dispatch_todo_tasks` then catalog install recovery, so
+  the API dispatch admission point still decides every released Task; the hint admits nothing.
+- A Redis or socket error on publish is logged as `task_dispatcher_wake_failed` with the brief
+  id, the story id and the error type only; the committed admission and its response are
+  unchanged. Cancellation propagates. There is no retry.
+- Every other write that can make a Task dispatchable still waits for the interval: Task creation
+  in `todo`, operator resume and retry, a blocker reaching `done`, a Story start or an engineering
+  stop release, a freed paid-work slot, and the catalog install and repair paths.
+
 ## Listener
 
 scheduler-pipeline runs one `scheduler_wake` listener beside its loops under the same
@@ -72,7 +91,7 @@ supervisor. It must hold an event for every target in the vocabulary, or it refu
 - A payload that is not text, exceeds 256 characters, is not JSON, names an unknown target or
   carries an extra field is rejected and logged as `scheduler_wake_hint_rejected` with a reason
   and validation shape only, never the payload. It wakes nothing and is never mapped to another
-  target.
+  target. A listener older than a target rejects it the same way, and the interval sweep covers it.
 - A Redis connect, subscribe or read failure, or an ended subscription, closes that Pub/Sub and
   Redis client and resubscribes after one `scheduler.dispatch_interval_seconds`. The loops keep
   their own interval deadlines and keep sweeping meanwhile.

@@ -329,7 +329,6 @@ async def test_pipeline_starts_without_loki(monkeypatch):
         "owner_notifications",
         "story_supervision",
     ]
-    assert workers["task_dispatcher"] is pipeline.task_dispatcher_loop
     assert workers["scaffold"] is pipeline.scaffold_loop
     assert workers["lifecycle_supervision"] is pipeline.lifecycle_supervision_loop
     assert workers["qa_routing"] is pipeline.qa_routing_loop
@@ -341,29 +340,38 @@ async def test_pipeline_starts_without_loki(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_routes_a_story_completion_hint_to_its_loop(monkeypatch):
+async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     from _wake_doubles import Broker, Timers, settle
 
     from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
     from shared.redis.scheduler_wake import publish_scheduler_wake
     from src import pipeline
-    from src.tasks import scheduler_wake_listener, story_completion_loop
+    from src.tasks import scheduler_wake_listener, story_completion_loop, task_dispatcher
 
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
     broker = Broker()
-    complete = AsyncMock(return_value=0)
+    journal: list[str] = []
+
+    def record(step: str, result: object = None) -> AsyncMock:
+        return AsyncMock(side_effect=lambda *_args: journal.append(step) or result)
+
     run_workers = AsyncMock()
     monkeypatch.setattr(pipeline.runtime, "initialize_configs", AsyncMock())
     monkeypatch.setattr(pipeline.runtime, "run_workers", run_workers)
     monkeypatch.setattr(story_completion_loop, "RedisStreamClient", broker.client)
-    monkeypatch.setattr(story_completion_loop, "complete_stories", complete)
+    monkeypatch.setattr(story_completion_loop, "complete_stories", record("complete", 0))
     monkeypatch.setattr(story_completion_loop, "_story_completion_interval", lambda: 3600)
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", broker.client)
+    monkeypatch.setattr(task_dispatcher, "dispatch_todo_tasks", record("dispatch", 0))
+    monkeypatch.setattr(task_dispatcher, "_recover_catalog_installs", record("recover"))
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 3600)
     monkeypatch.setattr(scheduler_wake_listener, "_reconnect_interval", lambda: 3600)
     await pipeline.main()
     workers = dict(run_workers.await_args.args[0])
 
     tasks = [
+        asyncio.create_task(workers["task_dispatcher"]()),
         asyncio.create_task(workers["story_completion"]()),
         asyncio.create_task(
             workers["scheduler_wake"](redis_factory=broker.client, sleep=Timers().sleep)
@@ -371,14 +379,20 @@ async def test_pipeline_routes_a_story_completion_hint_to_its_loop(monkeypatch):
     ]
     await broker.subscribed()
     await settle()
-    assert complete.await_count == 1
-
+    assert sorted(journal) == ["complete", "dispatch", "recover"]
     publisher = broker.client()
     await publisher.connect()
+
+    journal.clear()
+    await publish_scheduler_wake(publisher, SchedulerWakeTarget.TASK_DISPATCHER)
+    await settle()
+    assert journal == ["dispatch", "recover"]
+
+    journal.clear()
     await publish_scheduler_wake(publisher, SchedulerWakeTarget.STORY_COMPLETION)
     await settle()
+    assert journal == ["complete"]
 
-    assert complete.await_count == 2
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
