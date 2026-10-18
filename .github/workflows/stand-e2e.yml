@@ -928,8 +928,8 @@ jobs:
             # The QA session lives in the qa-worker env file, not in the api
             # environment, so the redactor is handed it by name: -e NAME takes
             # the value from this shell, never from a command line.
-            # It is the only pair allowed empty: any other named value missing
-            # from the api environment fails the redaction path closed.
+            # The api environment must carry GITHUB_WEBHOOK_SECRET; without it the
+            # redaction path fails closed.
             qa_env=./.qa-worker.env
             TELETHON_API_HASH=; TELETHON_SESSION=
             if [ -f "${qa_env}" ]; then
@@ -943,7 +943,7 @@ jobs:
             rm -f "${services_partial}"
             if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler-infrastructure 2>&1 | \
               ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" -e TELETHON_API_HASH -e TELETHON_SESSION api \
-              python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); optional={\"TELETHON_API_HASH\", \"TELETHON_SESSION\"}; missing=[name for name in names if name not in optional and not os.environ.get(name, \"\").strip()]; missing and sys.exit(\"missing redaction values: \" + \" \".join(missing)); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
+              python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); os.environ.get(\"GITHUB_WEBHOOK_SECRET\", \"\").strip() or sys.exit(\"missing redaction value: GITHUB_WEBHOOK_SECRET\"); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
               > "${services_partial}"; then
               mv "${services_partial}" "${services_out}"
             else
@@ -1211,8 +1211,8 @@ jobs:
                 # The QA session lives in the qa-worker env file, not in the api
                 # environment, so the redactor is handed it by name: -e NAME takes
                 # the value from this shell, never from a command line.
-                # It is the only pair allowed empty: any other named value missing
-                # from the api environment fails the redaction path closed.
+                # The api environment must carry GITHUB_WEBHOOK_SECRET; without it the
+                # redaction path fails closed.
                 qa_env=./.qa-worker.env
                 TELETHON_API_HASH=; TELETHON_SESSION=
                 if [ -f "${qa_env}" ]; then
@@ -1232,7 +1232,7 @@ jobs:
                      engineering-worker worker-manager worker-broker api \
                      qa-worker deploy-worker 2>&1 | \
                    ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" -e TELETHON_API_HASH -e TELETHON_SESSION api \
-                   python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); optional={\"TELETHON_API_HASH\", \"TELETHON_SESSION\"}; missing=[name for name in names if name not in optional and not os.environ.get(name, \"\").strip()]; missing and sys.exit(\"missing redaction values: \" + \" \".join(missing)); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
+                   python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); os.environ.get(\"GITHUB_WEBHOOK_SECRET\", \"\").strip() or sys.exit(\"missing redaction value: GITHUB_WEBHOOK_SECRET\"); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
                    > "${partial}"; then
                   mv "${partial}" "${out}"
                 else

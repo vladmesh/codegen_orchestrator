@@ -2269,7 +2269,7 @@ def test_the_service_tail_redaction_removes_a_session_looking_value(tmp_path, wh
             "PATH": os.environ["PATH"],
             "PYTHONPATH": str(WORKFLOW.parents[2]),
             "STAND_DIAGNOSTIC_SECRET_NAMES": names,
-            **_api_protected_environment(names),
+            "GITHUB_WEBHOOK_SECRET": WEBHOOK_SECRET,
             "TELETHON_API_HASH": handed_hash,
             "TELETHON_SESSION": handed_session,
         },
@@ -2454,17 +2454,38 @@ def test_the_service_tails_redact_the_webhook_secret_and_keep_safe_lines(tmp_pat
     assert "ORCHESTRATOR_HOSTNAME=stand.example.test" in collected
 
 
+@pytest.mark.parametrize("webhook_secret", [None, "   "], ids=["absent", "blank"])
 @pytest.mark.parametrize("which", [0, 1], ids=["provisioning-tails", "suite-failure-tails"])
-def test_service_tails_without_the_webhook_secret_publish_only_the_refusal(tmp_path, which):
+def test_service_tails_without_the_webhook_secret_publish_only_the_refusal(
+    tmp_path, which, webhook_secret
+):
     environment = _api_environment_with_webhook_secret(which)
-    del environment["GITHUB_WEBHOOK_SECRET"]
+    if webhook_secret is None:
+        del environment["GITHUB_WEBHOOK_SECRET"]
+    else:
+        environment["GITHUB_WEBHOOK_SECRET"] = webhook_secret
 
     collected, result = _collect_service_tails(tmp_path, which, environment)
 
     assert WEBHOOK_SECRET not in collected
     assert "the redaction path did not complete" in collected
     assert "github_webhook_refused" not in collected
-    assert "missing redaction values: GITHUB_WEBHOOK_SECRET" in result.stderr
+    assert "missing redaction value: GITHUB_WEBHOOK_SECRET" in result.stderr
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["provisioning-tails", "suite-failure-tails"])
+def test_service_tails_without_another_protected_value_still_redact_the_webhook_secret(
+    tmp_path, which
+):
+    environment = _api_environment_with_webhook_secret(which)
+    del environment["INTERNAL_API_KEY"]
+
+    collected, result = _collect_service_tails(tmp_path, which, environment)
+
+    assert "the redaction path did not complete" not in collected
+    assert WEBHOOK_SECRET not in collected + result.stdout + result.stderr
+    assert "api | webhook hmac key [redacted] in a traceback\n" in collected
+    assert "github_webhook_refused reason=signature_mismatch status=403" in collected
 
 
 def test_the_webhook_secret_is_a_protected_value_of_every_artifact_admission():

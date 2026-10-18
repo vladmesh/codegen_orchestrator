@@ -122,7 +122,7 @@ def test_opaque_claude_token_refuses_missing_and_expired_expiry_metadata():
     "value", ["", "   ", "two words", "one\nINJECTED=1", "$(touch pwned)", "quoted'value"]
 )
 def test_every_suite_refuses_a_missing_or_unsafe_webhook_secret_by_name_only(suite, value):
-    now = datetime(2026, 8, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     environment = {**_environment(now), "GITHUB_WEBHOOK_SECRET": value}
     if value == "":
         del environment["GITHUB_WEBHOOK_SECRET"]
@@ -138,7 +138,7 @@ def test_every_suite_refuses_a_missing_or_unsafe_webhook_secret_by_name_only(sui
 
 @pytest.mark.parametrize("value", [WEBHOOK_SECRET, "aGVsbG8tc3RhbmQ=", "a-b_c.d~e+f/g="])
 def test_a_suite_without_model_sessions_still_accepts_a_one_token_webhook_secret(value):
-    now = datetime(2026, 8, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     environment = {
         "SSH_PRIVATE_KEY": _environment(now)["SSH_PRIVATE_KEY"],
         "GITHUB_WEBHOOK_SECRET": value,
