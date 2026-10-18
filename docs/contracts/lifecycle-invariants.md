@@ -274,7 +274,10 @@ unset, it answers 409
 then sends no alert and redispatches the revoke without spending an attempt; it
 asks again when that revoke fails. Nothing else stands in for the column: not a
 newer QA run of the story, not a story status move. A QA run with no verdict yet
-still receives the routable `qa_cleanup_failed` blocker.
+still receives the routable `qa_cleanup_failed` blocker. A QA run's first terminal
+state wakes the `qa_routing` and `temporary_access` loops early
+([wake hints](scheduler-wake-hints.md#qa-terminal-state)); each decides from durable
+state in either order, and neither hint stands in for `qa_routed_at`.
 
 `POST /api/temporary-access-grants/{grant_id}/drain` is the sole unproved-close
 boundary. Under the grant row lock it accepts only a complete target-backed row

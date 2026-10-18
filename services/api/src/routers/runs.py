@@ -674,13 +674,32 @@ def _first_proof_wake(before: _DeployProof, after: _DeployProof) -> SchedulerWak
 async def _wake_on_first_deploy_proof(
     before: _DeployProof, run: Run, redis: RedisStreamClient
 ) -> None:
-    """Hint the owning sweep once a deploy Run's first success proof has committed.
-
-    A lost hint waits for the sweep's interval.
-    """
+    """Hint the owning sweep once a deploy Run's first success proof has committed."""
     target = _first_proof_wake(before, _deploy_proof(run))
-    if target is None:
+    if target is not None:
+        await _publish_wake(target, run, redis)
+
+
+def _holds_terminal_qa(run: Run) -> bool:
+    return run.type == RunType.QA.value and run.status in _TERMINAL_RUN_STATUSES
+
+
+async def _wake_on_first_qa_terminal(
+    terminal_before: bool, run: Run, redis: RedisStreamClient
+) -> None:
+    """Hint QA routing and the access sweep once a QA Run's first terminal state has committed.
+
+    The hints name a terminal state, not a valid verdict. A storyless Run has no story to route.
+    """
+    if terminal_before or not _holds_terminal_qa(run):
         return
+    if run.story_id is not None:
+        await _publish_wake(SchedulerWakeTarget.QA_ROUTING, run, redis)
+    await _publish_wake(SchedulerWakeTarget.TEMPORARY_ACCESS, run, redis)
+
+
+async def _publish_wake(target: SchedulerWakeTarget, run: Run, redis: RedisStreamClient) -> None:
+    """Publish one hint after the Run's commit; a lost hint waits for the sweep's interval."""
     try:
         receivers = await publish_scheduler_wake(redis, target)
     except (RedisError, OSError) as exc:
@@ -824,10 +843,12 @@ async def update_run(
 
     Once a deploy Run's first typed success has committed, the sweep that owns that
     proof is woken: lifecycle supervision for an ordinary story deploy, temporary
-    access for a grant or revoke operation.
+    access for a grant or revoke operation. Once a QA Run's first terminal state has
+    committed, QA routing (for a story's Run) and temporary access are woken.
     """
     run, story, task = await _lock_terminal_context(run_id, db)
     proof_before = _deploy_proof(run)
+    qa_terminal_before = _holds_terminal_qa(run)
 
     # Only services acting for themselves, and admins, can update runs
     actor = await resolve_actor(
@@ -967,6 +988,7 @@ async def update_run(
 
     await db.commit()
     await _wake_on_first_deploy_proof(proof_before, run, redis)
+    await _wake_on_first_qa_terminal(qa_terminal_before, run, redis)
     await db.refresh(run)
 
     logger.info(

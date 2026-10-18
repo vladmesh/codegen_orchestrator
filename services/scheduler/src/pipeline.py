@@ -33,6 +33,7 @@ async def main() -> None:
     story_completion_wake = asyncio.Event()
     lifecycle_supervision_wake = asyncio.Event()
     temporary_access_wake = asyncio.Event()
+    qa_routing_wake = asyncio.Event()
     await runtime.run_workers(
         [
             ("task_dispatcher", partial(task_dispatcher_loop, wake=task_dispatcher_wake)),
@@ -47,6 +48,7 @@ async def main() -> None:
                         SchedulerWakeTarget.STORY_COMPLETION: story_completion_wake,
                         SchedulerWakeTarget.LIFECYCLE_SUPERVISION: lifecycle_supervision_wake,
                         SchedulerWakeTarget.TEMPORARY_ACCESS: temporary_access_wake,
+                        SchedulerWakeTarget.QA_ROUTING: qa_routing_wake,
                     },
                 ),
             ),
@@ -54,7 +56,7 @@ async def main() -> None:
                 "lifecycle_supervision",
                 partial(lifecycle_supervision_loop, wake=lifecycle_supervision_wake),
             ),
-            ("qa_routing", qa_routing_loop),
+            ("qa_routing", partial(qa_routing_loop, wake=qa_routing_wake)),
             ("pr_ci", pr_ci_loop),
             ("worker_reconciliation", worker_reconciliation_loop),
             ("temporary_access", partial(temporary_access_loop, wake=temporary_access_wake)),

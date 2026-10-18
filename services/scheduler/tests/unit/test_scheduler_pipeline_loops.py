@@ -215,7 +215,7 @@ async def test_qa_routing_loop_continues_after_failure_and_owns_redis(monkeypatc
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await qa_routing_loop.qa_routing_loop()
+        await qa_routing_loop.qa_routing_loop(wake=asyncio.Event())
 
     assert route.await_count == 2
     route.assert_awaited_with(api, redis)
