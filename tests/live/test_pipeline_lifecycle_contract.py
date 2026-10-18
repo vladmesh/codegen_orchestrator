@@ -558,14 +558,7 @@ async def test_service_deployment_selects_exact_application_project_and_sha():
 
 @pytest.mark.asyncio
 async def test_two_deploys_of_one_application_are_a_log_not_an_ambiguity():
-    """What run 35451082771 actually had, and what the old assertion called ambiguous.
-
-    The story's own grant deploy wrote one record; the redeploy that hands QA
-    its temporary capability wrote a second one for the same application, the
-    same project and the same merged commit — `service_name` is the project's
-    runtime slug in both, whatever the product's modules are. Two deploys, two
-    records, and the one the application is serving is the later of them.
-    """
+    """Two deploys of the same commit write two records; the later one is served."""
     ctx = {"application_id": 7, "project_id": "project-1", "deploy_head_sha": "abc123"}
     handler, _ = _deployment_and_runs(
         [
@@ -574,7 +567,7 @@ async def test_two_deploys_of_one_application_are_a_log_not_an_ambiguity():
         ],
         [
             {"id": "deploy-grant-7167257310", "type": "deploy"},
-            {"id": "temporary-access-grant-a6a508be", "type": "deploy"},
+            {"id": "deploy-retry-7167257310", "type": "deploy"},
         ],
     )
 

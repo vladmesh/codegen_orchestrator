@@ -9,7 +9,6 @@ import uuid
 import httpx
 import structlog
 
-from shared.contracts.dto.deploy_dispatch import DispatchWithdrawal
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QARunResult
 from shared.contracts.dto.temporary_access import (
@@ -24,6 +23,7 @@ from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis import RedisStreamClient
+from shared.temporary_access_cleanup import grant_cleanup_owes_workflow_stop
 
 from .. import startup
 
@@ -231,17 +231,18 @@ async def _publish_operation(
     grant,
     run_id: str,
     operation: str,
-    *,
-    fence_active_deploys: bool = False,
 ) -> None:
-    """Redeploy the running artifact to write or take away the QA capability.
+    """Queue one grant or revoke operation Run for the deploy consumer.
 
-    The grant records the story commit it belongs to; what has to be redeployed
-    is the artifact the target is running, and only the target's own deployment
-    record says which commit that is. Reading it here rather than reusing
-    `grant.head_sha` is the difference between redeploying the same images and
-    asking for images of a commit whose CI never published any.
+    The consumer calls the target's users-core capability directly. The message
+    also names the commit the target's own deployment record says it runs. Every
+    revoke re-derives from the record's whole grant Run history whether an earlier
+    grant workflow must be stopped first, so no retry, replacement or redispatch
+    loses that obligation.
     """
+    fence_active_deploys = operation == "revoke" and await grant_cleanup_owes_workflow_stop(
+        api_client, grant
+    )
     deployed_commit_sha = await api_client.latest_deployed_commit_sha(grant.target_application_id)
     if not deployed_commit_sha:
         raise RuntimeError(
@@ -434,20 +435,11 @@ async def _dispatch_revoke(api_client, redis_client, grant, reason) -> None:
         ),
     )
     # Close the old grant dispatch only after the durable transition says it is
-    # obsolete, and before beginning cleanup. A grant that already crossed the
-    # deploy boundary makes cleanup fenced so Actions cannot later restore it.
-    withdrawal = await api_client.withdraw_deploy_dispatch(
+    # obsolete, and before beginning cleanup.
+    await api_client.withdraw_deploy_dispatch(
         grant.grant_run_id, "temporary access cleanup superseded grant operation"
     )
-    await _publish_operation(
-        api_client,
-        redis_client,
-        grant,
-        run_id,
-        "revoke",
-        fence_active_deploys=getattr(withdrawal, "outcome", None)
-        is DispatchWithdrawal.ALREADY_DISPATCHED,
-    )
+    await _publish_operation(api_client, redis_client, grant, run_id, "revoke")
 
 
 async def _settle_revoke(api_client, redis_client, grant, counts, log) -> None:

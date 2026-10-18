@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 import os
 import time
@@ -22,6 +23,18 @@ class WorkflowCancelledError(RuntimeError):
 
 class WorkflowCancellationUnprovenError(RuntimeError):
     """Raised when teardown cannot prove a GitHub Actions run has stopped."""
+
+
+class RequestGuardRefusedError(Exception):
+    """A caller's write guard refused a request; `error` is the guard's own exception."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+#: Awaited immediately before each attempt of a guarded write, after every other await.
+RequestGuard = Callable[[], Awaitable[None]]
 
 
 class GitHubAppClientBase:
@@ -64,16 +77,23 @@ class GitHubAppClientBase:
         method: str,
         url: str,
         headers: dict[str, str],
+        *,
+        guard: RequestGuard | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Make HTTP request with rate limit handling."""
+        """Make HTTP request with rate limit handling.
+
+        A `guard` refusal raises `RequestGuardRefusedError` and sends nothing.
+        """
         if self._http_client is not None:
             return await self._request_with_client(
-                self._http_client, method, url, headers, **kwargs
+                self._http_client, method, url, headers, guard=guard, **kwargs
             )
 
         async with httpx.AsyncClient() as client:
-            return await self._request_with_client(client, method, url, headers, **kwargs)
+            return await self._request_with_client(
+                client, method, url, headers, guard=guard, **kwargs
+            )
 
     async def _request_with_client(
         self,
@@ -81,11 +101,18 @@ class GitHubAppClientBase:
         method: str,
         url: str,
         headers: dict[str, str],
+        *,
+        guard: RequestGuard | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
         max_retries = 3
 
         for attempt in range(max_retries):
+            if guard is not None:
+                try:
+                    await guard()
+                except Exception as error:
+                    raise RequestGuardRefusedError(error) from error
             try:
                 resp = await client.request(method, url, headers=headers, **kwargs)
             except httpx.RequestError:

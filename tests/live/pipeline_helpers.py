@@ -5396,9 +5396,8 @@ async def record_stage_notices(
 async def _project_deploy_runs(api_internal: httpx.AsyncClient, project_id: str) -> list[dict]:
     """Every deploy Run of this project, not only the ones a story owns.
 
-    The capability deploys carry no story — `temporary_access` sends its
-    `DeployMessage` with `story_id=""` — so `_story_runs` cannot see them, and
-    they are exactly the deploys whose records have to be accounted for here.
+    A deploy without a story, such as the owner-grant deploy of a fresh project,
+    is invisible to `_story_runs`, and its record still has to be accounted for.
     """
     require_unscoped_run_observer(api_internal)
     response = await api_internal.get(
@@ -5444,26 +5443,16 @@ async def wait_service_deployment(
     """Select the deployment this application is serving, out of a log of deploys.
 
     `service_deployments` is an immutable log of deploy attempts
-    (`shared/models/deployment.py`), and one level-1 run fills it more than
-    once. Run 35451082771 failed here with `ambiguous deployments for
-    application 1 … [2, 1]`, and the two rows were written by two different
-    deploys of the same commit: `deploy-grant-71672573103249b09aaf4cb3dbdf2a54`
-    at 15:48:00 and `temporary-access-grant-a6a508bec27d` at 15:49:14, the
-    redeploy that hands QA its temporary capability. Both carry
-    `service_name=stand-t-477db6f21739461cb11fa8e6f94cc169` — the project's
-    runtime slug, which is the only service name a deploy record ever holds,
-    whether the product has one module or two. So "exactly one row per
-    application" was never about modules: it was an assertion about a product
-    that deploys once, and this product deploys again whenever a capability is
-    granted or revoked.
+    (`shared/models/deployment.py`), and one level-1 run can fill it more than
+    once: every deploy of the same commit, a retry or a fix loop, writes its own
+    row with the project's runtime slug as `service_name`. A temporary QA access
+    grant or revoke deploys nothing and writes none.
 
-    What the rows cannot say by themselves is which deploy wrote them — the
-    record carries no run id — so the guard the old assertion existed for is
-    kept by counting them against the deploys that could have written them. Each
-    deploy Run of this project writes at most one record and a stop/undeploy Run
-    writes none, so more records than deploys is the same deploy recorded twice,
-    and that still fails here by name. Taking the first row instead, or dropping
-    the count, would have made a genuine duplicate invisible.
+    The records carry no run id, so a duplicate is caught by counting them
+    against the deploys that could have written them. Each deploy Run of this
+    project writes at most one record and a stop/undeploy Run writes none, so
+    more records than deploys is the same deploy recorded twice, and that fails
+    here by name.
 
     The row that is selected is the newest one, because that is the deploy the
     application is actually running, and it still has to be a success carrying

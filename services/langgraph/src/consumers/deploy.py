@@ -9,19 +9,22 @@ Run standalone: python -m src.consumers.deploy
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from shared.allocation_disposition import attempt_disposition, may_terminate_story
-from shared.clients.github import WorkflowCancellationUnprovenError
+from shared.clients.github import GitHubAppClient, WorkflowCancellationUnprovenError
 from shared.contracts.dto.application import (
     DEFAULT_APPLICATION_RESERVED_RAM_MB,
+    ApplicationDTO,
     ApplicationStatus,
 )
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, DeploySkipReason, MissingUserSecret
+from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
 from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY
 from shared.contracts.env_overrides import (
     EMPTY_OVERRIDES_DIGEST,
@@ -36,6 +39,7 @@ from shared.contracts.queues.deploy import (
 from shared.contracts.service_ports import DEPLOY_INFRA_PORT_SERVICES
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
+from shared.temporary_access_cleanup import grant_cleanup_owes_workflow_stop
 
 from ..allocations import AllocationError
 from ..clients.api import api_client
@@ -43,6 +47,12 @@ from ..config.system_config import system_config
 from ..deploy_fence import DeployFence, DeployFenceLost, DeployWrite
 from ..runtime_identity import project_runtime_slug
 from ..subgraphs.devops import create_devops_subgraph
+from ..subgraphs.devops.deployer import (
+    DeployDispatchWithdrawnError,
+    DeployFenceUnprovenError,
+    fence_active_deploys,
+    require_live_lease,
+)
 from ._base import start_worker, validate_queued_message
 from ._events import publish_callback_event
 from ._live_work import live_work_cancel_key, live_work_settled, live_work_unsettled
@@ -53,6 +63,11 @@ from .deploy_result_handler import (
     _handle_deploy_success,
     _handle_smoke_failure,
     user_secret_classification,
+)
+from .temporary_access_operation import (
+    admit_temporary_access,
+    apply_temporary_access_operation,
+    confirm_current_operation,
 )
 
 logger = structlog.get_logger(__name__)
@@ -71,29 +86,13 @@ class AccessTargetUnresolvedError(Exception):
     """A temporary-access operation whose recorded target could not be read.
 
     Only a target application that exists and holds no allocations proves there
-    is no deployment. Anything short of reading it — no grant, no target, a row
-    that is gone, an API error — fails the operation closed, never as that proof.
+    is no deployment. A target row that is gone or an API error fails the
+    operation closed, never as that proof.
     """
 
 
-async def _allocate_resources(
-    project_id: str,
-    project: ProjectDTO,
-    *,
-    access: DeployAccessContext | None = None,
-) -> dict | str:
+async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | str:
     """Get or create allocations. Returns dict of resources or error string.
-
-    This is the deploy path's only allocation call, and the one place that
-    decides whether it may create. A temporary-access grant or revoke redeploys
-    what its grant's recorded target application already runs, so for one only
-    that application's allocations are read: an empty result means the target
-    has no deployment, and nothing is allocated for it. The repository's first
-    application is never asked instead — a repository can have one per server,
-    and another row's empty allocations say nothing about the target's access.
-    On 2026-09-25 a revoke that arrived after its target was undeployed
-    re-allocated all four ports, failed its precheck, and left them owned by an
-    application nobody runs.
 
     An `AllocationError` is deliberately *not* caught here. It is the one failure
     on this path that is about the platform rather than the project, and it
@@ -108,8 +107,6 @@ async def _allocate_resources(
         dict.fromkeys([*config.get("modules", ["backend"]), *DEPLOY_INFRA_PORT_SERVICES])
     )
     min_ram_mb = config.get("estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB)
-    if access is not None and access.temporary_access_operation is not None:
-        return await _access_target_allocations(access, min_ram_mb)
 
     # Get repo_id from primary repository
     primary_repo = await api_client.get_primary_repository(project_id)
@@ -127,21 +124,22 @@ async def _allocate_resources(
     )
 
 
-async def _access_target_allocations(access: DeployAccessContext, min_ram_mb: int) -> dict:
-    """Read the grant's recorded target application's allocations, or fail closed.
+async def _access_target(
+    grant: TemporaryAccessGrantDTO, min_ram_mb: int
+) -> tuple[ApplicationDTO, dict]:
+    """Read the grant's recorded target application and its allocations, or fail closed.
 
-    An admission refusal of the target's host stays the typed `AllocationError`
-    every placement raises; every other way of not reading the target raises
+    Only that application is read and nothing is allocated: a repository can hold
+    one application per server, and another row's allocations say nothing about
+    the target's access. An admission refusal of the target's host stays the
+    typed `AllocationError`; every other way of not reading the target raises
     `AccessTargetUnresolvedError`.
     """
     from ..allocations import existing_application_allocations
 
-    grant = access.temporary_access_grant
-    if grant is None:
-        raise AccessTargetUnresolvedError("temporary access operation has no grant")
     try:
         application = await api_client.get_application(grant.target_application_id)
-        return await existing_application_allocations(
+        allocations = await existing_application_allocations(
             application_id=application.id,
             server_handle=application.server_handle,
             min_ram_mb=min_ram_mb,
@@ -153,6 +151,7 @@ async def _access_target_allocations(access: DeployAccessContext, min_ram_mb: in
             f"target application {grant.target_application_id} of temporary access grant "
             f"{grant.id} could not be read: {type(error).__name__}"
         ) from error
+    return application, allocations
 
 
 async def _record_infrastructure_wait(
@@ -525,9 +524,9 @@ async def _resolve_deploy_access(
     metadata = getattr(run, "run_metadata", None) or {}
     stored_temporary_access_grant = metadata.get("temporary_access_grant_id")
     stored_temporary_access_operation = metadata.get("temporary_access_operation")
-    # Either key marks a capability operation, which must never fall through to
-    # a product deploy that places the application: it needs both.
-    if stored_temporary_access_grant is not None or stored_temporary_access_operation is not None:
+    # Either key marks a capability operation, even with a null value, and one
+    # must never fall through to a product deploy that places the application.
+    if "temporary_access_grant_id" in metadata or "temporary_access_operation" in metadata:
         temporary_access_operation = stored_temporary_access_operation
         if not isinstance(stored_temporary_access_grant, str) or not isinstance(
             temporary_access_operation, str
@@ -561,6 +560,8 @@ async def _resolve_deploy_access(
             temporary_access_grant.project_id != msg.project_id
             or temporary_access_grant.head_sha != msg.head_sha
             or temporary_access_operation not in {"grant", "revoke"}
+            or grant_intent is not None
+            or msg.action in LIFECYCLE_ACTIONS
         ):
             return await _deploy_failure_terminal(
                 msg,
@@ -640,21 +641,11 @@ async def _allocate_deploy_resources(
     fence: DeployFence,
 ) -> tuple[dict, dict[str, str]] | DeployTerminal:
     """Resolve placement and effective environment for a normal deploy."""
-    operation = base.access.temporary_access_operation
     try:
-        alloc_result = await _allocate_resources(msg.project_id, base.project, access=base.access)
+        alloc_result = await _allocate_resources(msg.project_id, base.project)
     except AllocationError as error:
         return DeployTerminal(
             await _record_infrastructure_wait(msg.task_id, msg.project_id, error, fence)
-        )
-    except AccessTargetUnresolvedError as error:
-        logger.warning("temporary_access_target_unresolved", task_id=msg.task_id, error=str(error))
-        return await _deploy_failure_terminal(
-            msg,
-            redis,
-            fence,
-            str(error),
-            deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
         )
 
     if isinstance(alloc_result, str):
@@ -671,9 +662,6 @@ async def _allocate_deploy_resources(
         )
         return DeployTerminal(live_work_unsettled({"status": "failed", "error": alloc_result}))
 
-    if operation is not None and not alloc_result:
-        return await _access_operation_without_deployment(base, msg, redis, fence)
-
     try:
         env_overrides = _effective_env_overrides(base.project, msg.env_overrides)
     except ValueError as error:
@@ -687,19 +675,173 @@ async def _allocate_deploy_resources(
     return alloc_result, env_overrides
 
 
+async def _run_temporary_access_operation(
+    base: DeployBaseContext,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+    fence: DeployFence,
+) -> dict:
+    """Grant or revoke the QA identity through its target's users-core capability.
+
+    Nothing is deployed. In order: read the recorded target's existing allocations
+    and the cleanup obligation, take the Run's atomic dispatch admission, prove any
+    earlier grant workflow stopped, confirm the current operation, prove the exact
+    identity's readback, and record the terminal outcome last. A withdrawal that
+    wins the admission at any of its renewals ends the Run cancelled with no
+    further external write.
+    """
+    grant = base.access.temporary_access_grant
+    operation = base.access.temporary_access_operation
+    min_ram_mb = (base.project.config or {}).get(
+        "estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB
+    )
+    try:
+        application, allocations = await _access_target(grant, min_ram_mb)
+    except AllocationError as error:
+        return await _record_infrastructure_wait(msg.task_id, msg.project_id, error, fence)
+    except AccessTargetUnresolvedError as error:
+        logger.warning("temporary_access_target_unresolved", task_id=msg.task_id, error=str(error))
+        return await _access_failure_response(msg, redis, fence, str(error))
+    must_fence = msg.fence_active_deploys or (
+        operation == "revoke" and await grant_cleanup_owes_workflow_stop(api_client, grant)
+    )
+
+    try:
+        await admit_temporary_access(msg.task_id, fence)
+        if must_fence:
+            refusal = await _fence_earlier_deploy_workflows(msg, fence)
+            if refusal is not None:
+                return await _access_failure_response(msg, redis, fence, refusal)
+        if not allocations:
+            return await _access_operation_without_deployment(
+                base, msg, redis, fence, application.id
+            )
+        failure = await apply_temporary_access_operation(
+            task_id=msg.task_id,
+            project_id=msg.project_id,
+            project=base.project,
+            application_id=application.id,
+            grant=grant,
+            operation=operation,
+            fence=fence,
+        )
+    except DeployDispatchWithdrawnError as withdrawn:
+        return await _record_access_withdrawn(msg, fence, withdrawn)
+    if failure is not None:
+        logger.warning(
+            "temporary_access_proof_failed",
+            task_id=msg.task_id,
+            grant_id=grant.id,
+            operation=operation,
+            reason=failure,
+        )
+        return await _access_failure_response(
+            msg, redis, fence, f"temporary access {operation} was not proved: {failure}"
+        )
+
+    logger.info(
+        "temporary_access_operation_proved",
+        task_id=msg.task_id,
+        grant_id=grant.id,
+        target_application_id=application.id,
+        operation=operation,
+    )
+    await fence.ensure_held(DeployWrite.RUN_STATE)
+    await api_client.patch(
+        f"runs/{msg.task_id}",
+        json={
+            "status": RunStatus.COMPLETED.value,
+            "result": DeployRunResult(
+                deploy_outcome=DeployOutcome.SUCCESS,
+                application_id=application.id,
+                action=msg.action,
+            ).model_dump(mode="json"),
+        },
+    )
+    await publish_callback_event(
+        redis,
+        msg.callback_stream,
+        "completed",
+        msg.task_id,
+        f"Temporary access {operation} proved",
+        telegram_chat_id=msg.telegram_chat_id,
+        project_id=msg.project_id,
+    )
+    return live_work_settled({"status": "success", "operation": operation})
+
+
+async def _record_access_withdrawn(
+    msg: DeployMessage, fence: DeployFence, withdrawn: DeployDispatchWithdrawnError
+) -> dict:
+    """End an operation whose Run was withdrawn before its effect, as a cancelled deploy."""
+    logger.info("temporary_access_operation_withdrawn", task_id=msg.task_id, error=str(withdrawn))
+    await fence.ensure_held(DeployWrite.RUN_STATE)
+    await api_client.patch(
+        f"runs/{msg.task_id}",
+        json={
+            "status": RunStatus.CANCELLED.value,
+            "error_message": "Temporary access operation was withdrawn before its effect",
+            "result": DeployRunResult(
+                deploy_outcome=DeployOutcome.CANCELLED,
+                action=msg.action,
+            ).model_dump(mode="json"),
+        },
+    )
+    return live_work_unsettled({"status": "cancelled"})
+
+
+async def _access_failure_response(
+    msg: DeployMessage, redis: RedisStreamClient, fence: DeployFence, error_msg: str
+) -> dict:
+    """Record a retryable temporary-access failure the reconciler retries."""
+    return (
+        await _deploy_failure_terminal(
+            msg,
+            redis,
+            fence,
+            error_msg,
+            deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+        )
+    ).response
+
+
+async def _fence_earlier_deploy_workflows(msg: DeployMessage, fence: DeployFence) -> str | None:
+    """Stop every earlier deploy workflow of the project's repository, or say why not.
+
+    Each cancellation renews this Run's admission first, so a withdrawal or a
+    lapsed lease stops the next cancellation as well as the product effect.
+    """
+    primary_repo = await api_client.get_primary_repository(msg.project_id)
+    if primary_repo is None:
+        return f"project {msg.project_id} has no repository whose deploy runs can be fenced"
+    owner, repo = primary_repo.git_url.rstrip("/").removesuffix(".git").split("/")[-2:]
+
+    async def admit() -> None:
+        await admit_temporary_access(msg.task_id, fence)
+
+    try:
+        await fence_active_deploys(
+            GitHubAppClient(), owner, repo, msg.project_id, fence, admit=admit
+        )
+    except DeployFenceUnprovenError as error:
+        logger.error("temporary_access_workflow_fence_unproven", task_id=msg.task_id)
+        return str(error)
+    return None
+
+
 async def _access_operation_without_deployment(
     base: DeployBaseContext,
     msg: DeployMessage,
     redis: RedisStreamClient,
     fence: DeployFence,
-) -> DeployTerminal:
+    application_id: int,
+) -> dict:
     """Settle a temporary-access operation whose target is no longer deployed.
 
-    No precheck, SSH or DevOps run follows: there is nothing to redeploy. Access
-    to a deployment that no longer exists went away with it, so a revoke records
-    exactly what a proved revoke records and the supervisor settles the grant as
-    revoked. A grant has nothing to grant access to and fails through the grant
-    failure path, which the supervisor already retries and then cleans up.
+    Access to a deployment that no longer exists went away with it, so a revoke
+    that still holds its admission and current operation records exactly what a
+    proved revoke records. A grant has nothing to grant access to and fails
+    through the grant failure path the reconciler retries.
     """
     operation = base.access.temporary_access_operation
     grant = base.access.temporary_access_grant
@@ -712,13 +854,25 @@ async def _access_operation_without_deployment(
         operation=operation,
     )
     if operation != "revoke":
-        return await _deploy_failure_terminal(
+        return await _access_failure_response(
             msg,
             redis,
             fence,
             f"application {grant.target_application_id} has no deployment to grant access to",
-            deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
         )
+    claim, failure = await confirm_current_operation(
+        task_id=msg.task_id,
+        project_id=msg.project_id,
+        application_id=application_id,
+        grant=grant,
+        operation=operation,
+        fence=fence,
+    )
+    if failure is not None:
+        return await _access_failure_response(
+            msg, redis, fence, f"temporary access {operation} was not proved: {failure}"
+        )
+    require_live_lease(claim, datetime.now(UTC))
     await fence.ensure_held(DeployWrite.RUN_STATE)
     await api_client.patch(
         f"runs/{msg.task_id}",
@@ -739,7 +893,7 @@ async def _access_operation_without_deployment(
         telegram_chat_id=msg.telegram_chat_id,
         project_id=msg.project_id,
     )
-    return DeployTerminal(live_work_settled({"status": "success", "reason": "not_deployed"}))
+    return live_work_settled({"status": "success", "reason": "not_deployed"})
 
 
 async def _maybe_skip_redundant_deploy(
@@ -752,11 +906,7 @@ async def _maybe_skip_redundant_deploy(
 ) -> DeployTerminal | None:
     """Complete a deploy immediately when its exact commit/environment is already live."""
     access = base.access
-    if (
-        access.grant_intent is not None
-        or access.temporary_access_grant is not None
-        or msg.fence_active_deploys
-    ):
+    if access.grant_intent is not None or msg.fence_active_deploys:
         return None
 
     application_id = await _already_deployed_application(
@@ -932,8 +1082,6 @@ async def _route_deploy_result(
             msg=msg,
             application_id=result.get("application_id"),
             grant_intent=access.grant_intent,
-            temporary_access_grant=access.temporary_access_grant,
-            temporary_access_operation=access.temporary_access_operation,
             fence=fence,
         )
 
@@ -1135,6 +1283,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         base = await _load_deploy_base(run, msg, redis, fence)
         if isinstance(base, DeployTerminal):
             return base.response
+
+        if base.access.temporary_access_operation is not None:
+            return await _run_temporary_access_operation(base, msg, redis, fence)
 
         prepared = await _prepare_deploy(base, msg, job_data, redis, fence)
         if isinstance(prepared, DeployTerminal):

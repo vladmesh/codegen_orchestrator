@@ -20,7 +20,6 @@ from shared.contracts.dto.settings_seed import (
     settings_seed_failure_detail,
     settings_seed_failure_kinds,
 )
-from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO, TemporaryAccessStatus
 from shared.contracts.dto.users_grant import (
     GrantIntent,
     GrantIntentKind,
@@ -136,8 +135,6 @@ async def _handle_deploy_success(  # noqa: PLR0913
     fence: DeployFence,
     application_id: int | None = None,
     grant_intent: GrantIntent | None = None,
-    temporary_access_grant: TemporaryAccessGrantDTO | None = None,
-    temporary_access_operation: str | None = None,
 ) -> dict:
     """Handle successful deploy — update run, no story transitions.
 
@@ -168,70 +165,29 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 fence=fence,
             )
 
-    if temporary_access_grant is not None and temporary_access_operation is not None:
-        failure = await _apply_temporary_access_operation(
+    settings_seed = await _seed_initial_settings(
+        task_id=task_id,
+        project_id=project_id,
+        story_id=story_id,
+        deployed_url=result["deployed_url"],
+        secret_values=result.get("secret_values", {}),
+        fence=fence,
+    )
+    failures = settings_seed_failure_kinds(settings_seed)
+    if failures:
+        return await _handle_settings_seed_failure(
+            result=result,
             task_id=task_id,
             project_id=project_id,
+            callback_stream=callback_stream,
+            telegram_chat_id=telegram_chat_id,
+            redis=redis,
+            failures=failures,
             application_id=application_id,
-            secret_values=result.get("secret_values", {}),
-            grant=temporary_access_grant,
-            operation=temporary_access_operation,
+            settings_seed=settings_seed,
+            deploy_fix_attempt=msg.deploy_fix_attempt,
             fence=fence,
         )
-        if failure is not None:
-            return await _handle_owner_access_failure(
-                result=result,
-                task_id=task_id,
-                project_id=project_id,
-                callback_stream=callback_stream,
-                telegram_chat_id=telegram_chat_id,
-                redis=redis,
-                reason=failure,
-                application_id=application_id,
-                deploy_fix_attempt=msg.deploy_fix_attempt,
-                fence=fence,
-            )
-
-    if temporary_access_operation is not None:
-        # A capability operation redeploys the artifact the target is already
-        # running for one reason: to write or take away the QA identity's access.
-        # Its proof is the readback above. Seeding the project's confirmed
-        # settings here would be the work of a story deploy done against somebody
-        # else's artifact — and on 2026-09-19 it was: a revoke that had already
-        # proved the access inactive was recorded `settings_seed_failed` because
-        # the *next* story's confirmed brief declares a key the still-deployed
-        # commit does not, so the grant never reached REVOKED and held the target
-        # against that story's own QA handoff.
-        settings_seed: list[SettingSeedOutcome] = []
-        logger.info(
-            "deploy_settings_seed_not_a_product_deploy",
-            task_id=task_id,
-            temporary_access_operation=temporary_access_operation,
-        )
-    else:
-        settings_seed = await _seed_initial_settings(
-            task_id=task_id,
-            project_id=project_id,
-            story_id=story_id,
-            deployed_url=result["deployed_url"],
-            secret_values=result.get("secret_values", {}),
-            fence=fence,
-        )
-        failures = settings_seed_failure_kinds(settings_seed)
-        if failures:
-            return await _handle_settings_seed_failure(
-                result=result,
-                task_id=task_id,
-                project_id=project_id,
-                callback_stream=callback_stream,
-                telegram_chat_id=telegram_chat_id,
-                redis=redis,
-                failures=failures,
-                application_id=application_id,
-                settings_seed=settings_seed,
-                deploy_fix_attempt=msg.deploy_fix_attempt,
-                fence=fence,
-            )
 
     logger.info(
         "deploy_job_success",
@@ -343,71 +299,6 @@ async def _apply_grant_intent(  # noqa: PLR0913
     return None
 
 
-async def _apply_temporary_access_operation(
-    *,
-    task_id: str,
-    project_id: str,
-    application_id: int | None,
-    secret_values: dict,
-    grant: TemporaryAccessGrantDTO,
-    operation: str,
-    fence: DeployFence,
-) -> str | None:
-    """Use this deploy's capability only while its durable operation is current.
-
-    The remote grant or revoke checks the deploy lock after the grant is re-read,
-    immediately before it is made.
-    """
-    if (
-        grant.project_id != project_id
-        or application_id != grant.target_application_id
-        or operation not in {"grant", "revoke"}
-    ):
-        return "temporary_access_target_mismatch"
-    # The grant was read before the deploy began. Recovery can replace it with
-    # cleanup while that deploy is still queued or running, so the durable
-    # operation transition is re-read immediately before the remote effect.
-    # A delayed delivery must never re-grant after a proved revoke.
-    current = await api_client.get_temporary_access_grant(grant.id)
-    expected_run_id = current.grant_run_id if operation == "grant" else current.revoke_run_id
-    expected_status = (
-        TemporaryAccessStatus.GRANTING if operation == "grant" else TemporaryAccessStatus.REVOKING
-    )
-    if current.status is not expected_status or expected_run_id != task_id:
-        logger.info(
-            "temporary_access_operation_superseded",
-            grant_id=grant.id,
-            task_id=task_id,
-            operation=operation,
-            status=current.status.value,
-        )
-        return "temporary_access_operation_superseded"
-    if (
-        current.project_id != project_id
-        or application_id != current.target_application_id
-        or current.head_sha != grant.head_sha
-    ):
-        return "temporary_access_target_mismatch"
-    capability = secret_values.get(_USERS_GRANT_CAPABILITY)
-    if not isinstance(capability, str) or not capability:
-        return "capability_unavailable"
-    client = GeneratedServiceGrantClient(current.target_base_url)
-    await fence.ensure_held(DeployWrite.PRODUCT_ACCESS)
-    if operation == "grant":
-        proof = await client.grant_and_resolve(
-            channel=current.channel, external_id=current.external_id, capability=capability
-        )
-        if proof.active:
-            return None
-    else:
-        proof = await client.revoke_and_resolve(
-            channel=current.channel, external_id=current.external_id, capability=capability
-        )
-        if not proof.active and proof.failure is None:
-            return None
-    return proof.failure.value if proof.failure is not None else "unverified"
-
-
 async def _seed_initial_settings(
     *,
     task_id: str,
@@ -433,9 +324,7 @@ async def _seed_initial_settings(
     none — the owner-grant deploy of a fresh project is the only *product*
     deploy such a product gets — reads the project's latest confirmed brief
     carrying settings, so the product never reaches QA unseeded. Either way one
-    event says which brief was found, or that there was nothing to seed. A
-    temporary-access capability operation also names no story and is not a
-    product deploy at all; its caller keeps it out of here.
+    event says which brief was found, or that there was nothing to seed.
     """
     if story_id:
         route = "story"

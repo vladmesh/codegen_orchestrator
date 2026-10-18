@@ -1468,3 +1468,44 @@ async def test_scoped_cache_refreshes_inside_five_minutes(client, mock_jwt):
             assert await client.get_repo_scoped_token("my-org", "repo-a") == "synthetic-current"
             assert await client.get_repo_scoped_token("my-org", "repo-a") == "synthetic-current"
         assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fence_guards_each_cancellation_and_raises_its_refusal_unchanged(authed_client):
+    """The guard runs before every cancel request; its own refusal is not 'unproven'."""
+
+    class Refused(Exception):
+        pass
+
+    authed_client.get_token = AsyncMock(return_value="token")
+    cancelled: list[int] = []
+    states = {42: "in_progress", 43: "queued"}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/runs"):
+            status = request.url.params["status"]
+            listed = [{"id": i, "status": s} for i, s in states.items() if s == status]
+            return httpx.Response(200, json={"workflow_runs": listed})
+        if path.endswith("/cancel"):
+            run_id = int(path.split("/")[-2])
+            cancelled.append(run_id)
+            states[run_id] = "completed"
+            return httpx.Response(202)
+        run_id = int(path.rsplit("/", 1)[-1])
+        return httpx.Response(200, json={"id": run_id, "status": states[run_id]})
+
+    checks: list[int] = []
+
+    async def guard() -> None:
+        checks.append(len(cancelled))
+        if cancelled:
+            raise Refused("lock lost")
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.route(host="api.github.com").mock(side_effect=handle)
+        with pytest.raises(Refused):
+            await authed_client.fence_workflow("my-org", "my-repo", "deploy.yml", guard=guard)
+
+    assert checks == [0, 1]
+    assert len(cancelled) == 1

@@ -152,7 +152,8 @@ intents, even when it carries a deployment SHA.
 Temporary QA access uses the same generated-service capability but a distinct
 durable record. It binds the central QA Telegram identity, application, base URL,
 and SHA before dispatch. Grant and revoke each require the matching active or
-inactive `/users/access` readback; the capability remains in deploy-local memory.
+inactive `/users/access` readback without a redeploy; the stored capability is
+decrypted only in the deploy consumer's memory.
 The reconciler retries only the record's immutable target. Missing or stale grant
 and revoke operation Runs consume their separately recorded, bounded attempt
 budgets. A revoke that exceeds its attempt or unrevoked-time bound receives one
