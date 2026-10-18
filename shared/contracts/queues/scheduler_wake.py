@@ -20,6 +20,7 @@ class SchedulerWakeTarget(StrEnum):
 
     STORY_COMPLETION = "story_completion"
     TASK_DISPATCHER = "task_dispatcher"
+    LIFECYCLE_SUPERVISION = "lifecycle_supervision"
 
 
 class SchedulerWakeHint(BaseModel):

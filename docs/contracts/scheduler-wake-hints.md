@@ -11,7 +11,8 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - Message: the JSON body of `SchedulerWakeHint` in `shared/contracts/queues/scheduler_wake.py`,
   for example `{"target":"story_completion"}`. `target` is a `SchedulerWakeTarget`; no other
   field is accepted.
-- Targets: `story_completion` and `task_dispatcher`; each wakes only the loop of that name.
+- Targets: `story_completion`, `task_dispatcher` and `lifecycle_supervision`; each wakes only the
+  loop of that name.
 - A hint carries routing only: no credentials, ids, correlation metadata or business state. It
   grants no permission to transition a Story, Task or Run and never invokes a business action.
 - Producers publish with `shared.redis.scheduler_wake.publish_scheduler_wake` after the durable
@@ -23,6 +24,7 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 |---|---|---|
 | `story_completion` | api Task routes `POST /tasks/{id}/complete`, `POST /tasks/{id}/transition`, `DELETE /tasks/{id}`; langgraph engineering success settlement (`handle_engineering_success`) | scheduler-pipeline `story_completion` loop |
 | `task_dispatcher` | api Product Brief admission `POST /product-briefs/{id}/admit` | scheduler-pipeline `task_dispatcher` loop |
+| `lifecycle_supervision` | api Run update `PATCH /runs/{id}` on the first typed success of an ordinary story deploy | scheduler-pipeline `lifecycle_supervision` loop |
 
 ## Producers
 
@@ -69,6 +71,35 @@ path, and the awakened cycle decides from the same durable Story/Task/Run state 
 - Every other write that can make a Task dispatchable still waits for the interval: Task creation
   in `todo`, operator resume and retry, a blocker reaching `done`, a Story start or an engineering
   stop release, a freed paid-work slot, and the catalog install and repair paths.
+
+### `lifecycle_supervision`
+
+- `PATCH /runs/{id}` publishes one `lifecycle_supervision` hint when the request gives a
+  story-scoped `deploy` Run its first terminal typed success: the locked row before the update
+  lacks, and the final row holds, a terminal status with a result that validates as
+  `DeployRunResult` with `deploy_outcome` `success`, the proof the deploy supervisor routes to its
+  QA handoff. A status and result written in two requests publish on the second, and a late
+  success on a cancelled deploy without a result publishes too.
+- The route publishes on the initialized Redis client right after its own `db.commit()` returns
+  and before the response refresh. An identical terminal replay, a metadata-only update, an
+  intermediate status, a terminal write without a result, a non-success or malformed result,
+  another Run type, a storyless Run, a refused request and a failed commit publish nothing. The
+  classification never refuses or fails a write.
+- A temporary-access grant or revoke Run publishes nothing: `temporary_access_grant_id` or
+  `temporary_access_operation` as a key of the stored or the final metadata, with a null value or
+  cleared by the update, names the `temporary_access` loop as the owner of its proof.
+- The langgraph deploy consumer records its success through this route before its callbacks, so
+  this hint covers it; it publishes no hint of its own.
+- The awakened cycle runs the unchanged `supervise_lifecycle_once` sweeps in their order with
+  per-sweep error isolation; the deploy supervisor still decides the handoff from the durable
+  Story and its latest deploy Run, and the hint hands off nothing.
+- A Redis or socket error on publish is logged as `lifecycle_supervision_wake_failed` with the run
+  id, the story id and the error type only; the committed Run and its response are unchanged.
+  Cancellation propagates. There is no retry.
+- Every other write that lifecycle supervision acts on still waits for the interval: a
+  non-success deploy outcome, temporary-access grant and revoke proof, a queued deploy handoff
+  awaiting recovery, a stuck, failed or resource-waiting Task, an awaited user secret, and every
+  recovery, direct-database, install, repair or takeover write.
 
 ## Listener
 

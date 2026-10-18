@@ -1,5 +1,6 @@
 """A committed story Task change to done or cancelled publishes the story-completion hint."""
 
+from _api_calls import call_api
 from httpx import AsyncClient
 import pytest
 from sqlalchemy import select
@@ -11,18 +12,12 @@ from shared.models import Task
 STORY_COMPLETION = [SchedulerWakeTarget.STORY_COMPLETION]
 
 
-async def _call(client: AsyncClient, method: str, path: str, status: int = 200, **kwargs):
-    response = await client.request(method, path, **kwargs)
-    assert response.status_code == status, response.text
-    return response.json()
-
-
 async def _story_task(client: AsyncClient, project_id: str, *, in_dev: bool = True) -> str:
-    story = await _call(
+    story = await call_api(
         client, "POST", "/api/stories/", 201, json={"project_id": project_id, "title": "Wake"}
     )
-    await _call(client, "POST", f"/api/stories/{story['id']}/start", json={"actor": "test"})
-    task = await _call(
+    await call_api(client, "POST", f"/api/stories/{story['id']}/start", json={"actor": "test"})
+    task = await call_api(
         client,
         "POST",
         "/api/tasks/",
@@ -40,7 +35,7 @@ async def _story_task(client: AsyncClient, project_id: str, *, in_dev: bool = Tr
 
 
 async def _transition(client: AsyncClient, task_id: str, to_status: str, status: int = 200):
-    return await _call(
+    return await call_api(
         client,
         "POST",
         f"/api/tasks/{task_id}/transition",
@@ -62,7 +57,7 @@ async def test_complete_publishes_one_hint_after_committing_done(
     task_id = await _story_task(async_client, _tasks_project)
     assert await wake_hints.published() == []
 
-    completed = await _call(async_client, "POST", f"/api/tasks/{task_id}/complete")
+    completed = await call_api(async_client, "POST", f"/api/tasks/{task_id}/complete")
 
     assert completed["status"] == "done"
     assert await wake_hints.published() == STORY_COMPLETION
@@ -104,10 +99,10 @@ async def test_delete_publishes_once_and_a_repeated_delete_is_silent(
     task_id = await _story_task(async_client, _tasks_project, in_dev=False)
     await wake_hints.published()
 
-    await _call(async_client, "DELETE", f"/api/tasks/{task_id}")
+    await call_api(async_client, "DELETE", f"/api/tasks/{task_id}")
     assert await wake_hints.published() == STORY_COMPLETION
 
-    repeated = await _call(async_client, "DELETE", f"/api/tasks/{task_id}")
+    repeated = await call_api(async_client, "DELETE", f"/api/tasks/{task_id}")
     assert repeated["status"] == "cancelled"
     assert await wake_hints.published() == []
     assert await _committed_status(db_engine, task_id) == "cancelled"
@@ -121,18 +116,18 @@ async def test_refused_and_storyless_changes_publish_nothing(
     await wake_hints.published()
 
     await _transition(async_client, task_id, "done", status=422)
-    await _call(async_client, "POST", f"/api/tasks/{task_id}/complete", 422)
+    await call_api(async_client, "POST", f"/api/tasks/{task_id}/complete", 422)
     assert await wake_hints.published() == []
     assert await _committed_status(db_engine, task_id) == "todo"
 
-    storyless = await _call(
+    storyless = await call_api(
         async_client,
         "POST",
         "/api/tasks/",
         201,
         json={"project_id": _tasks_project, "title": "Storyless"},
     )
-    await _call(async_client, "POST", f"/api/tasks/{storyless['id']}/start")
-    await _call(async_client, "POST", f"/api/tasks/{storyless['id']}/complete")
+    await call_api(async_client, "POST", f"/api/tasks/{storyless['id']}/start")
+    await call_api(async_client, "POST", f"/api/tasks/{storyless['id']}/complete")
     assert await wake_hints.published() == []
     assert await _committed_status(db_engine, storyless["id"]) == "done"

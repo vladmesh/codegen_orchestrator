@@ -330,7 +330,6 @@ async def test_pipeline_starts_without_loki(monkeypatch):
         "story_supervision",
     ]
     assert workers["scaffold"] is pipeline.scaffold_loop
-    assert workers["lifecycle_supervision"] is pipeline.lifecycle_supervision_loop
     assert workers["qa_routing"] is pipeline.qa_routing_loop
     assert workers["pr_ci"] is pipeline.pr_ci_loop
     assert workers["worker_reconciliation"] is pipeline.worker_reconciliation_loop
@@ -346,12 +345,26 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
     from shared.redis.scheduler_wake import publish_scheduler_wake
     from src import pipeline
-    from src.tasks import scheduler_wake_listener, story_completion_loop, task_dispatcher
+    from src.tasks import (
+        lifecycle_supervision_loop,
+        scheduler_wake_listener,
+        story_completion_loop,
+        task_dispatcher,
+    )
 
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
     broker = Broker()
     journal: list[str] = []
+    lifecycle_sweeps = [
+        "supervise_stuck_stories",
+        "supervise_stuck_tasks",
+        "supervise_failed_tasks",
+        "supervise_waiting_resource_tasks",
+        "supervise_application_deploy_handoffs",
+        "supervise_deploying_stories",
+        "supervise_waiting_user_secret_stories",
+    ]
 
     def record(step: str, result: object = None) -> AsyncMock:
         return AsyncMock(side_effect=lambda *_args: journal.append(step) or result)
@@ -366,6 +379,10 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     monkeypatch.setattr(task_dispatcher, "dispatch_todo_tasks", record("dispatch", 0))
     monkeypatch.setattr(task_dispatcher, "_recover_catalog_installs", record("recover"))
     monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 3600)
+    monkeypatch.setattr(lifecycle_supervision_loop, "RedisStreamClient", broker.client)
+    for sweep in lifecycle_sweeps:
+        monkeypatch.setattr(lifecycle_supervision_loop, sweep, record(sweep, {}))
+    monkeypatch.setattr(lifecycle_supervision_loop, "_lifecycle_supervision_interval", lambda: 3600)
     monkeypatch.setattr(scheduler_wake_listener, "_reconnect_interval", lambda: 3600)
     await pipeline.main()
     workers = dict(run_workers.await_args.args[0])
@@ -373,13 +390,14 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     tasks = [
         asyncio.create_task(workers["task_dispatcher"]()),
         asyncio.create_task(workers["story_completion"]()),
+        asyncio.create_task(workers["lifecycle_supervision"]()),
         asyncio.create_task(
             workers["scheduler_wake"](redis_factory=broker.client, sleep=Timers().sleep)
         ),
     ]
     await broker.subscribed()
     await settle()
-    assert sorted(journal) == ["complete", "dispatch", "recover"]
+    assert sorted(journal) == sorted(["complete", "dispatch", "recover", *lifecycle_sweeps])
     publisher = broker.client()
     await publisher.connect()
 
@@ -392,6 +410,11 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
     await publish_scheduler_wake(publisher, SchedulerWakeTarget.STORY_COMPLETION)
     await settle()
     assert journal == ["complete"]
+
+    journal.clear()
+    await publish_scheduler_wake(publisher, SchedulerWakeTarget.LIFECYCLE_SUPERVISION)
+    await settle()
+    assert journal == lifecycle_sweeps
 
     for task in tasks:
         task.cancel()

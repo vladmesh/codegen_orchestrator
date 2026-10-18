@@ -11,12 +11,9 @@ import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.exc import OperationalError
 from structlog.testing import capture_logs
+from wake_doubles import NativeRedis
 
-from shared.contracts.queues.scheduler_wake import (
-    SCHEDULER_WAKE_CHANNEL,
-    SchedulerWakeTarget,
-    parse_scheduler_wake_hint,
-)
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from src.routers._task_actions import complete_task, transition_task
 from src.routers.tasks import cancel_task
 
@@ -90,27 +87,6 @@ class Session:
 
     async def refresh(self, row) -> None:
         self.journal.append(("refresh",))
-
-
-class NativeRedis:
-    """The initialized client's native Pub/Sub publish."""
-
-    def __init__(self, journal: list) -> None:
-        self.journal = journal
-        self.receivers = 1
-        self.hold: asyncio.Event | None = None
-        self.held = asyncio.Event()
-        self.failure: BaseException | None = None
-
-    async def publish(self, channel: str, message: str) -> int:
-        if self.hold is not None:
-            self.held.set()
-            await self.hold.wait()
-        if self.failure is not None:
-            raise self.failure
-        assert channel == SCHEDULER_WAKE_CHANNEL
-        self.journal.append(("wake", parse_scheduler_wake_hint(message).target))
-        return self.receivers
 
 
 @pytest.fixture

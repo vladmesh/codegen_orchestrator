@@ -6,10 +6,10 @@ QA was released anyway and the QA identity was answered "no access". Here the
 sweep runs against the real API with the grant run in exactly that state.
 """
 
-import json
 import os
 import uuid
 
+from _qa_queue import qa_messages_for
 import httpx
 import pytest
 
@@ -22,7 +22,6 @@ from shared.contracts.dto.run_result import (
 from shared.contracts.dto.temporary_access import TemporaryAccessRevokeReason, TemporaryAccessStatus
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAMessage, QAOutcome
-from shared.queues import QA_QUEUE
 from shared.redis import RedisStreamClient
 from shared.tests.ssh_key_fixtures import fleet_private_key
 from src.tasks.temporary_access import (
@@ -174,11 +173,6 @@ async def _complete_operation(
     assert settled.status_code == httpx.codes.OK, settled.text
 
 
-async def _qa_messages_for(redis_client: RedisStreamClient, qa_run_id: str) -> int:
-    entries = await redis_client.redis.xrange(QA_QUEUE)
-    return sum(1 for _, fields in entries if json.loads(fields["data"])["run_id"] == qa_run_id)
-
-
 async def _start_grant(
     api_client, redis_client, project_id: str, application_id: int, qa_run_id: str
 ) -> None:
@@ -222,7 +216,7 @@ async def test_skipped_grant_runs_never_release_qa_and_end_in_the_access_blocker
             DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA,
         )
         await supervise_temporary_access(api_client, redis_client)
-        assert await _qa_messages_for(redis_client, qa_run_id) == 0
+        assert await qa_messages_for(redis_client, qa_run_id) == 0
 
     grant = await _grant(async_client, qa_run_id)
     assert grant["status"] == TemporaryAccessStatus.REVOKING.value
@@ -231,7 +225,7 @@ async def test_skipped_grant_runs_never_release_qa_and_end_in_the_access_blocker
     qa_run = (await async_client.get(f"/api/runs/{qa_run_id}")).json()
     assert qa_run["status"] == "failed"
     assert qa_run["result"]["blocker"]["category"] == QABlockerCategory.QA_ACCESS_GRANT_FAILED.value
-    assert await _qa_messages_for(redis_client, qa_run_id) == 0
+    assert await qa_messages_for(redis_client, qa_run_id) == 0
 
 
 @pytest.mark.asyncio
@@ -248,7 +242,7 @@ async def test_confirmed_grant_releases_qa_exactly_once(async_client, api_client
     grant = await _grant(async_client, qa_run_id)
     assert grant["status"] == TemporaryAccessStatus.GRANTED.value
     assert grant["qa_dispatched_at"] is not None
-    assert await _qa_messages_for(redis_client, qa_run_id) == 1
+    assert await qa_messages_for(redis_client, qa_run_id) == 1
 
 
 async def _qa_run_on(client: _API, project_id: str, application_id: int) -> str:

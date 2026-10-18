@@ -33,6 +33,7 @@ import json
 import os
 import uuid
 
+from _story_scope import OnlyStory
 import asyncpg
 import httpx
 import pytest
@@ -142,26 +143,6 @@ class _PullRequest:
         assert number == PR_NUMBER
         self._reads += 1
         return dict(self.observed if self._reads == 1 else self.current)
-
-
-class _OnlyStory:
-    """The real API client, with every status scan narrowed to one story.
-
-    The service database is shared by every test in the session, so a
-    supervisor that scans a status must not reach another test's stories.
-    Every other call is the real client's.
-    """
-
-    def __init__(self, api_client, story_id: str) -> None:
-        self._api = api_client
-        self._story_id = story_id
-
-    async def get_stories_by_status(self, status) -> list:
-        stories = await self._api.get_stories_by_status(status)
-        return [story for story in stories if story.id == self._story_id]
-
-    def __getattr__(self, name: str):
-        return getattr(self._api, name)
 
 
 class _ReadBeforeTheMove:
@@ -402,7 +383,7 @@ async def _deploying(api_client, redis_client, *, outcome: str | None) -> _Wait:
     run_id = await _running_deploy_run(api_client, project_id, story_id, app_id)
 
     async def routing():
-        return await supervise_deploying_stories(_OnlyStory(api_client, story_id), redis_client)
+        return await supervise_deploying_stories(OnlyStory(api_client, story_id), redis_client)
 
     wait = _Wait(story_id, StoryStatus.DEPLOYING, RunType.DEPLOY, routing)
     if outcome == "success":
@@ -465,7 +446,7 @@ async def _testing(api_client, redis_client, *, passes: bool) -> _Wait:
     await _age_run(qa_run_id, AGED[StoryStatus.TESTING])
 
     async def routing():
-        return await supervise_testing_stories(_OnlyStory(api_client, story_id), redis_client)
+        return await supervise_testing_stories(OnlyStory(api_client, story_id), redis_client)
 
     wait = _Wait(story_id, StoryStatus.TESTING, RunType.QA, routing)
     if passes:
@@ -485,7 +466,7 @@ async def _pr_review(api_client, github: _PullRequest, *, merges: bool) -> _Wait
     await _application(api_client, project_id)
     story_id = await _story(api_client, project_id, "start", "pr_review")
     await _call(api_client, "PATCH", f"stories/{story_id}", json={"pr_number": PR_NUMBER})
-    scoped = _OnlyStory(api_client, story_id)
+    scoped = OnlyStory(api_client, story_id)
 
     async def routing():
         # The PR poller's writes for a merged pull request whose images are
@@ -534,7 +515,7 @@ async def _waiting_user_secret(api_client, redis_client, *, secret_saved: bool) 
             "missing_user_secrets": [{"key": "STRIPE_KEY", "description": "Stripe secret key"}],
         },
     )
-    scoped = _OnlyStory(api_client, story_id)
+    scoped = OnlyStory(api_client, story_id)
     # The real entry into the wait: the ask is owed, the story moves, the ask
     # is delivered — and its delivery is then aged past the bound.
     await supervise_deploying_stories(scoped, redis_client)
@@ -658,7 +639,7 @@ async def test_a_genuinely_expired_wait_ends_exactly_once(
     counts: dict[str, int] = {}
 
     async def watchdog():
-        counts.update(await supervise_state_age_bounds(_OnlyStory(api_client, wait.story_id), po))
+        counts.update(await supervise_state_age_bounds(OnlyStory(api_client, wait.story_id), po))
 
     await _in_order(order, watchdog, wait.routing)
     # A later pass that still read the old status asks again: a typed no-op.

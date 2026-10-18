@@ -35,6 +35,7 @@ from dataclasses import dataclass
 import os
 import uuid
 
+from _story_scope import OnlyStory
 import httpx
 import pytest
 
@@ -62,26 +63,6 @@ _NOTHING = {"entered": 0, "still_there": 0, "unaddressable": 0}
 
 
 # --- the world around the sweep -------------------------------------------
-
-
-class _OnlyStory:
-    """The real API client, with every status scan narrowed to one story.
-
-    The service database is shared by every test in the session, so a
-    supervisor that scans a status must not reach another test's stories.
-    Every other call is the real client's.
-    """
-
-    def __init__(self, api_client, story_id: str) -> None:
-        self._api = api_client
-        self._story_id = story_id
-
-    async def get_stories_by_status(self, status) -> list:
-        stories = await self._api.get_stories_by_status(status)
-        return [story for story in stories if story.id == self._story_id]
-
-    def __getattr__(self, name: str):
-        return getattr(self._api, name)
 
 
 class _ScannedBeforeTheMove:
@@ -288,7 +269,7 @@ async def _deploying(api_client, redis_client, *, succeeds: bool) -> _Stay:
     await _call(api_client, "PATCH", f"runs/{run_id}", json={"status": "running"})
 
     async def routing():
-        return await supervise_deploying_stories(_OnlyStory(api_client, story_id), redis_client)
+        return await supervise_deploying_stories(OnlyStory(api_client, story_id), redis_client)
 
     stay = _Stay(story_id, StoryStatus.DEPLOYING, routing)
     if succeeds:
@@ -338,7 +319,7 @@ async def _testing(api_client, redis_client, *, passes: bool) -> _Stay:
     await _call(api_client, "PATCH", f"runs/{qa_run_id}", json={"status": "running"})
 
     async def routing():
-        return await supervise_testing_stories(_OnlyStory(api_client, story_id), redis_client)
+        return await supervise_testing_stories(OnlyStory(api_client, story_id), redis_client)
 
     stay = _Stay(story_id, StoryStatus.TESTING, routing)
     if passes:
@@ -407,7 +388,7 @@ async def test_a_stage_the_story_has_left_is_never_announced(api_client, redis_c
         assert marker is None
 
     # The next sweep scans the story where it is now, and announces that.
-    after = await supervise_stage_notices(_OnlyStory(api_client, stay.story_id), redis_client)
+    after = await supervise_stage_notices(OnlyStory(api_client, stay.story_id), redis_client)
 
     now_said = _said(await _notices(redis_client, stay.story_id))
     marker = await read_stage_notice_marker(redis_client, stay.story_id)
@@ -453,7 +434,7 @@ async def test_a_story_that_stays_is_announced_once_per_interval(
 
     # Later sweeps inside the quiet interval, with the old scan and a fresh one alike.
     again = await supervise_stage_notices(scan, redis_client)
-    fresh = await supervise_stage_notices(_OnlyStory(api_client, stay.story_id), redis_client)
+    fresh = await supervise_stage_notices(OnlyStory(api_client, stay.story_id), redis_client)
 
     assert again == _NOTHING
     assert fresh == _NOTHING

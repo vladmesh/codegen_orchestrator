@@ -1,11 +1,13 @@
 """Runs router (execution layer)."""
 
 from datetime import UTC, datetime
+from typing import NamedTuple
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, ValidationError
+from redis.exceptions import RedisError
 from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -34,12 +36,17 @@ from shared.contracts.dto.owner_notification import (
 from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResult
+from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Project, Run, User
+from shared.redis.client import RedisStreamClient
+from shared.redis.scheduler_wake import publish_scheduler_wake
 
 from ..database import get_async_session
 from ..dependencies import (
     _optional_bearer_scheme,
+    get_redis_client,
     is_internal_service,
     require_internal_or_admin,
     resolve_actor,
@@ -64,6 +71,10 @@ _TERMINAL_RUN_STATUSES = frozenset(
 # What a run says happened. The first recorded outcome owns these fields; QA
 # cancellation is an outcome even without a typed result.
 _OUTCOME_FIELDS = ("status", "result", "error_message")
+
+# Temporary-access grant and revoke Runs are deploys owned by the temporary-access
+# sweep; either key names that owner, even with a null value.
+_TEMPORARY_ACCESS_METADATA_KEYS = ("temporary_access_grant_id", "temporary_access_operation")
 
 # Largest page the QA grant selection will hand out at once. The page bounds one
 # response, never the coverage: the caller walks pages from a cursor until one
@@ -601,6 +612,62 @@ def _has_recorded_outcome(run: Run) -> bool:
     )
 
 
+class _DeploySuccessProof(NamedTuple):
+    """What one Run row says about the lifecycle wake: its proof and its owner."""
+
+    proved: bool
+    temporary_access: bool
+
+
+def _deploy_success_proof(run: Run) -> _DeploySuccessProof:
+    metadata = run.run_metadata or {}
+    return _DeploySuccessProof(
+        proved=_holds_story_deploy_success(run),
+        temporary_access=any(key in metadata for key in _TEMPORARY_ACCESS_METADATA_KEYS),
+    )
+
+
+def _holds_story_deploy_success(run: Run) -> bool:
+    """Whether a story deploy row holds the terminal typed success its supervisor routes."""
+    if run.type != RunType.DEPLOY.value or run.story_id is None:
+        return False
+    if run.status not in _TERMINAL_RUN_STATUSES or run.result is None:
+        return False
+    try:
+        result = DeployRunResult.model_validate(run.result)
+    except ValidationError:
+        return False
+    return result.deploy_outcome is DeployOutcome.SUCCESS
+
+
+async def _wake_on_first_deploy_success(
+    before: _DeploySuccessProof, run: Run, redis: RedisStreamClient
+) -> None:
+    """Hint the lifecycle sweep once an ordinary story deploy's first success has committed.
+
+    A lost hint waits for the sweep's interval.
+    """
+    after = _deploy_success_proof(run)
+    if before.proved or not after.proved or before.temporary_access or after.temporary_access:
+        return
+    try:
+        receivers = await publish_scheduler_wake(redis, SchedulerWakeTarget.LIFECYCLE_SUPERVISION)
+    except (RedisError, OSError) as exc:
+        logger.warning(
+            "lifecycle_supervision_wake_failed",
+            run_id=run.id,
+            story_id=run.story_id,
+            error_type=type(exc).__name__,
+        )
+        return
+    logger.info(
+        "lifecycle_supervision_wake_published",
+        run_id=run.id,
+        story_id=run.story_id,
+        receivers=receivers,
+    )
+
+
 async def _lock_terminal_context(run_id, db):
     # Discover identities only, then descend the engineering lock ladder.
     from ..attempt_disposition import lock_story_attempts
@@ -712,6 +779,7 @@ async def update_run(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+    redis: RedisStreamClient = Depends(get_redis_client),
 ) -> Run:
     """Update run status and result.
 
@@ -722,8 +790,12 @@ async def update_run(
     commits last is what the story reads. Reading under the lock makes the two
     writers take turns, so the second one sees the first one's answer and is
     refused by the same rules that exist to refuse it.
+
+    Once the first terminal typed success of an ordinary story deploy has committed,
+    the lifecycle supervision loop is woken.
     """
     run, story, task = await _lock_terminal_context(run_id, db)
+    proof_before = _deploy_success_proof(run)
 
     # Only services acting for themselves, and admins, can update runs
     actor = await resolve_actor(
@@ -862,6 +934,7 @@ async def update_run(
     await _settle_terminal_accounting(run, engineering_attempt, qa_accounting, db)
 
     await db.commit()
+    await _wake_on_first_deploy_success(proof_before, run, redis)
     await db.refresh(run)
 
     logger.info(
