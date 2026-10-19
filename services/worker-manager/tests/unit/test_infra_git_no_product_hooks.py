@@ -86,13 +86,15 @@ def _make_product_repo(tmp_path: Path) -> tuple[Path, Path]:
     return remote, workspace
 
 
-def _run_checkout_script(workspace: Path, branch: str) -> subprocess.CompletedProcess[str]:
+def _run_checkout_script(
+    workspace: Path, branch: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run the real script, with only its hard-coded `/workspace` redirected."""
     script = git_ops.build_checkout_script(branch)
     assert "cd /workspace" in script
     script = script.replace("cd /workspace", f"cd {workspace}", 1)
     return subprocess.run(  # noqa: S603
-        ["bash", "-c", script], capture_output=True, text=True, timeout=60
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
     )
 
 
@@ -109,6 +111,35 @@ def _advance_remote(remote: Path, tmp_path: Path, branch: str, message: str) -> 
     _git(side, "commit", "-m", message)
     _git(side, "push", "-u", "origin", branch)
     return _git(side, "rev-parse", "HEAD")
+
+
+def _record_remote_commands(tmp_path: Path, workspace: Path) -> Path:
+    """Log each connection the workspace opens to origin, as the remote side starts it."""
+    log = tmp_path / "remote-commands"
+    for service in ("upload-pack", "receive-pack"):
+        wrapper = tmp_path / f"record-{service}"
+        wrapper.write_text(f"#!/bin/sh\necho {service} >> '{log}'\nexec git {service} \"$@\"\n")
+        wrapper.chmod(0o755)
+        _git(workspace, "config", f"remote.origin.{service.replace('-', '')}", str(wrapper))
+    return log
+
+
+# Advertisement, fetch, upstream push, exact readback.
+_PREPARATION_COMMANDS = ["upload-pack", "upload-pack", "receive-pack", "upload-pack"]
+
+
+def _git_shim(tmp_path: Path, on_fetch: str) -> dict[str, str]:
+    """An environment whose `git` runs `on_fetch` before each `fetch origin`."""
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        f'case "$*" in *"fetch origin"*) {on_fetch} ;; esac\n'
+        f'exec "{shutil.which("git")}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return {**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"}
 
 
 # --- Criterion 1: no product hook on an infrastructure command ---
@@ -186,51 +217,153 @@ async def test_a_new_story_branch_is_cut_from_the_fetched_default_branch(tmp_pat
     assert _git(workspace, "rev-parse", "HEAD") != stale_head
 
 
-async def test_checkout_converges_after_branch_fetch_failed_following_default_fetch(tmp_path):
+async def test_a_new_branch_is_prepared_from_a_renamed_default_in_four_remote_commands(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    _git(remote, "branch", "-m", "main", "trunk")
+    _git(remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+    trunk = _advance_remote(remote, tmp_path, "trunk", "trunk moved on")
+    log = _record_remote_commands(tmp_path, workspace)
+
+    result = _run_checkout_script(workspace, "story/new")
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().split() == _PREPARATION_COMMANDS
+    assert f"CODEGEN_CHECKOUT_HEAD={trunk}" in result.stdout
+    assert _git(workspace, "rev-parse", "HEAD") == trunk
+    assert _git(remote, "rev-parse", "refs/heads/story/new") == trunk
+    assert _git(workspace, "rev-parse", "--abbrev-ref", "@{upstream}") == "origin/story/new"
+    assert _git(workspace, "config", "core.hooksPath") == ".githooks"
+
+
+async def test_a_resumed_branch_fast_forwards_in_four_remote_commands(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    branch = "story/resumed"
+    assert _run_checkout_script(workspace, branch).returncode == 0
+    tip = _advance_remote(remote, tmp_path, branch, "remote turn")
+    main_tip = _advance_remote(remote, tmp_path, "main", "main moved on")
+    log = _record_remote_commands(tmp_path, workspace)
+
+    result = _run_checkout_script(workspace, branch)
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().split() == _PREPARATION_COMMANDS
+    assert f"CODEGEN_CHECKOUT_HEAD={tip}" in result.stdout
+    assert _git(workspace, "rev-parse", "HEAD") == tip
+    assert _git(remote, "rev-parse", f"refs/heads/{branch}") == tip
+    assert _git(workspace, "rev-parse", "refs/remotes/origin/main") == main_tip
+    assert _git(workspace, "rev-parse", "--abbrev-ref", "@{upstream}") == f"origin/{branch}"
+    assert _git(workspace, "config", "core.hooksPath") == ".githooks"
+
+
+async def test_a_branch_that_is_the_default_is_fetched_once(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    main_tip = _advance_remote(remote, tmp_path, "main", "main moved on")
+    log = _record_remote_commands(tmp_path, workspace)
+
+    result = _run_checkout_script(workspace, "main")
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().split() == _PREPARATION_COMMANDS
+    assert _git(workspace, "rev-parse", "HEAD") == main_tip
+    assert _git(remote, "rev-parse", "refs/heads/main") == main_tip
+    assert _git(workspace, "rev-parse", "--abbrev-ref", "@{upstream}") == "origin/main"
+
+
+async def test_a_stale_tracking_ref_does_not_stand_for_an_absent_remote_branch(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    branch = "story/deleted"
+    assert _run_checkout_script(workspace, branch).returncode == 0
+    (workspace / "old.txt").write_text("old story")
+    _git(workspace, "add", "old.txt")
+    _git(workspace, "commit", "-m", "old story")
+    _git(workspace, "-c", "core.hooksPath=/dev/null", "push")
+    stale = _git(workspace, "rev-parse", "HEAD")
+    _git(workspace, "checkout", "main")
+    _git(workspace, "branch", "-D", branch)
+    _git(remote, "branch", "-D", branch)
+    main_tip = _advance_remote(remote, tmp_path, "main", "main moved on")
+    assert _git(workspace, "rev-parse", f"refs/remotes/origin/{branch}") == stale
+    log = _record_remote_commands(tmp_path, workspace)
+
+    result = _run_checkout_script(workspace, branch)
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().split() == _PREPARATION_COMMANDS
+    assert _git(workspace, "rev-parse", "HEAD") == main_tip
+    assert _git(remote, "rev-parse", f"refs/heads/{branch}") == main_tip
+    assert _git(workspace, "rev-parse", "@{upstream}") == main_tip
+
+
+@pytest.mark.parametrize("remote_branch", [True, False])
+async def test_checkout_converges_after_the_combined_fetch_failed(tmp_path, remote_branch):
     remote, workspace = _make_product_repo(tmp_path)
     branch = "story/story-ea07a289"
-    remote_tip = _advance_remote(remote, tmp_path, branch, "existing story work")
-    real_git = subprocess.run(  # noqa: S603
-        ["which", "git"], capture_output=True, text=True, check=True
-    ).stdout.strip()
-    shim_dir = tmp_path / "shim"
-    shim_dir.mkdir()
+    if remote_branch:
+        expected = _advance_remote(remote, tmp_path, branch, "existing story work")
+    else:
+        expected = _git(remote, "rev-parse", "refs/heads/main")
     calls = tmp_path / "fetch-calls"
-    shim = shim_dir / "git"
-    shim.write_text(
-        "#!/bin/sh\n"
-        'case "$*" in\n'
-        "  *'fetch origin'*)\n"
-        f"    count=$(cat '{calls}' 2>/dev/null || echo 0)\n"
-        "    count=$((count + 1))\n"
-        f"    echo \"$count\" > '{calls}'\n"
-        '    if [ "$count" -eq 2 ]; then '
-        "echo 'remote: Repository not found.' >&2; exit 128; fi ;;\n"
-        "esac\n"
-        f"exec '{real_git}' \"$@\"\n"
+    env = _git_shim(
+        tmp_path,
+        f"count=$(cat '{calls}' 2>/dev/null || echo 0); echo $((count + 1)) > '{calls}'; "
+        f"if [ \"$count\" -eq 0 ]; then echo 'remote: Repository not found.' >&2; exit 128; fi",
     )
-    shim.chmod(0o755)
-    script = git_ops.build_checkout_script(branch).replace("cd /workspace", f"cd {workspace}", 1)
-    env = {**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"}
 
-    first = subprocess.run(  # noqa: S603
-        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
-    )
+    first = _run_checkout_script(workspace, branch, env)
+
     assert first.returncode != 0
     assert "Repository not found" in first.stderr
-    assert _git(workspace, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") == "origin/main"
+    assert "CODEGEN_CHECKOUT_HEAD" not in first.stdout
     assert _git(workspace, "branch", "--list", branch) == ""
+    published = _git(remote, "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}")
+    assert published == (expected if remote_branch else "")
 
-    resumed = subprocess.run(  # noqa: S603
-        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
-    )
+    resumed = _run_checkout_script(workspace, branch, env)
+
     assert resumed.returncode == 0, resumed.stderr
+    assert f"CODEGEN_CHECKOUT_HEAD={expected}" in resumed.stdout
     assert _git(workspace, "rev-parse", "--abbrev-ref", "HEAD") == branch
-    assert _git(workspace, "rev-parse", "HEAD") == remote_tip
-    assert _git(workspace, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}") == (
-        f"origin/{branch}"
+    assert _git(workspace, "rev-parse", "HEAD") == expected
+    assert _git(remote, "rev-parse", f"refs/heads/{branch}") == expected
+    assert _git(workspace, "rev-parse", "--abbrev-ref", "@{upstream}") == f"origin/{branch}"
+
+
+async def test_an_advertised_branch_that_disappears_before_the_fetch_fails_checkout(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    branch = "story/vanished"
+    _advance_remote(remote, tmp_path, branch, "existing story work")
+    main_tip = _git(remote, "rev-parse", "refs/heads/main")
+    env = _git_shim(
+        tmp_path,
+        f'"{shutil.which("git")}" --git-dir="{remote}" update-ref -d "refs/heads/{branch}"',
     )
-    assert branch in _git(remote, "branch", "--list", branch)
+
+    vanished = _run_checkout_script(workspace, branch, env)
+
+    assert vanished.returncode != 0
+    assert "CODEGEN_CHECKOUT_HEAD" not in vanished.stdout
+    assert _git(workspace, "branch", "--list", branch) == ""
+    assert _git(remote, "branch", "--list", branch) == ""
+
+    retried = _run_checkout_script(workspace, branch)
+
+    assert retried.returncode == 0, retried.stderr
+    assert _git(workspace, "rev-parse", "HEAD") == main_tip
+    assert _git(remote, "rev-parse", f"refs/heads/{branch}") == main_tip
+
+
+@pytest.mark.parametrize("default_ref", ["refs/heads/unborn", "refs/tags/release"])
+async def test_an_unusable_remote_default_fails_before_publication(tmp_path, default_ref):
+    remote, workspace = _make_product_repo(tmp_path)
+    _git(remote, "tag", "release", "main")
+    _git(remote, "symbolic-ref", "HEAD", default_ref)
+
+    result = _run_checkout_script(workspace, "story/no-default")
+
+    assert result.returncode != 0
+    assert "CODEGEN_CHECKOUT_HEAD" not in result.stdout
+    assert _git(workspace, "branch", "--list", "story/no-default") == ""
+    assert _git(remote, "branch", "--list", "story/no-default") == ""
 
 
 async def test_an_existing_story_branch_resumes_at_its_remote_tip(tmp_path):

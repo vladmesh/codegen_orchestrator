@@ -37,8 +37,9 @@ GIT = "git -c core.hooksPath=/dev/null"
 def build_checkout_script(branch: str) -> str:
     """The shell the manager runs to put a workspace on `branch`.
 
-    - The default branch is read from the repository (`origin/HEAD`), not
-      hard-coded here: the scaffolder is what publishes it.
+    - One advertisement reads the remote default branch (`HEAD`) and whether
+      the story branch exists; one fetch then takes exactly the advertised refs.
+      Local remote-tracking refs never stand in for that advertisement.
     - A story branch that does not exist yet is cut from the *freshly fetched*
       default branch, never from whatever the reused workspace had checked out.
     - Synchronize local and remote tips only by fast-forward. A local tip ahead
@@ -65,24 +66,27 @@ is_ancestor() {{
     exit "$ANCESTRY_STATUS"
   fi
 }}
-ORIGIN_HEAD="$({GIT} ls-remote --symref origin HEAD)"
-DEFAULT_BRANCH="$(printf '%s\\n' "$ORIGIN_HEAD" | awk '
-  $1 == "ref:" && $3 == "HEAD" {{sub("^refs/heads/", "", $2); print $2}}')"
-if [ -z "$DEFAULT_BRANCH" ]; then
-  echo "cannot determine the default branch of origin" >&2
-  exit 1
+REMOTE_REFS="$({GIT} ls-remote --symref origin HEAD "refs/heads/{branch}")"
+DEFAULT_REF="$(printf '%s\\n' "$REMOTE_REFS" | awk -F '\\t' '
+  $2 == "HEAD" && $1 ~ "^ref: refs/heads/." {{print substr($1, 6)}}')"
+case "$DEFAULT_REF" in
+  refs/heads/?*) ;;
+  *)
+    echo "cannot determine the default branch of origin" >&2
+    exit 1
+    ;;
+esac
+DEFAULT_BRANCH="${{DEFAULT_REF#refs/heads/}}"
+REMOTE_BRANCH="$(printf '%s\\n' "$REMOTE_REFS" | awk -F '\\t' -v ref="refs/heads/{branch}" '
+  $1 !~ "^ref: " && $2 == ref {{found = 1}} END {{print found + 0}}')"
+set -- "+$DEFAULT_REF:refs/remotes/origin/$DEFAULT_BRANCH"
+if [ "$REMOTE_BRANCH" = 1 ] && [ "$DEFAULT_REF" != "refs/heads/{branch}" ]; then
+  set -- "$@" "+refs/heads/{branch}:refs/remotes/origin/{branch}"
 fi
-{GIT} fetch origin "+$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+# An advertised branch that vanished before this fetch fails it: absence is
+# only ever what the advertisement said.
+{GIT} fetch origin "$@"
 {GIT} remote set-head origin "$DEFAULT_BRANCH"
-if BRANCH_FETCH_OUTPUT="$({GIT} fetch origin "+{branch}:refs/remotes/origin/{branch}" 2>&1)"; then
-  REMOTE_BRANCH=1
-else
-  printf '%s\\n' "$BRANCH_FETCH_OUTPUT" >&2
-  case "$BRANCH_FETCH_OUTPUT" in
-    *"couldn't find remote ref"*) REMOTE_BRANCH=0 ;;
-    *) exit 1 ;;
-  esac
-fi
 if {GIT} show-ref --verify --quiet "refs/heads/{branch}"; then
   {GIT} checkout {branch}
   if [ "$REMOTE_BRANCH" = 1 ]; then
