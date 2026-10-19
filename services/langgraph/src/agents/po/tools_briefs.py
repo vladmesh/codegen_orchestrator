@@ -75,7 +75,10 @@ from shared.product_brief_text import (
 )
 
 from ...capability_feasibility import capability_refusal
+from ...capability_preview import PreviewRefused, unanswered_commands
+from ...catalog_product_settings import turn_catalog
 from ...prompts.qa_capabilities import render_brief_capabilities
+from .tools_capabilities import PREVIEW_NEXT_STEP
 from .tools_shared import _get_api, _user_headers
 
 logger = structlog.get_logger(__name__)
@@ -347,7 +350,9 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
               "value": "en", "description": "The bot speaks English"}]}`.
             List every previewed request that is not impossible, with the
             must-requirements it serves, and the user's explicit answers. Leave
-            unset for a brief that relies on no previewed capability.
+            unset for a brief that relies on no previewed capability. A usage
+            example of a plain `module` requirement sends only commands from the
+            preview's `module_surfaces`; anything else is refused.
     """
     try:
         project_uuid = uuid.UUID(project_id)
@@ -380,6 +385,8 @@ async def present_product_brief(  # noqa: PLR0913 - Each brief field is a named 
         return _refusal_of_invalid(invalid)
 
     if refusal := capability_refusal(content):
+        return refusal
+    if refusal := await _refuse_commands_no_module_answers(content, config):
         return refusal
 
     api = _get_api()
@@ -503,6 +510,45 @@ async def _refuse_settings_that_are_secrets(
                 "initial_settings — it is already stored with set_project_secret."
             )
     return None
+
+
+async def _refuse_commands_no_module_answers(
+    content: ProposedProductBriefContent, config: RunnableConfig
+) -> str | None:
+    """A plain `module` requirement's examples send only commands the installed bot answers."""
+    if content.capabilities is None:
+        return None
+    try:
+        unanswered = unanswered_commands(
+            await turn_catalog(config), content.capabilities, content.usage_examples
+        )
+    except PreviewRefused as refused:
+        next_step = PREVIEW_NEXT_STEP[refused.refusal.code]
+        return f"No Product Brief was presented and nothing was changed: {next_step}"
+    if unanswered is None:
+        return None
+    logger.info(
+        "po_brief_module_command_refused",
+        commands=unanswered.commands,
+        requirement_ids=unanswered.requirement_ids,
+    )
+    return "No Product Brief was presented and nothing was changed: " + json.dumps(
+        {
+            "status": "command_not_answered",
+            "commands": unanswered.commands,
+            "requirement_ids": unanswered.requirement_ids,
+            "request_ids": unanswered.request_ids,
+            "commands_the_bot_answers": unanswered.answered,
+            "instruction": (
+                "On a plain `module` route the bot answers only the listed commands, and its "
+                "language is chosen once at order. Rewrite these usage examples with one of "
+                "those commands, or call preview_capabilities again with `beyond` naming the "
+                "extra work for these requests and present the brief with the "
+                "`module_with_glue` route it returns."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 #: What the PO does about each capability refusal, in product terms only.

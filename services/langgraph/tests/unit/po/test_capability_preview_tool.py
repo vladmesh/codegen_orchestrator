@@ -155,6 +155,38 @@ async def test_a_preview_answers_routes_questions_and_limits_in_product_terms(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("beyond", [{}, {"beyond": "switch the language with /lang"}])
+async def test_a_module_route_shows_the_commands_its_bot_answers(
+    api, activated_kit_catalog, beyond
+):
+    answer = await _preview(activated_kit_catalog, CHANNEL_REQUEST | beyond)
+
+    [surface] = json.loads(answer)["module_surfaces"]
+    assert surface["request_id"] == "channels"
+    assert surface["language_chosen_at_order"] is True
+    commands = {command["command"]: command for command in surface["commands"]}
+    assert list(commands) == ["/channel", "/channels", "/digest"]
+    assert commands["/channel"]["help"] == {
+        "ru": "Добавить канал: /channel @name",
+        "en": "Add a channel: /channel @name",
+    }
+    assert commands["/channels"]["buttons"] == [{"ru": "Удалить", "en": "Remove"}]
+    assert commands["/digest"]["buttons"] == []
+    for technical in TECHNICAL:
+        assert technical not in answer
+
+
+@pytest.mark.asyncio
+async def test_a_route_without_a_module_shows_no_surface(api, activated_kit_catalog):
+    request = {"request_id": "notes", "capability_id": None, "wording": "keep my notes"}
+    answer = await _preview(activated_kit_catalog, request)
+
+    result = json.loads(answer)
+    assert [r["route"] for r in result["routes"]] == ["from_scratch"]
+    assert result["module_surfaces"] == []
+
+
+@pytest.mark.asyncio
 async def test_the_technical_half_is_stored_by_the_platform_itself(api, activated_kit_catalog):
     await _preview(activated_kit_catalog, CHANNEL_REQUEST)
 
@@ -282,11 +314,13 @@ class _BriefAPI(_API):
 
 
 @pytest.mark.asyncio
-async def test_a_capability_brief_shows_the_answer_and_the_chosen_language():
+async def test_a_capability_brief_shows_the_answer_and_the_chosen_language(
+    activated_kit_catalog,
+):
     api = _BriefAPI()
     init_po_clients(api, AsyncMock())
     answer = await present_product_brief.ainvoke(
-        _BRIEF | {"capabilities": _CAPABILITIES}, config=_config(None)
+        _BRIEF | {"capabilities": _CAPABILITIES}, config=_config(activated_kit_catalog)
     )
 
     [(path, body, _)] = api.posts
@@ -298,12 +332,14 @@ async def test_a_capability_brief_shows_the_answer_and_the_chosen_language():
 
 
 @pytest.mark.asyncio
-async def test_a_refused_capability_brief_is_explained_without_technical_detail():
+async def test_a_refused_capability_brief_is_explained_without_technical_detail(
+    activated_kit_catalog,
+):
     refusal = {"code": "missing_answer", "request_ids": [], "question_ids": ["product_language"]}
     api = _BriefAPI(refusal, HTTPStatus.UNPROCESSABLE_ENTITY)
     init_po_clients(api, AsyncMock())
     answer = await present_product_brief.ainvoke(
-        _BRIEF | {"capabilities": _CAPABILITIES}, config=_config(None)
+        _BRIEF | {"capabilities": _CAPABILITIES}, config=_config(activated_kit_catalog)
     )
 
     assert answer.startswith("No Product Brief was presented and nothing was changed: ")
@@ -313,11 +349,13 @@ async def test_a_refused_capability_brief_is_explained_without_technical_detail(
 
 
 @pytest.mark.asyncio
-async def test_confirmation_relays_a_drifted_plan_as_a_new_revision_to_present():
+async def test_confirmation_relays_a_drifted_plan_as_a_new_revision_to_present(
+    activated_kit_catalog,
+):
     api = _BriefAPI()
     init_po_clients(api, AsyncMock())
     await present_product_brief.ainvoke(
-        _BRIEF | {"capabilities": _CAPABILITIES}, config=_config(None)
+        _BRIEF | {"capabilities": _CAPABILITIES}, config=_config(activated_kit_catalog)
     )
     api.refusal = {"code": "plan_drift", "request_ids": [], "question_ids": []}
     api.status = HTTPStatus.CONFLICT
@@ -328,3 +366,90 @@ async def test_confirmation_relays_a_drifted_plan_as_a_new_revision_to_present()
 
     assert "was not confirmed" in answer and '"code": "plan_drift"' in answer
     assert "corrects_brief_id='brief-1'" in answer
+
+
+def _channel_brief(user_sends: str, route: str = "module") -> dict:
+    capability = _CAPABILITIES["capabilities"][0] | {"route": route}
+    return _BRIEF | {
+        "usage_examples": [
+            {"requirement_id": "r1", "user_sends": user_sends, "product_answers": "Done"}
+        ],
+        "capabilities": _CAPABILITIES | {"capabilities": [capability]},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_sends,command",
+    [("/addchannel @cyprus_news", "/addchannel"), ("/lang en", "/lang")],
+)
+async def test_a_module_brief_promising_a_command_its_bot_lacks_is_refused(
+    activated_kit_catalog, user_sends, command
+):
+    api = _BriefAPI()
+    init_po_clients(api, AsyncMock())
+    answer = await present_product_brief.ainvoke(
+        _channel_brief(user_sends), config=_config(activated_kit_catalog)
+    )
+
+    assert answer.startswith("No Product Brief was presented and nothing was changed: ")
+    result = json.loads(answer.split(": ", 1)[1])
+    assert result["status"] == "command_not_answered"
+    assert (result["commands"], result["requirement_ids"], result["request_ids"]) == (
+        [command],
+        ["r1"],
+        ["channels"],
+    )
+    assert result["commands_the_bot_answers"] == [
+        "/channel",
+        "/channels",
+        "/digest",
+        "/start",
+        "/command",
+    ]
+    assert "`beyond`" in result["instruction"]
+    assert api.posts == [] and api.briefs == {}
+
+
+@pytest.mark.asyncio
+async def test_the_same_promise_on_a_glue_route_is_presented(activated_kit_catalog):
+    api = _BriefAPI()
+    init_po_clients(api, AsyncMock())
+    answer = await present_product_brief.ainvoke(
+        _channel_brief("/lang en", route="module_with_glue"),
+        config=_config(activated_kit_catalog),
+    )
+
+    assert answer.startswith("Product Brief revision 1 (id: brief-1)")
+    [(path, body, _)] = api.posts
+    assert path == "product-briefs/"
+    assert body["content"]["usage_examples"][0]["user_sends"] == "/lang en"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_sends", ["/channels, then Remove", "/digest", "/start"])
+async def test_a_module_brief_using_its_own_commands_is_presented(
+    activated_kit_catalog, user_sends
+):
+    api = _BriefAPI()
+    init_po_clients(api, AsyncMock())
+    answer = await present_product_brief.ainvoke(
+        _channel_brief(user_sends), config=_config(activated_kit_catalog)
+    )
+
+    assert answer.startswith("Product Brief revision 1 (id: brief-1)")
+    assert [path for path, _, _ in api.posts] == ["product-briefs/"]
+
+
+@pytest.mark.asyncio
+async def test_a_module_brief_cannot_be_checked_without_the_catalog():
+    api = _BriefAPI()
+    init_po_clients(api, AsyncMock())
+    unavailable = KitCatalogUnavailable("https://kit.invalid", KitCatalogFailure.TRANSPORT, "x")
+    answer = await present_product_brief.ainvoke(
+        _channel_brief("/digest"), config=_config(unavailable)
+    )
+
+    assert answer.startswith("No Product Brief was presented and nothing was changed: ")
+    assert "cannot be checked right now" in answer
+    assert api.posts == []

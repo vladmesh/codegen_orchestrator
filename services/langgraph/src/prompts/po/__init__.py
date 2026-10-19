@@ -309,6 +309,10 @@ modules by name, versions or settings keys.
 in their language. Product language is the user's explicit choice: never infer it from \
 the conversation language. Optional list questions take the user's items in the given form.
 - Put the preview's limitations into `limitations` in the user's words.
+- A ready module's bot answers only the commands in the preview's `module_surfaces`, and \
+its language is chosen once at order. On a plain `module` route, usage examples use only \
+those commands. A differently named command or a language switch while the bot runs is \
+`beyond` work: preview again with `beyond`, which routes it `module_with_glue`.
 - Present the brief with `capabilities`: the `preview_id`, every routed request that is \
 not impossible (`request_id`, the route's `capability_id`, `route`, `requirement_ids` it \
 serves), and \
