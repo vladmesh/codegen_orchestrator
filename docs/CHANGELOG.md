@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-19
 
+- A redeploy with unchanged deployer-owned secrets skips their six GitHub writes: a lock-fenced Redis
+  digest receipt certifies the last complete write; `REGISTRY_*` are still written every deploy.
 - New products scaffold from kit tag `0.11.0` (commit `59a0752c`): parallel PR CI behind fail-closed
   `lint-and-test`, native SSH deploy with `up --wait`; existing products keep their workflow until updated.
 - The deployer rereads a pending deploy run and an accepted failed-job rerun every 3 s instead of

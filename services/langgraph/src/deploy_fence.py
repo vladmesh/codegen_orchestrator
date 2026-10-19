@@ -121,13 +121,17 @@ class DeployFence:
         """Refuse `write` unless the lock still stores this deploy's token."""
         held = await self.redis.eval(_HOLDS_DEPLOY_LOCK, 1, self.lock_key, self.token)
         if held != 1:
-            logger.warning(
-                "deploy_fence_lost",
-                project_id=self.project_id,
-                lock_key=self.lock_key,
-                refused_write=write.value,
-            )
-            raise DeployFenceLost(self.project_id, write)
+            raise self.lost(write)
+
+    def lost(self, write: DeployWrite) -> DeployFenceLost:
+        """The refusal of `write`, logged, for a check that found another holder."""
+        logger.warning(
+            "deploy_fence_lost",
+            project_id=self.project_id,
+            lock_key=self.lock_key,
+            refused_write=write.value,
+        )
+        return DeployFenceLost(self.project_id, write)
 
     async def release(self) -> None:
         """Delete the lock only while it is still this deploy's."""

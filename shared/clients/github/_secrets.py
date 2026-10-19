@@ -6,6 +6,8 @@ import os
 from shared.diagnostics import redact_diagnostic
 from shared.log_config import get_logger
 
+from ._base import RequestGuard, RequestGuardRefusedError
+
 logger = get_logger(__name__)
 
 #: The repository secrets a generated product's push-main CI logs in to the
@@ -61,6 +63,8 @@ class SecretsMixin:
         secret_name: str,
         secret_value: str,
         token: str | None = None,
+        *,
+        guard: RequestGuard | None = None,
     ) -> None:
         """Set an encrypted repository secret for GitHub Actions.
 
@@ -73,6 +77,7 @@ class SecretsMixin:
             secret_name: Name of the secret (e.g., DEPLOY_HOST)
             secret_value: Plain text value to encrypt and store
             token: Optional pre-obtained token (e.g. org-level). Falls back to per-repo lookup.
+            guard: Awaited immediately before each attempt of the PUT; see `_make_request`.
         """
         # Lazy import: pynacl only needed when this method is called
         from nacl import public
@@ -106,6 +111,7 @@ class SecretsMixin:
             "PUT",
             f"https://api.github.com/repos/{owner}/{repo}/actions/secrets/{secret_name}",
             headers=headers,
+            guard=guard,
             json={
                 "encrypted_value": encrypted_b64,
                 "key_id": key_id,
@@ -125,6 +131,8 @@ class SecretsMixin:
         repo: str,
         secrets: dict[str, str],
         token: str | None = None,
+        *,
+        guard: RequestGuard | None = None,
     ) -> int:
         """Set multiple repository secrets at once.
 
@@ -133,6 +141,8 @@ class SecretsMixin:
             repo: Repository name
             secrets: Dictionary of secret_name -> secret_value
             token: Optional pre-obtained token (e.g. org-level). Falls back to per-repo lookup.
+            guard: Awaited immediately before each PUT attempt. Its own refusal is raised
+                unchanged and stops the batch, so no later secret is written.
 
         Returns:
             Number of secrets successfully set
@@ -140,8 +150,10 @@ class SecretsMixin:
         count = 0
         for name, value in secrets.items():
             try:
-                await self.set_repository_secret(owner, repo, name, value, token=token)
+                await self.set_repository_secret(owner, repo, name, value, token=token, guard=guard)
                 count += 1
+            except RequestGuardRefusedError as refused:
+                raise refused.error from None
             except Exception as e:
                 logger.error(
                     "github_secret_set_failed",

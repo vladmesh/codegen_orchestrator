@@ -17,6 +17,7 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis
@@ -225,7 +226,10 @@ def deploy():
     lifecycle_api.get_server_ssh_key = AsyncMock(return_value="ssh-key")
 
     github = AsyncMock()
-    github.set_repository_secrets = AsyncMock(side_effect=lambda owner, repo, values: len(values))
+    github.get_repo = AsyncMock(return_value=SimpleNamespace(id=1001))
+    github.set_repository_secrets = AsyncMock(
+        side_effect=lambda owner, repo, values, **_: len(values)
+    )
     github.fence_workflow = AsyncMock(return_value=[])
     github.wait_for_workflow_completion = AsyncMock(
         return_value={

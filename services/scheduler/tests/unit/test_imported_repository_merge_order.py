@@ -81,7 +81,7 @@ class ImportedRepository(SecretsMixin):
         return False
 
     async def set_repository_secret(  # noqa: PLR0913 — the real method's signature
-        self, owner: str, repo: str, secret_name: str, secret_value: str, token=None
+        self, owner: str, repo: str, secret_name: str, secret_value: str, token=None, *, guard=None
     ) -> None:
         if secret_name == self.refused_secret:
             raise RuntimeError(f"403 Resource not accessible by integration: {secret_value}")
