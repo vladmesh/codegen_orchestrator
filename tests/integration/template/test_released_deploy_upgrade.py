@@ -6,19 +6,17 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tomllib
 
 import pytest
 import yaml
 
 from scripts.template_pin import TEMPLATE_PIN
-from shared.catalog_activation import CATALOG_ACTIVATION
-from shared.contracts.template import recorded_template_commit_matches
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = Path(".github/workflows/deploy.yml")
 PREVIOUS_REF = ".".join(map(str, (0, 6, 3)))
-# The render resolves its tooling at the pinned release's full commit, the activated tooling.
-RELEASE_SHA = CATALOG_ACTIVATION.tooling_commit
+TOOLING = "codegen-kit-tooling @ git+"
 
 
 def run(command, cwd, **kwargs):
@@ -29,6 +27,16 @@ def run(command, cwd, **kwargs):
 
 def git(product, *args):
     return run(["git", *args], product)
+
+
+def release_commit(product):
+    """The rendered tooling commit, which must be the one the pinned release tag peels to."""
+    project = tomllib.loads((product / "pyproject.toml").read_text())["project"]
+    [requirement] = [item for item in project["dependencies"] if item.startswith(TOOLING)]
+    repository, commit = requirement.removeprefix(TOOLING).rsplit("@", 1)
+    peeled = f"refs/tags/{TEMPLATE_PIN.ref}^{{}}"
+    assert git(product, "ls-remote", repository, peeled).split() == [commit, peeled]
+    return commit
 
 
 def workflow(product):
@@ -231,10 +239,13 @@ def test_published_update_retains_owned_bytes_and_requires_reconciliation(
     assert before == {name: (product / name).read_bytes() for name in owned}
     answers = yaml.safe_load((product / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    assert recorded_template_commit_matches(str(answers["_commit"]), TEMPLATE_PIN.ref)
+    # A tag pin is recorded as itself; a commit pin as itself or `<tag>-<n>-g<abbreviated commit>`.
+    recorded = str(answers["_commit"])
+    assert recorded == TEMPLATE_PIN.ref or TEMPLATE_PIN.ref.startswith(recorded.rsplit("-g", 1)[-1])
     assert answers["modules"] == "backend,tg_bot"
-    assert f"codegen-product-kit.git@{RELEASE_SHA}" in (product / "pyproject.toml").read_text()
-    assert f"rev={RELEASE_SHA}#{RELEASE_SHA}" in (product / "uv.lock").read_text()
+    release = release_commit(product)
+    assert f"codegen-product-kit.git@{release}" in (product / "pyproject.toml").read_text()
+    assert f"rev={release}#{release}" in (product / "uv.lock").read_text()
     if overlap:
         reconcile_owned_workflow(product, previous)
     updated = workflow(product)
