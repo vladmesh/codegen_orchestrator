@@ -458,10 +458,12 @@ would otherwise sign dashboard tokens with a known key.
 | `REGISTRY_PASSWORD_HASH` | Bcrypt hash of registry password (for Caddy) |
 
 `GITHUB_REGISTRY_LEASE_SECONDS` is required and has no default. It is policy, so it is a
-GitHub Environment **variable** (`vars.GITHUB_REGISTRY_LEASE_SECONDS`), `180` on
-`production` and on the stand, which `stand-e2e.yml` renders itself. The deploy preflight refuses a
-missing value or anything but a positive whole number before it touches the host, then writes it into
-the server `.env`. It is how long one writer may hold a product repository's registry-secrets lease
+GitHub Environment **variable**, stored as `GH_REGISTRY_LEASE_SECONDS` because GitHub refuses
+variable names starting with `GITHUB_`: `180` on `production` and on the `stand` Environment, while
+`stand-e2e.yml` renders its own `180`. The deploy preflight refuses a missing
+`vars.GH_REGISTRY_LEASE_SECONDS` or anything but a positive whole number before it touches the host,
+then writes it into the server `.env` as `GITHUB_REGISTRY_LEASE_SECONDS`. It is how long one writer
+may hold a product repository's registry-secrets lease
 ([SECRETS.md](SECRETS.md#deployment-via-github-actions)); scheduler-pipeline, engineering-worker,
 scaffolder and deploy-worker refuse to start without it or without a usable
 `SECRETS_ENCRYPTION_KEY`, and Compose refuses to render them without either.
@@ -1570,9 +1572,10 @@ The host commands use the `COMPOSE` array of [Updating](#updating). Preflight, b
 from an operator shell with `gh` access:
 
 ```bash
-gh variable set GITHUB_REGISTRY_LEASE_SECONDS --env production --body 180
-gh variable set GITHUB_REGISTRY_LEASE_SECONDS --env stand --body 180
-gh variable list --env production | grep '^GITHUB_REGISTRY_LEASE_SECONDS'
+gh variable set GH_REGISTRY_LEASE_SECONDS --env production --body 180
+gh variable set GH_REGISTRY_LEASE_SECONDS --env stand --body 180
+gh variable list --env production | grep '^GH_REGISTRY_LEASE_SECONDS'
+gh variable list --env stand | grep '^GH_REGISTRY_LEASE_SECONDS'
 ```
 
 Provision the pending `GH_WEBHOOK_SECRET` of each environment in the same window
