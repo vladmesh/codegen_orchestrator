@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-19
+
+- New products scaffold from kit tag `0.11.0` (commit `59a0752c`, core 2.6.0): parallel PR CI behind a
+  fail-closed `lint-and-test`, native SSH deploy with `up --wait`; existing products need a Copier update.
+
 ## 2026-10-18
 
 - Deploy and `stand-e2e.yml` write the `GH_WEBHOOK_SECRET` Environment secret into the API's `.env`

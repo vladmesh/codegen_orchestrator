@@ -11,12 +11,14 @@ import pytest
 import yaml
 
 from scripts.template_pin import TEMPLATE_PIN
+from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.contracts.template import recorded_template_commit_matches
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = Path(".github/workflows/deploy.yml")
 PREVIOUS_REF = ".".join(map(str, (0, 6, 3)))
-# The pin is an immutable kit commit, and the render resolves its tooling at that commit.
-RELEASE_SHA = TEMPLATE_PIN.ref
+# The render resolves its tooling at the pinned release's full commit, the activated tooling.
+RELEASE_SHA = CATALOG_ACTIVATION.tooling_commit
 
 
 def run(command, cwd, **kwargs):
@@ -229,9 +231,7 @@ def test_published_update_retains_owned_bytes_and_requires_reconciliation(
     assert before == {name: (product / name).read_bytes() for name in owned}
     answers = yaml.safe_load((product / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    # A commit pin is recorded as itself or as `<tag>-<n>-g<abbreviated commit>`.
-    recorded = str(answers["_commit"])
-    assert recorded == TEMPLATE_PIN.ref or TEMPLATE_PIN.ref.startswith(recorded.rsplit("-g", 1)[-1])
+    assert recorded_template_commit_matches(str(answers["_commit"]), TEMPLATE_PIN.ref)
     assert answers["modules"] == "backend,tg_bot"
     assert f"codegen-product-kit.git@{RELEASE_SHA}" in (product / "pyproject.toml").read_text()
     assert f"rev={RELEASE_SHA}#{RELEASE_SHA}" in (product / "uv.lock").read_text()

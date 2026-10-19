@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from scripts import template_pin
+from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.contracts.template import recorded_template_commit_matches
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,15 +36,6 @@ LITERAL_ALLOWED = {
     "docs/contracts/kit-template-and-qa.md",
     "docs/CHANGELOG.md",
     "docs/evidence/catalog-install-fixture.json",
-    # The pin is an immutable kit commit, and the same commit is also the kit tooling the
-    # services install and the activated catalog snapshot. These files carry that commit in
-    # those other roles, which no template-pin reader derives from: the uv sources and the
-    # LangGraph requirement, the activation record and the capability manifest's provenance.
-    "pyproject.toml",
-    "services/langgraph/pyproject.toml",
-    "shared/catalog_activation.yaml",
-    "docs/platform_capabilities.yaml",
-    "docs/PLATFORM_CAPABILITIES.md",
 }
 FIXTURE_TREE = "shared/tests/fixtures/"
 # Dependency manifests are written by a package resolver and hold third-party versions.
@@ -101,13 +93,18 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
     assert carriers == [], f"the template ref is repeated outside its definition: {carriers}"
 
 
-def test_production_pin_is_the_immutable_kit_commit_of_the_installed_tooling() -> None:
-    """The scaffold pin is a full commit, the same one the services' kit tooling resolves."""
+def test_render_of_the_pin_installed_tooling_and_activation_resolve_one_kit_commit() -> None:
+    """The render of the pinned ref, the services' kit tooling and the activated catalog
+    snapshot name one full kit commit, which the ref itself need not spell."""
     installed = json.loads(distribution("codegen-kit-tooling").read_text("direct_url.json"))
+    rendered = re.findall(
+        r"codegen-product-kit\.git@([0-9a-f]{40})",
+        (template_pin.TEMPLATE_PIN.fixture_path() / "pyproject.toml").read_text(),
+    )
 
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert re.fullmatch(r"[0-9a-f]{40}", template_pin.TEMPLATE_PIN.ref)
-    assert installed["vcs_info"]["commit_id"] == template_pin.TEMPLATE_PIN.ref
+    assert rendered == [installed["vcs_info"]["commit_id"]]
+    assert CATALOG_ACTIVATION.commit == CATALOG_ACTIVATION.tooling_commit == rendered[0]
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -116,8 +113,8 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    # Rendered at a commit, the template resolves its tooling at that same commit.
-    corrected_commit = template_pin.TEMPLATE_PIN.ref
+    # Rendered at the pinned ref, the template resolves its tooling at that ref's commit.
+    corrected_commit = CATALOG_ACTIVATION.tooling_commit
 
     assert recorded_template_commit_matches(answers["_commit"], template_pin.TEMPLATE_PIN.ref)
     assert answers["_src_path"] == template_pin.TEMPLATE_PIN.source
