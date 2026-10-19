@@ -1,21 +1,19 @@
 """The deploy and registry receipts and the deploy lock as real Redis Lua, across writers."""
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 from cryptography.fernet import Fernet
 import pytest
 
-from shared.clients.github import (
-    RegistrySecretsResult,
-    registry_lease_key,
-    registry_receipt_key,
-)
+from shared.clients.github import registry_lease_key, registry_receipt_key
 from shared.redis import RedisStreamClient
+from src.consumers._repo_setup import _create_repo_and_set_secrets
 from src.deploy_fence import DeployFence, DeployFenceLost
 from src.subgraphs.devops.deploy_secrets import receipt_key, write_deploy_secrets
 from tests.service._github_secrets_repository import OWNER, REPO, Repository
+from tests.unit.factories import make_project
 
 WRITER_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.test",
@@ -64,13 +62,29 @@ async def _deploy(redis, project_id, task_id, values, repository) -> bool:
         await fence.release()
 
 
-async def test_a_receipt_warmed_by_another_writer_leaves_an_unchanged_redeploy_no_put(stores):
+async def test_a_receipt_warmed_by_repository_setup_leaves_every_deploy_no_registry_put(stores):
     redis, project_id, repository = stores
-    warmed = await repository.client().ensure_registry_secrets(
-        OWNER, REPO, redis=redis, lease_seconds=180
+    setup_github = repository.client()
+    recorded_with = []
+    api = MagicMock()
+    api.post = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: recorded_with.append(repository.puts[:])
     )
-    assert warmed == RegistrySecretsResult(written=3)
+    setup_redis = RedisStreamClient()
+    await setup_redis.connect()
+    try:
+        with (
+            patch.dict(os.environ, {"GITHUB_ORG": OWNER}),
+            patch("shared.clients.github.GitHubAppClient", return_value=setup_github),
+            patch("src.consumers._repo_setup.api_client", api),
+        ):
+            await _create_repo_and_set_secrets(make_project(slug=REPO), setup_redis)
+    finally:
+        await setup_redis.close()
 
+    assert repository.created == [REPO]
+    # Recording the repository lets the scaffold push start CI: all three are set first.
+    assert recorded_with == [REGISTRY_NAMES]
     assert await _deploy(redis, project_id, "deploy-a", VALUES, repository)
     assert repository.puts == [*REGISTRY_NAMES, *VALUES]
     key_reads = repository.key_reads
