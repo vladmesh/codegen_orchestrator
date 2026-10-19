@@ -48,7 +48,7 @@ def _github(written: list[list[str]], on_write=None) -> AsyncMock:
         return len(values)
 
     github = AsyncMock()
-    github.get_repo = AsyncMock(return_value=SimpleNamespace(id=1713))
+    github.get_repo = AsyncMock(return_value=SimpleNamespace(id=1001))
     github.set_repository_secrets = AsyncMock(side_effect=write)
     return github
 

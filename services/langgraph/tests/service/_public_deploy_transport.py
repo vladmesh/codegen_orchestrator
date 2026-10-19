@@ -76,7 +76,7 @@ class ContentGitHubFixture(GitHubAppClient):
             return httpx.Response(
                 200,
                 json={
-                    "id": 1439,
+                    "id": 1001,
                     "name": "public",
                     "full_name": "fixture/public",
                     "html_url": "https://github.com/fixture/public",
