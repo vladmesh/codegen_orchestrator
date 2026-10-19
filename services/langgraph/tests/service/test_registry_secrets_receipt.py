@@ -124,3 +124,23 @@ async def test_a_holder_that_lost_the_lease_is_refused_and_the_next_one_repairs(
     assert await _ensure(repository, text_redis) == RegistrySecretsResult(written=3)
     assert await _ensure(repository, bytes_redis) == RegistrySecretsResult(written=0)
     assert repository.puts == ["REGISTRY_URL", *REGISTRY_NAMES]
+
+
+@pytest.mark.parametrize("connection", ["text", "bytes"])
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        b"\xff\xfe\x80gAAAA",
+        Fernet(REGISTRY_ENV["SECRETS_ENCRYPTION_KEY"]).encrypt("é".encode() * 32),
+    ],
+    ids=["invalid-utf8", "same-key-non-digest"],
+)
+async def test_a_corrupt_receipt_is_a_miss_repaired_under_the_lease(stores, connection, receipt):
+    repository, text_redis, bytes_redis = stores
+    redis = text_redis if connection == "text" else bytes_redis
+    assert await _ensure(repository, redis) == RegistrySecretsResult(written=3)
+    await bytes_redis.set(registry_receipt_key(repository.id), receipt)
+
+    assert await _ensure(repository, redis) == RegistrySecretsResult(written=3)
+    assert await _ensure(repository, redis) == RegistrySecretsResult(written=0)
+    assert repository.puts == [*REGISTRY_NAMES, *REGISTRY_NAMES]

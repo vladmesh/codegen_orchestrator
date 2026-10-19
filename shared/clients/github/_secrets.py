@@ -74,12 +74,14 @@ _RECEIPT_CONTEXT = "github-registry-secrets-receipt/v1"
 
 # Each script first compares the lease with this holder's token, so a holder whose
 # lease expired or was taken can neither read a hit, invalidate, publish nor release.
+# A receipt that is not a Fernet token reads as absent, so corrupt bytes are a miss
+# whether or not the caller's connection decodes responses.
 _READ_RECEIPT = """
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then
     return {0}
 end
 local receipt = redis.call('GET', KEYS[2])
-if not receipt then
+if not receipt or not string.match(receipt, '^[%w_=-]+$') then
     return {1}
 end
 return {1, receipt}
@@ -148,9 +150,10 @@ def _receipt_cipher() -> SecretsCipher:
 
 def _vouches(cipher: SecretsCipher, receipt: str, digest: str) -> bool:
     try:
-        return hmac.compare_digest(cipher.decrypt(receipt), digest)
+        held = cipher.decrypt(receipt)
     except (InvalidToken, UnicodeError):
         return False
+    return hmac.compare_digest(held.encode(), digest.encode())
 
 
 @dataclass(frozen=True)
@@ -394,10 +397,12 @@ class SecretsMixin:
             else:
                 await lease.invalidate_receipt()
 
+                # The lease check is the last await before each PUT attempt, so a lease
+                # that expired while the caller's guard was suspended sends nothing.
                 async def guarded() -> None:
-                    await lease.ensure_held()
                     if guard is not None:
                         await guard()
+                    await lease.ensure_held()
 
                 written = await self.set_repository_secrets(owner, repo, secrets, guard=guarded)
                 if written != len(secrets):
@@ -406,8 +411,22 @@ class SecretsMixin:
                         f"wrote {written} of {len(secrets)} registry secrets to {owner}/{repo}",
                     )
                 await lease.publish_receipt(cipher.encrypt(digest))
-        finally:
-            await lease.release()
+        except BaseException:
+            # The active failure, a caller refusal or a cancellation, is what the caller
+            # needs; a cleanup failure is only logged, and the lease expires on its own.
+            try:
+                await lease.release()
+            except Exception as error:
+                logger.error(
+                    "registry_secrets_lease_release_failed",
+                    owner=owner,
+                    repo=repo,
+                    repository_id=repository_id,
+                    error=redact_diagnostic(error, secrets=secrets.values()),
+                    error_type=type(error).__name__,
+                )
+            raise
+        await lease.release()
         logger.info(
             "registry_secrets_current",
             owner=owner,

@@ -427,3 +427,120 @@ async def test_an_unreachable_lease_store_is_no_hit_and_writes_nothing(repositor
         await _ensure(repository)
 
     assert repository.written() == []
+
+
+class OutageAfter(fakeredis.aioredis.FakeRedis):
+    """A caller connection whose Redis server goes away after `scripts` Lua calls."""
+
+    def __init__(self, scripts: int, server: fakeredis.FakeServer) -> None:
+        super().__init__(server=server)
+        self.outage_server = server
+        self.scripts = scripts
+
+    async def eval(self, *args):
+        result = await super().eval(*args)
+        self.scripts -= 1
+        if self.scripts == 0:
+            self.outage_server.connected = False
+        return result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decode_responses", [True, False], ids=["text", "bytes"])
+async def test_a_receipt_of_invalid_utf8_is_a_miss_repaired_in_either_response_mode(
+    repository, decode_responses
+):
+    assert await _ensure(repository) == RegistrySecretsResult(written=3)
+    fakeredis.FakeRedis(server=repository.server).set(
+        registry_receipt_key(repository.id), b"\xff\xfe\x80gAAAA"
+    )
+    redis = fakeredis.aioredis.FakeRedis(
+        server=repository.server, decode_responses=decode_responses
+    )
+    repository.requests.clear()
+
+    assert await _ensure(repository, redis) == RegistrySecretsResult(written=3)
+    assert repository.written() == REGISTRY_NAMES
+    assert await _ensure(repository, redis) == RegistrySecretsResult(written=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "plaintext", ["é".encode() * 32, b"\xff" * 64], ids=["non-ascii", "non-utf8"]
+)
+async def test_a_same_key_receipt_that_is_no_digest_is_a_miss_repaired(repository, plaintext):
+    assert await _ensure(repository) == RegistrySecretsResult(written=3)
+    envelope = Fernet(os.environ["SECRETS_ENCRYPTION_KEY"].encode()).encrypt(plaintext)
+    repository.redis.set(registry_receipt_key(repository.id), envelope.decode())
+    repository.requests.clear()
+
+    assert await _ensure(repository) == RegistrySecretsResult(written=3)
+    assert repository.written() == REGISTRY_NAMES
+    assert await _ensure(repository) == RegistrySecretsResult(written=0)
+
+
+@pytest.mark.asyncio
+async def test_a_holder_suspended_in_the_caller_guard_sends_nothing_after_a_successor(
+    repository,
+):
+    in_guard, resume = asyncio.Event(), asyncio.Event()
+
+    async def suspending_guard() -> None:
+        in_guard.set()
+        await resume.wait()
+
+    stale = asyncio.ensure_future(_ensure(repository, guard=suspending_guard))
+    await in_guard.wait()
+    repository.redis.delete(registry_lease_key(repository.id))
+    with patch.dict(os.environ, CHANGED_ENV):
+        assert await _ensure(repository) == RegistrySecretsResult(written=3)
+    successor_receipt = repository.receipt()
+    repository.hand_over()
+    repository.requests.clear()
+    resume.set()
+
+    with pytest.raises(RegistrySecretsNotRefreshedError) as refused:
+        await stale
+
+    assert refused.value.reason is RegistrySecretsRefusal.LEASE_LOST
+    assert repository.written() == []
+    assert repository.secrets["REGISTRY_URL"] == CHANGED_ENV["ORCHESTRATOR_HOSTNAME"]
+    assert repository.receipt() == successor_receipt
+    assert repository.lease() == OTHER_HOLDER
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_keeps_the_caller_guard_refusal_itself(repository):
+    refusal = Refused("caller fence lost")
+
+    async def guard() -> None:
+        repository.server.connected = False
+        raise refusal
+
+    with capture_logs() as logs, pytest.raises(Refused) as raised:
+        await _ensure(repository, guard=guard)
+
+    assert raised.value is refusal
+    failed = [entry for entry in logs if entry["event"] == "registry_secrets_lease_release_failed"]
+    assert len(failed) == 1
+    assert "registry-password-value" not in repr(logs)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_keeps_the_cancellation(repository):
+    repository.pause_on = ("PUT", "/actions/secrets/REGISTRY_USER")
+    call = asyncio.ensure_future(_ensure(repository))
+    await repository.paused.wait()
+    repository.server.connected = False
+
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_after_a_hit_is_no_success(repository):
+    assert await _ensure(repository) == RegistrySecretsResult(written=3)
+
+    with pytest.raises(redis_errors.ConnectionError):
+        await _ensure(repository, OutageAfter(2, repository.server))
