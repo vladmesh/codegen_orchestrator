@@ -13,6 +13,9 @@ a key: metadata the preview cannot turn into a question is a typed refusal.
 A module route is resolved to the exact closure `plan_install_payload` selects from the same
 snapshot — package, version, tag, recommended libraries, default binding — before the user is
 asked anything, so a capability the preview offers is one that installs on this core.
+
+The same default binding gives a module route's user surface (`module_surfaces`) and the
+commands a plain `module` brief may promise (`unanswered_commands`).
 """
 
 from __future__ import annotations
@@ -20,18 +23,24 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
+import re
 import uuid
 
 from framework.binding_product import binding_settings
-from framework.bindings_v2 import BindingV2
+from framework.bindings import Binding, ListedItems
+from framework.bindings_v2 import BindingV2, ListV2, Text
+from framework.host_contract import RESERVED_COMMANDS
 from framework.spec.loader import _package_prefix
 from framework.spec.packages import PackageManifest
+from pydantic import BaseModel, Field
 import structlog
 import yaml
 
 from shared.contracts.dto.capability_preview import (
     CAPABILITY_LOCALES,
+    MODULE_ROUTES,
     AnswerTarget,
+    BriefCapabilities,
     CapabilityOffer,
     CapabilityPreviewCreate,
     CapabilityPreviewProjection,
@@ -48,6 +57,7 @@ from shared.contracts.dto.capability_preview import (
     RouteReason,
 )
 from shared.contracts.dto.catalog_install import CatalogActivation
+from shared.contracts.dto.product_brief import UsageExample
 
 from .capability_feasibility import normalise
 from .catalog_install import (
@@ -76,6 +86,8 @@ TIMEZONE_QUESTION = "product_timezone"
 _LIST_KEYWORDS = frozenset({"type", "items", "maxItems", "uniqueItems", "description"})
 _ITEM_KEYWORDS = frozenset({"type", "pattern", "maxLength", "description"})
 _CHOICE_KEYWORDS = frozenset({"type", "enum", "description"})
+#: A slash command as a user types it; the `/` inside a URL or a path is not one.
+_SLASH_COMMAND = re.compile(r"(?<![\w/])/([A-Za-z][A-Za-z0-9_]*)")
 
 
 def capability_id(package_name: str) -> str:
@@ -86,6 +98,10 @@ def capability_id(package_name: str) -> str:
 def _offered(item: InstallablePackage) -> bool:
     package = item.package
     return package.extends is None and package.default_binding is not None
+
+
+def _offered_by_id(catalog: KitCatalog) -> dict[str, InstallablePackage]:
+    return {capability_id(item.name): item for item in catalog.packages if _offered(item)}
 
 
 def capability_offers(catalog: KitCatalog) -> list[CapabilityOffer]:
@@ -124,8 +140,12 @@ def _needs_platform(manifest: PackageManifest) -> bool:
     )
 
 
+def _binding(catalog: KitCatalog, item: InstallablePackage) -> Binding | BindingV2:
+    return load_catalog_binding(catalog.bindings[item.name])
+
+
 def _binding_questions(catalog: KitCatalog, item: InstallablePackage, request_id: str):
-    binding = load_catalog_binding(catalog.bindings[item.name])
+    binding = _binding(catalog, item)
     for key, schema in binding_settings(binding).items():
         if isinstance(binding, BindingV2) and key == binding.language.key:
             choices = [
@@ -266,14 +286,8 @@ def resolve_preview(  # noqa: C901, PLR0912 - one route decision per request, in
     optional id out never turns an offered module's intent into programmable work. That
     is why every request needs the activated catalog, named or not.
     """
-    if not isinstance(catalog, KitCatalog):
-        code = (
-            PreviewRefusalCode.CATALOG_INACTIVE
-            if catalog.failure in TERMINAL_CATALOG_FAILURES
-            else PreviewRefusalCode.CATALOG_UNAVAILABLE
-        )
-        raise PreviewRefused(code, [request.request_id for request in requests])
-    offered = {capability_id(item.name): item for item in catalog.packages if _offered(item)}
+    _require_catalog(catalog, [request.request_id for request in requests])
+    offered = _offered_by_id(catalog)
     named = [request for request in requests if request.capability_id is not None]
     if unknown := [r.request_id for r in named if r.capability_id not in offered]:
         raise PreviewRefused(PreviewRefusalCode.UNKNOWN_CAPABILITY, unknown)
@@ -364,6 +378,138 @@ def resolve_preview(  # noqa: C901, PLR0912 - one route decision per request, in
             modules=modules,
             targets=[item.target for item in questions.values()],
         ),
+    )
+
+
+def _require_catalog(catalog: KitCatalogAnswer, request_ids: list[str]) -> None:
+    if not isinstance(catalog, KitCatalog):
+        code = (
+            PreviewRefusalCode.CATALOG_INACTIVE
+            if catalog.failure in TERMINAL_CATALOG_FAILURES
+            else PreviewRefusalCode.CATALOG_UNAVAILABLE
+        )
+        raise PreviewRefused(code, request_ids)
+
+
+class SurfaceCommand(BaseModel):
+    """One command the module's bot answers; texts per product language, or one fixed text."""
+
+    command: str
+    help: dict[str, str] | str
+    buttons: list[dict[str, str] | str] = Field(default_factory=list)
+
+
+class ModuleSurface(BaseModel):
+    """What a user can send the bot a module route installs, read from its default binding."""
+
+    request_id: str
+    commands: list[SurfaceCommand]
+    #: The bot's language is a product setting answered once at order; no command switches it.
+    language_chosen_at_order: bool
+
+
+def _text(text: Text | str, languages: list[str]) -> dict[str, str] | str:
+    if isinstance(text, str):
+        return text
+    return {language: text.model_dump()[language] for language in languages}
+
+
+def _surface(binding: Binding | BindingV2, request_id: str) -> ModuleSurface:
+    product_language = isinstance(binding, BindingV2)
+    languages = (
+        [value for value in CAPABILITY_LOCALES if value in binding.language.values]
+        if product_language
+        else []
+    )
+    return ModuleSurface(
+        request_id=request_id,
+        commands=[
+            SurfaceCommand(
+                command=f"/{command.command}",
+                help=_text(command.help, languages),
+                buttons=[
+                    _text(button.label, languages)
+                    for button in (
+                        command.buttons if isinstance(command, ListedItems | ListV2) else []
+                    )
+                ],
+            )
+            for command in binding.commands
+        ],
+        language_chosen_at_order=product_language,
+    )
+
+
+def module_surfaces(catalog: KitCatalog, routes: list[PreviewRoute]) -> list[ModuleSurface]:
+    """The user surface of every module route's bot, from the activated snapshot."""
+    offered = _offered_by_id(catalog)
+    return [
+        _surface(_binding(catalog, offered[route.capability_id]), route.request_id)
+        for route in routes
+        if route.route in MODULE_ROUTES
+    ]
+
+
+@dataclass(frozen=True)
+class UnansweredCommands:
+    """Slash commands plain-module usage examples send that the generated bot does not answer."""
+
+    commands: list[str]
+    requirement_ids: list[str]
+    request_ids: list[str]
+    #: Every command the generated bot answers: the modules' own, then the kit core's.
+    answered: list[str]
+
+
+def unanswered_commands(
+    catalog: KitCatalogAnswer,
+    capabilities: BriefCapabilities,
+    examples: list[UsageExample],
+) -> UnansweredCommands | None:
+    """What a brief promises on a plain `module` route that the installed bot cannot answer.
+
+    Only a requirement every capability routes plain `module` is checked: any other route
+    plans product work that may add a command. Raises `PreviewRefused` when the activated
+    catalog cannot be read or no longer offers a briefed capability.
+    """
+    routes: dict[str, set[CapabilityRoute]] = {}
+    for capability in capabilities.capabilities:
+        for requirement_id in capability.requirement_ids:
+            routes.setdefault(requirement_id, set()).add(capability.route)
+    module_only = {key for key, found in routes.items() if found == {CapabilityRoute.MODULE}}
+    sent = [
+        (example.requirement_id, f"/{command.lower()}")
+        for example in examples
+        if example.requirement_id in module_only
+        for command in _SLASH_COMMAND.findall(example.user_sends)
+    ]
+    if not sent:
+        return None
+    modules = [item for item in capabilities.capabilities if item.route in MODULE_ROUTES]
+    _require_catalog(catalog, [item.request_id for item in modules])
+    offered = _offered_by_id(catalog)
+    if stale := [item.request_id for item in modules if item.capability_id not in offered]:
+        raise PreviewRefused(PreviewRefusalCode.UNKNOWN_CAPABILITY, stale)
+    names = [
+        *(
+            command.command
+            for item in modules
+            for command in _binding(catalog, offered[item.capability_id]).commands
+        ),
+        *RESERVED_COMMANDS,
+    ]
+    answered = [f"/{name}" for name in dict.fromkeys(names)]
+    missing = [(key, command) for key, command in sent if command not in answered]
+    if not missing:
+        return None
+    requirement_ids = sorted({key for key, _ in missing})
+    return UnansweredCommands(
+        commands=sorted({command for _, command in missing}),
+        requirement_ids=requirement_ids,
+        request_ids=sorted(
+            item.request_id for item in modules if set(item.requirement_ids) & set(requirement_ids)
+        ),
+        answered=answered,
     )
 
 

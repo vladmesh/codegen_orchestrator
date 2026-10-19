@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-19
 
+- The PO's preview answer lists each module bot's commands, and a brief whose plain `module` example
+  sends another command is refused, so a runtime language switch or renamed command routes as glue.
 - A redeploy with unchanged deployer-owned secrets skips their six GitHub writes: a lock-fenced Redis
   digest receipt certifies the last complete write; `REGISTRY_*` are still written every deploy.
 - New products scaffold from kit tag `0.11.0` (commit `59a0752c`): parallel PR CI behind fail-closed

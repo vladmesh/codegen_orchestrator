@@ -477,12 +477,19 @@ schema shape can be checked exactly; a required setting of another shape refuses
 preview (`unsupported_question`). An unknown id, an unreadable or inactive catalog, an
 unreadable rollout or a closure that does not install are typed refusals with request ids
 only. The platform stores the preview (`POST /api/capability-previews/`, service actor
-only); users read its product projection.
+only); users read its product projection. The PO tool's answer adds, per module route,
+`module_surfaces` read from the resolved default binding (not stored): each command with
+its help text per product language, list buttons, and whether the language is a product
+setting chosen once at order.
 
 *Brief and plan.* `ProductBriefContent.capabilities` (absent, and not serialized, on every
 other brief) names the preview, each routed request that is not impossible with the
 must-requirements it serves, and the answers with a description in the user's language.
-Answers share the six-setting cap. On creation the API derives the `CapabilityPlan` from
+Answers share the six-setting cap. `present_product_brief` refuses, before anything is
+stored, a usage example of a requirement routed only plain `module` that sends a slash
+command the generated bot does not answer (the module bindings' commands plus the kit
+core's reserved ones, recomputed from the activated snapshot): such a promise is `beyond`
+work and needs a `module_with_glue` preview. On creation the API derives the `CapabilityPlan` from
 the stored preview (`derive_capability_plan`) and stores it in
 `product_briefs.capability_plan`, beside the immutable content; the plan is read only by the
 platform (`GET /api/product-briefs/{id}/capability-plan`). A forged or foreign preview, a

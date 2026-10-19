@@ -30,7 +30,7 @@ from shared.contracts.dto.capability_preview import (
 )
 
 from ...capability_feasibility import platform_cannot
-from ...capability_preview import PreviewRefused, resolve_preview
+from ...capability_preview import PreviewRefused, module_surfaces, resolve_preview
 from ...catalog_product_settings import turn_catalog
 from .tools_shared import _get_api, _user_headers
 
@@ -42,7 +42,7 @@ MODULE_ROLLOUT_CONFIG_KEY = "capabilities.module_rollout"
 _REQUESTS = TypeAdapter(list[CapabilityRequest])
 
 #: What the PO does next after each refusal; never the technical cause.
-_NEXT_STEP = {
+PREVIEW_NEXT_STEP = {
     PreviewRefusalCode.UNKNOWN_CAPABILITY: (
         "Use only capability ids from this turn's list, or null for anything else."
     ),
@@ -82,7 +82,7 @@ def _refused(refusal: CapabilityPreviewRefusal) -> str:
         {
             "status": "preview_refused",
             **refusal.model_dump(mode="json"),
-            "instruction": "No preview was stored. " + _NEXT_STEP[refusal.code],
+            "instruction": "No preview was stored. " + PREVIEW_NEXT_STEP[refusal.code],
         },
         ensure_ascii=False,
     )
@@ -105,9 +105,12 @@ async def preview_capabilities(
     Returns the preview: `preview_id`, a `route` per request (`module`, `module_with_glue`,
     `from_scratch`, `impossible`) with its `reason`, the `questions` to ask the user
     (`question_id`, `kind`, `required`, `choices`, `max_items`, `item_pattern`) and
-    `limitations`. Ask every required question explicitly; never infer the product
-    language from the conversation. Pass the preview id, the routed capabilities and the
-    answers to `present_product_brief(capabilities=...)`.
+    `limitations`, and per module route its `module_surfaces`: the commands the installed
+    bot answers (`command`, `help`, list `buttons`) and `language_chosen_at_order`. On a
+    plain `module` route promise only those commands; a differently named command or a
+    language switch is `beyond` work. Ask every required question explicitly; never infer
+    the product language from the conversation. Pass the preview id, the routed
+    capabilities and the answers to `present_product_brief(capabilities=...)`.
 
     Args:
         project_id: Project ID (UUID) from `create_project`.
@@ -134,11 +137,12 @@ async def preview_capabilities(
     if project.status_code != HTTPStatus.OK:
         return f"No preview was stored: project {project_id} cannot be read."
     modules = (project.json().get("config") or {}).get("modules")
+    catalog = await turn_catalog(config)
     try:
         body = resolve_preview(
             project_id=project_uuid,
             requests=parsed,
-            catalog=await turn_catalog(config),
+            catalog=catalog,
             activation=CATALOG_ACTIVATION,
             project_modules=set(modules) if isinstance(modules, list) else set(),
             # Ready modules are open to every project; the per-project rollout list
@@ -172,6 +176,10 @@ async def preview_capabilities(
         {
             "status": "previewed",
             **preview.model_dump(mode="json", exclude={"project_id", "created_at"}),
+            "module_surfaces": [
+                surface.model_dump(mode="json")
+                for surface in module_surfaces(catalog, preview.routes)
+            ],
             "instruction": (
                 "Explain each route to the user in plain words. Ask every required question "
                 "and wait for explicit answers; then present the brief with `capabilities`."
@@ -181,4 +189,4 @@ async def preview_capabilities(
     )
 
 
-__all__ = ["MODULE_ROLLOUT_CONFIG_KEY", "preview_capabilities"]
+__all__ = ["MODULE_ROLLOUT_CONFIG_KEY", "PREVIEW_NEXT_STEP", "preview_capabilities"]
