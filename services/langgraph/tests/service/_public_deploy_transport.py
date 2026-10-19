@@ -9,7 +9,7 @@ import httpx
 import jwt
 
 import shared
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient, RegistrySecretsResult
 
 
 def released_workflow():
@@ -37,6 +37,7 @@ class ContentGitHubFixture(GitHubAppClient):
         self._http_client = httpx.AsyncClient(transport=httpx.MockTransport(self.respond))
         # External effects remain nonconnecting, after actual content admission.
         for name in (
+            "ensure_registry_secrets",
             "set_repository_secrets",
             "create_or_reset_tag",
             "delete_ref",
@@ -46,6 +47,7 @@ class ContentGitHubFixture(GitHubAppClient):
         ):
             setattr(self, name, AsyncMock())
         self.ref_exists = AsyncMock(return_value=False)
+        self.ensure_registry_secrets.return_value = RegistrySecretsResult(written=3)
 
     def respond(self, request):
         assert request.url.host == "api.github.com"

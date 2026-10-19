@@ -205,6 +205,7 @@ async def test_unknown_resolver_cause_survives_consumer_and_transactional_story_
             assert github.reads == [
                 ("/repos/fixture/public/contents/.github/workflows/deploy.yml", BUILT)
             ]
+            github.ensure_registry_secrets.assert_not_awaited()
             github.set_repository_secrets.assert_not_awaited()
             github.create_or_reset_tag.assert_not_awaited()
             github.trigger_workflow_dispatch.assert_not_awaited()
@@ -450,6 +451,7 @@ async def test_authenticated_built_workflow_read_refuses_before_external_effects
             BUILT,
         )
         for name in (
+            "ensure_registry_secrets",
             "set_repository_secrets",
             "create_or_reset_tag",
             "trigger_workflow_dispatch",
@@ -625,7 +627,7 @@ async def test_reviewed_updated_merge_recovers_exhausted_intent_and_finishes_smo
     assert await fence.acquire(60)
     state["deploy_fence"] = fence
     github = ContentGitHubFixture(built, source)
-    github.set_repository_secrets.return_value = 9
+    github.set_repository_secrets.return_value = 6
     github.wait_for_workflow_completion = AsyncMock(
         return_value={"id": 1439, "status": "completed", "conclusion": "success", "head_sha": built}
     )

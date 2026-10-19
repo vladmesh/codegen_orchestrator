@@ -24,6 +24,7 @@ import fakeredis
 import httpx
 import pytest
 
+from shared.clients.github import RegistrySecretsResult
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.dto.product_brief import InitialSetting, ProductBriefContent
 from shared.contracts.dto.run import RunStatus
@@ -227,6 +228,7 @@ def deploy():
 
     github = AsyncMock()
     github.get_repo = AsyncMock(return_value=SimpleNamespace(id=1001))
+    github.ensure_registry_secrets = AsyncMock(return_value=RegistrySecretsResult(written=3))
     github.set_repository_secrets = AsyncMock(
         side_effect=lambda owner, repo, values, **_: len(values)
     )

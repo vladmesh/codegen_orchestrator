@@ -1,6 +1,7 @@
 """Unit tests for poll_merged_prs — exact PR lookup via story.pr_number."""
 
 from datetime import UTC, datetime, timedelta
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
@@ -596,6 +597,22 @@ async def test_app_merge_refusal_parks_and_notifies(mock_gh_cls, owe, deliver, n
     notify.assert_awaited_once()
 
 
+REGISTRY_LEASE_SECONDS = 180
+
+
+@pytest.fixture
+def registry_policy():
+    with patch.dict(
+        os.environ, {"GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": str(REGISTRY_LEASE_SECONDS)}
+    ):
+        yield
+
+
+def _registry_call(redis) -> tuple[tuple, dict]:
+    """The one registry-secrets call shape: the caller's own Redis and the lease policy."""
+    return ("org", "my-repo"), {"redis": redis.redis, "lease_seconds": REGISTRY_LEASE_SECONDS}
+
+
 def _clean_open_pull_request() -> dict:
     return {
         "number": 42,
@@ -609,7 +626,8 @@ def _clean_open_pull_request() -> dict:
 
 @pytest.mark.asyncio
 @patch("src.tasks.pr_poller.GitHubAppClient")
-async def test_the_registry_secrets_are_refreshed_immediately_before_the_app_merge(mock_gh_cls):
+@pytest.mark.usefixtures("registry_policy")
+async def test_the_registry_secrets_are_made_current_immediately_before_the_app_merge(mock_gh_cls):
     """The merge starts push-main CI, which reads the registry secrets as it starts."""
     gh = AsyncMock()
     mock_gh_cls.return_value = self_entering(gh)
@@ -623,9 +641,10 @@ async def test_the_registry_secrets_are_refreshed_immediately_before_the_app_mer
     await poll_merged_prs(api, redis)
 
     calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
-    refresh = calls.index("refresh_registry_secrets")
+    refresh = calls.index("ensure_registry_secrets")
     assert calls[refresh + 1] == "merge_pull_request"
-    gh.refresh_registry_secrets.assert_awaited_once_with("org", "my-repo")
+    args, kwargs = _registry_call(redis)
+    gh.ensure_registry_secrets.assert_awaited_once_with(*args, **kwargs)
 
 
 def _armed_pull_request(mergeable_state: str = "clean") -> dict:
@@ -657,10 +676,10 @@ async def test_a_pull_request_armed_for_auto_merge_is_refreshed_disarmed_refresh
     await poll_merged_prs(api, redis)
 
     calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
-    assert calls[calls.index("refresh_registry_secrets") :][:4] == [
-        "refresh_registry_secrets",
+    assert calls[calls.index("ensure_registry_secrets") :][:4] == [
+        "ensure_registry_secrets",
         "disable_auto_merge",
-        "refresh_registry_secrets",
+        "ensure_registry_secrets",
         "merge_pull_request",
     ]
     gh.disable_auto_merge.assert_awaited_once_with("org", "my-repo", pr_node_id="PR_kwDOarmed")
@@ -683,8 +702,8 @@ async def test_an_armed_pull_request_still_waiting_on_checks_is_refreshed_disarm
     assert await poll_merged_prs(api, redis) == 0
 
     calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
-    assert calls[calls.index("refresh_registry_secrets") :] == [
-        "refresh_registry_secrets",
+    assert calls[calls.index("ensure_registry_secrets") :] == [
+        "ensure_registry_secrets",
         "disable_auto_merge",
     ]
     gh.merge_pull_request.assert_not_awaited()
@@ -702,6 +721,7 @@ async def test_an_armed_pull_request_still_waiting_on_checks_is_refreshed_disarm
     ids=["not-confirmed", "github-error", "no-node-id"],
 )
 @patch("src.tasks.pr_poller.GitHubAppClient")
+@pytest.mark.usefixtures("registry_policy")
 async def test_an_auto_merge_request_that_was_not_withdrawn_still_refreshes_but_never_merges(
     mock_gh_cls, withdrawal, node_id
 ):
@@ -719,10 +739,11 @@ async def test_an_auto_merge_request_that_was_not_withdrawn_still_refreshes_but_
     with capture_logs() as logs:
         assert await poll_merged_prs(api, redis) == 0
 
-    gh.refresh_registry_secrets.assert_awaited_once_with("org", "my-repo")
+    args, kwargs = _registry_call(redis)
+    gh.ensure_registry_secrets.assert_awaited_once_with(*args, **kwargs)
     calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
     # The write comes straight after reading the PR, before any withdrawal attempt.
-    assert calls[calls.index("get_pull_request") + 1] == "refresh_registry_secrets"
+    assert calls[calls.index("get_pull_request") + 1] == "ensure_registry_secrets"
     gh.merge_pull_request.assert_not_awaited()
     failed = next(e for e in logs if e["event"] == "poll_merged_auto_merge_takeover_failed")
     assert failed["reason"] == "github_auto_merge_disable_failed"
@@ -748,8 +769,8 @@ async def test_a_disable_that_raises_is_preceded_by_the_refresh(mock_gh_cls):
     assert await poll_merged_prs(api, redis) == 0
 
     calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
-    assert calls[calls.index("refresh_registry_secrets") :] == [
-        "refresh_registry_secrets",
+    assert calls[calls.index("ensure_registry_secrets") :] == [
+        "ensure_registry_secrets",
         "disable_auto_merge",
     ]
     gh.merge_pull_request.assert_not_awaited()
@@ -768,7 +789,7 @@ async def test_a_failed_refresh_on_an_armed_pull_request_is_typed_and_changes_no
     api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
     api.get_primary_repository.return_value = _make_repo()
     gh.get_pull_request.return_value = _armed_pull_request("blocked")
-    gh.refresh_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(
+    gh.ensure_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(
         RegistrySecretsRefusal.WRITE_INCOMPLETE, "wrote 2 of 3 registry secrets to org/my-repo"
     )
     gh.disable_auto_merge.return_value = False
@@ -798,7 +819,7 @@ async def test_a_pull_request_still_waiting_on_checks_writes_no_secrets(mock_gh_
 
     assert await poll_merged_prs(api, redis) == 0
 
-    gh.refresh_registry_secrets.assert_not_awaited()
+    gh.ensure_registry_secrets.assert_not_awaited()
     gh.merge_pull_request.assert_not_awaited()
 
 
@@ -808,6 +829,10 @@ async def test_a_pull_request_still_waiting_on_checks_writes_no_secrets(mock_gh_
     [
         (RegistrySecretsRefusal.ENV_MISSING, "REGISTRY_PASSWORD not set"),
         (RegistrySecretsRefusal.WRITE_INCOMPLETE, "wrote 2 of 3 registry secrets to org/my-repo"),
+        (
+            RegistrySecretsRefusal.RECEIPT_KEY_INVALID,
+            "SECRETS_ENCRYPTION_KEY is not a usable Fernet key",
+        ),
     ],
 )
 @patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
@@ -825,7 +850,7 @@ async def test_registry_secrets_that_were_not_refreshed_block_the_merge(  # noqa
     api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
     api.get_primary_repository.return_value = _make_repo()
     gh.get_pull_request.return_value = _clean_open_pull_request()
-    gh.refresh_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(reason, detail)
+    gh.ensure_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(reason, detail)
 
     with capture_logs() as logs:
         assert await poll_merged_prs(api, redis) == 0
@@ -842,6 +867,74 @@ async def test_registry_secrets_that_were_not_refreshed_block_the_merge(  # noqa
     notify.assert_awaited_once()
     api.create_run_if_absent.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", [RegistrySecretsRefusal.LEASE_BUSY, RegistrySecretsRefusal.LEASE_LOST]
+)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_registry_lease_contention_leaves_the_merge_to_the_next_tick(mock_gh_cls, reason):
+    """Another writer is making the same secrets current: no merge now, and no park."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = _clean_open_pull_request()
+    gh.ensure_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(reason, "held")
+
+    with capture_logs() as logs:
+        assert await poll_merged_prs(api, redis) == 0
+
+    gh.merge_pull_request.assert_not_awaited()
+    contended = next(e for e in logs if e["event"] == "poll_merged_registry_secrets_contended")
+    assert contended["reason"] == reason.value
+    api.update_story.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_an_unreachable_receipt_store_blocks_the_merge_without_parking(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = _clean_open_pull_request()
+    gh.ensure_registry_secrets.side_effect = ConnectionError("redis unreachable")
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    gh.merge_pull_request.assert_not_awaited()
+    api.update_story.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_an_unreachable_receipt_store_still_withdraws_an_armed_auto_merge(mock_gh_cls):
+    """Withdrawal is what stops GitHub merging with secrets nobody made current."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = _armed_pull_request("blocked")
+    gh.ensure_registry_secrets.side_effect = ConnectionError("redis unreachable")
+    gh.disable_auto_merge.return_value = True
+
+    with capture_logs() as logs:
+        assert await poll_merged_prs(api, redis) == 0
+
+    failed = next(e for e in logs if e["event"] == "poll_merged_armed_pr_refresh_failed")
+    assert failed["reason"] == "ConnectionError"
+    gh.disable_auto_merge.assert_awaited_once()
+    gh.merge_pull_request.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,11 @@ from typing import Any
 import structlog
 
 from shared.allocation_disposition import attempt_disposition, may_terminate_story
-from shared.clients.github import GitHubAppClient, WorkflowCancellationUnprovenError
+from shared.clients.github import (
+    GitHubAppClient,
+    WorkflowCancellationUnprovenError,
+    registry_writer_lease_seconds,
+)
 from shared.contracts.dto.application import (
     DEFAULT_APPLICATION_RESERVED_RAM_MB,
     ApplicationDTO,
@@ -1326,6 +1330,8 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
 def main():
     """Entry point for running as module."""
+    # This consumer writes product registry secrets: no lease policy or receipt key, no start.
+    registry_writer_lease_seconds()
     start_worker(
         service_name="deploy-worker",
         queue=DEPLOY_QUEUE,

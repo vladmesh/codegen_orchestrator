@@ -377,7 +377,7 @@ current story ref. An earlier fix-cycle PR or ambiguous GitHub response cannot
 stand in for the current completion.
 
 **CI runs on the PR:**
-- **Green CI** → PR poller writes the registry secrets and merges → observes the merge commit's images → deploy
+- **Green CI** → PR poller makes the registry secrets current and merges → observes the merge commit's images → deploy
 - **Red CI** → PR poller detects CI failure → creates fix task → one `retry-after-ci-failure` call walks the story `failed → reopened → in_progress` server-side
 
 **PR merge detection**: `scheduler-pipeline` runs the PR poller (`scheduler/src/tasks/pr_poller.py`) for merged PRs and CI failures on stories in `pr_review` status every 30 seconds.
@@ -387,27 +387,32 @@ the product's push-main CI, whose `build-and-push` jobs read `REGISTRY_URL`, `RE
 `REGISTRY_PASSWORD` when they start. GitHub auto-merge fires whenever checks pass, possibly after a
 registry hostname or credential rotation, and nothing would write the current values before that
 merge. So the PR poller merges every product PR, and in the same tick immediately before its
-`merge_pull_request` it calls `GitHubAppClient.refresh_registry_secrets`, which writes the three
-from `scheduler-pipeline`'s `ORCHESTRATOR_HOSTNAME`/`REGISTRY_USER`/`REGISTRY_PASSWORD`. This
-covers a repository the platform did not create and one created before a rotation; the deploy
-worker's own write of the same secrets comes after the merge, too late for that CI. If the write
-is incomplete the poller does not merge: it parks the story in `waiting_human_review` with
-`quarantine_reason.reason` set to `registry_secrets_env_missing` or
-`registry_secrets_write_incomplete`, naming variables and counts only.
+`merge_pull_request` it calls `GitHubAppClient.ensure_registry_secrets` on its own Redis, which
+makes the three current from `scheduler-pipeline`'s
+`ORCHESTRATOR_HOSTNAME`/`REGISTRY_USER`/`REGISTRY_PASSWORD` under the shared registry receipt
+([SECRETS.md](SECRETS.md#deployment-via-github-actions)): a receipt for the same values and
+repository is enough, anything else writes all three. This covers a repository the platform did not
+create and one created before a rotation; the deploy worker's own call comes after the merge, too
+late for that CI. If the secrets are not made current the poller does not merge. Lease contention
+(`registry_secrets_lease_busy`, `registry_secrets_lease_lost`) leaves the PR for the next tick; a
+Redis or repository-read failure skips it for that tick; any other refusal parks the story in
+`waiting_human_review` with `quarantine_reason.reason` set to its reason
+(`registry_secrets_env_missing`, `registry_secrets_write_incomplete`,
+`registry_secrets_receipt_key_invalid`), naming variables and counts only.
 
 **One invariant, enforced in one place.** A product PR that anything other than the poller's own
 call can merge is never left with stale registry secrets, and the poller's per-PR visit is the
 only code that enforces it:
 
 1. An open PR still armed for auto-merge (left over from before this rule), which GitHub may merge
-   by itself: on every tick the poller first writes the registry secrets, then tries to withdraw
-   the request (`disable_auto_merge`, GraphQL `disablePullRequestAutoMerge`). A failed write is
+   by itself: on every tick the poller first makes the registry secrets current, then tries to
+   withdraw the request (`disable_auto_merge`, GraphQL `disablePullRequestAutoMerge`). A failure is
    logged as `poll_merged_armed_pr_refresh_failed` with its typed reason and changes nothing else.
    A failed or unconfirmed withdrawal logs `github_auto_merge_disable_failed`; the poller does not
    merge and tries again next tick, and the secrets are current either way. No outcome of the
    withdrawal, exception included, can skip the write, and the write never merges.
-2. An open PR under the poller's sole control: the write immediately before `merge_pull_request`,
-   parking the story on a failed write, as above.
+2. An open PR under the poller's sole control: the call immediately before `merge_pull_request`,
+   with the outcomes above.
 
 So every merge — the poller's, or GitHub's of a still-armed PR — follows a write in the same tick
 or an earlier one. What remains is a rotation between the last write and GitHub's own merge within
@@ -425,7 +430,7 @@ previous release can also merge before the new poller's first tick; that is a de
 
 0. (Before the deploy Run exists) The producer waits for the merged commit's
    images — see below. No Run is created until they are published. The order is:
-   registry secrets written → merge → push-main CI builds and pushes with those secrets →
+   registry secrets made current → merge → push-main CI builds and pushes with those secrets →
    the merge commit's images observed → deploy dispatched. `deploy.yml` has only a
    `workflow_dispatch` trigger, so nothing starts it on push.
 1. Resolve server for the project (or provision new one)

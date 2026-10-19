@@ -1,7 +1,4 @@
-"""Repository setup — create GitHub repo and configure registry secrets.
-
-Extracted from engineering_worker.py (#18).
-"""
+"""Repository setup: create the GitHub repo and make its registry secrets current."""
 
 from __future__ import annotations
 
@@ -11,6 +8,7 @@ import httpx
 import structlog
 
 from shared.contracts.dto.project import ProjectDTO
+from shared.redis import RedisStreamClient
 
 from ..clients.api import api_client
 from ..runtime_identity import project_runtime_slug
@@ -18,18 +16,13 @@ from ..runtime_identity import project_runtime_slug
 logger = structlog.get_logger(__name__)
 
 
-async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
-    """Create GitHub repo and set registry secrets for a draft project.
+async def _create_repo_and_set_secrets(project: ProjectDTO, redis: RedisStreamClient) -> None:
+    """Create a draft project's GitHub repo and make its registry secrets current.
 
-    Replaces the old scaffolder queue approach: repo creation and secret
-    setup happen inline, while copier + make setup are deferred to
-    worker-manager's scaffold phase.
+    Copier and make setup follow later in worker-manager's scaffold phase, whose push
+    starts the product's CI; a failure here raises, so no repository is recorded.
     """
-    from shared.clients.github import (
-        GitHubAppClient,
-        RegistrySecretsNotRefreshedError,
-        registry_repository_secrets,
-    )
+    from shared.clients.github import GitHubAppClient, registry_writer_lease_seconds
 
     project_id = str(project.id)
     project_name = project.title
@@ -75,21 +68,15 @@ async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
     except Exception as exc:
         raise RuntimeError(f"GitHub repository creation failed: {exc}") from exc
 
-    # Step 2: Set registry secrets so CI can push Docker images. The PR poller
-    # writes them again before every merge, so this is not the only chance.
-    try:
-        registry_secrets = registry_repository_secrets()
-    except RegistrySecretsNotRefreshedError as error:
-        logger.warning("registry_secrets_env_missing", detail=error.detail)
-    else:
-        token = await github_client.get_org_token(org_name)
-        count = await github_client.set_repository_secrets(
-            org_name, repo_name, registry_secrets, token=token
-        )
-        if count < len(registry_secrets):
-            logger.warning(
-                "registry_secrets_incomplete", expected=len(registry_secrets), actual=count
-            )
+    # Step 2: The scaffold push starts the product's CI, whose build-and-push logs in
+    # with the registry secrets, so they are current before it or the setup fails.
+    registry = await github_client.ensure_registry_secrets(
+        org_name,
+        repo_name,
+        redis=redis.redis,
+        lease_seconds=registry_writer_lease_seconds(),
+    )
+    logger.info("registry_secrets_current", repo=repo_full_name, written=registry.written)
 
     # Step 3: Create Repository entity (project stays DRAFT until scaffold completes)
     repo_url = f"https://github.com/{repo_full_name}"

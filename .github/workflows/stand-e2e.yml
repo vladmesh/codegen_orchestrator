@@ -660,6 +660,7 @@ jobs:
           STAND_PLATFORM_FIXTURE_FILE: platform-module.json
           DEFAULT_AGENT_TYPE: claude
           TELEGRAM_MAX_CONCURRENT_UPDATES: '8'
+          GITHUB_REGISTRY_SECRETS_LEASE_SECONDS: '180'
           # The QA account's Telethon credentials, for qa-worker alone.
           TELETHON_API_ID: ${{ secrets.TELETHON_API_ID }}
           TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
@@ -684,7 +685,7 @@ jobs:
               "WORKER_BROKER_INTERNAL_TOKEN", "GITHUB_WEBHOOK_SECRET", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "HOST_CODEX_HOME", "HOST_CODEX_VALIDATION_PATH", "PO_LLM_MODEL",
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
               "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR", "DEFAULT_AGENT_TYPE",
-              "TELEGRAM_MAX_CONCURRENT_UPDATES",
+              "TELEGRAM_MAX_CONCURRENT_UPDATES", "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS",
               "STAND_PLATFORM_FIXTURE_FILE",
           )
           # Not in names: .stand.env becomes the stand .env, which compose hands

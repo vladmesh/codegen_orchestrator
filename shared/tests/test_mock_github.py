@@ -55,9 +55,7 @@ class TestMockGitHubClient:
     async def test_provision_project_repo_success(self):
         client = MockGitHubClient()
 
-        repo = await client.provision_project_repo(
-            name="My Project", project_spec={"name": "test"}, secrets={"TOKEN": "xyz"}
-        )
+        repo = await client.provision_project_repo(name="My Project", project_spec={"name": "test"})
 
         # Check name sanitization
         assert repo.name == "my-project"
@@ -65,9 +63,6 @@ class TestMockGitHubClient:
         # Check file created
         config = await client.get_file_contents("mock-org", "my-project", ".project.yaml")
         assert "name: test" in config
-
-        # Check secret set
-        assert client.secrets["my-project"]["TOKEN"] == "xyz"  # noqa: S105
 
     async def test_provision_project_idempotency(self):
         client = MockGitHubClient()

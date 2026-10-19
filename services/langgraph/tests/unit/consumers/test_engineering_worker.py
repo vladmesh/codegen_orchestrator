@@ -7,11 +7,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from shared.clients.github import (
+    RegistrySecretsNotRefreshedError,
+    RegistrySecretsRefusal,
+    RegistrySecretsResult,
+)
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.queues.worker_result import WorkerFailedResult
 from shared.contracts.vocab import AgentType
@@ -993,7 +998,7 @@ class TestFeatureActionFlow:
 
 
 class TestCreateRepoAndSetSecrets:
-    """Tests for _create_repo_and_set_secrets (replaced _trigger_scaffolding)."""
+    """A draft project's repository is created and its registry secrets made current."""
 
     @pytest.fixture
     def mock_api(self):
@@ -1012,36 +1017,35 @@ class TestCreateRepoAndSetSecrets:
             "ORCHESTRATOR_HOSTNAME": "registry.example.com",
             "REGISTRY_USER": "admin",
             "REGISTRY_PASSWORD": "secret",
+            "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": "180",
         },
     )
     async def test_happy_path(self, mock_gh_cls, mock_api):
-        """Creates repo, sets secrets, updates project status."""
+        """Creates the repo, makes its registry secrets current, then records the repository."""
         from src.consumers._repo_setup import _create_repo_and_set_secrets
 
         mock_gh = AsyncMock()
         mock_gh_cls.return_value = mock_gh
         mock_gh.create_repo = AsyncMock()
-        mock_gh.get_org_token = AsyncMock(return_value="ghs_token")
-        mock_gh.set_repository_secrets = AsyncMock(return_value=3)
+        mock_gh.ensure_registry_secrets.side_effect = lambda *_a, **_k: (
+            mock_api.post.assert_not_called() or RegistrySecretsResult(written=3)
+        )
+        redis = MagicMock()
 
         project = make_project(title="My Project", slug="my-project-0000")
 
-        await _create_repo_and_set_secrets(project)
+        await _create_repo_and_set_secrets(project, redis)
 
-        # Repo was created
         mock_gh.create_repo.assert_awaited_once_with(
             org="test-org",
             name="my-project-0000",
             description="Project: My Project",
             private=True,
         )
-
-        # Secrets were set
-        mock_gh.set_repository_secrets.assert_awaited_once()
-        secrets_arg = mock_gh.set_repository_secrets.call_args[0][2]
-        assert secrets_arg["REGISTRY_URL"] == "registry.example.com"
-        assert secrets_arg["REGISTRY_USER"] == "admin"
-        assert secrets_arg["REGISTRY_PASSWORD"] == "secret"  # noqa: S105
+        mock_gh.ensure_registry_secrets.assert_awaited_once_with(
+            "test-org", "my-project-0000", redis=redis.redis, lease_seconds=180
+        )
+        mock_gh.set_repository_secrets.assert_not_awaited()
 
         # Repository entity created (project stays draft — no status patch)
         mock_api.post.assert_called()
@@ -1071,34 +1075,36 @@ class TestCreateRepoAndSetSecrets:
         project = make_project(name="existing-project")
 
         with pytest.raises(RuntimeError, match="already exists"):
-            await _create_repo_and_set_secrets(project)
+            await _create_repo_and_set_secrets(project, MagicMock())
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            RegistrySecretsRefusal.ENV_MISSING,
+            RegistrySecretsRefusal.LEASE_BUSY,
+            RegistrySecretsRefusal.WRITE_INCOMPLETE,
+        ],
+    )
     @patch("shared.clients.github.GitHubAppClient")
     @patch.dict("os.environ", {"GITHUB_ORG": "test-org"}, clear=False)
-    async def test_missing_registry_env_warns(self, mock_gh_cls, mock_api):
-        """Missing registry env vars logs warning but doesn't fail."""
-        import os
-
+    async def test_registry_secrets_not_made_current_fail_the_setup(
+        self, mock_gh_cls, mock_api, reason
+    ):
+        """No repository is recorded, so nothing scaffolds and pushes into it."""
         from src.consumers._repo_setup import _create_repo_and_set_secrets
 
         mock_gh = AsyncMock()
         mock_gh_cls.return_value = mock_gh
-        mock_gh.create_repo = AsyncMock()
+        mock_gh.ensure_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(
+            reason, "refused"
+        )
 
-        # Clear registry env vars
-        env = os.environ.copy()
-        for key in ("ORCHESTRATOR_HOSTNAME", "REGISTRY_USER", "REGISTRY_PASSWORD"):
-            env.pop(key, None)
+        with pytest.raises(RegistrySecretsNotRefreshedError):
+            await _create_repo_and_set_secrets(make_project(name="test"), MagicMock())
 
-        project = make_project(name="test")
-
-        with patch.dict("os.environ", env, clear=True):
-            await _create_repo_and_set_secrets(project)
-
-        # Repo still created, but set_repository_secrets NOT called
         mock_gh.create_repo.assert_awaited_once()
-        mock_gh.set_repository_secrets.assert_not_awaited()
+        mock_api.post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_missing_github_org_raises(self, mock_api):
@@ -1107,7 +1113,7 @@ class TestCreateRepoAndSetSecrets:
 
         with patch.dict("os.environ", {}, clear=True):
             with pytest.raises(RuntimeError, match="GITHUB_ORG"):
-                await _create_repo_and_set_secrets(make_project(name="x"))
+                await _create_repo_and_set_secrets(make_project(name="x"), MagicMock())
 
 
 class TestNoNewCommitFailure:

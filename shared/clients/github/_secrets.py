@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from cryptography.fernet import InvalidToken
 
+from shared.config import registry_secrets_lease_seconds
 from shared.crypto import SecretsCipher
 from shared.diagnostics import redact_diagnostic
 from shared.log_config import get_logger
@@ -41,6 +42,7 @@ class RegistrySecretsRefusal(StrEnum):
     RECEIPT_KEY_INVALID = "registry_secrets_receipt_key_invalid"
     LEASE_BUSY = "registry_secrets_lease_busy"
     LEASE_LOST = "registry_secrets_lease_lost"
+    CALLER_LOCK_LOST = "registry_secrets_caller_lock_lost"
 
 
 class RegistrySecretsNotRefreshedError(RuntimeError):
@@ -72,13 +74,32 @@ def registry_repository_secrets(environ: Mapping[str, str] | None = None) -> dic
 #: Part of the digest input, so a registry receipt never matches a digest made for another use.
 _RECEIPT_CONTEXT = "github-registry-secrets-receipt/v1"
 
-# Each script first compares the lease with this holder's token, so a holder whose
-# lease expired or was taken can neither read a hit, invalidate, publish nor release.
-# A receipt that is not a Fernet token reads as absent, so corrupt bytes are a miss
-# whether or not the caller's connection decodes responses.
-_READ_RECEIPT = """
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then
-    return {0}
+# Each script first checks both owners in one call: the caller's lock (KEYS[3], when the
+# caller has one) against ARGV[2], then the lease against this holder's token in ARGV[1],
+# answering -1, 0 or 1 for a lost lock, a lost lease or both held. A holder that lost
+# either can neither read a hit, invalidate, publish nor send. A receipt that is not a
+# Fernet token reads as absent, so corrupt bytes are a miss whether or not the caller's
+# connection decodes responses.
+_CALLER_LOST, _HELD = -1, 1
+
+_OWNERS_HELD = """
+local function owners_held()
+    if #KEYS == 3 and redis.call('GET', KEYS[3]) ~= ARGV[2] then
+        return -1
+    end
+    if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+        return 0
+    end
+    return 1
+end
+local held = owners_held()
+"""
+
+_READ_RECEIPT = (
+    _OWNERS_HELD
+    + """
+if held ~= 1 then
+    return {held}
 end
 local receipt = redis.call('GET', KEYS[2])
 if not receipt or not string.match(receipt, '^[%w_=-]+$') then
@@ -86,29 +107,29 @@ if not receipt or not string.match(receipt, '^[%w_=-]+$') then
 end
 return {1, receipt}
 """
+)
 
-_HOLDS_LEASE = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return 1
-end
-return 0
-"""
+_HOLDS_LEASE = _OWNERS_HELD + "return held\n"
 
-_INVALIDATE_RECEIPT = """
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then
-    return 0
+_INVALIDATE_RECEIPT = (
+    _OWNERS_HELD
+    + """
+if held == 1 then
+    redis.call('DEL', KEYS[2])
 end
-redis.call('DEL', KEYS[2])
-return 1
+return held
 """
+)
 
-_PUBLISH_RECEIPT = """
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then
-    return 0
+_PUBLISH_RECEIPT = (
+    _OWNERS_HELD
+    + """
+if held == 1 then
+    redis.call('SET', KEYS[2], ARGV[3])
 end
-redis.call('SET', KEYS[2], ARGV[2])
-return 1
+return held
 """
+)
 
 _RELEASE_LEASE = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -148,6 +169,15 @@ def _receipt_cipher() -> SecretsCipher:
         ) from None
 
 
+def registry_writer_lease_seconds() -> int:
+    """This writer process's registry lease policy, refused unless the receipt key is usable too.
+
+    A writer calls it at startup, so a missing policy or key stops the process before any write.
+    """
+    _receipt_cipher()
+    return registry_secrets_lease_seconds()
+
+
 def _vouches(cipher: SecretsCipher, receipt: str, digest: str) -> bool:
     try:
         held = cipher.decrypt(receipt)
@@ -165,35 +195,47 @@ class RegistrySecretsResult:
 
 @dataclass(frozen=True)
 class _RegistryLease:
-    """One holder's claim on a repository's registry lease, checked by every receipt script."""
+    """One holder's claim on a repository's registry lease, checked by every receipt script.
+
+    `caller_lock` is the caller's own `(key, token)` lock, checked in the same script.
+    """
 
     redis: "Redis"
     repository_id: int
     owner: str
     repo: str
     token: str
+    caller_lock: tuple[str, str] | None
 
     async def _eval(self, script: str, *args: str) -> object:
-        return await self.redis.eval(
-            script,
-            2,
-            registry_lease_key(self.repository_id),
-            registry_receipt_key(self.repository_id),
-            self.token,
-            *args,
-        )
+        keys = [registry_lease_key(self.repository_id), registry_receipt_key(self.repository_id)]
+        caller_token = ""
+        if self.caller_lock is not None:
+            caller_key, caller_token = self.caller_lock
+            keys.append(caller_key)
+        return await self.redis.eval(script, len(keys), *keys, self.token, caller_token, *args)
 
-    def _lost(self) -> RegistrySecretsNotRefreshedError:
+    def _refusal(self, held: object) -> RegistrySecretsNotRefreshedError:
+        repository = f"{self.owner}/{self.repo}"
+        if held == _CALLER_LOST:
+            reason, detail = (
+                RegistrySecretsRefusal.CALLER_LOCK_LOST,
+                f"the caller lost its lock while making {repository} current",
+            )
+        else:
+            reason, detail = (
+                RegistrySecretsRefusal.LEASE_LOST,
+                f"lost the registry secrets lease of {repository}",
+            )
         logger.warning(
-            "registry_secrets_lease_lost",
-            owner=self.owner,
-            repo=self.repo,
-            repository_id=self.repository_id,
+            reason.value, owner=self.owner, repo=self.repo, repository_id=self.repository_id
         )
-        return RegistrySecretsNotRefreshedError(
-            RegistrySecretsRefusal.LEASE_LOST,
-            f"lost the registry secrets lease of {self.owner}/{self.repo}",
-        )
+        return RegistrySecretsNotRefreshedError(reason, detail)
+
+    async def _held(self, script: str, *args: str) -> None:
+        held = await self._eval(script, *args)
+        if held != _HELD:
+            raise self._refusal(held)
 
     async def acquire(self, lease_seconds: int) -> None:
         key = registry_lease_key(self.repository_id)
@@ -211,21 +253,18 @@ class _RegistryLease:
 
     async def read_receipt(self) -> str | None:
         held, *receipt = await self._eval(_READ_RECEIPT)
-        if held != 1:
-            raise self._lost()
+        if held != _HELD:
+            raise self._refusal(held)
         return decode_redis_value(receipt[0]) if receipt else None
 
     async def ensure_held(self) -> None:
-        if await self._eval(_HOLDS_LEASE) != 1:
-            raise self._lost()
+        await self._held(_HOLDS_LEASE)
 
     async def invalidate_receipt(self) -> None:
-        if await self._eval(_INVALIDATE_RECEIPT) != 1:
-            raise self._lost()
+        await self._held(_INVALIDATE_RECEIPT)
 
     async def publish_receipt(self, receipt: str) -> None:
-        if await self._eval(_PUBLISH_RECEIPT, receipt) != 1:
-            raise self._lost()
+        await self._held(_PUBLISH_RECEIPT, receipt)
 
     async def release(self) -> None:
         await self.redis.eval(_RELEASE_LEASE, 1, registry_lease_key(self.repository_id), self.token)
@@ -342,30 +381,6 @@ class SecretsMixin:
                 )
         return count
 
-    async def refresh_registry_secrets(
-        self,
-        owner: str,
-        repo: str,
-        token: str | None = None,
-    ) -> None:
-        """Write the orchestrator's current registry secrets into one product repository.
-
-        Idempotent and cheap, so it runs before every merge that starts the
-        product's push-main CI: those builds read ``REGISTRY_URL`` and the
-        credentials when they start, and a repository created elsewhere, or
-        created before a hostname or credential change, would otherwise build
-        against stale values. Raises ``RegistrySecretsNotRefreshedError`` unless
-        every secret was written.
-        """
-        secrets = registry_repository_secrets()
-        written = await self.set_repository_secrets(owner, repo, secrets, token=token)
-        if written != len(secrets):
-            raise RegistrySecretsNotRefreshedError(
-                RegistrySecretsRefusal.WRITE_INCOMPLETE,
-                f"wrote {written} of {len(secrets)} registry secrets to {owner}/{repo}",
-            )
-        logger.info("registry_secrets_refreshed", owner=owner, repo=repo, count=written)
-
     async def ensure_registry_secrets(
         self,
         owner: str,
@@ -374,11 +389,13 @@ class SecretsMixin:
         redis: "Redis",
         lease_seconds: int,
         guard: RequestGuard | None = None,
+        caller_lock: tuple[str, str] | None = None,
     ) -> RegistrySecretsResult:
         """Make the registry secrets current in `owner/repo`, skipped while a receipt vouches.
 
         Runs under the repository's registry lease and raises
         ``RegistrySecretsNotRefreshedError`` unless it proved a receipt hit or wrote every secret.
+        A `caller_lock` `(key, token)` must hold with the lease at each hit, PUT and receipt change.
         """
         if lease_seconds <= 0:
             raise ValueError(f"lease_seconds must be positive, got {lease_seconds}")
@@ -386,7 +403,9 @@ class SecretsMixin:
         cipher = _receipt_cipher()
         # A repository deleted and recreated under the same name gets a new id.
         repository_id = (await self.get_repo(owner, repo)).id
-        lease = _RegistryLease(redis, repository_id, owner, repo, token=uuid4().hex)
+        lease = _RegistryLease(
+            redis, repository_id, owner, repo, token=uuid4().hex, caller_lock=caller_lock
+        )
         await lease.acquire(lease_seconds)
         try:
             digest = _registry_digest(repository_id, secrets)
@@ -397,8 +416,8 @@ class SecretsMixin:
             else:
                 await lease.invalidate_receipt()
 
-                # The lease check is the last await before each PUT attempt, so a lease
-                # that expired while the caller's guard was suspended sends nothing.
+                # The joint owner check is the last await before each PUT attempt, so a
+                # lock or lease lost while the caller's guard was suspended sends nothing.
                 async def guarded() -> None:
                     if guard is not None:
                         await guard()

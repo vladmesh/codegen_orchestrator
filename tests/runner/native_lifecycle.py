@@ -14,7 +14,8 @@ scaffolder's `src` package is importable. Every transition is the production own
 The one controlled edge is GitHub, declared here: `ControlledGitHub` answers the GitHub App
 client the scaffolder uses, and git reaches a local bare repository through a process-scoped
 `insteadOf` while the scaffold runs. Creating the repository initialises that bare remote as
-GitHub's `auto_init` would; branch protection and auto-merge are recorded and acknowledged.
+GitHub's `auto_init` would; registry secrets, branch protection and auto-merge are recorded
+and acknowledged.
 """
 
 from __future__ import annotations
@@ -68,9 +69,11 @@ class ControlledGitHub:
             )
         return SimpleNamespace(id=1, full_name=f"{org}/{name}", allow_auto_merge=True)
 
-    async def set_repository_secrets(self, org: str, name: str, secrets, token=None) -> int:
-        self._record("set_repository_secrets", org=org, name=name, count=len(secrets))
-        return len(secrets)
+    async def ensure_registry_secrets(
+        self, org: str, name: str, *, redis, lease_seconds: int
+    ) -> SimpleNamespace:
+        self._record("ensure_registry_secrets", org=org, name=name, lease_seconds=lease_seconds)
+        return SimpleNamespace(written=3)
 
     async def update_branch_protection(self, org: str, name: str, branch: str, **rules) -> None:
         self._record("update_branch_protection", org=org, name=name, branch=branch, **rules)

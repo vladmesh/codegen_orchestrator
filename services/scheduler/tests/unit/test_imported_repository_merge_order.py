@@ -6,7 +6,8 @@ current one at 23:02:31, after the builds had read the stale one. Both image
 builds failed and the deploy found no images.
 
 The GitHub double below is one imported repository. Its secret writes go through
-the real ``GitHubAppClient.refresh_registry_secrets`` and ``set_repository_secrets``;
+the real ``GitHubAppClient.ensure_registry_secrets`` and ``set_repository_secrets``,
+with the registry lease and receipt as real Lua on an in-memory Redis;
 a merge starts a push-main CI run that reads the registry secrets when it starts,
 as the product template's ``build-and-push`` job does, and publishes images only
 if those values reach the orchestrator's live registry. An armed auto-merge
@@ -18,12 +19,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import fakeredis
 import pytest
 from structlog.testing import capture_logs
 
-from shared.clients.github import SecretsMixin
+from shared.clients.github import SecretsMixin, registry_receipt_key
 from shared.queues import DEPLOY_QUEUE
 from src.tasks.pr_poller import poll_merged_prs
 
@@ -31,6 +34,7 @@ REGISTRY_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.current.example.com",
     "REGISTRY_USER": "registry-user",
     "REGISTRY_PASSWORD": "current-registry-password",  # noqa: S105
+    "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": "180",
 }
 ROTATED_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.rotated.example.com",
@@ -59,6 +63,7 @@ class ImportedRepository(SecretsMixin):
         checks_passed: bool = True,
     ) -> None:
         self.events = events
+        self.id = 7001
         self.refused_secret = refused_secret
         self.refuses_disable = refuses_disable
         self.secrets = dict(STALE_SECRETS)
@@ -79,6 +84,9 @@ class ImportedRepository(SecretsMixin):
 
     async def __aexit__(self, *exc: object) -> bool:
         return False
+
+    async def get_repo(self, owner: str, repo: str) -> SimpleNamespace:
+        return SimpleNamespace(id=self.id)
 
     async def set_repository_secret(  # noqa: PLR0913 — the real method's signature
         self, owner: str, repo: str, secret_name: str, secret_value: str, token=None, *, guard=None
@@ -182,6 +190,7 @@ def _api() -> AsyncMock:
 
 def _redis(events: list) -> AsyncMock:
     redis = AsyncMock()
+    redis.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
     async def publish(queue, message):
         if queue == DEPLOY_QUEUE:
@@ -243,7 +252,9 @@ async def test_an_armed_auto_merge_request_merges_by_itself_on_what_the_repo_hol
     """
     events: list = []
     github = ImportedRepository(events, auto_merge={"merge_method": "merge"}, checks_passed=False)
-    await github.refresh_registry_secrets("org", "imported-repo")
+    await github.ensure_registry_secrets(
+        "org", "imported-repo", redis=fakeredis.aioredis.FakeRedis(), lease_seconds=180
+    )
     os.environ.update(ROTATED_ENV)
     github.checks_pass()
     github.finish_build()
@@ -371,3 +382,30 @@ async def test_an_armed_request_that_cannot_be_withdrawn_merges_on_rotated_secre
         f"registry.rotated.example.com/org/imported-repo/backend:sha-{MERGE_SHA[:7]}"
     ]
     api.transition_story.assert_awaited_once_with("story-1", "deploy")
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, REGISTRY_ENV)
+@pytest.mark.parametrize("receipt", ["kept", "corrupt", "deleted"])
+async def test_a_matching_receipt_merges_without_a_write_and_a_broken_one_repairs_first(receipt):
+    events: list = []
+    github = ImportedRepository(events)
+    api, redis = _api(), _redis(events)
+    await github.ensure_registry_secrets(
+        "org", "imported-repo", redis=redis.redis, lease_seconds=180
+    )
+    if receipt == "corrupt":
+        await redis.redis.set(registry_receipt_key(github.id), "not-a-receipt")
+    elif receipt == "deleted":
+        await redis.redis.delete(registry_receipt_key(github.id))
+    events.clear()
+
+    with patch("src.tasks.pr_poller.GitHubAppClient", return_value=github):
+        assert await poll_merged_prs(api, redis) == 0
+
+    written = [] if receipt == "kept" else [("secret_written", n) for n in REGISTRY_SECRETS]
+    assert events == [
+        *written,
+        ("merged", MERGE_SHA),
+        ("ci_started", "registry.current.example.com"),
+    ]

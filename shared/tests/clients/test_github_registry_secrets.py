@@ -1,59 +1,26 @@
-"""The product repository's registry secrets, written from the orchestrator's env."""
+"""The product repository's registry secrets and the writer policy, read from the env."""
 
-import base64
-from datetime import UTC, datetime, timedelta
-import json
 import os
 from unittest.mock import patch
 
-import httpx
-from nacl import public
+from cryptography.fernet import Fernet
+from pydantic import ValidationError
 import pytest
-import respx
-from structlog.testing import capture_logs
 
 from shared.clients.github import (
-    GitHubAppClient,
     RegistrySecretsNotRefreshedError,
     RegistrySecretsRefusal,
     registry_repository_secrets,
+    registry_writer_lease_seconds,
 )
 
-OWNER, REPO = "my-org", "imported-repo"
+LEASE_POLICY = "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS"
+
 REGISTRY_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.current.example.com",
     "REGISTRY_USER": "registry-user",
     "REGISTRY_PASSWORD": "registry-password-value",  # noqa: S105
 }
-
-
-@pytest.fixture
-def client():
-    with patch.dict(
-        os.environ, {"GITHUB_APP_ID": "12345", "GITHUB_APP_PRIVATE_KEY_PATH": "dummy.pem"}
-    ):
-        github = GitHubAppClient()
-    github._private_key = "dummy_private_key"
-    github._token_cache[111] = ("token", datetime.now(UTC) + timedelta(hours=1))
-    with patch.object(github, "get_installation_id", return_value=111):
-        yield github
-
-
-@pytest.fixture
-def repository_key():
-    """The repository's Actions public key, and the private half that opens what it seals."""
-    private = public.PrivateKey.generate()
-    return private, base64.b64encode(bytes(private.public_key)).decode()
-
-
-def _sealed_values(routes, private_key) -> dict[str, str]:
-    box = public.SealedBox(private_key)
-    written = {}
-    for name, route in routes.items():
-        for call in route.calls:
-            body = json.loads(call.request.content)
-            written[name] = box.decrypt(base64.b64decode(body["encrypted_value"])).decode()
-    return written
 
 
 def test_the_secrets_are_named_for_the_product_ci_and_valued_from_the_env():
@@ -75,62 +42,27 @@ def test_a_missing_variable_is_named_and_no_value_is():
     assert refused.value.detail == "ORCHESTRATOR_HOSTNAME, REGISTRY_USER, REGISTRY_PASSWORD not set"
 
 
-@pytest.mark.asyncio
-async def test_refresh_writes_the_current_values_over_stale_ones(client, repository_key):
-    private_key, public_key_b64 = repository_key
-    with patch.dict(os.environ, REGISTRY_ENV), respx.mock(base_url="https://api.github.com") as gh:
-        gh.get(f"/repos/{OWNER}/{REPO}/actions/secrets/public-key").mock(
-            return_value=httpx.Response(200, json={"key": public_key_b64, "key_id": "k1"})
-        )
-        routes = {
-            name: gh.put(f"/repos/{OWNER}/{REPO}/actions/secrets/{name}").mock(
-                return_value=httpx.Response(204)
-            )
-            for name in ("REGISTRY_URL", "REGISTRY_USER", "REGISTRY_PASSWORD")
-        }
-        with capture_logs() as logs:
-            await client.refresh_registry_secrets(OWNER, REPO)
-
-    assert _sealed_values(routes, private_key) == {
-        "REGISTRY_URL": "registry.current.example.com",
-        "REGISTRY_USER": "registry-user",
-        "REGISTRY_PASSWORD": "registry-password-value",
-    }
-    assert any(entry["event"] == "registry_secrets_refreshed" for entry in logs)
-    assert "registry-password-value" not in repr(logs)
+@pytest.mark.parametrize("value", [None, "", "0", "-5", "soon", "1.5"])
+def test_a_missing_or_non_positive_lease_policy_refuses_the_writer(value):
+    env = {"SECRETS_ENCRYPTION_KEY": Fernet.generate_key().decode()}
+    with patch.dict(os.environ, env):
+        os.environ.pop(LEASE_POLICY, None)
+        if value is not None:
+            os.environ[LEASE_POLICY] = value
+        with pytest.raises(ValidationError, match="github_registry_secrets_lease_seconds"):
+            registry_writer_lease_seconds()
 
 
-@pytest.mark.asyncio
-async def test_an_incomplete_write_refuses_and_logs_no_value(client, repository_key):
-    _private_key, public_key_b64 = repository_key
-    with patch.dict(os.environ, REGISTRY_ENV), respx.mock(base_url="https://api.github.com") as gh:
-        gh.get(f"/repos/{OWNER}/{REPO}/actions/secrets/public-key").mock(
-            return_value=httpx.Response(200, json={"key": public_key_b64, "key_id": "k1"})
-        )
-        for name in ("REGISTRY_URL", "REGISTRY_USER"):
-            gh.put(f"/repos/{OWNER}/{REPO}/actions/secrets/{name}").mock(
-                return_value=httpx.Response(204)
-            )
-        # A failure whose own text carries the value it was writing.
-        gh.put(f"/repos/{OWNER}/{REPO}/actions/secrets/REGISTRY_PASSWORD").mock(
-            side_effect=ValueError("could not write registry-password-value")
-        )
-        with capture_logs() as logs, pytest.raises(RegistrySecretsNotRefreshedError) as refused:
-            await client.refresh_registry_secrets(OWNER, REPO)
-
-    assert refused.value.reason is RegistrySecretsRefusal.WRITE_INCOMPLETE
-    assert refused.value.detail == f"wrote 2 of 3 registry secrets to {OWNER}/{REPO}"
-    failed = [entry for entry in logs if entry["event"] == "github_secret_set_failed"]
-    assert [entry["secret_name"] for entry in failed] == ["REGISTRY_PASSWORD"]
-    assert "registry-password-value" not in repr(logs)
+def test_the_lease_policy_is_whole_seconds():
+    env = {LEASE_POLICY: "180", "SECRETS_ENCRYPTION_KEY": Fernet.generate_key().decode()}
+    with patch.dict(os.environ, env):
+        assert registry_writer_lease_seconds() == 180
 
 
-@pytest.mark.asyncio
-async def test_a_missing_variable_writes_nothing(client):
-    env = {**REGISTRY_ENV, "REGISTRY_PASSWORD": ""}
-    with patch.dict(os.environ, env), respx.mock(base_url="https://api.github.com") as gh:
+@pytest.mark.parametrize("key", ["", "not-a-fernet-key"], ids=["missing", "invalid"])
+def test_an_unusable_receipt_key_refuses_the_writer(key):
+    with patch.dict(os.environ, {LEASE_POLICY: "180", "SECRETS_ENCRYPTION_KEY": key}):
         with pytest.raises(RegistrySecretsNotRefreshedError) as refused:
-            await client.refresh_registry_secrets(OWNER, REPO)
+            registry_writer_lease_seconds()
 
-    assert refused.value.reason is RegistrySecretsRefusal.ENV_MISSING
-    assert not gh.calls
+    assert refused.value.reason is RegistrySecretsRefusal.RECEIPT_KEY_INVALID

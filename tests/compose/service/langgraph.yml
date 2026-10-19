@@ -129,6 +129,7 @@ services:
       - TEST_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - GITHUB_REGISTRY_SECRETS_LEASE_SECONDS=180
     depends_on:
       redis:
         condition: service_healthy

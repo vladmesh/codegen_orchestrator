@@ -185,7 +185,6 @@ class MockGitHubClient:
         name: str,
         description: str = "",
         project_spec: dict | None = None,
-        secrets: dict[str, str] | None = None,
     ) -> GitHubRepository:
         self._check_failure()
 
@@ -208,9 +207,5 @@ class MockGitHubClient:
             await self.create_or_update_file(
                 org, repo_name, ".project.yaml", config_content, "chore: init"
             )
-
-        # 3. Secrets
-        if secrets:
-            await self.set_repository_secrets(org, repo_name, secrets)
 
         return repo

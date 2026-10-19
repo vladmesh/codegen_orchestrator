@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import structlog
 
+from shared.clients.github import RegistrySecretsResult
 from shared.notifications import AdminDeliveryResult
 from shared.redis import RedisStreamClient
 from src import startup
@@ -65,8 +66,11 @@ class SyntheticGitHub:
             "head": {"sha": "a" * 40},
         }
 
-    async def refresh_registry_secrets(self, *args):
+    async def ensure_registry_secrets(self, owner, repo, *, redis, lease_seconds):
+        assert lease_seconds == int(os.environ["GITHUB_REGISTRY_SECRETS_LEASE_SECONDS"])
+        assert await redis.ping()
         self.refreshed = True
+        return RegistrySecretsResult(written=3)
 
     async def merge_pull_request(self, *args):
         assert self.refreshed

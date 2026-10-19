@@ -125,6 +125,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - GITHUB_REGISTRY_SECRETS_LEASE_SECONDS=180
       - SERVICE_NAME=scheduler-pipeline
     command: ["python", "-m", "src.pipeline"]
     healthcheck:

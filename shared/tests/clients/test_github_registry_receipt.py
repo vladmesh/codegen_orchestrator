@@ -32,6 +32,8 @@ from shared.clients.github import (
 
 OWNER, REPO = "fixture-org", "fixture-product"
 OTHER_HOLDER = "other-holder-token"
+CALLER_KEY = "fixture:caller:lock"
+CALLER = (CALLER_KEY, "caller-token")
 LEASE_SECONDS = 30
 REGISTRY_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.example.com",
@@ -72,6 +74,7 @@ class Repository:
         self.requests: list[tuple[str, str]] = []
         self.refuse: set[str] = set()
         self.hand_over_on: tuple[str, str] | None = None
+        self.hand_over_caller_on: tuple[str, str] | None = None
         self.answer_first_put_with: int | None = None
         self.pause_on: tuple[str, str] | None = None
         self.paused = asyncio.Event()
@@ -82,11 +85,17 @@ class Repository:
         """The lease expires and another holder claims it."""
         self.redis.set(registry_lease_key(self.id), OTHER_HOLDER)
 
+    def hand_over_caller(self) -> None:
+        """The caller's own lock expires and the caller's successor claims it."""
+        self.redis.set(CALLER_KEY, OTHER_HOLDER)
+
     async def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path.removeprefix(f"/repos/{OWNER}/{REPO}")
         self.requests.append((request.method, path))
         if (request.method, path) == self.hand_over_on:
             self.hand_over()
+        if (request.method, path) == self.hand_over_caller_on:
+            self.hand_over_caller()
         if (request.method, path) == self.pause_on:
             self.paused.set()
             await asyncio.Event().wait()
@@ -153,18 +162,28 @@ def _client(repository: Repository) -> GitHubAppClient:
     return github
 
 
-async def _ensure(repository: Repository, redis=None, guard=None) -> RegistrySecretsResult:
+async def _ensure(
+    repository: Repository, redis=None, guard=None, caller_lock=None
+) -> RegistrySecretsResult:
     if redis is None:
         redis = fakeredis.aioredis.FakeRedis(server=repository.server)
     return await _client(repository).ensure_registry_secrets(
-        OWNER, REPO, redis=redis, lease_seconds=LEASE_SECONDS, guard=guard
+        OWNER, REPO, redis=redis, lease_seconds=LEASE_SECONDS, guard=guard, caller_lock=caller_lock
     )
 
 
-async def _refused(repository: Repository, redis=None, guard=None) -> RegistrySecretsRefusal:
+async def _refused(
+    repository: Repository, redis=None, guard=None, caller_lock=None
+) -> RegistrySecretsRefusal:
     with pytest.raises(RegistrySecretsNotRefreshedError) as refused:
-        await _ensure(repository, redis, guard)
+        await _ensure(repository, redis, guard, caller_lock)
     return refused.value.reason
+
+
+def _held_caller(repository: Repository) -> tuple[str, str]:
+    """The caller's lock, held by the caller when the call starts."""
+    repository.redis.set(*CALLER)
+    return CALLER
 
 
 @pytest.mark.asyncio
@@ -544,3 +563,155 @@ async def test_a_failed_release_after_a_hit_is_no_success(repository):
 
     with pytest.raises(redis_errors.ConnectionError):
         await _ensure(repository, OutageAfter(2, repository.server))
+
+
+@pytest.mark.asyncio
+async def test_a_held_caller_lock_writes_then_certifies_a_hit(repository):
+    caller = _held_caller(repository)
+
+    assert await _ensure(repository, caller_lock=caller) == RegistrySecretsResult(written=3)
+    repository.requests.clear()
+    assert await _ensure(repository, caller_lock=caller) == RegistrySecretsResult(written=0)
+
+    assert repository.requests == [("GET", "")]
+    assert repository.redis.get(CALLER_KEY) == CALLER[1]
+    assert repository.lease() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_",
+    [("GET", "/actions/secrets/public-key"), ("PUT", "/actions/secrets/REGISTRY_PASSWORD")],
+    ids=["key-read", "last-put"],
+)
+async def test_a_caller_lock_lost_mid_write_sends_and_certifies_nothing_more(repository, request_):
+    caller = _held_caller(repository)
+    repository.hand_over_caller_on = request_
+
+    with capture_logs() as logs:
+        refusal = await _refused(repository, caller_lock=caller)
+
+    assert refusal is RegistrySecretsRefusal.CALLER_LOCK_LOST
+    assert repository.written() == ([] if request_[0] == "GET" else REGISTRY_NAMES)
+    assert repository.receipt() is None
+    assert repository.lease() is None
+    assert repository.redis.get(CALLER_KEY) == OTHER_HOLDER
+    assert "registry_secrets_caller_lock_lost" in [entry["event"] for entry in logs]
+    assert OTHER_HOLDER not in repr(logs)
+
+
+@pytest.mark.asyncio
+async def test_a_caller_lock_lost_before_a_retry_stops_the_batch(repository):
+    caller = _held_caller(repository)
+    repository.answer_first_put_with = 502
+    repository.hand_over_caller_on = ("PUT", "/actions/secrets/REGISTRY_URL")
+
+    assert await _refused(repository, caller_lock=caller) is RegistrySecretsRefusal.CALLER_LOCK_LOST
+
+    assert repository.written() == ["REGISTRY_URL"]
+    assert repository.receipt() is None
+
+
+class HandOverCallerAfter(fakeredis.aioredis.FakeRedis):
+    """A caller connection whose caller lock passes to a successor after `scripts` Lua calls."""
+
+    def __init__(self, scripts: int, repository: Repository) -> None:
+        super().__init__(server=repository.server)
+        self.repository = repository
+        self.scripts = scripts
+
+    async def eval(self, *args):
+        result = await super().eval(*args)
+        self.scripts -= 1
+        if self.scripts == 0:
+            self.repository.hand_over_caller()
+        return result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receipt", ["hit", "foreign"])
+async def test_a_caller_lock_lost_after_the_receipt_read_neither_certifies_nor_invalidates(
+    repository, receipt
+):
+    assert await _ensure(repository) == RegistrySecretsResult(written=3)
+    if receipt == "foreign":
+        repository.redis.set(registry_receipt_key(repository.id), "0" * 64)
+    kept = repository.receipt()
+    caller = _held_caller(repository)
+    repository.requests.clear()
+
+    refusal = await _refused(repository, HandOverCallerAfter(1, repository), caller_lock=caller)
+
+    assert refusal is RegistrySecretsRefusal.CALLER_LOCK_LOST
+    assert repository.written() == []
+    assert repository.receipt() == kept
+    assert repository.lease() is None
+
+
+@pytest.mark.asyncio
+async def test_a_caller_lock_and_lease_both_lost_reports_the_caller_lock(repository):
+    caller = _held_caller(repository)
+
+    async def guard() -> None:
+        repository.hand_over()
+        repository.hand_over_caller()
+
+    refusal = await _refused(repository, guard=guard, caller_lock=caller)
+
+    assert refusal is RegistrySecretsRefusal.CALLER_LOCK_LOST
+    assert repository.written() == []
+    assert repository.lease() == OTHER_HOLDER
+
+
+@pytest.mark.asyncio
+async def test_a_caller_suspended_in_its_guard_sends_nothing_after_its_successor(repository):
+    caller = _held_caller(repository)
+    in_guard, resume = asyncio.Event(), asyncio.Event()
+
+    async def suspending_guard() -> None:
+        in_guard.set()
+        await resume.wait()
+
+    stale = asyncio.ensure_future(_ensure(repository, guard=suspending_guard, caller_lock=caller))
+    await in_guard.wait()
+    repository.redis.delete(registry_lease_key(repository.id))
+    successor = (CALLER_KEY, OTHER_HOLDER)
+    repository.hand_over_caller()
+    with patch.dict(os.environ, CHANGED_ENV):
+        assert await _ensure(repository, caller_lock=successor) == RegistrySecretsResult(written=3)
+    successor_receipt = repository.receipt()
+    repository.requests.clear()
+    resume.set()
+
+    with pytest.raises(RegistrySecretsNotRefreshedError) as refused:
+        await stale
+
+    assert refused.value.reason is RegistrySecretsRefusal.CALLER_LOCK_LOST
+    assert repository.written() == []
+    assert repository.secrets["REGISTRY_URL"] == CHANGED_ENV["ORCHESTRATOR_HOSTNAME"]
+    assert repository.receipt() == successor_receipt
+    assert repository.redis.get(CALLER_KEY) == OTHER_HOLDER
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_keeps_the_caller_lock_refusal(repository):
+    caller = _held_caller(repository)
+
+    async def guard() -> None:
+        repository.hand_over_caller()
+
+    class OutageOnRelease(fakeredis.aioredis.FakeRedis):
+        async def eval(self, script, *args):
+            result = await super().eval(script, *args)
+            if result == -1:
+                repository.server.connected = False
+            return result
+
+    with capture_logs() as logs:
+        refusal = await _refused(
+            repository, OutageOnRelease(server=repository.server), guard, caller
+        )
+
+    assert refusal is RegistrySecretsRefusal.CALLER_LOCK_LOST
+    failed = [entry for entry in logs if entry["event"] == "registry_secrets_lease_release_failed"]
+    assert len(failed) == 1

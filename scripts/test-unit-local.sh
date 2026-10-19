@@ -70,6 +70,7 @@ CLEAN_ENV=(
     ORCHESTRATOR_HOSTNAME="localhost"
     REGISTRY_USER="test"
     REGISTRY_PASSWORD="test"
+    GITHUB_REGISTRY_SECRETS_LEASE_SECONDS="180"
     WORKER_MANAGER_URL="http://localhost:8001"
     WORKER_REDIS_URL="redis://localhost:6379/0"
     WORKER_API_URL="http://localhost:8000"

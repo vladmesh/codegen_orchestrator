@@ -31,7 +31,7 @@ async def test_http_422_is_stale_repo_only_when_lookup_confirms_it(mock_client_c
     github.get_repo.return_value = SimpleNamespace(id=123)
 
     with pytest.raises(RuntimeError, match="already exists"):
-        await _create_repo_and_set_secrets(_project())
+        await _create_repo_and_set_secrets(_project(), AsyncMock())
 
     github.get_repo.assert_awaited_once_with("org", "demo")
 
@@ -47,7 +47,7 @@ async def test_unconfirmed_http_422_keeps_original_validation_failure(mock_clien
     github.get_repo.side_effect = _http_error(httpx.codes.NOT_FOUND)
 
     with pytest.raises(httpx.HTTPStatusError) as raised:
-        await _create_repo_and_set_secrets(_project())
+        await _create_repo_and_set_secrets(_project(), AsyncMock())
 
     assert raised.value is create_error
 
@@ -62,7 +62,7 @@ async def test_transport_failure_keeps_httpx_type(mock_client_cls):
     github.create_repo.side_effect = httpx.ConnectError("offline", request=request)
 
     with pytest.raises(httpx.ConnectError, match="offline"):
-        await _create_repo_and_set_secrets(_project())
+        await _create_repo_and_set_secrets(_project(), AsyncMock())
 
 
 @pytest.mark.asyncio
@@ -74,7 +74,7 @@ async def test_exception_text_is_not_used_to_classify_stale_repo(mock_client_cls
     github.create_repo.side_effect = Exception("422: already exists in transport wrapper")
 
     with pytest.raises(RuntimeError, match="GitHub repository creation failed") as raised:
-        await _create_repo_and_set_secrets(_project())
+        await _create_repo_and_set_secrets(_project(), AsyncMock())
 
     assert "previous run was not cleaned up" not in str(raised.value)
     github.get_repo.assert_not_awaited()

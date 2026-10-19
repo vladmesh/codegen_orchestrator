@@ -457,6 +457,15 @@ would otherwise sign dashboard tokens with a known key.
 | `REGISTRY_PASSWORD` | Docker registry password |
 | `REGISTRY_PASSWORD_HASH` | Bcrypt hash of registry password (for Caddy) |
 
+`GITHUB_REGISTRY_SECRETS_LEASE_SECONDS` is required and has no default. It is policy, so it is a
+GitHub Environment **variable** (`vars.GITHUB_REGISTRY_SECRETS_LEASE_SECONDS`), `180` on
+`production` and on the stand, which `stand-e2e.yml` renders itself. The deploy preflight refuses a
+missing value or anything but a positive whole number before it touches the host, then writes it into
+the server `.env`. It is how long one writer may hold a product repository's registry-secrets lease
+([SECRETS.md](SECRETS.md#deployment-via-github-actions)); scheduler-pipeline, engineering-worker,
+scaffolder and deploy-worker refuse to start without it or without a usable
+`SECRETS_ENCRYPTION_KEY`, and Compose refuses to render them without either.
+
 ### Platform services in the admin console
 
 | Variable | Description |
@@ -1548,6 +1557,62 @@ COMPOSE=(/usr/local/libexec/backup-db-rootless.sh docker compose \
 
 Without `-f deployed-service-images.compose.yml`, compose falls back to the `:local` build names and
 would build from the checkout.
+
+### Later PO operation: activate the shared registry-secrets receipt
+
+The release that routes every registry-secret writer through the receipt replaces scheduler-pipeline,
+engineering-worker, scaffolder and deploy-worker together. An old writer of these services still
+writes `REGISTRY_*` outside the lease and receipt, so it must not run beside a new one. No receipt
+migration exists or is needed: nothing deployed has written one. This is a separate authorized
+operation; this repository change performs none of it.
+
+The host commands use the `COMPOSE` array of [Updating](#updating). Preflight, before the deploy,
+from an operator shell with `gh` access:
+
+```bash
+gh variable set GITHUB_REGISTRY_SECRETS_LEASE_SECONDS --env production --body 180
+gh variable set GITHUB_REGISTRY_SECRETS_LEASE_SECONDS --env stand --body 180
+gh variable list --env production | grep '^GITHUB_REGISTRY_SECRETS_LEASE_SECONDS'
+```
+
+Provision the pending `GH_WEBHOOK_SECRET` of each environment in the same window
+([GitHub Integration](#github-integration)). On the host, confirm the four writers already read the
+same usable `SECRETS_ENCRYPTION_KEY` from the one `.env`, without printing it; expect `1` and
+four `usable` lines:
+
+```bash
+cd "$COMPOSE_DIR"
+for service in scheduler-pipeline engineering-worker scaffolder deploy-worker; do
+  "${COMPOSE[@]}" exec -T "$service" sh -c 'printf %s "$SECRETS_ENCRYPTION_KEY" | sha256sum'
+done | sort -u | wc -l
+for service in scheduler-pipeline engineering-worker scaffolder deploy-worker; do
+  "${COMPOSE[@]}" exec -T "$service" python -c \
+    'from shared.crypto import SecretsCipher; SecretsCipher(); print("usable")'
+done
+```
+
+Upgrade:
+
+1. Quiesce the old writers: set `emergency_stop` ([Paid-work emergency controls](#paid-work-emergency-controls)),
+   wait until no deploy holds a project lock and no scaffold is running
+   (`"${COMPOSE[@]}" exec -T redis redis-cli --scan --pattern 'deploy:*:lock'` and
+   `--pattern 'live:scaffold:leases:*'` print nothing), then
+   `"${COMPOSE[@]}" stop scheduler-pipeline engineering-worker scaffolder deploy-worker`.
+2. Deploy the release through the workflow as usual; it writes the policy into `.env` and starts the
+   four services from the new images together.
+3. Confirm each started (`"${COMPOSE[@]}" ps scheduler-pipeline engineering-worker scaffolder deploy-worker`),
+   then clear `emergency_stop`.
+
+If an old writer ran after a receipt was written (an interrupted upgrade or a rollback), stop all
+four writers before the new ones start again and delete only the registry receipts, so the next
+writer rewrites the three secrets:
+
+```bash
+"${COMPOSE[@]}" exec -T redis sh -c \
+  "redis-cli --scan --pattern 'github:repository:*:registry-secrets' | xargs -r redis-cli DEL"
+```
+
+Never flush Redis or delete another holder's `:lease` key; a lease expires on its own within 180 s.
 
 ### What the production overlay adds
 
