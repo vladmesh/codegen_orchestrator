@@ -8,13 +8,7 @@ from typing import Any
 from langchain_core.messages import AIMessage
 import structlog
 
-from shared.clients.github import (
-    GitHubAppClient,
-    RegistrySecretsNotRefreshedError,
-    RequestGuard,
-    deploy_pin_tag,
-    registry_repository_secrets,
-)
+from shared.clients.github import GitHubAppClient, RequestGuard, deploy_pin_tag
 from shared.clients.registry import RegistryError
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
@@ -26,6 +20,7 @@ from ...clients.api import api_client
 from ...deploy_fence import DeployFence, DeployFenceLost, DeployWrite
 from ...nodes.base import FunctionalNode
 from ...runtime_identity import project_spec_runtime_slug
+from .deploy_secrets import write_deploy_secrets
 from .deploy_workflow import require_backend_workflow
 from .dotenv_builder import build_dotenv, encode_dotenv
 from .image_gate import ImagesNotPublishedError, image_references, verify_published_images
@@ -292,62 +287,6 @@ def _encode_deploy_payload(
     dotenv_b64 = encode_dotenv(build_dotenv({**values, "CODEGEN_PROJECT_ID": project_id}))
     diagnostic_secrets.append(dotenv_b64)
     return dotenv_b64
-
-
-async def _write_deploy_secrets(  # noqa: PLR0913
-    github_client: GitHubAppClient,
-    owner: str,
-    repo: str,
-    server_ip: str,
-    port: int,
-    project_name: str,
-    dotenv_b64: str,
-    ssh_key: str,
-    ssh_user: str,
-    *,
-    deploy_fence: DeployFence,
-    diagnostic_secrets: Iterable[str] = (),
-) -> bool:
-    """Write deployment secrets to GitHub repository for deploy.yml workflow."""
-    # Registry credentials for CI docker push. The PR poller already wrote them
-    # before the merge that started this commit's build; rewriting them here keeps
-    # an administrative or capability redeploy's repository current as well.
-    try:
-        registry_secrets = registry_repository_secrets()
-    except RegistrySecretsNotRefreshedError as error:
-        logger.error("registry_env_missing", reason=error.reason.value, detail=error.detail)
-        return False
-
-    secrets_map = {
-        "DOTENV": dotenv_b64,
-        "DEPLOY_HOST": server_ip,
-        "DEPLOY_USER": ssh_user,
-        "DEPLOY_SSH_KEY": ssh_key,
-        "DEPLOY_PORT": str(port),
-        "PROJECT_NAME": project_name,
-        **registry_secrets,
-    }
-
-    await deploy_fence.ensure_held(DeployWrite.GITHUB_SECRETS)
-    try:
-        count = await github_client.set_repository_secrets(owner, repo, secrets_map)
-        logger.info(
-            "deploy_secrets_configured",
-            owner=owner,
-            repo=repo,
-            secrets_count=count,
-            total=len(secrets_map),
-        )
-        return count == len(secrets_map)
-    except Exception as e:
-        logger.error(
-            "deploy_secrets_setup_failed",
-            owner=owner,
-            repo=repo,
-            error=redact_diagnostic(e, secrets=diagnostic_secrets),
-            error_type=type(e).__name__,
-        )
-        return False
 
 
 class DeployerNode(FunctionalNode):
@@ -768,16 +707,18 @@ class DeployerNode(FunctionalNode):
                 repo=repo,
                 dotenv_len=len(dotenv_b64),
             )
-            secrets_ok = await _write_deploy_secrets(
-                github_client=github,
-                owner=owner,
-                repo=repo,
-                server_ip=server_ip,
-                port=port,
-                project_name=project_name,
-                dotenv_b64=dotenv_b64,
-                ssh_key=ssh_key,
-                ssh_user=server.ssh_user,
+            secrets_ok = await write_deploy_secrets(
+                github,
+                owner,
+                repo,
+                {
+                    "DOTENV": dotenv_b64,
+                    "DEPLOY_HOST": server_ip,
+                    "DEPLOY_USER": server.ssh_user,
+                    "DEPLOY_SSH_KEY": ssh_key,
+                    "DEPLOY_PORT": str(port),
+                    "PROJECT_NAME": project_name,
+                },
                 deploy_fence=deploy_fence,
                 diagnostic_secrets=diagnostic_secrets,
             )

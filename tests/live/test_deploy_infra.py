@@ -187,7 +187,7 @@ class TestDeploySecrets:
     def test_langgraph_has_registry_env_vars(self, compose_exec):
         """langgraph container has ORCHESTRATOR_HOSTNAME + REGISTRY_* env vars.
 
-        _write_deploy_secrets() reads these to push to GitHub Actions secrets.
+        write_deploy_secrets() reads these to push to GitHub Actions secrets.
         """
         env_vars = ["ORCHESTRATOR_HOSTNAME", "REGISTRY_USER", "REGISTRY_PASSWORD"]
         missing = []
@@ -202,7 +202,7 @@ class TestDeploySecrets:
 
         assert not missing, (
             f"langgraph container missing deploy env vars: {', '.join(missing)}. "
-            "Deployer node (_write_deploy_secrets) will fail."
+            "Deployer node (write_deploy_secrets) will fail."
         )
 
     @pytest.mark.parametrize("var", ["ORCHESTRATOR_HOSTNAME", "REGISTRY_USER", "REGISTRY_PASSWORD"])

@@ -5,6 +5,7 @@ import base64
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -17,6 +18,7 @@ from shared.clients.registry import RegistryError, sha_image_tag
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.queues.deploy import DeployOutcome
+from src.deploy_fence import DeployFence
 from src.subgraphs.devops.deployer import DeployerNode, _platform_services
 from src.subgraphs.devops.image_gate import ImagesNotPublishedError
 from tests.unit.deploy_fences import held_deploy_fence
@@ -120,6 +122,7 @@ def _dotenv(repository_secrets: dict[str, str]) -> dict[str, str]:
 def _setup_happy_mocks(mock_api, mock_gh_cls):
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
+    gh.get_repo.return_value = SimpleNamespace(id=1001)
     gh.set_repository_secrets.return_value = 9
     gh.wait_for_workflow_completion.return_value = _SUCCESS_RUN
     gh.get_file_contents.return_value = (
@@ -187,7 +190,7 @@ async def test_resolved_public_address_reaches_dotenv_and_success_url(
         requests.append(request)
         return httpx.Response(200, json={"status": "ok"})
 
-    async def write(owner, repo, values):
+    async def write(owner, repo, values, **_):
         written.update(values)
         return len(values)
 
@@ -379,6 +382,31 @@ class TestDeployerNodeErrors:
         mock_api.create_deployment.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @patch.dict(
+        os.environ,
+        {
+            "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+            "REGISTRY_USER": "registry-user",
+            "REGISTRY_PASSWORD": "registry-password",
+        },
+    )
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_an_unread_repository_identity_refuses_before_any_secret_or_dispatch(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.get_repo.side_effect = httpx.ConnectError("github unreachable")
+
+        result = await deployer.run(base_state)
+
+        assert result["deployment_result"]["status"] == "failed"
+        assert "GitHub Actions secrets are incomplete" in result["errors"][0]
+        gh.set_repository_secrets.assert_not_awaited()
+        gh.create_or_reset_tag.assert_not_awaited()
+        gh.trigger_workflow_dispatch.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.logger")
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
     @patch("src.subgraphs.devops.deployer.api_client")
@@ -439,6 +467,37 @@ class TestDeployerNodeHappyPath:
         assert secrets_arg["REGISTRY_PASSWORD"] == "testpass"  # noqa: S105
         mock_api.get_server.assert_awaited_once_with("srv-1")
         mock_api.get_server_ssh_key.assert_awaited_once_with("srv-1")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_a_redeploy_of_unchanged_values_writes_only_the_registry_secrets(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.set_repository_secrets.side_effect = lambda owner, repo, values, **_: len(values)
+        first = base_state["deploy_fence"]
+        await deployer.run(base_state)
+        second = DeployFence.for_job(first.redis, "proj-123", "deploy-2")
+        await first.redis.set(first.lock_key, second.token)
+
+        result = await deployer.run({**base_state, "deploy_fence": second})
+
+        assert result["deployment_result"]["status"] == "success"
+        registry = ["REGISTRY_URL", "REGISTRY_USER", "REGISTRY_PASSWORD"]
+        deployer_owned = [
+            "DOTENV",
+            "DEPLOY_HOST",
+            "DEPLOY_USER",
+            "DEPLOY_SSH_KEY",
+            "DEPLOY_PORT",
+            "PROJECT_NAME",
+        ]
+        assert [list(call.args[2]) for call in gh.set_repository_secrets.await_args_list] == [
+            [*deployer_owned, *registry],
+            registry,
+        ]
+        assert gh.trigger_workflow_dispatch.await_count == 2
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
@@ -625,6 +684,7 @@ class TestDeployerNodeFailures:
     async def test_handles_workflow_failure(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
+        gh.get_repo.return_value = SimpleNamespace(id=1001)
         gh.set_repository_secrets.return_value = 9
         mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
         mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
@@ -647,6 +707,7 @@ class TestDeployerNodeFailures:
     async def test_handles_timeout(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
+        gh.get_repo.return_value = SimpleNamespace(id=1001)
         gh.set_repository_secrets.return_value = 9
         mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
         mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
@@ -1021,7 +1082,7 @@ class TestDeployerFencesEarlierRuns:
         order = []
         gh.fence_workflow = AsyncMock(side_effect=lambda *a, **k: order.append("fence") or [7])
         gh.set_repository_secrets = AsyncMock(
-            side_effect=lambda owner, repo, secrets: order.append("secrets") or len(secrets)
+            side_effect=lambda owner, repo, secrets, **_: order.append("secrets") or len(secrets)
         )
         gh.trigger_workflow_dispatch = AsyncMock(
             side_effect=lambda *a, **k: order.append("dispatch") or True

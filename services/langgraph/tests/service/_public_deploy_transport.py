@@ -72,6 +72,17 @@ class ContentGitHubFixture(GitHubAppClient):
             )
         assert request.method == "GET"
         assert request.headers["Authorization"] == "token content-fixture-token"
+        if path == "/repos/fixture/public":
+            return httpx.Response(
+                200,
+                json={
+                    "id": 1001,
+                    "name": "public",
+                    "full_name": "fixture/public",
+                    "html_url": "https://github.com/fixture/public",
+                    "clone_url": "https://github.com/fixture/public.git",
+                },
+            )
         assert request.headers["Accept"] == "application/vnd.github.raw+json"
         assert dict(request.url.params) == {"ref": self.built}
         assert path in {
