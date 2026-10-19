@@ -19,6 +19,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   lease and an encrypted digest receipt; no production writer calls it yet.
 - Every `REGISTRY_*` writer (PR poller, repo setup, scaffolder, deployer) uses the shared receipt under the
   required `GITHUB_REGISTRY_LEASE_SECONDS`, so an unchanged redeploy sends no secret PUT.
+- Deploy reads the registry lease policy from the `GH_REGISTRY_LEASE_SECONDS` Environment variable,
+  since GitHub refuses `GITHUB_` names, and writes it to `.env` as `GITHUB_REGISTRY_LEASE_SECONDS`.
 
 ## 2026-10-18
 
