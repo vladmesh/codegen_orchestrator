@@ -363,7 +363,8 @@ async def test_an_unusable_remote_default_fails_before_publication(tmp_path, def
     assert result.returncode != 0
     assert "CODEGEN_CHECKOUT_HEAD" not in result.stdout
     assert _git(workspace, "branch", "--list", "story/no-default") == ""
-    assert _git(remote, "branch", "--list", "story/no-default") == ""
+    # `git branch` refuses a repository whose HEAD names a tag; read the exact ref instead.
+    assert _git(remote, "for-each-ref", "refs/heads/story/no-default") == ""
 
 
 async def test_an_existing_story_branch_resumes_at_its_remote_tip(tmp_path):
