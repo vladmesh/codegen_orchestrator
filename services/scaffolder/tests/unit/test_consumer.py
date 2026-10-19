@@ -184,7 +184,7 @@ class TestProcessScaffoldJob:
                     "ORCHESTRATOR_HOSTNAME": "registry.example.com",
                     "REGISTRY_USER": "admin",
                     "REGISTRY_PASSWORD": "secret",
-                    "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": "180",
+                    "GITHUB_REGISTRY_LEASE_SECONDS": "180",
                 },
             ),
         ):

@@ -85,11 +85,11 @@ async def test_the_worker_refuses_to_start_without_the_registry_lease_policy(mon
     """A full scaffold writes product registry secrets, so nothing is consumed without it."""
     redis = _FakeRedisClient()
 
-    monkeypatch.delenv("GITHUB_REGISTRY_SECRETS_LEASE_SECONDS", raising=False)
+    monkeypatch.delenv("GITHUB_REGISTRY_LEASE_SECONDS", raising=False)
     monkeypatch.setattr(consumer, "RedisStreamClient", lambda: redis)
     monkeypatch.setattr(consumer, "setup_logging", lambda **_kwargs: None)
 
-    with pytest.raises(ValidationError, match="github_registry_secrets_lease_seconds"):
+    with pytest.raises(ValidationError, match="github_registry_lease_seconds"):
         await consumer.run_worker()
 
     assert redis.rejected == []

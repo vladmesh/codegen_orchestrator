@@ -473,7 +473,7 @@ class TestDeployerNodeErrors:
         "ORCHESTRATOR_HOSTNAME": "registry.example.com",
         "REGISTRY_USER": "testuser",
         "REGISTRY_PASSWORD": "testpass",  # noqa: S105
-        "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": "180",
+        "GITHUB_REGISTRY_LEASE_SECONDS": "180",
     },
 )
 class TestDeployerNodeHappyPath:

@@ -143,7 +143,7 @@ def internal_api_key_field():
 
 
 class _RegistrySecretsWriterSettings(BaseSettings):
-    github_registry_secrets_lease_seconds: int = Field(
+    github_registry_lease_seconds: int = Field(
         ...,
         gt=0,
         description="How long one holder may keep a repository's registry-secrets lease",
@@ -151,9 +151,9 @@ class _RegistrySecretsWriterSettings(BaseSettings):
     )
 
 
-def registry_secrets_lease_seconds() -> int:
-    """`GITHUB_REGISTRY_SECRETS_LEASE_SECONDS`: required production policy, a positive integer.
+def registry_lease_seconds() -> int:
+    """`GITHUB_REGISTRY_LEASE_SECONDS`: required production policy, a positive integer.
 
     Every process that writes a product repository's registry secrets reads it.
     """
-    return _RegistrySecretsWriterSettings().github_registry_secrets_lease_seconds
+    return _RegistrySecretsWriterSettings().github_registry_lease_seconds

@@ -67,7 +67,7 @@ class SyntheticGitHub:
         }
 
     async def ensure_registry_secrets(self, owner, repo, *, redis, lease_seconds):
-        assert lease_seconds == int(os.environ["GITHUB_REGISTRY_SECRETS_LEASE_SECONDS"])
+        assert lease_seconds == int(os.environ["GITHUB_REGISTRY_LEASE_SECONDS"])
         assert await redis.ping()
         self.refreshed = True
         return RegistrySecretsResult(written=3)

@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from cryptography.fernet import InvalidToken
 
-from shared.config import registry_secrets_lease_seconds
+from shared.config import registry_lease_seconds
 from shared.crypto import SecretsCipher
 from shared.diagnostics import redact_diagnostic
 from shared.log_config import get_logger
@@ -175,7 +175,7 @@ def registry_writer_lease_seconds() -> int:
     A writer calls it at startup, so a missing policy or key stops the process before any write.
     """
     _receipt_cipher()
-    return registry_secrets_lease_seconds()
+    return registry_lease_seconds()
 
 
 def _vouches(cipher: SecretsCipher, receipt: str, digest: str) -> bool:

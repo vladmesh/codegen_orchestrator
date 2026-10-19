@@ -494,7 +494,7 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
                     "WORKSPACE_BASE_PATH": str(base),
                     "GITHUB_ORG": GITHUB_ORG,
                     # A full scaffold makes registry secrets current; GitHub is controlled here.
-                    "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": "180",
+                    "GITHUB_REGISTRY_LEASE_SECONDS": "180",
                     "SECRETS_ENCRYPTION_KEY": Fernet.generate_key().decode(),
                 }
             )

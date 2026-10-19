@@ -163,7 +163,7 @@ jobs:
           # refuses to start without it; failing here stops before the host is touched.
           REQUIRED_DEFAULT_AGENT_TYPE: ${{ vars.DEFAULT_AGENT_TYPE }}
           # Policy too: how long one registry-secrets writer may hold a repository's lease.
-          REQUIRED_GITHUB_REGISTRY_SECRETS_LEASE_SECONDS: ${{ vars.GITHUB_REGISTRY_SECRETS_LEASE_SECONDS }}
+          REQUIRED_GITHUB_REGISTRY_LEASE_SECONDS: ${{ vars.GITHUB_REGISTRY_LEASE_SECONDS }}
         run: |
           set -euo pipefail
           missing=()
@@ -183,7 +183,7 @@ jobs:
             REQUIRED_WORKER_BROKER_INTERNAL_TOKEN \
             REQUIRED_GH_WEBHOOK_SECRET \
             REQUIRED_DEFAULT_AGENT_TYPE \
-            REQUIRED_GITHUB_REGISTRY_SECRETS_LEASE_SECONDS
+            REQUIRED_GITHUB_REGISTRY_LEASE_SECONDS
           do
             if [ -z "${!name}" ]; then
               missing+=("${name#REQUIRED_}")
@@ -202,8 +202,8 @@ jobs:
               "${{ inputs.environment }}" >&2
             exit 1
           fi
-          if [[ ! "${REQUIRED_GITHUB_REGISTRY_SECRETS_LEASE_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
-            printf 'GITHUB_REGISTRY_SECRETS_LEASE_SECONDS for %s must be a positive whole number of seconds\n' \
+          if [[ ! "${REQUIRED_GITHUB_REGISTRY_LEASE_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+            printf 'GITHUB_REGISTRY_LEASE_SECONDS for %s must be a positive whole number of seconds\n' \
               "${{ inputs.environment }}" >&2
             exit 1
           fi
@@ -400,7 +400,7 @@ jobs:
           REGISTRY_PASSWORD_HASH=${{ secrets.REGISTRY_PASSWORD_HASH }}
           # Validated above; scheduler-pipeline, engineering-worker, scaffolder and
           # deploy-worker refuse to start without it.
-          GITHUB_REGISTRY_SECRETS_LEASE_SECONDS=${{ vars.GITHUB_REGISTRY_SECRETS_LEASE_SECONDS }}
+          GITHUB_REGISTRY_LEASE_SECONDS=${{ vars.GITHUB_REGISTRY_LEASE_SECONDS }}
 
           # Worker agents
           # Engineering executor for new projects; required, no fallback.

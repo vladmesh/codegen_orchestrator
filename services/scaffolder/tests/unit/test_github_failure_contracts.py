@@ -61,7 +61,7 @@ async def test_full_mode_verifies_existing_repo_after_http_422():
     api.get_stories_by_project.return_value = []
 
     with (
-        patch.dict(os.environ, {"GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": "180"}),
+        patch.dict(os.environ, {"GITHUB_REGISTRY_LEASE_SECONDS": "180"}),
         patch(
             "src.consumer.run_scaffold",
             new=AsyncMock(return_value=ScaffoldResult(success=False, error="stop after create")),

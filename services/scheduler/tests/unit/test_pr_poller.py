@@ -602,9 +602,7 @@ REGISTRY_LEASE_SECONDS = 180
 
 @pytest.fixture
 def registry_policy():
-    with patch.dict(
-        os.environ, {"GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": str(REGISTRY_LEASE_SECONDS)}
-    ):
+    with patch.dict(os.environ, {"GITHUB_REGISTRY_LEASE_SECONDS": str(REGISTRY_LEASE_SECONDS)}):
         yield
 
 

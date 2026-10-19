@@ -34,7 +34,7 @@ REGISTRY_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.current.example.com",
     "REGISTRY_USER": "registry-user",
     "REGISTRY_PASSWORD": "current-registry-password",  # noqa: S105
-    "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": "180",
+    "GITHUB_REGISTRY_LEASE_SECONDS": "180",
 }
 ROTATED_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.rotated.example.com",

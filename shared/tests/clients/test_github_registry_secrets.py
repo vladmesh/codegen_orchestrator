@@ -14,7 +14,7 @@ from shared.clients.github import (
     registry_writer_lease_seconds,
 )
 
-LEASE_POLICY = "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS"
+LEASE_POLICY = "GITHUB_REGISTRY_LEASE_SECONDS"
 
 REGISTRY_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.current.example.com",
@@ -49,7 +49,7 @@ def test_a_missing_or_non_positive_lease_policy_refuses_the_writer(value):
         os.environ.pop(LEASE_POLICY, None)
         if value is not None:
             os.environ[LEASE_POLICY] = value
-        with pytest.raises(ValidationError, match="github_registry_secrets_lease_seconds"):
+        with pytest.raises(ValidationError, match="github_registry_lease_seconds"):
             registry_writer_lease_seconds()
 
 

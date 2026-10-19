@@ -17,5 +17,5 @@ def test_every_registry_writer_requires_the_lease_policy_and_the_receipt_key():
 
     for name in WRITERS:
         environment = services[name]["environment"]
-        for variable in ("GITHUB_REGISTRY_SECRETS_LEASE_SECONDS", "SECRETS_ENCRYPTION_KEY"):
+        for variable in ("GITHUB_REGISTRY_LEASE_SECONDS", "SECRETS_ENCRYPTION_KEY"):
             assert environment[variable].startswith(f"${{{variable}:?"), (name, variable)

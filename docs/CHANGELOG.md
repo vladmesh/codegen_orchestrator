@@ -18,7 +18,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 - `GitHubAppClient.ensure_registry_secrets` skips unchanged `REGISTRY_*` under a per-repository Redis
   lease and an encrypted digest receipt; no production writer calls it yet.
 - Every `REGISTRY_*` writer (PR poller, repo setup, scaffolder, deployer) uses the shared receipt under the
-  required `GITHUB_REGISTRY_SECRETS_LEASE_SECONDS`, so an unchanged redeploy sends no secret PUT.
+  required `GITHUB_REGISTRY_LEASE_SECONDS`, so an unchanged redeploy sends no secret PUT.
 
 ## 2026-10-18
 

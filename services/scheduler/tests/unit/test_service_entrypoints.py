@@ -64,12 +64,12 @@ async def test_the_pipeline_refuses_to_start_without_the_registry_lease_policy(m
     """Its PR poller writes product registry secrets, so the policy is required at startup."""
     from src import pipeline, runtime
 
-    monkeypatch.delenv("GITHUB_REGISTRY_SECRETS_LEASE_SECONDS", raising=False)
+    monkeypatch.delenv("GITHUB_REGISTRY_LEASE_SECONDS", raising=False)
     monkeypatch.setattr(pipeline, "setup_logging", MagicMock())
     initialize = AsyncMock()
     monkeypatch.setattr(runtime, "initialize_configs", initialize)
 
-    with pytest.raises(ValidationError, match="github_registry_secrets_lease_seconds"):
+    with pytest.raises(ValidationError, match="github_registry_lease_seconds"):
         await pipeline.main()
 
     initialize.assert_not_awaited()

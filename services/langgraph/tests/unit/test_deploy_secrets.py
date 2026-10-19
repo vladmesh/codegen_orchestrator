@@ -45,7 +45,7 @@ REGISTRY_NAMES = list(REGISTRY_SECRETS)
 WRITER_ENV = {
     **REGISTRY_ENV,
     "SECRETS_ENCRYPTION_KEY": Fernet.generate_key().decode(),
-    "GITHUB_REGISTRY_SECRETS_LEASE_SECONDS": "180",
+    "GITHUB_REGISTRY_LEASE_SECONDS": "180",
 }
 DOTENV = base64.b64encode(b"BACKEND_IMAGE=registry.example.com/bot:sha-b\nTOKEN=canary\n").decode()
 VALUES = {
