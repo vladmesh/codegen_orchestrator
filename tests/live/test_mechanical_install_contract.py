@@ -20,7 +20,7 @@ from pipeline_helpers import ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY, Level1PhaseFa
 from pydantic import ValidationError
 import pytest
 
-from scripts.template_pin import TEMPLATE_PIN
+from shared.catalog_activation import CATALOG_ACTIVATION
 
 pytestmark = pytest.mark.needs_no_api_credential
 
@@ -92,8 +92,8 @@ def test_notes_reuses_the_released_dependencies_and_registers_owned_handlers():
 
 
 KIT = "https://github.com/vladmesh/codegen-product-kit.git"
-# The admitted catalog and kit tooling are the same immutable commit the template pins.
-KIT_COMMIT = TEMPLATE_PIN.ref
+# The admitted catalog and kit tooling are the activated snapshot's full commit.
+KIT_COMMIT = CATALOG_ACTIVATION.commit
 
 
 def component(name, version):

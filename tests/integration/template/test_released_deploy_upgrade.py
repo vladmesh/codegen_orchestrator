@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tomllib
 
 import pytest
 import yaml
@@ -15,8 +16,7 @@ from scripts.template_pin import TEMPLATE_PIN
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = Path(".github/workflows/deploy.yml")
 PREVIOUS_REF = ".".join(map(str, (0, 6, 3)))
-# The pin is an immutable kit commit, and the render resolves its tooling at that commit.
-RELEASE_SHA = TEMPLATE_PIN.ref
+TOOLING = "codegen-kit-tooling @ git+"
 
 
 def run(command, cwd, **kwargs):
@@ -27,6 +27,16 @@ def run(command, cwd, **kwargs):
 
 def git(product, *args):
     return run(["git", *args], product)
+
+
+def release_commit(product):
+    """The rendered tooling commit, which must be the one the pinned release tag peels to."""
+    project = tomllib.loads((product / "pyproject.toml").read_text())["project"]
+    [requirement] = [item for item in project["dependencies"] if item.startswith(TOOLING)]
+    repository, commit = requirement.removeprefix(TOOLING).rsplit("@", 1)
+    peeled = f"refs/tags/{TEMPLATE_PIN.ref}^{{}}"
+    assert git(product, "ls-remote", repository, peeled).split() == [commit, peeled]
+    return commit
 
 
 def workflow(product):
@@ -43,15 +53,15 @@ def executable_digest(product):
     return sha256(json.dumps(steps, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def admission_digest():
+def admission_digests():
     tree = ast.parse(
         (ROOT / "services/langgraph/src/subgraphs/devops/deploy_workflow.py").read_text()
     )
     return next(
-        ast.literal_eval(node.value)
+        ast.literal_eval(node.value.args[0])
         for node in tree.body
         if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "RELEASED_STEPS_DIGEST" for t in node.targets)
+        and any(isinstance(t, ast.Name) and t.id == "RELEASED_STEPS_DIGESTS" for t in node.targets)
     )
 
 
@@ -229,19 +239,21 @@ def test_published_update_retains_owned_bytes_and_requires_reconciliation(
     assert before == {name: (product / name).read_bytes() for name in owned}
     answers = yaml.safe_load((product / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    # A commit pin is recorded as itself or as `<tag>-<n>-g<abbreviated commit>`.
+    # A tag pin is recorded as itself; a commit pin as itself or `<tag>-<n>-g<abbreviated commit>`.
     recorded = str(answers["_commit"])
     assert recorded == TEMPLATE_PIN.ref or TEMPLATE_PIN.ref.startswith(recorded.rsplit("-g", 1)[-1])
     assert answers["modules"] == "backend,tg_bot"
-    assert f"codegen-product-kit.git@{RELEASE_SHA}" in (product / "pyproject.toml").read_text()
-    assert f"rev={RELEASE_SHA}#{RELEASE_SHA}" in (product / "uv.lock").read_text()
+    release = release_commit(product)
+    assert f"codegen-product-kit.git@{release}" in (product / "pyproject.toml").read_text()
+    assert f"rev={release}#{release}" in (product / "uv.lock").read_text()
     if overlap:
         reconcile_owned_workflow(product, previous)
     updated = workflow(product)
     assert updated["name"] == "Owned deploy"
     assert updated["jobs"]["deploy"]["runs-on"] == "ubuntu-24.04"
-    assert updated["jobs"]["deploy"]["steps"][3]["with"]["host"] == "${{ secrets.DEPLOY_HOST }}"
-    assert executable_digest(product) == admission_digest()
+    deploy_env = updated["jobs"]["deploy"]["steps"][3]["env"]
+    assert deploy_env["DEPLOY_HOST"] == "${{ secrets.DEPLOY_HOST }}"
+    assert executable_digest(product) in admission_digests()
     assert not list(product.rglob("*.rej"))
     assert before == {name: (product / name).read_bytes() for name in owned}
     for host in ("192.0.2.42", "2001:db8::42", "::ffff:192.0.2.42"):

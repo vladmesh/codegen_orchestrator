@@ -1,17 +1,17 @@
 {
   "source": "gh:vladmesh/codegen-product-kit",
-  "ref": "14fa729c28a2ceb43035c7ac7b601057c5cc5d84",
-  "candidate_sha": "759b10ad85455838823d3d51dde0dccf0445525f",
-  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: packages/tg-channels/v0.1.2-17-g14fa729\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
+  "ref": "0.11.0",
+  "candidate_sha": "07643c28a1d35c46841dbd950f437bd2a7b7b183",
+  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: 0.11.0\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
   "tracked_sha256": {
-    ".copier-answers.yml": "743885036bc7736df328c74c80663c66d8bb05886cf100e9b3ebbdc27d29bf5b",
+    ".copier-answers.yml": "9ce95415ffcc3da14e003f1e565fa60cdcb1d9c3fd86d800a83af70976c27aaa",
     ".coveragerc": "e81eaf903c40f90b6e89ceaaf9d3def080db0265dca88d8955c1d702b91af016",
     ".dockerignore": "7b8eac7cd6e7aac256526e938f203a0c06357edf5c32343e44968430b4580a6a",
     ".env.example": "b9fd3997f087dc3386cbd4829ed965fa5ec1c3d6981ace5699559d2524b81943",
     ".githooks/pre-commit": "f5334e168deaffb9ee77434e250a57105b9c312fbfc91af2771c4becb6d11e02",
     ".githooks/pre-push": "48140380093115ebcd75a4e5c57e4957d4a75c6f1bcad5c2e5a1cbe82de25549",
-    ".github/workflows/ci.yml": "0e85f6006a5b504dc66e17cc19bf88faab44301d2acd8d24e5eb86ff9a134c95",
-    ".github/workflows/deploy.yml": "d18b37b6d5db34ea6c385c2add7fdd55d74fef08f4eda331ef72679e908b6ec9",
+    ".github/workflows/ci.yml": "03bf2b4d4d7ca634f1ca4c7fb8709a1d6f4a8601250b3910dd7f968215037d8a",
+    ".github/workflows/deploy.yml": "6effa55a58a8860ca9a586c11cdf752c202f08cce69c1a6d1336b14dd1e0ef62",
     ".gitignore": "89732f3995dabb199f18265fc12f27d5e214fc5dbb0870a61f49b22b1fd5bef9",
     "AGENTS.md": "da8350b8503380a33ef94eb7438ccfc3cc67274abe4705adc00db9511c92c87e",
     "ARCHITECTURE.md": "af79c0b3b20e091f9fb5bb5c6895ab568324aa367ee3bd366a688e9f675a750d",
@@ -24,7 +24,7 @@
     "codegen_kit/migrations.py": "da31c38408a61a183ec2bfe487136341f3373c87ebbf5423686d2330c0df8006",
     "codegen_kit/packages.py": "d946ab2b409e0491c5acd080beb865bdcca6949c0b7e69c1f3cb24fddd3ff06f",
     "infra/.env.test": "56e2cac12bea28d4ac1752b09df23d2c258e3f2c60b731e4d5a3ea633a1e6e38",
-    "infra/README.md": "dd3087ff012c0484205d5328fc559417b0a85c3de08c410e399df0a3857f0840",
+    "infra/README.md": "3c2b2a720305075e5b3a7b1484a3dce759df94561187e056591a1458758cb58c",
     "infra/compose.base.yml": "0d0306b976f328130b2b878ab68634b88a811a757442035abf4b3334c13bc372",
     "infra/compose.dev.yml": "78cc92a5714c2bf0c5abcd9739c4cacf2304ce2a701e8edaa2bcee4f5ab0d2c2",
     "infra/compose.local.yml": "58f5bc9229c1f2c8ffe82c45f3e9cfa2c7e3b652ac0864412c04be3db7074804",
@@ -32,7 +32,7 @@
     "infra/compose.tests.integration.yml": "06e8545c170a2eed06b123ac7b691c8bb98e45cf754880a54b2b8d5a699f7394",
     "infra/env.contract.yaml": "b9052abeac9fea2e8e39a1b4e5d2a067c9df7dceec83912134dd22fa2ab928f1",
     "mypy.ini": "5262a519571da0963b5b9df960ea6393b9ba0291e8987b32326504d62b65b611",
-    "pyproject.toml": "db70f6fe7649d811c112120f9694dc8ebb470e3a89153045ce5b9a5d5a1c6d9a",
+    "pyproject.toml": "89cbdaf93aa4411824ce93ffd662891485723fe975841ad1d6a35758dadf07db",
     "pytest.ini": "44fbeef624539fbae76f55804299812bbd139d2a31b29bfd3615687cacb7b788",
     "ruff.toml": "755941b2ac3202f1044abf6a916eda298b03c6b9759be079e2e40ec700ed11f0",
     "scripts/prepare-env.sh": "d9ce9de05d5d7ab5871006e0182852fdf3130e66816bc36e5b85321effe75c21",
@@ -160,6 +160,6 @@
     "tests/integration/test_durable_events.py": "fb60fb0324f16ff929989e484475521524065022562d6f3a026afe2b2a440784",
     "tests/integration/test_example.py": "1a869093e2346d7b79775ab08c644352b8ea267f5de2437fe67d913424a26ca3",
     "tests/integration/test_user_identifiers.py": "bdfbb9160295da41b2861e2d507eff2574189a9074697df0451628cedd6d4a60",
-    "uv.lock": "a015c3174c4dd500a5b41eef46563fe71b67c20b9331d0deaa7abfaf5e730156"
+    "uv.lock": "21c0167cbe2f239204eedd60e3f960529e6c482422f07a163c2b0bb10bb189bc"
   }
 }

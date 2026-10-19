@@ -20,16 +20,18 @@ the admitted sources production uses is separate and lives in
 That seed is the single definition of the pin: it is what a deployed orchestrator
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by an immutable
-commit of that repository and no longer from `service-template`.
-The production boundary is kit main commit `14fa729c28a2ceb43035c7ac7b601057c5cc5d84`.
-Rendered at a commit, Copier
-records `_commit` in `git describe` form (`packages/tg-channels/v0.1.2-17-g14fa729`);
-`shared.contracts.template.recorded_template_commit_matches` and the install probe accept
-exactly the pin itself or that form of it. The matching
-`shared/tests/fixtures/codegen-product-kit-14fa729c28a2ceb43035c7ac7b601057c5cc5d84` tree is
-its `backend,tg_bot` Copier render. The root `codegen-kit-tooling` dependency, the LangGraph
-requirement and their locks resolve the same commit; the locks are the CI producer's output
-(`.github/workflows/template-fixture.yml`, job `locks`), never hand edits.
+release tag of that repository and no longer from `service-template`.
+The production boundary is the annotated kit release `0.11.0` (tag object
+`705f3ce5bd182a6f6700c73997b34c51089d53a5`, commit `59a0752c8f44c01c04054f9bbe0bd699d3d27dd9`,
+[release notes](https://github.com/vladmesh/codegen-product-kit/blob/59a0752c8f44c01c04054f9bbe0bd699d3d27dd9/docs/releases/0.11.0.md)).
+The tag and its commit are separate identities. The seed, the fixture directory name and the
+recorded `_commit` carry the tag; the root `codegen-kit-tooling` dependency, the LangGraph
+requirement, their locks, the activated catalog snapshot (`shared/catalog_activation.yaml`) and the
+capability manifest's provenance carry the full commit. The matching
+`shared/tests/fixtures/codegen-product-kit-0.11.0` tree is its `backend,tg_bot` Copier render.
+The render, its [provenance](../evidence/catalog-install-fixture.json) and both locks are the CI
+producer's output (`.github/workflows/template-fixture.yml`, jobs `render` and `locks`), never
+hand edits.
 It represents the committed checkout: generated ignored `.env` and `TASK.md`
 are omitted; every versioned rendered file retains the producer's bytes. It is
 rendered with `copier copy --trust --defaults --vcs-ref=<tag>` and the answers
@@ -43,12 +45,18 @@ The render carries bigint user identifiers, forward migration `e6b8c2d4a901`
 after `d4a7b2c9e1f0`, and Telegram token protection in HTTP logs, as since the
 kit's [0.6.3 release](https://github.com/vladmesh/codegen-product-kit/blob/f23460c62fa3508858c0552557b2860af09f2656/docs/releases/0.6.3.md).
 
-This commit carries core facade `2.6.0`, protocol `1` and tooling distribution `0.1.0`:
+This release carries core facade `2.6.0`, protocol `1` and tooling distribution `0.1.0`:
 the core-owned product `language` setting, one authoritative bot registry for the product's
 commands, inline callbacks and text handler (the generated product's `services/tg_bot/AGENTS.md`,
 "Command registry", owns its forms), a generated users write that commits before it
 acknowledges, and the typed `kit check-install` preflight, on top of generic platform
 environment sources and finite bilingual binding v2 (v1 unchanged).
+Its generated CI runs `quality`, `dev-smoke` and `integration` as parallel jobs on pull requests
+and manual dispatch, behind the stable required `lint-and-test` aggregate, which fails unless every
+result is `success`. Its deploy step uses the runner's native `ssh` and
+`docker compose up --wait --wait-timeout 120 --remove-orphans`, failing when a service is not
+running, or not healthy where it declares a healthcheck, within that bound. No production deploy
+time has been measured on this release.
 The retained fixture's [producer hashes](../evidence/catalog-install-fixture.json) cover every
 tracked file and the saved answers.
 
@@ -123,7 +131,10 @@ opaque, but only its canonical form (`telegram:<id>`) lets that user see the see
 Central QA reads those routes as one verified QA user (see "Central QA reads package routes as a
 verified QA user" below). `POST /jobs/fire` of `reminders.tick` with `X-Jobs-Capability` is unchanged.
 
-This pin changes new-product scaffolding; it does not migrate deployed products.
+This pin changes new-product scaffolding; it does not migrate deployed products, which keep
+their rendered workflows until a deliberate Copier update. IPv6 deploy admission accepts both
+the previously reviewed SSH-action deploy workflow and this release's native `ssh` one
+([lifecycle invariants](lifecycle-invariants.md)).
 Existing products need a reviewed Copier update on a clean review branch:
 `copier update --defaults --trust --vcs-ref=<reviewed-release> --conflict=rej`. Preserve selected
 modules and owned application/spec/environment bytes, back up ignored real

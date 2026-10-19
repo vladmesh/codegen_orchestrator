@@ -1,0 +1,7 @@
+{
+  "source": "gh:vladmesh/codegen-product-kit",
+  "ref": "14fa729c28a2ceb43035c7ac7b601057c5cc5d84",
+  "candidate_sha": "759b10ad85455838823d3d51dde0dccf0445525f",
+  "tracked_path": ".github/workflows/deploy.yml",
+  "sha256": "d18b37b6d5db34ea6c385c2add7fdd55d74fef08f4eda331ef72679e908b6ec9"
+}

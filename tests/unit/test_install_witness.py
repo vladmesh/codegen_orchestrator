@@ -12,6 +12,7 @@ import json
 import pytest
 
 from scripts.template_pin import TEMPLATE_PIN
+from shared.catalog_activation import CATALOG_ACTIVATION
 from tests.live.install_witness import (
     PUBLISHED_EVENT,
     WitnessRefused,
@@ -22,8 +23,10 @@ from tests.runner.verify_evidence import stand_witness_problems
 
 G = ["git", "-c", "core.hooksPath=/dev/null"]
 CATALOG = "https://github.com/vladmesh/codegen-product-kit.git"
-# The admitted catalog and kit tooling are the same immutable commit the template pins.
-KIT_COMMIT = TEMPLATE_PIN.ref
+# The admitted catalog and kit tooling are the activated snapshot's full commit; the probe
+# is handed the template ref the product was scaffolded from.
+KIT_COMMIT = CATALOG_ACTIVATION.commit
+TEMPLATE_REF = TEMPLATE_PIN.ref
 BASE = "c1cf3226e0edf07a5dc9e4e7b1a7f227c74e46ca"
 HEAD = "2e5e5f674ddfa52402338db14ceacbe8110334f3"
 OPERATION = "install-712031010ab1489b9371e9664ff06478"
@@ -116,7 +119,7 @@ def trace(install, *, check_rc=3, remote_story=False):
         ("prepare", [*G, "ls-files"]),
         ("prepare", ["sh", "scripts/prepare-env.sh", "root", "backend", "tg_bot"]),
         ("preflight", status),
-        ("preflight", [python, "-I", PROBE, "provenance", payload, KIT_COMMIT]),
+        ("preflight", [python, "-I", PROBE, "provenance", payload, TEMPLATE_REF]),
         (
             "preflight",
             [
@@ -132,7 +135,7 @@ def trace(install, *, check_rc=3, remote_story=False):
             ],
         ),
         ("preflight", status),
-        ("preflight", [python, "-I", PROBE, "preflight", payload, KIT_COMMIT]),
+        ("preflight", [python, "-I", PROBE, "preflight", payload, TEMPLATE_REF]),
         ("preflight", status),
         ("package", [kit, "add", package, *catalog]),
         *(("library", [kit, "add", item["name"], *catalog]) for item in install["libraries"]),
@@ -142,7 +145,7 @@ def trace(install, *, check_rc=3, remote_story=False):
         ("validate", [f"{ROOT}/services/backend/.venv/bin/mypy", "services/backend"]),
         ("validate", [f"{ROOT}/services/tg_bot/.venv/bin/mypy", "services/tg_bot"]),
         ("validate", ["make", "tests", "REDIS_URL=redis://redis.invalid:6379"]),
-        ("readback", [python, "-I", PROBE, "readback", payload, KIT_COMMIT]),
+        ("readback", [python, "-I", PROBE, "readback", payload, TEMPLATE_REF]),
         ("commit", [*G, "add", "-A"]),
         ("commit", [*G, "status", "--porcelain"]),
         (

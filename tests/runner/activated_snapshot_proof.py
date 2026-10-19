@@ -142,6 +142,12 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
     activation = yaml.safe_load(
         (args.orchestrator_dir / "shared/catalog_activation.yaml").read_text()
     )
+    sys.path.insert(1, str(args.orchestrator_dir.resolve()))
+    from scripts.template_pin import load_template_pin  # noqa: PLC0415 - the checkout's seed reader
+
+    # The scheduler publishes the seed's ref, a release tag; `template_evidence` proves the
+    # render's recorded ref resolves to the kit commit.
+    template_ref = load_template_pin(args.orchestrator_dir / "scripts/system_configs.yaml").ref
     fresh_product.RELEASE_TRANSPORTS[CATALOG_MODE] = ACTIVATED_TRANSPORT
 
     class ActivatedSnapshotRunner(fresh_product.Runner):
@@ -502,7 +508,7 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
             if (
                 message["mode"] != "full"
                 or message["repository_id"] != repository
-                or message["template_ref"] != self.sha
+                or message["template_ref"] != template_ref
                 or message["modules"] != "backend,tg_bot"
             ):
                 raise fresh_product.ProofError(f"the scheduler published {message}")
@@ -541,7 +547,7 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
                 project["status"] != "active"
                 or config.get("workspace_ready") is not True
                 or config["service_template"]["commit"] != str(self.evidence["template"]["commit"])
-                or config["service_template"]["requested_ref"] != self.sha
+                or config["service_template"]["requested_ref"] != template_ref
                 or repo["git_url"] != git_url
             ):
                 raise fresh_product.ProofError(f"the scaffold readiness is not recorded: {project}")

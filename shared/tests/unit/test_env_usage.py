@@ -345,8 +345,8 @@ def test_template_fixture_tracks_the_pinned_template_ref():
     assert not stale, f"fixtures left behind for unpinned template revisions: {stale}"
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    # The pin is an immutable kit commit; Copier records it, or its `git describe` form
-    # when a tag is reachable from it.
+    # Copier records a tag pin as itself, and a commit pin as the commit or its
+    # `git describe` form when a tag is reachable from it.
     assert recorded_template_commit_matches(answers["_commit"], pinned_template_ref())
 
 
@@ -400,7 +400,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     assert not (fixture / "TASK.md").exists()
     assert (
         fixture_tree_digest(fixture)
-        == "e0b9a369235b53ac8579610e881a7fd4cf22effaed92e599e2529bddc128e314"
+        == "03687a243a5fb6542b17625daa9a1649ef1a9ac398409cc0ab455998376f5be8"
     )
 
 
