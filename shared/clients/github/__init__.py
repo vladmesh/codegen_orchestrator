@@ -21,7 +21,10 @@ from ._secrets import (
     REGISTRY_SECRET_ENV,
     RegistrySecretsNotRefreshedError,
     RegistrySecretsRefusal,
+    RegistrySecretsResult,
     SecretsMixin,
+    registry_lease_key,
+    registry_receipt_key,
     registry_repository_secrets,
 )
 
@@ -63,5 +66,8 @@ __all__ = [
     "REGISTRY_SECRET_ENV",
     "RegistrySecretsNotRefreshedError",
     "RegistrySecretsRefusal",
+    "RegistrySecretsResult",
+    "registry_lease_key",
+    "registry_receipt_key",
     "registry_repository_secrets",
 ]

@@ -15,6 +15,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   both in one native fetch, so preparation makes four remote Git calls instead of five.
 - Workspace-lock unit tests give the existing owner a live story through the status lookup seam, so they
   prove live-owner refusal without contacting the control API and fit the unit time budget.
+- `GitHubAppClient.ensure_registry_secrets` skips unchanged `REGISTRY_*` under a per-repository Redis
+  lease and an encrypted digest receipt; no production writer calls it yet.
 
 ## 2026-10-18
 
