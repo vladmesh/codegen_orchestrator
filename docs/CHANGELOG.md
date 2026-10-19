@@ -9,6 +9,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   `lint-and-test`, native SSH deploy with `up --wait`; existing products keep their workflow until updated.
 - The deployer rereads a pending deploy run and an accepted failed-job rerun every 3 s instead of
   15 s, so a finished deploy is seen sooner; the first read stays immediate.
+- Worker checkout reads the remote default and the story branch from one advertisement and fetches
+  both in one native fetch, so preparation makes four remote Git calls instead of five.
 
 ## 2026-10-18
 
