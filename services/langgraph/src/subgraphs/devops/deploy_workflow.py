@@ -17,9 +17,16 @@ from .secret_resolver import SecretResolutionError
 
 WORKFLOW_PATH = ".github/workflows/deploy.yml"
 _MAX_WORKFLOW_LENGTH = 65_536
-# Digest of the released steps, excluding presentation names. Proven against the
-# actual production-pin Copier render by test_deploy_workflow_admission.py.
-RELEASED_STEPS_DIGEST = "896588bcb8b4a753e08c575440717940c580a5511ae795a6de67a6d7cb13006a"
+# Digests of the reviewed released steps, excluding presentation names. A product keeps
+# its scaffolded workflow until a deliberate Copier update, so each reviewed release shape
+# stays admitted: the SSH-action transport and the native SSH transport of the current pin.
+# Proven against the actual Copier renders by test_deploy_workflow_admission.py.
+RELEASED_STEPS_DIGESTS = frozenset(
+    {
+        "896588bcb8b4a753e08c575440717940c580a5511ae795a6de67a6d7cb13006a",
+        "f658e06c3435771b58cba7ff4d0b7824a783becbb952515fc86805305446df68",
+    }
+)
 _REFUSAL = (
     f"{WORKFLOW_PATH}: DEPLOY_HOST IPv6 transport is unverified; "
     "a reviewed kit update and reconciled workflow at the built commit are required"
@@ -64,7 +71,7 @@ def corrected_ipv6_workflow(source: str | None) -> bool:
         digest = sha256(
             json.dumps(steps, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        return digest == RELEASED_STEPS_DIGEST
+        return digest in RELEASED_STEPS_DIGESTS
     except (yaml.YAMLError, ValueError, TypeError, KeyError, AttributeError):
         return False
 

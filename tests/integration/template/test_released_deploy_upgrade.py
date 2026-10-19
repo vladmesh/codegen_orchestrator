@@ -45,15 +45,15 @@ def executable_digest(product):
     return sha256(json.dumps(steps, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def admission_digest():
+def admission_digests():
     tree = ast.parse(
         (ROOT / "services/langgraph/src/subgraphs/devops/deploy_workflow.py").read_text()
     )
     return next(
-        ast.literal_eval(node.value)
+        ast.literal_eval(node.value.args[0])
         for node in tree.body
         if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "RELEASED_STEPS_DIGEST" for t in node.targets)
+        and any(isinstance(t, ast.Name) and t.id == "RELEASED_STEPS_DIGESTS" for t in node.targets)
     )
 
 
@@ -240,8 +240,9 @@ def test_published_update_retains_owned_bytes_and_requires_reconciliation(
     updated = workflow(product)
     assert updated["name"] == "Owned deploy"
     assert updated["jobs"]["deploy"]["runs-on"] == "ubuntu-24.04"
-    assert updated["jobs"]["deploy"]["steps"][3]["with"]["host"] == "${{ secrets.DEPLOY_HOST }}"
-    assert executable_digest(product) == admission_digest()
+    deploy_env = updated["jobs"]["deploy"]["steps"][3]["env"]
+    assert deploy_env["DEPLOY_HOST"] == "${{ secrets.DEPLOY_HOST }}"
+    assert executable_digest(product) in admission_digests()
     assert not list(product.rglob("*.rej"))
     assert before == {name: (product / name).read_bytes() for name in owned}
     for host in ("192.0.2.42", "2001:db8::42", "::ffff:192.0.2.42"):

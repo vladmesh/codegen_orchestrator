@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-19
 
-- New products scaffold from kit tag `0.11.0` (commit `59a0752c`, core 2.6.0): parallel PR CI behind a
-  fail-closed `lint-and-test`, native SSH deploy with `up --wait`; existing products need a Copier update.
+- New products scaffold from kit tag `0.11.0` (commit `59a0752c`): parallel PR CI behind fail-closed
+  `lint-and-test`, native SSH deploy with `up --wait`; existing products keep their workflow until updated.
 
 ## 2026-10-18
 

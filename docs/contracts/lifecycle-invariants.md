@@ -109,11 +109,14 @@ For IPv6 allocations, `DeployerNode` uses the authenticated
 `GitHubAppClient.get_file_contents` at the full `deployed_commit_sha` to read
 `.github/workflows/deploy.yml` and its `.rej` before credentials, repository secret
 writes, fencing, temporary tags, dispatch or rerun. IPv4 keeps its existing
-admission boundary. `deploy_workflow.py` recognizes a bounded released executable
-shape: sole unconditional `deploy` job, `workflow_dispatch`, `ubuntu-24.04` and
-the released checkout/key/copy/SSH-action steps in order. A SHA-256 digest of
-those parsed steps, excluding presentation names, is tested against the actual
-pin render. It includes shell bodies, action inputs and env expressions, so raw
+admission boundary. `deploy_workflow.py` recognizes a bounded set of reviewed released
+executable shapes: sole unconditional `deploy` job, `workflow_dispatch`, `ubuntu-24.04` and
+the released checkout/key/copy steps followed by either the SSH-action deploy step or the
+native `ssh` deploy step of the current pin, in order. A product keeps its rendered workflow
+until a deliberate Copier update, so both stay admitted. A SHA-256 digest of
+those parsed steps, excluding presentation names, must equal one reviewed digest; each is
+tested against the actual Copier render that produced it. It includes shell bodies, action
+inputs and env expressions, so raw
 SSH/action host, bracketed SCP host, compose files, target and retry semantics
 are established by executable source. Workflow/job/step names, outer YAML
 comments/formatting, permissions and job timeout can differ. Extra jobs/steps,

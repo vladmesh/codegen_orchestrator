@@ -132,7 +132,9 @@ Central QA reads those routes as one verified QA user (see "Central QA reads pac
 verified QA user" below). `POST /jobs/fire` of `reminders.tick` with `X-Jobs-Capability` is unchanged.
 
 This pin changes new-product scaffolding; it does not migrate deployed products, which keep
-their rendered workflows until a deliberate Copier update.
+their rendered workflows until a deliberate Copier update. IPv6 deploy admission accepts both
+the previously reviewed SSH-action deploy workflow and this release's native `ssh` one
+([lifecycle invariants](lifecycle-invariants.md)).
 Existing products need a reviewed Copier update on a clean review branch:
 `copier update --defaults --trust --vcs-ref=<reviewed-release> --conflict=rej`. Preserve selected
 modules and owned application/spec/environment bytes, back up ignored real
