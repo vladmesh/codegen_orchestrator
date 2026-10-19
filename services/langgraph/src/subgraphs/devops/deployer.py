@@ -36,6 +36,8 @@ logger = structlog.get_logger()
 
 DEPLOY_WORKFLOW = "deploy.yml"
 DEPLOY_TIMEOUT_SECONDS = 600
+# Each waiter reads the run once before its first sleep; this paces the rereads.
+DEPLOY_POLL_SECONDS = 3
 # A rerun's run reappears in the API a moment after the request; unit tests set it to 0.
 RERUN_SETTLE_SECONDS = 3
 
@@ -402,6 +404,7 @@ class DeployerNode(FunctionalNode):
                 repo,
                 run_id,
                 timeout_seconds=DEPLOY_TIMEOUT_SECONDS,
+                poll_interval=DEPLOY_POLL_SECONDS,
                 cancel_check=lambda: self._run_cancelled(deploy_run_id),
             )
             logger.info("deploy_rerun_passed", run_id=run_id)
@@ -513,6 +516,7 @@ class DeployerNode(FunctionalNode):
                     workflow_file=DEPLOY_WORKFLOW,
                     branch=ref,
                     timeout_seconds=DEPLOY_TIMEOUT_SECONDS,
+                    poll_interval=DEPLOY_POLL_SECONDS,
                     created_after=dispatch_time,
                     head_sha=deployed_commit_sha or None,
                     cancel_check=lambda: self._run_cancelled(run_id),
