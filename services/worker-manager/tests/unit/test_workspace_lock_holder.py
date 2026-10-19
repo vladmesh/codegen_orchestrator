@@ -23,6 +23,7 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringExecutionPhase,
     EngineeringInfrastructureRefusal,
 )
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
@@ -33,6 +34,9 @@ from src.garbage_collector import garbage_collect_workspaces
 from src.manager import WorkerManager
 
 PROJECT = "proj-shared-checkout"
+LIVE_OWNER_REFUSAL = (
+    rf"Project {PROJECT} already has active worker worker-a owned by story story-1 \(in_progress\)"
+)
 
 
 def _make_docker_mock():
@@ -50,6 +54,13 @@ def _make_docker_mock():
     container.id = "container-abc"
     docker.run_container = AsyncMock(return_value=container)
     return docker
+
+
+def _manager(redis, docker) -> WorkerManager:
+    """A real manager whose existing project owner reports a live story."""
+    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager._lookup_story_status = AsyncMock(return_value=StoryStatus.IN_PROGRESS)
+    return manager
 
 
 def _ownership(run_id: str, attempt_id: str) -> WorkerOwnership:
@@ -96,13 +107,14 @@ async def test_a_rejected_worker_cleanup_leaves_the_live_workers_lock_alone(dock
     excluded from A's checkout.
     """
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = _manager(redis, docker)
 
     await _create(manager, "worker-a", "run-a")
     assert await redis.sismember("workspace:active_projects", PROJECT)
 
-    with pytest.raises(RuntimeError, match="already has active worker"):
+    with pytest.raises(RuntimeError, match=LIVE_OWNER_REFUSAL):
         await _create(manager, "worker-b", "run-b")
+    manager._lookup_story_status.assert_awaited_once_with("story-1")
 
     # B took no project lock, ownership, or teardown state.
     meta_b = decode_redis_fields(await redis.hgetall("worker:meta:worker-b"))
@@ -119,7 +131,7 @@ async def test_a_rejected_worker_cleanup_leaves_the_live_workers_lock_alone(dock
     assert await redis.sismember("workspace:active_projects", PROJECT)
     assert await manager._check_project_lock(PROJECT) == "worker-a"
 
-    with pytest.raises(RuntimeError, match="already has active worker"):
+    with pytest.raises(RuntimeError, match=LIVE_OWNER_REFUSAL):
         await _create(manager, "worker-c", "run-c")
 
     # And B's cleanup did not spend one of A's project's retries either.
@@ -136,11 +148,11 @@ async def test_a_refused_worker_fails_fast_instead_of_timing_out(docker):
     is exactly how a refusal turned into someone else's lock being released.
     """
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = _manager(redis, docker)
 
     await _create(manager, "worker-a", "run-a")
 
-    with pytest.raises(RuntimeError, match="already has active worker"):
+    with pytest.raises(RuntimeError, match=LIVE_OWNER_REFUSAL):
         await _create(manager, "worker-b", "run-b")
 
     assert await redis.hget("worker:status:worker-b", "status") == WorkerStatus.FAILED
@@ -158,7 +170,7 @@ async def test_a_refused_worker_fails_fast_instead_of_timing_out(docker):
 async def test_workspace_lock_refusal_does_not_poison_executor_inventory(docker, monkeypatch):
     """The retained terminal diagnostic record is not a lease needing a container."""
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = _manager(redis, docker)
     docker.list_containers = AsyncMock(return_value=[])
     monkeypatch.setattr(manager, "_check_project_lock", AsyncMock(return_value="worker-a"))
 
@@ -180,7 +192,7 @@ async def test_the_holder_is_the_one_that_won_the_acquisition(docker):
     ownership it wrote on the way in is withdrawn with the refusal.
     """
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = _manager(redis, docker)
 
     await manager._acquire_workspace_lock("worker-a", _ownership("run-a", "attempt-a"))
 
@@ -198,7 +210,7 @@ async def test_the_holder_is_the_one_that_won_the_acquisition(docker):
 async def test_failed_container_removal_keeps_the_owner_fenced_workspace_lock(docker):
     """A delete command is not teardown evidence and cannot free the checkout."""
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = _manager(redis, docker)
     await manager._acquire_workspace_lock("worker-a", _ownership("run-a", "attempt-a"))
     docker.remove_container.side_effect = RuntimeError("docker daemon unavailable")
 
@@ -218,7 +230,7 @@ async def test_a_qa_executor_does_not_release_a_developer_workers_lock(docker):
     other way this could reach for a lock it never took.
     """
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = _manager(redis, docker)
 
     await _create(manager, "worker-a", "run-a")
 
@@ -252,7 +264,7 @@ async def test_a_finished_qa_executor_is_not_swept_as_the_projects_stale_holder(
     delete path is forbidden from doing.
     """
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = _manager(redis, docker)
 
     await _create(manager, "worker-a", "run-a")
     await redis.hset(
@@ -321,15 +333,13 @@ async def test_the_stale_sweep_cannot_run_inside_an_acquisition(docker):
     counting_redis = aioredis.FakeRedis(decode_responses=True)
     counted, sadd_patch, hset_patch = _instrument(counting_redis, sweep_after=0)
     with sadd_patch, hset_patch:
-        await _create(
-            WorkerManager(redis=counting_redis, docker_client=docker), "worker-count", "run-count"
-        )
+        await _create(_manager(counting_redis, docker), "worker-count", "run-count")
     write_count = counted["writes"]
     assert write_count > 2
 
     for sweep_after in range(1, write_count + 1):
         redis = aioredis.FakeRedis(decode_responses=True)
-        manager = WorkerManager(redis=redis, docker_client=docker)
+        manager = _manager(redis, docker)
         state, sadd_patch, hset_patch = _instrument(redis, sweep_after)
 
         with sadd_patch, hset_patch:
@@ -341,5 +351,5 @@ async def test_the_stale_sweep_cannot_run_inside_an_acquisition(docker):
         assert await redis.sismember("workspace:active_projects", PROJECT), (
             f"the sweep took the workspace from its holder at interleaving point {sweep_after}"
         )
-        with pytest.raises(RuntimeError, match="already has active worker"):
+        with pytest.raises(RuntimeError, match=LIVE_OWNER_REFUSAL):
             await _create(manager, "worker-b", "run-b")
