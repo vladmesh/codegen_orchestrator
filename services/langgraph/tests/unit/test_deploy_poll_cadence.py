@@ -7,6 +7,7 @@ never slept, so the order of reads and waits is the evidence, not wall-clock tim
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import httpx
@@ -21,6 +22,7 @@ BUILT_SHA = "b" * 40
 RUN_ID = 7
 RUNS_PATH = "/repos/org/product/actions/workflows/deploy.yml/runs"
 RUN_PATH = f"/repos/org/product/actions/runs/{RUN_ID}"
+RUN_STAMP = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _run(status: str, conclusion: str | None = None) -> dict:
@@ -29,8 +31,8 @@ def _run(status: str, conclusion: str | None = None) -> dict:
         "status": status,
         "conclusion": conclusion,
         "html_url": f"https://github.com/org/product/actions/runs/{RUN_ID}",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z",
+        "created_at": RUN_STAMP,
+        "updated_at": RUN_STAMP,
         "head_sha": BUILT_SHA,
     }
 
