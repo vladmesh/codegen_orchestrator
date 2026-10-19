@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from pydantic import ValidationError
 import pytest
 
 from src import consumer
@@ -77,3 +78,18 @@ async def test_pending_processing_failure_keeps_inflight_marker(monkeypatch):
     redis.redis.delete.assert_not_awaited()
     assert redis.closed is True
     api.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_worker_refuses_to_start_without_the_registry_lease_policy(monkeypatch):
+    """A full scaffold writes product registry secrets, so nothing is consumed without it."""
+    redis = _FakeRedisClient()
+
+    monkeypatch.delenv("GITHUB_REGISTRY_LEASE_SECONDS", raising=False)
+    monkeypatch.setattr(consumer, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(consumer, "setup_logging", lambda **_kwargs: None)
+
+    with pytest.raises(ValidationError, match="github_registry_lease_seconds"):
+        await consumer.run_worker()
+
+    assert redis.rejected == []

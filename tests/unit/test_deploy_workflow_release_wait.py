@@ -272,11 +272,12 @@ def test_the_webhook_secret_reaches_the_api_env_exactly_and_never_the_output(hos
 
 
 def _validate_required_secrets(
-    tmp_path: Path, contour: str, webhook_secret: str
+    tmp_path: Path, contour: str, webhook_secret: str, lease_seconds: str = "180"
 ) -> subprocess.CompletedProcess[str]:
     step = _steps()["Validate required secrets"]
     environment = {name: f"value-of-{name}" for name in step["env"]}
     environment["REQUIRED_GH_WEBHOOK_SECRET"] = webhook_secret
+    environment["REQUIRED_GITHUB_REGISTRY_LEASE_SECONDS"] = lease_seconds
     return subprocess.run(
         ["bash", "-c", _render(step["run"], tmp_path, {"inputs.environment": contour})],
         cwd=tmp_path,
@@ -303,6 +304,27 @@ def test_a_missing_webhook_secret_is_named_before_any_host_write(tmp_path: Path,
 
     assert result.returncode == 1
     assert f"Missing required secrets or variables for {contour}: GH_WEBHOOK_SECRET" in (
+        result.stderr
+    )
+
+
+@pytest.mark.parametrize("lease_seconds", ["0", "-180", "1.5", "180s", "value"])
+def test_a_lease_policy_that_is_not_positive_whole_seconds_is_refused(
+    tmp_path: Path, lease_seconds: str
+):
+    result = _validate_required_secrets(tmp_path, "production", WEBHOOK_SECRET, lease_seconds)
+
+    assert result.returncode == 1
+    assert "GITHUB_REGISTRY_LEASE_SECONDS for production must be a positive whole number" in (
+        result.stderr
+    )
+
+
+def test_a_missing_lease_policy_is_named_before_any_host_write(tmp_path: Path):
+    result = _validate_required_secrets(tmp_path, "stand", WEBHOOK_SECRET, "")
+
+    assert result.returncode == 1
+    assert "Missing required secrets or variables for stand: GITHUB_REGISTRY_LEASE_SECONDS" in (
         result.stderr
     )
 

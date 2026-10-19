@@ -7,16 +7,15 @@ logger = get_logger(__name__)
 
 
 class ProvisioningMixin:
-    """High-level repository provisioning (creates repo + sets secrets)."""
+    """High-level repository provisioning (creates the repo and its project config)."""
 
     async def provision_project_repo(
         self,
         name: str,
         description: str = "",
         project_spec: dict | None = None,
-        secrets: dict[str, str] | None = None,
     ) -> GitHubRepository:
-        """Create repo with initial config and secrets.
+        """Create repo with its initial project config.
 
         Org is auto-detected from GitHub App installation.
 
@@ -24,7 +23,6 @@ class ProvisioningMixin:
             name: Repository name (will be sanitized to kebab-case)
             description: Repository description
             project_spec: Project specification to save as .project.yaml
-            secrets: Secrets to set in GitHub Actions (e.g., TELEGRAM_TOKEN)
 
         Returns:
             Created repository info
@@ -65,15 +63,6 @@ class ProvisioningMixin:
                 message="chore: add project configuration",
             )
 
-        # 5. Set secrets if provided
-        if secrets:
-            await self.set_repository_secrets(org, repo_name, secrets)
-
-        logger.info(
-            "project_repo_provisioned",
-            org=org,
-            repo=repo_name,
-            secrets_count=len(secrets) if secrets else 0,
-        )
+        logger.info("project_repo_provisioned", org=org, repo=repo_name)
 
         return repo

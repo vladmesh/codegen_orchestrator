@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+from pydantic import ValidationError
 import pytest
 import yaml
 
@@ -57,6 +58,21 @@ async def test_pipeline_validates_only_its_own_config(monkeypatch):
 
     with pytest.raises(RuntimeError, match="scheduler.github_sync_missing_threshold"):
         await startup.init_config(startup.MAINTENANCE_REQUIRED_KEYS)
+
+
+async def test_the_pipeline_refuses_to_start_without_the_registry_lease_policy(monkeypatch):
+    """Its PR poller writes product registry secrets, so the policy is required at startup."""
+    from src import pipeline, runtime
+
+    monkeypatch.delenv("GITHUB_REGISTRY_LEASE_SECONDS", raising=False)
+    monkeypatch.setattr(pipeline, "setup_logging", MagicMock())
+    initialize = AsyncMock()
+    monkeypatch.setattr(runtime, "initialize_configs", initialize)
+
+    with pytest.raises(ValidationError, match="github_registry_lease_seconds"):
+        await pipeline.main()
+
+    initialize.assert_not_awaited()
 
 
 class _Refresher:
@@ -131,9 +147,9 @@ def test_compose_runs_independent_scheduler_processes():
 def test_scheduler_pipeline_carries_the_registry_env_its_merges_write():
     """The merging process writes the product's registry secrets, so it holds them.
 
-    `pr_poller` and `story_completion` run in scheduler-pipeline and refresh a
-    product repository's REGISTRY_* secrets before every merge they perform or
-    enable. Production composes this file, so the variables must be named here.
+    `pr_poller` runs in scheduler-pipeline and makes a product repository's
+    REGISTRY_* secrets current before every merge it performs. Production
+    composes this file, so the variables must be named here.
     """
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
     environment = compose["services"]["scheduler-pipeline"]["environment"]

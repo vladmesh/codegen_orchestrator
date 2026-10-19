@@ -1,18 +1,12 @@
 """The registry secrets lease and receipt as real Redis Lua, across clients and holders."""
 
-import base64
-from datetime import UTC, datetime, timedelta
 import os
-import random
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from cryptography.fernet import Fernet
-import httpx
-from nacl import public
 import pytest
 
 from shared.clients.github import (
-    GitHubAppClient,
     RegistrySecretsNotRefreshedError,
     RegistrySecretsRefusal,
     RegistrySecretsResult,
@@ -20,8 +14,8 @@ from shared.clients.github import (
     registry_receipt_key,
 )
 from shared.redis import RedisStreamClient
+from tests.service._github_secrets_repository import OWNER, REPO, Repository
 
-OWNER, REPO = "fixture", "registry-receipt"
 OTHER_HOLDER = "other-holder-token"
 REGISTRY_ENV = {
     "ORCHESTRATOR_HOSTNAME": "registry.test",
@@ -30,45 +24,6 @@ REGISTRY_ENV = {
     "SECRETS_ENCRYPTION_KEY": Fernet.generate_key().decode(),
 }
 REGISTRY_NAMES = ["REGISTRY_URL", "REGISTRY_USER", "REGISTRY_PASSWORD"]
-
-
-class Repository:
-    """A GitHub repository with a fresh id, its Actions secrets API over controlled HTTP."""
-
-    def __init__(self) -> None:
-        self.id = random.randrange(10**9, 10**10)  # noqa: S311
-        self._key = base64.b64encode(bytes(public.PrivateKey.generate().public_key)).decode()
-        self.puts: list[str] = []
-        self.on_put = None
-        self.http = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
-
-    async def handle(self, request: httpx.Request) -> httpx.Response:
-        path = request.url.path.removeprefix(f"/repos/{OWNER}/{REPO}")
-        if path == "":
-            return httpx.Response(
-                200,
-                json={
-                    "id": self.id,
-                    "name": REPO,
-                    "full_name": f"{OWNER}/{REPO}",
-                    "html_url": f"https://github.com/{OWNER}/{REPO}",
-                    "clone_url": f"https://github.com/{OWNER}/{REPO}.git",
-                },
-            )
-        if path == "/actions/secrets/public-key":
-            return httpx.Response(200, json={"key": self._key, "key_id": "k1"})
-        self.puts.append(path.rsplit("/", 1)[1])
-        if self.on_put is not None:
-            await self.on_put()
-        return httpx.Response(204)
-
-    def client(self) -> GitHubAppClient:
-        with patch.dict(os.environ, {"GITHUB_APP_ID": "12345"}):
-            github = GitHubAppClient()
-        github._http_client = self.http
-        github._token_cache[111] = ("token", datetime.now(UTC) + timedelta(hours=1))
-        github.get_installation_id = AsyncMock(return_value=111)
-        return github
 
 
 @pytest.fixture
@@ -85,9 +40,9 @@ async def stores(real_redis):
     await repository.http.aclose()
 
 
-async def _ensure(repository: Repository, redis) -> RegistrySecretsResult:
+async def _ensure(repository: Repository, redis, caller_lock=None) -> RegistrySecretsResult:
     return await repository.client().ensure_registry_secrets(
-        OWNER, REPO, redis=redis, lease_seconds=60
+        OWNER, REPO, redis=redis, lease_seconds=60, caller_lock=caller_lock
     )
 
 
@@ -144,3 +99,33 @@ async def test_a_corrupt_receipt_is_a_miss_repaired_under_the_lease(stores, conn
     assert await _ensure(repository, redis) == RegistrySecretsResult(written=3)
     assert await _ensure(repository, redis) == RegistrySecretsResult(written=0)
     assert repository.puts == [*REGISTRY_NAMES, *REGISTRY_NAMES]
+
+
+@pytest.mark.parametrize("connection", ["text", "bytes"])
+async def test_a_caller_lock_lost_mid_write_is_checked_with_the_lease_in_one_script(
+    stores, connection
+):
+    repository, text_redis, bytes_redis = stores
+    redis = text_redis if connection == "text" else bytes_redis
+    caller_key = f"fixture:caller:{repository.id}"
+    await text_redis.set(caller_key, "caller-token", ex=60)
+
+    async def hand_over_caller():
+        await text_redis.set(caller_key, OTHER_HOLDER, ex=60)
+
+    repository.on_put = hand_over_caller
+    try:
+        with pytest.raises(RegistrySecretsNotRefreshedError) as refused:
+            await _ensure(repository, redis, (caller_key, "caller-token"))
+        assert refused.value.reason is RegistrySecretsRefusal.CALLER_LOCK_LOST
+        assert repository.puts == ["REGISTRY_URL"]
+        assert await text_redis.get(registry_receipt_key(repository.id)) is None
+        assert await text_redis.get(registry_lease_key(repository.id)) is None
+        assert await text_redis.get(caller_key) == OTHER_HOLDER
+
+        repository.on_put = None
+        successor = (caller_key, OTHER_HOLDER)
+        assert await _ensure(repository, redis, successor) == RegistrySecretsResult(written=3)
+        assert await _ensure(repository, redis, successor) == RegistrySecretsResult(written=0)
+    finally:
+        await text_redis.delete(caller_key)

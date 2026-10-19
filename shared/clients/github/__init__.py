@@ -26,6 +26,7 @@ from ._secrets import (
     registry_lease_key,
     registry_receipt_key,
     registry_repository_secrets,
+    registry_writer_lease_seconds,
 )
 
 
@@ -70,4 +71,5 @@ __all__ = [
     "registry_lease_key",
     "registry_receipt_key",
     "registry_repository_secrets",
+    "registry_writer_lease_seconds",
 ]

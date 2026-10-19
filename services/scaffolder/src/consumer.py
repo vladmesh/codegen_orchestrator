@@ -16,11 +16,7 @@ import httpx
 from pydantic import ValidationError
 import structlog
 
-from shared.clients.github import (
-    GitHubAppClient,
-    RegistrySecretsNotRefreshedError,
-    registry_repository_secrets,
-)
+from shared.clients.github import GitHubAppClient, registry_writer_lease_seconds
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode, in_work_cycle
@@ -173,7 +169,7 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
                 return await _process_install_mode(*args)
             if msg.mode == "ensure":
                 return await _process_ensure_mode(*args)
-            return await _process_full_mode(*args)
+            return await _process_full_mode(*args, redis=redis)
 
     except asyncio.CancelledError:
         if not lease_lost:
@@ -210,8 +206,10 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         await _finish_scaffold_work(redis, msg.project_id, lease)
 
 
-async def _process_full_mode(msg, repo_full_name, github, github_token, api, settings, log) -> dict:
-    """Full scaffold: create repo, copier, make setup, git push."""
+async def _process_full_mode(
+    msg, repo_full_name, github, github_token, api, settings, log, *, redis: RedisStreamClient
+) -> dict:
+    """Full scaffold: create repo, registry secrets, copier, make setup, git push."""
     org = repo_full_name.split("/")[0]
 
     # Create GitHub repo. A 422 may be an idempotent existing-repository case;
@@ -235,18 +233,15 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
         update_fields["provider_repo_id"] = github_repo.id
     await api.update_repository(msg.repository_id, **update_fields)
 
-    # Set registry secrets so CI build-and-push can work from first commit. The PR
-    # poller writes them again before every merge, so this is not the only chance.
-    try:
-        registry_secrets = registry_repository_secrets()
-    except RegistrySecretsNotRefreshedError as error:
-        log.warning("registry_secrets_skipped", detail=error.detail)
-    else:
-        github_token_for_secrets = await github.get_org_token(org)
-        count = await github.set_repository_secrets(
-            org, msg.project_name, registry_secrets, token=github_token_for_secrets
-        )
-        log.info("registry_secrets_set", count=count)
+    # The first push below starts the product's CI, whose build-and-push logs in with
+    # the registry secrets, so they are current before it or the scaffold fails.
+    registry = await github.ensure_registry_secrets(
+        org,
+        msg.project_name,
+        redis=redis.redis,
+        lease_seconds=registry_writer_lease_seconds(),
+    )
+    log.info("registry_secrets_current", written=registry.written)
 
     # Run scaffold
     result = await run_scaffold(
@@ -612,6 +607,8 @@ async def run_worker() -> None:
     _shutdown = False
 
     setup_logging(service_name="scaffolder")
+    # A full scaffold writes product registry secrets: no lease policy or receipt key, no start.
+    registry_writer_lease_seconds()
     consumer_name = f"scaffolder-{os.getpid()}"
 
     redis = RedisStreamClient()

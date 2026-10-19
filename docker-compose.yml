@@ -111,10 +111,11 @@ services:
       API_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
-      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
       REGISTRY_USER: ${REGISTRY_USER}
       REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
+      GITHUB_REGISTRY_LEASE_SECONDS: ${GITHUB_REGISTRY_LEASE_SECONDS:?GITHUB_REGISTRY_LEASE_SECONDS must be set}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: deploy-worker
     volumes:
@@ -189,10 +190,11 @@ services:
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
       GITHUB_ORG: ${GITHUB_ORG}
-      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
       REGISTRY_USER: ${REGISTRY_USER}
       REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
+      GITHUB_REGISTRY_LEASE_SECONDS: ${GITHUB_REGISTRY_LEASE_SECONDS:?GITHUB_REGISTRY_LEASE_SECONDS must be set}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: engineering-worker
     volumes:
@@ -417,11 +419,12 @@ services:
       REDIS_URL: redis://redis:6379
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
       PYTHONPATH: /app
-      # The PR poller and story completion write these into a product repository
-      # as its registry secrets before every merge they perform or enable.
+      # The PR poller makes these a product repository's registry secrets before
+      # every merge it performs.
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
       REGISTRY_USER: ${REGISTRY_USER}
       REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
+      GITHUB_REGISTRY_LEASE_SECONDS: ${GITHUB_REGISTRY_LEASE_SECONDS:?GITHUB_REGISTRY_LEASE_SECONDS must be set}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-pipeline
     command: ["python", "-m", "src.pipeline"]
@@ -543,6 +546,9 @@ services:
       PYTHONPATH: /app
       WORKSPACE_BASE_PATH: /data/workspaces
       GITHUB_ORG: ${GITHUB_ORG}
+      # The registry values themselves arrive through env_file; these two are checked here.
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY must be set}
+      GITHUB_REGISTRY_LEASE_SECONDS: ${GITHUB_REGISTRY_LEASE_SECONDS:?GITHUB_REGISTRY_LEASE_SECONDS must be set}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scaffolder
     volumes:

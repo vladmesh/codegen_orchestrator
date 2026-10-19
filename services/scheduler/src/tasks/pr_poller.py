@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from shared.clients.github import GitHubAppClient, RegistrySecretsNotRefreshedError
+from shared.clients.github import (
+    GitHubAppClient,
+    RegistrySecretsNotRefreshedError,
+    RegistrySecretsRefusal,
+    registry_writer_lease_seconds,
+)
 from shared.contracts.dto.pr_conflict_repair import PRConflictRepairCommand
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
@@ -49,9 +54,12 @@ _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
 _MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
 #: Logged when GitHub did not confirm withdrawing a PR's auto-merge request. The
-#: registry secrets were already refreshed that tick; the poller does not merge,
-#: and refreshes and asks again on the next poll.
+#: registry secrets were already made current that tick; the poller does not merge,
+#: and makes them current and asks again on the next poll.
 AUTO_MERGE_DISABLE_FAILED = "github_auto_merge_disable_failed"
+#: Another writer holds, or took over, the repository's registry lease: contention,
+#: not a defect, so the PR stays in the poll set for the next tick.
+_REGISTRY_CONTENTION = {RegistrySecretsRefusal.LEASE_BUSY, RegistrySecretsRefusal.LEASE_LOST}
 
 
 def _ci_failure_limit() -> int:
@@ -601,6 +609,7 @@ async def _park_story_for_merge_refusal(
 
 async def _take_over_auto_merge(
     github: GitHubAppClient,
+    redis_client: RedisStreamClient,
     *,
     owner: str,
     repo_name: str,
@@ -611,24 +620,37 @@ async def _take_over_auto_merge(
 
     Such a request is left over from before the poller merged every product PR
     itself. While it is armed GitHub may merge the PR by itself whenever checks
-    pass, so the secrets are written first, on every tick the PR is still armed,
-    and no outcome of the withdrawal can skip that write. A failed write is
-    logged with its typed reason and changes nothing else; the next tick writes
-    again. Refreshing never merges.
+    pass, so the secrets are made current first, on every tick the PR is still
+    armed, and no outcome of the withdrawal can skip that. A matching registry
+    receipt suffices; a failure is logged with its typed reason and changes
+    nothing else, and the next tick tries again. Making them current never merges.
 
     True once GitHub confirms the withdrawal, and the PR is under this poller's
     sole control. False otherwise: the caller does not merge, and the next tick
-    refreshes and asks again.
+    makes them current and asks again.
     """
     pr_number = pull_request["number"]
     try:
-        await github.refresh_registry_secrets(owner, repo_name)
+        await github.ensure_registry_secrets(
+            owner,
+            repo_name,
+            redis=redis_client.redis,
+            lease_seconds=registry_writer_lease_seconds(),
+        )
     except RegistrySecretsNotRefreshedError as error:
         log.error(
             "poll_merged_armed_pr_refresh_failed",
             reason=error.reason.value,
             pr_number=pr_number,
             detail=error.detail,
+        )
+    except Exception as exc:
+        # Withdrawing the request still follows: it is what stops GitHub merging by itself.
+        log.error(
+            "poll_merged_armed_pr_refresh_failed",
+            reason=type(exc).__name__,
+            pr_number=pr_number,
+            detail=redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ)))),
         )
     pr_node_id = pull_request.get("node_id")
     try:
@@ -666,10 +688,11 @@ async def _merge_open_pr(
     """Merge a green PR through the App; this poller is its only automated merger.
 
     A PR GitHub may still merge by itself (it carries an auto-merge request) has
-    its registry secrets refreshed on every tick before the request is withdrawn;
+    its registry secrets made current on every tick before the request is withdrawn;
     while GitHub has not confirmed the withdrawal, this poller does not merge it.
-    A PR under this poller's sole control is refreshed immediately before
-    ``merge_pull_request``, and parked if that write fails. Pending and CI-blocked PRs
+    A PR under this poller's sole control has them made current immediately before
+    ``merge_pull_request``: lease contention waits for the next tick, any other
+    refusal parks it. Pending and CI-blocked PRs
     stay in the poll set for their normal next tick. A refusal observed from
     GitHub is terminal for this automatic path, so it is recorded with owner and
     administrator notices instead of being retried as a warning forever.
@@ -692,7 +715,12 @@ async def _merge_open_pr(
         return pull_request
     if pull_request.get("auto_merge") is not None:
         if not await _take_over_auto_merge(
-            github, owner=owner, repo_name=repo_name, pull_request=pull_request, log=log
+            github,
+            redis_client,
+            owner=owner,
+            repo_name=repo_name,
+            pull_request=pull_request,
+            log=log,
         ):
             return pull_request
         pull_request = {**pull_request, "auto_merge": None}
@@ -794,8 +822,21 @@ async def _merge_clean_pr(
     # change, would otherwise build against stale values, and the deploy
     # worker's own write comes after the merge, too late for that CI.
     try:
-        await github.refresh_registry_secrets(owner, repo_name)
+        await github.ensure_registry_secrets(
+            owner,
+            repo_name,
+            redis=redis_client.redis,
+            lease_seconds=registry_writer_lease_seconds(),
+        )
     except RegistrySecretsNotRefreshedError as error:
+        if error.reason in _REGISTRY_CONTENTION:
+            log.warning(
+                "poll_merged_registry_secrets_contended",
+                reason=error.reason.value,
+                pr_number=pr_number,
+                detail=error.detail,
+            )
+            return None
         await _park_story_for_merge_refusal(
             api_client,
             redis_client,

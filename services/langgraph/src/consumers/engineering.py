@@ -12,6 +12,7 @@ import httpx
 from pydantic import ValidationError
 import structlog
 
+from shared.clients.github import registry_writer_lease_seconds
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
@@ -367,7 +368,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         project_status = project.status
         if project_status == ProjectStatus.DRAFT and action == ActionType.CREATE:
-            await _create_repo_and_set_secrets(project)
+            await _create_repo_and_set_secrets(project, redis)
         elif project_status == ProjectStatus.DRAFT and action != ActionType.CREATE:
             logger.warning(
                 "feature_fix_on_draft_project",
@@ -531,6 +532,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
 def main():
     """Entry point for running as module."""
+    # This consumer writes product registry secrets: no lease policy or receipt key, no start.
+    registry_writer_lease_seconds()
     start_worker(
         service_name="engineering-worker",
         queue=ENGINEERING_QUEUE,

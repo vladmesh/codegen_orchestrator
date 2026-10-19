@@ -367,7 +367,7 @@ async def test_completion_hands_the_pull_request_to_the_poller_without_auto_merg
         assert await complete_stories(api_client, redis_client) == 1
 
     github.enable_auto_merge.assert_not_called()
-    github.refresh_registry_secrets.assert_not_called()
+    github.ensure_registry_secrets.assert_not_called()
     github.merge_pull_request.assert_not_called()
     assert "auto-merge" not in github.create_pull_request.await_args.kwargs["body"].lower()
     api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 7})

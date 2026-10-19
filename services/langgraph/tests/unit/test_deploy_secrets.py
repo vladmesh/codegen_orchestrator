@@ -1,8 +1,8 @@
-"""A deploy's repository secrets: written when they change, skipped while a receipt vouches.
+"""A deploy's repository secrets: written when they change, skipped while receipts vouch.
 
 The GitHub client is the real one over controlled HTTP, sealing each value with
-the repository key; the receipt and the deploy lock are the real Lua scripts on
-an in-memory Redis shared by every deploy of the test.
+the repository key; the receipts, the registry lease and the deploy lock are the
+real Lua scripts on an in-memory Redis shared by every deploy of the test.
 """
 
 import base64
@@ -12,13 +12,19 @@ import os
 import re
 from unittest.mock import AsyncMock, patch
 
+from cryptography.fernet import Fernet
 import fakeredis
 import httpx
 from nacl import public
 import pytest
 from structlog.testing import capture_logs
 
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import (
+    GitHubAppClient,
+    RegistrySecretsResult,
+    registry_lease_key,
+    registry_receipt_key,
+)
 from src.deploy_fence import DeployFence, DeployFenceLost
 from src.subgraphs.devops.deploy_secrets import receipt_key, write_deploy_secrets
 
@@ -36,6 +42,11 @@ REGISTRY_SECRETS = {
     "REGISTRY_PASSWORD": "registry-password-value",
 }
 REGISTRY_NAMES = list(REGISTRY_SECRETS)
+WRITER_ENV = {
+    **REGISTRY_ENV,
+    "SECRETS_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+    "GITHUB_REGISTRY_LEASE_SECONDS": "180",
+}
 DOTENV = base64.b64encode(b"BACKEND_IMAGE=registry.example.com/bot:sha-b\nTOKEN=canary\n").decode()
 VALUES = {
     "DOTENV": DOTENV,
@@ -123,7 +134,7 @@ def server():
 async def repository(server):
     repository = Repository(server)
     with (
-        patch.dict(os.environ, REGISTRY_ENV),
+        patch.dict(os.environ, WRITER_ENV),
         patch("shared.clients.github._base.asyncio.sleep", new_callable=AsyncMock),
     ):
         yield repository
@@ -164,30 +175,117 @@ def _receipt(repository: Repository) -> str | None:
     return repository.redis.get(receipt_key(PROJECT_ID))
 
 
+def _registry_receipt(repository: Repository) -> str | None:
+    return repository.redis.get(registry_receipt_key(repository.id))
+
+
+def _counts(logs) -> list[tuple[int, int, int]]:
+    configured = [entry for entry in logs if entry["event"] == "deploy_secrets_configured"]
+    return [(e["secrets_count"], e["cached_count"], e["total"]) for e in configured]
+
+
 @pytest.mark.asyncio
-async def test_a_redeploy_from_another_job_writes_only_the_registry_secrets(repository):
-    assert await _write(repository, VALUES, "deploy-a")
-    assert repository.written() == [*VALUES, *REGISTRY_NAMES]
+async def test_a_redeploy_from_another_job_writes_no_secret_and_reads_no_key(repository):
+    with capture_logs() as logs:
+        assert await _write(repository, VALUES, "deploy-a")
+    assert repository.written() == [*REGISTRY_NAMES, *VALUES]
     assert repository.secrets == {**VALUES, **REGISTRY_SECRETS}
     repository.requests.clear()
 
-    with capture_logs() as logs:
+    with capture_logs() as logs_b:
         assert await _write(repository, VALUES, "deploy-b")
 
-    assert repository.written() == REGISTRY_NAMES
-    assert repository.key_reads() == len(REGISTRY_NAMES)
-    configured = [entry for entry in logs if entry["event"] == "deploy_secrets_configured"]
-    assert [(e["secrets_count"], e["cached_count"], e["total"]) for e in configured] == [(3, 6, 9)]
+    assert repository.written() == []
+    assert repository.key_reads() == 0
+    assert _counts(logs) == [(9, 0, 9)]
+    assert _counts(logs_b) == [(0, 9, 9)]
 
 
 @pytest.mark.asyncio
-async def test_the_receipt_is_one_digest_per_project_holding_no_value(repository):
+async def test_the_receipts_hold_no_value(repository):
     assert await _write(repository, VALUES, "deploy-a")
     assert await _write(repository, CHANGED, "deploy-b")
 
     keys = set(repository.redis.keys("*"))
-    assert keys == {f"deploy:{PROJECT_ID}:lock", receipt_key(PROJECT_ID)}
+    assert keys == {
+        f"deploy:{PROJECT_ID}:lock",
+        receipt_key(PROJECT_ID),
+        registry_receipt_key(repository.id),
+    }
     assert re.fullmatch(r"[0-9a-f]{64}", _receipt(repository))
+    for value in [*VALUES.values(), *CHANGED.values(), *REGISTRY_SECRETS.values()]:
+        assert value not in _registry_receipt(repository)
+
+
+@pytest.mark.asyncio
+async def test_a_registry_receipt_warmed_by_another_writer_spares_the_first_deploy(repository):
+    warmed = await _client(repository).ensure_registry_secrets(
+        OWNER,
+        REPO,
+        redis=fakeredis.aioredis.FakeRedis(server=repository.server),
+        lease_seconds=180,
+    )
+    assert warmed == RegistrySecretsResult(written=3)
+    repository.requests.clear()
+
+    with capture_logs() as logs:
+        assert await _write(repository, VALUES, "deploy-a")
+
+    assert repository.written() == list(VALUES)
+    assert _counts(logs) == [(6, 3, 9)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variable", list(REGISTRY_ENV))
+async def test_a_changed_registry_value_rewrites_only_the_registry_secrets(repository, variable):
+    assert await _write(repository, VALUES, "deploy-a")
+    repository.requests.clear()
+
+    with patch.dict(os.environ, {variable: "rotated-value"}), capture_logs() as logs:
+        assert await _write(repository, VALUES, "deploy-b")
+
+    assert repository.written() == REGISTRY_NAMES
+    assert "rotated-value" in repository.secrets.values()
+    assert _counts(logs) == [(3, 6, 9)]
+
+
+@pytest.mark.asyncio
+async def test_a_busy_registry_lease_refuses_before_any_deploy_secret(repository):
+    assert await _write(repository, VALUES, "deploy-a")
+    repository.redis.set(registry_lease_key(repository.id), "scheduler-holder")
+    receipt = _receipt(repository)
+    repository.requests.clear()
+
+    assert not await _write(repository, CHANGED, "deploy-b")
+
+    assert repository.written() == []
+    assert _receipt(repository) == receipt
+    assert repository.redis.get(registry_lease_key(repository.id)) == "scheduler-holder"
+
+
+@pytest.mark.asyncio
+async def test_a_missing_registry_variable_refuses_before_any_request(repository):
+    with patch.dict(os.environ, {"REGISTRY_PASSWORD": ""}):
+        assert not await _write(repository, VALUES, "deploy-a")
+
+    assert repository.requests == []
+    assert _receipt(repository) is None
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_while_the_registry_secrets_are_written_certifies_neither_group(
+    repository,
+):
+    repository.hand_over_on = ("GET", "/actions/secrets/public-key")
+
+    with pytest.raises(DeployFenceLost):
+        await _write(repository, VALUES, "deploy-a")
+
+    assert repository.written() == []
+    assert _receipt(repository) is None
+    assert _registry_receipt(repository) is None
+    assert repository.redis.get(registry_lease_key(repository.id)) is None
+    assert repository.redis.get(f"deploy:{PROJECT_ID}:lock") == OTHER_HOLDER
 
 
 @pytest.mark.asyncio
@@ -198,7 +296,7 @@ async def test_any_changed_value_writes_all_six_again(repository, name):
 
     assert await _write(repository, {**VALUES, name: CHANGED[name]}, "deploy-b")
 
-    assert repository.written() == [*VALUES, *REGISTRY_NAMES]
+    assert repository.written() == list(VALUES)
     assert repository.secrets[name] == CHANGED[name]
 
 
@@ -209,7 +307,7 @@ async def test_the_same_values_in_another_order_are_the_same_payload(repository)
 
     assert await _write(repository, dict(reversed(VALUES.items())), "deploy-b")
 
-    assert repository.written() == REGISTRY_NAMES
+    assert repository.written() == []
 
 
 @pytest.mark.asyncio
@@ -236,10 +334,10 @@ async def test_a_missing_or_foreign_receipt_writes_and_repairs(repository, recei
     repository.requests.clear()
 
     assert await _write(repository, VALUES, "deploy-b")
-    assert repository.written() == [*VALUES, *REGISTRY_NAMES]
+    assert repository.written() == list(VALUES)
     repository.requests.clear()
     assert await _write(repository, VALUES, "deploy-c")
-    assert repository.written() == REGISTRY_NAMES
+    assert repository.written() == []
 
 
 @pytest.mark.asyncio
@@ -254,7 +352,7 @@ async def test_a_partial_write_of_b_leaves_no_receipt_and_a_is_repaired(reposito
     repository.refuse = set()
     repository.requests.clear()
     assert await _write(repository, VALUES, "deploy-c")
-    assert repository.written() == [*VALUES, *REGISTRY_NAMES]
+    assert repository.written() == list(VALUES)
     assert {name: repository.secrets[name] for name in VALUES} == VALUES
 
 
@@ -265,9 +363,8 @@ async def test_a_partial_write_of_b_leaves_no_receipt_and_a_is_repaired(reposito
         (CHANGED, ("GET", ""), True),
         (CHANGED, ("GET", "/actions/secrets/public-key"), False),
         (VALUES, ("GET", ""), True),
-        (VALUES, ("GET", "/actions/secrets/public-key"), True),
     ],
-    ids=["identity-read", "key-read", "certified-identity-read", "certified-key-read"],
+    ids=["identity-read", "key-read", "certified-identity-read"],
 )
 async def test_a_lock_lost_during_a_read_sends_no_secret(
     repository, values, request_, receipt_kept
@@ -286,30 +383,37 @@ async def test_a_lock_lost_during_a_read_sends_no_secret(
 
 
 @pytest.mark.asyncio
-async def test_a_lock_lost_before_a_retry_stops_the_batch(repository):
+@pytest.mark.parametrize("name", ["REGISTRY_URL", "DOTENV"])
+async def test_a_lock_lost_before_a_retry_stops_the_batch(repository, name):
+    if name == "DOTENV":
+        assert await _write(repository, VALUES, "deploy-a")
+        repository.requests.clear()
     repository.answer_first_put_with = 502
-    repository.hand_over_on = ("PUT", "/actions/secrets/DOTENV")
+    repository.hand_over_on = ("PUT", f"/actions/secrets/{name}")
 
     with pytest.raises(DeployFenceLost):
-        await _write(repository, VALUES, "deploy-a")
+        await _write(repository, CHANGED, "deploy-b")
 
-    assert repository.written() == ["DOTENV"]
+    assert repository.written() == [name]
     assert _receipt(repository) is None
 
 
 @pytest.mark.asyncio
-async def test_a_lock_lost_after_the_last_write_publishes_no_receipt(repository):
-    repository.hand_over_on = ("PUT", "/actions/secrets/REGISTRY_PASSWORD")
+@pytest.mark.parametrize("name", ["REGISTRY_PASSWORD", "PROJECT_NAME"])
+async def test_a_lock_lost_after_a_group_is_written_publishes_no_receipt_for_it(repository, name):
+    repository.hand_over_on = ("PUT", f"/actions/secrets/{name}")
 
     with pytest.raises(DeployFenceLost):
         await _write(repository, VALUES, "deploy-a")
 
-    assert repository.written() == [*VALUES, *REGISTRY_NAMES]
+    registry_done = name == "PROJECT_NAME"
+    assert repository.written() == ([*REGISTRY_NAMES, *VALUES] if registry_done else REGISTRY_NAMES)
     assert _receipt(repository) is None
+    assert (_registry_receipt(repository) is not None) is registry_done
     repository.hand_over_on = None
     repository.requests.clear()
     assert await _write(repository, VALUES, "deploy-b")
-    assert repository.written() == [*VALUES, *REGISTRY_NAMES]
+    assert repository.written() == (list(VALUES) if registry_done else [*REGISTRY_NAMES, *VALUES])
 
 
 @pytest.mark.asyncio

@@ -140,3 +140,20 @@ def internal_api_key_field():
         min_length=1,
         description="Secret token internal services use to authenticate against the API",
     )
+
+
+class _RegistrySecretsWriterSettings(BaseSettings):
+    github_registry_lease_seconds: int = Field(
+        ...,
+        gt=0,
+        description="How long one holder may keep a repository's registry-secrets lease",
+        examples=[180],
+    )
+
+
+def registry_lease_seconds() -> int:
+    """`GITHUB_REGISTRY_LEASE_SECONDS`: required production policy, a positive integer.
+
+    Every process that writes a product repository's registry secrets reads it.
+    """
+    return _RegistrySecretsWriterSettings().github_registry_lease_seconds

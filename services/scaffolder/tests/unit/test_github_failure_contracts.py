@@ -45,6 +45,7 @@ async def test_full_mode_does_not_parse_422_from_exception_text():
             AsyncMock(),
             MagicMock(),
             MagicMock(),
+            redis=MagicMock(),
         )
 
     github.get_repo.assert_not_awaited()
@@ -60,7 +61,7 @@ async def test_full_mode_verifies_existing_repo_after_http_422():
     api.get_stories_by_project.return_value = []
 
     with (
-        patch.dict(os.environ, {}, clear=True),
+        patch.dict(os.environ, {"GITHUB_REGISTRY_LEASE_SECONDS": "180"}),
         patch(
             "src.consumer.run_scaffold",
             new=AsyncMock(return_value=ScaffoldResult(success=False, error="stop after create")),
@@ -74,6 +75,7 @@ async def test_full_mode_verifies_existing_repo_after_http_422():
             api,
             MagicMock(),
             MagicMock(),
+            redis=MagicMock(),
         )
 
     assert result["status"] == "failed"
@@ -101,6 +103,7 @@ async def test_full_mode_keeps_unconfirmed_http_422():
             AsyncMock(),
             MagicMock(),
             MagicMock(),
+            redis=MagicMock(),
         )
 
     assert raised.value is create_error

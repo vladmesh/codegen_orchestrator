@@ -36,7 +36,7 @@ A three-level abstraction for product management:
 4. The PO publishes an `ArchitectMessage` to `architect:queue`
 5. The Architect Consumer calls the LLM, which sees the tree of the scaffolded project → creates tasks only for the diff (the business logic)
 6. The Task Dispatcher finds unblocked tasks, creates Runs, publishes to `engineering:queue`
-7. The story-completion loop observes all tasks done and opens the story/* → main PR; the PR/CI loop merges it after writing registry secrets, lifecycle supervision routes deploy results, and the QA loop settles testing
+7. The story-completion loop observes all tasks done and opens the story/* → main PR; the PR/CI loop merges it after making its registry secrets current, lifecycle supervision routes deploy results, and the QA loop settles testing
 
 The Story / Task / Run / `TaskEvent` entities in the API describe work on **client** projects; they are created and maintained by the pipeline itself (PO, Architect, Task Dispatcher, workers).
 
@@ -199,7 +199,7 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
 
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
 All tasks done → story-completion loop creates PR story/* → main (no GitHub auto-merge) → story pr_review
-Checks green → PR poller writes the repo's REGISTRY_* secrets, then merges → push-main CI publishes the merge commit's images → PR poller observes them → deploy:queue → deploy
+Checks green → PR poller makes the repo's REGISTRY_* secrets current, then merges → push-main CI publishes the merge commit's images → PR poller observes them → deploy:queue → deploy
 Deploy success → run.result = DeployOutcome → supervisor → qa:queue → QA consumer runs deterministic checks, then its assigned subscription executor → story testing
 QA pass → run.result = QAOutcome.PASSED → supervisor → story completed → PO notification
 QA fail → run.result = QAOutcome.FAILED → supervisor → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA

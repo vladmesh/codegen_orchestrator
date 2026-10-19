@@ -9,6 +9,7 @@ import httpx
 import pytest
 from structlog.testing import capture_logs
 
+from shared.clients.github import RegistrySecretsNotRefreshedError, RegistrySecretsRefusal
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.story_failure import StoryFailureCode
@@ -183,6 +184,7 @@ class TestProcessScaffoldJob:
                     "ORCHESTRATOR_HOSTNAME": "registry.example.com",
                     "REGISTRY_USER": "admin",
                     "REGISTRY_PASSWORD": "secret",
+                    "GITHUB_REGISTRY_LEASE_SECONDS": "180",
                 },
             ),
         ):
@@ -201,17 +203,15 @@ class TestProcessScaffoldJob:
             provider_repo_id=1177997641,
         )
 
-        # Should have set registry secrets for CI build-and-push
-        mock_github.set_repository_secrets.assert_called_once_with(
+        # The registry secrets are made current through the shared receipt, on this
+        # consumer's own Redis, under the lease policy.
+        mock_github.ensure_registry_secrets.assert_awaited_once_with(
             "project-factory-organization",
             "my-project",
-            {
-                "REGISTRY_URL": "registry.example.com",
-                "REGISTRY_USER": "admin",
-                "REGISTRY_PASSWORD": "secret",
-            },
-            token="ghs_fake",  # noqa: S106
+            redis=mock_redis.redis,
+            lease_seconds=180,
         )
+        mock_github.set_repository_secrets.assert_not_called()
 
         # Should have saved tree without replacing unrelated config.
         tree_writes = [
@@ -252,28 +252,39 @@ class TestProcessScaffoldJob:
         mock_api.update_project_status.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_registry_secrets_skipped_when_env_missing(
-        self, valid_job_data, mock_redis, mock_api, mock_github
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            RegistrySecretsRefusal.ENV_MISSING,
+            RegistrySecretsRefusal.LEASE_BUSY,
+            RegistrySecretsRefusal.WRITE_INCOMPLETE,
+        ],
+    )
+    async def test_registry_secrets_not_made_current_fail_the_scaffold_before_its_first_push(
+        self, valid_job_data, mock_redis, mock_api, mock_github, reason
     ):
-        """Scaffold succeeds even without registry env vars — secrets are just skipped."""
-        scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
+        mock_github.ensure_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(
+            reason, "REGISTRY_PASSWORD not set"
+        )
 
         with (
             patch("src.consumer.get_api_client", return_value=mock_api),
             patch("src.consumer.GitHubAppClient", return_value=mock_github),
-            patch("src.consumer.run_scaffold", return_value=scaffold_result),
-            patch("src.consumer.get_settings") as mock_settings,
-            patch.dict(os.environ, {"GITHUB_ORG": "test-org"}, clear=False),
+            patch("src.consumer.run_scaffold") as run_scaffold,
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
         ):
-            # Ensure registry vars are NOT set
-            os.environ.pop("ORCHESTRATOR_HOSTNAME", None)
-            os.environ.pop("REGISTRY_USER", None)
-            os.environ.pop("REGISTRY_PASSWORD", None)
-            mock_settings.return_value = MagicMock()
             result = await process_scaffold_job(valid_job_data, mock_redis)
 
-        assert result["status"] == "success"
-        mock_github.set_repository_secrets.assert_not_called()
+        assert result == {"status": "failed", "error": "REGISTRY_PASSWORD not set"}
+        run_scaffold.assert_not_called()
+        mock_api.update_project_status.assert_not_called()
+        errors = [
+            call.kwargs["values"]["scaffold_error"]
+            for call in mock_api.patch_project_config.await_args_list
+            if "scaffold_error" in call.kwargs["values"]
+        ]
+        assert errors == ["REGISTRY_PASSWORD not set"]
 
     @pytest.mark.asyncio
     async def test_invalid_message_returns_skipped(self, mock_redis):
@@ -904,8 +915,7 @@ class TestGitHubClientLifecycle:
         assert _assert_one_operation_scope(client_cls, recorder) == [
             "get_org_token",
             "create_repo",
-            "get_org_token",
-            "set_repository_secrets",
+            "ensure_registry_secrets",
             "update_branch_protection",
             "enable_repo_auto_merge",
             "get_repo",
@@ -1008,7 +1018,6 @@ class TestGitHubClientLifecycle:
         assert _assert_one_operation_scope(client_cls, recorder, asyncio.CancelledError) == [
             "get_org_token",
             "create_repo",
-            "get_org_token",
-            "set_repository_secrets",
+            "ensure_registry_secrets",
         ]
         mock_redis.redis.zrem.assert_awaited_once()

@@ -486,8 +486,17 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
                 consumer.GitHubAppClient = github
 
         def scaffolder_env(self, base: Path) -> None:
+            from cryptography.fernet import Fernet  # noqa: PLC0415
+
             os.environ.update(
-                self.api_env | {"WORKSPACE_BASE_PATH": str(base), "GITHUB_ORG": GITHUB_ORG}
+                self.api_env
+                | {
+                    "WORKSPACE_BASE_PATH": str(base),
+                    "GITHUB_ORG": GITHUB_ORG,
+                    # A full scaffold makes registry secrets current; GitHub is controlled here.
+                    "GITHUB_REGISTRY_LEASE_SECONDS": "180",
+                    "SECRETS_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+                }
             )
 
         def scaffold(self, install: Any) -> Path:

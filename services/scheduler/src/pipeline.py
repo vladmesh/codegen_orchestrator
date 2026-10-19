@@ -5,6 +5,7 @@ from functools import partial
 
 import structlog
 
+from shared.clients.github import registry_writer_lease_seconds
 from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.log_config import setup_logging
 
@@ -27,6 +28,8 @@ logger = structlog.get_logger()
 
 async def main() -> None:
     setup_logging(service_name="scheduler-pipeline")
+    # The PR poller writes product registry secrets: no lease policy or receipt key, no start.
+    registry_writer_lease_seconds()
     logger.info("scheduler_pipeline_started")
     await runtime.initialize_configs(PIPELINE_REQUIRED_KEYS, service_name="scheduler-pipeline")
     task_dispatcher_wake = asyncio.Event()
