@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   15 s, so a finished deploy is seen sooner; the first read stays immediate.
 - Worker checkout reads the remote default and the story branch from one advertisement and fetches
   both in one native fetch, so preparation makes four remote Git calls instead of five.
+- Workspace-lock unit tests give the existing owner a live story through the status lookup seam, so they
+  prove live-owner refusal without contacting the control API and fit the unit time budget.
 
 ## 2026-10-18
 
