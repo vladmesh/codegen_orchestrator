@@ -25,6 +25,7 @@ from shared.contracts.vocab import AgentType
 from shared.notifications import deliver_to_admins
 from shared.redis import decode_redis_fields, decode_redis_value
 
+from . import qa_egress
 from .config import settings
 from .docker_ops import DockerClientWrapper
 from .profile_alerts import ExecutorProfileAlerts
@@ -95,6 +96,7 @@ class ExecutorDiagnostics:
             return None
 
         containers_by_worker: dict[str, tuple[dict[str, str], str | None]] = {}
+        proxy_workers: set[str] = set()
         for container in containers:
             labels = (
                 getattr(container, "labels", None)
@@ -104,10 +106,22 @@ class ExecutorDiagnostics:
             worker_id = labels.get(WorkerLabel.ID.value)
             if worker_id:
                 worker_id = str(worker_id)
-                if worker_id in containers_by_worker:
+                # A QA run's egress proxy carries its executor's id but owns no lease.
+                is_proxy = labels.get(WorkerLabel.TYPE.value) == qa_egress.PROXY_TYPE_LABEL
+                seen = proxy_workers if is_proxy else containers_by_worker
+                if worker_id in seen:
                     logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
                     return None
-                containers_by_worker[worker_id] = (labels, getattr(container, "status", None))
+                if is_proxy:
+                    proxy_workers.add(worker_id)
+                else:
+                    containers_by_worker[worker_id] = (labels, getattr(container, "status", None))
+
+        # A worker container without meta is refused below, so a proxy whose
+        # worker has no Redis record has no owner on either inventory side.
+        for worker_id in sorted(proxy_workers - set(metas)):
+            logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
+            return None
 
         counts = {AgentType.CLAUDE: 0, AgentType.CODEX: 0}
         for worker_id in set(metas) | set(containers_by_worker):

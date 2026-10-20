@@ -317,6 +317,117 @@ async def test_reconciler_returns_exact_mixed_executor_counts():
     }
 
 
+class _QAEgressDocker:
+    """Docker as `qa_egress.establish` drives it, keeping the proxy it starts."""
+
+    def __init__(self):
+        self.proxy = None
+
+    async def inspect_network(self, _network):
+        return {"Internal": True}
+
+    async def remove_container(self, _name, *, force):
+        return None
+
+    async def run_container(self, **kwargs):
+        self.proxy = MagicMock(id="proxy-container", labels=kwargs["labels"], status="running")
+        return self.proxy
+
+    async def connect_network(self, _network, _container_id):
+        return None
+
+    async def exec_in_container(self, _container_id, _command, *, user):
+        return 0, b""
+
+
+async def _established_qa_proxy(worker_id: str):
+    from src import qa_egress
+
+    docker = _QAEgressDocker()
+    await qa_egress.establish(
+        docker,
+        worker_id=worker_id,
+        agent_type=AgentType.CODEX,
+        image="worker-image",
+        network="qa-net",
+        internet_network="internet",
+        configured_backends="",
+        direct=(),
+        deploy_target=("deploy.example.test:443",),
+        telegram=(),
+        labels={"com.codegen.project.id": "project", "com.codegen.run.id": "run"},
+    )
+    return docker.proxy
+
+
+@pytest.mark.asyncio
+async def test_running_qa_worker_with_its_egress_proxy_is_available_with_one_lease(
+    monkeypatch,
+):
+    import src.executor_diagnostics as diagnostics_module
+
+    for setting, profile in (("HOST_CLAUDE_DIR", "/claude"), ("HOST_CODEX_HOME", "/codex")):
+        monkeypatch.setattr(diagnostics_module.settings, setting, profile, raising=False)
+    monkeypatch.setattr(
+        ExecutorDiagnostics,
+        "inspect_host_profile",
+        staticmethod(lambda *_args: _inspection(ExecutorProfileCondition.HEALTHY)),
+    )
+    redis = _inventory_redis(["qa-1"])
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(
+        return_value=[
+            _container("qa-1", "codex", "host_session"),
+            await _established_qa_proxy("qa-1"),
+        ]
+    )
+    alerts = MagicMock(reconcile=AsyncMock())
+
+    snapshot = await ExecutorDiagnostics(redis=redis, docker=docker, alerts=alerts).publish()
+
+    by_executor = {item.executor: item for item in snapshot.diagnostics}
+    assert by_executor[AgentType.CODEX].availability is ExecutorAvailability.AVAILABLE
+    assert by_executor[AgentType.CODEX].active_lease_count == 1
+    assert by_executor[AgentType.CLAUDE].availability is ExecutorAvailability.AVAILABLE
+    assert by_executor[AgentType.CLAUDE].active_lease_count == 0
+
+
+@pytest.mark.asyncio
+async def test_settled_qa_worker_with_a_lingering_proxy_is_a_zero_lease():
+    redis = _inventory_redis(["qa-1"], statuses={"qa-1": "STOPPED"})
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[await _established_qa_proxy("qa-1")])
+
+    assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() == {
+        AgentType.CLAUDE: 0,
+        AgentType.CODEX: 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_proxy_without_a_worker_record_makes_lease_inventory_unknown():
+    redis = _inventory_redis([])
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[await _established_qa_proxy("qa-1")])
+
+    assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+async def test_two_proxies_for_one_worker_make_lease_inventory_unknown():
+    redis = _inventory_redis(["qa-1"])
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(
+        return_value=[
+            _container("qa-1", "codex", "host_session"),
+            await _established_qa_proxy("qa-1"),
+            await _established_qa_proxy("qa-1"),
+        ]
+    )
+
+    assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() is None
+
+
 def test_disabled_executor_preserves_reconciled_live_lease_count(monkeypatch):
     from datetime import UTC, datetime, timedelta
 
