@@ -213,6 +213,7 @@ async def test_explicit_criteria_rechecks_changed_inputs_before_writing(
             "story_id": "story-1",
             "acceptance_criteria": "- GET /health returns 200",
             "selected_module_jobs": {},
+            "must_requirements": [],
             "kit_install_snapshot": injected,
         },
         config={"configurable": {"planning_module_facts": facts}},

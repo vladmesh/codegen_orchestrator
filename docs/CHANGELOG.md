@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-20
+
+- In a brief-backed story `update_acceptance_criteria` refuses a `FIRE JOB` line without a brief
+  `(requirement <id>)`, so a package's own timer no requirement asks for is not a QA check.
+
 ## 2026-10-19
 
 - The PO's preview answer lists each module bot's commands, and a brief whose plain `module` example

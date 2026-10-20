@@ -311,7 +311,12 @@ settings configure the behaviour, the observable is read off those values
 language) rather than re-derived from the story prose, and it asserts a
 capability rather than a sample: "a digest per configured language" is a check,
 "there is a Russian item this week" makes QA red on a quiet week. A story
-without such a behaviour gets neither the line nor the declaration. The prompt
+without such a behaviour gets neither the line nor the declaration. In a
+brief-backed story every `FIRE JOB` line ends with `(requirement <id>)` naming a
+must-requirement of that brief whose confirmed behaviour is the job, and
+`update_acceptance_criteria` refuses any other before a repository write; a
+selected package's own timer that no confirmed requirement asks for runs
+natively and gets no `FIRE JOB` line. The prompt
 and the `update_acceptance_criteria` contract teach exactly the form
 `shared/contracts/acceptance.py` parses, and a unit test round-trips the worked
 lines through `parse_scheduled_behaviours` itself so the two cannot drift.

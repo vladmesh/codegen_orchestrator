@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, sentinel
 import pytest
 import yaml
 
+from shared.contracts.dto.product_brief import MustRequirement
 from src.agents.architect import tools
 from src.catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, plan_install_payload
 from src.kit_catalog import install_snapshot
@@ -90,6 +91,7 @@ async def test_unknown_selected_module_job_is_refused_before_any_write(criteria_
                 "- FIRE JOB tg_channels.poll THEN GET /tg-channels/digest shows configured posts"
             ),
             "selected_module_jobs": selected_jobs,
+            "must_requirements": [],
         }
     )
 
@@ -114,6 +116,7 @@ async def test_selected_module_arguments_use_the_native_schema(
                 "GET /tg-channels/digest shows configured posts"
             ),
             "selected_module_jobs": selected_jobs,
+            "must_requirements": [],
         }
     )
     assert "Invalid arguments for tg_channels.tick" in result["error"]
@@ -136,6 +139,7 @@ async def test_declared_module_and_product_owned_jobs_are_written_unchanged(
             "project_id": "project-1",
             "acceptance_criteria": criteria,
             "selected_module_jobs": selected_jobs,
+            "must_requirements": [],
         }
     )
     assert result["acceptance_criteria"] == criteria
@@ -145,12 +149,41 @@ async def test_declared_module_and_product_owned_jobs_are_written_unchanged(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("at,accepted", [('"2026-01-02T03:04:05Z"', True), ("42", False)])
+async def test_a_brief_linked_module_line_is_still_validated_by_its_contract(
+    criteria_api, selected_jobs, at, accepted
+):
+    criteria = (
+        f'- FIRE JOB tg_channels.tick WITH {{"at":{at}}} THEN '
+        "GET /tg-channels/digest shows configured posts (requirement digest)"
+    )
+    result = await tools.update_acceptance_criteria.ainvoke(
+        {
+            "project_id": "project-1",
+            "acceptance_criteria": criteria,
+            "selected_module_jobs": selected_jobs,
+            "must_requirements": [MustRequirement(id="digest", text="Digest tracked channels")],
+        }
+    )
+    if accepted:
+        assert result["acceptance_criteria"] == criteria
+    else:
+        assert "Invalid arguments for tg_channels.tick" in result["error"]
+    assert criteria_api.update_repository.await_count == int(accepted)
+
+
+@pytest.mark.asyncio
 async def test_no_module_criteria_remain_supported(criteria_api):
     criteria = (
         "- GET /health returns 200\n- FIRE JOB service.sync THEN GET /output shows the result"
     )
     result = await tools.update_acceptance_criteria.ainvoke(
-        {"project_id": "project-1", "acceptance_criteria": criteria, "selected_module_jobs": {}}
+        {
+            "project_id": "project-1",
+            "acceptance_criteria": criteria,
+            "selected_module_jobs": {},
+            "must_requirements": [],
+        }
     )
     assert result["acceptance_criteria"] == criteria
 
@@ -169,6 +202,7 @@ async def test_later_duplicate_lines_cannot_hide_invalid_module_arguments(
             "project_id": "project-1",
             "acceptance_criteria": criteria,
             "selected_module_jobs": selected_jobs,
+            "must_requirements": [],
         }
     )
     assert "Invalid arguments" in result["error"]
@@ -192,6 +226,7 @@ async def test_explicit_install_uses_its_persisted_selected_release(
             "story_id": "story-1",
             "acceptance_criteria": criteria,
             "selected_module_jobs": {},
+            "must_requirements": [],
             "kit_install_snapshot": install_snapshot(activated_kit_catalog),
         }
     )
@@ -213,6 +248,7 @@ async def test_explicit_install_contract_drift_refuses_the_criteria_write(
             "story_id": "story-1",
             "acceptance_criteria": "- GET /health returns 200",
             "selected_module_jobs": {},
+            "must_requirements": [],
             "kit_install_snapshot": install_snapshot(activated_kit_catalog),
         }
     )
@@ -242,6 +278,7 @@ async def test_verified_fact_refusal_prevents_repository_writes(
             "story_id": "story-1",
             "acceptance_criteria": "- GET /health returns 200",
             "selected_module_jobs": {},
+            "must_requirements": [],
             "kit_install_snapshot": injected,
         },
         config={"configurable": {"planning_module_facts": facts}},
@@ -274,6 +311,7 @@ async def test_cancelled_historical_install_does_not_select_a_module(
             "story_id": "story-1",
             "acceptance_criteria": criteria,
             "selected_module_jobs": {},
+            "must_requirements": [],
             "kit_install_snapshot": install_snapshot(activated_kit_catalog),
         }
     )
@@ -297,6 +335,7 @@ async def test_selected_package_with_no_jobs_still_owns_its_namespace(
             "project_id": "project-1",
             "acceptance_criteria": "- FIRE JOB tg_channels.tick THEN GET /output shows posts",
             "selected_module_jobs": contracts,
+            "must_requirements": [],
         }
     )
     assert "declared names: (none)" in result["error"]
@@ -342,6 +381,7 @@ async def test_graph_injects_authoritative_contracts_despite_model_arguments(
             "project_id": "project-1",
             "story_id": "story-1",
             "selected_module_jobs": selected_jobs,
+            "must_requirements": [],
             "kit_install_snapshot": None,
         }
     )

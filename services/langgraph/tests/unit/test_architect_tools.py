@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from shared.contracts.acceptance import parse_scheduled_behaviours
-from shared.contracts.dto.product_brief import RequirementCoverageRead
-from tests.unit.factories import make_project, make_story, make_task
+from shared.contracts.dto.product_brief import MustRequirement, RequirementCoverageRead
+from tests.unit.factories import make_project, make_repository, make_story, make_task
 
 
 @pytest.fixture
@@ -478,6 +478,72 @@ class TestUpdateAcceptanceCriteriaContract:
         )
 
         assert parse_scheduled_behaviours(ordinary) == []
+
+
+_BRIEF_REQUIREMENTS = [
+    MustRequirement(id="channel-add", text="/channel adds a public channel"),
+    MustRequirement(id="digest", text="/digest summarises tracked channels"),
+]
+_UNLINKED_TICK = (
+    '- FIRE JOB tg_channels.tick WITH {"at":"2026-01-02T03:04:05Z"} THEN '
+    "GET /api/tg-channels/posts lists refreshed publications from tracked public channels"
+)
+
+
+class TestUpdateAcceptanceCriteriaRequirementLink:
+    """Under a confirmed brief a FIRE JOB line checks one of the brief's must-requirements."""
+
+    @pytest.fixture(autouse=True)
+    def _repository(self, mock_api):
+        repo = make_repository(id="repo-1")
+        mock_api.get_primary_repository = AsyncMock(return_value=repo)
+        mock_api.update_repository = AsyncMock(
+            side_effect=lambda repo_id, body: make_repository(id=repo_id, **body)
+        )
+
+    @staticmethod
+    async def _write(criteria: str, requirements: list[MustRequirement]) -> dict:
+        from src.agents.architect.tools import update_acceptance_criteria
+
+        return await update_acceptance_criteria.ainvoke(
+            {
+                "project_id": "project-1",
+                "acceptance_criteria": f"- GET /health returns 200\n{criteria}",
+                "selected_module_jobs": {},
+                "must_requirements": requirements,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unlinked_package_timer_is_refused_without_a_write(self, mock_api):
+        result = await self._write(_UNLINKED_TICK, _BRIEF_REQUIREMENTS)
+
+        assert "tg_channels.tick" in result["error"]
+        assert "channel-add, digest" in result["error"]
+        assert "own timer" in result["error"]
+        mock_api.get_primary_repository.assert_not_called()
+        mock_api.update_repository.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_suffix_naming_an_id_the_brief_lacks_is_refused(self, mock_api):
+        result = await self._write(f"{_UNLINKED_TICK} (requirement poller)", _BRIEF_REQUIREMENTS)
+
+        assert "tg_channels.tick" in result["error"]
+        mock_api.update_repository.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_line_linked_to_a_brief_requirement_is_written(self, mock_api):
+        linked = f"{_UNLINKED_TICK} (requirement digest)"
+
+        result = await self._write(linked, _BRIEF_REQUIREMENTS)
+
+        assert result["acceptance_criteria"] == f"- GET /health returns 200\n{linked}"
+
+    @pytest.mark.asyncio
+    async def test_a_story_without_a_brief_writes_an_unlinked_line(self, mock_api):
+        result = await self._write(_UNLINKED_TICK, [])
+
+        assert result["acceptance_criteria"] == f"- GET /health returns 200\n{_UNLINKED_TICK}"
 
 
 class TestCreateTaskInstallsOnlyCatalogPackages:

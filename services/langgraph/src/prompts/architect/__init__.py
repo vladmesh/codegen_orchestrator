@@ -193,10 +193,12 @@ and an app-level set/readback test pass.
 
 A scheduled requirement uses a selected package job when its contract covers it. \
 Package jobs already have providers and generated declarations; the core delivers \
-their declared timers natively. Use the pinned runtime-qualified names, schemas \
-and timer facts. Never redeclare package jobs in service manifests, modify package \
-code, or add aliases, bridges or duplicate timers. For a service-owned scheduled \
-behaviour, plan an in-process timer in the backend or bot that calls the declared job. \
+their declared timers natively. QA fires a package job only for a must-requirement \
+whose confirmed behaviour is that job; otherwise its timer runs with no QA check. \
+Use the pinned runtime-qualified names, schemas and timer facts. Never redeclare \
+package jobs in service manifests, modify package code, or add aliases, bridges or \
+duplicate timers. For a service-owned scheduled behaviour, plan an in-process \
+timer in the backend or bot that calls the declared job. \
 `FIRE JOB` remains the QA verification form, not a production scheduler. The core accepts a \
 fire, records the command and emits `job_fired`, and whichever optional module \
 declared `provides: ["jobs.fire"]` subscribes to that event and does the work.
@@ -219,13 +221,12 @@ provider to leave the stated durable output observable by QA. `dispatch_status: 
 dispatched` proves only that the core emitted `job_fired`; it cannot complete \
 this requirement.
 
-Then name the behaviour in the acceptance criteria, so QA can fire it. \
-The line is read by the platform, not by a human, and its form is exactly:
+Then name the behaviour in the acceptance criteria, so QA can fire it, in \
+exactly this form:
 
     - FIRE JOB <name> WITH {"json": "arguments"} THEN <observable>
 
-`WITH {...}` is omitted when the behaviour takes no arguments. A worked example \
-of the whole line:
+`WITH {...}` is omitted when the behaviour takes no arguments. A worked line:
 
     - FIRE JOB daily_digest WITH {"languages":["ru","en"]} THEN a digest per configured language
 
@@ -233,8 +234,7 @@ For a service-owned job, `<name>` is character for character the string the mani
 not a paraphrase. For a package job, use the selected contract's exact runtime-qualified \
 name. WITH must supply all required schema arguments, including date-time `at` \
 for a package timer job; QA injects no arguments. QA reads the name off this \
-line and off nothing else; a line the platform cannot spell exactly offers no \
-fire at all.
+line only; a line the platform cannot spell offers no fire.
 
 The `<observable>` is what the check is judged on, and four rules decide it:
 
@@ -249,9 +249,8 @@ behaviour's output in each configured language, reading the languages from that 
 setting's value — never from a list re-derived from the story description or \
 the requirement prose.
 - **Assert a capability, not a sample.** "a digest per configured language" \
-is an observable; "there is a Russian item this week" is not — a quiet week \
-would make QA red on a working product, and the first false red teaches \
-everyone to ignore the check.
+is an observable; "there is a Russian item this week" is not: a quiet week \
+would make QA falsely red on a working product.
 - **Plan the provider-path proof.** The task acceptance criteria must require
   a focused cheap test: seed the confirmed setting values, fire the real named
   job contract, then read the stated observable and assert exactly one durable
@@ -260,7 +259,9 @@ everyone to ignore the check.
   record, or logs does not prove the deployed provider path.
 
 A story with no scheduled behaviour gets no `FIRE JOB` line and no `jobs_schema` \
-declaration: nothing here invents a behaviour the brief did not ask for.
+declaration: nothing here invents a behaviour the brief did not ask for. Under a \
+confirmed brief every `FIRE JOB` line ends with `(requirement <id>)` of the \
+must-requirement it checks.
 
 ## Capability Shape
 
