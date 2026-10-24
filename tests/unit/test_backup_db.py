@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -181,12 +182,15 @@ def test_nightly_retention_preserves_legacy_and_protected_artifacts(backup_env):
     assert all((directory / name).read_bytes() == b"protected" for name in protected)
 
 
-def test_concurrent_predeploy_reruns_have_distinct_names_and_no_rotation(backup_env):
+def test_concurrent_predeploy_reruns_have_distinct_names(backup_env):
     with ThreadPoolExecutor(max_workers=3) as pool:
         results = list(
             pool.map(
                 lambda _: run_backup(
-                    backup_env, BACKUP_KIND="predeploy", BACKUP_LABEL="run-42-attempt-2"
+                    backup_env,
+                    BACKUP_KIND="predeploy",
+                    BACKUP_LABEL="run-42-attempt-2",
+                    BACKUP_RETAIN="5",
                 ),
                 range(3),
             )
@@ -195,6 +199,95 @@ def test_concurrent_predeploy_reruns_have_distinct_names_and_no_rotation(backup_
     archives = list(Path(backup_env["BACKUP_DIR"]).glob("*.dump"))
     assert len(archives) == 3
     assert all("run-42-attempt-2" in archive.name for archive in archives)
+
+
+PREDEPLOY = "orchestrator_predeploy_run-{}-attempt-1-{}_20261001T000000000000000Z_abcdefgh.dump"
+
+
+def test_predeploy_retention_keeps_newest_and_preserves_other_artifacts(backup_env):
+    directory = Path(backup_env["BACKUP_DIR"])
+    old = [directory / PREDEPLOY.format(run, "a" * 40) for run in (1, 2, 3)]
+    for index, archive in enumerate(old):
+        archive.write_bytes(b"old")
+        os.utime(archive, ns=(index * 10**9, index * 10**9))
+    protected = [
+        "orchestrator_nightly_20261001T000000000000000Z_abcdefgh.dump",
+        "orchestrator_maintenance_ticket-7_20261001T000000000000000Z_abcdefgh.dump",
+        "orchestrator_predeploy_manual.dump",
+        "orchestrator_2026-09-01.sql.gz",
+    ]
+    for name in protected:
+        (directory / name).write_bytes(b"protected")
+    result = run_backup(
+        backup_env, BACKUP_KIND="predeploy", BACKUP_LABEL="run-9-attempt-1", BACKUP_RETAIN="2"
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    remaining = {p.name for p in directory.glob("orchestrator_predeploy_run-*Z_*.dump")}
+    assert len(remaining) == 2
+    assert old[2].name in remaining
+    assert any("run-9-attempt-1" in name for name in remaining)
+    assert all((directory / name).read_bytes() == b"protected" for name in protected)
+
+
+def test_rotation_never_deletes_the_archive_just_published(backup_env):
+    directory = Path(backup_env["BACKUP_DIR"])
+    future = directory / PREDEPLOY.format(1, "a" * 40)
+    future.write_bytes(b"clock-skewed")
+    os.utime(future, ns=(2**62, 2**62))
+    result = run_backup(
+        backup_env, BACKUP_KIND="predeploy", BACKUP_LABEL="run-9-attempt-1", BACKUP_RETAIN="1"
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    archives = list(directory.glob("*.dump"))
+    assert len(archives) == 1
+    assert "run-9-attempt-1" in archives[0].name
+    assert str(archives[0]).encode() in result.stdout
+
+
+def test_predeploy_retention_failure_keeps_the_verified_archive_and_succeeds(backup_env):
+    binaries = Path(backup_env["PATH"].split(":")[0])
+    real = shutil.which("python3")
+    # Only the isolated retention run fails; the fake docker shim still runs.
+    (binaries / "python3").write_text(f'#!/bin/sh\n[ "$1" = -I ] && exit 1\nexec {real} "$@"\n')
+    (binaries / "python3").chmod(0o755)
+    directory = Path(backup_env["BACKUP_DIR"])
+    old = directory / PREDEPLOY.format(1, "a" * 40)
+    old.write_bytes(b"old")
+    result = run_backup(
+        backup_env, BACKUP_KIND="predeploy", BACKUP_LABEL="run-9-attempt-1", BACKUP_RETAIN="1"
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert b"archive_list_exit=0" in result.stdout
+    assert b"warning operation=retention" in result.stderr
+    assert len(list(directory.glob("*.dump"))) == 2
+    assert run_backup(backup_env, BACKUP_RETAIN="1").returncode != 0
+
+
+@pytest.mark.parametrize("failure", ["dump", "empty", "list"])
+def test_failed_predeploy_does_not_rotate(backup_env, failure):
+    directory = Path(backup_env["BACKUP_DIR"])
+    existing = directory / PREDEPLOY.format(1, "a" * 40)
+    existing.write_bytes(b"previous-good")
+    result = run_backup(
+        backup_env,
+        FAILURE=failure,
+        BACKUP_KIND="predeploy",
+        BACKUP_LABEL="run-9-attempt-1",
+        BACKUP_RETAIN="1",
+    )
+    assert result.returncode != 0
+    assert list(directory.glob("*.dump")) == [existing]
+
+
+def test_predeploy_requires_retention_and_maintenance_never_rotates(backup_env):
+    env = dict(backup_env)
+    env.pop("BACKUP_RETAIN")
+    predeploy = run_backup(env, BACKUP_KIND="predeploy", BACKUP_LABEL="run-9")
+    assert predeploy.returncode != 0
+    assert not Path(backup_env["COMMAND_LOG"]).exists()
+    for _ in range(3):
+        assert run_backup(env, BACKUP_KIND="maintenance", BACKUP_LABEL="t-7").returncode == 0
+    assert len(list(Path(backup_env["BACKUP_DIR"]).glob("orchestrator_maintenance_*.dump"))) == 3
 
 
 def test_only_absent_stand_database_can_bootstrap(backup_env):

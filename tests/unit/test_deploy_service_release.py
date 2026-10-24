@@ -597,6 +597,7 @@ class DeployHost:
             "env.DEPLOY_SSH_USER": "deploy",
             "env.HOST_UID": "1000",
             "env.HOST_GID": "1000",
+            "env.PREDEPLOY_BACKUP_RETAIN": "7",
             "secrets.GHCR_TOKEN || github.token": "test-token",
             "secrets.GH_APP_PRIVATE_KEY": "the-new-app-key",
             "github.repository_owner": "vladmesh",

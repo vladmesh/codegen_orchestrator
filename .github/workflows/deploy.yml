@@ -60,6 +60,10 @@ jobs:
       # rootless user on the host). The default is production's historical deploy uid.
       HOST_UID: ${{ vars.HOST_UID || '1000' }}
       HOST_GID: ${{ vars.HOST_GID || '1000' }}
+      # How many verified predeploy archives the Switch keeps in
+      # <parent of DEPLOY_PATH>/backups/orchestrator/predeploy (1..365, like nightly's
+      # BACKUP_RETAIN). Older ones are removed only after the new archive is published.
+      PREDEPLOY_BACKUP_RETAIN: ${{ vars.PREDEPLOY_BACKUP_RETAIN || '7' }}
       # The one revision every step deploys: the runner checkout, both release waits,
       # the host checkout, both pulls and the target reconcile. Validated as a full
       # SHA before anything reads it.
@@ -709,6 +713,7 @@ jobs:
             BACKUP_DIR="${live%/*}/backups/orchestrator/predeploy" \
             BACKUP_KIND=predeploy BACKUP_CONTOUR='${{ inputs.environment }}' \
             BACKUP_LABEL='run-${{ github.run_id }}-attempt-${{ github.run_attempt }}-${{ env.DEPLOY_REVISION }}' \
+            BACKUP_RETAIN='${{ env.PREDEPLOY_BACKUP_RETAIN }}' \
             bash "${pending}/backup-db.sh"
 
           sudo mkdir -p ${{ env.SECRETS_PATH }}
