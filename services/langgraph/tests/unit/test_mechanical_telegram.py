@@ -349,7 +349,7 @@ def test_admission_and_the_consumer_agree_on_executor_free_qa(criteria):
     from src.consumers.qa import _qa_criteria
 
     try:
-        _, checks = _qa_criteria(criteria)
+        _, checks = _qa_criteria(criteria, confirmed_order=None)
         consumer_needs_no_executor = checks is not None
     except (ProbeFailure, ValueError):
         consumer_needs_no_executor = False

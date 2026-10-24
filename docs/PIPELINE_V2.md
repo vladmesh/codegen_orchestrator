@@ -538,8 +538,8 @@ pass as an ordinary schema error.
 **Trigger**: Supervisor detects successful deploy → creates QA run → publishes `QAMessage`
 
 **How it works**:
-1. QA consumer receives `QAMessage` with `project_id`, `deployed_url`, `application_id`, `run_id`, optional `story_id` and `bot_username`
-2. Criteria that only state GET expectations are decided directly over HTTP — no agent, no LLM
+1. QA consumer receives `QAMessage` with `project_id`, `deployed_url`, `application_id`, `run_id`, optional `story_id`, `bot_username` and `confirmed_order` (the story's confirmed brief)
+2. Criteria that only state GET expectations are decided directly over HTTP — no agent, no LLM; a message carrying a confirmed order is never decided by GET checks alone
 3. Otherwise the run is exploratory. The run is never performed as `servers.ssh_user` — that is the administrative account the fleet key opens, the same on a stand row as on a production one — and a target whose QA account would be `root` or that administrative account is refused here: QA does not run privileged
 4. The consumer creates an isolated central workspace, writes a durable `qa_ssh_grant` record on the QA run, then mints a one-shot SSH identity on the target (`restrict`, `expiry-time`), installed and removed with the fleet key by the runner
 5. The run's capability set is resolved from deployment data: physical root of the deployment directory (`readlink -f` on the target), containers of this compose project (`docker ps --filter label=com.docker.compose.project=...`), the application's allocated ports, the public URL

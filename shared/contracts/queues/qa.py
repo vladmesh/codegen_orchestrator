@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.base import BaseMessage
+from shared.contracts.dto.product_brief import MustRequirement, ProductBriefRead, UsageExample
 from shared.contracts.dto.server import SSHUser
 
 
@@ -15,6 +18,33 @@ class QAOutcome(StrEnum):
     EXHAUSTED = "exhausted"
     ERROR = "error"
     BLOCKED = "blocked"
+
+
+class QAConfirmedOrder(BaseModel):
+    """The confirmed brief revision a story's QA judges, whatever the repository criteria say.
+
+    QA owes a check for every must-requirement here, and plain GET checks never certify it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    brief_id: str = Field(min_length=1)
+    revision: int
+    language: str | None = None
+    must_requirements: list[MustRequirement] = Field(min_length=1)
+    usage_examples: list[UsageExample] = Field(default_factory=list)
+
+    @classmethod
+    def from_brief(cls, brief: ProductBriefRead) -> QAConfirmedOrder:
+        if brief.confirmed_at is None:
+            raise ValueError(f"brief {brief.id} is not confirmed, so it orders nothing")
+        return cls(
+            brief_id=brief.id,
+            revision=brief.revision,
+            language=brief.content.language,
+            must_requirements=brief.content.must_requirements,
+            usage_examples=brief.content.usage_examples,
+        )
 
 
 class QAMessage(BaseMessage):
@@ -38,6 +68,11 @@ class QAMessage(BaseMessage):
     # producer. Blank would parse to "no checks" and quietly reach the agent with
     # nothing to test, so the contract rejects it rather than QA discovering it.
     acceptance_criteria: str = Field(min_length=1)
+    # The story's confirmed brief, resolved by the producer; None for a story
+    # without one and for administrative E2E. With it, work admission and the
+    # consumer refuse the executor-free GET leg unless a fixed stand probe is
+    # in the criteria.
+    confirmed_order: QAConfirmedOrder | None = None
     run_id: str = ""
     bot_username: str | None = None
     qa_attempt: int = 0

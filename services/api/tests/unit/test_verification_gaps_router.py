@@ -144,6 +144,15 @@ class TestRecordingFromARun:
         assert response.status_code == 409
         assert fake.rows == []
 
+    async def test_a_run_blocked_on_an_unverified_order_writes_its_gaps(self, session):
+        blocker = _blocker() | {"category": "order_unverified"}
+        fake = session["session"] = FakeSession(run=_run("blocked", blocker=blocker))
+
+        response = await _post()
+
+        assert response.status_code == 200
+        assert [row.name for row in fake.rows] == [WITHHELD["name"], EXECUTOR["name"]]
+
     async def test_only_the_qa_runtime_writes_gaps(self, session):
         session["session"] = FakeSession(run=_run())
 

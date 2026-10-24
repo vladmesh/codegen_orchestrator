@@ -83,6 +83,7 @@ from .common import (
     _resource_wait_timeout_minutes,
 )
 from .handoff import (
+    _confirmed_qa_order,
     _execute_qa_handoff,
     _qa_run_id_for_deploy,
     _resolve_qa_repository,
@@ -586,6 +587,9 @@ async def _handle_deploy_success_story(
         return False
 
     acceptance_criteria = repo.acceptance_criteria.strip()
+    # The confirmed brief travels beside the repository's criteria, which an
+    # INSTALL-only plan leaves at the scaffold's health check.
+    confirmed_order = await _confirmed_qa_order(api_client, story_id)
 
     # The bot username is persisted on the repository when the user's token is
     # validated, so QA gets it even when the deploy smoke check could not resolve
@@ -656,6 +660,7 @@ async def _handle_deploy_success_story(
         deployed_url=deployed_url,
         application_id=application_id,
         acceptance_criteria=acceptance_criteria,
+        confirmed_order=confirmed_order,
         bot_username=bot_username,
         run_id=qa_run_id,
     )

@@ -420,7 +420,7 @@ invariants are in [REST story, task, run, and policy surfaces](contracts/story-t
 | `ArchitectMessage` | `queues/architect.py` | PO/API and scheduler-pipeline | architect consumer | story identity, not conversational state, drives decomposition |
 | `EngineeringMessage` | `queues/engineering.py` | scheduler-pipeline | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
 | `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler-pipeline/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
-| `QAMessage`, QA outcomes | `queues/qa.py` | supervisor/admin action | QA consumer | run id names the QA decision; criteria are resolved before publication |
+| `QAMessage`, `QAConfirmedOrder`, QA outcomes | `queues/qa.py` | supervisor/admin action | QA consumer | run id names the QA decision; criteria and the confirmed order are resolved before publication; see [kit contracts](contracts/kit-template-and-qa.md) |
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
 | worker input/output | `shared/contracts/worker_turn.py`, LangGraph worker clients, wrapper/broker | developer/QA node | wrapper / developer/QA node | `WorkerTurnInput` is validated before lease; engineering turns carry attempt+deadline together, while QA turns omit both; broker request id and accepted output settle a leased turn |
 | provisioning request/result | `queues/provisioner.py` | scheduler-infrastructure / infra-service | infra-service / scheduler-infrastructure and bot | result consumers use their own group semantics |

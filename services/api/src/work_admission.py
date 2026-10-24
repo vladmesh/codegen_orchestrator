@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.acceptance import parse_health_only_criteria
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorOverride
 from shared.contracts.dto.executor_diagnostics import (
@@ -340,6 +341,11 @@ def _health_only_qa_handoff(command: PaidRunStartCommand) -> bool:
             message.acceptance_criteria, contour=os.environ.get("LIVE_CONTOUR")
         )
         is not None
+        # A confirmed order is decided without an executor only by a fixed stand probe.
+        and (
+            message.confirmed_order is None
+            or parse_health_only_criteria(message.acceptance_criteria) is None
+        )
     )
 
 

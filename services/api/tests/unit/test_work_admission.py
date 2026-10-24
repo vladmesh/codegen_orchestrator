@@ -23,8 +23,9 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionRead,
     WorkAdmissionReason,
 )
-from shared.contracts.queues.qa import QAMessage
+from shared.contracts.queues.qa import QAConfirmedOrder, QAMessage
 from shared.contracts.vocab import AgentType
+from shared.tests.confirmed_order_cases import channels_brief
 from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.work_admission import (
     PaidRunReservedMetadata,
@@ -120,6 +121,13 @@ def _rows(values: dict[str, object]) -> MagicMock:
             "matching",
             WorkAdmissionOutcome.DENIED,
         ),
+        # GET checks alone never decide a confirmed order; a fixed stand probe still does.
+        ("- GET /health returns 200", "ordered", WorkAdmissionOutcome.DENIED),
+        (
+            "- GET /health returns 200\n- Stand mechanical reminders: e2e-0f1e2d3c4b5a",
+            "ordered",
+            WorkAdmissionOutcome.ADMITTED,
+        ),
         (
             "- Stand mechanical notes: a\n- The bot replies to /start",
             "matching",
@@ -155,6 +163,9 @@ async def test_qa_handoff_requires_model_diagnostics_only_for_exploratory_checks
         application_id=1,
         deployed_url="http://product.test:8000",
         acceptance_criteria=criteria,
+        confirmed_order=(
+            QAConfirmedOrder.from_brief(channels_brief()) if handoff == "ordered" else None
+        ),
     )
     command = PaidRunStartCommand(
         id="qa-health",
