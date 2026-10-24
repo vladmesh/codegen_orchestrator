@@ -2,7 +2,8 @@
 # Verified custom archive of the existing Compose database. No host DB credentials.
 # Required: COMPOSE_DIR (absolute), COMPOSE_ARGS (whitespace-separated Compose flags),
 # BACKUP_DIR (absolute, owned by this user), BACKUP_KIND, BACKUP_CONTOUR.
-# Nightly requires BACKUP_RETAIN (1..365); predeploy/maintenance require BACKUP_LABEL.
+# Nightly and predeploy require BACKUP_RETAIN (1..365); predeploy/maintenance require
+# BACKUP_LABEL. Maintenance archives are never rotated.
 set +x
 set -euo pipefail
 umask 077
@@ -17,10 +18,14 @@ fail() { echo "[backup] failed operation=$1" >&2; exit 1; }
 [[ "$BACKUP_DIR" = /* ]] || fail backup_directory
 case "$BACKUP_CONTOUR" in production|stand) ;; *) fail contour ;; esac
 case "$BACKUP_KIND" in
-    nightly)
-        : "${BACKUP_RETAIN:?BACKUP_RETAIN is required for nightly}"
+    nightly|predeploy)
+        : "${BACKUP_RETAIN:?BACKUP_RETAIN is required for nightly and predeploy}"
         [[ "$BACKUP_RETAIN" =~ ^[1-9][0-9]{0,2}$ ]] || fail retention_policy
         (( BACKUP_RETAIN <= 365 )) || fail retention_policy
+        ;;
+esac
+case "$BACKUP_KIND" in
+    nightly)
         prefix=orchestrator_nightly
         ;;
     predeploy|maintenance)
@@ -77,16 +82,21 @@ final="$BACKUP_DIR/${filename#.}"
 final=${final%.partial}
 mv -- "$temporary" "$final" || fail archive_publication
 
-if [ "$BACKUP_KIND" = nightly ]; then
-    # Only this producer's final nightly names; no partial, legacy SQL, symlink,
-    # predeploy or secret-conversion artifact can be selected. Lock is still held.
-    python3 -I - "$BACKUP_DIR" "$BACKUP_RETAIN" <<'PY' || fail retention
+if [ "$BACKUP_KIND" = nightly ] || [ "$BACKUP_KIND" = predeploy ]; then
+    # Only this producer's final names of this kind; no partial, legacy SQL, symlink,
+    # maintenance, other-kind or secret-conversion artifact can be selected. Rotation
+    # runs only after the new archive is verified and published. Lock is still held.
+    python3 -I - "$BACKUP_DIR" "$BACKUP_RETAIN" "$BACKUP_KIND" <<'PY' || fail retention
 from pathlib import Path
 import re
 import sys
 
 directory = Path(sys.argv[1])
-pattern = re.compile(r"orchestrator_nightly_[0-9]{8}T[0-9]{15}Z_[a-zA-Z0-9]{8}\.dump")
+suffix = r"_[0-9]{8}T[0-9]{15}Z_[a-zA-Z0-9]{8}\.dump"
+if sys.argv[3] == "predeploy":
+    pattern = re.compile(r"orchestrator_predeploy_[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}" + suffix)
+else:
+    pattern = re.compile(r"orchestrator_nightly" + suffix)
 archives = [p for p in directory.iterdir() if pattern.fullmatch(p.name)
             and not p.is_symlink() and p.is_file()]
 archives.sort(key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)

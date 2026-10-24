@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-24
+
+- Deploy keeps only the newest `PREDEPLOY_BACKUP_RETAIN` (default 7) predeploy archives and deletes
+  older ones only after the new dump is verified; maintenance archives are still never rotated.
+
 ## 2026-10-20
 
 - In a brief-backed story `update_acceptance_criteria` refuses a `FIRE JOB` line without a brief

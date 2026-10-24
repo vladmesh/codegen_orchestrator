@@ -1277,15 +1277,18 @@ named operation; database stderr and archive listings are suppressed. No passwor
 
 Configuration is explicit: absolute `COMPOSE_DIR` and `BACKUP_DIR`, whitespace-separated
 `COMPOSE_ARGS` (paths cannot contain spaces), `BACKUP_CONTOUR=production|stand`, and
-`BACKUP_KIND=nightly|predeploy|maintenance`. Nightly requires `BACKUP_RETAIN=1..365`. Protected
-predeploy/maintenance runs require a nonempty `BACKUP_LABEL` of at most 160 letters, digits,
+`BACKUP_KIND=nightly|predeploy|maintenance`. Nightly and predeploy require `BACKUP_RETAIN=1..365`;
+maintenance archives are never rotated. Labelled predeploy/maintenance runs require a nonempty `BACKUP_LABEL` of at most 160 letters, digits,
 periods, underscores or hyphens, beginning with a letter/digit. There is no SQL fallback.
 
 Directories are owned by the invoking user and mode 0700; archives and the serialization lock
 are mode 0600. UTC nanoseconds and a random suffix distinguish concurrent calls/reruns. The lock
 serializes publication and retention. Nightly retains only the newest configured count of this
-producer's exact `orchestrator_nightly_<UTC>_<random>.dump` names in its destination; it excludes
-partials, symlinks and every other name. Deploy stores protected archives in
+producer's exact `orchestrator_nightly_<UTC>_<random>.dump` names in its destination; predeploy
+likewise retains only the newest `orchestrator_predeploy_<label>_<UTC>_<random>.dump` names. Both
+exclude partials, symlinks and every other name, and rotate only after the new archive is verified
+and published; a failed dump deletes nothing. Deploy passes `PREDEPLOY_BACKUP_RETAIN` (environment
+variable, default 7) as the predeploy count and stores the archives in
 `<parent of DEPLOY_PATH>/backups/orchestrator/predeploy` (on h01o,
 `/home/vlad/backups/orchestrator/predeploy`), labels them with run ID, attempt and target SHA, and logs
 the executing workflow SHA. Its durable Switch log records host path, exact bytes and
