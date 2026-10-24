@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -226,6 +227,40 @@ def test_predeploy_retention_keeps_newest_and_preserves_other_artifacts(backup_e
     assert old[2].name in remaining
     assert any("run-9-attempt-1" in name for name in remaining)
     assert all((directory / name).read_bytes() == b"protected" for name in protected)
+
+
+def test_rotation_never_deletes_the_archive_just_published(backup_env):
+    directory = Path(backup_env["BACKUP_DIR"])
+    future = directory / PREDEPLOY.format(1, "a" * 40)
+    future.write_bytes(b"clock-skewed")
+    os.utime(future, ns=(2**62, 2**62))
+    result = run_backup(
+        backup_env, BACKUP_KIND="predeploy", BACKUP_LABEL="run-9-attempt-1", BACKUP_RETAIN="1"
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    archives = list(directory.glob("*.dump"))
+    assert len(archives) == 1
+    assert "run-9-attempt-1" in archives[0].name
+    assert str(archives[0]).encode() in result.stdout
+
+
+def test_predeploy_retention_failure_keeps_the_verified_archive_and_succeeds(backup_env):
+    binaries = Path(backup_env["PATH"].split(":")[0])
+    real = shutil.which("python3")
+    # Only the isolated retention run fails; the fake docker shim still runs.
+    (binaries / "python3").write_text(f'#!/bin/sh\n[ "$1" = -I ] && exit 1\nexec {real} "$@"\n')
+    (binaries / "python3").chmod(0o755)
+    directory = Path(backup_env["BACKUP_DIR"])
+    old = directory / PREDEPLOY.format(1, "a" * 40)
+    old.write_bytes(b"old")
+    result = run_backup(
+        backup_env, BACKUP_KIND="predeploy", BACKUP_LABEL="run-9-attempt-1", BACKUP_RETAIN="1"
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert b"archive_list_exit=0" in result.stdout
+    assert b"warning operation=retention" in result.stderr
+    assert len(list(directory.glob("*.dump"))) == 2
+    assert run_backup(backup_env, BACKUP_RETAIN="1").returncode != 0
 
 
 @pytest.mark.parametrize("failure", ["dump", "empty", "list"])

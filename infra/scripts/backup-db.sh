@@ -81,12 +81,14 @@ filename=${temporary##*/}
 final="$BACKUP_DIR/${filename#.}"
 final=${final%.partial}
 mv -- "$temporary" "$final" || fail archive_publication
+echo "[backup] verified path=$final bytes=$bytes archive_list_exit=0 kind=$BACKUP_KIND"
 
 if [ "$BACKUP_KIND" = nightly ] || [ "$BACKUP_KIND" = predeploy ]; then
     # Only this producer's final names of this kind; no partial, legacy SQL, symlink,
     # maintenance, other-kind or secret-conversion artifact can be selected. Rotation
-    # runs only after the new archive is verified and published. Lock is still held.
-    python3 -I - "$BACKUP_DIR" "$BACKUP_RETAIN" "$BACKUP_KIND" <<'PY' || fail retention
+    # runs only after the new archive is verified and published, and never selects
+    # the archive just published, whatever the mtimes. Lock is still held.
+    if ! python3 -I - "$BACKUP_DIR" "$BACKUP_RETAIN" "$BACKUP_KIND" "${final##*/}" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -98,10 +100,16 @@ if sys.argv[3] == "predeploy":
 else:
     pattern = re.compile(r"orchestrator_nightly" + suffix)
 archives = [p for p in directory.iterdir() if pattern.fullmatch(p.name)
-            and not p.is_symlink() and p.is_file()]
+            and p.name != sys.argv[4] and not p.is_symlink() and p.is_file()]
 archives.sort(key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
-for archive in archives[int(sys.argv[2]):]:
+# One retention slot belongs to the archive just published.
+for archive in archives[int(sys.argv[2]) - 1:]:
     archive.unlink()
 PY
+    then
+        # A published, verified predeploy archive must not block the deploy over
+        # cleanup; nightly keeps failing closed so its timer reports the problem.
+        [ "$BACKUP_KIND" = predeploy ] || fail retention
+        echo "[backup] warning operation=retention kind=$BACKUP_KIND" >&2
+    fi
 fi
-echo "[backup] verified path=$final bytes=$bytes archive_list_exit=0 kind=$BACKUP_KIND"

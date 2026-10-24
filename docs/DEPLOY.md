@@ -1287,7 +1287,10 @@ serializes publication and retention. Nightly retains only the newest configured
 producer's exact `orchestrator_nightly_<UTC>_<random>.dump` names in its destination; predeploy
 likewise retains only the newest `orchestrator_predeploy_<label>_<UTC>_<random>.dump` names. Both
 exclude partials, symlinks and every other name, and rotate only after the new archive is verified
-and published; a failed dump deletes nothing. Deploy passes `PREDEPLOY_BACKUP_RETAIN` (environment
+and published; a failed dump deletes nothing. The archive just published always keeps one of the
+slots, whatever the mtimes. A predeploy retention error only logs `warning operation=retention`
+and does not fail the deploy (the verified archive is already published); nightly fails closed.
+The first deploy with rotation still needs room for one more archive beside the existing ones. Deploy passes `PREDEPLOY_BACKUP_RETAIN` (environment
 variable, default 7) as the predeploy count and stores the archives in
 `<parent of DEPLOY_PATH>/backups/orchestrator/predeploy` (on h01o,
 `/home/vlad/backups/orchestrator/predeploy`), labels them with run ID, attempt and target SHA, and logs
