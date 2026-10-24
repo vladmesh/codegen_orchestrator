@@ -292,8 +292,8 @@ remote access is absent and cannot override an ordinary current-format lifecycle
 
 ## QA handoff and restricted access
 
-`dto/qa_handoff.py` binds QA to deploy provenance. Health-only criteria run over
-HTTP without an executor. Other criteria use the central ephemeral QA executor
+`dto/qa_handoff.py` binds QA to deploy provenance. Health-only criteria of a story
+without a confirmed order run over HTTP without an executor. Other criteria use the central ephemeral QA executor
 through worker-manager, which is QA's only executor: when it does not run, the
 run ends as a typed infrastructure outcome rather than retrying elsewhere. The executor receives a run-scoped restricted capability, no target SSH
 credential, and egress only through the assigned proxy, whose per-run allowlist

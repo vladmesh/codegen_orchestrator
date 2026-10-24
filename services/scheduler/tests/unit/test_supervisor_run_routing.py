@@ -143,6 +143,8 @@ def api_client():
     client = AsyncMock()
     # QA runs the repository's criteria, so the deploy→QA handoff resolves them.
     client.get_primary_repository.return_value = _make_repo()
+    # A story without a confirmed brief; the order-carrying handoff has its own tests.
+    client.get_product_brief_by_story.return_value = None
     # The project the story belongs to: the deploy→QA and deploy→fix handoffs
     # read the run that initiated the work off it.
     client.get_project.return_value = _make_project()

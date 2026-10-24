@@ -24,7 +24,7 @@ from shared.contracts.dto.engineering_attempt import (
     EngineeringAttemptLedgerInput,
     QAAccountingFact,
 )
-from shared.contracts.dto.product_brief import InitialSetting, ProductBriefContent
+from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
 from shared.contracts.dto.qa_verification import QAUnverifiedCheck, QAUnverifiedOrigin
 from shared.contracts.dto.run_result import (
@@ -35,6 +35,7 @@ from shared.contracts.dto.run_result import (
     QAProbeRun,
     QATelegramProbeEvidence,
 )
+from shared.contracts.queues.qa import QAConfirmedOrder
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
@@ -345,6 +346,17 @@ def _block_forbidden_application_write(qa_result: QAResult, write: str) -> QARes
 #: arose. An executor check never carries it (its fields are exact), so a
 #: `qa_capability` check without it is the executor's own.
 _ORIGIN = "origin"
+
+_CONFIRMED_ORDER_SECTION = """
+## Confirmed order
+The user confirmed these must-requirements. Check each one through the product's
+own interface, sending the inputs of its usage examples or a command the bot
+itself lists; never invent a command. Start the name of every check of a
+requirement with its id in square brackets, e.g. `[r1] /help lists commands`.
+A requirement you cannot check is a `qa_capability` check named the same way.
+The run passes only on a passing check that names a requirement.
+"""
+
 _PASSED_CHECK_FIELDS = frozenset({"name", "pass", "detail"})
 _FAILED_CHECK_FIELDS = _PASSED_CHECK_FIELDS | {"cause"}
 #: A check the transport could not carry: no `pass`, no `cause`. It counts toward
@@ -1354,6 +1366,68 @@ def settle_unverified_checks(qa_result: QAResult) -> QAResult:
     return qa_result
 
 
+def _names_requirement(name: str, requirement_id: str) -> bool:
+    return name.startswith(f"[{requirement_id}]")
+
+
+def require_confirmed_order(qa_result: QAResult, order: QAConfirmedOrder | None) -> QAResult:
+    """A settled pass passes a confirmed order only through a passing check of its requirements.
+
+    Each must-requirement no check named is recorded as unverified; a pass in which no
+    passing check names any of them becomes the `order_unverified` blocker, not a product failure.
+    """
+    if order is None or not qa_result.passed:
+        return qa_result
+    named = [
+        *(check["name"] for check in qa_result.checks),
+        *(check.name for check in qa_result.unverified_checks),
+    ]
+    qa_result.unverified_checks = [
+        *qa_result.unverified_checks,
+        *(
+            QAUnverifiedCheck(
+                name=f"[{requirement.id}] {requirement.text}",
+                reason=(
+                    "the confirmed order asks for this must-requirement and no check of this run "
+                    "named it, so QA did not verify it"
+                ),
+                origin=QAUnverifiedOrigin.EXECUTOR,
+            )
+            for requirement in order.must_requirements
+            if not any(_names_requirement(name, requirement.id) for name in named)
+        ),
+    ]
+    verified = [
+        requirement.id
+        for requirement in order.must_requirements
+        if any(
+            check.get("pass") is True and _names_requirement(check["name"], requirement.id)
+            for check in qa_result.checks
+        )
+    ]
+    logger.info(
+        "qa_confirmed_order_judged",
+        brief_id=order.brief_id,
+        revision=order.revision,
+        verified=verified,
+        unverified=[check.name for check in qa_result.unverified_checks],
+    )
+    if verified:
+        return qa_result
+    qa_result.passed = False
+    qa_result.blocker = QABlocker(
+        category=QABlockerCategory.ORDER_UNVERIFIED,
+        attempted=f"judge confirmed brief {order.brief_id} revision {order.revision}",
+        sent="; ".join(requirement.id for requirement in order.must_requirements),
+        received=(
+            "no passing check of this run named a confirmed must-requirement; unverified: "
+            + "; ".join(check.name for check in qa_result.unverified_checks)
+        ),
+    )
+    qa_result.summary = f"{qa_result.summary}; {qa_result.blocker.received}"
+    return qa_result
+
+
 def scheduled_behaviour_facts(
     behaviours: Sequence[ScheduledBehaviourCriterion], *, fireable: bool
 ) -> list[str]:
@@ -1546,7 +1620,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     probe_library: Sequence[QAProbeLibraryFile] = (),
     caller_identity: QACallerIdentity | None = None,
     redaction: QARunRedaction | None = None,
-    brief: ProductBriefContent | None = None,
+    order: QAConfirmedOrder | None = None,
 ) -> QAResult:
     """Run the one assigned executor over this run's capability endpoint.
 
@@ -1613,10 +1687,10 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             attempts=attempts,
             probe_library=probe_library,
             redaction=redaction,
-            brief=brief,
+            order=order,
         )
         if executor_run is not None:
-            return settle_unverified_checks(
+            settled = settle_unverified_checks(
                 apply_unverifiable_criteria(
                     apply_package_acceptance(
                         _apply_probe_runs(
@@ -1631,6 +1705,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
                     prepared_criteria.unverifiable,
                 ),
             )
+            return require_confirmed_order(settled, order)
     finally:
         await service.stop()
 
@@ -1674,7 +1749,7 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
     attempts: QAExecutorAttempts,
     probe_library: Sequence[QAProbeLibraryFile] = (),
     redaction: QARunRedaction | None = None,
-    brief: ProductBriefContent | None = None,
+    order: QAConfirmedOrder | None = None,
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
     """Retry only transient subscription-executor failures.
 
@@ -1690,14 +1765,8 @@ async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, e
         established_facts=established_facts,
         settings_established=settings_established,
     )
-    if brief is not None:
-        prompt += "\n## Confirmed input contract\n" + json.dumps(
-            {
-                "must_requirements": [row.text for row in brief.must_requirements],
-                "usage_examples": [row.model_dump() for row in brief.usage_examples],
-            },
-            ensure_ascii=False,
-        )
+    if order is not None:
+        prompt += _CONFIRMED_ORDER_SECTION + order.model_dump_json(exclude={"brief_id", "revision"})
     last: QAExecutorUnavailable | None = None
     said = attempts
     scrub = (redaction or QARunRedaction()).text
@@ -1800,7 +1869,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     probe_library: Sequence[QAProbeLibraryFile] = (),
     caller_identity: QACallerIdentity | None = None,
     redaction: QARunRedaction | None = None,
-    brief: ProductBriefContent | None = None,
+    order: QAConfirmedOrder | None = None,
 ) -> QAResult:
     """Run QA with cleanup residue reported as a blocker on every exit path.
 
@@ -1900,7 +1969,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             probe_library=probe_library,
                             caller_identity=caller_identity,
                             redaction=redaction,
-                            brief=brief,
+                            order=order,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
             if attempts.started:

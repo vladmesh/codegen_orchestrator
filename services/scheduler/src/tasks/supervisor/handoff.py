@@ -18,6 +18,7 @@ from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run_result import (
     DeployRunResult,
 )
+from shared.contracts.queues.qa import QAConfirmedOrder
 from shared.queues import (
     QA_QUEUE,
 )
@@ -132,3 +133,17 @@ async def _resolve_qa_repository(
         log.error("deploy_success_no_acceptance_criteria", repo_id=repo.id)
         return None
     return repo
+
+
+async def _confirmed_qa_order(
+    api_client: SchedulerAPIClient, story_id: str
+) -> QAConfirmedOrder | None:
+    """The confirmed brief QA judges this story against, or None for a story without one.
+
+    A failed read raises, so the story waits in DEPLOYING for the next tick instead of
+    reaching QA with only the repository's criteria.
+    """
+    brief = await api_client.get_product_brief_by_story(story_id)
+    if brief is None or brief.confirmed_at is None:
+        return None
+    return QAConfirmedOrder.from_brief(brief)

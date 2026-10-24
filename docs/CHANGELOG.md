@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Deploy keeps only the newest `PREDEPLOY_BACKUP_RETAIN` (default 7) predeploy archives and deletes
   older ones only after the new dump is verified; maintenance archives are still never rotated.
+- QA receives the story's confirmed brief as `QAMessage.confirmed_order` and never passes it on GET
+  checks alone; a run that verified no requirement is `order_unverified`, not a pass or a fix task.
 
 ## 2026-10-20
 

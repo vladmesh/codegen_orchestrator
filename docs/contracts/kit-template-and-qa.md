@@ -512,7 +512,8 @@ records `qa_caller_identity` (`user_ref` and `active`), and the run's facts tell
 `user_ref` its reads act as and that no request names a `user_ref` itself.
 
 **Health-only QA holds the same identity.** Criteria that are all plain GET expectations
-(`parse_health_only_criteria`) are decided by `run_health_checks` with no executor, and that leg is
+(`parse_health_only_criteria`) on a message without a confirmed order are decided by
+`run_health_checks` with no executor, and that leg is
 built from the same two pieces as the exploratory one, in `consumers/qa.py`: `_run_secrets` reads
 the project's stored secrets once and builds the run's `QARunRedaction` from them, and
 `_establish_caller_identity` resolves the identity through `resolve_qa_caller_identity`, records
@@ -646,6 +647,40 @@ an assertion in the variant's harness about what this run must have produced
 Compose files; no product checkout is inspected. A package-free product's QA path is unchanged. A
 run whose architect chose another permitted shape is a run that failed to demonstrate the package
 route, and it says so rather than being prevented from happening.
+
+## A confirmed order is judged by central QA
+
+A story's QA judges its confirmed Product Brief, not only the repository's criteria, which an
+INSTALL-only plan leaves at the scaffold's `- GET /health returns 200`.
+
+**Producer.** The deploy-to-QA handoff (`_handle_deploy_success_story` in
+`services/scheduler/src/tasks/supervisor/deploy.py`) reads `GET /api/product-briefs/by-story/{story_id}`
+through `_confirmed_qa_order` (`supervisor/handoff.py`) before the QA Run exists. A brief with
+`confirmed_at` becomes `QAMessage.confirmed_order` (`QAConfirmedOrder` in
+`shared/contracts/queues/qa.py`: brief id, revision, language, every must-requirement and every
+usage example), stored on the Run's `qa_handoff` plan and published with it. No brief or an
+unconfirmed one gives `None`: it orders nothing. A failed read raises, so the story stays
+`deploying` for the next tick rather than reaching QA with only the repository's criteria.
+
+**Consumer.** GET checks alone never decide a confirmed order. `_qa_criteria` in
+`consumers/qa.py` refuses the executor-free leg for a message with an order unless the criteria
+carry a fixed stand probe (`- Stand mechanical …`, `- Stand conversation: …`), and work admission
+(`_health_only_qa_handoff`) applies the same rule, so such a run is admitted with executor
+diagnostics. The exploratory leg passes the order to `run_qa_centrally`. The repository's criteria
+stay in the prompt as additional technical checks, and a `## Confirmed order` section beside them
+carries the order as JSON. The executor exercises each requirement through its usage examples' inputs or a
+command the bot itself lists, and names each check of a requirement `[<id>] …`.
+
+**Settlement.** `require_confirmed_order` in `_qa_runner.py` runs after `settle_unverified_checks`
+and only on a pass. Each must-requirement no check names is added to `unverified_checks` (origin
+`executor`). A pass in which no passing check names a requirement becomes the
+`order_unverified` blocker: the run settles `blocked`, with its passed and unverified checks, and
+the consumer writes those as verification gaps (the gap endpoint accepts exactly this blocked
+case). The supervisor parks the story for human review and creates no fix task. A failing check
+of a requirement with cause `product` keeps the run `failed` and reaches the engineering loop as
+before. A pass with at least one passing requirement check is `passed`, its other requirements
+recorded as gaps. The binding is the executor's own check name: the runner proves that a
+requirement was claimed and checked, not that the words of its example were mechanically proven.
 
 ## A QA run keeps the executor's own transcript
 

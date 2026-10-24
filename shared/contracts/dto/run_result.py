@@ -407,6 +407,11 @@ class QABlockerCategory(StrEnum):
     # on it. A check QA had no tool for is never this: it is unverified
     # (`QARunResult.unverified_checks`) and does not block the story.
     QA_CHECKS_UNVERIFIABLE = "qa_checks_unverifiable"
+    # QA ran and no passing check named a must-requirement of the story's
+    # confirmed order (`QAMessage.confirmed_order`). The order is unjudged: the
+    # run is not passed, and with no product failure it is not a fix task
+    # either. Its unverified requirements are the run's `unverified_checks`.
+    ORDER_UNVERIFIED = "order_unverified"
     UNKNOWN = "unknown"
 
 

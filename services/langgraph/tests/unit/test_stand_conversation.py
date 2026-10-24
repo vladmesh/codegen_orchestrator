@@ -31,7 +31,7 @@ def test_qa_routes_conversation_to_health_and_native_grant(monkeypatch):
 
     monkeypatch.setenv("LIVE_CONTOUR", "stand")
     selected, checks = _qa_criteria(
-        "- GET /health returns 200\n- Stand conversation: platform-module"
+        "- GET /health returns 200\n- Stand conversation: platform-module", confirmed_order=None
     )
     assert selected[:2] == ("conversation", "platform-module")
     assert checks is not None

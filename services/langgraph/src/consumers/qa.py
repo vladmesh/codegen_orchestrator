@@ -38,7 +38,7 @@ from shared.contracts.dto.run_result import (
     QARunResult,
 )
 from shared.contracts.dto.telegram import BotLivenessState
-from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
+from shared.contracts.queues.qa import QAConfirmedOrder, QAMessage, QAOutcome, QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.crypto import decrypt_dict
@@ -427,11 +427,11 @@ def _stale_target_profile_blocker(server_info: QAServerInfo) -> QABlocker | None
 
 
 async def _confirmed_qa_brief(story_id: str | None) -> ProductBriefRead | None:
-    """The confirmed brief of this story — its settings and input contract — or nothing.
+    """The confirmed brief of this story, whose settings QA reads back, or nothing.
 
     Read through the released brief endpoint, exactly as the deploy path reads
     them before writing them into the product. A story with no brief, or a
-    brief nobody confirmed supplies neither settings nor an input contract.
+    brief nobody confirmed, supplies no settings. Its order travels on the message.
     """
     if not story_id:
         return None
@@ -758,7 +758,6 @@ async def _run_exploratory_qa(
         stored=stored,
     )
     brief = await _confirmed_qa_brief(msg.story_id)
-    confirmed_brief = brief.content if brief else None
     confirmed_settings = await confirmed_product_settings(brief, api_client) if brief else []
     established_facts: list[str] = [
         *scheduled_behaviour_facts(behaviours, fireable=jobs is not None),
@@ -825,7 +824,7 @@ async def _run_exploratory_qa(
         provisioning_journal=ServerProvisioningJournal(server_info),
         established_facts=established_facts,
         settings_established=bool(confirmed_settings),
-        brief=confirmed_brief,
+        order=msg.confirmed_order,
         jobs=jobs,
         attempts=attempts,
         probe_library=library.files,
@@ -862,7 +861,11 @@ async def _load_qa_executor_decision(run_id: str) -> ExecutorDecision | QABlocke
     return decision
 
 
-def _qa_criteria(criteria):
+def _qa_criteria(criteria: str, *, confirmed_order: QAConfirmedOrder | None):
+    """The fixed stand probe and GET checks that decide this run with no executor, if any.
+
+    GET checks alone never decide a confirmed order: its run goes to the executor.
+    """
     from .mechanical_telegram import selection  # noqa: PLC0415
     from .stand_conversation import selection as conversation_selection  # noqa: PLC0415
 
@@ -870,6 +873,8 @@ def _qa_criteria(criteria):
     checks = parse_health_only_criteria(mechanical[2] if mechanical else criteria)
     if mechanical and checks is None:
         raise ValueError("fixed stand probes require deterministic HTTP criteria")
+    if confirmed_order is not None and not mechanical:
+        return None, None
     return mechanical, checks
 
 
@@ -934,7 +939,9 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         # them first: criteria that only state GET expectations need nothing but
         # the deployed URL.
         acceptance_criteria = msg.acceptance_criteria
-        mechanical, health_checks = _qa_criteria(acceptance_criteria)
+        mechanical, health_checks = _qa_criteria(
+            acceptance_criteria, confirmed_order=msg.confirmed_order
+        )
 
         blocker = await _before_judgement_blocker(msg)
         if blocker:
@@ -1058,42 +1065,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 report=qa_result.report[:2000],
             )
 
-        if qa_result.blocker:
-            return await _handle_qa_blocked(
-                run_id=run_id,
-                attempts=attempts,
-                blocker=qa_result.blocker,
-                state_changes=qa_result.state_changes,
-                telegram_probe_evidence=qa_result.telegram_probe_evidence,
-                probe_runs=qa_result.probe_runs,
-                probe_library=qa_result.probe_library,
-                executor_transcript=qa_result.executor_evidence,
-                executor_attempt=qa_result.executor_attempt,
-            )
-        if qa_result.passed:
-            return await _handle_qa_pass(
-                run_id=run_id,
-                project_id=msg.project_id,
-                attempts=attempts,
-                deployed_url=msg.deployed_url,
-                report=qa_result.report,
-                state_changes=qa_result.state_changes,
-                telegram_probe_evidence=qa_result.telegram_probe_evidence,
-                probe_runs=qa_result.probe_runs,
-                probe_library=qa_result.probe_library,
-                executor_transcript=qa_result.executor_evidence,
-                executor_attempt=qa_result.executor_attempt,
-                passed_checks=_passed_check_names(qa_result),
-                unverified_checks=qa_result.unverified_checks,
-            )
-        else:
-            return await _handle_qa_fail(
-                run_id=run_id,
-                project_id=msg.project_id,
-                attempts=attempts,
-                qa_attempt=msg.qa_attempt,
-                qa_result=qa_result,
-            )
+        return await _settle_qa_result(msg, attempts, qa_result)
 
     except Exception as exc:
         logger.exception(
@@ -1121,6 +1093,51 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
     finally:
         # Always release inflight marker
         await redis.redis.delete(inflight_key)
+
+
+async def _settle_qa_result(
+    msg: QAMessage, attempts: QAExecutorAttempts, qa_result: QAResult
+) -> dict:
+    """Write the Run's terminal outcome for a result QA reached."""
+    if qa_result.blocker and qa_result.blocker.category is QABlockerCategory.ORDER_UNVERIFIED:
+        return await _handle_order_unverified(
+            run_id=msg.run_id, project_id=msg.project_id, attempts=attempts, qa_result=qa_result
+        )
+    if qa_result.blocker:
+        return await _handle_qa_blocked(
+            run_id=msg.run_id,
+            attempts=attempts,
+            blocker=qa_result.blocker,
+            state_changes=qa_result.state_changes,
+            telegram_probe_evidence=qa_result.telegram_probe_evidence,
+            probe_runs=qa_result.probe_runs,
+            probe_library=qa_result.probe_library,
+            executor_transcript=qa_result.executor_evidence,
+            executor_attempt=qa_result.executor_attempt,
+        )
+    if qa_result.passed:
+        return await _handle_qa_pass(
+            run_id=msg.run_id,
+            project_id=msg.project_id,
+            attempts=attempts,
+            deployed_url=msg.deployed_url,
+            report=qa_result.report,
+            state_changes=qa_result.state_changes,
+            telegram_probe_evidence=qa_result.telegram_probe_evidence,
+            probe_runs=qa_result.probe_runs,
+            probe_library=qa_result.probe_library,
+            executor_transcript=qa_result.executor_evidence,
+            executor_attempt=qa_result.executor_attempt,
+            passed_checks=_passed_check_names(qa_result),
+            unverified_checks=qa_result.unverified_checks,
+        )
+    return await _handle_qa_fail(
+        run_id=msg.run_id,
+        project_id=msg.project_id,
+        attempts=attempts,
+        qa_attempt=msg.qa_attempt,
+        qa_result=qa_result,
+    )
 
 
 async def _handle_qa_pass(  # noqa: PLR0913 — one settled pass, each part named
@@ -1248,6 +1265,33 @@ async def _handle_qa_blocked(
     )
     logger.warning("qa_blocked", run_id=run_id, category=blocker.category.value)
     return live_work_settled({"status": "qa_blocked", "blocker": blocker.category.value})
+
+
+async def _handle_order_unverified(
+    *, run_id: str, project_id: str, attempts: QAExecutorAttempts, qa_result: QAResult
+) -> dict:
+    """Settle a run that verified none of its confirmed order: blocked, its gaps on the project."""
+    settled = await _update_run(
+        run_id,
+        attempts,
+        RunStatus.COMPLETED,
+        QAOutcome.BLOCKED,
+        summary=qa_result.summary,
+        blocker=qa_result.blocker,
+        passed_checks=_passed_check_names(qa_result),
+        unverified_checks=qa_result.unverified_checks,
+        report=qa_result.report,
+        state_changes=qa_result.state_changes,
+        telegram_probe_evidence=qa_result.telegram_probe_evidence,
+        probe_runs=qa_result.probe_runs,
+        probe_library=qa_result.probe_library,
+        executor_transcript=qa_result.executor_evidence,
+        executor_attempt=qa_result.executor_attempt,
+    )
+    logger.warning("qa_blocked", run_id=run_id, category=qa_result.blocker.category.value)
+    if settled:
+        await _record_verification_gaps(project_id=project_id, run_id=run_id)
+    return live_work_settled({"status": "qa_blocked", "blocker": qa_result.blocker.category.value})
 
 
 async def _handle_qa_fail(

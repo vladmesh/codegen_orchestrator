@@ -30,9 +30,9 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 
-from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.qa_ssh_grant import QASshGrantState
 from shared.contracts.dto.run_result import QABlockerCategory
+from shared.contracts.queues.qa import QAConfirmedOrder
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
@@ -377,7 +377,7 @@ def central_run(tmp_path):
         unavailable=None,
         runtime=RUNTIME,
         redaction=None,
-        brief=None,
+        order=None,
     ):
         connection = conn or FakeConn()
         factory = _executor_factory(behaviour, unavailable=unavailable)
@@ -404,7 +404,7 @@ def central_run(tmp_path):
                 provisioning_journal=provisioning_record,
                 established_facts=[],
                 redaction=redaction,
-                brief=brief,
+                order=order,
             )
         return result, connection, factory, record
 
@@ -417,8 +417,9 @@ async def _no_executor(harness):
 
 @pytest.mark.parametrize("text", ["/history", "/reading"])
 async def test_central_runner_preserves_product_cause_with_confirmed_brief(central_run, text):
-    brief = ProductBriefContent(
-        summary="Readings",
+    order = QAConfirmedOrder(
+        brief_id="brief-1",
+        revision=1,
         must_requirements=[{"id": "reading", "text": "Produce readings"}],
         usage_examples=[
             {
@@ -472,7 +473,7 @@ async def test_central_runner_preserves_product_cause_with_confirmed_brief(centr
         result, _, factory, _ = await central_run(
             behaviour=behaviour,
             runtime=runtime,
-            brief=brief,
+            order=order,
             target=replace(TARGET, bot_username="test_bot"),
         )
     assert result.blocker is None
@@ -494,8 +495,9 @@ async def test_central_runner_preserves_product_cause_with_confirmed_brief(centr
 async def test_central_settlement_preserves_unattributed_product_failures(
     central_run, inputs, name, detail
 ):
-    brief = ProductBriefContent(
-        summary="Readings",
+    order = QAConfirmedOrder(
+        brief_id="brief-1",
+        revision=1,
         must_requirements=[{"id": "reading", "text": "Produce readings"}],
         usage_examples=[
             {
@@ -541,7 +543,7 @@ async def test_central_settlement_preserves_unattributed_product_failures(
         result, _, _, _ = await central_run(
             behaviour=behaviour,
             runtime=runtime,
-            brief=brief,
+            order=order,
             target=replace(TARGET, bot_username="test_bot"),
         )
     assert result.blocker is None
@@ -632,9 +634,10 @@ async def test_central_settlement_preserves_unattributed_product_failures(
 async def test_settlement_never_changes_executor_product_failure(
     central_run, inputs, example, name, detail, reply, include_step
 ):
-    brief = (
-        ProductBriefContent(
-            summary="Input handling",
+    order = (
+        QAConfirmedOrder(
+            brief_id="brief-1",
+            revision=1,
             must_requirements=[{"id": "input", "text": "Handle the requested input"}],
             usage_examples=[
                 {"requirement_id": "input", "user_sends": example, "product_answers": "An answer"}
@@ -676,7 +679,7 @@ async def test_settlement_never_changes_executor_product_failure(
         result, _, _, _ = await central_run(
             behaviour=behaviour,
             runtime=runtime,
-            brief=brief,
+            order=order,
             target=replace(TARGET, bot_username="test_bot"),
         )
     assert result.blocker is None

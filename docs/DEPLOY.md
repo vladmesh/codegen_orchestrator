@@ -549,7 +549,7 @@ QA has exactly one executor, and the runtime holds no model credential of its ow
 executor does not run (no session, expired session, broken CLI, container never started), the run
 ends as `qa_executor_unavailable` — a QA-infrastructure outcome that names the assigned executor and
 what it said, alerts administrators and sends the story to human review, never a product defect.
-Health-only criteria run with no executor at all.
+Health-only criteria of a story without a confirmed order run with no executor at all.
 
 **What the QA container can reach.** It is a sandbox: a shell with `python3`, `curl` and Telethon
 (image capability `qa_sandbox`), and it holds nothing of the platform — no SSH key, no fleet key, no

@@ -17,7 +17,7 @@ from shared.contracts.dto.qa_verification import (
     QAVerificationGapsRecorded,
 )
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import QARunResult
+from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAOutcome
 from shared.models import Project, Run, VerificationGap
 
@@ -33,8 +33,17 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 #: The QA outcomes that are a verdict on the product. A blocked or errored run
-#: judged nothing, so what it did not check is not a gap of the product.
+#: judged nothing, so what it did not check is not a gap of the product, except
+#: `order_unverified`: its gaps are the confirmed requirements QA could not judge.
 _VERDICT_OUTCOMES = frozenset({QAOutcome.PASSED, QAOutcome.FAILED, QAOutcome.EXHAUSTED})
+
+
+def _records_gaps(result: QARunResult) -> bool:
+    if result.qa_outcome in _VERDICT_OUTCOMES:
+        return True
+    return (
+        result.blocker is not None and result.blocker.category is QABlockerCategory.ORDER_UNVERIFIED
+    )
 
 
 @router.get("/{project_id}/verification-gaps", response_model=list[QAVerificationGap])
@@ -66,9 +75,9 @@ async def record_verification_gaps_from_run(  # noqa: PLR0913 — FastAPI depend
     """Write a settled QA Run's unverified checks on its project, once per check.
 
     The gaps are read off the Run's own stored result, not the request, and
-    only from a Run settled with a verdict on the product. Writing the same Run
-    again adds nothing: a check already recorded for this run is counted, not
-    repeated.
+    only from a Run settled with a verdict on the product or `order_unverified`.
+    Writing the same Run again adds nothing: a check already recorded for this
+    run is counted, not repeated.
     """
     actor = await resolve_actor(
         is_internal=_is_internal, telegram_id=x_telegram_id, credentials=credentials, db=db
@@ -99,7 +108,7 @@ async def record_verification_gaps_from_run(  # noqa: PLR0913 — FastAPI depend
             status_code=status.HTTP_409_CONFLICT,
             detail=f"run {body.run_id} carries no QA result: {exc.error_count()} error(s)",
         ) from exc
-    if run.status != RunStatus.COMPLETED.value or result.qa_outcome not in _VERDICT_OUTCOMES:
+    if run.status != RunStatus.COMPLETED.value or not _records_gaps(result):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"run {body.run_id} did not settle with a verdict; it records no gaps",
