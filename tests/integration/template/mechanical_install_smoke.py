@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 from dataclasses import asdict
-from datetime import UTC, datetime
 import hashlib
 import json
 import os
@@ -21,8 +20,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "services/scaffolder"))
 
 from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
+from shared.contracts.dto.catalog_install import CatalogInstall  # noqa: E402
+from shared.contracts.dto.install_operation import verification_refusal  # noqa: E402
 from shared.contracts.dto.local_install import LocalPackageInstall  # noqa: E402
-from shared.contracts.queues.scaffold import ScaffoldMessage  # noqa: E402
 from shared.diagnostics import redact_diagnostic  # noqa: E402
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS  # noqa: E402
 from src import install  # noqa: E402
@@ -129,32 +129,11 @@ def customize_notes(product, python=None):
 
 SOURCE_PATH = "packages/notes_source"
 #: The kit's child interpreter writes no bytecode; existing cache files stay in every snapshot.
-SOURCE_PREFLIGHT_CACHE_POLICY = {"PYTHONDONTWRITEBYTECODE": "1", "cache_files_compared": True}
-
-
-def owned_tree(root):
-    """Every entry under `root` with its kind and content: file SHA256, symlink target, dir.
-
-    Symlinks are recorded by target and never followed, so nothing outside `root` is read.
-    """
-    if root.is_symlink() or not root.is_dir():
-        raise RuntimeError(f"{root} is not an owned directory")
-
-    def unreadable(error):
-        raise error
-
-    entries = {}
-    for directory, names, files in os.walk(root, onerror=unreadable):
-        for name in [*names, *files]:
-            path = Path(directory) / name
-            relative = str(path.relative_to(root))
-            if path.is_symlink():
-                entries[relative] = ["symlink", os.readlink(path)]
-            elif path.is_dir():
-                entries[relative] = ["dir"]
-            else:
-                entries[relative] = ["file", hashlib.sha256(path.read_bytes()).hexdigest()]
-    return entries
+SOURCE_PREFLIGHT_CACHE_POLICY = {**install.NO_BYTECODE, "cache_files_compared": True}
+#: Touched at the product root only when the package runs from its source tree.
+IMPORT_MARKER = ".notes-source-imported"
+STORY = "ci-story"
+LOCAL_OPERATION = "ci-local-operation"
 
 
 def tree_evidence(entries):
@@ -168,26 +147,74 @@ def tree_evidence(entries):
 
 
 def write_source(product):
-    """The synthetic notes-source package: data-only metadata and a marker on runtime import."""
+    """The synthetic notes-source package: one action, a real default binding, an import marker."""
     source = product / SOURCE_PATH
     module = source / "notes_source"
-    module.mkdir(parents=True)
+    (module / "bindings").mkdir(parents=True)
     (module / "package.yaml").write_text(
         "protocol_version: 1\n"
         "name: notes-source\n"
         "version: 1.0.0\n"
-        'requires_core: ">=2,<3"\n'
+        'requires_core: ">=2.4,<3"\n'
+        "package_dependencies: [fastapi]\n"
         "http:\n"
         "  prefix: /notes-source\n"
         "deployment:\n"
         "  modes: [in_process]\n"
+        "actions:\n"
+        "  - name: create\n"
+        "    summary: Keep one memo for the verified caller.\n"
+        "    operation: {method: POST, path: ''}\n"
+        "    input:\n"
+        "      type: object\n"
+        "      properties:\n"
+        "        text: {type: string, minLength: 1}\n"
+        "      required: [text]\n"
+        "      additionalProperties: false\n"
+        "    output:\n"
+        "      type: object\n"
+        "      properties:\n"
+        "        id: {type: string}\n"
+        "        text: {type: string}\n"
+        "      required: [id, text]\n"
+        "      additionalProperties: false\n"
+        "default_binding: notes_source:bindings/default.yaml\n"
+    )
+    (module / "bindings/default.yaml").write_text(
+        "binding_version: 2\n"
+        "package: notes-source\n"
+        "language: {key: language, scope: product, values: [ru, en]}\n"
+        "commands:\n"
+        "  - kind: text_create\n"
+        "    command: memo\n"
+        "    help: {ru: 'Заметка: /memo текст', en: 'Keep a memo: /memo text'}\n"
+        "    action: notes-source.create\n"
+        "    args: {text: $text}\n"
+        "    reply:\n"
+        "      parts:\n"
+        "        - {ru: 'Сохранено: ', en: 'Kept: '}\n"
+        "        - {source: $result.text}\n"
+        "    on_empty: {ru: Введите текст., en: Enter text.}\n"
+        "    on_invalid_text: {ru: Неверный текст., en: Invalid text.}\n"
+        "events: []\n"
     )
     (module / "__init__.py").write_text(
-        "from pathlib import Path\n"
-        "marker = Path(__file__).resolve().parents[3] / '.git'\n"
-        "if marker.is_dir():\n"
-        "    marker.joinpath('notes-source-imported').touch()\n"
-        "package = None\n"
+        "from pathlib import Path\n\n"
+        "from fastapi import APIRouter\n\n"
+        "root = Path(__file__).resolve().parents[3]\n"
+        "if (root / '.copier-answers.yml').is_file():\n"
+        f"    root.joinpath('{IMPORT_MARKER}').touch()\n\n"
+        "router = APIRouter()\n\n\n"
+        "@router.post('')\n"
+        "async def create(body: dict[str, str]) -> dict[str, str]:\n"
+        "    return {'id': '1', 'text': body['text']}\n\n\n"
+        "class NotesSource:\n"
+        "    router = router\n\n"
+        "    async def startup(self, application: object) -> None:\n"
+        "        return None\n\n"
+        "    async def shutdown(self, application: object) -> None:\n"
+        "        return None\n\n\n"
+        "package = NotesSource()\n"
     )
     (source / "pyproject.toml").write_text(
         '[project]\nname = "codegen-kit-notes-source"\nversion = "1.0.0"\n'
@@ -197,6 +224,7 @@ def write_source(product):
         '[tool.hatch.build.targets.wheel]\npackages = ["notes_source"]\n'
         "[tool.hatch.build.targets.wheel.force-include]\n"
         '"notes_source/package.yaml" = "notes_source/package.yaml"\n'
+        '"notes_source/bindings/default.yaml" = "notes_source/bindings/default.yaml"\n'
     )
     return source
 
@@ -223,27 +251,13 @@ def local_target(product, payload, **changes):
     )
 
 
-def owned_environments(product):
-    return {
-        "source": product / SOURCE_PATH,
-        "root": product / ".venv",
-        "backend": product / "services/backend/.venv",
-        "tg_bot": product / "services/tg_bot/.venv",
-    }
-
-
 def product_state(product, tracked):
-    """Git status, locks, protected bytes and every owned source/environment tree."""
+    """Git status, protected bytes and the source, lock and environment bytes a read keeps."""
     return {
         "git_status": run(["git", "status", "--porcelain", "--untracked-files=all"], product),
         "ignored": run(["git", "status", "--porcelain", "--ignored"], product),
-        "locks": {
-            name: hashlib.sha256((product / name).read_bytes()).hexdigest()
-            for name in tracked
-            if Path(name).name == "uv.lock"
-        },
         "protected": install.protected_files(product, tracked),
-        "trees": {name: owned_tree(path) for name, path in owned_environments(product).items()},
+        **install.source_read_state(product, SOURCE_PATH, tracked),
     }
 
 
@@ -283,21 +297,14 @@ def prove_source_preflight(product, payload, answers):
     local = local_target(product, payload)
     tracked = run(["git", "ls-files"], product).splitlines()
 
-    kit_env = install.product_environment(product) | {
-        "PYTHONDONTWRITEBYTECODE": SOURCE_PREFLIGHT_CACHE_POLICY["PYTHONDONTWRITEBYTECODE"]
-    }
+    kit_env = install.product_environment(product) | install.NO_BYTECODE
     answers["cache_policy"] = SOURCE_PREFLIGHT_CACHE_POLICY
-    answers["compared"] = [
-        "git_status",
-        "ignored",
-        "locks",
-        "protected",
-        *owned_environments(product),
-    ]
+    answers["compared"] = ["git_status", "ignored", "locks", "protected", "source"]
+    answers["compared"] += list(install.PRODUCT_ENVIRONMENTS)
     try:
         for label, version in (("admitted", "1.0.0"), ("version_mismatch", "1.0.1")):
             before = product_state(product, tracked)
-            # The fixed argv a local executor would run from its owned checkout.
+            # The fixed argv the local executor runs from its owned checkout.
             argv = [str(product / ".venv/bin/kit"), "check-install", "notes-source", "--json"]
             argv += ["--package-source", SOURCE_PATH, "--version", version]
             argv += ["--product-root", str(product)]
@@ -318,7 +325,7 @@ def prove_source_preflight(product, payload, answers):
                 "bytes": byte_evidence(before, after, changed),
             }
             assert not changed, f"check-install {label} changed {changed[:20]}"
-            assert not (product / ".git/notes-source-imported").exists()
+            assert not (product / IMPORT_MARKER).exists()
             result = install.admitted_preflight(answer.returncode, answer.stdout, local)
             answers[label]["outstanding_glue"] = len(result.outstanding_glue(local))
         admitted = answers["admitted"]["native"]
@@ -348,42 +355,12 @@ PROBE = ROOT / "services/scaffolder/src/install_probe.py"
 SOURCE_PROBE_CACHE_POLICY = {"interpreter_flags": ["-I", "-B"], "cache_files_compared": True}
 
 
-def prove_local_source(product, payload, answers):  # noqa: PLR0915  # one evidence sequence
-    """The fixed source probe over a package committed at HEAD, kit add, generate, readback.
-
-    Every probe run is read-only over the owned trees and a refusal names its boundary; the
-    readback is admitted only against its provenance through the real canonical consumer.
-    """
-    write_source(product)
-    run(["git", "add", "--", SOURCE_PATH], product)
-    run(
-        [
-            "git",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "user.name=CI",
-            "-c",
-            "user.email=ci@example.com",
-            "commit",
-            "-qm",
-            "Owned notes-source package",
-        ],
-        product,
-    )
-    local = local_target(product, payload)
-    parent = run(["git", "rev-parse", "HEAD~1"], product)
+def source_probes(product, local, answers):
+    """The fixed source probe over `product`, each run proven read-only and recorded by label."""
     tracked = run(["git", "ls-files"], product).splitlines()
-    env = install.product_environment(product)
-    marker = product / ".git/notes-source-imported"
-    answers["cache_policy"] = SOURCE_PROBE_CACHE_POLICY
-    answers["source"] = {
-        "commit": local.commit,
-        "tree": run(["git", "rev-parse", f"HEAD:{SOURCE_PATH}"], product),
-        "entries": run(["git", "ls-tree", "-r", "HEAD", "--", SOURCE_PATH], product).splitlines(),
-    }
+    env = install.product_environment(product) | install.NO_BYTECODE
 
-    def probe(label, mode, target, refusal=None):
+    def probe(label, mode, target, refusal):
         before = product_state(product, tracked)
         argv = [str(product / ".venv/bin/python"), "-I", "-B", str(PROBE), mode]
         argv += [target.model_dump_json(), TEMPLATE_PIN.ref]
@@ -397,15 +374,10 @@ def prove_local_source(product, payload, answers):  # noqa: PLR0915  # one evide
             "target": target.model_dump(mode="json"),
             "returncode": result.returncode,
             "bytes": byte_evidence(before, after, changed),
+            "refusal": redact_diagnostic((result.stderr.strip().splitlines() or [""])[-1]),
         }
         assert not changed, f"{mode} {label} changed {changed[:20]}"
-        if refusal is None:
-            assert result.returncode == 0, redact_diagnostic(result.stderr)[-2000:]
-            answers[label]["raw"] = json.loads(result.stdout)
-            return result.stdout, after["protected"]
-        answers[label]["refusal"] = redact_diagnostic(result.stderr.strip().splitlines()[-1])
         assert result.returncode != 0 and refusal in answers[label]["refusal"], answers[label]
-        return None
 
     def substituted(path, content, label, mode, refusal):
         # A new inode each time: an installed file may be a hardlink into the uv cache.
@@ -419,12 +391,123 @@ def prove_local_source(product, payload, answers):  # noqa: PLR0915  # one evide
             if original is not None:
                 path.write_bytes(original)
 
-    manifest = product / SOURCE_PATH / "notes_source/package.yaml"
-    output, protected = probe("provenance", "source-provenance", local)
-    provenance = install.admitted_local_verification(output, local, protected)
-    assert provenance.source.tree == answers["source"]["tree"]
-    assert provenance.head == local.commit and provenance.installed is None
-    answers["provenance_verification"] = provenance.model_dump(mode="json")
+    return probe, substituted
+
+
+def changed_bytes(original):
+    return original + b"# substituted\n"
+
+
+class CanonicalFence:
+    """Records each command and holds the API's local rules for one `LocalPackageInstall`.
+
+    The proof advances once, provenance to readback; the base is the saved commit.
+    """
+
+    def __init__(self, local, record):
+        self.local, self.record, self.proofs = local, record, []
+
+    async def __call__(self, command):
+        self.record.append(command.model_dump(mode="json"))
+        current = self.proofs[-1] if self.proofs else None
+        if command.verification is not None:
+            refusal = verification_refusal(current, command.verification, self.local)
+            if refusal is not None:
+                raise install.InstallExecutionError(command.stage, refusal)
+            if command.verification != current:
+                self.proofs.append(command.verification)
+        if command.base_sha not in {None, self.local.commit}:
+            raise install.InstallExecutionError(command.stage, "base_mismatch")
+        if command.action == "publish" and (
+            current is None
+            or current.mode != "readback"
+            or command.preflight is None
+            or command.preflight.glue
+        ):
+            raise install.InstallExecutionError(command.stage, "readback_unverified")
+
+
+async def execute(context, base, fence, boundary, before=None):
+    """The production executor with only the owned GitHub origin observation controlled.
+
+    `before(argv, cwd)` may read the attempt ahead of a command; the command itself is real.
+    """
+    actual_command = install._run_cmd
+
+    async def transport(argv, **kwargs):
+        operation = argv[3] if argv[0] == "git" else None
+        credential_present = any(
+            key.startswith("GIT_CONFIG_VALUE_") and value.startswith("Authorization: ")
+            for key, value in kwargs["env"].items()
+        )
+        assert credential_present == (
+            argv[0] == "git" and operation in {"fetch", "ls-remote", "push"}
+        )
+        boundary.append(
+            {
+                "executable": Path(argv[0]).name,
+                "git_operation": operation,
+                "credential_present": credential_present,
+            }
+        )
+        # GitHub's repository transport is the one controlled edge. All
+        # git branch/commit/non-force-push/readback operations are real.
+        if argv == ["git", "-c", "core.hooksPath=/dev/null", "remote", "get-url", "origin"]:
+            return 0, "https://github.com/ci/notes\n", ""
+        if before is not None:
+            before(argv, kwargs["cwd"])
+        return await actual_command(argv, **kwargs)
+
+    install._run_cmd = transport
+    try:
+        return await install.run_install(
+            context,
+            SimpleNamespace(workspace_base_path=str(base)),
+            "https://github.com/ci/notes",
+            "synthetic-ci-token",
+            fence,
+        )
+    finally:
+        install._run_cmd = actual_command
+
+
+def published(product, head, name):
+    return subprocess.run(
+        ["git", "cat-file", "blob", f"{head}:{name}"],
+        cwd=product,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+
+
+async def prove_local_source(product, payload, base, answers):  # noqa: PLR0915  # one evidence sequence
+    """The real executor installs a package source committed at the owned story head.
+
+    Source refusals first read the workspace at that commit. The executor then runs the fixed
+    probe, the kit's check-install, add, bind, generation, product checks and readback in its
+    own attempt, under a fence holding the API's local transition, and publishes non-force.
+    """
+    write_source(product)
+    run(["git", "add", "--", SOURCE_PATH], product)
+    git = ["git", "-c", "core.hooksPath=/dev/null"]
+    run(
+        [*git, "-c", "user.name=CI", "-c", "user.email=ci@example.com"]
+        + ["commit", "-qm", "Owned notes-source package"],
+        product,
+    )
+    # The owned story branch carries the reviewed source commit the install is planned at.
+    run([*git, "push", "origin", f"HEAD:refs/heads/story/{STORY}"], product)
+    local = local_target(product, payload)
+    parent = run(["git", "rev-parse", "HEAD~1"], product)
+    answers["cache_policy"] = SOURCE_PROBE_CACHE_POLICY
+    answers["source"] = {
+        "commit": local.commit,
+        "tree": run(["git", "rev-parse", f"HEAD:{SOURCE_PATH}"], product),
+        "entries": run(["git", "ls-tree", "-r", "HEAD", "--", SOURCE_PATH], product).splitlines(),
+    }
+    probe, substituted = source_probes(product, local, answers.setdefault("refusals", {}))
+    manifest = Path(SOURCE_PATH) / "notes_source/package.yaml"
     package = local.package.model_dump()
     for label, target, refusal in (
         ("wrong_commit", local_target(product, payload, commit=parent), "source_commit_mismatch"),
@@ -442,116 +525,136 @@ def prove_local_source(product, payload, answers):  # noqa: PLR0915  # one evide
     ):
         probe(label, "source-provenance", target, refusal)
     substituted(
-        manifest,
-        lambda original: original + b"# substituted\n",
+        product / manifest,
+        changed_bytes,
         "tracked_source_changed",
         "source-provenance",
         "source_changed",
     )
     substituted(
-        manifest.with_name("extra.py"),
+        product / manifest.with_name("extra.py"),
         lambda _: b"",
         "untracked_source_input",
         "source-provenance",
         "source_uncommitted",
     )
-    refusal = None
-    try:
-        install.admitted_local_verification(
-            output, local.model_copy(update={"repository_id": "repo-other"}), protected
+    assert not (product / IMPORT_MARKER).exists()
+
+    attempt = base / CATALOG_INSTALL_ATTEMPTS / product.name / LOCAL_OPERATION
+
+    def readback_refusals(argv, cwd):
+        """At the executor's own readback, its installed attempt refuses substituted bytes."""
+        if not (len(argv) > 4 and argv[3] == str(PROBE) and argv[4] == "source-readback"):
+            return
+        root = Path(cwd)
+        assert root == attempt.resolve() and not (root / IMPORT_MARKER).exists()
+        answers["attempt_status"] = run(
+            [*git, "status", "--porcelain", "--ignored", "--untracked-files=all"], root
         )
-    except install.InstallExecutionError as error:
-        refusal = str(error)
-    assert refusal == "local_verification_mismatch: target.repository_id"
-    answers["other_repository_refusal"] = refusal
-    assert not marker.exists()
+        probe, substituted = source_probes(root, local, answers["refusals"])
+        site = run(
+            [str(root / "services/backend/.venv/bin/python"), "-I", "-B", "-c"]
+            + ["import site; print(site.getsitepackages()[0])"],
+            root,
+        )
+        substituted(
+            Path(site) / "notes_source/__init__.py",
+            changed_bytes,
+            "installed_file_changed",
+            "source-readback",
+            "installed_files_mismatch",
+        )
+        substituted(
+            root / manifest,
+            changed_bytes,
+            "installed_source_changed",
+            "source-readback",
+            "source_changed",
+        )
 
-    kit = str(product / ".venv/bin/kit")
-    argv = [kit, "check-install", "notes-source", "--json", "--package-source", SOURCE_PATH]
-    argv += ["--version", local.package.version, "--product-root", str(product)]
-    before = product_state(product, tracked)
-    answer = subprocess.run(
-        argv,
-        cwd=product,
-        env=env | {"PYTHONDONTWRITEBYTECODE": "1"},
-        capture_output=True,
-        text=True,
-        timeout=120,
+    context = install.InstallContext(
+        project_id=str(local.project_id),
+        repository_id=product.name,
+        story_id=STORY,
+        operation_id=LOCAL_OPERATION,
+        template_ref=TEMPLATE_PIN.ref,
+        install=local,
     )
-    changed = state_changes(before, product_state(product, tracked))
-    assert not changed, f"check-install changed {changed[:20]}"
-    preflight = install.admitted_preflight(answer.returncode, answer.stdout, local)
-    assert not preflight.outstanding_glue(local)
-    answers["preflight"] = {"result": preflight.model_dump(mode="json"), "unchanged": True}
-    run([kit, "add", "notes-source", "--package-source", SOURCE_PATH], product, env)
-    # Only a package that declares a default binding is bound; this one declares none.
-    assert provenance.source.default_binding is None
-    answers["bind"] = "not_applicable: the package declares no default binding"
-    run(["make", "generate-from-spec"], product, env)
-    answers["kit_add_marker_present"] = marker.exists()
-
-    output, installed_protected = probe("readback", "source-readback", local)
-    readback = install.admitted_local_verification(output, local, installed_protected, provenance)
-    answers["readback_verification"] = readback.model_dump(mode="json")
-    wheel = product / readback.installed.wheel
-    lock = tomllib.loads((product / "services/backend/uv.lock").read_text())
-    answers["observed"] = {
-        "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
-        "lock": next(
-            item for item in lock["package"] if item["name"] == local.package.distribution
-        ),
-        "requirement_source": tomllib.loads(
-            (product / "services/backend/pyproject.toml").read_text()
-        )["tool"]["uv"]["sources"][local.package.distribution],
-        "source_status": run(
-            [
-                "git",
-                "status",
-                "--porcelain",
-                "--ignored",
-                "--untracked-files=all",
-                "--",
-                SOURCE_PATH,
-            ],
-            product,
-        ),
-        "head": run(["git", "rev-parse", "HEAD"], product),
+    fence = CanonicalFence(local, answers.setdefault("fence_commands", []))
+    boundary = answers.setdefault("credential_boundary", [])
+    result = await execute(context, base, fence, boundary, readback_refusals)
+    answers["execution"] = asdict(result)
+    provenance, readback = fence.proofs
+    assert (provenance.mode, readback.mode) == ("provenance", "readback")
+    assert provenance.source.default_binding == "notes_source:bindings/default.yaml"
+    assert result.checkout == f"{product.name}/{LOCAL_OPERATION}" and result.checkout_removed
+    assert not attempt.exists()
+    kit = [item["argv"][1:] for item in result.stages if item["argv"][0].endswith("/bin/kit")]
+    assert kit[1:] == [
+        ["add", "notes-source", "--package-source", SOURCE_PATH],
+        ["bind", "notes-source", "--default"],
+    ]
+    remote = run([*git, "ls-remote", "origin", f"refs/heads/story/{STORY}"], product).split()[0]
+    run([*git, "fetch", "--no-tags", "origin"], product)
+    names = run(["git", "ls-tree", "-r", "--name-only", result.head_sha], product).splitlines()
+    lock = tomllib.loads(published(product, result.head_sha, "services/backend/uv.lock").decode())
+    [locked] = [item for item in lock["package"] if item["name"] == local.package.distribution]
+    binding = published(product, result.head_sha, "services/tg_bot/bindings/notes-source.yaml")
+    retained = {
+        name: hashlib.sha256(published(product, result.head_sha, name)).hexdigest()
+        for name in readback.protected_sha256
+        if name in names
     }
-    assert answers["observed"]["wheel_sha256"] == readback.installed.wheel_sha256
-    assert answers["observed"]["head"] == local.commit
-    site = run(
-        [
-            str(product / "services/backend/.venv/bin/python"),
-            "-I",
-            "-B",
-            "-c",
-            "import site; print(site.getsitepackages()[0])",
-        ],
-        product,
-    )
-    substituted(
-        Path(site) / "notes_source/__init__.py",
-        lambda original: original + b"# substituted\n",
-        "installed_file_changed",
-        "source-readback",
-        "installed_files_mismatch",
-    )
-    substituted(
-        manifest,
-        lambda original: original + b"# substituted\n",
-        "installed_source_changed",
-        "source-readback",
-        "source_changed",
-    )
+    answers["publication"] = {
+        "base": result.base_sha,
+        "head": result.head_sha,
+        "remote_head": remote,
+        "parents": run(
+            ["git", "rev-list", "--parents", "-n", "1", result.head_sha], product
+        ).split()[1:],
+        "source_tree": run(["git", "rev-parse", f"{result.head_sha}:{SOURCE_PATH}"], product),
+        "wheel_sha256": hashlib.sha256(
+            published(product, result.head_sha, readback.installed.wheel)
+        ).hexdigest(),
+        "lock": locked,
+        "binding_sha256": hashlib.sha256(binding).hexdigest(),
+        "retained_protected": len(retained),
+        "import_marker_published": IMPORT_MARKER in names,
+    }
+    publication = answers["publication"]
+    assert result.base_sha == local.commit and publication["parents"] == [local.commit]
+    assert publication["remote_head"] == result.head_sha != local.commit
+    assert publication["source_tree"] == answers["source"]["tree"]
+    assert publication["wheel_sha256"] == readback.installed.wheel_sha256
+    assert [item["hash"] for item in locked["wheels"]] == [
+        f"sha256:{readback.installed.wheel_sha256}"
+    ]
+    assert publication["binding_sha256"] == provenance.source.binding_sha256
+    assert publication["binding_sha256"] == readback.installed.binding_sha256
+    assert retained == {name: readback.protected_sha256[name] for name in retained}
+    assert not publication["import_marker_published"]
     refusal = None
     try:
         install.admitted_local_verification(
-            output, local, installed_protected | {"pyproject.toml": "0" * 64}, provenance
+            readback.model_dump_json(),
+            local,
+            readback.protected_sha256 | {"pyproject.toml": "0" * 64},
+            provenance,
         )
     except install.InstallExecutionError as error:
         refusal = str(error)
     assert refusal == "local_verification_mismatch: protected_sha256"
     answers["protected_change_refusal"] = refusal
+    other = local.model_copy(update={"repository_id": "repo-other"})
+    refusal = None
+    try:
+        install.admitted_local_verification(
+            provenance.model_dump_json(), other, provenance.protected_sha256
+        )
+    except install.InstallExecutionError as error:
+        refusal = str(error)
+    assert refusal == "local_verification_mismatch: target.repository_id"
+    answers["other_repository_refusal"] = refusal
 
 
 async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one owned product
@@ -648,63 +751,24 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
             artifact["source_preflight"] = {}
             prove_source_preflight(product, payload, artifact["source_preflight"])
             assert run(["git", "status", "--porcelain"], product) == ""
-            message = ScaffoldMessage(
+            context = install.InstallContext(
                 project_id="ci-project",
                 repository_id=product.name,
-                template_repo=TEMPLATE_PIN.source,
-                template_ref=TEMPLATE_PIN.ref,
-                project_name="notes",
-                modules="backend,tg_bot",
-                mode="install",
-                task_id="ci-install",
-                story_id="ci-story",
+                story_id=STORY,
                 operation_id="ci-operation",
-                cycle_started_at=datetime.now(UTC),
-                install=payload,
+                template_ref=TEMPLATE_PIN.ref,
+                install=CatalogInstall.model_validate(payload),
             )
-            actual_command = install._run_cmd
-
-            async def transport(argv, **kwargs):
-                operation = argv[3] if argv[0] == "git" else None
-                credential_present = any(
-                    key.startswith("GIT_CONFIG_VALUE_") and value.startswith("Authorization: ")
-                    for key, value in kwargs["env"].items()
-                )
-                assert credential_present == (
-                    argv[0] == "git" and operation in {"fetch", "ls-remote", "push"}
-                )
-                artifact["credential_boundary"].append(
-                    {
-                        "executable": Path(argv[0]).name,
-                        "git_operation": operation,
-                        "credential_present": credential_present,
-                    }
-                )
-                # GitHub's repository transport is the one controlled edge. All
-                # git branch/commit/non-force-push/readback operations are real.
-                if argv == ["git", "-c", "core.hooksPath=/dev/null", "remote", "get-url", "origin"]:
-                    return 0, "https://github.com/ci/notes\n", ""
-                return await actual_command(argv, **kwargs)
 
             async def fence(command):
                 artifact["fence_commands"].append(command.model_dump(mode="json"))
 
-            install._run_cmd = transport
-            try:
-                result = await install.run_install(
-                    message,
-                    SimpleNamespace(workspace_base_path=str(base)),
-                    "https://github.com/ci/notes",
-                    "synthetic-ci-token",
-                    fence,
-                )
-            finally:
-                install._run_cmd = actual_command
+            result = await execute(context, base, fence, artifact["credential_boundary"])
             artifact["execution"] = asdict(result)
             artifact["selection"] = payload
             # The executor ran in its own attempt checkout, admitted by the kit's preflight,
             # and removed it once published; the workspace was never its working tree.
-            assert result.checkout == f"{product.name}/{message.operation_id}"
+            assert result.checkout == f"{product.name}/{context.operation_id}"
             assert result.checkout_removed
             assert not (base / CATALOG_INSTALL_ATTEMPTS / result.checkout).exists()
             assert result.preflight["status"] in {"mechanical", "glue"}
@@ -734,7 +798,7 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
                         "core.hooksPath=/dev/null",
                         "ls-remote",
                         "origin",
-                        "refs/heads/story/ci-story",
+                        f"refs/heads/story/{STORY}",
                     ],
                     product,
                 ).split()[0]
@@ -777,9 +841,9 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
                 "sha256": hashlib.sha256(scenario.read_bytes()).hexdigest(),
             }
             artifact["handler_scenarios"] = json.loads(scenario_result.splitlines()[-1])
-            # The local source proof runs last, on this checkout's published install head.
+            # A package source committed on the published catalog head installs last.
             artifact["local_source"] = {}
-            prove_local_source(product, payload, artifact["local_source"])
+            await prove_local_source(product, payload, base, artifact["local_source"])
             artifact["no_engineering"] = {
                 "executor": "scaffolder.install.run_install",
                 "task_type": "install",

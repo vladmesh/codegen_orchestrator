@@ -232,7 +232,7 @@ normalized product-relative package directory (no absolute, root, dot, parent, e
 backslash or control character), the expected package name, distribution and version, and the
 core, Python and tooling identity. It carries no release tag, catalog, digest, binding or library
 closure, and neither payload validates with the other's fields. The path check is lexical:
-existence, ancestry and symlink containment are the future executor's and the kit's. Both task
+existence, ancestry and symlink containment are the executor's and the kit's. Both task
 create routes refuse it unless its project and repository are the task's, the repository is
 managed by that project and the story is that project's (`local_install_repository_unowned`,
 `local_install_story_unowned`). Catalog selection, replan, glue coverage and the admin
@@ -254,10 +254,11 @@ commit (`base_mismatch`); its `head_sha` is the later installation commit, while
 parks the task and story for a person: it is never a product glue repair, which would move the
 pinned commit. Publication requires the readback (`readback_unverified`), the checkpointed base
 equal to the saved commit (`base_unverified`), a mechanical preflight (`preflight_unverified`) and
-the checkpointed installation head (`head_unverified`). No route executes a local install yet:
-the scheduler dispatches no local target (no admission, no `ScaffoldMessage`, which carries only
-`CatalogInstall`), operator recovery answers 409 `local_install_unsupported` before any mutation,
-and engineering admission still refuses every INSTALL.
+the checkpointed installation head (`head_unverified`). The scaffolder's executor runs a local
+target (below), but no production route delivers one to it: the scheduler dispatches no local
+target (no admission, no `ScaffoldMessage`, which carries only `CatalogInstall`), operator recovery
+answers 409 `local_install_unsupported` before any mutation, and engineering admission still
+refuses every INSTALL.
 
 `InstallPreflight` also reads the pinned kit's `kit check-install <package> --json
 --package-source <path>` answer, whose target is exactly `route: package_source`, `path` (the
@@ -305,10 +306,10 @@ every target field with the admitted `LocalPackageInstall`, `head` with its comm
 core and tooling, then a readback with its provenance: source tree and metadata, protected bytes,
 wheel metadata, lock hash, installed version and binding digest. It carries no catalog, tag,
 digest or component target and never validates as `InstallVerification`. A changed branch head
-requires replanning against an existing commit; the future executor enforces HEAD equal to the
-saved commit before mutation and before its install commit. Build tools and dependencies stay
-the kit's, so no build is claimed reproducible from the source tree. No route runs the source
-modes yet; the install-command API keeps their verification on the operation (above).
+requires replanning against an existing commit; the executor enforces HEAD equal to the saved
+commit before mutation and before its install commit (below). Build tools and dependencies stay
+the kit's, so no build is claimed reproducible from the source tree. The install-command API
+keeps the verification on the operation (above).
 
 The reader reads only the activated catalog snapshot (`shared/catalog_activation.yaml`):
 `packages/catalog.yaml` at its commit, verified against its raw SHA256 and the semantic
@@ -405,6 +406,34 @@ each key and failure, and no product judgement is made.
 Credentials, user IDs and timezone values never enter
 parser/generator code.
 
+A `LocalPackageInstall` runs through the same `run_install`, attempt checkout, workspace
+lock, scoped Git transport and fences. Its input is the service-internal `InstallContext`
+(`services/scaffolder/src/install.py`) that the consumer builds from the claimed operation, its
+template ref and the admitted target; the executor refuses `local_target_unowned` before any
+command unless the target's project and repository are the context's, so a matching Git URL
+authorizes nothing. The resolved owned remote base must be the saved commit before the attempt
+is created (`source_base_mismatch`, `prepare`, for replanning): no local branch is read and the old
+commit is never fetched or exported. After the frozen environment preparation the fixed probe's
+`source-provenance` runs as `python -I -B` with `PYTHONDONTWRITEBYTECODE=1`; its output is admitted
+by `admitted_local_verification` with the executor's protected snapshot and checkpointed as the
+operation's provenance. Then `kit check-install <package> --json --package-source <saved path>
+--version <version> --product-root <attempt>` runs under the same no-bytecode policy and is
+admitted by `admitted_preflight` and checkpointed; incompatible or any glue refuses, never as a
+product glue repair. Around both reads the executor compares Git status, protected bytes, every
+tracked `uv.lock` and the whole trees of the source and of each product environment, existing
+caches included (`preflight_not_read_only`). The fixed argv are then `kit add <package>
+--package-source <saved path>`, `kit bind <package> --default` only when the measured source
+declares a default binding, regeneration, spec validation, per-service mypy and the product tests.
+The `source-readback` is admitted against the provenance with the re-read protected bytes and
+checkpointed as the matching readback. Before the install commit the executor rechecks HEAD,
+the source tree and an empty `git status --ignored` below the source path (`source_changed`) and
+the protected bytes; untracked or ignored build residue below the source refuses
+(`source_residue`) and stays in the retained attempt. The staging rule is `git add -A -- .
+':(exclude,literal)<saved path>'`: only the native installation outputs (backend requirement,
+lock and wheel, binding, manifests, generated output) are staged and the committed source tree
+is unchanged. The commit's parent is the saved commit; the proof's `head` stays that commit while
+the operation's head is the new installation commit.
+
 Verification and exact base/head checkpoints precede a non-force commit/push. A
 lost push response succeeds only after the remote exact head is observed. Publication
 marks the Task done with verified closure under the same API fences. Existing story
@@ -490,12 +519,16 @@ reads component tag object/target/tree provenance, and runs the released fake-ba
 confirmation/preset/list/cancel corpus under the product bot interpreter. Its redacted
 `mechanical-install-result.json` identifies the candidate, executed stages, readback
 and exact non-force Git head. On that published head the lane then commits a synthetic
-package source, runs the source provenance probe, its refusals (other commit, path, version or
-distribution, a changed tracked byte, an untracked file), the kit's source check-install,
-`kit add --package-source` and regeneration, and the readback with a changed installed file or
-source refused. Every probe runs `-I -B` and leaves source, lock, protected and environment trees
-byte-identical; the real consumer admits the readback only against its provenance, and the
-artifact's `local_source` retains raw outputs, tree, wheel, lock and refusals. DB/Redis service tests prove actual persisted closure,
+package source declaring one action and a real v2 default binding, moves the owned story branch
+to it and checks the source probe's refusals (other commit, path, version or distribution, a
+changed tracked byte, an untracked file) read-only. It then calls the actual executor with an
+`InstallContext` for that target under a fence that records every command and holds the API's
+local transition and base rule; at the executor's own readback the attempt refuses a changed
+installed file and a changed source. The artifact's `local_source` retains the ordered fence
+commands, the credential boundary, the executor stages (`kit add --package-source`, `kit bind
+--default`, generation, checks), the admitted provenance and readback, the published base, head,
+parent, source tree, wheel, lock and binding digests, retained protected bytes and the removed
+attempt. It does not replace the API, DB and Redis service proof or a queue delivery witness. DB/Redis service tests prove actual persisted closure,
 coverage, dispatch, zero engineering accounting and exclusive/recoverable ownership.
 The older `mega-noop` engineering runner directive remains historical evidence of a
 different route, retained by the ordinary engineering fixture and `mega-live`.

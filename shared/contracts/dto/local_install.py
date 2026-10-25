@@ -1,4 +1,4 @@
-"""A product-local kit package INSTALL target and its probe evidence; not executable yet."""
+"""A product-local kit package INSTALL target and its probe evidence."""
 
 from typing import Annotated, Literal
 import unicodedata

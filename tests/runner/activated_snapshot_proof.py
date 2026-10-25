@@ -646,8 +646,8 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
             executor = install.run_install
             runner = self
 
-            async def owned(message, settings, git_url, token, fence):
-                name = message.install.package.name
+            async def owned(context, settings, git_url, token, fence):
+                name = context.install.package.name
                 with timeline.commands(runner.timeline, install, runner.command_name):
                     harness_transport = install._run_cmd
 

@@ -1,6 +1,7 @@
 """Production executor with real local Git; only kit/process product edges are controlled."""
 
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
@@ -12,7 +13,7 @@ import pytest
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS, has_preserved_work
 from src.install import InstallExecutionError, run_install
 from src.scaffold import _run_cmd
-from tests.unit.test_install_executor import check_install, glue_item, message
+from tests.unit.test_install_executor import check_install, context, glue_item
 
 # Every test here starts processes: CI runs this file, the host profile skips it.
 pytestmark = pytest.mark.subprocess
@@ -83,7 +84,7 @@ def git_operation(args):
 
 async def execute(product, tmp_path, fence=None, operation="install-1"):
     return await run_install(
-        message().model_copy(update={"operation_id": operation}),
+        replace(context(), operation_id=operation),
         SimpleNamespace(workspace_base_path=str(tmp_path)),
         "https://github.com/owner/notes",
         "fake-token",

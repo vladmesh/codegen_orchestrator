@@ -12,6 +12,7 @@ from shared.contracts.dto.local_install import LocalPackageInstall
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS
 from src.install import (
+    InstallContext,
     InstallExecutionError,
     admitted_local_verification,
     admitted_preflight,
@@ -134,13 +135,26 @@ def message():
     )
 
 
+def context(msg=None):
+    """The executor's input for `msg`, as the consumer builds it from the claimed operation."""
+    msg = msg or message()
+    return InstallContext(
+        project_id=msg.project_id,
+        repository_id=msg.repository_id,
+        story_id=msg.story_id,
+        operation_id=msg.operation_id,
+        template_ref=msg.template_ref,
+        install=msg.install,
+    )
+
+
 @pytest.mark.asyncio
 async def test_missing_workspace_refuses_without_any_command(tmp_path, monkeypatch):
     command = AsyncMock()
     monkeypatch.setattr("src.install._run_cmd", command)
     with pytest.raises(InstallExecutionError, match="workspace_unowned"):
         await run_install(
-            message(),
+            context(),
             SimpleNamespace(workspace_base_path=str(tmp_path)),
             "https://github.com/owner/notes",
             "fake-token",
@@ -169,7 +183,7 @@ async def test_a_retained_attempt_is_never_reused_by_its_operation(tmp_path, mon
     monkeypatch.setattr("src.install._run_cmd", command)
     with pytest.raises(InstallExecutionError, match="attempt_exists") as refused:
         await run_install(
-            message(),
+            context(),
             SimpleNamespace(workspace_base_path=str(tmp_path)),
             "https://github.com/owner/notes",
             "fake-token",
@@ -201,7 +215,7 @@ async def test_install_git_trusts_the_worker_owned_workspace(tmp_path, monkeypat
     # refuse the repository as dubious before reading anything.
     with pytest.raises(InstallExecutionError) as refused:
         await run_install(
-            message(),
+            context(),
             SimpleNamespace(workspace_base_path=str(tmp_path)),
             "https://github.com/owner/notes",
             "fake-token",
@@ -331,7 +345,7 @@ def product_checkout_until(tmp_path, stop, preflight=None, preflight_rc=0):
 
 async def execute(tmp_path, fence=None):
     return await run_install(
-        message(),
+        context(),
         SimpleNamespace(workspace_base_path=str(tmp_path)),
         "https://github.com/owner/notes",
         "fake-token",
@@ -532,7 +546,7 @@ async def test_product_unit_leg_never_reaches_the_orchestrator_redis(tmp_path, m
     monkeypatch.setattr("src.install._run_cmd", command)
     with pytest.raises(InstallExecutionError, match="tests failed"):
         await run_install(
-            message(),
+            context(),
             SimpleNamespace(workspace_base_path=str(tmp_path)),
             "https://github.com/owner/notes",
             "fake-token",
@@ -551,7 +565,7 @@ async def test_timed_out_product_command_refuses_with_its_argv(tmp_path, monkeyp
     monkeypatch.setattr("src.install._run_cmd", command)
     with pytest.raises(InstallExecutionError) as refused:
         await run_install(
-            message(),
+            context(),
             SimpleNamespace(workspace_base_path=str(tmp_path)),
             "https://github.com/owner/notes",
             "fake-token",
@@ -570,7 +584,7 @@ async def test_every_component_is_added_from_the_payloads_pinned_catalog(tmp_pat
     monkeypatch.setattr("src.install._run_cmd", command)
     with pytest.raises(InstallExecutionError):
         await run_install(
-            message(),
+            context(),
             SimpleNamespace(workspace_base_path=str(tmp_path)),
             "https://github.com/owner/notes",
             "fake-token",
@@ -592,7 +606,7 @@ async def test_a_payload_without_a_catalog_commit_runs_nothing(tmp_path, monkeyp
     (tmp_path / "repo-1/.git").mkdir(parents=True)
     command = AsyncMock()
     monkeypatch.setattr("src.install._run_cmd", command)
-    unpinned = message()
+    unpinned = context()
     unpinned.install.catalog = None
     with pytest.raises(InstallExecutionError, match="catalog_unpinned") as refused:
         await run_install(

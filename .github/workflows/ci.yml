@@ -602,13 +602,13 @@ jobs:
       - name: Run baseline compatibility smoke
         if: matrix.candidate == false
         run: >-
-          bash scripts/ci-infra.sh bound --step compatibility-smoke --timeout 15m --
+          bash scripts/ci-infra.sh bound --step compatibility-smoke --timeout 12m --
           make test-template-compat ARTIFACT_DIR="$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
 
       - name: Prove released mechanical catalog install executor
         if: matrix.candidate == false
         run: >-
-          bash scripts/ci-infra.sh bound --step mechanical-install --timeout 11m --
+          bash scripts/ci-infra.sh bound --step mechanical-install --timeout 14m --
           uv run python tests/integration/template/mechanical_install_smoke.py
           --output-dir "$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
 

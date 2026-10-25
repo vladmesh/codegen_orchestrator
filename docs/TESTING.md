@@ -627,7 +627,7 @@ Buildx bootstrap (120 s attempts), 6.5 minutes per image pulled (90 s attempts),
 | `service-image-imports` | 6.6 min (import step 6.0) | 32.5 | 35 | Buildx 3 × 120 s; imports 15 min |
 | `test-service/<leg>` | 8.7 min (tests 8.4) | 50 (`scheduler` and `langgraph`, 3 images) | 55 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
 | `test-integration/<leg>` | 4.2 min (tests 3.9) | 40.5 (2 images) | 45 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 10 min |
-| `template-compatibility/<entry>` | 3.7 min (smoke 3.5) | 24.5 | 30 | smoke 15 min |
+| `template-compatibility/<entry>` | 3.7 min (smoke 3.5) | 39.5 | 40 | baseline smoke 12 min, mechanical install 14 min; candidate smoke 15 min |
 | `web-checks/<app>` | 0.5 min | — | 10 | — |
 | `test-backend-dind-integration` | 8.5 min (suite 8.1, of which about 131 s built the worker chain; it now pulls the candidates) | 52 (3 images) | 55 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
 | `build-worker-images` | new, not yet measured (the chain built and pushed in 2.5–4 min in the old publish job; a released hash only re-verifies) | 19.5 | 20 | candidates 15 min |
