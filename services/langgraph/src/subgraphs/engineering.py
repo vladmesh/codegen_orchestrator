@@ -17,6 +17,7 @@ from shared.contracts.dto.commit_publication import CommitPublication
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 from shared.contracts.dto.executor_decision import ExecutorDecision
+from shared.contracts.dto.local_install import LocalPackageBuild
 from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.queues.worker_result import WorkerStopReason
@@ -62,6 +63,10 @@ class EngineeringState(TypedDict):
     # primary repository's cumulative checklist central QA runs after deploy.
     task_acceptance_criteria: str | None
     repository_acceptance_criteria: str | None
+
+    # The planning Task's stored package build intent, read from the API by the
+    # consumer; None for taskless work and every ordinary task.
+    package_build: LocalPackageBuild | None
 
     # Repository info (for workspace mounting)
     repo_id: str | None

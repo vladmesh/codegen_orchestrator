@@ -221,7 +221,7 @@ paid engineering admission and this worker. The deterministic plan_install tool
 owns the package, recommended libraries and released default binding as one closure;
 do not recreate the parser or handlers or turn a refused install into a coding task.
 
-Package code is never hand-written into a product. Scaffolder uses the package catalog
+Catalog package code is never hand-written into a product. Scaffolder uses the package catalog
 (`packages/catalog.yaml` in the kit) and owns fixed kit add/bind commands, regeneration, actual product
 readback, preservation of app/spec/environment/binding bytes and its non-force story
 head. An incompatible core, binding conflict or unresolved Copier rejection requires
@@ -229,6 +229,14 @@ human review through the native update/recovery contract. Default binding declar
 timezone schema only; a confirmed explicit value follows the typed settings seed/deploy
 path. See docs/contracts/kit-template-and-qa.md, "Installing a kit package into a
 generated product". Ordinary feature work keeps its existing worker lifecycle.
+
+### Product-local package source
+
+The one exception is a task whose TASK.md has a "Product-Local Package Source" section:
+the platform stored a typed build intent with it. Write that package's source exactly
+where and as the section says, test it, commit and push it like any feature. Installing
+it stays the platform's: never run `kit add` or `kit bind` for it, add its wheel or
+regenerate for it. Without that section, write no package source.
 
 ## Commit & Push
 

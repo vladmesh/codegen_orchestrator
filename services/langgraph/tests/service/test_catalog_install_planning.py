@@ -13,6 +13,9 @@ import uuid
 from psycopg import AsyncConnection
 import pytest
 
+from shared.catalog_activation import CATALOG_ACTIVATION
+from shared.contracts.dto.local_install import LocalPackageBuild
+from shared.contracts.dto.story_planning import PlanningChannels
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.queues import ENGINEERING_QUEUE, SCAFFOLD_QUEUE, WORKER_COMMANDS
 from src.agents.architect import tools
@@ -160,6 +163,174 @@ async def test_scripted_selection_persists_one_install_and_dispatches_without_en
                     )
                     assert (await cursor.fetchone())[0] == 0
     finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+async def test_architect_source_build_persists_owned_intent_chain_and_admitted_coverage(
+    real_redis,
+):
+    """Real tools and API: INSTALL, then the owned source FEATURE, then ordinary work.
+
+    No model, worker, GitHub, package source or native install takes part.
+    """
+    api = LanggraphAPIClient()
+    api.base_url = os.environ["TEST_API_BASE_URL"]
+    telegram = uuid.uuid4().int % 1_000_000_000
+    before = {queue: await real_redis.xlen(queue) for queue in (ENGINEERING_QUEUE, WORKER_COMMANDS)}
+    build = {
+        "path": "packages/post-ranking",
+        "package": {
+            "name": "post-ranking",
+            "distribution": "codegen-kit-post-ranking",
+            "version": "0.1.0",
+        },
+        "core_version": CATALOG_ACTIVATION.core_version,
+        "python_version": INSTALL_PYTHON_VERSION,
+        "tooling_commit": CATALOG_ACTIVATION.tooling_commit,
+    }
+    try:
+        await api.post("users/", json={"telegram_id": telegram, "username": "ranking-owner"})
+        project = await api.post(
+            "projects/",
+            headers={"X-Telegram-ID": str(telegram)},
+            json={
+                "title": "Ranked digest",
+                "status": "active",
+                "initiating_run_id": "ranking-init",
+                "config": {"workspace_ready": True, "modules": ["backend", "tg_bot"]},
+            },
+        )
+        pid = project["id"]
+        repo = await api.post(
+            "repositories/",
+            json={
+                "project_id": pid,
+                "role": "primary",
+                "name": f"ranked-{telegram}",
+                "git_url": f"https://github.com/synthetic/ranked-{telegram}",
+            },
+        )
+        story = await api.post("stories/", json={"project_id": pid, "title": "Rank my posts"})
+        content = {
+            "summary": "Rank collected posts and remind me to read them",
+            "language": "en",
+            "must_requirements": [
+                {
+                    "id": "rank",
+                    "text": "Rank collected posts by my configured signals",
+                    "user_wording": "Show my posts ranked",
+                }
+            ],
+            "usage_examples": [
+                {
+                    "requirement_id": "rank",
+                    "user_sends": "/top",
+                    "product_answers": "The collected posts, highest ranked first",
+                }
+            ],
+        }
+        brief = await api.post(
+            "product-briefs/",
+            json={
+                "project_id": pid,
+                "title": "Ranked posts",
+                "content": content,
+                "request_id": f"ranking-request-{telegram}",
+            },
+        )
+        await api.post(
+            f"product-briefs/{brief['id']}/confirm",
+            json={"request_id": f"ranking-confirm-{telegram}", "content": content},
+        )
+        await api.post(f"product-briefs/{brief['id']}/story", json={"story_id": story["id"]})
+        claim = await api.claim_planning_attempt(brief["id"])
+        assert claim.outcome == "claimed"
+        attempt = claim.planning_attempt_id
+        await api.transition_story(story["id"], "start")
+        identity = {"story_id": story["id"], "project_id": pid, "planning_attempt_id": attempt}
+        tools.reset_task_chain()
+        with patch("src.agents.architect.tools.api_client", api):
+            install = await tools.plan_install.coroutine(
+                name="reminders",
+                kit_install_snapshot=install_snapshot(snapshot()),
+                config={"configurable": {}},
+                **identity,
+            )
+            ordinary = {"type": "feature", "kit_catalog_packages": sorted(snapshot().names)}
+            source = await tools.create_task.ainvoke(
+                {
+                    **identity,
+                    **ordinary,
+                    "title": "Post ranking package",
+                    "description": "Rank collected posts by configured signals.",
+                    "acceptance_criteria": "The package ranks posts by its settings.",
+                    "package_build": build,
+                }
+            )
+            follow_up = await tools.create_task.ainvoke(
+                {
+                    **identity,
+                    **ordinary,
+                    "title": "Show ranked posts",
+                    "description": "Reply to /top with the ranked posts.",
+                    "acceptance_criteria": "Telegram: /top lists posts highest ranked first",
+                }
+            )
+            coverage = await tools.record_requirement_coverage.ainvoke(
+                {
+                    "requirement_id": "rank",
+                    "task_id": source["id"],
+                    "brief_id": brief["id"],
+                    "planning_attempt_id": attempt,
+                }
+            )
+        assert "error" not in install and "error" not in source, (install, source)
+        assert "error" not in follow_up and "error" not in coverage, (follow_up, coverage)
+        admitted = await api.admit_product_brief_coverage(
+            brief["id"], attempt, channels=PlanningChannels()
+        )
+        assert admitted.outcome == "admitted"
+
+        tasks = {task.id: task for task in await api.get_tasks_by_story(story["id"])}
+        assert set(tasks) == {install["id"], source["id"], follow_up["id"]}
+        installed, built, after = (tasks[t["id"]] for t in (install, source, follow_up))
+        assert installed.type == "install" and installed.repository_id == repo["id"]
+        assert built.type == "feature" and built.status == "todo" and built.install is None
+        assert built.package_build == LocalPackageBuild.model_validate(build)
+        assert (built.repository_id, built.story_id) == (repo["id"], story["id"])
+        assert built.planning_attempt_id == attempt and built.blocked_by_task_id == installed.id
+        assert after.package_build is None and after.blocked_by_task_id == built.id
+        assert all(task.dispatch_admitted for task in tasks.values())
+        [recorded] = await api.list_requirement_coverage(brief["id"])
+        assert recorded.task_id == built.id and recorded.planning_attempt_id == attempt
+
+        dispatched = subprocess.run(
+            [sys.executable, "-P", str(Path(__file__).with_name("_catalog_install_scheduler.py"))],
+            env=os.environ
+            | {
+                "PYTHONPATH": "/app/scheduler:/app",
+                "INSTALL_TASK": installed.id,
+                "API_BASE_URL": os.environ["TEST_API_BASE_URL"],
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert dispatched.returncode == 0, dispatched.stdout + dispatched.stderr
+        assert before == {queue: await real_redis.xlen(queue) for queue in before}
+        async with await AsyncConnection.connect(
+            os.environ["TEST_DATABASE_URL"], autocommit=True
+        ) as db:
+            for table in ("runs", "engineering_attempt_ledger", "engineering_budget_reservations"):
+                async with db.cursor() as cursor:
+                    await cursor.execute(
+                        f"SELECT count(*) FROM {table} WHERE project_id=%s", (pid,)
+                    )
+                    assert (await cursor.fetchone())[0] == 0
+        assert (await api.get_task(built.id)).blocked_by_task_id == installed.id
+    finally:
+        tools.reset_task_chain()
         await api.close()
 
 

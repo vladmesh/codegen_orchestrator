@@ -19,7 +19,7 @@ from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType
 from src.clients.worker_spawner import SpawnResult
 from src.nodes.developer_tasks import build_task_message
-from tests.unit.factories import make_project, make_repository, make_task
+from tests.unit.factories import make_engineering_reads, make_project, make_repository
 
 # The 2026-09-17 case (sprint:1445, story-9d65206d): the architect quoted the
 # brief's usage-example replies, central QA checked them literally, and the
@@ -33,6 +33,7 @@ REPOSITORY_CRITERIA = f"{BASELINE_ACCEPTANCE_CRITERIA}\n{TASK_CRITERIA}"
 QUOTE = "«Доход 5000 «зарплата» записан.»"
 
 TASK_HEADING = "## Acceptance Criteria (QA checks these literally)"
+PROJECT_ID = str(make_project().id)
 CHECKLIST_HEADING = "## Post-Deploy QA Checklist"
 
 
@@ -40,7 +41,7 @@ def _dispatcher_message(**overrides) -> dict:
     """`task_dispatcher`: a planned or QA-fix task, story-scoped, deploy at story level."""
     message = EngineeringMessage(
         task_id="eng-1",
-        project_id="proj-1",
+        project_id=PROJECT_ID,
         initiating_run_id="live-1",
         action="feature",
         description="Record income and expenses",
@@ -56,7 +57,7 @@ def _api_manual_start_message() -> dict:
     """`_task_actions`: a planned task started by hand, no branch."""
     return EngineeringMessage(
         task_id="eng-2",
-        project_id="proj-1",
+        project_id=PROJECT_ID,
         initiating_run_id="live-1",
         action="feature",
         description="Record income and expenses",
@@ -69,7 +70,7 @@ def _deploy_code_fix_message() -> dict:
     """`supervisor/deploy`: a deploy code fix, with no planning task."""
     return EngineeringMessage(
         task_id="eng-3",
-        project_id="proj-1",
+        project_id=PROJECT_ID,
         initiating_run_id="live-1",
         action="fix",
         description="Deploy failed: container exits on start",
@@ -79,10 +80,13 @@ def _deploy_code_fix_message() -> dict:
     ).model_dump(mode="json")
 
 
+def _planned_task(job_data: dict, **overrides):
+    return make_engineering_reads(job_data, **overrides)[0]
+
+
 def _consumer_api(*, task=None, repository=None, task_error=None, repository_error=None):
     api = MagicMock()
     api.patch = AsyncMock()
-    api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
     api.get_project = AsyncMock(return_value=make_project(config={"modules": ["backend"]}))
     api.get_task = AsyncMock(return_value=task, side_effect=task_error)
     api.get_primary_repository = AsyncMock(return_value=repository, side_effect=repository_error)
@@ -94,6 +98,8 @@ async def _task_md(job_data: dict, api: MagicMock) -> str:
     from src.consumers.engineering import process_engineering_job
     from src.nodes.developer import DeveloperNode
 
+    if job_data["planning_task_id"]:
+        api.get_run = AsyncMock(return_value=make_engineering_reads(job_data)[1])
     spawn = AsyncMock(
         return_value=SpawnResult(request_id="req-1", success=False, exit_code=1, output="stop")
     )
@@ -146,7 +152,7 @@ class TestEveryProducerCarriesTheCriteria:
     async def test_planned_task_carries_its_own_and_the_repository_criteria(self, job_data):
         """Regression 2026-09-17: both quotes reach TASK.md verbatim."""
         api = _consumer_api(
-            task=make_task(id="task-62fc50cb", acceptance_criteria=TASK_CRITERIA),
+            task=_planned_task(job_data, acceptance_criteria=TASK_CRITERIA),
             repository=make_repository(acceptance_criteria=REPOSITORY_CRITERIA),
         )
 
@@ -164,14 +170,13 @@ class TestEveryProducerCarriesTheCriteria:
     @pytest.mark.asyncio
     async def test_qa_fix_task_carries_the_repository_checklist(self):
         """A QA-fix task has no criteria of its own; the checklist it must pass is still there."""
+        job_data = _dispatcher_message(action=ActionType.FIX, planning_task_id="task-fix")
         api = _consumer_api(
-            task=make_task(id="task-fix", type="fix", acceptance_criteria=None),
+            task=_planned_task(job_data, type="fix", acceptance_criteria=None),
             repository=make_repository(acceptance_criteria=REPOSITORY_CRITERIA),
         )
 
-        task_md = await _task_md(
-            _dispatcher_message(action=ActionType.FIX, planning_task_id="task-fix"), api
-        )
+        task_md = await _task_md(job_data, api)
 
         assert TASK_HEADING not in task_md
         assert REPOSITORY_CRITERIA in task_md.split(CHECKLIST_HEADING, 1)[1]
@@ -189,11 +194,11 @@ class TestEveryProducerCarriesTheCriteria:
         assert QUOTE in task_md.split(CHECKLIST_HEADING, 1)[1]
 
 
-class TestUnreadableCriteriaNeverFailTheRun:
+class TestUnreadableRepositoryNeverFailsTheRun:
     @pytest.mark.asyncio
     async def test_failed_repository_read_omits_the_checklist_and_warns_once(self):
         api = _consumer_api(
-            task=make_task(id="task-62fc50cb", acceptance_criteria=TASK_CRITERIA),
+            task=_planned_task(_dispatcher_message(), acceptance_criteria=TASK_CRITERIA),
             repository_error=httpx.ConnectError("api unavailable"),
         )
 
@@ -207,7 +212,7 @@ class TestUnreadableCriteriaNeverFailTheRun:
     @pytest.mark.asyncio
     async def test_missing_repository_omits_the_checklist_and_warns_once(self):
         api = _consumer_api(
-            task=make_task(id="task-62fc50cb", acceptance_criteria=TASK_CRITERIA),
+            task=_planned_task(_dispatcher_message(), acceptance_criteria=TASK_CRITERIA),
             repository=None,
         )
 
@@ -215,24 +220,6 @@ class TestUnreadableCriteriaNeverFailTheRun:
             task_md = await _task_md(_dispatcher_message(), api)
 
         assert CHECKLIST_HEADING not in task_md
-        assert logger.warning.call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_missing_planning_task_omits_its_section_and_warns_once(self):
-        request = httpx.Request("GET", "http://api/tasks/task-62fc50cb")
-        not_found = httpx.HTTPStatusError(
-            "not found", request=request, response=httpx.Response(404, request=request)
-        )
-        api = _consumer_api(
-            task_error=not_found,
-            repository=make_repository(acceptance_criteria=REPOSITORY_CRITERIA),
-        )
-
-        with patch("src.consumers.acceptance_context.logger") as logger:
-            task_md = await _task_md(_dispatcher_message(), api)
-
-        assert TASK_HEADING not in task_md
-        assert REPOSITORY_CRITERIA in task_md
         assert logger.warning.call_count == 1
 
 

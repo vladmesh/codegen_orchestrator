@@ -435,6 +435,8 @@ async def test_actual_planned_empty_attempt_fails_its_task_without_parking_the_s
             "max_iterations": 3,
         },
     )
+    async with await AsyncConnection.connect(os.environ["TEST_DATABASE_URL"]) as db:
+        await db.execute("UPDATE runs SET task_id=%s WHERE id=%s", (task["id"], run_id))
     stream = RedisStreamClient()
     await stream.connect()
     before_deploys = await real_redis.xlen(DEPLOY_QUEUE)

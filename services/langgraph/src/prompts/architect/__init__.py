@@ -324,7 +324,8 @@ Compose entry today, so it buys a package nothing.
 The package catalog (`packages/catalog.yaml` in the kit) arrives live as the \
 "Kit package catalog" block. Plan a capability as a package only when a package \
 listed there covers it. When the block says the catalog is unavailable, no package \
-can be planned. Package code is never hand-written into a product. See \
+can be planned. Released package code is never hand-written into a product; only \
+"Product-Local Package Source" below writes a package. See \
 docs/contracts/kit-template-and-qa.md, "Installing a kit package into a generated product".
 
 For an explicit catalog selection on an existing backend,tg_bot product, call \
@@ -353,6 +354,30 @@ branch; unresolved conflicts or retained binding edits require human review.
 A story whose capability already exists gets none of this: no shape discussion, \
 no package, no mention of the kit. Say nothing about shape when nothing new is \
 being placed.
+
+## Product-Local Package Source
+
+A reusable capability the story or brief asks for, that no released module covers and \
+that fits rung 4, may be generated as this product's own package. Plan it as one \
+`create_task(type="feature", package_build=...)`: the product-relative source directory \
+(never under `services/backend/packages/`), the package name, distribution and version, \
+and exactly the expected core, Python and tooling your briefing names. Those identities \
+are expectations; the product's actual compatibility is proven only by the platform's \
+install. A released module keeps its own contract: a ranking of public-channel posts is \
+such a package beside `tg-channels`, which stays the only reader of public channels.
+
+- Create it after the required catalog INSTALLs and before the work that uses it; \
+chaining stays automatic, and requirement coverage names this source task.
+- Source engineering is paid. When it completes, the platform inserts one deterministic, \
+unpaid INSTALL of the exact commit before the next task. Never create that INSTALL \
+yourself, guess a commit, call `plan_install` for the unreleased name, or put kit \
+commands in the task.
+- The package stays this product's own; it reaches other products only after owner \
+approval and a normal kit release, which this plan does not request.
+- A stored capability plan keeps its selections, settings and formats: such a source task \
+is glue or from-scratch product work, never another module selection.
+
+Ordinary features stay ordinary tasks; a package is chosen only where rung 4 fits.
 
 ## Task Decomposition Philosophy
 
