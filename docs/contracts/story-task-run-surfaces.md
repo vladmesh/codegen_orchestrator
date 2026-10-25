@@ -253,8 +253,8 @@ TaskCreate type=install requires an `InstallTarget` (`CatalogInstall` or the
 product-local `LocalPackageInstall`) plus story/repository ownership; TaskRead and
 TaskDTO carry the identical typed install and API-owned install_operation data.
 Both create routes refuse a local source outside the task's managed repository and
-product story before insertion; no production route delivers such a target to the
-executor yet.
+product story before insertion; no planner writes such a target, and the scheduler
+delivers a stored one to the executor as any INSTALL.
 TaskUpdate cannot rewrite that ownership or supply execution fields. Generic
 start/complete/retry/resume are refused; DELETE preserves cancellation, releasing
 queued operations while running writers still owe owned settlement. Internal/admin

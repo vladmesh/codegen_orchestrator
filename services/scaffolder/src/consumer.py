@@ -469,6 +469,7 @@ async def _process_install_mode(msg, repo_full_name, github, github_token, api, 
     operation = decision.operation
     if (
         operation is None
+        or operation.id != msg.operation_id
         or str(operation.project_id) != msg.project_id
         or operation.task_id != msg.task_id
         or operation.story_id != msg.story_id
