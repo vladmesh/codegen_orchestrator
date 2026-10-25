@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import select
 from test_local_install import buyer, local_install, package_build, post, product
-from test_local_package_handoff import admitted_build, complete, fresh, success
+from test_local_package_handoff import admitted_build, complete, fresh, produce_done, success
 
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.package_candidate import PackageCandidateRead
@@ -121,13 +121,16 @@ async def twelve_built(client, db_session) -> dict:
     """One story with twelve distinct long-identity packages built and settled in order."""
     owner = await product(client, await buyer(client))
     for index in range(12):
-        await built(
+        build = await built(
             client,
             db_session,
             owner,
             package_build=long_package(index),
             title=f"Generate package {index}",
         )
+        # A story admits the next engineering task only once no sibling is still in_dev.
+        done = await produce_done(client, build)
+        assert done.status_code == 200 and done.json()["status"] == "done", done.text
     return owner
 
 
