@@ -39,6 +39,18 @@ def test_a_budget_refusal_tells_the_owner_no_budget_not_exhaustion():
     assert "still has conflicts" not in text and "platform problem" not in text
 
 
+def test_a_refused_package_handoff_says_engineering_completed_but_installation_did_not_start():
+    failure = StoryFailure(
+        code=StoryFailureCode.LOCAL_PACKAGE_HANDOFF_REFUSED,
+        source="engineering",
+        detail="Attempt eng-1: commit_missing",
+    )
+    text = story_failure_owner_text(failure)
+    assert "engineering work completed" in text and "installation" in text
+    assert "commit_missing" in text
+    assert "nothing was spent" not in text and "nothing was built" not in text
+
+
 def test_the_detail_is_redacted_before_it_can_be_stored():
     failure = StoryFailure(
         code=StoryFailureCode.SCAFFOLD_FAILED,

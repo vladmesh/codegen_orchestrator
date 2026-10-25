@@ -71,6 +71,9 @@ class StoryFailureCode(StrEnum):
     #: reason (emergency stop, paid-work limit) before any Run existed.
     ENGINEERING_DISPATCH_REFUSED = "engineering_dispatch_refused"
     INITIAL_OWNER_DEPLOYMENT_EXHAUSTED = "initial_owner_deployment_exhausted"
+    #: A package-build FEATURE's engineering completed, but its result could not be pinned
+    #: into the one INSTALL of that package (no valid commit, foreign owner, child conflict).
+    LOCAL_PACKAGE_HANDOFF_REFUSED = "local_package_handoff_refused"
 
 
 class StoryFailure(BaseModel):
@@ -125,6 +128,10 @@ _OWNER_WORDS: dict[StoryFailureCode, str] = {
     StoryFailureCode.PLANNING_FAILED: (
         "Work on this change stopped before it began: the platform could not plan the "
         "work, so nothing was built."
+    ),
+    StoryFailureCode.LOCAL_PACKAGE_HANDOFF_REFUSED: (
+        "Work on this change stopped: its engineering work completed, but the platform could "
+        "not hand the package it built over to installation."
     ),
     StoryFailureCode.NO_NEW_COMMIT: (
         "Work on this change stopped: nothing was produced to merge or deploy."

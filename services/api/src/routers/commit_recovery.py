@@ -593,6 +593,9 @@ async def recover_commit(
     story, task, project, run, runs = await lock_attempt(command.attempt_id, db)
     if story is None or story.id != story_id:
         refuse("ownership_missing", "Attempt belongs to another Story")
+    if task is not None and task.package_build is not None:
+        # Only a completed Run's handoff pins a package source into its INSTALL.
+        refuse("local_package_handoff_unsupported", "A package build has no commit recovery")
     claim = await db.scalar(
         select(CommitRecovery)
         .where(

@@ -53,7 +53,7 @@ export interface Story {
 
 export interface StoryFailure {
   reason?: 'story_failure'
-  code: 'worker_commit_not_published' | 'scaffold_failed' | 'scaffold_timeout' | 'planning_failed' | 'no_new_commit' | 'environment_resolution_failed' | 'pr_conflict_repair_exhausted' | 'initial_owner_deployment_exhausted' | 'engineering_budget_denied' | 'engineering_dispatch_refused'
+  code: 'worker_commit_not_published' | 'scaffold_failed' | 'scaffold_timeout' | 'planning_failed' | 'no_new_commit' | 'environment_resolution_failed' | 'pr_conflict_repair_exhausted' | 'initial_owner_deployment_exhausted' | 'engineering_budget_denied' | 'engineering_dispatch_refused' | 'local_package_handoff_refused'
   source: string
   detail: string
   observed_at?: string

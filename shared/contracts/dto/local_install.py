@@ -1,5 +1,6 @@
 """A product-local kit package INSTALL target, its build intent and its probe evidence."""
 
+import hashlib
 from typing import Annotated, Literal
 import unicodedata
 import uuid
@@ -68,6 +69,33 @@ class LocalPackageInstall(Strict):
     core_version: Version
     python_version: Version
     tooling_commit: SHA
+
+
+def pinned_local_install(
+    build: LocalPackageBuild, project_id: uuid.UUID, repository_id: str, commit: str | None
+) -> LocalPackageInstall:
+    """The INSTALL target of a build intent at its owner's published engineering commit.
+
+    Refuses (`ValidationError`) a missing or partial commit instead of pinning one.
+    """
+    return LocalPackageInstall.model_validate(
+        {
+            **build.model_dump(mode="json"),
+            "route": "package_source",
+            "project_id": project_id,
+            "repository_id": repository_id,
+            "commit": commit,
+        }
+    )
+
+
+def local_install_task_id(source_task_id: str) -> str:
+    """The one Task id of the INSTALL a package-build FEATURE hands its source to.
+
+    The id names its source only; a reader decides from the row's type and target, never the id.
+    """
+    digest = hashlib.sha256(f"local-package-build:{source_task_id}".encode()).hexdigest()
+    return f"task-{digest[:32]}"
 
 
 #: What a Task's `install` holds: a released catalog closure or a product-local source.

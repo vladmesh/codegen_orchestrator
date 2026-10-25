@@ -53,6 +53,7 @@ from ..engineering_budget_admission import (
     finalize_engineering_reservation,
     release_pre_handoff_reservation,
 )
+from ..local_package_handoff import hand_off_package_build
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..owner_notification_settlement import preserve_po_settlement
 from ..scheduler_wake import publish_wake
@@ -712,17 +713,19 @@ async def _lock_terminal_context(run_id, db):
     ).one_or_none()
     story = None
     task = None
+    ladder = None
     if edges is not None and edges.type == RunType.ENGINEERING.value:
         if edges.story_id:
-            story, roster, _, _ = await lock_story_attempts(edges.story_id, db)
+            story, roster, project, runs = await lock_story_attempts(edges.story_id, db)
             task = next((t for t in roster if t.id == edges.task_id), None)
+            ladder = roster, project, runs
         elif edges.task_id:
             from ._task_helpers import get_task_for_update
 
             task = await get_task_for_update(edges.task_id, db)
     if edges is not None and edges.type == RunType.ENGINEERING.value and not edges.story_id:
         await db.scalar(select(Project).where(Project.id == edges.project_id).with_for_update())
-    return await _lock_run(run_id, db), story, task
+    return await _lock_run(run_id, db), story, task, ladder
 
 
 async def _park_terminal_publication(story, task, run, db):
@@ -744,6 +747,20 @@ async def _park_terminal_publication(story, task, run, db):
             if engineering_result.publication is None:
                 raise HTTPException(422, "Publication refusal requires typed evidence")
             await park_publication(story, task, run, engineering_result.publication, db)
+
+
+async def _hand_off_first_completion(terminal_before, story, task, ladder, run, db):
+    """A package-build FEATURE's first completed engineering outcome owes its INSTALL handoff."""
+    if (
+        terminal_before
+        or run.status != RunStatus.COMPLETED.value
+        or ladder is None
+        or task is None
+        or task.package_build is None
+    ):
+        return
+    roster, project, runs = ladder
+    await hand_off_package_build(story, roster, project, runs, task, run, db)
 
 
 def _require_retained_empty_outcome(run, update_data, engineering_attempt):
@@ -827,9 +844,11 @@ async def update_run(
     Once a deploy Run's first typed success has committed, the sweep that owns that
     proof is woken: lifecycle supervision for an ordinary story deploy, temporary
     access for a grant or revoke operation. Once a QA Run's first terminal state has
-    committed, QA routing (for a story's Run) and temporary access are woken.
+    committed, QA routing (for a story's Run) and temporary access are woken. A package-build
+    FEATURE's first completed engineering outcome commits with its pinned INSTALL or its stop.
     """
-    run, story, task = await _lock_terminal_context(run_id, db)
+    run, story, task, ladder = await _lock_terminal_context(run_id, db)
+    terminal_before = run.status in _TERMINAL_RUN_STATUSES
     proof_before = _deploy_proof(run)
     qa_terminal_before = _holds_terminal_qa(run)
 
@@ -965,6 +984,7 @@ async def update_run(
             setattr(run, field, value)
 
     await _park_terminal_publication(story, task, run, db)
+    await _hand_off_first_completion(terminal_before, story, task, ladder, run, db)
 
     # This is deliberately the only ledger writer, under the terminal Run lock.
     await _settle_terminal_accounting(run, engineering_attempt, qa_accounting, db)

@@ -37,7 +37,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | confirmed content is immutable; one live planning attempt; one idempotent admission releases that attempt's tasks |
 | Capability preview and stored plan | `shared/contracts/dto/capability_preview.py` | `routers/capability_previews.py`, `routers/product_briefs.py` | previews and plans are written and read by the platform only; the plan is derived from the stored preview at creation, derived again at confirmation, and never shown in the brief |
 | Task action requests | `services/api/src/schemas/actions.py` | `routers/_task_actions.py` | actions use admission and do not bypass paid-run ownership |
-| Run create/type/status | `shared/contracts/dto/run.py` | `schemas/run.py`, `routers/runs.py` | terminal transitions are guarded by the Run owner and lock; the first committed typed success of an ordinary story deploy publishes the lossy `lifecycle_supervision` [wake hint](scheduler-wake-hints.md), a temporary-access operation's first readback proof publishes `temporary_access`, and a QA Run's first terminal state publishes `qa_routing` (story-scoped) and `temporary_access` |
+| Run create/type/status | `shared/contracts/dto/run.py` | `schemas/run.py`, `routers/runs.py` | terminal transitions are guarded by the Run owner and lock; a package-build FEATURE's first completed engineering Run commits its pinned INSTALL or its stop; the first committed typed success of an ordinary story deploy publishes the lossy `lifecycle_supervision` [wake hint](scheduler-wake-hints.md), a temporary-access operation's first readback proof publishes `temporary_access`, and a QA Run's first terminal state publishes `qa_routing` (story-scoped) and `temporary_access` |
 | Typed run results | `shared/contracts/dto/run_result.py` | `schemas/run.py`, deploy/QA consumers | only the owning terminal writer may set its typed result; readers reject a mismatched or untyped shape |
 | Engineering and QA attempt ledger input | `shared/contracts/dto/engineering_attempt.py` | `schemas/run.py`, `routers/runs.py` | terminal ledger fact is idempotent by Run |
 | Owner notification | `shared/contracts/dto/owner_notification.py` | `schemas/story.py`, `routers/stories.py` | persist notification obligation before PO publish; retry from that record |
@@ -257,8 +257,9 @@ product story before insertion; no planner writes such a target, and the schedul
 delivers a stored one to the executor as any INSTALL.
 A FEATURE may instead store a commit-free `package_build` intent with the same
 ownership refusals; TaskRead and TaskDTO carry it apart from `install`, TaskUpdate
-cannot change it or its owners, and the API stores it only: no Run, operation or
-queue message, and dispatch stays ordinary engineering. See
+cannot change it or its owners, and dispatch stays ordinary engineering. Its first
+completed engineering Run commits one pinned INSTALL behind it, or its stop, and its
+`done` requires that INSTALL. See
 [the build intent](kit-template-and-qa.md#installing-a-kit-package-into-a-generated-product).
 TaskUpdate cannot rewrite that ownership or supply execution fields. Generic
 start/complete/retry/resume are refused; DELETE preserves cancellation, releasing
