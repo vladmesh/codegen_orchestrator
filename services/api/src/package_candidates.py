@@ -100,17 +100,52 @@ async def record_package_candidates(story: Story, db: AsyncSession) -> list[Pack
     return list(recorded.values())
 
 
+# Telegram refuses a sendMessage text longer than this.
+ADMIN_TEXT_LIMIT = 4096
+CANDIDATE_BLOCK_LIMIT = 1500
+RATIONALE_CUT = " [rationale truncated]"
+
+
+def _candidate_block(project: Project, story: Story, candidate: PackageCandidate) -> str:
+    """One candidate's notice: identity facts and the warning whole, the rationale cut to fit."""
+    path = f"/package-candidates/{candidate.id}"
+
+    def block(rationale: str) -> str:
+        return (
+            f"Package candidate from product {project.title} (project {project.id}), "
+            f"story {story.id}: {candidate.package_name} {candidate.package_version} at "
+            f"{candidate.path}, commit {candidate.commit} in repository {candidate.repository_id}. "
+            f"Capability: {candidate.capability}. Rationale: {rationale}. "
+            "The code is unreviewed and exclusive to this product; it awaits the owner's "
+            "personal code and security review before any release. "
+            f"Full record in the admin console at {path}."
+        )
+
+    text = block(candidate.rationale)
+    if len(text) <= CANDIDATE_BLOCK_LIMIT:
+        return text
+    room = CANDIDATE_BLOCK_LIMIT - len(block("")) - len(RATIONALE_CUT)
+    return block(candidate.rationale[: max(room, 0)] + RATIONALE_CUT)
+
+
 async def package_candidate_admin_text(
     story: Story, candidates: list[PackageCandidate], db: AsyncSession
 ) -> str:
     """The administrators' notice of the candidates one completion recorded."""
     project = await db.get(Project, story.project_id)
-    return "\n\n".join(
-        f"Package candidate from product {project.title} (project {project.id}), "
-        f"story {story.id}: {candidate.package_name} {candidate.package_version} at "
-        f"{candidate.path}, commit {candidate.commit} in repository {candidate.repository_id}. "
-        f"Capability: {candidate.capability}. Rationale: {candidate.rationale}. "
-        "The code is unreviewed and exclusive to this product; it awaits the owner's "
-        "personal code and security review before any release."
-        for candidate in candidates
-    )
+    return "\n\n".join(_candidate_block(project, story, candidate) for candidate in candidates)
+
+
+def bounded_admin_text(story_id: str, carried: str | None, candidate_text: str) -> str:
+    """Carried administrator text before the candidate notice, within one Telegram message.
+
+    The candidate notice stays whole; only the carried text is shortened, with a marker.
+    """
+    if not carried:
+        return candidate_text
+    combined = f"{carried}\n\n{candidate_text}"
+    if len(combined) <= ADMIN_TEXT_LIMIT:
+        return combined
+    marker = f" [earlier administrator text for story {story_id} truncated]"
+    room = ADMIN_TEXT_LIMIT - len(candidate_text) - len(marker) - 2
+    return f"{carried[: max(room, 0)]}{marker}\n\n{candidate_text}"

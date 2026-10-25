@@ -52,7 +52,11 @@ from ..dependencies import (
 )
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..owner_notification_settlement import preserve_po_settlement
-from ..package_candidates import package_candidate_admin_text, record_package_candidates
+from ..package_candidates import (
+    bounded_admin_text,
+    package_candidate_admin_text,
+    record_package_candidates,
+)
 from ..scheduler_wake import publish_wake
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
@@ -616,7 +620,7 @@ async def _owe_completed_story_notification(
         )
         notification = notification.model_copy(
             update={
-                "admin_text": "\n\n".join(filter(None, [carried, admin_text])),
+                "admin_text": bounded_admin_text(story.id, carried, admin_text),
                 "admin_state": OwnerNotificationState.OWED,
                 "admin_attempts": 0,
                 "admin_detail": None,

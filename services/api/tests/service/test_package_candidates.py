@@ -233,3 +233,51 @@ async def test_only_an_administrator_reads_package_candidates(async_client, db_s
     assert PackageCandidateRead.model_validate(read.json()) == candidate
     missing = await async_client.get("/api/admin/v2/package-candidates/0", headers=headers)
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_long_rationale_is_cut_in_the_notice_and_kept_whole_in_the_candidate(
+    async_client, db_session
+):
+    owner = await product(async_client, await buyer(async_client))
+    rationale = "digest " * 1430
+    build = await admitted_build(async_client, db_session, owner, description=rationale)
+    await complete(async_client, build)
+    install = await fresh(db_session, Task, build["child"])
+    install.status = "done"
+    await db_session.commit()
+
+    await post(async_client, f"/api/stories/{owner['story']}/complete")
+
+    [candidate] = await candidates(db_session, owner["project"])
+    assert candidate.rationale == rationale
+    text = (await notice(async_client, owner["story"])).admin_text
+    assert len(text) <= 1500
+    assert "[rationale truncated]" in text
+    assert f"/package-candidates/{candidate.id}" in text
+    for fact in (
+        "Owned notes product",
+        owner["project"],
+        owner["story"],
+        "notes-digest 0.1.0",
+        "packages/notes_digest",
+        "1" * 40,
+        owner["repository"],
+        "Generate notes digest",
+        "unreviewed and exclusive to this product",
+        "personal code and security review before any release",
+    ):
+        assert fact in text
+
+
+@pytest.mark.asyncio
+async def test_a_short_rationale_notice_only_gains_the_admin_path(async_client, db_session):
+    build = await built(async_client, db_session)
+
+    await post(async_client, f"/api/stories/{build['owner']['story']}/complete")
+
+    [candidate] = await candidates(db_session, build["owner"]["project"])
+    text = (await notice(async_client, build["owner"]["story"])).admin_text
+    path = f"/package-candidates/{candidate.id}"
+    assert text.endswith(f" Full record in the admin console at {path}.")
+    assert_admin_notice(text, build, "1" * 40)
