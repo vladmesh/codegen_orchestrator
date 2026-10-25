@@ -255,6 +255,11 @@ TaskDTO carry the identical typed install and API-owned install_operation data.
 Both create routes refuse a local source outside the task's managed repository and
 product story before insertion; no planner writes such a target, and the scheduler
 delivers a stored one to the executor as any INSTALL.
+A FEATURE may instead store a commit-free `package_build` intent with the same
+ownership refusals; TaskRead and TaskDTO carry it apart from `install`, TaskUpdate
+cannot change it or its owners, and the API stores it only: no Run, operation or
+queue message, and dispatch stays ordinary engineering. See
+[the build intent](kit-template-and-qa.md#installing-a-kit-package-into-a-generated-product).
 TaskUpdate cannot rewrite that ownership or supply execution fields. Generic
 start/complete/retry/resume are refused; DELETE preserves cancellation, releasing
 queued operations while running writers still owe owned settlement. Internal/admin

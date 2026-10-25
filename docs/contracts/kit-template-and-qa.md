@@ -240,6 +240,19 @@ managed by that project and the story is that project's (`local_install_reposito
 `local_install_story_unowned`). Catalog selection, replan, glue coverage and the admin
 package projection read only `CatalogInstall`.
 
+A product's own package source does not exist until engineering commits it, so a FEATURE that is
+to generate one carries `Task.package_build`, a `LocalPackageBuild` (`dto/local_install.py`): the
+same normalized product-relative `path`, expected `package` name, distribution and version, and
+core, Python and tooling identity as a `LocalPackageInstall`, with no route, commit, project,
+repository, catalog, tag, wheel, command or proof field; neither shape validates as the other. It
+is expected output only: it proves no source, commit, compatibility or installation, and its
+FEATURE stays ordinary paid engineering. Only a FEATURE with story and repository ownership and no
+install payload carries one (`TaskCreate` and the `ck_tasks_package_build` constraint); both
+create routes apply the local INSTALL ownership refusals above to it, and TaskUpdate cannot change
+it or its project, repository or story (`package_build_ownership_immutable`). No planner writes
+one yet, and nothing derives an INSTALL from it: the pending handoff pins the FEATURE's real
+published engineering commit into one `LocalPackageInstall` before story completion.
+
 `dto/install_operation.py` holds the one operation of either route: `InstallOperation`,
 `InstallCommand` and `InstallDecision` carry a `CatalogInstall` with `InstallVerification` or a
 `LocalPackageInstall` with `LocalInstallVerification`, neither proof validating as the other.

@@ -1,4 +1,7 @@
-"""Real PostgreSQL/Redis: a product-local INSTALL is owned, settled and never bought."""
+"""Real PostgreSQL/Redis: a product-local INSTALL is owned, settled and never bought.
+
+A FEATURE's package build intent is stored owned and immutable, and stays ordinary engineering.
+"""
 
 from datetime import UTC, datetime, timedelta
 import uuid
@@ -6,7 +9,11 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from shared.contracts.dto.local_install import LocalInstallVerification, LocalPackageInstall
+from shared.contracts.dto.local_install import (
+    LocalInstallVerification,
+    LocalPackageBuild,
+    LocalPackageInstall,
+)
 from shared.contracts.dto.task import TaskDTO
 from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Run, Story, Task
 from shared.queues import ENGINEERING_QUEUE, SCAFFOLD_QUEUE, WORKER_COMMANDS
@@ -480,3 +487,129 @@ async def test_lost_local_lease_keeps_its_proof_and_operator_recovery_stays_refu
     read = (await async_client.get(f"/api/tasks/{task['id']}")).json()
     assert (read["status"], read["install_operation"]) == ("waiting_human_review", operation)
     await no_paid_work(db_session, task)
+
+
+def package_build() -> dict:
+    target = local_install({"project": None, "repository": None})
+    return {
+        key: target[key]
+        for key in ("path", "package", "core_version", "python_version", "tooling_commit")
+    }
+
+
+def build_body(owner: dict, **changes) -> dict:
+    return {
+        "project_id": owner["project"],
+        "repository_id": owner["repository"],
+        "story_id": owner["story"],
+        "title": "Generate notes digest",
+        "type": "feature",
+        "status": "todo",
+        "package_build": package_build(),
+        **changes,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["/api/tasks/", "/api/tasks/push"])
+async def test_both_create_routes_store_a_build_intent_without_install_or_work(
+    async_client, db_session, redis_client, route
+):
+    owner = await product(async_client, await buyer(async_client))
+    queues = (ENGINEERING_QUEUE, WORKER_COMMANDS, SCAFFOLD_QUEUE)
+    before = {queue: await redis_client.xlen(queue) for queue in queues}
+    created = await post(async_client, route, build_body(owner), 201)
+    assert created["package_build"] == package_build()
+    assert (created["install"], created["install_operation"]) == (None, None)
+    row = await db_session.get(Task, created["id"])
+    await db_session.refresh(row)
+    assert (row.package_build, row.install, row.install_operation) == (package_build(), None, None)
+    read = TaskDTO.model_validate((await async_client.get(f"/api/tasks/{created['id']}")).json())
+    assert isinstance(read.package_build, LocalPackageBuild)
+    assert read.package_build.model_dump(mode="json") == package_build()
+    assert (read.type, read.install) == ("feature", None)
+    listed = (await async_client.get("/api/tasks/", params={"story_id": owner["story"]})).json()
+    assert [TaskDTO.model_validate(item).package_build for item in listed] == [read.package_build]
+    await no_paid_work(db_session, created)
+    assert before == {queue: await redis_client.xlen(queue) for queue in queues}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["/api/tasks/", "/api/tasks/push"])
+async def test_a_build_intent_outside_its_own_managed_repository_and_story_is_refused(
+    async_client, db_session, route
+):
+    telegram = await buyer(async_client)
+    owner = await product(async_client, telegram)
+    other = await product(async_client, telegram)
+    unmanaged = await product(async_client, telegram, managed=False)
+    for body, code in [
+        (build_body(owner, repository_id=other["repository"]), "local_install_repository_unowned"),
+        (build_body(unmanaged), "local_install_repository_unowned"),
+        (build_body(owner, repository_id="missing-repo"), "local_install_repository_unowned"),
+        (build_body(owner, story_id=other["story"]), "local_install_story_unowned"),
+        (build_body(owner, story_id="missing-story"), "local_install_story_unowned"),
+    ]:
+        result = await async_client.post(route, json=body)
+        assert result.status_code == 409 and code in result.text, result.text
+    for changes in [{"type": "fix"}, {"story_id": None}, {"install": local_install(owner)}]:
+        result = await async_client.post(route, json=build_body(owner, **changes))
+        assert result.status_code == 422, result.text
+    for item in (owner, unmanaged):
+        assert await task_count(db_session, item["project"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_build_intent_and_its_ownership_are_immutable_while_ordinary_fields_edit(
+    async_client,
+):
+    telegram = await buyer(async_client)
+    owner = await product(async_client, telegram)
+    other = await product(async_client, telegram)
+    task = await post(async_client, "/api/tasks/", build_body(owner), 201)
+    path = f"/api/tasks/{task['id']}"
+    for field, value in [
+        ("repository_id", other["repository"]),
+        ("story_id", other["story"]),
+        ("project_id", other["project"]),
+    ]:
+        result = await async_client.patch(path, json={field: value})
+        assert result.status_code == 409 and "package_build_ownership_immutable" in result.text
+    for field in ("package_build", "install", "type"):
+        result = await async_client.patch(path, json={field: None})
+        assert result.status_code == 422, result.text
+    edited = await async_client.patch(
+        path,
+        json={
+            "title": "Generate the notes digest package",
+            "description": "Weekly digest command",
+            "priority": 7,
+            "repository_id": owner["repository"],
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    read = (await async_client.get(path)).json()
+    assert (read["title"], read["priority"]) == ("Generate the notes digest package", 7)
+    assert (read["project_id"], read["repository_id"], read["story_id"]) == (
+        owner["project"],
+        owner["repository"],
+        owner["story"],
+    )
+    assert read["package_build"] == package_build()
+
+
+@pytest.mark.asyncio
+async def test_a_build_intent_feature_is_admitted_as_ordinary_paid_engineering(
+    async_client, db_session
+):
+    owner = await product(async_client, await buyer(async_client))
+    task = await post(async_client, "/api/tasks/", build_body(owner), 201)
+    decision = await post(
+        async_client, "/api/work-admission/engineering-dispatches", {"task_id": task["id"]}
+    )
+    assert decision["outcome"] == "admitted", decision
+    run = await db_session.get(Run, decision["run_id"])
+    assert (run.task_id, run.type) == (task["id"], "engineering")
+    row = await db_session.get(Task, task["id"])
+    await db_session.refresh(row)
+    assert (row.package_build, row.install, row.install_operation) == (package_build(), None, None)

@@ -9,7 +9,11 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.catalog_install import CatalogInstall
 from shared.contracts.dto.install_operation import InstallOperation
-from shared.contracts.dto.local_install import InstallTarget, LocalPackageInstall
+from shared.contracts.dto.local_install import (
+    InstallTarget,
+    LocalPackageBuild,
+    LocalPackageInstall,
+)
 
 
 class TaskStatus(StrEnum):
@@ -123,6 +127,7 @@ class TaskDTO(TimestampedDTO):
     planning_attempt_id: str | None = None
     install: InstallTarget | None = None
     install_operation: InstallOperation | None = None
+    package_build: LocalPackageBuild | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
 
@@ -170,6 +175,7 @@ class TaskCreate(BaseModel):
     planning_attempt_id: str | None = None
 
     install: InstallTarget | None = None
+    package_build: LocalPackageBuild | None = None
 
     @model_validator(mode="after")
     def install_contract(self):
@@ -185,6 +191,10 @@ class TaskCreate(BaseModel):
                 raise ValueError("a local INSTALL source belongs to the task's product repository")
         elif self.install is not None:
             raise ValueError("only INSTALL carries an install payload")
+        if self.package_build is not None and (
+            self.type is not TaskType.FEATURE or not self.story_id or not self.repository_id
+        ):
+            raise ValueError("a package build is a FEATURE with story and repository ownership")
         return self
 
 

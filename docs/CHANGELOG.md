@@ -19,6 +19,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   an internal `InstallContext`; no production route delivers one yet, and source residue is refused.
 - The scheduler queues an admitted `LocalPackageInstall` in `ScaffoldMessage` mode=install and the
   scaffolder claims and runs it like a catalog one; no planner writes one and local recovery stays off.
+- An owned FEATURE can store an immutable `package_build` intent (expected local package, no commit);
+  an INSTALL needs the real engineering commit, so the producer and INSTALL handoff stay pending.
 
 ## 2026-10-24
 

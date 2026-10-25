@@ -42,6 +42,7 @@ def _make_task(**overrides):
         "planning_attempt_id": None,
         "install": None,
         "install_operation": None,
+        "package_build": None,
         "created_at": now,
         "updated_at": now,
     }

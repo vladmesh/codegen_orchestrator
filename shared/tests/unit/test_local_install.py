@@ -1,4 +1,7 @@
-"""A product-local INSTALL target is typed, owned and never read as a catalog release."""
+"""A product-local INSTALL target is typed, owned and never read as a catalog release.
+
+A FEATURE's package build intent is a distinct, commit-free shape beside it.
+"""
 
 from datetime import UTC, datetime
 import uuid
@@ -7,7 +10,11 @@ from pydantic import ValidationError
 import pytest
 
 from shared.contracts.dto.catalog_install import CatalogInstall
-from shared.contracts.dto.local_install import LocalPackageInstall, parse_install_target
+from shared.contracts.dto.local_install import (
+    LocalPackageBuild,
+    LocalPackageInstall,
+    parse_install_target,
+)
 from shared.contracts.dto.task import TaskCreate, TaskDTO
 
 PROJECT = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
@@ -186,3 +193,100 @@ def test_a_local_install_still_requires_story_repository_and_payload(field):
 def test_an_ordinary_task_cannot_carry_a_local_source():
     with pytest.raises(ValidationError):
         create(local_install(), type="feature")
+
+
+def package_build(**changes) -> dict:
+    target = local_install()
+    return {
+        key: target[key]
+        for key in ("path", "package", "core_version", "python_version", "tooling_commit")
+    } | changes
+
+
+def feature(**changes) -> TaskCreate:
+    return TaskCreate(
+        **{
+            "project_id": PROJECT,
+            "title": "Generate notes digest",
+            "type": "feature",
+            "story_id": "story-1",
+            "repository_id": "repo-1",
+            "package_build": package_build(),
+            **changes,
+        }
+    )
+
+
+def test_a_build_intent_keeps_its_exact_identity_through_create_and_read():
+    created = feature()
+    assert created.model_dump(mode="json")["package_build"] == package_build()
+    task = read(created)
+    assert isinstance(task.package_build, LocalPackageBuild)
+    assert task.package_build.model_dump(mode="json") == package_build()
+    assert task.install is None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"route": "package_source"},
+        {"commit": "1" * 40},
+        {"project_id": str(PROJECT)},
+        {"repository_id": "repo-1"},
+        {"catalog": catalog_install()["catalog"]},
+        {"package": {**local_install()["package"], "tag": "packages/x/v0.1.0"}},
+        {"wheel": "services/backend/packages/notes.whl"},
+        {"command": "kit add"},
+        {"proof": "built"},
+    ],
+    ids=lambda changes: next(iter(changes)),
+)
+def test_a_build_intent_names_no_commit_route_owner_release_or_proof(changes):
+    with pytest.raises(ValidationError):
+        LocalPackageBuild.model_validate(package_build(**changes))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"path": "packages/../notes"},
+        {"core_version": "2.x"},
+        {"python_version": ""},
+        {"tooling_commit": "main"},
+    ],
+    ids=["path", "core", "python", "tooling"],
+)
+def test_a_build_intent_uses_the_canonical_target_field_types(changes):
+    with pytest.raises(ValidationError):
+        LocalPackageBuild.model_validate(package_build(**changes))
+
+
+def test_a_build_intent_and_an_install_target_never_validate_as_each_other():
+    with pytest.raises(ValidationError):
+        parse_install_target(package_build())
+    with pytest.raises(ValidationError):
+        LocalPackageBuild.model_validate(local_install())
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"type": "create"},
+        {"type": "fix"},
+        {"type": "refactor"},
+        {"type": "install", "install": local_install()},
+    ],
+    ids=["create", "fix", "refactor", "install"],
+)
+def test_only_a_feature_without_an_install_payload_carries_a_build_intent(changes):
+    feature(package_build=None, **changes)
+    with pytest.raises(ValidationError):
+        feature(**changes)
+
+
+@pytest.mark.parametrize("field", ["story_id", "repository_id"])
+@pytest.mark.parametrize("value", [None, ""])
+def test_a_build_intent_requires_story_and_repository_ownership(field, value):
+    feature(package_build=None, **{field: value})
+    with pytest.raises(ValidationError):
+        feature(**{field: value})

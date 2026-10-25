@@ -24,6 +24,11 @@ class Task(Base):
             "AND repository_id IS NOT NULL) OR (type <> 'install' AND install IS NULL)",
             name="ck_tasks_install_payload",
         ),
+        CheckConstraint(
+            "package_build IS NULL OR (type = 'feature' AND install IS NULL "
+            "AND story_id IS NOT NULL AND repository_id IS NOT NULL)",
+            name="ck_tasks_package_build",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
@@ -56,6 +61,7 @@ class Task(Base):
     failure_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     install: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     install_operation: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    package_build: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     # Whether this task has crossed the coverage-to-dispatch boundary. True for
     # every task that is not planned against an unadmitted Product Brief, which
     # is every task that existed before the boundary did — so a `todo` status

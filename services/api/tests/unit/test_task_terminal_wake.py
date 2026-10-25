@@ -48,6 +48,7 @@ def make_task(*, status: str, story_id: str | None = STORY_ID, type: str = "feat
         "planning_attempt_id": None,
         "install": None,
         "install_operation": None,
+        "package_build": None,
         "created_at": now,
         "updated_at": now,
     }
