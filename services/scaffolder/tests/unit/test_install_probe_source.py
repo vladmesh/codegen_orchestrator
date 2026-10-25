@@ -41,7 +41,7 @@ def product(tmp_path, pyproject=PYPROJECT) -> Path:
     shutil.copy(DATA / "default.yaml", module / "bindings/default.yaml")
     (module / "__init__.py").write_text("raise RuntimeError('package runtime imported')\n")
     (root / SOURCE / "pyproject.toml").write_text(pyproject)
-    (root / ".copier-answers.yml").write_text("_commit: v0.12.0\n")
+    (root / ".copier-answers.yml").write_text("_commit: synthetic-fixture\n")
     return root
 
 
@@ -75,7 +75,7 @@ def test_a_source_without_a_default_binding_reports_no_binding_digest(tmp_path):
 
 
 def nested(root):
-    (root / "packages/.copier-answers.yml").write_text("_commit: v0.12.0\n")
+    (root / "packages/.copier-answers.yml").write_text("_commit: synthetic-fixture\n")
 
 
 def escaping(root):
