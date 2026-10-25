@@ -539,7 +539,7 @@ wheels = [
 [[package]]
 name = "codegen-kit-tooling"
 version = "0.1.0"
-source = { git = "https://github.com/vladmesh/codegen-product-kit.git?rev=59a0752c8f44c01c04054f9bbe0bd699d3d27dd9#59a0752c8f44c01c04054f9bbe0bd699d3d27dd9" }
+source = { git = "https://github.com/vladmesh/codegen-product-kit.git?rev=8caf935feb3d099a3b79162392df2efabb95c669#8caf935feb3d099a3b79162392df2efabb95c669" }
 dependencies = [
     { name = "datamodel-code-generator", extra = ["http"] },
     { name = "jinja2" },
@@ -585,7 +585,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "api", editable = "services/api" },
-    { name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=59a0752c8f44c01c04054f9bbe0bd699d3d27dd9" },
+    { name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=8caf935feb3d099a3b79162392df2efabb95c669" },
     { name = "copier", specifier = ">=9.17.1" },
     { name = "deptry", specifier = ">=0.22.0" },
     { name = "fakeredis", extras = ["lua"], specifier = ">=2.34.1" },
@@ -1585,7 +1585,7 @@ dependencies = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "asyncssh", specifier = ">=2.24.0" },
-    { name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=59a0752c8f44c01c04054f9bbe0bd699d3d27dd9" },
+    { name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=8caf935feb3d099a3b79162392df2efabb95c669" },
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "ddgs", specifier = ">=7.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },

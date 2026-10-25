@@ -1,10 +1,10 @@
 {
   "source": "gh:vladmesh/codegen-product-kit",
-  "ref": "0.11.0",
-  "candidate_sha": "07643c28a1d35c46841dbd950f437bd2a7b7b183",
-  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: 0.11.0\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
+  "ref": "0.12.0",
+  "candidate_sha": "726d5517ddedd6a2ca5fd717b5ed07b6f65c86b0",
+  "answers": "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_commit: 0.12.0\n_src_path: gh:vladmesh/codegen-product-kit\nauthor_email: dev@example.com\nauthor_name: Developer\nmodules: backend,tg_bot\nproject_description: A product generated with codegen-product-kit\nproject_name: env_fixture\npython_version: '3.12'\ntask_description: ''\n",
   "tracked_sha256": {
-    ".copier-answers.yml": "9ce95415ffcc3da14e003f1e565fa60cdcb1d9c3fd86d800a83af70976c27aaa",
+    ".copier-answers.yml": "3dd22864e018e1e1661d9cba0f39c7218b9c1342357d42b8e74e241a377ab9e5",
     ".coveragerc": "e81eaf903c40f90b6e89ceaaf9d3def080db0265dca88d8955c1d702b91af016",
     ".dockerignore": "7b8eac7cd6e7aac256526e938f203a0c06357edf5c32343e44968430b4580a6a",
     ".env.example": "b9fd3997f087dc3386cbd4829ed965fa5ec1c3d6981ace5699559d2524b81943",
@@ -32,7 +32,7 @@
     "infra/compose.tests.integration.yml": "06e8545c170a2eed06b123ac7b691c8bb98e45cf754880a54b2b8d5a699f7394",
     "infra/env.contract.yaml": "b9052abeac9fea2e8e39a1b4e5d2a067c9df7dceec83912134dd22fa2ab928f1",
     "mypy.ini": "5262a519571da0963b5b9df960ea6393b9ba0291e8987b32326504d62b65b611",
-    "pyproject.toml": "89cbdaf93aa4411824ce93ffd662891485723fe975841ad1d6a35758dadf07db",
+    "pyproject.toml": "3ca6db64f4aacfa5cf302ecf6e91ac07ab351f8213b6c4e45e0e0938f3bac1af",
     "pytest.ini": "44fbeef624539fbae76f55804299812bbd139d2a31b29bfd3615687cacb7b788",
     "ruff.toml": "755941b2ac3202f1044abf6a916eda298b03c6b9759be079e2e40ec700ed11f0",
     "scripts/prepare-env.sh": "d9ce9de05d5d7ab5871006e0182852fdf3130e66816bc36e5b85321effe75c21",
@@ -160,6 +160,6 @@
     "tests/integration/test_durable_events.py": "fb60fb0324f16ff929989e484475521524065022562d6f3a026afe2b2a440784",
     "tests/integration/test_example.py": "1a869093e2346d7b79775ab08c644352b8ea267f5de2437fe67d913424a26ca3",
     "tests/integration/test_user_identifiers.py": "bdfbb9160295da41b2861e2d507eff2574189a9074697df0451628cedd6d4a60",
-    "uv.lock": "21c0167cbe2f239204eedd60e3f960529e6c482422f07a163c2b0bb10bb189bc"
+    "uv.lock": "562336c82185916d89b901fe7368c9867aadaeffe8f7103f288cf275819c23a7"
   }
 }
