@@ -39,6 +39,8 @@ ATTEMPT = {
     "cost_source": "provider_reported",
 }
 QUEUES = (ENGINEERING_QUEUE, WORKER_COMMANDS, SCAFFOLD_QUEUE)
+HOLD = 5000
+BUDGET = {"limit_microusd": 1_000_000, "attempt_reservation_microusd": HOLD, "state": "enabled"}
 
 
 def success(commit: str | None = COMMIT) -> dict:
@@ -53,9 +55,28 @@ async def fresh(db_session, model, key):
     return await db_session.get(model, key, populate_existing=True)
 
 
+async def reservation(db_session, run_id) -> EngineeringBudgetReservation:
+    return await db_session.scalar(
+        select(EngineeringBudgetReservation)
+        .where(EngineeringBudgetReservation.attempt_id == run_id)
+        .execution_options(populate_existing=True)
+    )
+
+
+async def assert_hold_active(db_session, run_id):
+    held = await reservation(db_session, run_id)
+    assert (held.state, held.active_held_microusd) == ("active", HOLD)
+
+
 async def admitted_build(client, db_session, owner=None, **source_changes) -> dict:
-    """An admitted, started package-build FEATURE with a direct successor and a running Run."""
+    """An admitted, started package-build FEATURE with a direct successor and a running Run.
+
+    The owner's enabled budget policy gives that Run an active hold.
+    """
     owner = owner or await product(client, await buyer(client))
+    buyer_id = (await client.get(f"/api/projects/{owner['project']}")).json()["owner_id"]
+    policy = await client.put(f"/api/engineering-budget-policies/{buyer_id}", json=BUDGET)
+    assert policy.status_code in {200, 201}, policy.text
     source = await post(client, "/api/tasks/", build_body(owner, **source_changes), 201)
     successor = await post(
         client,
@@ -76,6 +97,7 @@ async def admitted_build(client, db_session, owner=None, **source_changes) -> di
     run = decision["run_id"]
     response = await client.patch(f"/api/runs/{run}", json={"status": "running"})
     assert response.status_code == 200, response.text
+    await assert_hold_active(db_session, run)
     return {
         "owner": owner,
         "source": source["id"],
@@ -120,12 +142,8 @@ async def assert_outcome_settled_once(db_session, build, body=None):
         )
     ).all()
     assert [(row.cost_microusd, row.total_tokens) for row in ledger] == [(1500, 20)]
-    reservation = await db_session.scalar(
-        select(EngineeringBudgetReservation)
-        .where(EngineeringBudgetReservation.attempt_id == run.id)
-        .execution_options(populate_existing=True)
-    )
-    assert (reservation.state, reservation.active_held_microusd) == ("settled", 0)
+    settled = await reservation(db_session, run.id)
+    assert (settled.state, settled.active_held_microusd) == ("settled", 0)
     # The INSTALL is unpaid: it owns no Run, ledger row or budget hold.
     for model, column in [
         (Run, Run.task_id),
@@ -248,6 +266,7 @@ async def test_a_rolled_back_delivery_leaves_no_half_handoff_and_its_retry_compl
         await async_client.patch(f"/api/runs/{build['run']}", json=success())
     monkeypatch.undo()
     assert (await fresh(db_session, Run, build["run"])).status == "running"
+    await assert_hold_active(db_session, build["run"])
     await assert_no_handoff(db_session, build)
 
     await complete(async_client, build)

@@ -96,6 +96,13 @@ async def test_direct_completion_without_qa_persists_and_settles_a_story_notific
     async_client: AsyncClient, db_session: AsyncSession
 ):
     story_id, _ = await _story(async_client, db_session)
+    # The owed page is oldest first over the shared suite database; an aged story is on it.
+    await db_session.execute(
+        update(Story)
+        .where(Story.id == story_id)
+        .values(created_at=datetime.now(UTC) - timedelta(days=30))
+    )
+    await db_session.commit()
     started = await async_client.post(f"/api/stories/{story_id}/start")
     assert started.status_code == status.HTTP_200_OK
 
