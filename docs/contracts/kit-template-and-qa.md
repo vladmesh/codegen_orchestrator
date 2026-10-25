@@ -247,10 +247,10 @@ core, Python and tooling identity as a `LocalPackageInstall`, with no route, com
 repository, catalog, tag, wheel, command or proof field; neither shape validates as the other. It
 is expected output only: it proves no source, commit, compatibility or installation, and its
 FEATURE stays ordinary paid engineering. Only a FEATURE with story and repository ownership and no
-install payload carries one (`TaskCreate` and the `ck_tasks_package_build` constraint); both
-create routes apply the local INSTALL ownership refusals above to it, and TaskUpdate cannot change
-it or its project, repository or story (`package_build_ownership_immutable`). No planner writes
-one yet.
+install payload carries one, and `TaskCreate` refuses one submitted `done` (`TaskCreate` and the
+`ck_tasks_package_build` constraint); both create routes apply the local INSTALL ownership refusals
+above to it, and TaskUpdate cannot change it or its project, repository or story
+(`package_build_ownership_immutable`). No planner writes one yet.
 
 The FEATURE's first completed engineering Run write (`PATCH /runs/{id}`, `local_package_handoff.py`)
 pins the intent, under the terminal Run lock ladder and in the transaction of that outcome and its

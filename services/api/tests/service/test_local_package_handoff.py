@@ -16,6 +16,7 @@ from test_local_install import (
     local_install,
     post,
     product,
+    task_count,
 )
 
 from shared.contracts.dto.local_install import local_install_task_id
@@ -521,3 +522,23 @@ async def test_commit_recovery_of_a_build_fails_closed_and_keeps_its_stop(async_
     run = await fresh(db_session, Run, build["run"])
     assert (run.status, run.result) == ("failed", failed["result"])
     await assert_no_handoff(db_session, build)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["/api/tasks/", "/api/tasks/push"])
+async def test_a_build_submitted_done_is_refused_before_it_exists(async_client, db_session, route):
+    owner = await product(async_client, await buyer(async_client))
+    refused = await async_client.post(route, json=build_body(owner, status="done"))
+    assert refused.status_code == 422, refused.text
+    assert await task_count(db_session, owner["project"]) == 0
+    runs = select(func.count()).select_from(Run).where(Run.story_id == owner["story"])
+    assert await db_session.scalar(runs) == 0
+
+    # The same request without an intent, or with one not yet done, is created as before.
+    plain = await post(
+        async_client, route, build_body(owner, package_build=None, status="done"), 201
+    )
+    assert (plain["status"], plain["package_build"]) == ("done", None)
+    build = await post(async_client, route, build_body(owner), 201)
+    assert (build["status"], build["package_build"]) == ("todo", build_body(owner)["package_build"])
+    assert await task_count(db_session, owner["project"]) == 2

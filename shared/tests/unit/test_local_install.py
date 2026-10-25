@@ -286,6 +286,14 @@ def test_only_a_feature_without_an_install_payload_carries_a_build_intent(change
         feature(**changes)
 
 
+def test_a_build_intent_is_never_created_already_done():
+    feature(package_build=None, status="done")
+    for status in ("backlog", "todo", "in_dev"):
+        feature(status=status)
+    with pytest.raises(ValidationError):
+        feature(status="done")
+
+
 @pytest.mark.parametrize("field", ["story_id", "repository_id"])
 @pytest.mark.parametrize("value", [None, ""])
 def test_a_build_intent_requires_story_and_repository_ownership(field, value):

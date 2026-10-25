@@ -259,7 +259,7 @@ A FEATURE may instead store a commit-free `package_build` intent with the same
 ownership refusals; TaskRead and TaskDTO carry it apart from `install`, TaskUpdate
 cannot change it or its owners, and dispatch stays ordinary engineering. Its first
 completed engineering Run commits one pinned INSTALL behind it, or its stop, and its
-`done` requires that INSTALL. See
+`done` requires that INSTALL; TaskCreate refuses one submitted `done`. See
 [the build intent](kit-template-and-qa.md#installing-a-kit-package-into-a-generated-product).
 TaskUpdate cannot rewrite that ownership or supply execution fields. Generic
 start/complete/retry/resume are refused; DELETE preserves cancellation, releasing
