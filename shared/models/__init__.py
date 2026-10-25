@@ -15,6 +15,7 @@ from .engineering_attempt_ledger import EngineeringAttemptLedger
 from .engineering_budget_policy import EngineeringBudgetPolicy
 from .engineering_budget_reservation import EngineeringBudgetReservation
 from .incident import Incident, IncidentStatus, IncidentType
+from .package_candidate import PackageCandidate
 from .port_allocation import PortAllocation
 from .product_brief import CapabilityPreview, ProductBrief, RequirementCoverage
 from .project import Project
@@ -45,6 +46,7 @@ __all__ = [
     "ApplicationHealthHistory",
     "Base",
     "Brainstorm",
+    "PackageCandidate",
     "Project",
     "Resource",
     "Repository",

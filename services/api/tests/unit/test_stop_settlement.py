@@ -63,6 +63,8 @@ async def test_explicit_acceptance_releases_its_stop_before_the_completion_trans
     )
     db = AsyncMock()
     db.add = MagicMock()
+    # The story holds no DONE INSTALL, so it records no package candidate.
+    db.scalars.return_value = MagicMock(all=MagicMock(return_value=[]))
     with patch("src.routers.stories._owe_completed_story_notification", AsyncMock()):
         result = await _complete_story(story, db, acceptance=acceptance)
     assert result.status.value == "completed"
