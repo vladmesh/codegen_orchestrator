@@ -180,21 +180,27 @@ async def test_an_unparseable_install_target_refuses_the_completion_naming_the_i
     build = await built(async_client, db_session)
     story_id = build["owner"]["story"]
     install = await fresh(db_session, Task, build["child"])
+    target = install.install
     install.install = {"route": "package_source"}
     await db_session.commit()
     before = (await fresh(db_session, Story, story_id)).owner_notification
+    try:
+        response = await async_client.post(f"/api/stories/{story_id}/complete")
 
-    response = await async_client.post(f"/api/stories/{story_id}/complete")
-
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"] == {
-        "code": "package_candidate_unrecordable",
-        "task_id": build["child"],
-        "cause": "install_target_invalid",
-    }
-    story = await fresh(db_session, Story, story_id)
-    assert (story.status, story.owner_notification) == ("in_progress", before)
-    assert await candidates(db_session, build["owner"]["project"]) == []
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == {
+            "code": "package_candidate_unrecordable",
+            "task_id": build["child"],
+            "cause": "install_target_invalid",
+        }
+        story = await fresh(db_session, Story, story_id)
+        assert (story.status, story.owner_notification) == ("in_progress", before)
+        assert await candidates(db_session, build["owner"]["project"]) == []
+    finally:
+        # Later tests list every task of the shared suite database as typed targets.
+        install = await fresh(db_session, Task, build["child"])
+        install.install = target
+        await db_session.commit()
 
 
 @pytest.mark.asyncio
