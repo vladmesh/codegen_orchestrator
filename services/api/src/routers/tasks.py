@@ -77,9 +77,9 @@ class _TaskFilters:
         self.sort = sort
 
 
-async def _refuse_unowned_local_install(body: TaskCreate, db: AsyncSession) -> None:
-    """A local source names a managed repository and a story of the task's own product."""
-    if not isinstance(body.install, LocalPackageInstall):
+async def _refuse_unowned_local_package(body: TaskCreate, db: AsyncSession) -> None:
+    """A local source or build names a managed repository and a story of the task's own product."""
+    if not isinstance(body.install, LocalPackageInstall) and body.package_build is None:
         return
     repository = await db.get(Repository, body.repository_id)
     if repository is None or repository.project_id != body.project_id or not repository.is_managed:
@@ -97,7 +97,7 @@ async def create_task(
     body: TaskCreate,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
-    await _refuse_unowned_local_install(body, db)
+    await _refuse_unowned_local_package(body, db)
     now = datetime.now(UTC)
     # Taken before the row is inserted, and before any Task row is locked: a
     # brief-backed task is planned, not merely created, so whether it is
@@ -127,6 +127,7 @@ async def create_task(
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
         install=body.install.model_dump(mode="json") if body.install else None,
+        package_build=body.package_build.model_dump(mode="json") if body.package_build else None,
         dispatch_admitted=dispatch_admitted,
         planning_attempt_id=planning_attempt_id,
         created_at=now,
@@ -146,7 +147,7 @@ async def push_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     """Create a task at the top of the backlog (lowest priority number)."""
-    await _refuse_unowned_local_install(body, db)
+    await _refuse_unowned_local_package(body, db)
     min_q = select(func.min(Task.priority)).where(Task.status == TaskStatus.BACKLOG)
     result = await db.execute(min_q)
     min_priority = result.scalar_one_or_none()
@@ -181,6 +182,7 @@ async def push_task(
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
         install=body.install.model_dump(mode="json") if body.install else None,
+        package_build=body.package_build.model_dump(mode="json") if body.package_build else None,
         dispatch_admitted=dispatch_admitted,
         planning_attempt_id=planning_attempt_id,
         created_at=now,
@@ -318,6 +320,11 @@ async def update_task(
         for field in ("project_id", "story_id", "repository_id", "blocked_by_task_id")
     ):
         raise HTTPException(409, {"code": "install_ownership_immutable"})
+    if task.package_build is not None and any(
+        field in update_data and update_data[field] != getattr(task, field)
+        for field in ("project_id", "story_id", "repository_id")
+    ):
+        raise HTTPException(409, {"code": "package_build_ownership_immutable"})
 
     from shared.contracts.dto.commit_publication import COMMIT_PUBLICATION_KEY
 

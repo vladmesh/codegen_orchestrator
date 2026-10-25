@@ -1,4 +1,4 @@
-"""A product-local kit package INSTALL target and its probe evidence."""
+"""A product-local kit package INSTALL target, its build intent and its probe evidence."""
 
 from typing import Annotated, Literal
 import unicodedata
@@ -38,6 +38,19 @@ class LocalPackage(Strict):
     name: Name
     distribution: Distribution
     version: Version
+
+
+class LocalPackageBuild(Strict):
+    """The package a FEATURE's engineering is expected to commit in its own product, as intent only.
+
+    It proves no source, commit or compatibility; an INSTALL is pinned only to a real commit.
+    """
+
+    path: ProductPath
+    package: LocalPackage
+    core_version: Version
+    python_version: Version
+    tooling_commit: SHA
 
 
 class LocalPackageInstall(Strict):

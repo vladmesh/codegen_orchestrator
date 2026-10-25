@@ -61,6 +61,7 @@ def to_read(task: Task, last_event: str | None = None) -> TaskRead:
         planning_attempt_id=task.planning_attempt_id,
         install=task.install,
         install_operation=task.install_operation,
+        package_build=task.package_build,
         created_at=task.created_at,
         updated_at=task.updated_at,
         last_event=last_event,

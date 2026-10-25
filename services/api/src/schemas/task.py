@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.install_operation import InstallOperation
-from shared.contracts.dto.local_install import InstallTarget
+from shared.contracts.dto.local_install import InstallTarget, LocalPackageBuild
 
 # The request schemas are the contract every client already imports; the API
 # validates against that same object rather than a look-alike of its own.
@@ -57,6 +57,7 @@ class TaskRead(TimestampedDTO):
     planning_attempt_id: str | None = None
     install: InstallTarget | None = None
     install_operation: InstallOperation | None = None
+    package_build: LocalPackageBuild | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
 

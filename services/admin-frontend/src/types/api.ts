@@ -137,6 +137,14 @@ export interface LocalPackageInstall {
   tooling_commit: string
 }
 
+export interface LocalPackageBuild {
+  path: string
+  package: LocalPackage
+  core_version: string
+  python_version: string
+  tooling_commit: string
+}
+
 export interface InstallVerification {
   core_version: string
   tooling_commit: string
@@ -326,6 +334,7 @@ export interface Task {
   planning_attempt_id?: string | null
   install?: CatalogInstall | LocalPackageInstall | null
   install_operation?: InstallOperation | null
+  package_build?: LocalPackageBuild | null
   created_at: string
   updated_at?: string | null
   last_event?: string | null
