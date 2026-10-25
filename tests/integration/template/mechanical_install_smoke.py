@@ -127,13 +127,51 @@ def customize_notes(product, python=None):
 
 
 SOURCE_PATH = "packages/notes_source"
+#: The kit's child interpreter writes no bytecode; existing cache files stay in every snapshot.
+SOURCE_PREFLIGHT_CACHE_POLICY = {"PYTHONDONTWRITEBYTECODE": "1", "cache_files_compared": True}
 
 
-def prove_source_preflight(product, payload):
+def owned_tree(root):
+    """Every entry under `root` with its kind and content: file SHA256, symlink target, dir.
+
+    Symlinks are recorded by target and never followed, so nothing outside `root` is read.
+    """
+    if root.is_symlink() or not root.is_dir():
+        raise RuntimeError(f"{root} is not an owned directory")
+
+    def unreadable(error):
+        raise error
+
+    entries = {}
+    for directory, names, files in os.walk(root, onerror=unreadable):
+        for name in [*names, *files]:
+            path = Path(directory) / name
+            relative = str(path.relative_to(root))
+            if path.is_symlink():
+                entries[relative] = ["symlink", os.readlink(path)]
+            elif path.is_dir():
+                entries[relative] = ["dir"]
+            else:
+                entries[relative] = ["file", hashlib.sha256(path.read_bytes()).hexdigest()]
+    return entries
+
+
+def tree_evidence(entries):
+    canonical = json.dumps(entries, sort_keys=True).encode()
+    return {
+        "entries": len(entries),
+        "files": sum(kind == "file" for kind, *_ in entries.values()),
+        "symlinks": sum(kind == "symlink" for kind, *_ in entries.values()),
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def prove_source_preflight(product, payload, answers):
     """The pinned kit's `check-install --package-source` answer, admitted for a local target.
 
     The source lives inside the product and imports a marker on any runtime import; the kit
     must read it as data only, leaving product, lock and environment bytes as they were.
+    `answers` is filled per invocation, so a failed comparison keeps its evidence.
     """
     source = product / SOURCE_PATH
     assert not (product / "packages").exists()
@@ -176,21 +214,31 @@ def prove_source_preflight(product, payload):
     )
     tracked = run(["git", "ls-files"], product).splitlines()
 
+    owned = {
+        "source": source,
+        "root": product / ".venv",
+        "backend": product / "services/backend/.venv",
+        "tg_bot": product / "services/tg_bot/.venv",
+    }
+
     def state():
-        return (
-            run(["git", "status", "--porcelain", "--untracked-files=all"], product),
-            run(["git", "status", "--porcelain", "--ignored"], product),
-            {
+        return {
+            "git_status": run(["git", "status", "--porcelain", "--untracked-files=all"], product),
+            "ignored": run(["git", "status", "--porcelain", "--ignored"], product),
+            "locks": {
                 name: hashlib.sha256((product / name).read_bytes()).hexdigest()
                 for name in tracked
                 if Path(name).name == "uv.lock"
             },
-            install.protected_files(product, tracked),
-            install.environment_fingerprint(product),
-            sorted(str(path.relative_to(source)) for path in source.rglob("*")),
-        )
+            "protected": install.protected_files(product, tracked),
+            "trees": {name: owned_tree(path) for name, path in owned.items()},
+        }
 
-    answers = {}
+    kit_env = install.product_environment(product) | {
+        "PYTHONDONTWRITEBYTECODE": SOURCE_PREFLIGHT_CACHE_POLICY["PYTHONDONTWRITEBYTECODE"]
+    }
+    answers["cache_policy"] = SOURCE_PREFLIGHT_CACHE_POLICY
+    answers["compared"] = ["git_status", "ignored", "locks", "protected", *owned]
     try:
         for label, version in (("admitted", "1.0.0"), ("version_mismatch", "1.0.1")):
             before = state()
@@ -201,20 +249,38 @@ def prove_source_preflight(product, payload):
             answer = subprocess.run(
                 argv,
                 cwd=product,
-                env=install.product_environment(product),
+                env=kit_env,
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
-            assert state() == before, f"check-install {label} changed the product"
-            assert not (product / ".git/notes-source-imported").exists()
-            result = install.admitted_preflight(answer.returncode, answer.stdout, local)
+            after = state()
+            changed = sorted(key for key in before if key != "trees" and before[key] != after[key])
+            changed += sorted(
+                f"{name}:{entry}"
+                for name, tree in before["trees"].items()
+                for entry in set(tree) | set(after["trees"][name])
+                if tree.get(entry) != after["trees"][name].get(entry)
+            )
             answers[label] = {
                 "argv": argv[1:],
                 "returncode": answer.returncode,
                 "native": json.loads(answer.stdout),
-                "outstanding_glue": len(result.outstanding_glue(local)),
+                "bytes": {
+                    "before": {k: tree_evidence(v) for k, v in before["trees"].items()},
+                    "after": {k: tree_evidence(v) for k, v in after["trees"].items()},
+                    "locks": after["locks"],
+                    "protected_sha256": hashlib.sha256(
+                        json.dumps(after["protected"], sort_keys=True).encode()
+                    ).hexdigest(),
+                    "changed": changed[:50],
+                    "unchanged": not changed,
+                },
             }
+            assert not changed, f"check-install {label} changed {changed[:20]}"
+            assert not (product / ".git/notes-source-imported").exists()
+            result = install.admitted_preflight(answer.returncode, answer.stdout, local)
+            answers[label]["outstanding_glue"] = len(result.outstanding_glue(local))
         admitted = answers["admitted"]["native"]
         assert admitted["status"] in {"mechanical", "glue"}
         assert admitted["target"]["route"] == "package_source"
@@ -234,9 +300,7 @@ def prove_source_preflight(product, payload):
         answers["other_path_refusal"] = refusal
     finally:
         shutil.rmtree(product / "packages")
-    answers["unchanged"] = ["git_status", "ignored", "locks", "protected", "environments", "source"]
     answers["package_runtime_imported"] = False
-    return answers
 
 
 async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one owned product
@@ -330,7 +394,8 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
             artifact["plain_push_canary_returncode"] = plain_push.returncode
             canary_marker.unlink()
             payload = select_payload()
-            artifact["source_preflight"] = prove_source_preflight(product, payload)
+            artifact["source_preflight"] = {}
+            prove_source_preflight(product, payload, artifact["source_preflight"])
             assert run(["git", "status", "--porcelain"], product) == ""
             message = ScaffoldMessage(
                 project_id="ci-project",
