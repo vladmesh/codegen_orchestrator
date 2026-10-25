@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-25
+
+- New products scaffold from kit tag `0.12.0` (commit `8caf935f`) and carry its local-source
+  `kit add --package-source`; the orchestrator still installs only activated catalog releases.
+
 ## 2026-10-24
 
 - Deploy keeps only the newest `PREDEPLOY_BACKUP_RETAIN` (default 7) predeploy archives and deletes

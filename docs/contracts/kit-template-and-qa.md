@@ -21,14 +21,14 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by an immutable
 release tag of that repository and no longer from `service-template`.
-The production boundary is the annotated kit release `0.11.0` (tag object
-`705f3ce5bd182a6f6700c73997b34c51089d53a5`, commit `59a0752c8f44c01c04054f9bbe0bd699d3d27dd9`,
-[release notes](https://github.com/vladmesh/codegen-product-kit/blob/59a0752c8f44c01c04054f9bbe0bd699d3d27dd9/docs/releases/0.11.0.md)).
+The production boundary is the annotated kit release `0.12.0` (tag object
+`629d68558d877c48c28d4383eb254db11dad95dc`, commit `8caf935feb3d099a3b79162392df2efabb95c669`,
+[release notes](https://github.com/vladmesh/codegen-product-kit/blob/8caf935feb3d099a3b79162392df2efabb95c669/docs/releases/0.12.0.md)).
 The tag and its commit are separate identities. The seed, the fixture directory name and the
 recorded `_commit` carry the tag; the root `codegen-kit-tooling` dependency, the LangGraph
 requirement, their locks, the activated catalog snapshot (`shared/catalog_activation.yaml`) and the
 capability manifest's provenance carry the full commit. The matching
-`shared/tests/fixtures/codegen-product-kit-0.11.0` tree is its `backend,tg_bot` Copier render.
+`shared/tests/fixtures/codegen-product-kit-0.12.0` tree is its `backend,tg_bot` Copier render.
 The render, its [provenance](../evidence/catalog-install-fixture.json) and both locks are the CI
 producer's output (`.github/workflows/template-fixture.yml`, jobs `render` and `locks`), never
 hand edits.
@@ -51,6 +51,12 @@ commands, inline callbacks and text handler (the generated product's `services/t
 "Command registry", owns its forms), a generated users write that commits before it
 acknowledges, and the typed `kit check-install` preflight, on top of generic platform
 environment sources and finite bilingual binding v2 (v1 unchanged).
+Its tooling adds `kit add <name> --package-source <dir> --product-root <root>`, which builds and
+installs a protocol-v1 package from source inside the product, so a new product carries that
+local-source installer. The orchestrator does not use it: an INSTALL closure names only an
+activated catalog release; typed local-source provenance and its INSTALL execution, candidate
+handling and generating a product whose package exists only as local source are outside this
+boundary. Existing products receive the tooling only through a Copier update.
 Its generated CI runs `quality`, `dev-smoke` and `integration` as parallel jobs on pull requests
 and manual dispatch, behind the stable required `lint-and-test` aggregate, which fails unless every
 result is `success`. Its deploy step uses the runner's native `ssh` and
