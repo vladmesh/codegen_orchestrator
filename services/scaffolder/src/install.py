@@ -26,7 +26,11 @@ from shared.contracts.dto.catalog_install import (
     InstallPreflight,
     InstallVerification,
 )
-from shared.contracts.dto.local_install import preflight_mismatch
+from shared.contracts.dto.local_install import (
+    LocalInstallVerification,
+    local_verification_mismatch,
+    preflight_mismatch,
+)
 from shared.diagnostics import redact_diagnostic
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS, acquire_install_workspace_lock
 from src.scaffold import _git_auth_env, _run_cmd, _workspace_path
@@ -168,6 +172,26 @@ def admitted_preflight(returncode, output, install) -> InstallPreflight:
     if (mismatch := preflight_mismatch(result, install)) is not None:
         raise InstallExecutionError("preflight", f"preflight_provenance_mismatch: {mismatch}")
     return result
+
+
+def admitted_local_verification(
+    output, install, protected, provenance=None
+) -> LocalInstallVerification:
+    """The source probe's evidence with this checkout's protected bytes, or a refusal.
+
+    A readback is admitted only against the provenance it follows.
+    """
+    stage = "preflight" if provenance is None else "readback"
+    try:
+        verification = LocalInstallVerification.model_validate(
+            json.loads(output) | {"protected_sha256": protected}
+        )
+    except (ValueError, TypeError) as error:
+        detail = redact_diagnostic(error)[:600]
+        raise InstallExecutionError(stage, f"local_verification_malformed: {detail}") from error
+    if (mismatch := local_verification_mismatch(verification, install, provenance)) is not None:
+        raise InstallExecutionError(stage, f"local_verification_mismatch: {mismatch}")
+    return verification
 
 
 def glue_detail(result: InstallPreflight, install) -> str:
