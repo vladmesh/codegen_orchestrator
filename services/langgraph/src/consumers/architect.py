@@ -70,7 +70,12 @@ from ..agents.architect.tools import (
     reset_task_chain,
 )
 from ..capability_feasibility import capability_conflicts
-from ..catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, plan_install_payload
+from ..catalog_install import (
+    INSTALL_PYTHON_VERSION,
+    InstallRefusal,
+    local_build_identity,
+    plan_install_payload,
+)
 from ..catalog_product_settings import catalog_binding_settings
 from ..clients.api import api_client
 from ..config.settings import Settings, get_settings
@@ -901,8 +906,8 @@ def _kit_catalog_briefing(
         "Plan a capability as a kit package only when a package listed here covers it, "
         "and install it only as `kit add <name>` with the name exactly as listed: never "
         "from a wheel file or another built artifact. A capability no listed package "
-        'covers is not a package: take another shape from "Capability Shape" or return '
-        "the requirement."
+        "covers is not a catalog package: build it as a product-local package source where "
+        'rung 4 fits, take another shape from "Capability Shape", or return the requirement.'
     )
     heading = (
         f"\n\n{KIT_CATALOG_HEADING} (read from the activated snapshot {catalog.source}; "
@@ -1007,7 +1012,39 @@ def _capability_plan_briefing(plan: CapabilityPlan, installs: dict[str, str]) ->
         "\n\nCapability plan of the confirmed brief (decided before this run; do not change "
         "it):\n" + "\n".join(lines) + "\nNo package can be selected or installed in this "
         "run: create no task that runs `kit add`, and never call plan_install. The modules' "
-        "settings the user chose are written by the platform after deploy."
+        "settings the user chose are written by the platform after deploy. Glue or "
+        "from-scratch work may still be built as a product-local package source (below): "
+        "that is product work, not another module selection."
+    )
+
+
+def _local_package_briefing(catalog: KitCatalogAnswer) -> str:
+    """The expected identities a product-local package build is planned against this run.
+
+    When this host is not the activated kit target, or the catalog whose released names
+    a build may not take is unavailable, the block says so instead, and `create_task`
+    refuses every build.
+    """
+    try:
+        identity = local_build_identity()
+    except InstallRefusal as error:
+        return (
+            f"\n\nProduct-local package source: unavailable this run ({error}). "
+            "Pass no package_build to create_task."
+        )
+    if not isinstance(catalog, KitCatalog):
+        return (
+            "\n\nProduct-local package source: unavailable this run (the kit catalog's "
+            "released package names cannot be checked). Pass no package_build to create_task."
+        )
+    return (
+        "\n\nProduct-local package source: a reusable capability the story asks for that no "
+        'released module covers may be one create_task(type="feature", package_build=...) '
+        "whose engineering writes the package source in this product. Pass exactly these "
+        f"expected identities: core_version {identity['core_version']}, python_version "
+        f"{identity['python_version']}, tooling_commit {identity['tooling_commit']}. They are "
+        "the platform's activated kit target, not the product's observed compatibility: the "
+        "platform's own install of the committed source proves that later."
     )
 
 
@@ -1554,6 +1591,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             if capability_plan is not None
             else _kit_catalog_briefing(catalog, facts=planning_facts)
         )
+        user_content += _local_package_briefing(catalog)
         selectable = capability_plan is None and isinstance(catalog, KitCatalog)
         user_content += module_jobs_briefing(selected_module_jobs)
 
@@ -1567,6 +1605,9 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             "selected_module_jobs": selected_module_jobs,
             "kit_catalog_packages": (
                 sorted(catalog.names) if selectable else [] if capability_plan else None
+            ),
+            "kit_catalog_released": (
+                sorted(catalog.names) if isinstance(catalog, KitCatalog) else None
             ),
         }
 

@@ -55,9 +55,9 @@ Its tooling adds `kit add <name> --package-source <dir> --product-root <root>`, 
 installs a protocol-v1 package from source inside the product, so a new product carries that
 local-source installer. A catalog INSTALL closure names only an activated catalog release; an
 admitted `LocalPackageInstall` (below) is delivered through the scheduler and scaffold queue to
-the executor that runs this installer. No planner writes a local target or build intent: generating
-the source, operator recovery of a local operation, candidate handling and buyer acceptance of a
-local install are outside this boundary. Existing products receive the tooling
+the executor that runs this installer. No planner writes a local target; the Architect writes only
+a build intent (below). Operator recovery of a local operation, candidate handling and buyer
+acceptance of a local install are outside this boundary. Existing products receive the tooling
 only through a Copier update.
 Its generated CI runs `quality`, `dev-smoke` and `integration` as parallel jobs on pull requests
 and manual dispatch, behind the stable required `lint-and-test` aggregate, which fails unless every
@@ -250,7 +250,28 @@ FEATURE stays ordinary paid engineering. Only a FEATURE with story and repositor
 install payload carries one, and `TaskCreate` refuses one submitted `done` (`TaskCreate` and the
 `ck_tasks_package_build` constraint); both create routes apply the local INSTALL ownership refusals
 above to it, and TaskUpdate cannot change it or its project, repository or story
-(`package_build_ownership_immutable`). No planner writes one yet.
+(`package_build_ownership_immutable`).
+
+The Architect's `create_task(package_build=...)` is the one planner that writes an intent, for a
+reusable capability no released module covers. It accepts one only for a FEATURE whose core, Python
+and tooling equal the activated target (`CATALOG_ACTIVATION`, `INSTALL_PYTHON_VERSION`;
+`activation_refusal` refuses host drift), whose path is outside `services/backend/packages/` and
+whose name the verified activated catalog does not release, on an active backend,tg_bot product
+whose managed primary repository and story it reads. That membership (`kit_catalog_released`) is
+injected apart from selection permission, so a frozen plan that may select nothing still refuses a
+released name; an unavailable catalog admits no build. Every refusal precedes the API write and the chain; the
+task is a `TaskCreate` with that repository, `todo`, its planning attempt and chain predecessor, and
+the `kit add`/artifact prose guard still applies. A task without the argument never carries one.
+The run's briefing names those identities as expectations, not observed compatibility; a stored
+capability plan keeps its selections, and such a source is glue or from-scratch product work.
+
+The engineering consumer reads a named planning Task from the API before any graph: a failed or
+malformed read, or a Task or Run naming another task, product or story, fails the attempt and
+touches no Task, and a build also needs a FEATURE and the product's managed primary repository the
+worker is given. `EngineeringState.package_build` carries the intent to the developer node, whose
+TASK.md, on a fresh or reused turn, names the directory, package and expected identities, asks for a
+protocol-v1 source with its own tests, tracked and residue-free, and forbids installing it. The
+rendered instructions prove no package source, commit or compatibility.
 
 The FEATURE's first completed engineering Run write (`PATCH /runs/{id}`, `local_package_handoff.py`)
 pins the intent, under the terminal Run lock ladder and in the transaction of that outcome and its

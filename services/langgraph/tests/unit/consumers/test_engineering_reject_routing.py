@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.contracts.dto.engineering import EngineeringStatus
-from tests.unit.factories import make_project, make_repository, make_story
+from tests.unit.factories import (
+    make_engineering_reads,
+    make_project,
+    make_repository,
+    make_story,
+)
 
 _PATCH = "src.consumers.engineering"
 
@@ -16,7 +21,7 @@ _PATCH = "src.consumers.engineering"
 def _make_job_data(**overrides) -> dict:
     defaults = {
         "task_id": "eng-test-1",
-        "project_id": "proj-1",
+        "project_id": str(make_project().id),
         "initiating_run_id": "live-1",
         "telegram_chat_id": "123",
         "callback_stream": "cb:123",
@@ -44,6 +49,9 @@ def mock_api():
         api.get_primary_repository = AsyncMock(return_value=make_repository())
         api.get_tasks_by_story = AsyncMock(return_value=[])
         api.get_story = AsyncMock(return_value=make_story(title="test story"))
+        task, run = make_engineering_reads(_make_job_data())
+        api.get_task = AsyncMock(return_value=task)
+        api.get_run = AsyncMock(return_value=run)
         yield api
 
 

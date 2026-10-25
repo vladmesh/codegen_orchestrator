@@ -20,14 +20,16 @@ fields, and then `create_task` sends the ordinary non-brief shape.
 Catalog selection uses `plan_install(name)`: the injected catalog snapshot owns
 package, recommended library and default-binding identities in a typed INSTALL.
 `create_task` continues ordinary engineering planning, but refuses prose kit
-installation recipes and supplied artifacts. No model field controls command
-vectors, component sources, operation leases or engineering accounting.
+installation recipes and supplied artifacts; only an explicit `package_build` makes
+its task an owned product-local source FEATURE at the activated pins. No model field
+controls command vectors, component sources, operation leases or engineering accounting.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+from http import HTTPStatus
 import io
 import re
 import shlex
@@ -42,10 +44,13 @@ from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.catalog_install import CatalogInstall
+from shared.contracts.dto.local_install import LocalPackageBuild
 from shared.contracts.dto.product_brief import MustRequirement, RequirementCoverageCreate
+from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.repository import RepositoryDTO, RepositoryRole
 from shared.contracts.dto.task import TaskCreate, TaskStatus, TaskType
 
-from ...catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal
+from ...catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, local_build_identity
 from ...clients.api import api_client
 from ...planning_module_jobs import (
     PlanningModuleFacts,
@@ -344,6 +349,8 @@ async def create_task(
     project_id: Annotated[str, InjectedState("project_id")],
     planning_attempt_id: Annotated[str | None, InjectedState("planning_attempt_id")] = None,
     kit_catalog_packages: Annotated[list[str] | None, InjectedState("kit_catalog_packages")] = None,
+    kit_catalog_released: Annotated[list[str] | None, InjectedState("kit_catalog_released")] = None,
+    package_build: LocalPackageBuild | None = None,
 ) -> dict:
     """Create a new task for a story.
 
@@ -360,6 +367,10 @@ async def create_task(
         description: What needs to be done.
         type: One of: create, feature, fix, refactor.
         acceptance_criteria: How to verify the task is done.
+        package_build: Only for a "feature" whose engineering writes a new product-local
+            kit package source: its product-relative directory, package name, distribution
+            and version, and the expected core, Python and tooling given in your briefing.
+            Omit it for every other task. The platform installs the committed source later.
     """
     refusal = package_install_refusal(f"{description}\n{acceptance_criteria}", kit_catalog_packages)
     if refusal is not None:
@@ -374,23 +385,49 @@ async def create_task(
 
     blocked_by = _last_task_id.get(story_id)
 
-    task_data = {
-        "title": title,
-        "description": description,
-        "type": type,
-        "acceptance_criteria": acceptance_criteria,
-        "story_id": story_id,
-        "project_id": project_id,
-        "status": TaskStatus.TODO,
-        "blocked_by_task_id": blocked_by,
-        "created_by": "architect",
-    }
-    if planning_attempt_id is not None:
-        # Planning under a Product Brief: the API creates the task unadmitted
-        # under this attempt, and only `POST /product-briefs/{id}/admit`
-        # releases it. Absent otherwise, so an ordinary task is created with the
-        # shape it has always been created with.
-        task_data["planning_attempt_id"] = planning_attempt_id
+    if package_build is not None:
+        try:
+            repository = await _package_build_repository(
+                package_build, story_id, project_id, kit_catalog_released
+            )
+        except PackageBuildRefusal as refusal:
+            logger.warning("architect_package_build_refused", title=title, detail=str(refusal))
+            return {"error": f"task {title!r} was refused: {refusal}"}
+        try:
+            task_data = TaskCreate(
+                title=title,
+                description=description,
+                type=type,
+                acceptance_criteria=acceptance_criteria,
+                story_id=story_id,
+                project_id=project_id,
+                repository_id=repository.id,
+                status=TaskStatus.TODO,
+                blocked_by_task_id=blocked_by,
+                created_by="architect",
+                planning_attempt_id=planning_attempt_id,
+                package_build=package_build,
+            ).model_dump(mode="json")
+        except ValidationError as invalid:
+            return {"error": f"task {title!r} was refused: {invalid}"}
+    else:
+        task_data = {
+            "title": title,
+            "description": description,
+            "type": type,
+            "acceptance_criteria": acceptance_criteria,
+            "story_id": story_id,
+            "project_id": project_id,
+            "status": TaskStatus.TODO,
+            "blocked_by_task_id": blocked_by,
+            "created_by": "architect",
+        }
+        if planning_attempt_id is not None:
+            # Planning under a Product Brief: the API creates the task unadmitted
+            # under this attempt, and only `POST /product-briefs/{id}/admit`
+            # releases it. Absent otherwise, so an ordinary task is created with the
+            # shape it has always been created with.
+            task_data["planning_attempt_id"] = planning_attempt_id
     result = await api_client.create_task(task_data)
 
     # Track for auto-chaining
@@ -404,8 +441,85 @@ async def create_task(
         title=title,
         blocked_by=blocked_by,
         planning_attempt_id=planning_attempt_id,
+        package_build=package_build is not None,
     )
     return result.model_dump(mode="json")
+
+
+#: Where `kit add` retains installed wheels; package source never lives there.
+_WHEEL_STORE = "services/backend/packages"
+
+
+class PackageBuildRefusal(ValueError):
+    """Why this run may not plan a package build."""
+
+
+async def _package_build_repository(
+    build: LocalPackageBuild,
+    story_id: str,
+    project_id: str,
+    released: list[str] | None,
+) -> RepositoryDTO:
+    """The managed primary repository that will own `build`, once its target and owners hold.
+
+    The pins must be the activated target's, the name none the verified catalog releases
+    (`None`: unknown, so no name is admitted); the product must be an active backend,tg_bot
+    one and the story its own. A planning check only: the later INSTALL proves the
+    product's actual compatibility.
+    """
+    try:
+        expected = local_build_identity()
+    except InstallRefusal as error:
+        raise PackageBuildRefusal(f"package_build_unavailable: {error}") from None
+    for key, value in expected.items():
+        if getattr(build, key) != value:
+            raise PackageBuildRefusal(
+                f"package_build_pin_mismatch: {key} is {getattr(build, key)}, the activated "
+                f"kit target expects {value}"
+            )
+    if build.path == _WHEEL_STORE or build.path.startswith(f"{_WHEEL_STORE}/"):
+        raise PackageBuildRefusal(
+            f"package_build_path_refused: {_WHEEL_STORE} holds installed wheels, not source"
+        )
+    if released is None:
+        raise PackageBuildRefusal(
+            "package_build_catalog_unavailable: the released package names cannot be checked"
+        )
+    if build.package.name in released:
+        raise PackageBuildRefusal(
+            f"package_build_released: {build.package.name} is a released catalog package; "
+            "select it with plan_install instead of building it"
+        )
+    project = await api_client.get_project(project_id)
+    modules = None if project is None else project.config.get("modules")
+    if (
+        project is None
+        or project.status is not ProjectStatus.ACTIVE
+        or not isinstance(modules, list)
+        or not {"backend", "tg_bot"}.issubset(modules)
+    ):
+        raise PackageBuildRefusal(
+            "package_build_product_incompatible: requires an active backend,tg_bot product"
+        )
+    repository = await api_client.get_primary_repository(project_id)
+    if (
+        repository is None
+        or repository.role != RepositoryRole.PRIMARY
+        or str(repository.project_id) != project_id
+        or not repository.is_managed
+    ):
+        raise PackageBuildRefusal(
+            "package_build_repository_unowned: the product has no managed primary repository"
+        )
+    try:
+        story = await api_client.get_story(story_id)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code != HTTPStatus.NOT_FOUND:
+            raise
+        raise PackageBuildRefusal("package_build_story_unowned: no such story") from None
+    if str(story.project_id) != project_id:
+        raise PackageBuildRefusal("package_build_story_unowned: the story is another product's")
+    return repository
 
 
 def _refusal_detail(error: httpx.HTTPStatusError) -> str:

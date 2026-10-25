@@ -33,6 +33,7 @@ from shared.contracts.dto.capability_preview import (
 from shared.contracts.dto.product_brief import ProductBriefAdmissionOutcome, ProductBriefContent
 from src.capability_feasibility import platform_cannot
 from src.capability_preview import capability_id, resolve_preview
+from src.catalog_install import INSTALL_PYTHON_VERSION
 from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
 from tests.unit.architect_kit_catalog import CatalogBrief, CatalogPlanApi, plan_story
 from tests.unit.factories import make_admission, make_project, make_repository
@@ -422,8 +423,26 @@ def _glue_brief(catalog) -> tuple[CatalogBrief, CapabilityPlan]:
     return brief, plan
 
 
+#: A product-local ranking package, pinned to the activated target the briefing names.
+RANKING_BUILD = {
+    "path": "packages/post-ranking",
+    "package": {
+        "name": "post-ranking",
+        "distribution": "codegen-kit-post-ranking",
+        "version": "0.1.0",
+    },
+    "core_version": CATALOG_ACTIVATION.core_version,
+    "python_version": INSTALL_PYTHON_VERSION,
+    "tooling_commit": CATALOG_ACTIVATION.tooling_commit,
+}
+
+
 def _glue_graph(api: _PlanApi, *, cover_with: str | None):
-    """A model turn: `None` plans nothing, `"install"` records the install, `"feature"` builds."""
+    """A model turn: `None` plans nothing, `"install"` records the install, `"feature"` builds.
+
+    `"package"` first asks for a source under the frozen module's own released name,
+    then builds the glue as a distinct product-local package source.
+    """
     from src.agents.architect.tools import create_task, record_requirement_coverage
 
     seen: dict = {}
@@ -433,18 +452,33 @@ def _glue_graph(api: _PlanApi, *, cover_with: str | None):
         if cover_with is None:
             return {"messages": []}
         task_id = "task-1"
-        if cover_with == "feature":
-            created = await create_task.ainvoke(
-                {
-                    "title": "Score posts",
-                    "description": "Rank delivered posts by the user's scoring rules",
-                    "type": "feature",
-                    "acceptance_criteria": "posts arrive ranked",
-                    "story_id": state["story_id"],
-                    "project_id": state["project_id"],
-                    "planning_attempt_id": state["planning_attempt_id"],
-                }
-            )
+        if cover_with in {"feature", "package"}:
+            call = {
+                "title": "Score posts",
+                "description": "Rank delivered posts by the user's scoring rules",
+                "type": "feature",
+                "acceptance_criteria": "posts arrive ranked",
+                "story_id": state["story_id"],
+                "project_id": state["project_id"],
+                "planning_attempt_id": state["planning_attempt_id"],
+                "kit_catalog_packages": state["kit_catalog_packages"],
+                "kit_catalog_released": state["kit_catalog_released"],
+            }
+            if cover_with == "package":
+                frozen = api.plan.modules[0].install.package
+                seen["refused"] = await create_task.ainvoke(
+                    {
+                        **call,
+                        "package_build": {
+                            **RANKING_BUILD,
+                            "package": frozen.model_dump(
+                                include={"name", "distribution", "version"}
+                            ),
+                        },
+                    }
+                )
+                call["package_build"] = RANKING_BUILD
+            created = await create_task.ainvoke(call)
             task_id = created["id"]
         seen["coverage"] = await record_requirement_coverage.ainvoke(
             {
@@ -526,6 +560,41 @@ async def test_glue_work_planned_after_the_install_covers_the_requirement(
     assert feature["blocked_by_task_id"] == "task-1"
     assert api.coverage == {"digest": ("plan-live", "task-2", None)}
     assert api.released == ["task-1", "task-2"]
+
+
+@pytest.mark.asyncio
+async def test_frozen_glue_may_be_a_local_package_source_without_another_selection(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    """Ranking beyond tg-channels as this product's own package; the stored plan is kept.
+
+    The frozen module's own released name is refused as a build before any write, although
+    the run may select nothing; the distinct ranking name is planned after the INSTALL.
+    """
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, plan = _glue_brief(activated_kit_catalog)
+    api = _PlanApi(brief, plan)
+    graph, seen = _glue_graph(api, cover_with="package")
+
+    result = await _plan_glue(api, graph)
+
+    assert result["status"] == "success", result
+    released = plan.modules[0].install.package.name
+    assert f"package_build_released: {released}" in seen["refused"]["error"]
+    assert released in seen["kit_catalog_released"]
+    install, source = api.task_payloads
+    assert install["install"] == plan.capabilities[0].install.model_dump(mode="json")
+    assert source["type"] == "feature" and source["install"] is None
+    assert source["package_build"] == RANKING_BUILD
+    assert source["repository_id"] == make_repository().id
+    assert source["blocked_by_task_id"] == "task-1"
+    assert api.coverage == {"digest": ("plan-live", "task-2", None)}
+    assert api.released == ["task-1", "task-2"]
+    assert seen["kit_install_snapshot"] is None and seen["kit_catalog_packages"] == []
+    briefing = seen["messages"][0]["content"]
+    assert f"core_version {CATALOG_ACTIVATION.core_version}" in briefing
+    assert f"python_version {INSTALL_PYTHON_VERSION}" in briefing
+    assert f"tooling_commit {CATALOG_ACTIVATION.tooling_commit}" in briefing
 
 
 @pytest.mark.asyncio

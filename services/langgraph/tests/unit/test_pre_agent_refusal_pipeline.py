@@ -23,7 +23,7 @@ from shared.contracts.dto.task import TaskDTO
 from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import _wait_until_ready, spawn_result_from_output
 from src.nodes.developer import DeveloperNode
-from tests.unit.factories import make_project, make_repository
+from tests.unit.factories import make_engineering_reads, make_project, make_repository
 
 
 def _load_service_package(name: str, source: Path):
@@ -119,7 +119,19 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
     producer_api.get_primary_repository.return_value = make_repository(
         git_url="https://github.com/org/test-project"
     )
-    producer_api.get_run.return_value = SimpleNamespace(run_metadata={})
+    job = {
+        "task_id": "eng-1",
+        "story_id": "story-1",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "initiating_run_id": "live-1",
+        "planning_task_id": "task-1",
+        "action": "feature",
+        "description": "Exercise the refusal seam",
+        "callback_stream": "po:input",
+    }
+    producer_api.get_task.return_value, producer_api.get_run.return_value = make_engineering_reads(
+        job
+    )
     producer_redis = AsyncMock()
     producer_redis.redis = AsyncMock()
     producer_redis.redis.hget.return_value = None
@@ -143,19 +155,7 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
         ),
     ):
         graph_factory.return_value.ainvoke = AsyncMock(return_value=node_result)
-        await engineering.process_engineering_job(
-            {
-                "task_id": "eng-1",
-                "story_id": "story-1",
-                "project_id": "00000000-0000-0000-0000-000000000001",
-                "initiating_run_id": "live-1",
-                "planning_task_id": "task-1",
-                "action": "feature",
-                "description": "Exercise the refusal seam",
-                "callback_stream": "po:input",
-            },
-            producer_redis,
-        )
+        await engineering.process_engineering_job(job, producer_redis)
 
     terminal_patch = next(
         call.kwargs["json"]

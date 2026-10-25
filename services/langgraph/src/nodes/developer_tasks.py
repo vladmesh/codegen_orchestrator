@@ -8,6 +8,8 @@ import os
 
 import structlog
 
+from shared.contracts.dto.local_install import LocalPackageBuild
+
 logger = structlog.get_logger()
 
 
@@ -84,6 +86,57 @@ match exactly.
 {repository_acceptance_criteria.strip()}
 """)
     return "".join(sections)
+
+
+def format_package_build(build: LocalPackageBuild | None) -> str:
+    """Render the task's stored package build intent. Empty string for ordinary work."""
+    if build is None:
+        return ""
+    package = build.package
+    return f"""
+## Product-Local Package Source
+
+This task writes the source of one new kit package that belongs to this product only.
+The platform stored this intent with the task. It is the expected output, not proof that
+the package exists or is compatible: after your commit is published, the platform installs
+exactly that commit in a separate deterministic step, which checks the real package.
+
+- Source directory: `{build.path}` (product-relative, the only directory the package lives in)
+- Package name: `{package.name}`; distribution: `{package.distribution}`;
+  version: `{package.version}`
+- Expected kit core `{build.core_version}`, product Python `{build.python_version}` and kit
+  tooling commit `{build.tooling_commit}`: the platform's expectations. Read the product's
+  own `codegen_kit` core and tooling, and report a mismatch instead of working around it.
+- The rest of this TASK.md, the product's AGENTS.md and the story context are the
+  product the package serves; it reaches that product only through its declared
+  extension points.
+
+Write it as an installable package protocol v1 source, following the package-authoring
+contract the product itself carries (its `codegen_kit` package runtime and the kit's
+"Package protocol v1"); do not invent another manifest format:
+
+- `{build.path}/pyproject.toml` declares a static `[project]` name `{package.distribution}`,
+  version `{package.version}`, a `requires-python` admitting `{build.python_version}`, and
+  exactly one `codegen_kit.packages` entry point named `{package.name}`.
+- The entry-point module is a package directory holding the one `package.yaml`:
+  `protocol_version: 1`, name `{package.name}`, version `{package.version}`, a
+  `requires_core` admitting `{build.core_version}`, and the extension points the
+  capability uses (`http.prefix`, `events`, `settings_schema`, `jobs_schema`, `database`).
+- Parameterize behaviour through the package's own `settings_schema`; hard-code no
+  product values, user IDs or credentials.
+- Ship the package's own behavioural tests inside `{build.path}` and make them pass;
+  commit and push the package through the normal engineering lifecycle.
+- Commit every source file as a tracked regular file. When you push, `{build.path}` holds
+  no untracked, ignored or cache entries (`__pycache__`, `.pytest_cache`, `dist/`,
+  `build/`, `*.egg-info`, virtual environments).
+- Keep the source outside `services/backend/packages/`, which holds installed wheels only.
+- Do not install it: no `kit add`, `kit bind`, `uv add` or `pip install` of it, no wheel
+  in `services/backend/packages/`, no entry in `services/backend/manifest.yaml` `packages`
+  and no regeneration for it. Where the product's tooling provides it, the read-only
+  `kit check-install {package.name} --package-source {build.path} --json` previews the source.
+- Do not copy a released kit package's implementation, and publish no catalog entry,
+  tag or release.
+"""
 
 
 def format_env_hints(project_spec: dict) -> str:
@@ -179,6 +232,7 @@ def build_feature_task(
     story_context: str | None = None,
     task_acceptance_criteria: str | None = None,
     repository_acceptance_criteria: str | None = None,
+    package_build: LocalPackageBuild | None = None,
 ) -> str:
     """Build task message for feature addition or bug fix."""
     action_label = "Add Feature" if action == "feature" else "Fix Issue"
@@ -196,6 +250,7 @@ def build_feature_task(
 ## What To Do
 
 {task_description}
+{format_package_build(package_build)}\
 {format_acceptance_criteria(task_acceptance_criteria, repository_acceptance_criteria)}
 ## Project Context
 
@@ -216,7 +271,7 @@ def build_feature_task(
 {format_story_context(story_context)}"""
 
 
-def build_task_message(
+def build_task_message(  # noqa: PLR0913 — one TASK.md's whole content, each part named
     project_name: str,
     description: str,
     modules: list[str],
@@ -227,6 +282,8 @@ def build_task_message(
     story_context: str | None = None,
     task_acceptance_criteria: str | None = None,
     repository_acceptance_criteria: str | None = None,
+    *,
+    package_build: LocalPackageBuild | None = None,
 ) -> str:
     """Build TASK.md content for the developer worker.
 
@@ -247,6 +304,7 @@ def build_task_message(
             story_context=story_context,
             task_acceptance_criteria=task_acceptance_criteria,
             repository_acceptance_criteria=repository_acceptance_criteria,
+            package_build=package_build,
         )
 
     return build_create_task(

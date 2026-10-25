@@ -23,6 +23,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   an INSTALL needs the real engineering commit, so the producer and INSTALL handoff stay pending.
 - A package-build FEATURE's first completed Run pins its commit into one INSTALL before its `done`;
   no planner writes the intent, and package existence, compatibility and native/live runs are unproven.
+- The Architect's `create_task(package_build=...)` plans an owned, pin-checked source FEATURE and
+  its worker's TASK.md states the package to write, uninstalled; no package or live run is proven.
 
 ## 2026-10-24
 

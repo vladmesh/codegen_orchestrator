@@ -13,6 +13,7 @@ from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.queues.worker import WorkerOwnership
 from src.clients.worker_spawner import SpawnResult
 from src.consumers.engineering import EngineeringSuccessParams
+from tests.unit.factories import make_engineering_reads
 
 _PROJECT_ID = uuid.uuid4()
 
@@ -237,21 +238,22 @@ class TestEngineeringConsumerStoryWorker:
         redis_mock.redis = MagicMock()
         redis_mock.redis.xadd = AsyncMock()
 
-        result = await process_engineering_job(
-            {
-                "task_id": "eng-123",
-                "project_id": "proj-1",
-                "telegram_chat_id": "u-1",
-                "action": "feature",
-                "run_id": "eng-1",
-                "initiating_run_id": "live-1",
-                "description": "Add login",
-                "story_id": "story-1",
-                "planning_task_id": "task-1",
-                "skip_deploy": True,
-            },
-            redis_mock,
-        )
+        job = {
+            "task_id": "eng-123",
+            "project_id": str(_project_dto().id),
+            "telegram_chat_id": "u-1",
+            "action": "feature",
+            "run_id": "eng-1",
+            "initiating_run_id": "live-1",
+            "description": "Add login",
+            "story_id": "story-1",
+            "planning_task_id": "task-1",
+            "skip_deploy": True,
+        }
+        task, run = make_engineering_reads(job)
+        mock_api.get_task = AsyncMock(return_value=task)
+        mock_api.get_run = AsyncMock(return_value=run)
+        result = await process_engineering_job(job, redis_mock)
 
         assert result["status"] == "success"
         # Should look up worker for story
@@ -302,21 +304,22 @@ class TestEngineeringConsumerStoryWorker:
         redis_mock.redis = MagicMock()
         redis_mock.redis.xadd = AsyncMock()
 
-        await process_engineering_job(
-            {
-                "task_id": "eng-456",
-                "project_id": "proj-1",
-                "telegram_chat_id": "u-1",
-                "action": "feature",
-                "run_id": "eng-1",
-                "initiating_run_id": "live-1",
-                "description": "Add profile page",
-                "story_id": "story-1",
-                "planning_task_id": "task-2",
-                "skip_deploy": True,
-            },
-            redis_mock,
-        )
+        job = {
+            "task_id": "eng-456",
+            "project_id": str(_project_dto().id),
+            "telegram_chat_id": "u-1",
+            "action": "feature",
+            "run_id": "eng-1",
+            "initiating_run_id": "live-1",
+            "description": "Add profile page",
+            "story_id": "story-1",
+            "planning_task_id": "task-2",
+            "skip_deploy": True,
+        }
+        task, run = make_engineering_reads(job)
+        mock_api.get_task = AsyncMock(return_value=task)
+        mock_api.get_run = AsyncMock(return_value=run)
+        await process_engineering_job(job, redis_mock)
 
         # Should pass worker_id to subgraph
         invoke_args = mock_graph.ainvoke.call_args[0][0]

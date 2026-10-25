@@ -177,6 +177,24 @@ def make_task(**overrides) -> TaskDTO:
     return TaskDTO(**base)
 
 
+def make_engineering_reads(job: dict, **task_overrides) -> tuple[TaskDTO, RunDTO]:
+    """The planning Task and engineering Run an engineering job names, owned as it says."""
+    task = make_task(
+        id=job["planning_task_id"],
+        project_id=uuid.UUID(job["project_id"]),
+        story_id=job.get("story_id"),
+        **task_overrides,
+    )
+    run = make_run(
+        id=job["task_id"],
+        type=RunType.ENGINEERING,
+        project_id=job["project_id"],
+        story_id=job.get("story_id"),
+        task_id=job["planning_task_id"],
+    )
+    return task, run
+
+
 def make_task_event(**overrides) -> TaskEventDTO:
     base = {
         "id": 1,

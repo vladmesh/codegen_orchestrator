@@ -38,6 +38,10 @@ class ArchitectState(AgentState):
     #: with, or `None` when the catalog was unavailable. `create_task` refuses a
     #: `kit add` of any other name, so the plan installs only what it was shown.
     kit_catalog_packages: list[str] | None
+    #: The package names the verified activated catalog releases for the pinned core,
+    #: whether or not this run may select one; `None` when the catalog was unavailable.
+    #: Membership only: it grants no selection, and a package build never takes one.
+    kit_catalog_released: list[str] | None
 
     kit_install_snapshot: dict | None
     #: Read-only contracts of frozen/previously selected module namespaces. This

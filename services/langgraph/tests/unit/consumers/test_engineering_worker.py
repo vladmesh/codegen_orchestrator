@@ -23,7 +23,7 @@ from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import spawn_result_from_output
 from src.consumers.engineering import EngineeringSuccessParams
 from src.nodes.developer import DeveloperNode
-from tests.unit.factories import make_project, make_repository
+from tests.unit.factories import make_engineering_reads, make_project, make_repository
 
 
 @pytest.fixture
@@ -504,19 +504,20 @@ class TestFeatureActionFlow:
         mock_allocator.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
         mock_create_subgraph.return_value.ainvoke = AsyncMock(return_value=node_result)
 
-        await process_engineering_job(
-            {
-                "task_id": "eng-run-34160792874",
-                "story_id": "story-1",
-                "project_id": "proj-1",
-                "initiating_run_id": "live-34160792874",
-                "planning_task_id": "fix-attempt-1",
-                "action": "fix",
-                "description": "Repair failed CI",
-                "callback_stream": "po:input",
-            },
-            mock_redis,
-        )
+        job = {
+            "task_id": "eng-run-34160792874",
+            "story_id": "story-1",
+            "project_id": str(make_project().id),
+            "initiating_run_id": "live-34160792874",
+            "planning_task_id": "fix-attempt-1",
+            "action": "fix",
+            "description": "Repair failed CI",
+            "callback_stream": "po:input",
+        }
+        task, run = make_engineering_reads(job, type="fix")
+        mock_api.get_task = AsyncMock(return_value=task)
+        mock_api.get_run = AsyncMock(return_value=run)
+        await process_engineering_job(job, mock_redis)
 
         event = next(
             call

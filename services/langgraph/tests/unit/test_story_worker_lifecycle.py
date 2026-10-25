@@ -14,6 +14,7 @@ import pytest
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
+from tests.unit.factories import make_engineering_reads
 
 _PROJECT_ID = uuid.uuid4()
 
@@ -114,20 +115,21 @@ class TestTwoTaskStoryLifecycle:
         )
         mock_create_graph.return_value = mock_graph
 
-        await process_engineering_job(
-            {
-                "task_id": "eng-task1",
-                "project_id": "proj-1",
-                "initiating_run_id": "live-1",
-                "telegram_chat_id": "u-1",
-                "action": "feature",
-                "description": "Create User model",
-                "story_id": "story-1",
-                "planning_task_id": "task-1",
-                "skip_deploy": True,
-            },
-            redis_mock,
-        )
+        job = {
+            "task_id": "eng-task1",
+            "project_id": str(_project_dto().id),
+            "initiating_run_id": "live-1",
+            "telegram_chat_id": "u-1",
+            "action": "feature",
+            "description": "Create User model",
+            "story_id": "story-1",
+            "planning_task_id": "task-1",
+            "skip_deploy": True,
+        }
+        task, run = make_engineering_reads(job)
+        mock_api.get_task = AsyncMock(return_value=task)
+        mock_api.get_run = AsyncMock(return_value=run)
+        await process_engineering_job(job, redis_mock)
 
         # Looked up worker (found none)
         mock_get_worker.assert_called_with(redis_mock.redis, "story-1")
@@ -154,20 +156,21 @@ class TestTwoTaskStoryLifecycle:
         )
         mock_create_graph.return_value = mock_graph_2
 
-        await process_engineering_job(
-            {
-                "task_id": "eng-task2",
-                "project_id": "proj-1",
-                "initiating_run_id": "live-1",
-                "telegram_chat_id": "u-1",
-                "action": "feature",
-                "description": "Add API endpoint",
-                "story_id": "story-1",
-                "planning_task_id": "task-2",
-                "skip_deploy": True,
-            },
-            redis_mock,
-        )
+        job = {
+            "task_id": "eng-task2",
+            "project_id": str(_project_dto().id),
+            "initiating_run_id": "live-1",
+            "telegram_chat_id": "u-1",
+            "action": "feature",
+            "description": "Add API endpoint",
+            "story_id": "story-1",
+            "planning_task_id": "task-2",
+            "skip_deploy": True,
+        }
+        task, run = make_engineering_reads(job)
+        mock_api.get_task = AsyncMock(return_value=task)
+        mock_api.get_run = AsyncMock(return_value=run)
+        await process_engineering_job(job, redis_mock)
 
         # Looked up worker (found it)
         mock_get_worker.assert_called_with(redis_mock.redis, "story-1")

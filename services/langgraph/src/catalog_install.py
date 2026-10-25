@@ -10,6 +10,7 @@ from framework.catalog import Catalog, CatalogError
 from framework.spec.packages import PackageManifest
 import yaml
 
+from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.contracts.dto.catalog_install import (
     CatalogInstall,
     CatalogSource,
@@ -17,7 +18,12 @@ from shared.contracts.dto.catalog_install import (
     InstallComponent,
 )
 
-from .kit_catalog import KitCatalog, KitCatalogAnswer, installed_tooling_commit
+from .kit_catalog import (
+    KitCatalog,
+    KitCatalogAnswer,
+    activation_refusal,
+    installed_tooling_commit,
+)
 
 #: The product Python every install is resolved for: the generated product's runtime.
 INSTALL_PYTHON_VERSION = "3.12.0"
@@ -25,6 +31,21 @@ INSTALL_PYTHON_VERSION = "3.12.0"
 
 class InstallRefusal(ValueError):
     pass
+
+
+def local_build_identity() -> dict[str, str]:
+    """The core, Python and tooling a product-local package build is planned against.
+
+    They are the activated target's expectations, never an observed product's; raises
+    `InstallRefusal` when this host is not that target.
+    """
+    if (refusal := activation_refusal(CATALOG_ACTIVATION)) is not None:
+        raise InstallRefusal(f"catalog_inactive: {refusal}")
+    return {
+        "core_version": CATALOG_ACTIVATION.core_version,
+        "python_version": INSTALL_PYTHON_VERSION,
+        "tooling_commit": CATALOG_ACTIVATION.tooling_commit,
+    }
 
 
 def selected_package_manifest(snapshot: KitCatalog, name: str) -> PackageManifest:
