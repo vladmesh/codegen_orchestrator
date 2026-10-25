@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "services/scaffolder"))
 
 from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
+from shared.contracts.dto.local_install import LocalPackageInstall  # noqa: E402
 from shared.contracts.queues.scaffold import ScaffoldMessage  # noqa: E402
 from shared.diagnostics import redact_diagnostic  # noqa: E402
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS  # noqa: E402
@@ -124,6 +126,183 @@ def customize_notes(product, python=None):
     return notes
 
 
+SOURCE_PATH = "packages/notes_source"
+#: The kit's child interpreter writes no bytecode; existing cache files stay in every snapshot.
+SOURCE_PREFLIGHT_CACHE_POLICY = {"PYTHONDONTWRITEBYTECODE": "1", "cache_files_compared": True}
+
+
+def owned_tree(root):
+    """Every entry under `root` with its kind and content: file SHA256, symlink target, dir.
+
+    Symlinks are recorded by target and never followed, so nothing outside `root` is read.
+    """
+    if root.is_symlink() or not root.is_dir():
+        raise RuntimeError(f"{root} is not an owned directory")
+
+    def unreadable(error):
+        raise error
+
+    entries = {}
+    for directory, names, files in os.walk(root, onerror=unreadable):
+        for name in [*names, *files]:
+            path = Path(directory) / name
+            relative = str(path.relative_to(root))
+            if path.is_symlink():
+                entries[relative] = ["symlink", os.readlink(path)]
+            elif path.is_dir():
+                entries[relative] = ["dir"]
+            else:
+                entries[relative] = ["file", hashlib.sha256(path.read_bytes()).hexdigest()]
+    return entries
+
+
+def tree_evidence(entries):
+    canonical = json.dumps(entries, sort_keys=True).encode()
+    return {
+        "entries": len(entries),
+        "files": sum(kind == "file" for kind, *_ in entries.values()),
+        "symlinks": sum(kind == "symlink" for kind, *_ in entries.values()),
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def prove_source_preflight(product, payload, answers):
+    """The pinned kit's `check-install --package-source` answer, admitted for a local target.
+
+    The source lives inside the product and imports a marker on any runtime import; the kit
+    must read it as data only, leaving product, lock and environment bytes as they were.
+    `answers` is filled per invocation, so a failed comparison keeps its evidence.
+    """
+    source = product / SOURCE_PATH
+    assert not (product / "packages").exists()
+    module = source / "notes_source"
+    module.mkdir(parents=True)
+    (module / "package.yaml").write_text(
+        "protocol_version: 1\n"
+        "name: notes-source\n"
+        "version: 1.0.0\n"
+        'requires_core: ">=2,<3"\n'
+        "http:\n"
+        "  prefix: /notes-source\n"
+        "deployment:\n"
+        "  modes: [in_process]\n"
+    )
+    (module / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "Path(__file__).resolve().parents[3].joinpath('.git/notes-source-imported').touch()\n"
+    )
+    (source / "pyproject.toml").write_text(
+        '[project]\nname = "codegen-kit-notes-source"\nversion = "1.0.0"\n'
+        '[project.entry-points."codegen_kit.packages"]\nnotes-source = "notes_source:package"\n'
+    )
+    local = LocalPackageInstall.model_validate(
+        {
+            "route": "package_source",
+            "project_id": "00000000-0000-4000-8000-000000000001",
+            "repository_id": product.name,
+            "commit": run(["git", "rev-parse", "HEAD"], product),
+            "path": SOURCE_PATH,
+            "package": {
+                "name": "notes-source",
+                "distribution": "codegen-kit-notes-source",
+                "version": "1.0.0",
+            },
+            "core_version": payload["core_version"],
+            "python_version": payload["python_version"],
+            "tooling_commit": payload["tooling_commit"],
+        }
+    )
+    tracked = run(["git", "ls-files"], product).splitlines()
+
+    owned = {
+        "source": source,
+        "root": product / ".venv",
+        "backend": product / "services/backend/.venv",
+        "tg_bot": product / "services/tg_bot/.venv",
+    }
+
+    def state():
+        return {
+            "git_status": run(["git", "status", "--porcelain", "--untracked-files=all"], product),
+            "ignored": run(["git", "status", "--porcelain", "--ignored"], product),
+            "locks": {
+                name: hashlib.sha256((product / name).read_bytes()).hexdigest()
+                for name in tracked
+                if Path(name).name == "uv.lock"
+            },
+            "protected": install.protected_files(product, tracked),
+            "trees": {name: owned_tree(path) for name, path in owned.items()},
+        }
+
+    kit_env = install.product_environment(product) | {
+        "PYTHONDONTWRITEBYTECODE": SOURCE_PREFLIGHT_CACHE_POLICY["PYTHONDONTWRITEBYTECODE"]
+    }
+    answers["cache_policy"] = SOURCE_PREFLIGHT_CACHE_POLICY
+    answers["compared"] = ["git_status", "ignored", "locks", "protected", *owned]
+    try:
+        for label, version in (("admitted", "1.0.0"), ("version_mismatch", "1.0.1")):
+            before = state()
+            # The fixed argv a local executor would run from its owned checkout.
+            argv = [str(product / ".venv/bin/kit"), "check-install", "notes-source", "--json"]
+            argv += ["--package-source", SOURCE_PATH, "--version", version]
+            argv += ["--product-root", str(product)]
+            answer = subprocess.run(
+                argv,
+                cwd=product,
+                env=kit_env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            after = state()
+            changed = sorted(key for key in before if key != "trees" and before[key] != after[key])
+            changed += sorted(
+                f"{name}:{entry}"
+                for name, tree in before["trees"].items()
+                for entry in set(tree) | set(after["trees"][name])
+                if tree.get(entry) != after["trees"][name].get(entry)
+            )
+            answers[label] = {
+                "argv": argv[1:],
+                "returncode": answer.returncode,
+                "native": json.loads(answer.stdout),
+                "bytes": {
+                    "before": {k: tree_evidence(v) for k, v in before["trees"].items()},
+                    "after": {k: tree_evidence(v) for k, v in after["trees"].items()},
+                    "locks": after["locks"],
+                    "protected_sha256": hashlib.sha256(
+                        json.dumps(after["protected"], sort_keys=True).encode()
+                    ).hexdigest(),
+                    "changed": changed[:50],
+                    "unchanged": not changed,
+                },
+            }
+            assert not changed, f"check-install {label} changed {changed[:20]}"
+            assert not (product / ".git/notes-source-imported").exists()
+            result = install.admitted_preflight(answer.returncode, answer.stdout, local)
+            answers[label]["outstanding_glue"] = len(result.outstanding_glue(local))
+        admitted = answers["admitted"]["native"]
+        assert admitted["status"] in {"mechanical", "glue"}
+        assert admitted["target"]["route"] == "package_source"
+        assert admitted["target"]["path"] == SOURCE_PATH
+        assert answers["admitted"]["outstanding_glue"] == len(admitted["glue"])
+        refused = answers["version_mismatch"]["native"]
+        assert refused["incompatible"]["code"] == "package_mismatch"
+        elsewhere = local.model_copy(update={"path": "packages/other"})
+        refusal = None
+        try:
+            install.admitted_preflight(
+                answers["admitted"]["returncode"], json.dumps(admitted), elsewhere
+            )
+        except install.InstallExecutionError as error:
+            refusal = str(error)
+        assert refusal == "preflight_provenance_mismatch: target.path"
+        answers["other_path_refusal"] = refusal
+    finally:
+        shutil.rmtree(product / "packages")
+    answers["package_runtime_imported"] = False
+
+
 async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one owned product
     output.mkdir(parents=True, exist_ok=True)
     artifact = {
@@ -215,6 +394,9 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
             artifact["plain_push_canary_returncode"] = plain_push.returncode
             canary_marker.unlink()
             payload = select_payload()
+            artifact["source_preflight"] = {}
+            prove_source_preflight(product, payload, artifact["source_preflight"])
+            assert run(["git", "status", "--porcelain"], product) == ""
             message = ScaffoldMessage(
                 project_id="ci-project",
                 repository_id=product.name,

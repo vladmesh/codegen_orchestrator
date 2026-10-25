@@ -159,7 +159,29 @@ async def test_a_local_install_is_never_admitted_recovered_or_bought(
     task = await post(async_client, "/api/tasks/", task_body(owner), 201)
     queues = (ENGINEERING_QUEUE, WORKER_COMMANDS, SCAFFOLD_QUEUE)
     before = {queue: await redis_client.xlen(queue) for queue in queues}
-    for body in [{"action": "admit"}, {"action": "claim", "operation_id": "op", "token": "t"}]:
+    # The kit's own answer for this exact target admits nothing while local installs are off.
+    source = {
+        "result_version": 1,
+        "package": "notes-digest",
+        "status": "mechanical",
+        "product_core": "2.2.0",
+        "target": {
+            "route": "package_source",
+            "path": "packages/notes_digest",
+            "version": "0.1.0",
+            "requires_core": ">=2,<3",
+            "metadata_sha256": "f" * 64,
+        },
+        "glue": [],
+        "incompatible": None,
+    }
+    settle = {"operation_id": "op", "token": "t", "stage": "preflight", "preflight": source}
+    for body in [
+        {"action": "admit"},
+        {"action": "claim", "operation_id": "op", "token": "t"},
+        {"action": "checkpoint", **settle},
+        {"action": "refuse", **settle},
+    ]:
         decision = await post(async_client, f"/api/tasks/{task['id']}/catalog-install", body)
         assert (decision["outcome"], decision["reason"]) == ("refused", "local_install_unsupported")
         assert decision["operation"] is None and decision["install"] is None

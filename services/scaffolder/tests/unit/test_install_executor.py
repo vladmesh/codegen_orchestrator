@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from shared.contracts.dto.local_install import LocalPackageInstall
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS
 from src.install import (
     InstallExecutionError,
+    admitted_preflight,
     attempt_checkout,
     install_environment,
     product_environment,
@@ -251,6 +253,41 @@ def check_install(status="mechanical", glue=(), incompatible=None, **target):
     }
 
 
+LOCAL = LocalPackageInstall.model_validate(
+    {
+        "route": "package_source",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "repository_id": "repo-1",
+        "commit": "a" * 40,
+        "path": "packages/notes",
+        "package": {"name": "notes", "distribution": "codegen-kit-notes", "version": "1.0.0"},
+        "core_version": "2.6.0",
+        "python_version": "3.12.0",
+        "tooling_commit": "c" * 40,
+    }
+)
+
+
+def source_check_install(status="mechanical", glue=(), incompatible=None, **target):
+    """`kit check-install --package-source packages/notes --json` as the pinned kit prints it."""
+    return {
+        "result_version": 1,
+        "package": LOCAL.package.name,
+        "status": status,
+        "product_core": None if incompatible else LOCAL.core_version,
+        "target": {
+            "route": "package_source",
+            "path": LOCAL.path,
+            "version": LOCAL.package.version,
+            "requires_core": ">=2,<3",
+            "metadata_sha256": "f" * 64,
+        }
+        | target,
+        "glue": list(glue),
+        "incompatible": incompatible,
+    }
+
+
 def glue_item(code, *, owner="product", symbol=None, path="services/tg_bot/src/commands.py"):
     return {
         "code": code,
@@ -451,6 +488,7 @@ async def test_an_incompatible_release_is_a_typed_refusal(tmp_path, monkeypatch)
         (json.dumps(check_install(version="0.4.0")), 0, "target.version"),
         (json.dumps(check_install() | {"package": "tg-channels"}), 0, "package"),
         (json.dumps(check_install() | {"product_core": "2.1.0"}), 0, "product_core"),
+        (json.dumps(source_check_install() | {"package": "reminders"}), 0, "target.route"),
     ],
 )
 @pytest.mark.asyncio
@@ -663,3 +701,67 @@ async def test_a_mechanical_release_still_meets_the_probes_ownership_refusals(
         await execute(tmp_path)
     assert refused.value.stage == "preflight"
     assert [args[1] for args in calls if args[0].endswith("/.venv/bin/kit")] == ["check-install"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "rc"),
+    [
+        (source_check_install(), 0),
+        (source_check_install("glue", [glue_item("command_conflict")]), 3),
+    ],
+)
+def test_a_package_source_answer_is_admitted_for_its_saved_local_target(answer, rc):
+    result = admitted_preflight(rc, json.dumps(answer), LOCAL)
+    assert (result.status, result.target.route, result.target.path) == (
+        answer["status"],
+        "package_source",
+        "packages/notes",
+    )
+
+
+def test_a_local_targets_glue_is_all_outstanding():
+    own = glue_item("library_required", owner="package:notes", symbol="textparse")
+    answer = source_check_install("glue", [own, glue_item("command_conflict")])
+    result = admitted_preflight(3, json.dumps(answer), LOCAL)
+    assert [item.code for item in result.outstanding_glue(LOCAL)] == [
+        "library_required",
+        "command_conflict",
+    ]
+
+
+@pytest.mark.parametrize("target", [None, "read"])
+def test_an_incompatible_source_keeps_the_kits_reason_and_nullable_target(target):
+    reason = {"code": "package_mismatch", "explanation": "the source carries notes 2.0.0"}
+    answer = source_check_install("incompatible", incompatible=reason, version="2.0.0")
+    if target is None:
+        answer["target"] = None
+    result = admitted_preflight(4, json.dumps(answer), LOCAL)
+    assert (result.status, result.incompatible.code) == ("incompatible", "package_mismatch")
+    assert (result.target is None) == (target is None)
+
+
+@pytest.mark.parametrize(
+    ("answer", "rc", "refusal"),
+    [
+        (source_check_install(), 3, "preflight_exit_mismatch"),
+        (source_check_install("glue", [glue_item("command_conflict")]), 0, "exit_mismatch"),
+        (source_check_install(catalog_ref="d" * 40), 0, "preflight_malformed"),
+        (source_check_install(path="/srv/packages/notes", tag="x"), 0, "preflight_malformed"),
+        (check_install() | {"package": "notes"}, 0, "target.route"),
+        (
+            check_install("incompatible", incompatible={"code": "core_range", "explanation": "x"})
+            | {"package": "notes", "product_core": None, "target": check_install()["target"]},
+            4,
+            "target.route",
+        ),
+        (source_check_install(path="packages/notes/src"), 0, "target.path"),
+        (source_check_install(path="./packages/notes"), 0, "target.path"),
+        (source_check_install(version="1.0.1"), 0, "target.version"),
+        (source_check_install() | {"package": "reminders"}, 0, "package"),
+        (source_check_install() | {"product_core": "2.5.0"}, 0, "product_core"),
+    ],
+)
+def test_an_answer_that_is_not_the_local_targets_result_is_refused(answer, rc, refusal):
+    with pytest.raises(InstallExecutionError, match=refusal) as refused:
+        admitted_preflight(rc, json.dumps(answer), LOCAL)
+    assert refused.value.stage == "preflight"

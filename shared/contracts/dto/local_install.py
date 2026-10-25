@@ -10,6 +10,7 @@ from shared.contracts.dto.catalog_install import (
     SHA,
     CatalogInstall,
     Distribution,
+    InstallPreflight,
     Name,
     Strict,
     Version,
@@ -64,3 +65,26 @@ _INSTALL_TARGET = TypeAdapter(InstallTarget)
 def parse_install_target(payload: dict) -> InstallTarget:
     """The typed target of a stored `Task.install`; each route refuses the other's fields."""
     return _INSTALL_TARGET.validate_python(payload)
+
+
+def preflight_mismatch(result: InstallPreflight, install: InstallTarget) -> str | None:
+    """What a kit answer differs in from the saved target, or `None` when it is its result.
+
+    A source answer attests only the package name, the supplied path, the version and the
+    product core; the commit, ownership, containment and distribution stay unattested.
+    """
+    if isinstance(install, CatalogInstall):
+        return result.provenance_mismatch(install)
+    if result.target is not None and result.target.route != install.route:
+        return "target.route"
+    if result.package != install.package.name:
+        return "package"
+    if result.status == "incompatible":
+        return None
+    if result.target.path != install.path:
+        return "target.path"
+    if result.target.version != install.package.version:
+        return "target.version"
+    if result.product_core != install.core_version:
+        return "product_core"
+    return None
