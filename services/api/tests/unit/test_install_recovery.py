@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 import uuid
 
+from fastapi import HTTPException
 import pytest
 from test_install_contract import install_payload
 
@@ -37,6 +38,7 @@ async def test_admin_retry_releases_cancelled_old_operation_without_touching_sto
         project_id=operation.project_id,
         repository_id=operation.repository_id,
         status="cancelled",
+        install=install_payload(),
         install_operation=operation.model_dump(mode="json"),
     )
     cause = {"detail": "A different stop in the current cycle"}
@@ -135,3 +137,77 @@ async def test_expired_old_cycle_is_settled_without_parking_the_new_cycle(monkey
     assert answer.operation.stage == ("lease_lost" if action == "admit" else "push")
     assert task.status == "cancelled" and story.status == "in_progress"
     assert story.reopened_at == now and story.quarantine_reason is None
+
+
+def local_task():
+    pid = uuid.uuid4()
+    return SimpleNamespace(
+        id="task-local",
+        type="install",
+        project_id=pid,
+        story_id="story-1",
+        repository_id="repo-1",
+        status="todo",
+        install={
+            "route": "package_source",
+            "project_id": str(pid),
+            "repository_id": "repo-1",
+            "commit": "1" * 40,
+            "path": "packages/notes_digest",
+            "package": {
+                "name": "notes-digest",
+                "distribution": "codegen-kit-notes-digest",
+                "version": "0.1.0",
+            },
+            "core_version": "2.2.0",
+            "python_version": "3.12.0",
+            "tooling_commit": "2" * 40,
+        },
+        install_operation=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["admit", "claim"])
+async def test_a_local_install_is_refused_before_any_catalog_admission(monkeypatch, action):
+    task = local_task()
+    monkeypatch.setattr(
+        "src.catalog_install._lock_dispatch_tasks",
+        AsyncMock(return_value=(task, {}, None, task.story_id)),
+    )
+    roster = AsyncMock()
+    monkeypatch.setattr("src.catalog_install._take_story_roster", roster)
+    db = SimpleNamespace(add=Mock(), commit=AsyncMock(), scalar=AsyncMock())
+    answer = await install_command(
+        task.id, InstallCommand(action=action, operation_id="op", token=uuid.uuid4().hex), db
+    )
+    assert (answer.outcome, answer.reason, answer.operation) == (
+        "refused",
+        "local_install_unsupported",
+        None,
+    )
+    roster.assert_not_awaited()
+    db.scalar.assert_not_awaited()
+    db.add.assert_not_called()
+    db.commit.assert_not_awaited()
+    assert (task.status, task.install_operation) == ("todo", None)
+
+
+@pytest.mark.asyncio
+async def test_a_local_install_has_no_operator_recovery(monkeypatch):
+    task = local_task()
+    monkeypatch.setattr(
+        "src.catalog_install_recovery._lock_dispatch_tasks",
+        AsyncMock(return_value=(task, {}, None, task.story_id)),
+    )
+    db = SimpleNamespace(add=Mock(), commit=AsyncMock(), scalar=AsyncMock())
+    with pytest.raises(HTTPException) as refused:
+        await operator_install_recovery(
+            task.id, InstallOperatorRequest(operation_id="op", action="retry"), "admin:1", db
+        )
+    assert (refused.value.status_code, refused.value.detail) == (
+        409,
+        {"code": "local_install_unsupported"},
+    )
+    db.add.assert_not_called()
+    db.commit.assert_not_awaited()

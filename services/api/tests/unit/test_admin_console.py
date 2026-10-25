@@ -445,6 +445,32 @@ def test_passport_lists_published_packages_container_ports_and_secret_names_only
     assert "ciphertext" not in passport.model_dump_json()
 
 
+LOCAL_INSTALL = {
+    "route": "package_source",
+    "project_id": str(PROJECT),
+    "repository_id": "repo-1",
+    "commit": "1" * 40,
+    "path": "packages/notes_digest",
+    "package": {
+        "name": "notes-digest",
+        "distribution": "codegen-kit-notes-digest",
+        "version": "0.1.0",
+    },
+    "core_version": "2.2.0",
+    "python_version": "3.12.0",
+    "tooling_commit": "2" * 40,
+}
+
+
+def test_passport_names_no_catalog_release_for_a_product_local_source():
+    project = SimpleNamespace(id=PROJECT, config={"modules": ["backend", "tg_bot"]})
+    local = task(
+        "t-local", type="install", install=LOCAL_INSTALL, install_operation={"state": "published"}
+    )
+    passport = build_passports([project], [local], [], [], [], [], [])[PROJECT]
+    assert passport.packages == []
+
+
 BOT_SECRETS = dict.fromkeys(
     ("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME", "PLATFORM_KEY", "POSTGRES_PASSWORD"),
     "ciphertext",

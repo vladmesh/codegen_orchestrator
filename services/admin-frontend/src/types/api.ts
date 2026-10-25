@@ -119,6 +119,24 @@ export interface CatalogInstall {
   catalog?: CatalogSource | null
 }
 
+export interface LocalPackage {
+  name: string
+  distribution: string
+  version: string
+}
+
+export interface LocalPackageInstall {
+  route: 'package_source'
+  project_id: string
+  repository_id: string
+  commit: string
+  path: string
+  package: LocalPackage
+  core_version: string
+  python_version: string
+  tooling_commit: string
+}
+
 export interface InstallVerification {
   core_version: string
   tooling_commit: string
@@ -263,7 +281,7 @@ export interface Task {
   failure_metadata?: Record<string, unknown> | null
   dispatch_admitted: boolean
   planning_attempt_id?: string | null
-  install?: CatalogInstall | null
+  install?: CatalogInstall | LocalPackageInstall | null
   install_operation?: InstallOperation | null
   created_at: string
   updated_at?: string | null

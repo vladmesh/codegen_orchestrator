@@ -53,11 +53,11 @@ class PlanningModuleFacts:
 
 
 def selected_install_closures(tasks: list[TaskDTO]) -> list[CatalogInstall]:
-    """Cancelled historical attempts confer no selection on the current plan."""
+    """Released catalog closures only: a local source or a cancelled attempt selects nothing."""
     return [
         task.install
         for task in tasks
-        if task.install is not None and task.status is not TaskStatus.CANCELLED
+        if isinstance(task.install, CatalogInstall) and task.status is not TaskStatus.CANCELLED
     ]
 
 

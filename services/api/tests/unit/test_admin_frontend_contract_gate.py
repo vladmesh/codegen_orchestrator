@@ -287,7 +287,7 @@ def _typescript_shape_factory(source: str) -> Callable[[str], dict[str, Any]]:
             key_value = _top_level_parts(value[len("Record<") : -1], ",")
             assert len(key_value) == 2, f"cannot parse map {value}"
             return {"kind": "map", "values": shape(key_value[1], resolving), "nullable": False}
-        if value in {"string", "number", "boolean", "unknown"}:
+        if value in {"string", "number", "boolean", "unknown", "null"}:
             return {"kind": value, "nullable": False}
         if re.fullmatch(r"'[^']*'", value):
             return {"kind": "enum", "values": (value[1:-1],), "nullable": False}

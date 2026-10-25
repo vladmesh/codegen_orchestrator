@@ -206,7 +206,8 @@ def _reached(story: Any, attempts_by_stage: dict[JourneyStage, list[JourneyAttem
 
 
 def package_refs(install: dict | None) -> list[PackageRef]:
-    if not install:
+    """Released catalog components; a product-local source has no release to name."""
+    if not install or install.get("route") == "package_source":
         return []
     refs = [
         PackageRef(
