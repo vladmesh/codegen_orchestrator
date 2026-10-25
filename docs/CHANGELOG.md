@@ -27,6 +27,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   its worker's TASK.md states the package to write, uninstalled; no package or live run is proven.
 - A completed story records each DONE product-local INSTALL as an admin-only `package_candidates` row
   (one per product package) and owes the admins a notice that the code awaits the owner's review.
+- Admins can read recorded package candidates in the console; the candidate notice lists packages with
+  their admin paths and always fits one Telegram message.
 
 ## 2026-10-24
 

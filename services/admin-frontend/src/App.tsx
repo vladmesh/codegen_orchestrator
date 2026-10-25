@@ -21,6 +21,8 @@ import { ConsolePage } from '@/pages/ConsolePage'
 import { JourneysPage } from '@/pages/JourneysPage'
 import { JourneyPage } from '@/pages/JourneyPage'
 import { AtlasPage } from '@/pages/AtlasPage'
+import { PackageCandidatesPage } from '@/pages/PackageCandidatesPage'
+import { PackageCandidateDetailPage } from '@/pages/PackageCandidateDetailPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,6 +47,8 @@ export default function App() {
             <Route path="overview" element={<DashboardPage />} />
             <Route path="projects" element={<ProjectsPage />} />
             <Route path="projects/:id" element={<ProjectDetailPage />} />
+            <Route path="package-candidates" element={<PackageCandidatesPage />} />
+            <Route path="package-candidates/:id" element={<PackageCandidateDetailPage />} />
             <Route path="tasks" element={<TasksPage />} />
             <Route path="tasks/:id" element={<TaskDetailPage />} />
             <Route path="workers" element={<WorkersPage />} />

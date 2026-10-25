@@ -19,6 +19,7 @@ import structlog
 
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.user import UserDTO
+from shared.telegram_text import TELEGRAM_MESSAGE_LIMIT, utf16_length
 
 logger = structlog.get_logger(__name__)
 
@@ -64,6 +65,11 @@ EMOJI_MAP = {
     "critical": "🚨",
     "success": "✅",
 }
+
+#: The longest message an admin delivery fits into one Telegram message after its level prefix.
+ADMIN_MESSAGE_BODY_LIMIT = TELEGRAM_MESSAGE_LIMIT - max(
+    utf16_length(f"{emoji} ") for emoji in EMOJI_MAP.values()
+)
 
 
 async def send_telegram_message(

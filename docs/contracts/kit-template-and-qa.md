@@ -306,11 +306,18 @@ to its commit. An INSTALL target that does not parse, or a source FEATURE that i
 description, refuses the completion with 409 `package_candidate_unrecordable` naming the INSTALL
 `task_id` and `cause`, and the story keeps its status. A completion that recorded a candidate owes
 administrators its notice on the same `story_completed` record (`admin_text`, `admin_state`
-`owed`, appended to an administrator text still owed): product, story, package, path, commit,
-repository, capability and rationale, unreviewed, exclusive to that product and awaiting the
-owner's personal code and security review before any release; the owner text is unchanged.
+`owed`, appended to an administrator text still owed): one header line with the product (title
+capped at 100 characters with a marker, and project id), the story, the count recorded and the
+review warning, then one line per candidate in recording order with package name and version,
+12-character commit and its `/package-candidates/{id}` admin path, while they fit; the rest are
+counted in one `+N more: /package-candidates` line. Path, repository, capability and rationale are
+read on the admin pages. The text, after the delivery's level prefix, fits one Telegram message
+(`ADMIN_MESSAGE_BODY_LIMIT` in `shared/notifications.py`, UTF-16 units): carried administrator text
+is shortened with a story-named marker and the candidate part stays whole. Building the notice never
+fails a completion. The owner text is unchanged.
 Only `GET /api/admin/v2/package-candidates` (most recently recorded first) and
-`GET /api/admin/v2/package-candidates/{id}` under `require_internal_or_admin` read candidates. No
+`GET /api/admin/v2/package-candidates/{id}` under `require_internal_or_admin` read candidates for
+the read-only admin list and detail pages. No
 catalog, planner, Architect briefing, buyer or LK surface reads them, and they confer no approval,
 release or install right on any product. Deleting the product deletes its candidates.
 

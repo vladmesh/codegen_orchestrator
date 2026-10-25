@@ -8,23 +8,31 @@ import uuid
 from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import select
-from test_local_install import buyer, local_install, post, product
-from test_local_package_handoff import admitted_build, complete, fresh, success
+from test_local_install import buyer, local_install, package_build, post, product
+from test_local_package_handoff import admitted_build, complete, fresh, produce_done, success
 
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.package_candidate import PackageCandidateRead
 from shared.models import PackageCandidate, Story, Task
+from shared.notifications import EMOJI_MAP
+from shared.telegram_text import TELEGRAM_MESSAGE_LIMIT, utf16_length
 from src.main import app
 
 RATIONALE = "Several products summarise notes; one digest package serves them all."
 OWNER_TEXT = "The story is finished. Tell the user the good news that their product is ready."
 REVIEW_STOP = {"code": "no_new_commit", "source": "engineering", "detail": "Synthetic stop"}
+REVIEW_WARNING = (
+    "The code is unreviewed and exclusive to this product; it awaits the owner's "
+    "personal code and security review before any release."
+)
 
 
-async def built(client, db_session, owner=None, commit=None) -> dict:
+async def built(client, db_session, owner=None, commit=None, **source_changes) -> dict:
     """A story whose package-build FEATURE handed off and whose INSTALL the executor settled."""
     owner = owner or await product(client, await buyer(client))
-    build = await admitted_build(client, db_session, owner, description=RATIONALE)
+    build = await admitted_build(
+        client, db_session, owner, **{"description": RATIONALE, **source_changes}
+    )
     await complete(client, build, success(commit) if commit else None)
     install = await fresh(db_session, Task, build["child"])
     install.status = "done"
@@ -69,22 +77,72 @@ def assert_candidate(candidate: PackageCandidateRead, build: dict, commit: str) 
     }
 
 
-def assert_admin_notice(text: str, build: dict, commit: str) -> None:
+def candidate_line(candidate: PackageCandidateRead) -> str:
+    return (
+        f"{candidate.package_name} {candidate.package_version}, "
+        f"commit {candidate.commit[:12]}: /package-candidates/{candidate.id}"
+    )
+
+
+def assert_admin_notice(text: str, build: dict, candidate: PackageCandidateRead) -> None:
     owner = build["owner"]
+    header, line = text.split("\n")
     for fact in (
         "Owned notes product",
         owner["project"],
         owner["story"],
-        "notes-digest 0.1.0",
-        "packages/notes_digest",
-        commit,
-        owner["repository"],
-        "Generate notes digest",
-        RATIONALE,
-        "unreviewed and exclusive to this product",
-        "personal code and security review before any release",
+        "1 recorded",
+        REVIEW_WARNING,
     ):
-        assert fact in text
+        assert fact in header
+    assert line == candidate_line(candidate)
+
+
+def outbound_length(admin_text: str) -> int:
+    """The Telegram length of the admin text as the scheduler's error-level delivery sends it."""
+    return utf16_length(f"{EMOJI_MAP['error']} {admin_text}")
+
+
+def long_package(index: int) -> dict:
+    """A package build with the longest admitted name and a long admitted version."""
+    name = f"pkg{index:02d}-" + "n" * 58
+    return {
+        **package_build(),
+        "path": f"packages/pkg_{index:02d}",
+        "package": {
+            "name": name,
+            "distribution": f"codegen-kit-{name}",
+            "version": f"{'9' * 240}.0.{index}",
+        },
+    }
+
+
+async def twelve_built(client, db_session) -> dict:
+    """One story with twelve distinct long-identity packages built and settled in order."""
+    owner = await product(client, await buyer(client))
+    for index in range(12):
+        build = await built(
+            client,
+            db_session,
+            owner,
+            package_build=long_package(index),
+            title=f"Generate package {index}",
+        )
+        # A story admits the next engineering task only once no sibling is still in_dev.
+        done = await produce_done(client, build)
+        assert done.status_code == 200 and done.json()["status"] == "done", done.text
+    return owner
+
+
+def assert_twelve_notice(text: str, owner: dict, rows: list[PackageCandidateRead]) -> None:
+    assert outbound_length(text) <= TELEGRAM_MESSAGE_LIMIT
+    header, *listed, more = text.split("\n")
+    for fact in ("Owned notes product", owner["project"], owner["story"], "12 recorded"):
+        assert fact in header
+    assert REVIEW_WARNING in header
+    assert 0 < len(listed) < len(rows)
+    assert listed == [candidate_line(row) for row in rows[: len(listed)]]
+    assert more == f"+{len(rows) - len(listed)} more: /package-candidates"
 
 
 @pytest.mark.asyncio
@@ -105,7 +163,7 @@ async def test_completing_a_story_records_its_built_package_and_owes_the_admins(
         OwnerNotificationState.OWED,
         OwnerNotificationState.OWED,
     )
-    assert_admin_notice(record.admin_text, build, "1" * 40)
+    assert_admin_notice(record.admin_text, build, candidate)
 
 
 @pytest.mark.asyncio
@@ -131,7 +189,7 @@ async def test_accepting_a_reviewed_result_records_the_package_beside_the_owed_s
     assert record.admin_state is OwnerNotificationState.OWED
     first, recorded = record.admin_text.split("\n\n")
     assert first == stop_notice
-    assert_admin_notice(recorded, build, "1" * 40)
+    assert_admin_notice(recorded, build, candidate)
 
 
 @pytest.mark.asyncio
@@ -170,7 +228,7 @@ async def test_a_later_story_rebuilding_the_package_keeps_one_row_at_the_newest_
     [rebuilt] = await candidates(db_session, first["owner"]["project"])
     assert (rebuilt.id, rebuilt.created_at) == (recorded.id, recorded.created_at)
     assert_candidate(rebuilt, second, "3" * 40)
-    assert_admin_notice((await notice(async_client, story["id"])).admin_text, second, "3" * 40)
+    assert_admin_notice((await notice(async_client, story["id"])).admin_text, second, rebuilt)
 
 
 @pytest.mark.asyncio
@@ -233,3 +291,113 @@ async def test_only_an_administrator_reads_package_candidates(async_client, db_s
     assert PackageCandidateRead.model_validate(read.json()) == candidate
     missing = await async_client.get("/api/admin/v2/package-candidates/0", headers=headers)
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_long_rationale_stays_out_of_the_notice_and_whole_in_the_candidate(
+    async_client, db_session
+):
+    owner = await product(async_client, await buyer(async_client))
+    rationale = "digest " * 1430
+    build = await built(async_client, db_session, owner, description=rationale)
+
+    await post(async_client, f"/api/stories/{owner['story']}/complete")
+
+    [candidate] = await candidates(db_session, owner["project"])
+    assert candidate.rationale == rationale
+    assert_candidate(candidate.model_copy(update={"rationale": RATIONALE}), build, "1" * 40)
+    text = (await notice(async_client, owner["story"])).admin_text
+    assert outbound_length(text) <= TELEGRAM_MESSAGE_LIMIT
+    assert_admin_notice(text, build, candidate)
+
+
+@pytest.mark.asyncio
+async def test_a_package_with_the_longest_path_and_capability_completes_within_one_message(
+    async_client, db_session
+):
+    path = "/".join(["s" * 127] * 7 + ["s" * 128])
+    capability = "c" * 500
+    build = await built(
+        async_client,
+        db_session,
+        package_build={**package_build(), "path": path},
+        title=capability,
+    )
+
+    await post(async_client, f"/api/stories/{build['owner']['story']}/complete")
+
+    [candidate] = await candidates(db_session, build["owner"]["project"])
+    assert (len(candidate.path), candidate.path, candidate.capability) == (1024, path, capability)
+    text = (await notice(async_client, build["owner"]["story"])).admin_text
+    assert outbound_length(text) <= TELEGRAM_MESSAGE_LIMIT
+    assert_admin_notice(text, build, candidate)
+
+
+@pytest.mark.asyncio
+async def test_twelve_packages_record_every_row_and_the_notice_lists_what_fits(
+    async_client, db_session
+):
+    owner = await twelve_built(async_client, db_session)
+
+    completed = await post(async_client, f"/api/stories/{owner['story']}/complete")
+
+    assert completed["status"] == "completed"
+    rows = sorted(await candidates(db_session, owner["project"]), key=lambda row: row.id)
+    assert [row.package_name for row in rows] == [
+        long_package(index)["package"]["name"] for index in range(12)
+    ]
+    assert_twelve_notice((await notice(async_client, owner["story"])).admin_text, owner, rows)
+
+
+@pytest.mark.asyncio
+async def test_twelve_packages_after_a_long_stop_notice_fit_one_message_on_accept_result(
+    async_client, db_session
+):
+    owner = await twelve_built(async_client, db_session)
+    story_id = owner["story"]
+    long_stop = {**REVIEW_STOP, "detail": "Synthetic stop detail. " * 30}
+    await post(async_client, f"/api/stories/{story_id}/human-review", {"failure": long_stop})
+    stop_notice = (await notice(async_client, story_id)).admin_text
+
+    await post(
+        async_client,
+        f"/api/stories/{story_id}/accept-result",
+        {"basis": "Reviewed the product"},
+        headers={"X-Admin-Console-Operator": "candidate-fixture"},
+    )
+
+    rows = sorted(await candidates(db_session, owner["project"]), key=lambda row: row.id)
+    assert len(rows) == 12
+    text = (await notice(async_client, story_id)).admin_text
+    assert outbound_length(text) <= TELEGRAM_MESSAGE_LIMIT
+    carried, recorded = text.split("\n\n")
+    assert carried == stop_notice
+    assert_twelve_notice(recorded, owner, rows)
+
+
+@pytest.mark.asyncio
+async def test_candidate_notice_keeps_its_block_when_carried_admin_text_is_too_long(
+    async_client, db_session
+):
+    build = await built(async_client, db_session)
+    story_id = build["owner"]["story"]
+    await post(async_client, f"/api/stories/{story_id}/human-review", {"failure": REVIEW_STOP})
+    story = await fresh(db_session, Story, story_id)
+    notification = dict(story.owner_notification)
+    notification["admin_text"] = "Earlier administrator context. " * 500
+    story.owner_notification = notification
+    await db_session.commit()
+
+    await post(
+        async_client,
+        f"/api/stories/{story_id}/accept-result",
+        {"basis": "Reviewed the product"},
+        headers={"X-Admin-Console-Operator": "candidate-fixture"},
+    )
+
+    [candidate] = await candidates(db_session, build["owner"]["project"])
+    text = (await notice(async_client, story_id)).admin_text
+    assert outbound_length(text) <= TELEGRAM_MESSAGE_LIMIT
+    carried, recorded = text.split("\n\n")
+    assert carried.endswith(f" [earlier administrator text for story {story_id} truncated]")
+    assert_admin_notice(recorded, build, candidate)
