@@ -256,8 +256,10 @@ The Architect's `create_task(package_build=...)` is the one planner that writes 
 reusable capability no released module covers. It accepts one only for a FEATURE whose core, Python
 and tooling equal the activated target (`CATALOG_ACTIVATION`, `INSTALL_PYTHON_VERSION`;
 `activation_refusal` refuses host drift), whose path is outside `services/backend/packages/` and
-whose name the briefed catalog does not list, on an active backend,tg_bot product whose managed
-primary repository and story it reads. Every refusal precedes the API write and the chain; the
+whose name the verified activated catalog does not release, on an active backend,tg_bot product
+whose managed primary repository and story it reads. That membership (`kit_catalog_released`) is
+injected apart from selection permission, so a frozen plan that may select nothing still refuses a
+released name; an unavailable catalog admits no build. Every refusal precedes the API write and the chain; the
 task is a `TaskCreate` with that repository, `todo`, its planning attempt and chain predecessor, and
 the `kit add`/artifact prose guard still applies. A task without the argument never carries one.
 The run's briefing names those identities as expectations, not observed compatibility; a stored

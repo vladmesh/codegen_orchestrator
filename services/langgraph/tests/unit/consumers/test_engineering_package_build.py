@@ -54,13 +54,6 @@ def _job(**overrides) -> dict:
     )
 
 
-def _not_found(path: str) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", f"http://api/{path}")
-    return httpx.HTTPStatusError(
-        "not found", request=request, response=httpx.Response(404, request=request)
-    )
-
-
 async def _run(
     job: dict,
     *,
@@ -187,7 +180,10 @@ def _malformed_task():
 @pytest.mark.parametrize("unreadable", ["missing", "transport", "malformed"])
 async def test_an_unreadable_named_task_fails_the_attempt_before_any_worker(unreadable):
     if unreadable == "missing":
-        error = _not_found("tasks/task-build")
+        request = httpx.Request("GET", "http://api/tasks/task-build")
+        error = httpx.HTTPStatusError(
+            "not found", request=request, response=httpx.Response(404, request=request)
+        )
     elif unreadable == "transport":
         error = httpx.ConnectError("api unavailable")
     else:

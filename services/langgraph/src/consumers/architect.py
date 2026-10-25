@@ -1018,11 +1018,12 @@ def _capability_plan_briefing(plan: CapabilityPlan, installs: dict[str, str]) ->
     )
 
 
-def _local_package_briefing() -> str:
+def _local_package_briefing(catalog: KitCatalogAnswer) -> str:
     """The expected identities a product-local package build is planned against this run.
 
-    When this host is not the activated kit target the block says so instead, and
-    `create_task` refuses every build.
+    When this host is not the activated kit target, or the catalog whose released names
+    a build may not take is unavailable, the block says so instead, and `create_task`
+    refuses every build.
     """
     try:
         identity = local_build_identity()
@@ -1030,6 +1031,11 @@ def _local_package_briefing() -> str:
         return (
             f"\n\nProduct-local package source: unavailable this run ({error}). "
             "Pass no package_build to create_task."
+        )
+    if not isinstance(catalog, KitCatalog):
+        return (
+            "\n\nProduct-local package source: unavailable this run (the kit catalog's "
+            "released package names cannot be checked). Pass no package_build to create_task."
         )
     return (
         "\n\nProduct-local package source: a reusable capability the story asks for that no "
@@ -1585,7 +1591,7 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             if capability_plan is not None
             else _kit_catalog_briefing(catalog, facts=planning_facts)
         )
-        user_content += _local_package_briefing()
+        user_content += _local_package_briefing(catalog)
         selectable = capability_plan is None and isinstance(catalog, KitCatalog)
         user_content += module_jobs_briefing(selected_module_jobs)
 
@@ -1599,6 +1605,9 @@ async def _plan(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one plann
             "selected_module_jobs": selected_module_jobs,
             "kit_catalog_packages": (
                 sorted(catalog.names) if selectable else [] if capability_plan else None
+            ),
+            "kit_catalog_released": (
+                sorted(catalog.names) if isinstance(catalog, KitCatalog) else None
             ),
         }
 

@@ -12,9 +12,13 @@ import pytest
 from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.contracts.dto.local_install import LocalPackageBuild
 from src.catalog_install import INSTALL_PYTHON_VERSION
+from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
 from tests.unit.factories import make_project, make_repository, make_story, make_task
+from tests.unit.test_catalog_install import snapshot
 
 PROJECT_ID = str(make_project().id)
+#: The released names of the briefed catalog fixture.
+RELEASED = ["tg-channels", "reminders"]
 
 
 def _build(**overrides) -> dict:
@@ -66,7 +70,8 @@ async def _create(build: dict | None = None, **overrides):
         "story_id": "story-abc",
         "project_id": PROJECT_ID,
         "planning_attempt_id": "plan-1",
-        "kit_catalog_packages": ["tg-channels", "reminders"],
+        "kit_catalog_packages": RELEASED,
+        "kit_catalog_released": RELEASED,
         **overrides,
     }
     if build is not None:
@@ -186,27 +191,38 @@ async def test_a_field_outside_the_build_intent_is_refused_at_the_tool_boundary(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("build", "code"),
-    [
-        (_build(path="services/backend/packages/channel-ranking"), "package_build_path_refused"),
-        (
-            _build(
-                package={
-                    "name": "tg-channels",
-                    "distribution": "codegen-kit-tg-channels",
-                    "version": "0.2.0",
-                }
-            ),
-            "package_build_released",
-        ),
-    ],
-)
-async def test_a_build_cannot_target_the_wheel_store_or_a_released_name(api, build, code):
-    result = await _create(build)
+async def test_a_build_cannot_target_the_wheel_store(api):
+    result = await _create(_build(path="services/backend/packages/channel-ranking"))
 
-    assert code in result["error"]
+    assert "package_build_path_refused" in result["error"]
     api.create_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selectable", [RELEASED, []], ids=["selectable", "frozen"])
+async def test_a_released_name_is_refused_whether_or_not_the_run_may_select(api, selectable):
+    released = _build(
+        package={"name": RELEASED[0], "distribution": "codegen-kit-ranking", "version": "0.2.0"}
+    )
+
+    refused = await _create(released, kit_catalog_packages=selectable)
+    await _create(title="Ordinary follow-up", kit_catalog_packages=selectable)
+
+    assert f"package_build_released: {RELEASED[0]}" in refused["error"]
+    api.create_task.assert_awaited_once()
+    assert api.create_task.await_args.args[0]["blocked_by_task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_released_names_admit_no_build_and_leave_ordinary_work(api):
+    refused = await _create(_build(), kit_catalog_packages=None, kit_catalog_released=None)
+    created = await _create(
+        title="Ordinary follow-up", kit_catalog_packages=None, kit_catalog_released=None
+    )
+
+    assert "package_build_catalog_unavailable" in refused["error"]
+    assert created["id"] == "task-001"
+    api.create_task.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -243,7 +259,7 @@ async def test_an_ordinary_task_never_acquires_a_build_from_its_words(api):
 def test_the_briefing_names_the_activated_expectations_as_expectations():
     from src.consumers.architect import _local_package_briefing
 
-    briefing = _local_package_briefing()
+    briefing = _local_package_briefing(snapshot())
 
     assert f"core_version {CATALOG_ACTIVATION.core_version}" in briefing
     assert f"python_version {INSTALL_PYTHON_VERSION}" in briefing
@@ -251,12 +267,17 @@ def test_the_briefing_names_the_activated_expectations_as_expectations():
     assert "not the product's observed compatibility" in briefing
 
 
-def test_off_the_activated_target_the_briefing_offers_no_build(monkeypatch):
+@pytest.mark.parametrize("cause", ["host", "catalog"])
+def test_without_the_target_or_the_catalog_the_briefing_offers_no_build(monkeypatch, cause):
     from src.consumers.architect import _local_package_briefing
 
-    monkeypatch.setattr("src.kit_catalog.installed_tooling_commit", lambda: "e" * 40)
+    catalog = snapshot()
+    if cause == "host":
+        monkeypatch.setattr("src.kit_catalog.installed_tooling_commit", lambda: "e" * 40)
+    else:
+        catalog = KitCatalogUnavailable("test", KitCatalogFailure.TRANSPORT, "unreachable")
 
-    briefing = _local_package_briefing()
+    briefing = _local_package_briefing(catalog)
 
     assert "unavailable this run" in briefing
     assert "Pass no package_build" in briefing

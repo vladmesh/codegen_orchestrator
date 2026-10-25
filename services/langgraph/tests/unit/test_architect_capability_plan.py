@@ -440,7 +440,8 @@ RANKING_BUILD = {
 def _glue_graph(api: _PlanApi, *, cover_with: str | None):
     """A model turn: `None` plans nothing, `"install"` records the install, `"feature"` builds.
 
-    `"package"` builds the glue as a typed product-local package source.
+    `"package"` first asks for a source under the frozen module's own released name,
+    then builds the glue as a distinct product-local package source.
     """
     from src.agents.architect.tools import create_task, record_requirement_coverage
 
@@ -461,8 +462,21 @@ def _glue_graph(api: _PlanApi, *, cover_with: str | None):
                 "project_id": state["project_id"],
                 "planning_attempt_id": state["planning_attempt_id"],
                 "kit_catalog_packages": state["kit_catalog_packages"],
+                "kit_catalog_released": state["kit_catalog_released"],
             }
             if cover_with == "package":
+                frozen = api.plan.modules[0].install.package
+                seen["refused"] = await create_task.ainvoke(
+                    {
+                        **call,
+                        "package_build": {
+                            **RANKING_BUILD,
+                            "package": frozen.model_dump(
+                                include={"name", "distribution", "version"}
+                            ),
+                        },
+                    }
+                )
                 call["package_build"] = RANKING_BUILD
             created = await create_task.ainvoke(call)
             task_id = created["id"]
@@ -552,7 +566,11 @@ async def test_glue_work_planned_after_the_install_covers_the_requirement(
 async def test_frozen_glue_may_be_a_local_package_source_without_another_selection(
     activated_kit_catalog, kit_catalog_off_github
 ):
-    """Ranking beyond tg-channels as this product's own package; the stored plan is kept."""
+    """Ranking beyond tg-channels as this product's own package; the stored plan is kept.
+
+    The frozen module's own released name is refused as a build before any write, although
+    the run may select nothing; the distinct ranking name is planned after the INSTALL.
+    """
     kit_catalog_off_github.read.return_value = activated_kit_catalog
     brief, plan = _glue_brief(activated_kit_catalog)
     api = _PlanApi(brief, plan)
@@ -561,6 +579,9 @@ async def test_frozen_glue_may_be_a_local_package_source_without_another_selecti
     result = await _plan_glue(api, graph)
 
     assert result["status"] == "success", result
+    released = plan.modules[0].install.package.name
+    assert f"package_build_released: {released}" in seen["refused"]["error"]
+    assert released in seen["kit_catalog_released"]
     install, source = api.task_payloads
     assert install["install"] == plan.capabilities[0].install.model_dump(mode="json")
     assert source["type"] == "feature" and source["install"] is None

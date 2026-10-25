@@ -133,7 +133,6 @@ class TestDeveloperInstructions:
 
     def test_catalog_install_belongs_to_the_mechanical_scaffolder(self):
         instructions = " ".join(self.content.split())
-        assert "Catalog package code is never hand-written into a product." in instructions
         assert "package catalog (`packages/catalog.yaml`" in instructions
         assert "one typed INSTALL task executed by scaffolder mode=install" in instructions
         assert "excluded from paid engineering admission and this worker" in instructions

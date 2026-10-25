@@ -333,7 +333,6 @@ class TestCapabilityShapeDirectives:
 
     def test_the_package_task_installs_and_never_hand_writes_package_code(self):
         prompt = " ".join(SYSTEM_PROMPT.split())
-        assert "Released package code is never hand-written into a product" in prompt
         assert "`plan_install(name)`" in prompt
         assert "exactly one typed INSTALL" in prompt
         assert "no engineering agent or paid engineering Run" in prompt

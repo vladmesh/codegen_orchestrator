@@ -349,6 +349,7 @@ async def create_task(
     project_id: Annotated[str, InjectedState("project_id")],
     planning_attempt_id: Annotated[str | None, InjectedState("planning_attempt_id")] = None,
     kit_catalog_packages: Annotated[list[str] | None, InjectedState("kit_catalog_packages")] = None,
+    kit_catalog_released: Annotated[list[str] | None, InjectedState("kit_catalog_released")] = None,
     package_build: LocalPackageBuild | None = None,
 ) -> dict:
     """Create a new task for a story.
@@ -387,7 +388,7 @@ async def create_task(
     if package_build is not None:
         try:
             repository = await _package_build_repository(
-                package_build, story_id, project_id, kit_catalog_packages
+                package_build, story_id, project_id, kit_catalog_released
             )
         except PackageBuildRefusal as refusal:
             logger.warning("architect_package_build_refused", title=title, detail=str(refusal))
@@ -457,11 +458,12 @@ async def _package_build_repository(
     build: LocalPackageBuild,
     story_id: str,
     project_id: str,
-    catalog: list[str] | None,
+    released: list[str] | None,
 ) -> RepositoryDTO:
     """The managed primary repository that will own `build`, once its target and owners hold.
 
-    The pins must be the activated target's; the product must be an active backend,tg_bot
+    The pins must be the activated target's, the name none the verified catalog releases
+    (`None`: unknown, so no name is admitted); the product must be an active backend,tg_bot
     one and the story its own. A planning check only: the later INSTALL proves the
     product's actual compatibility.
     """
@@ -479,7 +481,11 @@ async def _package_build_repository(
         raise PackageBuildRefusal(
             f"package_build_path_refused: {_WHEEL_STORE} holds installed wheels, not source"
         )
-    if catalog and build.package.name in catalog:
+    if released is None:
+        raise PackageBuildRefusal(
+            "package_build_catalog_unavailable: the released package names cannot be checked"
+        )
+    if build.package.name in released:
         raise PackageBuildRefusal(
             f"package_build_released: {build.package.name} is a released catalog package; "
             "select it with plan_install instead of building it"
