@@ -55,9 +55,9 @@ Its tooling adds `kit add <name> --package-source <dir> --product-root <root>`, 
 installs a protocol-v1 package from source inside the product, so a new product carries that
 local-source installer. A catalog INSTALL closure names only an activated catalog release; an
 admitted `LocalPackageInstall` (below) is delivered through the scheduler and scaffold queue to
-the executor that runs this installer. No planner writes a local target: generating the source and
-sequencing its INSTALL, operator recovery of a local operation, candidate handling and buyer
-acceptance of a local install are outside this boundary. Existing products receive the tooling
+the executor that runs this installer. No planner writes a local target or build intent: generating
+the source, operator recovery of a local operation, candidate handling and buyer acceptance of a
+local install are outside this boundary. Existing products receive the tooling
 only through a Copier update.
 Its generated CI runs `quality`, `dev-smoke` and `integration` as parallel jobs on pull requests
 and manual dispatch, behind the stable required `lint-and-test` aggregate, which fails unless every
@@ -247,11 +247,32 @@ core, Python and tooling identity as a `LocalPackageInstall`, with no route, com
 repository, catalog, tag, wheel, command or proof field; neither shape validates as the other. It
 is expected output only: it proves no source, commit, compatibility or installation, and its
 FEATURE stays ordinary paid engineering. Only a FEATURE with story and repository ownership and no
-install payload carries one (`TaskCreate` and the `ck_tasks_package_build` constraint); both
-create routes apply the local INSTALL ownership refusals above to it, and TaskUpdate cannot change
-it or its project, repository or story (`package_build_ownership_immutable`). No planner writes
-one yet, and nothing derives an INSTALL from it: the pending handoff pins the FEATURE's real
-published engineering commit into one `LocalPackageInstall` before story completion.
+install payload carries one, and `TaskCreate` refuses one submitted `done` (`TaskCreate` and the
+`ck_tasks_package_build` constraint); both create routes apply the local INSTALL ownership refusals
+above to it, and TaskUpdate cannot change it or its project, repository or story
+(`package_build_ownership_immutable`). No planner writes one yet.
+
+The FEATURE's first completed engineering Run write (`PATCH /runs/{id}`, `local_package_handoff.py`)
+pins the intent, under the terminal Run lock ladder and in the transaction of that outcome and its
+single accounting settlement. Only the Task's own current attempt (its task, project and story, its
+current iteration and story cycle, no newer or other live engineering Run) of an admitted source in
+`todo`..`testing` whose story is in progress, unstopped and eligible has that authority. It creates
+one INSTALL at `local_install_task_id(source)`: `pinned_local_install` of the intent with the
+source's project, repository and typed `EngineeringRunResult.commit_sha`, `todo`, blocked by the
+source, with the source's story, admission and planning attempt and no operation, Run, ledger or
+budget hold; the source's open same-story direct dependents move behind it. The commit is the
+worker's published result: nothing checks it against GitHub or the package. A receipt without that
+authority (stale iteration or cycle, foreign Run owner, cancelled, stopped, unadmitted or superseded
+source) keeps only its outcome and accounting. A current one whose output cannot form the INSTALL
+(no successful result, a missing or partial commit, a repository that is not the project's managed
+one, another row or target at that identity) moves the source to `waiting_human_review` with
+`local_package_handoff_refused` on its events and stops the story with
+`StoryFailureCode.LOCAL_PACKAGE_HANDOFF_REFUSED` and its owed notices. An identical existing INSTALL
+is reused, never replaced, and a later delivery to the terminal Run changes nothing. Every route to
+the source's `done` (`/complete`, `/transition`, the admitted-attempt start) requires that INSTALL
+with the creation identity a completed owned Run pins (409 `local_package_handoff_required`); commit
+recovery of such a FEATURE answers 409 `local_package_handoff_unsupported` before any claim. The
+handoff proves no package existence, compatibility, native execution or live install.
 
 `dto/install_operation.py` holds the one operation of either route: `InstallOperation`,
 `InstallCommand` and `InstallDecision` carry a `CatalogInstall` with `InstallVerification` or a

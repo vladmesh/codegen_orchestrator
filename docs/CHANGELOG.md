@@ -21,6 +21,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   scaffolder claims and runs it like a catalog one; no planner writes one and local recovery stays off.
 - An owned FEATURE can store an immutable `package_build` intent (expected local package, no commit);
   an INSTALL needs the real engineering commit, so the producer and INSTALL handoff stay pending.
+- A package-build FEATURE's first completed Run pins its commit into one INSTALL before its `done`;
+  no planner writes the intent, and package existence, compatibility and native/live runs are unproven.
 
 ## 2026-10-24
 

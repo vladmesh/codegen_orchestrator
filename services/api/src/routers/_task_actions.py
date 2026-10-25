@@ -31,6 +31,7 @@ from ..attempt_disposition import require_automatic_task
 from ..database import get_async_session
 from ..dependencies import get_internal_or_admin_actor, get_redis_client, require_internal_or_admin
 from ..engineering_dispatch_admission import admit_engineering_dispatch
+from ..local_package_handoff import require_package_handoff
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
@@ -167,6 +168,7 @@ async def apply_task_completion(task, actor, details, db):
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot complete task from status '{task.status}'",
         )
+    await require_package_handoff(task, db)
 
     # Every hop of the shortcut is checked against VALID_TRANSITIONS before any
     # of it is applied, so an illegal step cannot leave the task half-promoted.
@@ -626,6 +628,8 @@ async def transition_task(
         TaskStatus.DONE,
     }:
         await require_automatic_task(task, db)
+    if to_status == TaskStatus.DONE:
+        await require_package_handoff(task, db)
 
     validate_transition(task.status, to_status)
 

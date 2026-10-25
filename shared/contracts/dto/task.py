@@ -195,6 +195,9 @@ class TaskCreate(BaseModel):
             self.type is not TaskType.FEATURE or not self.story_id or not self.repository_id
         ):
             raise ValueError("a package build is a FEATURE with story and repository ownership")
+        if self.package_build is not None and self.status is TaskStatus.DONE:
+            # Only its own completed Run's pinned INSTALL lets a build reach done.
+            raise ValueError("a package build cannot be created done")
         return self
 
 

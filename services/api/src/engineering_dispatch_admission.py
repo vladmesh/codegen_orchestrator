@@ -78,6 +78,7 @@ from .infrastructure_park import (
     apply_infrastructure_park,
     workspace_ensure_failure_detail,
 )
+from .local_package_handoff import require_package_handoff
 from .work_admission import start_paid_run
 
 #: The orchestrator's own project. Its tasks are implemented by hand, so the
@@ -319,6 +320,7 @@ async def _apply_current_handoff(
     if task.status == TaskStatus.TODO.value:
         hops.append(TaskStatus.IN_DEV)
     if run.status == RunStatus.COMPLETED.value:
+        await require_package_handoff(task, db)
         hops.extend([TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE])
     for after in hops:
         before = task.status

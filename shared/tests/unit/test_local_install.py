@@ -13,7 +13,9 @@ from shared.contracts.dto.catalog_install import CatalogInstall
 from shared.contracts.dto.local_install import (
     LocalPackageBuild,
     LocalPackageInstall,
+    local_install_task_id,
     parse_install_target,
+    pinned_local_install,
 )
 from shared.contracts.dto.task import TaskCreate, TaskDTO
 
@@ -284,9 +286,42 @@ def test_only_a_feature_without_an_install_payload_carries_a_build_intent(change
         feature(**changes)
 
 
+def test_a_build_intent_is_never_created_already_done():
+    feature(package_build=None, status="done")
+    for status in ("backlog", "todo", "in_dev"):
+        feature(status=status)
+    with pytest.raises(ValidationError):
+        feature(status="done")
+
+
 @pytest.mark.parametrize("field", ["story_id", "repository_id"])
 @pytest.mark.parametrize("value", [None, ""])
 def test_a_build_intent_requires_story_and_repository_ownership(field, value):
     feature(package_build=None, **{field: value})
     with pytest.raises(ValidationError):
         feature(**{field: value})
+
+
+def pinned(commit: str | None = "1" * 40) -> LocalPackageInstall:
+    return pinned_local_install(
+        LocalPackageBuild.model_validate(package_build()), PROJECT, "repo-1", commit
+    )
+
+
+def test_a_build_pinned_at_its_engineering_commit_is_exactly_the_canonical_target():
+    target = pinned()
+    assert target.model_dump(mode="json") == local_install()
+    assert parse_install_target(target.model_dump(mode="json")) == target
+
+
+@pytest.mark.parametrize("commit", [None, "", "1" * 39, "A" * 40, "1" * 64, "main"])
+def test_a_build_is_never_pinned_without_one_full_commit(commit):
+    with pytest.raises(ValidationError):
+        pinned(commit)
+
+
+def test_each_source_task_has_one_stable_install_identity_of_its_own():
+    first = local_install_task_id("task-a1b2c3d4")
+    assert first == local_install_task_id("task-a1b2c3d4")
+    assert first != local_install_task_id("task-a1b2c3d5")
+    assert first != "task-a1b2c3d4" and len(first) <= 255
