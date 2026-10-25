@@ -10,8 +10,6 @@ ordinary planned story of the same draft keeps the path it always had.
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 from unittest.mock import patch
 import uuid
 
@@ -21,21 +19,12 @@ from shared.queues import ENGINEERING_QUEUE, WORKER_COMMANDS
 from src.agents.architect.tools import create_install_task
 from src.catalog_install import INSTALL_PYTHON_VERSION, plan_install_payload
 from src.clients.api import LanggraphAPIClient
+from tests.service._service_script import run_service_script
 from tests.unit.test_catalog_install import snapshot
-
-HERE = Path(__file__).parent
 
 
 def _service(script: str, result: Path, **env: str) -> dict:
-    ran = subprocess.run(
-        [sys.executable, "-P", str(HERE / script)],
-        env=os.environ
-        | {"API_BASE_URL": os.environ["TEST_API_BASE_URL"], "RESULT_FILE": str(result), **env},
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert ran.returncode == 0, ran.stdout + ran.stderr
+    run_service_script(script, RESULT_FILE=str(result), **env)
     return json.loads(result.read_text())
 
 
