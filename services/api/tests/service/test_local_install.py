@@ -437,6 +437,23 @@ async def test_lost_local_lease_keeps_its_proof_and_operator_recovery_stays_refu
     task = await post(async_client, "/api/tasks/", task_body(owner), 201)
     identity = await claimed(async_client, task)
     await command(async_client, task, "checkpoint", verification=proof(owner), **identity)
+    # A running local INSTALL is no engineering work, whichever paid or manual route asks.
+    for path, body in [
+        ("/api/work-admission/engineering-dispatches", {"task_id": task["id"]}),
+        (
+            "/api/work-admission/paid-runs",
+            {
+                "id": f"forbidden-{uuid.uuid4().hex}",
+                "type": "engineering",
+                "task_id": task["id"],
+                "story_id": task["story_id"],
+                "project_id": task["project_id"],
+            },
+        ),
+        (f"/api/tasks/{task['id']}/spawn-worker", {}),
+    ]:
+        response = await async_client.post(path, json=body)
+        assert "catalog_install_not_engineering" in response.text.replace(" ", "_"), response.text
     row = await db_session.get(Task, task["id"])
     row.install_operation = {
         **row.install_operation,
@@ -460,22 +477,6 @@ async def test_lost_local_lease_keeps_its_proof_and_operator_recovery_stays_refu
             json={"operation_id": operation["id"], "action": action},
         )
         assert recovery.status_code == 409 and "local_install_unsupported" in recovery.text
-    for path, body in [
-        ("/api/work-admission/engineering-dispatches", {"task_id": task["id"]}),
-        (
-            "/api/work-admission/paid-runs",
-            {
-                "id": f"forbidden-{uuid.uuid4().hex}",
-                "type": "engineering",
-                "task_id": task["id"],
-                "story_id": task["story_id"],
-                "project_id": task["project_id"],
-            },
-        ),
-        (f"/api/tasks/{task['id']}/spawn-worker", {}),
-    ]:
-        response = await async_client.post(path, json=body)
-        assert "catalog_install_not_engineering" in response.text.replace(" ", "_"), response.text
     read = (await async_client.get(f"/api/tasks/{task['id']}")).json()
     assert (read["status"], read["install_operation"]) == ("waiting_human_review", operation)
     await no_paid_work(db_session, task)
