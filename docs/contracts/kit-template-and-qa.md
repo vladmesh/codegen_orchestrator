@@ -235,11 +235,29 @@ closure, and neither payload validates with the other's fields. The path check i
 existence, ancestry and symlink containment are the future executor's and the kit's. Both task
 create routes refuse it unless its project and repository are the task's, the repository is
 managed by that project and the story is that project's (`local_install_repository_unowned`,
-`local_install_story_unowned`). The target is stored but not executable: catalog-install
-commands answer `refused`/`local_install_unsupported` and operator recovery 409
-`local_install_unsupported` before any admission fence, operation, mutation or enqueue; engineering
-admission still refuses every INSTALL. Catalog selection, replan, glue coverage and the admin
+`local_install_story_unowned`). Catalog selection, replan, glue coverage and the admin
 package projection read only `CatalogInstall`.
+
+`dto/install_operation.py` holds the one operation of either route: `InstallOperation`,
+`InstallCommand` and `InstallDecision` carry a `CatalogInstall` with `InstallVerification` or a
+`LocalPackageInstall` with `LocalInstallVerification`, neither proof validating as the other.
+`POST /tasks/{id}/catalog-install` admits, claims, heartbeats, checkpoints, refuses and publishes
+a local target through the same lock ladder, fences, lease and token as a catalog one, and first
+answers 409 `repository_unowned` unless the target's project and repository are the locked task's
+own managed repository. `verification_refusal` decides each proof: the other route's refuses
+`verification_route_mismatch`; a local proof is compared by `local_verification_mismatch`
+(`verification_mismatch`), a readback only against the operation's kept provenance
+(`verification_provenance_missing`); the verification slot advances once, provenance to readback,
+then only repeats (`verification_changed`). A local checkpoint's `base_sha` must be the saved
+commit (`base_mismatch`); its `head_sha` is the later installation commit, while the proof's
+`head` stays the saved commit. A local preflight is admitted by `preflight_mismatch`, and its glue
+parks the task and story for a person: it is never a product glue repair, which would move the
+pinned commit. Publication requires the readback (`readback_unverified`), the checkpointed base
+equal to the saved commit (`base_unverified`), a mechanical preflight (`preflight_unverified`) and
+the checkpointed installation head (`head_unverified`). No route executes a local install yet:
+the scheduler dispatches no local target (no admission, no `ScaffoldMessage`, which carries only
+`CatalogInstall`), operator recovery answers 409 `local_install_unsupported` before any mutation,
+and engineering admission still refuses every INSTALL.
 
 `InstallPreflight` also reads the pinned kit's `kit check-install <package> --json
 --package-source <path>` answer, whose target is exactly `route: package_source`, `path` (the
@@ -254,8 +272,7 @@ a source answer for a catalog target, or a catalog answer for a local one, refus
 never becomes a product glue repair. The answer cannot attest the commit, project or
 repository ownership, source existence, ancestry or physical containment, or the distribution
 and wheel; the fixed probe's source modes below attest the source and installed artifact, and
-project/repository ownership stays the API's. No route runs this check yet: local installs stay
-`local_install_unsupported`.
+project/repository ownership stays the API's.
 
 The fixed probe reads a `LocalPackageInstall` in two source modes under the product's own
 `.venv/bin/python -I`, with no service import. `source-provenance` applies the catalog modes'
@@ -291,7 +308,7 @@ digest or component target and never validates as `InstallVerification`. A chang
 requires replanning against an existing commit; the future executor enforces HEAD equal to the
 saved commit before mutation and before its install commit. Build tools and dependencies stay
 the kit's, so no build is claimed reproducible from the source tree. No route runs the source
-modes or stores the verification on an operation yet.
+modes yet; the install-command API keeps their verification on the operation (above).
 
 The reader reads only the activated catalog snapshot (`shared/catalog_activation.yaml`):
 `packages/catalog.yaml` at its commit, verified against its raw SHA256 and the semantic

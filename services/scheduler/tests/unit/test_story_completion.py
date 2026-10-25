@@ -382,7 +382,7 @@ async def test_completion_hands_the_pull_request_to_the_poller_without_auto_merg
 async def test_install_handoff_requires_its_exact_durable_head(
     api_client, redis_client, published, branch_contains, completes
 ):
-    from shared.contracts.dto.catalog_install import InstallOperation
+    from shared.contracts.dto.install_operation import InstallOperation
     from shared.contracts.dto.task import TaskType
 
     task = _done_task().model_copy(
@@ -424,7 +424,7 @@ async def test_replanned_install_completes_on_its_new_cycle_past_the_cancelled_o
     """An operator replan cancels the old cycle's install; only the new one is checked."""
     from datetime import timedelta
 
-    from shared.contracts.dto.catalog_install import InstallOperation
+    from shared.contracts.dto.install_operation import InstallOperation
     from shared.contracts.dto.task import TaskStatus, TaskType
 
     reopened = _NOW + timedelta(hours=1)
@@ -475,7 +475,7 @@ async def test_a_ci_retry_reopen_keeps_the_earlier_install_of_a_mixed_story(
     """The CI-fix reopen stamps a new cycle; the install it carries stays proved by its head."""
     from datetime import timedelta
 
-    from shared.contracts.dto.catalog_install import InstallOperation
+    from shared.contracts.dto.install_operation import InstallOperation
     from shared.contracts.dto.task import TaskType
 
     reopened = _NOW + timedelta(hours=2)

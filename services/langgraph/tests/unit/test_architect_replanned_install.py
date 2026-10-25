@@ -18,7 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.contracts.dto.catalog_install import CatalogInstall, InstallOperation
+from shared.contracts.dto.catalog_install import CatalogInstall
+from shared.contracts.dto.install_operation import InstallOperation
 from shared.contracts.dto.product_brief import (
     ProductBriefContent,
     ProductBriefPlanningAttemptOutcome,

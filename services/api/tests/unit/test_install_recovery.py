@@ -9,11 +9,8 @@ from fastapi import HTTPException
 import pytest
 from test_install_contract import install_payload
 
-from shared.contracts.dto.catalog_install import (
-    InstallCommand,
-    InstallOperation,
-    InstallOperatorRequest,
-)
+from shared.contracts.dto.catalog_install import InstallOperatorRequest
+from shared.contracts.dto.install_operation import InstallCommand, InstallOperation
 from src.catalog_install import install_command
 from src.catalog_install_recovery import operator_install_recovery
 
@@ -165,32 +162,6 @@ def local_task():
         },
         install_operation=None,
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["admit", "claim"])
-async def test_a_local_install_is_refused_before_any_catalog_admission(monkeypatch, action):
-    task = local_task()
-    monkeypatch.setattr(
-        "src.catalog_install._lock_dispatch_tasks",
-        AsyncMock(return_value=(task, {}, None, task.story_id)),
-    )
-    roster = AsyncMock()
-    monkeypatch.setattr("src.catalog_install._take_story_roster", roster)
-    db = SimpleNamespace(add=Mock(), commit=AsyncMock(), scalar=AsyncMock())
-    answer = await install_command(
-        task.id, InstallCommand(action=action, operation_id="op", token=uuid.uuid4().hex), db
-    )
-    assert (answer.outcome, answer.reason, answer.operation) == (
-        "refused",
-        "local_install_unsupported",
-        None,
-    )
-    roster.assert_not_awaited()
-    db.scalar.assert_not_awaited()
-    db.add.assert_not_called()
-    db.commit.assert_not_awaited()
-    assert (task.status, task.install_operation) == ("todo", None)
 
 
 @pytest.mark.asyncio

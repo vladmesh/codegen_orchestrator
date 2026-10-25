@@ -7,7 +7,8 @@ import uuid
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.catalog_install import CatalogInstall, InstallOperation
+from shared.contracts.dto.catalog_install import CatalogInstall
+from shared.contracts.dto.install_operation import InstallOperation
 from shared.contracts.dto.local_install import InstallTarget, LocalPackageInstall
 
 

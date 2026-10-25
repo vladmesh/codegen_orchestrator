@@ -1,8 +1,7 @@
-"""Finite catalog selection and non-engineering operation ownership."""
+"""Finite catalog selection, its preflight and proof, and operator settlement."""
 
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
-import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -11,23 +10,6 @@ Version = Annotated[str, Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 SHA = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 Distribution = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,127}$")]
-Stage = Literal[
-    "queued",
-    "claimed",
-    "prepare",
-    "preflight",
-    "package",
-    "library",
-    "bind",
-    "generate",
-    "validate",
-    "readback",
-    "commit",
-    "push",
-    "published",
-    "lease_lost",
-    "cancelled",
-]
 
 
 class Strict(BaseModel):
@@ -298,48 +280,6 @@ class InstallVerification(Strict):
     protected_sha256: dict[str, Digest]
 
 
-#: An attempt checkout is named `<repository id>/<operation id>`, nothing caller-chosen.
-AttemptCheckout = Annotated[
-    str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
-]
-
-
-class InstallOperation(Strict):
-    """API-owned durable record. No Run, executor, spend, or arbitrary path."""
-
-    id: str
-    project_id: uuid.UUID
-    task_id: str
-    story_id: str
-    repository_id: str
-    cycle_started_at: datetime
-    state: Literal["queued", "running", "published", "refused", "recovery_required"]
-    stage: Stage
-    token: str | None = None
-    heartbeat_at: datetime | None = None
-    head_sha: SHA | None = None
-    base_sha: SHA | None = None
-    detail: str | None = Field(default=None, max_length=2000)
-    verification: InstallVerification | None = None
-    #: The private checkout this operation's one attempt ran in, by its derived name.
-    checkout: AttemptCheckout | None = Field(default=None, exclude_if=lambda value: value is None)
-    #: The kit's read-only preflight of this attempt, glue and refusal included.
-    preflight: InstallPreflight | None = Field(default=None, exclude_if=lambda value: value is None)
-
-
-class InstallCommand(Strict):
-    operation_id: str | None = None
-    token: str | None = None
-    action: Literal["admit", "claim", "heartbeat", "checkpoint", "publish", "refuse"]
-    stage: Stage | None = None
-    head_sha: SHA | None = None
-    base_sha: SHA | None = None
-    detail: str | None = Field(default=None, max_length=2000)
-    verification: InstallVerification | None = None
-    checkout: AttemptCheckout | None = None
-    preflight: InstallPreflight | None = None
-
-
 class InstallOperatorRequest(Strict):
     operation_id: str
     action: Literal["retry", "recover", "replan"]
@@ -372,12 +312,3 @@ def replan_reopened(noted_at: datetime, reopened_at: datetime | None) -> bool:
     noted = noted_at if noted_at.tzinfo else noted_at.replace(tzinfo=UTC)
     reopened = reopened_at if reopened_at.tzinfo else reopened_at.replace(tzinfo=UTC)
     return abs(reopened - noted) <= REPLAN_REOPEN_WINDOW
-
-
-class InstallDecision(Strict):
-    outcome: Literal["admitted", "claimed", "reused", "refused", "settled"]
-    reason: str | None = None
-    operation: InstallOperation | None = None
-    install: CatalogInstall | None = None
-    project_name: str | None = None
-    git_url: str | None = None

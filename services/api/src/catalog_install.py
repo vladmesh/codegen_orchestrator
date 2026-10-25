@@ -1,4 +1,4 @@
-"""Durable catalog installation admission and settlement, without a paid Run."""
+"""Durable INSTALL admission and settlement for either target route, without a paid Run."""
 
 from datetime import UTC, datetime, timedelta
 import uuid
@@ -9,13 +9,21 @@ from sqlalchemy import select
 from shared.contracts.dto.catalog_install import (
     GLUE_REPAIR_AUTHOR,
     SETTLEMENT_NOTE_KEY,
-    InstallCommand,
-    InstallDecision,
-    InstallOperation,
+    CatalogInstall,
     product_glue_handoff,
 )
 from shared.contracts.dto.commit_publication import AttemptDisposition
-from shared.contracts.dto.local_install import LocalPackageInstall, parse_install_target
+from shared.contracts.dto.install_operation import (
+    InstallCommand,
+    InstallDecision,
+    InstallOperation,
+    verification_refusal,
+)
+from shared.contracts.dto.local_install import (
+    LocalPackageInstall,
+    parse_install_target,
+    preflight_mismatch,
+)
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
@@ -32,12 +40,14 @@ INSTALL_LEASE = timedelta(minutes=15)
 def _glue_repair(task, operation, stage, payload, locked, cycle) -> str | None:  # noqa: PLR0913  # one locked refusal's rows
     """The repair a glue refusal hands to engineering, once, or `None` to park it.
 
-    Only an untouched attempt of the current cycle whose answer is product glue is
-    repaired, and only once: a second glue answer after a repair is a person's.
+    Only an untouched catalog attempt of the current cycle whose answer is product glue is
+    repaired, and only once: a second glue answer after a repair is a person's. Local glue
+    is never repaired: a repair would move the pinned source commit.
     """
     preflight = operation.preflight
     if (
-        preflight is None
+        isinstance(payload, LocalPackageInstall)
+        or preflight is None
         or stage != "preflight"
         or operation.head_sha is not None
         or operation.cycle_started_at != cycle
@@ -59,15 +69,22 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
     if task.type != TaskType.INSTALL.value or not task.story_id or not task.repository_id:
         raise HTTPException(409, {"code": "not_catalog_install"})
     payload = parse_install_target(task.install)
-    if isinstance(payload, LocalPackageInstall):
-        return InstallDecision(outcome="refused", reason="local_install_unsupported")
+    local = isinstance(payload, LocalPackageInstall)
     _, reason = await _take_story_roster(task, story_id, locked, db)
     story = await _get_story_for_update(task.story_id, db)
     project = await load_locked_project(db, task.project_id)
     repository = await db.scalar(
         select(Repository).where(Repository.id == task.repository_id).with_for_update()
     )
-    if repository is None or repository.project_id != task.project_id or not repository.is_managed:
+    if (
+        repository is None
+        or repository.project_id != task.project_id
+        or not repository.is_managed
+        or (
+            local
+            and (payload.project_id, payload.repository_id) != (task.project_id, repository.id)
+        )
+    ):
         raise HTTPException(409, {"code": "repository_unowned"})
     operation = (
         InstallOperation.model_validate(task.install_operation) if task.install_operation else None
@@ -285,7 +302,7 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
     if operation and operation.state == "running" and command.action == "admit":
         return refuse("operation_live")
     if command.action == "admit":
-        if payload.catalog is None:
+        if isinstance(payload, CatalogInstall) and payload.catalog is None:
             # Stored before installs named their catalog commit: `kit add` would read the
             # kit's moving default branch. An operator replans it against the snapshot.
             return refuse("catalog_unpinned")
@@ -320,19 +337,10 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
         return await park("lease_lost", "Execution lease expired; retained work needs review.")
     operation.heartbeat_at = now
     if command.verification is not None:
-        proof = command.verification
-        expected = {item.name: item.version for item in [payload.package, *payload.libraries]}
-        if (
-            proof.core_version != payload.core_version
-            or proof.tooling_commit != payload.tooling_commit
-            or proof.binding_sha256 != payload.binding.sha256
-            or proof.distributions != expected
-            or set(proof.component_targets) != set(expected)
-        ):
-            return refuse("verification_mismatch")
-        if operation.verification is not None and operation.verification != proof:
-            return refuse("verification_changed")
-        operation.verification = proof
+        refusal = verification_refusal(operation.verification, command.verification, payload)
+        if refusal is not None:
+            return refuse(refusal)
+        operation.verification = command.verification
     if command.action == "checkpoint":
         operation.stage = command.stage or operation.stage
         if command.checkout:
@@ -343,10 +351,13 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
         if command.preflight is not None:
             if operation.preflight is not None and operation.preflight != command.preflight:
                 return refuse("preflight_changed")
-            if command.preflight.provenance_mismatch(payload) is not None:
+            if preflight_mismatch(command.preflight, payload) is not None:
                 return refuse("preflight_provenance_mismatch")
             operation.preflight = command.preflight
         if command.base_sha:
+            if local and command.base_sha != payload.commit:
+                # The saved commit is the attempt's exact base, never an ancestor of it.
+                return refuse("base_mismatch")
             if operation.base_sha and operation.base_sha != command.base_sha:
                 return refuse("base_changed")
             operation.base_sha = command.base_sha
@@ -361,10 +372,16 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
             or operation.verification is None
         ):
             return refuse("head_unverified")
+        if local and operation.verification.mode != "readback":
+            return refuse("readback_unverified")
+        if local and operation.base_sha != payload.commit:
+            return refuse("base_unverified")
         if (
             operation.preflight is None
             or operation.preflight.status == "incompatible"
-            or operation.preflight.outstanding_glue(payload)
+            or (
+                operation.preflight.glue if local else operation.preflight.outstanding_glue(payload)
+            )
         ):
             # Only a release the kit admitted on this product, with no product glue
             # outstanding, is an installation; anything else was never installed.

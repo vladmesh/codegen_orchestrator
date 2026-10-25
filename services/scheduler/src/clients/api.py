@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from shared.clients.internal_api import InternalAPIClient
 from shared.clients.run_api import RunAPIClientMixin
 from shared.contracts.dto.application import ApplicationDTO
-from shared.contracts.dto.catalog_install import InstallCommand, InstallDecision
 from shared.contracts.dto.deploy_dispatch import (
     DeployDispatchSupersede,
     DeployDispatchWithdrawal,
@@ -30,6 +29,7 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureParkRead,
 )
 from shared.contracts.dto.incident import IncidentDTO
+from shared.contracts.dto.install_operation import InstallCommand, InstallDecision
 from shared.contracts.dto.lifecycle_wait import (
     TaskResourceResumeCommand,
     TaskResourceResumeRead,

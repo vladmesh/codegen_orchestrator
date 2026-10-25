@@ -146,6 +146,41 @@ export interface InstallVerification {
   protected_sha256: Record<string, string>
 }
 
+export interface LocalSourceEvidence {
+  tree: string
+  entry_point: string
+  metadata_sha256: string
+  requires_core: string
+  requires_python: string | null
+  default_binding: string | null
+  binding_sha256: string | null
+}
+
+export interface LocalInstalledEvidence {
+  wheel: string
+  wheel_sha256: string
+  wheel_metadata_sha256: string
+  lock_sha256: string
+  direct_url: string
+  version: string
+  files_compared: number
+  manifest_sha256: string
+  binding_sha256: string | null
+}
+
+export interface LocalInstallVerification {
+  mode: 'provenance' | 'readback'
+  target: LocalPackageInstall
+  head: string
+  core_version: string
+  python_version: string
+  tooling_commit: string
+  source: LocalSourceEvidence
+  residue: string[]
+  installed: LocalInstalledEvidence | null
+  protected_sha256: Record<string, string>
+}
+
 export interface PreflightOther {
   owner: string
   path: string | null
@@ -213,7 +248,7 @@ export interface InstallOperation {
   head_sha?: string | null
   base_sha?: string | null
   detail?: string | null
-  verification?: InstallVerification | null
+  verification?: InstallVerification | LocalInstallVerification | null
   checkout?: string | null
   preflight?: InstallPreflight | null
 }

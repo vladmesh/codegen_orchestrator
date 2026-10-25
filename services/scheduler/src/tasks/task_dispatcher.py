@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 import httpx
 import structlog
 
-from shared.contracts.dto.catalog_install import InstallCommand
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
 from shared.contracts.dto.engineering_dispatch import (
     EngineeringAttemptStartCommand,
@@ -29,6 +28,8 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringExecutionPhase,
     infrastructure_refusal_for_dispatch,
 )
+from shared.contracts.dto.install_operation import InstallCommand
+from shared.contracts.dto.local_install import LocalPackageInstall
 from shared.contracts.dto.pr_conflict_repair import PRConflictRepairAttemptDisposition
 from shared.contracts.dto.run import RunDTO, RunStatus
 from shared.contracts.dto.story import StoryStatus
@@ -488,6 +489,10 @@ async def dispatch_todo_tasks(
 async def _dispatch_install(api_client, redis_client, task, log) -> bool:
     from .scaffold_trigger import _github_repo_name, _template_config
 
+    if isinstance(task.install, LocalPackageInstall):
+        # No executor runs a product-local source yet, so none is admitted or queued for one.
+        log.info("local_install_dispatch_disabled")
+        return False
     decision = await api_client.catalog_install_command(task.id, InstallCommand(action="admit"))
     if decision.outcome != "admitted":
         log.info("catalog_install_dispatch_refused", reason=decision.reason)

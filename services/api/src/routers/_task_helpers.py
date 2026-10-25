@@ -166,7 +166,7 @@ async def apply_cancellation(task: Task, db: AsyncSession) -> bool:
     old_status = task.status
     task.status = TaskStatus.CANCELLED
     if task.type == "install" and task.install_operation is not None:
-        from shared.contracts.dto.catalog_install import InstallOperation
+        from shared.contracts.dto.install_operation import InstallOperation
 
         operation = InstallOperation.model_validate(task.install_operation)
         if operation.state == "queued":

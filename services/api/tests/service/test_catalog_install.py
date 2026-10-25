@@ -12,6 +12,8 @@ from shared.contracts.dto.task import TaskDTO
 from shared.contracts.queues.scheduler_wake import SchedulerWakeTarget
 from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Run, Story, Task
 from shared.queues import ENGINEERING_QUEUE, WORKER_COMMANDS
+from shared.tests.unit.test_local_install import local_install
+from shared.tests.unit.test_local_verification import verification as local_verification
 
 LEASE_OWNER = "owner"
 OTHER_OWNER = "different"
@@ -789,3 +791,25 @@ async def test_the_task_list_keeps_only_installs_whose_operation_is_running(
         no_operation,
     }
     assert await listed(status="cancelled") == {install_task["id"], *settled, no_operation, feature}
+
+
+@pytest.mark.asyncio
+async def test_a_local_proof_never_settles_a_catalog_install(install_task, async_client):
+    identity = await claimed(async_client, install_task)
+    target = local_install(
+        project_id=install_task["project_id"], repository_id=install_task["repository_id"]
+    )
+    for mode in ("provenance", "readback"):
+        refused = await command(
+            async_client,
+            install_task,
+            "checkpoint",
+            stage="readback",
+            head_sha="d" * 40,
+            verification=local_verification(mode, target=target),
+            **identity,
+        )
+        assert (refused["outcome"], refused["reason"]) == ("refused", "verification_route_mismatch")
+    stored = (await async_client.get(f"/api/tasks/{install_task['id']}")).json()
+    assert stored["install_operation"]["verification"] is None
+    assert stored["install_operation"]["head_sha"] is None

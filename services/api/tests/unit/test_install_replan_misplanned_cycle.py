@@ -16,11 +16,8 @@ import pytest
 from test_install_contract import install_payload
 from test_install_replan import FakeGitHub
 
-from shared.contracts.dto.catalog_install import (
-    REPLAN_REOPEN_WINDOW,
-    InstallOperation,
-    InstallOperatorRequest,
-)
+from shared.contracts.dto.catalog_install import REPLAN_REOPEN_WINDOW, InstallOperatorRequest
+from shared.contracts.dto.install_operation import InstallOperation
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.models import Run, TaskEvent, WorkAdmissionAudit
 from shared.queues import ARCHITECT_QUEUE

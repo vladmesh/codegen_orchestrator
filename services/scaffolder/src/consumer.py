@@ -447,7 +447,7 @@ async def _process_ensure_mode(
 
 
 async def _process_install_mode(msg, repo_full_name, github, github_token, api, settings, log):
-    from shared.contracts.dto.catalog_install import InstallCommand
+    from shared.contracts.dto.install_operation import InstallCommand
     from src.install import InstallExecutionError, run_install
 
     token = uuid.uuid4().hex
