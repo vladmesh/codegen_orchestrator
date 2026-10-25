@@ -131,3 +131,23 @@ async def test_a_glue_answer_is_saved_at_its_operation_as_a_typed_refusal():
     refused = api.catalog_install_command.call_args.args[1]
     assert refused.action == "refuse" and refused.stage == "preflight"
     assert refused.preflight == preflight and refused.base_sha == "b" * 40
+
+
+@pytest.mark.asyncio
+async def test_the_executor_runs_the_claimed_operation_with_its_admitted_target():
+    from src.install import InstallContext
+
+    msg = message()
+    api = AsyncMock()
+    api.catalog_install_command.return_value = decision(msg)
+    published = SimpleNamespace(head_sha="a" * 40, stages=[], checkout="x", checkout_removed=True)
+    with patch("src.install.run_install", AsyncMock(return_value=published)) as execute:
+        assert (await consume(msg, api))["status"] == "success"
+    assert execute.call_args.args[0] == InstallContext(
+        project_id=msg.project_id,
+        repository_id=msg.repository_id,
+        story_id=msg.story_id,
+        operation_id=msg.operation_id,
+        template_ref=msg.template_ref,
+        install=msg.install,
+    )

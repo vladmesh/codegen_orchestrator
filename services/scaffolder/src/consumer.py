@@ -448,7 +448,7 @@ async def _process_ensure_mode(
 
 async def _process_install_mode(msg, repo_full_name, github, github_token, api, settings, log):
     from shared.contracts.dto.install_operation import InstallCommand
-    from src.install import InstallExecutionError, run_install
+    from src.install import InstallContext, InstallExecutionError, run_install
 
     token = uuid.uuid4().hex
 
@@ -509,7 +509,15 @@ async def _process_install_mode(msg, repo_full_name, github, github_token, api, 
 
     refreshing = asyncio.create_task(heartbeat())
     try:
-        result = await run_install(msg, settings, decision.git_url, github_token, fence)
+        context = InstallContext(
+            project_id=str(operation.project_id),
+            repository_id=operation.repository_id,
+            story_id=operation.story_id,
+            operation_id=operation.id,
+            template_ref=msg.template_ref,
+            install=decision.install,
+        )
+        result = await run_install(context, settings, decision.git_url, github_token, fence)
         log.info(
             "catalog_install_published",
             operation_id=msg.operation_id,

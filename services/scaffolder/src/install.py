@@ -1,10 +1,11 @@
-"""Mechanical catalog executor in one private attempt checkout of the exact story head.
+"""Mechanical install executor in one private attempt checkout of the exact story head.
 
 The repository workspace is never the place an install runs. Each operation gets its own
 worktree, derived from its operation id and detached at the owned remote story head (or
 the scaffold base), with its own environments prepared by the product's own
 `scripts/prepare-env.sh`. Whatever a worker left in the shared workspace — edits, Copier
 rejections, an unpublished local story branch — is neither read nor overwritten.
+A released catalog closure and a committed product-local package source share this path.
 """
 
 import asyncio
@@ -27,7 +28,9 @@ from shared.contracts.dto.catalog_install import (
 )
 from shared.contracts.dto.install_operation import InstallCommand
 from shared.contracts.dto.local_install import (
+    InstallTarget,
     LocalInstallVerification,
+    LocalPackageInstall,
     local_verification_mismatch,
     preflight_mismatch,
 )
@@ -44,6 +47,8 @@ UNIT_LEG_REDIS_URL = "redis://redis.invalid:6379"
 COMMAND_TIMEOUT = 600
 #: Every environment the installer and its probes execute: the kit tooling and both services.
 PRODUCT_ENVIRONMENTS = ("root", "backend", "tg_bot")
+#: A source check's interpreters, the kit's children included, leave no bytecode behind.
+NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
 
@@ -53,6 +58,22 @@ class InstallExecutionError(RuntimeError):
         #: The kit's typed preflight, when the refusal is its answer.
         self.preflight: InstallPreflight | None = preflight
         super().__init__(detail)
+
+
+@dataclass(frozen=True)
+class InstallContext:
+    """The API-admitted operation an attempt executes, with its saved target.
+
+    Built by the consumer from the claimed operation; a local target must name this project
+    and repository, whatever Git URL a caller supplies.
+    """
+
+    project_id: str
+    repository_id: str
+    story_id: str
+    operation_id: str
+    template_ref: str
+    install: InstallTarget
 
 
 @dataclass
@@ -105,13 +126,59 @@ def protected_files(root, tracked):
     }
 
 
+def _environment(root, env):
+    return root / (".venv" if env == "root" else f"services/{env}/.venv")
+
+
 def environment_fingerprint(root):
     """The installed distributions of every product environment, to prove a read changed none."""
     found = {}
     for env in PRODUCT_ENVIRONMENTS:
-        venv = root / (".venv" if env == "root" else f"services/{env}/.venv")
+        venv = _environment(root, env)
         found[env] = sorted(path.name for path in venv.glob("lib/*/site-packages/*.dist-info"))
     return found
+
+
+def owned_tree(root):
+    """Every entry under `root` with its kind and content: file SHA256, symlink target, dir.
+
+    Symlinks are recorded by target and never followed, so nothing outside `root` is read.
+    """
+    if root.is_symlink() or not root.is_dir():
+        raise RuntimeError(f"{root} is not an owned directory")
+
+    def unreadable(error):
+        raise error
+
+    entries = {}
+    for directory, names, files in os.walk(root, onerror=unreadable):
+        for name in [*names, *files]:
+            path = Path(directory) / name
+            relative = str(path.relative_to(root))
+            if path.is_symlink():
+                entries[relative] = ["symlink", os.readlink(path)]
+            elif path.is_dir():
+                entries[relative] = ["dir"]
+            else:
+                entries[relative] = ["file", hashlib.sha256(path.read_bytes()).hexdigest()]
+    return entries
+
+
+def source_read_state(root, source, tracked):
+    """What a source check must leave byte-identical: the source, every lock, every environment.
+
+    Environment trees are compared whole, existing bytecode caches included.
+    """
+    trees = {"source": root / source}
+    trees |= {env: _environment(root, env) for env in PRODUCT_ENVIRONMENTS}
+    return {
+        "locks": {
+            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in tracked
+            if Path(name).name == "uv.lock"
+        },
+        "trees": {name: owned_tree(path) for name, path in trees.items()},
+    }
 
 
 def product_environment(root, *trusted):
@@ -202,8 +269,10 @@ def glue_detail(result: InstallPreflight, install) -> str:
     return ("glue_required: " + "; ".join(items))[:2000]
 
 
-async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  # noqa: C901, PLR0912, PLR0915  # fixed stages share a workspace lease and retained head
-    shared = _workspace_path(settings.workspace_base_path, msg.repository_id)
+async def run_install(context, settings, git_url, token, fence) -> InstallResult:  # noqa: C901, PLR0912, PLR0915  # fixed stages share a workspace lease and retained head
+    install = context.install
+    local = isinstance(install, LocalPackageInstall)
+    shared = _workspace_path(settings.workspace_base_path, context.repository_id)
     if not (shared / ".git").is_dir():
         raise InstallExecutionError(
             "preflight", "workspace_unowned: ensure the owned repository first"
@@ -212,11 +281,20 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         raise InstallExecutionError(
             "preflight", "repository_unowned: expected an owned GitHub HTTPS URL"
         )
-    if msg.install.catalog is None:
+    if local and (
+        str(install.project_id) != context.project_id
+        or install.repository_id != context.repository_id
+    ):
+        raise InstallExecutionError(
+            "preflight", "local_target_unowned: the source belongs to another project/repository"
+        )
+    if not local and install.catalog is None:
         raise InstallExecutionError(
             "preflight", "catalog_unpinned: the install names no catalog commit; replan it"
         )
-    name, root = attempt_checkout(settings.workspace_base_path, msg.repository_id, msg.operation_id)
+    name, root = attempt_checkout(
+        settings.workspace_base_path, context.repository_id, context.operation_id
+    )
     if root.exists() or root.is_symlink():
         # One operation, one attempt: a redelivery never runs in a checkout it left.
         raise InstallExecutionError(
@@ -281,7 +359,16 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
 
     async def read_only_state():
         _, status = await command(["git", "status", "--porcelain", "--untracked-files=all"])
-        return status, protected_files(root, tracked), environment_fingerprint(root)
+        state = (status, protected_files(root, tracked), environment_fingerprint(root))
+        return (*state, source_read_state(root, install.path, tracked)) if local else state
+
+    def protected_changes():
+        return [
+            item
+            for item, digest in protected.items()
+            if not (root / item).is_file()
+            or hashlib.sha256((root / item).read_bytes()).hexdigest() != digest
+        ]
 
     try:
         _, origin = await command(["git", "remote", "get-url", "origin"], cwd=shared)
@@ -289,7 +376,7 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
             raise InstallExecutionError(
                 stage, "repository_unowned: origin differs from the durable repository"
             )
-        branch = f"story/{msg.story_id}"
+        branch = f"story/{context.story_id}"
         await command(["git", "check-ref-format", "--branch", branch], cwd=shared)
         await command(["git", "fetch", "--no-tags", "origin"], cwd=shared)
         _, remote = await command(
@@ -299,6 +386,16 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         # The exact owned remote story head, or the scaffold base: never a local branch.
         start = remote or "refs/remotes/origin/main"
         _, base = await command(["git", "rev-parse", "--verify", f"{start}^{{commit}}"], cwd=shared)
+        if local and base != install.commit:
+            # The source is installed only at the commit it was saved from; a moved head
+            # needs a new plan, never an export of the old commit.
+            raise InstallExecutionError(
+                stage,
+                "source_base_mismatch: the owned remote head is not the saved source commit; "
+                "replan against the current head",
+                None,
+                base,
+            )
         root.parent.mkdir(parents=True, exist_ok=True)
         await command(["git", "worktree", "add", "--detach", str(root), base], cwd=shared)
         checkout = name
@@ -313,36 +410,51 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
         await command(["sh", "scripts/prepare-env.sh", *PRODUCT_ENVIRONMENTS])
         stage = "preflight"
         before = await read_only_state()
-        payload = msg.install.model_dump_json()
+        protected = before[1]
+        payload = install.model_dump_json()
         probe = str(Path(__file__).with_name("install_probe.py"))
         python = str(root / ".venv/bin/python")
         kit = str(root / ".venv/bin/kit")
-        # Independent provenance first: saved source, core, tooling, tags, default binding.
-        _, probed = await command([python, "-I", probe, "provenance", payload, msg.template_ref])
-        json.loads(probed)
+        check_env = env | NO_BYTECODE if local else None
+        if local:
+            # The committed source, read as data at the exact HEAD, before the kit reads it.
+            _, probed = await command(
+                [python, "-I", "-B", probe, "source-provenance", payload, context.template_ref],
+                command_env=check_env,
+            )
+            verification = admitted_local_verification(probed, install, protected)
+            await checkpoint()
+            target = ["--package-source", install.path]
+        else:
+            # Independent provenance first: saved source, core, tooling, tags, default binding.
+            _, probed = await command(
+                [python, "-I", probe, "provenance", payload, context.template_ref]
+            )
+            json.loads(probed)
+            target = ["--catalog-source", install.catalog.repository]
+            target += ["--catalog-ref", install.catalog.commit]
         # Then the kit's read-only classification of this exact release on this product owns
         # every product conflict: language owners, command claims, settings.
-        catalog = ["--catalog-source", msg.install.catalog.repository]
-        catalog += ["--catalog-ref", msg.install.catalog.commit]
         rc, answer = await command(
             [
                 kit,
                 "check-install",
-                msg.install.package.name,
+                install.package.name,
                 "--json",
-                *catalog,
+                *target,
                 "--version",
-                msg.install.package.version,
+                install.package.version,
                 "--product-root",
                 str(root),
             ],
+            command_env=check_env,
             accept=tuple(PREFLIGHT_EXIT_CODES.values()),
         )
         if await read_only_state() != before:
             raise InstallExecutionError(
                 stage, "preflight_not_read_only: the product changed under preflight", head, base
             )
-        result = admitted_preflight(rc, answer, msg.install)
+        result = admitted_preflight(rc, answer, install)
         preflight = result
         if result.status == "incompatible":
             raise InstallExecutionError(
@@ -353,31 +465,39 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
                 base,
                 preflight=result,
             )
-        if result.outstanding_glue(msg.install):
+        if result.outstanding_glue(install):
             raise InstallExecutionError(
-                stage, glue_detail(result, msg.install), head, base, preflight=result
+                stage, glue_detail(result, install), head, base, preflight=result
             )
         await checkpoint()
-        # A release the kit admitted still passes the probe's own ownership refusals: a
-        # retained binding, a claimed command or a settings schema is never overwritten.
-        _, probed = await command([python, "-I", probe, "preflight", payload, msg.template_ref])
-        json.loads(probed)
-        if await read_only_state() != before:
-            raise InstallExecutionError(
-                stage, "preflight_not_read_only: the product changed under preflight", head, base
+        if not local:
+            # A release the kit admitted still passes the probe's own ownership refusals: a
+            # retained binding, a claimed command or a settings schema is never overwritten.
+            _, probed = await command(
+                [python, "-I", probe, "preflight", payload, context.template_ref]
             )
-        protected = before[1]
+            json.loads(probed)
+            if await read_only_state() != before:
+                raise InstallExecutionError(
+                    stage,
+                    "preflight_not_read_only: the product changed under preflight",
+                    head,
+                    base,
+                )
         # Each argv is platform-owned. No command, artifact, source override or
-        # product path comes from task prose. The product CLI owns all mutation, and
-        # it resolves every component from the payload's reviewed catalog commit, never
-        # from the kit's floating default branch.
+        # product path comes from task prose. The product CLI owns all mutation; a catalog
+        # component resolves from the payload's reviewed catalog commit, never from the
+        # kit's floating default branch, and a local package from its saved source path.
         stage = "package"
-        await command([kit, "add", msg.install.package.name, *catalog])
-        stage = "library"
-        for library in msg.install.libraries:
-            await command([kit, "add", library.name, *catalog])
-        stage = "bind"
-        await command([kit, "bind", msg.install.package.name, "--default"])
+        await command([kit, "add", install.package.name, *target])
+        if not local:
+            stage = "library"
+            for library in install.libraries:
+                await command([kit, "add", library.name, *target])
+        # A local package is bound only when its measured source declares a default binding.
+        if not local or verification.source.default_binding is not None:
+            stage = "bind"
+            await command([kit, "bind", install.package.name, "--default"])
         stage = "generate"
         await command(["make", "generate-from-spec"])
         stage = "validate"
@@ -391,37 +511,75 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
             )
         await command(["make", "tests", f"REDIS_URL={UNIT_LEG_REDIS_URL}"])
         stage = "readback"
-        _, readback = await command([python, "-I", probe, "readback", payload, msg.template_ref])
-        evidence = json.loads(readback)
-        changed = [
-            item
-            for item, digest in protected.items()
-            if not (root / item).is_file()
-            or hashlib.sha256((root / item).read_bytes()).hexdigest() != digest
-        ]
-        if changed:
+        if local:
+            _, readback = await command(
+                [python, "-I", "-B", probe, "source-readback", payload, context.template_ref],
+                command_env=check_env,
+            )
+        else:
+            _, readback = await command(
+                [python, "-I", probe, "readback", payload, context.template_ref]
+            )
+        if changed := protected_changes():
             raise InstallExecutionError(
                 stage, "protected_files_changed: " + ", ".join(changed), head, base
             )
-        verification = InstallVerification(
-            core_version=evidence["core"],
-            tooling_commit=evidence["tooling"]["vcs_info"]["commit_id"],
-            binding_sha256=evidence["binding_sha256"],
-            distributions={
-                item: found["version"] for item, found in evidence["distributions"].items()
-            },
-            component_targets={
-                item["name"]: item["target"] for item in evidence["component_sources"]
-            },
-            protected_sha256=protected,
-        )
+        if local:
+            # Its protected bytes are the ones just re-read, equal to the snapshot.
+            verification = admitted_local_verification(readback, install, protected, verification)
+            if verification.residue:
+                raise InstallExecutionError(
+                    stage,
+                    "source_residue: retained for review: " + ", ".join(verification.residue),
+                    head,
+                    base,
+                )
+            await checkpoint()
+            evidence = verification.model_dump(mode="json")
+        else:
+            evidence = json.loads(readback)
+            verification = InstallVerification(
+                core_version=evidence["core"],
+                tooling_commit=evidence["tooling"]["vcs_info"]["commit_id"],
+                binding_sha256=evidence["binding_sha256"],
+                distributions={
+                    item: found["version"] for item, found in evidence["distributions"].items()
+                },
+                component_targets={
+                    item["name"]: item["target"] for item in evidence["component_sources"]
+                },
+                protected_sha256=protected,
+            )
         stage = "commit"
-        await command(["git", "add", "-A"])
+        if local:
+            _, current = await command(["git", "rev-parse", "--verify", "HEAD^{commit}"])
+            _, tree = await command(["git", "rev-parse", "--verify", f"HEAD:{install.path}"])
+            _, entries = await command(
+                ["git", "status", "--porcelain", "--untracked-files=all", "--ignored=matching"]
+                + ["--", f":(literal){install.path}"]
+            )
+            if current != install.commit or tree != verification.source.tree or entries:
+                raise InstallExecutionError(
+                    stage,
+                    "source_changed: the source is not the saved commit's tree; retained for "
+                    f"review: {entries[:1500]}",
+                    head,
+                    base,
+                )
+            if changed := protected_changes():
+                raise InstallExecutionError(
+                    stage, "protected_files_changed: " + ", ".join(changed), head, base
+                )
+            # Only native installation outputs are staged; the committed source stays as saved.
+            await command(["git", "add", "-A", "--", ".", f":(exclude,literal){install.path}"])
+        else:
+            await command(["git", "add", "-A"])
         _, dirty = await command(["git", "status", "--porcelain"])
         if not dirty:
             raise InstallExecutionError(
                 stage, "no_install_change: selected closure already exists", head, base
             )
+        route = "package source" if local else "catalog package"
         await command(
             [
                 "git",
@@ -431,7 +589,7 @@ async def run_install(msg, settings, git_url, token, fence) -> InstallResult:  #
                 "user.email=codegen@localhost",
                 "commit",
                 "-m",
-                f"Install catalog package {msg.install.package.name} ({msg.operation_id})",
+                f"Install {route} {install.package.name} ({context.operation_id})",
             ]
         )
         _, head = await command(["git", "rev-parse", "HEAD"])
