@@ -100,7 +100,7 @@
   description: "Production Copier template source"
 
 - key: scheduler.service_template_ref
-  value: "0.11.0"
+  value: "0.12.0"
   category: scheduler
   description: "Pinned immutable codegen-product-kit release tag the orchestrator scaffolds from"
 

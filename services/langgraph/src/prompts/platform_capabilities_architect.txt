@@ -1,5 +1,5 @@
-## Platform capabilities, technical (manifest v27, owner-reviewed)
-Kit gh:vladmesh/codegen-product-kit@59a0752c8f44.
+## Platform capabilities, technical (manifest v28, owner-reviewed)
+Kit gh:vladmesh/codegen-product-kit@8caf935feb3d.
 Can (how):
 - Add a catalog capability [catalog_install]: One INSTALL of a stored plan or plan_install closure on core-2.6.0 backend,tg_bot, a draft's after scaffold. Per attempt: own story-head checkout, kit check-install, kit add at the catalog commit, validate, head to PR/CI/deploy. Kit-named product glue gets one repair task first; other glue a task after.
 - Plain HTTP self links [http_self_address]: PUBLIC_BASE_URL uses one backend allocation (IPv6 bracketed); missing/ambiguous, loopback/unspecified/multicast refuse. IPv6 needs released executable transport at the built commit; unverified workflow/.rej refuses with DEPLOY_HOST. Existing products need reviewed kit update/reconciled merge. No domain/TLS/frontend/webhook.

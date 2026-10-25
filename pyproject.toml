@@ -69,7 +69,7 @@ worker-wrapper = { workspace = true }
 
 # Not a workspace member: the product kit's tooling, pulled at the same commit the
 # vendored fixture's own `pyproject.toml` resolves.
-codegen-kit-tooling = { git = "https://github.com/vladmesh/codegen-product-kit.git", rev = "59a0752c8f44c01c04054f9bbe0bd699d3d27dd9" }
+codegen-kit-tooling = { git = "https://github.com/vladmesh/codegen-product-kit.git", rev = "8caf935feb3d099a3b79162392df2efabb95c669" }
 
 # No build-system — this is a virtual workspace root (not a distributable package)
 
