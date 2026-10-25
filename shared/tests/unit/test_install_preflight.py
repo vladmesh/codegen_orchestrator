@@ -139,3 +139,42 @@ def test_only_product_owned_glue_becomes_a_concrete_repair():
     )
     assert product_glue_handoff(package_owned, INSTALL) is None
     assert product_glue_handoff(InstallPreflight.model_validate(result()), INSTALL) is None
+
+
+def source_result(status="mechanical", glue=(), **target):
+    """The pinned kit's `check-install --package-source` answer: no release identity."""
+    return result(status, glue) | {
+        "target": {
+            "route": "package_source",
+            "path": "packages/reminders",
+            "version": "0.5.0",
+            "requires_core": ">=2.4,<3",
+            "metadata_sha256": "f" * 64,
+        }
+        | target
+    }
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        source_result(catalog_ref="d" * 40),
+        source_result(tag="packages/reminders/v0.5.0"),
+        source_result(commit="d" * 40),
+        source_result(distribution="codegen-kit-reminders"),
+        source_result(path=""),
+        result() | {"target": {"route": "wheel", "artifact": "reminders.whl"}},
+        result(path="packages/reminders"),
+    ],
+)
+def test_a_source_and_a_catalog_target_never_borrow_each_others_fields(answer):
+    with pytest.raises(ValidationError):
+        InstallPreflight.model_validate(answer)
+
+
+def test_a_source_answer_is_never_a_catalog_installs_result_or_repair():
+    own = item("library_required", owner="package:reminders", symbol="textparse")
+    answer = InstallPreflight.model_validate(source_result("glue", [own, item("command_conflict")]))
+    assert answer.provenance_mismatch(INSTALL) == "target.route"
+    assert answer.outstanding_glue(INSTALL) == answer.glue
+    assert product_glue_handoff(answer, INSTALL) is None

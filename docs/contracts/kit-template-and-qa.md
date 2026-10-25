@@ -241,6 +241,21 @@ commands answer `refused`/`local_install_unsupported` and operator recovery 409
 admission still refuses every INSTALL. Catalog selection, replan, glue coverage and the admin
 package projection read only `CatalogInstall`.
 
+`InstallPreflight` also reads the pinned kit's `kit check-install <package> --json
+--package-source <path>` answer, whose target is exactly `route: package_source`, `path` (the
+argument as supplied), `version`, `requires_core` and `metadata_sha256`; it names no catalog,
+tag, commit or distribution, and neither target validates with the other's fields. The
+scaffolder's `admitted_preflight` admits it for a `LocalPackageInstall` only with the same
+status/exit agreement and, in order, the source route, the package name and, unless
+`incompatible`, the exact stored `path`, package version and product core
+(`preflight_provenance_mismatch: target.route|package|target.path|target.version|product_core`);
+a source answer for a catalog target, or a catalog answer for a local one, refuses
+`target.route`. All glue of a source answer stays outstanding (no closure is discounted) and
+never becomes a product glue repair. The answer cannot attest the commit, project or
+repository ownership, source existence, ancestry or physical containment, or the distribution
+and wheel; those remain the future local executor's and probe's. No route runs this check yet:
+local installs stay `local_install_unsupported`.
+
 The reader reads only the activated catalog snapshot (`shared/catalog_activation.yaml`):
 `packages/catalog.yaml` at its commit, verified against its raw SHA256 and the semantic
 digest of the parsed catalog, on a host whose kit core and tooling are the activation's.

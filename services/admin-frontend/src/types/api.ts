@@ -176,6 +176,14 @@ export interface PreflightTarget {
   metadata_sha256: string
 }
 
+export interface PreflightSourceTarget {
+  route: 'package_source'
+  path: string
+  version: string
+  requires_core: string
+  metadata_sha256: string
+}
+
 export interface PreflightIncompatible {
   code: string
   explanation: string
@@ -186,7 +194,7 @@ export interface InstallPreflight {
   package: string
   status: 'mechanical' | 'glue' | 'incompatible'
   product_core: string | null
-  target: PreflightTarget | null
+  target: PreflightTarget | PreflightSourceTarget | null
   glue: PreflightGlue[]
   incompatible: PreflightIncompatible | null
 }

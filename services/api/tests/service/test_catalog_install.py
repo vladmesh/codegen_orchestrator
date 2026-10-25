@@ -566,6 +566,16 @@ async def test_the_attempt_checkout_and_preflight_are_owned_by_their_operation(
     stale["target"]["catalog_ref"] = "0" * 40
     refused = await command(async_client, install_task, "checkpoint", preflight=stale, **identity)
     assert refused["reason"] == "preflight_provenance_mismatch"
+    source = preflight("mechanical")
+    source["target"] = {
+        "route": "package_source",
+        "path": "packages/reminders",
+        "version": source["target"]["version"],
+        "requires_core": ">=2.2,<3",
+        "metadata_sha256": "f" * 64,
+    }
+    refused = await command(async_client, install_task, "checkpoint", preflight=source, **identity)
+    assert refused["reason"] == "preflight_provenance_mismatch"
     checkout = f"{install_task['repository_id']}/{identity['operation_id']}"
     saved = await command(
         async_client,

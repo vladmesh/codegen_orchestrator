@@ -151,12 +151,25 @@ class PreflightGlue(Strict):
 
 
 class PreflightTarget(Strict):
-    """The exact release the kit read: always the catalog route, never a live default."""
+    """The exact release the kit read from an explicit catalog, never a live default."""
 
     route: Literal["catalog"]
     catalog_source: str
     catalog_ref: SHA
     tag: str
+    version: Version
+    requires_core: str
+    metadata_sha256: Digest
+
+
+class PreflightSourceTarget(Strict):
+    """The package source directory the kit read, its path exactly as the caller supplied it.
+
+    It names no release, commit or distribution: only the metadata the directory declares.
+    """
+
+    route: Literal["package_source"]
+    path: str = Field(min_length=1)
     version: Version
     requires_core: str
     metadata_sha256: Digest
@@ -178,7 +191,7 @@ class InstallPreflight(Strict):
     package: Name
     status: Literal["mechanical", "glue", "incompatible"]
     product_core: Version | None
-    target: PreflightTarget | None
+    target: PreflightTarget | PreflightSourceTarget | None
     glue: list[PreflightGlue] = Field(max_length=64)
     incompatible: PreflightIncompatible | None
 
@@ -197,6 +210,8 @@ class InstallPreflight(Strict):
         """What differs from the saved install payload, or `None` when this is its result."""
         if install.catalog is None:
             return "catalog_unpinned"
+        if self.target is not None and self.target.route != "catalog":
+            return "target.route"
         if self.package != install.package.name:
             return "package"
         if self.status == "incompatible":
@@ -220,8 +235,10 @@ class InstallPreflight(Strict):
 
         The kit asks for `kit add <library>` before a package whose binding parses with it;
         the installer adds exactly the closure's libraries, so that item is its own work.
-        Everything else is product glue someone has to write.
+        Everything else, and all glue of a package source, is product glue someone has to write.
         """
+        if not isinstance(self.target, PreflightTarget):
+            return list(self.glue)
         closure = {item.name for item in install.libraries}
         return [
             item

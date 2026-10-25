@@ -26,6 +26,7 @@ from shared.contracts.dto.catalog_install import (
     InstallPreflight,
     InstallVerification,
 )
+from shared.contracts.dto.local_install import preflight_mismatch
 from shared.diagnostics import redact_diagnostic
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS, acquire_install_workspace_lock
 from src.scaffold import _git_auth_env, _run_cmd, _workspace_path
@@ -164,7 +165,7 @@ def admitted_preflight(returncode, output, install) -> InstallPreflight:
         raise InstallExecutionError(
             "preflight", f"preflight_exit_mismatch: {result.status} exited {returncode}"
         )
-    if (mismatch := result.provenance_mismatch(install)) is not None:
+    if (mismatch := preflight_mismatch(result, install)) is not None:
         raise InstallExecutionError("preflight", f"preflight_provenance_mismatch: {mismatch}")
     return result
 

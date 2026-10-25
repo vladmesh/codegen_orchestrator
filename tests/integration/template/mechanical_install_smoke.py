@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "services/scaffolder"))
 
 from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
+from shared.contracts.dto.local_install import LocalPackageInstall  # noqa: E402
 from shared.contracts.queues.scaffold import ScaffoldMessage  # noqa: E402
 from shared.diagnostics import redact_diagnostic  # noqa: E402
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS  # noqa: E402
@@ -124,6 +126,119 @@ def customize_notes(product, python=None):
     return notes
 
 
+SOURCE_PATH = "packages/notes_source"
+
+
+def prove_source_preflight(product, payload):
+    """The pinned kit's `check-install --package-source` answer, admitted for a local target.
+
+    The source lives inside the product and imports a marker on any runtime import; the kit
+    must read it as data only, leaving product, lock and environment bytes as they were.
+    """
+    source = product / SOURCE_PATH
+    assert not (product / "packages").exists()
+    module = source / "notes_source"
+    module.mkdir(parents=True)
+    (module / "package.yaml").write_text(
+        "protocol_version: 1\n"
+        "name: notes-source\n"
+        "version: 1.0.0\n"
+        'requires_core: ">=2,<3"\n'
+        "http:\n"
+        "  prefix: /notes-source\n"
+        "deployment:\n"
+        "  modes: [in_process]\n"
+    )
+    (module / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "Path(__file__).resolve().parents[3].joinpath('.git/notes-source-imported').touch()\n"
+    )
+    (source / "pyproject.toml").write_text(
+        '[project]\nname = "codegen-kit-notes-source"\nversion = "1.0.0"\n'
+        '[project.entry-points."codegen_kit.packages"]\nnotes-source = "notes_source:package"\n'
+    )
+    local = LocalPackageInstall.model_validate(
+        {
+            "route": "package_source",
+            "project_id": "00000000-0000-4000-8000-000000000001",
+            "repository_id": product.name,
+            "commit": run(["git", "rev-parse", "HEAD"], product),
+            "path": SOURCE_PATH,
+            "package": {
+                "name": "notes-source",
+                "distribution": "codegen-kit-notes-source",
+                "version": "1.0.0",
+            },
+            "core_version": payload["core_version"],
+            "python_version": payload["python_version"],
+            "tooling_commit": payload["tooling_commit"],
+        }
+    )
+    tracked = run(["git", "ls-files"], product).splitlines()
+
+    def state():
+        return (
+            run(["git", "status", "--porcelain", "--untracked-files=all"], product),
+            run(["git", "status", "--porcelain", "--ignored"], product),
+            {
+                name: hashlib.sha256((product / name).read_bytes()).hexdigest()
+                for name in tracked
+                if Path(name).name == "uv.lock"
+            },
+            install.protected_files(product, tracked),
+            install.environment_fingerprint(product),
+            sorted(str(path.relative_to(source)) for path in source.rglob("*")),
+        )
+
+    answers = {}
+    try:
+        for label, version in (("admitted", "1.0.0"), ("version_mismatch", "1.0.1")):
+            before = state()
+            # The fixed argv a local executor would run from its owned checkout.
+            argv = [str(product / ".venv/bin/kit"), "check-install", "notes-source", "--json"]
+            argv += ["--package-source", SOURCE_PATH, "--version", version]
+            argv += ["--product-root", str(product)]
+            answer = subprocess.run(
+                argv,
+                cwd=product,
+                env=install.product_environment(product),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            assert state() == before, f"check-install {label} changed the product"
+            assert not (product / ".git/notes-source-imported").exists()
+            result = install.admitted_preflight(answer.returncode, answer.stdout, local)
+            answers[label] = {
+                "argv": argv[1:],
+                "returncode": answer.returncode,
+                "native": json.loads(answer.stdout),
+                "outstanding_glue": len(result.outstanding_glue(local)),
+            }
+        admitted = answers["admitted"]["native"]
+        assert admitted["status"] in {"mechanical", "glue"}
+        assert admitted["target"]["route"] == "package_source"
+        assert admitted["target"]["path"] == SOURCE_PATH
+        assert answers["admitted"]["outstanding_glue"] == len(admitted["glue"])
+        refused = answers["version_mismatch"]["native"]
+        assert refused["incompatible"]["code"] == "package_mismatch"
+        elsewhere = local.model_copy(update={"path": "packages/other"})
+        refusal = None
+        try:
+            install.admitted_preflight(
+                answers["admitted"]["returncode"], json.dumps(admitted), elsewhere
+            )
+        except install.InstallExecutionError as error:
+            refusal = str(error)
+        assert refusal == "preflight_provenance_mismatch: target.path"
+        answers["other_path_refusal"] = refusal
+    finally:
+        shutil.rmtree(product / "packages")
+    answers["unchanged"] = ["git_status", "ignored", "locks", "protected", "environments", "source"]
+    answers["package_runtime_imported"] = False
+    return answers
+
+
 async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one owned product
     output.mkdir(parents=True, exist_ok=True)
     artifact = {
@@ -215,6 +330,8 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
             artifact["plain_push_canary_returncode"] = plain_push.returncode
             canary_marker.unlink()
             payload = select_payload()
+            artifact["source_preflight"] = prove_source_preflight(product, payload)
+            assert run(["git", "status", "--porcelain"], product) == ""
             message = ScaffoldMessage(
                 project_id="ci-project",
                 repository_id=product.name,

@@ -9,6 +9,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   `kit add --package-source`; the orchestrator still installs only activated catalog releases.
 - INSTALL tasks can store a product-local `LocalPackageInstall` (owned repository, exact commit,
   lexical package path) beside `CatalogInstall`; it is refused by catalog admission, not executed.
+- `InstallPreflight` reads the kit's `check-install --package-source` result and `admitted_preflight`
+  checks it against a `LocalPackageInstall`; wrong-route answers refuse, local installs stay off.
 
 ## 2026-10-24
 
