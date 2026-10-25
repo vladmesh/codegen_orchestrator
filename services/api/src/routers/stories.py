@@ -52,6 +52,7 @@ from ..dependencies import (
 )
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..owner_notification_settlement import preserve_po_settlement
+from ..package_candidates import package_candidate_admin_text, record_package_candidates
 from ..scheduler_wake import publish_wake
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
@@ -585,9 +586,13 @@ async def _owe_completed_story_notification(
     *,
     acceptance: StoryAcceptance | None = None,
     qa_run_id: str | None = None,
+    admin_text: str | None = None,
 ) -> None:
-    """Attach the completion obligation to the story in its transition transaction."""
-    story.owner_notification = preserve_po_settlement(
+    """Attach the completion obligation to the story in its transition transaction.
+
+    An `admin_text` is owed to administrators after any administrator text still owed.
+    """
+    notification = preserve_po_settlement(
         story.owner_notification,
         OwnerNotification(
             event=OwnerNotificationEvent.STORY_COMPLETED,
@@ -601,7 +606,23 @@ async def _owe_completed_story_notification(
                 None if acceptance is not None else await _completing_qa_verification(qa_run_id, db)
             ),
         ),
-    ).model_dump(mode="json")
+    )
+    if admin_text is not None:
+        stored = story.owner_notification
+        previous = stored and OwnerNotification.model_validate(stored)
+        carried = next(
+            (r.admin_text for r in (notification, previous) if r and r.admin_owed),
+            None,
+        )
+        notification = notification.model_copy(
+            update={
+                "admin_text": "\n\n".join(filter(None, [carried, admin_text])),
+                "admin_state": OwnerNotificationState.OWED,
+                "admin_attempts": 0,
+                "admin_detail": None,
+            }
+        )
+    story.owner_notification = notification.model_dump(mode="json")
 
 
 async def _complete_story(
@@ -612,6 +633,7 @@ async def _complete_story(
     qa_run_id: str | None = None,
 ) -> StoryRead:
     """The one completion transaction used by ordinary and accepted-result routes."""
+    candidates = await record_package_candidates(story, db)
     if acceptance is not None:
         from shared.contracts.dto.commit_publication import EngineeringStop
 
@@ -629,7 +651,15 @@ async def _complete_story(
             db,
             expected_cause=acceptance.overridden_quarantine_reason,
         )
-    await _owe_completed_story_notification(story, db, acceptance=acceptance, qa_run_id=qa_run_id)
+    await _owe_completed_story_notification(
+        story,
+        db,
+        acceptance=acceptance,
+        qa_run_id=qa_run_id,
+        admin_text=(
+            await package_candidate_admin_text(story, candidates, db) if candidates else None
+        ),
+    )
     if acceptance is not None:
         story.operator_acceptance = acceptance.model_dump(mode="json")
         # The completed story no longer represents a live QA quarantine.

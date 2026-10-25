@@ -226,6 +226,7 @@ completed result.
 | Budget policy | `shared/contracts/dto/engineering_budget_policy.py` | `routers/engineering_budget_policies.py` | integer micro-USD and optimistic versioning |
 | Executor decision/diagnostics | `shared/contracts/dto/executor_decision.py`, `dto/executor_diagnostics.py` | admission/overview routes | persisted decision wins over later configuration |
 | Admin overview | `shared/contracts/dto/admin_overview.py` | `routers/admin_overview.py` | unavailable observations remain unavailable |
+| Package candidates | `shared/contracts/dto/package_candidate.py` | `routers/admin_console.py` (admin read only), written by `package_candidates.py` in story completion | one row per product package, exclusive to its product; see [kit contracts](kit-template-and-qa.md) |
 | Incidents, analytics, brainstorms | `dto/incident.py`, `dto/analytics.py`, `dto/brainstorm.py` | corresponding schema and router modules | their status vocabularies are source-owned |
 | System config | `services/api/src/schemas/system_config.py` | corresponding API routers | API-local system-config payloads are not shared DTOs |
 | Telegram binding | `shared/contracts/dto/telegram.py` | `routers/projects.py` | token binding is fail-closed and stores the verified bot identity |

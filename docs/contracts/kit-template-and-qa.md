@@ -295,6 +295,25 @@ with the creation identity a completed owned Run pins (409 `local_package_handof
 recovery of such a FEATURE answers 409 `local_package_handoff_unsupported` before any claim. The
 handoff proves no package existence, compatibility, native execution or live install.
 
+A story that reaches `completed` records each of its DONE `package_source` INSTALLs as a package
+candidate (`package_candidates`, `shared/models/package_candidate.py`, read as
+`PackageCandidateRead` in `dto/package_candidate.py`) inside `_complete_story`, the one completion
+transaction of `/complete` and `/accept-result`. One row per (project, package name) holds the
+INSTALL target's repository, commit, path, package and core/Python/tooling identities, the story,
+the INSTALL and its source FEATURE (the story's `package_build` task at `local_install_task_id`),
+whose title is the capability and description the rationale; a later story's rebuild moves the row
+to its commit. An INSTALL target that does not parse, or a source FEATURE that is missing or has no
+description, refuses the completion with 409 `package_candidate_unrecordable` naming the INSTALL
+`task_id` and `cause`, and the story keeps its status. A completion that recorded a candidate owes
+administrators its notice on the same `story_completed` record (`admin_text`, `admin_state`
+`owed`, appended to an administrator text still owed): product, story, package, path, commit,
+repository, capability and rationale, unreviewed, exclusive to that product and awaiting the
+owner's personal code and security review before any release; the owner text is unchanged.
+Only `GET /api/admin/v2/package-candidates` (most recently recorded first) and
+`GET /api/admin/v2/package-candidates/{id}` under `require_internal_or_admin` read candidates. No
+catalog, planner, Architect briefing, buyer or LK surface reads them, and they confer no approval,
+release or install right on any product. Deleting the product deletes its candidates.
+
 `dto/install_operation.py` holds the one operation of either route: `InstallOperation`,
 `InstallCommand` and `InstallDecision` carry a `CatalogInstall` with `InstallVerification` or a
 `LocalPackageInstall` with `LocalInstallVerification`, neither proof validating as the other.

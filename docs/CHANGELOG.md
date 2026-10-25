@@ -25,6 +25,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   no planner writes the intent, and package existence, compatibility and native/live runs are unproven.
 - The Architect's `create_task(package_build=...)` plans an owned, pin-checked source FEATURE and
   its worker's TASK.md states the package to write, uninstalled; no package or live run is proven.
+- A completed story records each DONE product-local INSTALL as an admin-only `package_candidates` row
+  (one per product package) and owes the admins a notice that the code awaits the owner's review.
 
 ## 2026-10-24
 

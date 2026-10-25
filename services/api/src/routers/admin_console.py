@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import Story, StoryLink
+from shared.contracts.dto.package_candidate import PackageCandidateRead
+from shared.models import PackageCandidate, Story, StoryLink
 
 from .. import admin_console, admin_journey_repository, admin_live_log
 from ..database import get_async_session
@@ -103,6 +104,29 @@ async def remove_journey_link(
         raise HTTPException(status_code=404, detail="Link not found")
     await db.delete(link)
     await db.commit()
+
+
+@router.get("/package-candidates", response_model=list[PackageCandidateRead])
+async def package_candidates(
+    limit: int = Query(100, ge=1, le=500), db: AsyncSession = Depends(get_async_session)
+) -> list[PackageCandidate]:
+    """Every product's unreviewed package candidates, the most recently recorded first."""
+    rows = await db.scalars(
+        select(PackageCandidate)
+        .order_by(PackageCandidate.updated_at.desc(), PackageCandidate.id.desc())
+        .limit(limit)
+    )
+    return list(rows.all())
+
+
+@router.get("/package-candidates/{candidate_id}", response_model=PackageCandidateRead)
+async def package_candidate(
+    candidate_id: int, db: AsyncSession = Depends(get_async_session)
+) -> PackageCandidate:
+    candidate = await db.get(PackageCandidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Package candidate not found")
+    return candidate
 
 
 @router.get("/workers/{worker_id}/live-log", response_model=LiveLogResponse)
