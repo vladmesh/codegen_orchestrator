@@ -6,7 +6,7 @@ import uuid
 from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.catalog_install import InstallOperation
+from shared.contracts.dto.install_operation import InstallOperation
 from shared.contracts.dto.local_install import InstallTarget
 
 # The request schemas are the contract every client already imports; the API

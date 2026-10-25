@@ -13,7 +13,7 @@ from _run_routing_factories import _make_task
 import httpx
 import pytest
 
-from shared.contracts.dto.catalog_install import InstallOperation
+from shared.contracts.dto.install_operation import InstallOperation
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 _FILTERS = ("status", "type", "install_state")

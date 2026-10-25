@@ -7,13 +7,9 @@ from sqlalchemy import select
 import structlog
 
 from shared.clients.github import GitHubAppClient
-from shared.contracts.dto.catalog_install import (
-    InstallDecision,
-    InstallOperation,
-    is_replan_note,
-    replan_reopened,
-)
+from shared.contracts.dto.catalog_install import is_replan_note, replan_reopened
 from shared.contracts.dto.commit_publication import EngineeringStop
+from shared.contracts.dto.install_operation import InstallDecision, InstallOperation
 from shared.contracts.dto.local_install import LocalPackageInstall, parse_install_target
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.story import StoryStatus

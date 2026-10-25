@@ -9,11 +9,8 @@ from fastapi import HTTPException
 import pytest
 from test_install_contract import install_payload
 
-from shared.contracts.dto.catalog_install import (
-    InstallCommand,
-    InstallOperation,
-    InstallOperatorRequest,
-)
+from shared.contracts.dto.catalog_install import InstallOperatorRequest
+from shared.contracts.dto.install_operation import InstallCommand, InstallOperation
 from shared.contracts.dto.story_failure import in_work_cycle
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.models import TaskEvent, WorkAdmissionAudit

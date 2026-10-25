@@ -9,11 +9,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.catalog_install import (
-    InstallCommand,
-    InstallDecision,
-    InstallOperatorRequest,
-)
+from shared.contracts.dto.catalog_install import InstallOperatorRequest
+from shared.contracts.dto.install_operation import InstallCommand, InstallDecision
 from shared.contracts.dto.local_install import LocalPackageInstall
 from shared.contracts.dto.task import TaskStatus
 from shared.models import Repository, Story, Task, TaskEvent, User

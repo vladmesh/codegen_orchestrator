@@ -22,10 +22,10 @@ import structlog
 
 from shared.contracts.dto.catalog_install import (
     PREFLIGHT_EXIT_CODES,
-    InstallCommand,
     InstallPreflight,
     InstallVerification,
 )
+from shared.contracts.dto.install_operation import InstallCommand
 from shared.contracts.dto.local_install import (
     LocalInstallVerification,
     local_verification_mismatch,

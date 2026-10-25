@@ -13,6 +13,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   checks it against a `LocalPackageInstall`; wrong-route answers refuse, local installs stay off.
 - The install probe's source modes verify a committed local package at the exact HEAD and its
   retained wheel, lock and installed files as `LocalInstallVerification`; no route runs them yet.
+- The install-command API admits, fences and publishes a `LocalPackageInstall` on its owned operation
+  with provenance-then-readback proof; scheduler dispatch, executor and operator recovery stay off.
 
 ## 2026-10-24
 

@@ -21,8 +21,9 @@ from shared.contracts.dto.capability_preview import CapabilityPlan, CapabilityRo
 from shared.contracts.dto.catalog_install import (
     PRODUCT_GLUE_OWNER,
     CatalogInstall,
-    InstallOperation,
+    InstallVerification,
 )
+from shared.contracts.dto.install_operation import InstallOperation
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.contracts.queues.deploy import DeployOutcome
@@ -173,6 +174,8 @@ def _install_contradiction(task: dict, install: CatalogInstall, op: InstallOpera
     if op.preflight.status == "incompatible" or op.preflight.provenance_mismatch(install):
         return "the preflight is not this install's admitted result"
     verification = op.verification
+    if not isinstance(verification, InstallVerification):
+        return "the verification is not a catalog closure's"
     installed = verification.distributions.get(install.package.name) or (
         verification.distributions.get(install.package.distribution)
     )

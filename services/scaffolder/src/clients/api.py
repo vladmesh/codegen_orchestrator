@@ -5,7 +5,7 @@ from __future__ import annotations
 import structlog
 
 from shared.clients.internal_api import InternalAPIClient
-from shared.contracts.dto.catalog_install import InstallCommand, InstallDecision
+from shared.contracts.dto.install_operation import InstallCommand, InstallDecision
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.story_failure import StoryFailure

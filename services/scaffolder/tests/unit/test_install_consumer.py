@@ -6,11 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.contracts.dto.catalog_install import (
-    InstallDecision,
-    InstallOperation,
-    InstallPreflight,
-)
+from shared.contracts.dto.catalog_install import InstallPreflight
+from shared.contracts.dto.install_operation import InstallDecision, InstallOperation
 from src.consumer import _process_install_mode
 from tests.unit.test_install_executor import message
 

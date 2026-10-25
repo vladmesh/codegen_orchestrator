@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from shared.tests.unit.test_local_verification import verification as local_verification
 from src.synthetic_buyer import native, probe
 from src.synthetic_buyer.evidence import ObservationStatus
 from src.synthetic_buyer.repository_evidence import (
@@ -120,6 +121,14 @@ def test_the_install_chain_starts_on_the_scaffold_and_the_story_contains_it():
 
     assert (observed.status, head) == (ObservationStatus.OBSERVED, INSTALL_HEAD)
     assert {elsewhere.status, modelled.status, dropped.status} == {ObservationStatus.FAILED}
+
+
+def test_a_catalog_install_carrying_a_local_proof_contradicts_its_closure():
+    finding, head = native.install_chain(
+        [_install_task(verification=local_verification("readback"))], [], PULL, PUBLISHED, AFTER
+    )
+
+    assert (finding.status, head) == (ObservationStatus.FAILED, None)
 
 
 def test_engineering_after_the_install_is_judged_by_the_files_it_changed():
