@@ -16,6 +16,8 @@ from shared.contracts.dto.local_install import (
 )
 from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.models import PackageCandidate, Project, Story, Task
+from shared.notifications import ADMIN_MESSAGE_BODY_LIMIT
+from shared.telegram_text import utf16_length
 
 
 def _unrecordable(install: Task, cause: str) -> HTTPException:
@@ -100,62 +102,75 @@ async def record_package_candidates(story: Story, db: AsyncSession) -> list[Pack
     return list(recorded.values())
 
 
-# Telegram refuses a sendMessage text longer than this.
-ADMIN_TEXT_LIMIT = 4096
-CANDIDATE_BLOCK_LIMIT = 1500
-# A stored story id is at most 255 characters. Reserve room for its carried-text marker.
-CANDIDATE_TEXT_LIMIT = ADMIN_TEXT_LIMIT - 512
-RATIONALE_CUT = " [rationale truncated]"
+# A story id is up to 255 characters, each up to two UTF-16 units; this keeps room for the
+# carried-text marker that names it.
+CANDIDATE_TEXT_LIMIT = ADMIN_MESSAGE_BODY_LIMIT - 1024
+TITLE_LIMIT = 100
+TITLE_CUT = " [title truncated]"
 
 
-def _candidate_block(
-    project: Project, story: Story, candidate: PackageCandidate, limit: int
-) -> str:
-    """One candidate's notice: identity facts and the warning whole, the rationale cut to fit."""
-    path = f"/package-candidates/{candidate.id}"
+def _utf16_prefix(text: str, units: int) -> str:
+    """The longest prefix of `text` at most `units` UTF-16 code units long."""
+    used = 0
+    for index, char in enumerate(text):
+        used += utf16_length(char)
+        if used > units:
+            return text[:index]
+    return text
 
-    def block(rationale: str) -> str:
-        return (
-            f"Package candidate from product {project.title} (project {project.id}), "
-            f"story {story.id}: {candidate.package_name} {candidate.package_version} at "
-            f"{candidate.path}, commit {candidate.commit} in repository {candidate.repository_id}. "
-            f"Capability: {candidate.capability}. Rationale: {rationale}. "
-            "The code is unreviewed and exclusive to this product; it awaits the owner's "
-            "personal code and security review before any release. "
-            f"Full record in the admin console at {path}."
-        )
 
-    text = block(candidate.rationale)
-    if len(text) <= limit:
-        return text
-    room = limit - len(block("")) - len(RATIONALE_CUT)
-    return block(candidate.rationale[: max(room, 0)] + RATIONALE_CUT)
+def _capped_title(title: str) -> str:
+    if utf16_length(title) <= TITLE_LIMIT:
+        return title
+    return _utf16_prefix(title, TITLE_LIMIT) + TITLE_CUT
+
+
+def _more(count: int) -> str:
+    return f"+{count} more: /package-candidates"
 
 
 async def package_candidate_admin_text(
     story: Story, candidates: list[PackageCandidate], db: AsyncSession
 ) -> str:
-    """The administrators' notice of the candidates one completion recorded."""
+    """The administrators' notice of the candidates one completion recorded.
+
+    A header with the review warning, then one line per candidate in recording order while
+    they fit `CANDIDATE_TEXT_LIMIT`, then a count of the rest; the admin pages hold the facts.
+    """
     project = await db.get(Project, story.project_id)
-    separators = 2 * (len(candidates) - 1)
-    block_limit = min(CANDIDATE_BLOCK_LIMIT, (CANDIDATE_TEXT_LIMIT - separators) // len(candidates))
-    return "\n\n".join(
-        _candidate_block(project, story, candidate, block_limit) for candidate in candidates
+    header = (
+        f"Package candidates from product {_capped_title(project.title)} "
+        f"(project {project.id}), story {story.id}: {len(candidates)} recorded. "
+        "The code is unreviewed and exclusive to this product; it awaits the owner's "
+        "personal code and security review before any release."
     )
+    lines = [header]
+    used = utf16_length(header)
+    for listed, candidate in enumerate(candidates):
+        line = (
+            f"{candidate.package_name} {candidate.package_version}, "
+            f"commit {candidate.commit[:12]}: /package-candidates/{candidate.id}"
+        )
+        rest = len(candidates) - listed - 1
+        reserve = 1 + utf16_length(_more(rest)) if rest else 0
+        if used + 1 + utf16_length(line) + reserve > CANDIDATE_TEXT_LIMIT:
+            lines.append(_more(rest + 1))
+            break
+        lines.append(line)
+        used += 1 + utf16_length(line)
+    return "\n".join(lines)
 
 
 def bounded_admin_text(story_id: str, carried: str | None, candidate_text: str) -> str:
-    """Carried administrator text before the candidate notice, within one Telegram message.
+    """Carried administrator text before the candidate notice, within `ADMIN_MESSAGE_BODY_LIMIT`.
 
     The candidate notice stays whole; only the carried text is shortened, with a marker.
     """
-    if len(candidate_text) > CANDIDATE_TEXT_LIMIT:
-        raise ValueError("package candidate text exceeds the one-message reserve")
     if not carried:
         return candidate_text
     combined = f"{carried}\n\n{candidate_text}"
-    if len(combined) <= ADMIN_TEXT_LIMIT:
+    if utf16_length(combined) <= ADMIN_MESSAGE_BODY_LIMIT:
         return combined
     marker = f" [earlier administrator text for story {story_id} truncated]"
-    room = ADMIN_TEXT_LIMIT - len(candidate_text) - len(marker) - 2
-    return f"{carried[: max(room, 0)]}{marker}\n\n{candidate_text}"
+    room = ADMIN_MESSAGE_BODY_LIMIT - utf16_length(f"{marker}\n\n{candidate_text}")
+    return f"{_utf16_prefix(carried, room)}{marker}\n\n{candidate_text}"

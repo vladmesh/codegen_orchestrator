@@ -44,6 +44,7 @@ export function PackageCandidateDetailPage() {
 
       <Card className="min-w-0">
         <dl className="grid min-w-0 gap-x-6 gap-y-4 md:grid-cols-2">
+          <Fact label="Candidate ID"><span className="font-mono">{detail.id}</span></Fact>
           <Fact label="Product"><Link to={detail.product.href} className="text-primary hover:underline">{detail.product.id}</Link></Fact>
           <Fact label="Story"><Link to={detail.story.href} className="text-primary hover:underline">{detail.story.id}</Link></Fact>
           <Fact label="Source FEATURE"><Link to={detail.sourceTask.href} className="text-primary hover:underline">{detail.sourceTask.id}</Link></Fact>
