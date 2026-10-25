@@ -529,3 +529,39 @@ def test_module_and_from_scratch_routes_have_no_glue_requirement():
     assert _derive().glue_requirement_ids == set()
     assert glue_coverage_gaps(_derive(), {"r1": "t1"}, _tasks(("t1", True, None))) == []
     assert _glue_plan().glue_requirement_ids == {"r1"}
+
+
+def _local_install() -> dict:
+    return {
+        "route": "package_source",
+        "project_id": str(uuid.UUID(int=1)),
+        "repository_id": "repo-1",
+        "commit": "1" * 40,
+        "path": "packages/tg_channels",
+        "package": {
+            "name": "tg-channels",
+            "distribution": "codegen-kit-tg-channels",
+            "version": "0.1.2",
+        },
+        "core_version": CATALOG_ACTIVATION.core_version,
+        "python_version": "3.12.0",
+        "tooling_commit": CATALOG_ACTIVATION.tooling_commit,
+    }
+
+
+@pytest.mark.parametrize(
+    "covering,tasks",
+    [
+        ({"r1": "t1"}, {"t1": PlanTask(task_id="t1", install=_local_install())}),
+        (
+            {"r1": "t2"},
+            {
+                "t1": PlanTask(task_id="t1", install=_local_install()),
+                "t2": PlanTask(task_id="t2", blocked_by_task_id="t1"),
+            },
+        ),
+    ],
+    ids=["local-install-itself", "after-local-install"],
+)
+def test_a_local_install_is_neither_glue_nor_the_released_module_closure(covering, tasks):
+    assert glue_coverage_gaps(_glue_plan(), covering, tasks) == ["r1"]

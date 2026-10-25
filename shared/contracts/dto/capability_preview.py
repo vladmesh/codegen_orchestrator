@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from shared.contracts.dto.catalog_install import CatalogActivation, CatalogInstall
+from shared.contracts.dto.local_install import InstallTarget
 
 #: The product languages a capability question may offer; the user picks one explicitly.
 CAPABILITY_LOCALES = ("ru", "en")
@@ -388,7 +389,7 @@ class PlanTask(_Strict):
     """What glue coverage reads of one task planned under the attempt being admitted."""
 
     task_id: str
-    install: CatalogInstall | None = None
+    install: InstallTarget | None = None
     blocked_by_task_id: str | None = None
 
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.catalog_install import CatalogInstall, InstallOperation
+from shared.contracts.dto.local_install import InstallTarget, LocalPackageInstall
 
 
 class TaskStatus(StrEnum):
@@ -119,7 +120,7 @@ class TaskDTO(TimestampedDTO):
     dispatch_admitted: bool
     #: The architect planning attempt this task was planned under, if any.
     planning_attempt_id: str | None = None
-    install: CatalogInstall | None = None
+    install: InstallTarget | None = None
     install_operation: InstallOperation | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
@@ -167,15 +168,20 @@ class TaskCreate(BaseModel):
     #: by existing.
     planning_attempt_id: str | None = None
 
-    install: CatalogInstall | None = None
+    install: InstallTarget | None = None
 
     @model_validator(mode="after")
     def install_contract(self):
         if self.type is TaskType.INSTALL:
             if self.install is None or not self.story_id or not self.repository_id:
                 raise ValueError("INSTALL requires payload, story and repository ownership")
-            if self.install.catalog is None:
+            if isinstance(self.install, CatalogInstall) and self.install.catalog is None:
                 raise ValueError("a new INSTALL names the catalog commit it installs from")
+            if isinstance(self.install, LocalPackageInstall) and (
+                self.install.project_id != self.project_id
+                or self.install.repository_id != self.repository_id
+            ):
+                raise ValueError("a local INSTALL source belongs to the task's product repository")
         elif self.install is not None:
             raise ValueError("only INSTALL carries an install payload")
         return self

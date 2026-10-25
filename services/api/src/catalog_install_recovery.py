@@ -14,6 +14,7 @@ from shared.contracts.dto.catalog_install import (
     replan_reopened,
 )
 from shared.contracts.dto.commit_publication import EngineeringStop
+from shared.contracts.dto.local_install import LocalPackageInstall, parse_install_target
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import CLOSED_TASK_STATUSES, in_work_cycle
@@ -48,6 +49,10 @@ async def operator_install_recovery(task_id, body, actor, db, redis=None):
     from .routers.projects_guards import load_locked_project
 
     task, locked, _, story_id = await _lock_dispatch_tasks(task_id, db)
+    if task.type == "install" and isinstance(
+        parse_install_target(task.install), LocalPackageInstall
+    ):
+        raise HTTPException(409, {"code": "local_install_unsupported"})
     if task.type != "install" or task.install_operation is None:
         raise HTTPException(409, {"code": "install_operation_missing"})
     operation = InstallOperation.model_validate(task.install_operation)

@@ -9,13 +9,13 @@ from sqlalchemy import select
 from shared.contracts.dto.catalog_install import (
     GLUE_REPAIR_AUTHOR,
     SETTLEMENT_NOTE_KEY,
-    CatalogInstall,
     InstallCommand,
     InstallDecision,
     InstallOperation,
     product_glue_handoff,
 )
 from shared.contracts.dto.commit_publication import AttemptDisposition
+from shared.contracts.dto.local_install import LocalPackageInstall, parse_install_target
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
@@ -58,7 +58,9 @@ async def install_command(task_id, command: InstallCommand, db) -> InstallDecisi
     task, locked, _, story_id = await _lock_dispatch_tasks(task_id, db)
     if task.type != TaskType.INSTALL.value or not task.story_id or not task.repository_id:
         raise HTTPException(409, {"code": "not_catalog_install"})
-    payload = CatalogInstall.model_validate(task.install)
+    payload = parse_install_target(task.install)
+    if isinstance(payload, LocalPackageInstall):
+        return InstallDecision(outcome="refused", reason="local_install_unsupported")
     _, reason = await _take_story_roster(task, story_id, locked, db)
     story = await _get_story_for_update(task.story_id, db)
     project = await load_locked_project(db, task.project_id)

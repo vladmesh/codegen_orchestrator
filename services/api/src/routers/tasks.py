@@ -14,8 +14,9 @@ from shared.contracts.dto.catalog_install import (
     InstallDecision,
     InstallOperatorRequest,
 )
+from shared.contracts.dto.local_install import LocalPackageInstall
 from shared.contracts.dto.task import TaskStatus
-from shared.models import Task, TaskEvent, User
+from shared.models import Repository, Story, Task, TaskEvent, User
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
@@ -79,6 +80,18 @@ class _TaskFilters:
         self.sort = sort
 
 
+async def _refuse_unowned_local_install(body: TaskCreate, db: AsyncSession) -> None:
+    """A local source names a managed repository and a story of the task's own product."""
+    if not isinstance(body.install, LocalPackageInstall):
+        return
+    repository = await db.get(Repository, body.repository_id)
+    if repository is None or repository.project_id != body.project_id or not repository.is_managed:
+        raise HTTPException(409, {"code": "local_install_repository_unowned"})
+    story = await db.get(Story, body.story_id)
+    if story is None or story.project_id != body.project_id:
+        raise HTTPException(409, {"code": "local_install_story_unowned"})
+
+
 # --- CRUD ---
 
 
@@ -87,6 +100,7 @@ async def create_task(
     body: TaskCreate,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
+    await _refuse_unowned_local_install(body, db)
     now = datetime.now(UTC)
     # Taken before the row is inserted, and before any Task row is locked: a
     # brief-backed task is planned, not merely created, so whether it is
@@ -135,6 +149,7 @@ async def push_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     """Create a task at the top of the backlog (lowest priority number)."""
+    await _refuse_unowned_local_install(body, db)
     min_q = select(func.min(Task.priority)).where(Task.status == TaskStatus.BACKLOG)
     result = await db.execute(min_q)
     min_priority = result.scalar_one_or_none()

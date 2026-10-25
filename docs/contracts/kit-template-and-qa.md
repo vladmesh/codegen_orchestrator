@@ -225,6 +225,22 @@ requires story/repository ownership; TaskRead/TaskDTO persist the same payload.
 ownership through TaskUpdate. The migration adds nullable JSON columns and a DB
 constraint pairing the payload with INSTALL and required ownership.
 
+A product-local package is a different INSTALL target, `LocalPackageInstall` in
+`dto/local_install.py`, on the same `Task.install` column and constraint. Its `package_source`
+route (the kit's) names the owning project, its repository, one full 40-hex source commit, a
+normalized product-relative package directory (no absolute, root, dot, parent, empty segment,
+backslash or control character), the expected package name, distribution and version, and the
+core, Python and tooling identity. It carries no release tag, catalog, digest, binding or library
+closure, and neither payload validates with the other's fields. The path check is lexical:
+existence, ancestry and symlink containment are the future executor's and the kit's. Both task
+create routes refuse it unless its project and repository are the task's, the repository is
+managed by that project and the story is that project's (`local_install_repository_unowned`,
+`local_install_story_unowned`). The target is stored but not executable: catalog-install
+commands answer `refused`/`local_install_unsupported` and operator recovery 409
+`local_install_unsupported` before any admission fence, operation, mutation or enqueue; engineering
+admission still refuses every INSTALL. Catalog selection, replan, glue coverage and the admin
+package projection read only `CatalogInstall`.
+
 The reader reads only the activated catalog snapshot (`shared/catalog_activation.yaml`):
 `packages/catalog.yaml` at its commit, verified against its raw SHA256 and the semantic
 digest of the parsed catalog, on a host whose kit core and tooling are the activation's.

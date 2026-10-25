@@ -249,8 +249,11 @@ above names a shared contract import.
 
 ## Mechanical install tasks
 
-TaskCreate type=install requires CatalogInstall plus story/repository ownership;
-TaskRead and TaskDTO carry identical install and API-owned install_operation data.
+TaskCreate type=install requires an `InstallTarget` (`CatalogInstall` or the
+product-local `LocalPackageInstall`) plus story/repository ownership; TaskRead and
+TaskDTO carry the identical typed install and API-owned install_operation data.
+Both create routes refuse a local source outside the task's managed repository and
+product story before insertion; such a target is stored but not executable yet.
 TaskUpdate cannot rewrite that ownership or supply execution fields. Generic
 start/complete/retry/resume are refused; DELETE preserves cancellation, releasing
 queued operations while running writers still owe owned settlement. Internal/admin

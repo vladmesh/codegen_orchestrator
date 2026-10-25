@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - New products scaffold from kit tag `0.12.0` (commit `8caf935f`) and carry its local-source
   `kit add --package-source`; the orchestrator still installs only activated catalog releases.
+- INSTALL tasks can store a product-local `LocalPackageInstall` (owned repository, exact commit,
+  lexical package path) beside `CatalogInstall`; it is refused by catalog admission, not executed.
 
 ## 2026-10-24
 

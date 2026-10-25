@@ -10,6 +10,7 @@ Name = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
 Version = Annotated[str, Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 SHA = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+Distribution = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,127}$")]
 Stage = Literal[
     "queued",
     "claimed",
@@ -35,7 +36,7 @@ class Strict(BaseModel):
 
 class InstallComponent(Strict):
     name: Name
-    distribution: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,127}$")]
+    distribution: Distribution
     version: Version
     tag: str
 

@@ -21,7 +21,11 @@ import structlog
 from shared.catalog_activation import CATALOG_ACTIVATION
 from shared.contracts.dto.agent_log import AgentLogKind, AgentLogWriter
 from shared.contracts.dto.capability_preview import CapabilityPlan, CapabilityRoute
-from shared.contracts.dto.catalog_install import is_replan_note, replan_reopened
+from shared.contracts.dto.catalog_install import (
+    CatalogInstall,
+    is_replan_note,
+    replan_reopened,
+)
 from shared.contracts.dto.llm_channel import LLMChannelConfig
 from shared.contracts.dto.product_brief import (
     PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
@@ -1268,7 +1272,7 @@ async def _replanned_install_packages(story: StoryDTO, tasks: list[TaskDTO]) -> 
         if (
             task.type != TaskType.INSTALL
             or task.status != TaskStatus.CANCELLED
-            or task.install is None
+            or not isinstance(task.install, CatalogInstall)
         ):
             continue
         events = await api_client.get_task_events(task.id)

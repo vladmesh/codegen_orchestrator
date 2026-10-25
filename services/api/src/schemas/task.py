@@ -6,7 +6,8 @@ import uuid
 from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.catalog_install import CatalogInstall, InstallOperation
+from shared.contracts.dto.catalog_install import InstallOperation
+from shared.contracts.dto.local_install import InstallTarget
 
 # The request schemas are the contract every client already imports; the API
 # validates against that same object rather than a look-alike of its own.
@@ -54,7 +55,7 @@ class TaskRead(TimestampedDTO):
     # Paired with `TaskDTO`, field for field — see the class docstring.
     dispatch_admitted: bool
     planning_attempt_id: str | None = None
-    install: CatalogInstall | None = None
+    install: InstallTarget | None = None
     install_operation: InstallOperation | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
