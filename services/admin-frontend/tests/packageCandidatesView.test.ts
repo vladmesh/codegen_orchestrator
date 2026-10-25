@@ -61,7 +61,8 @@ test('the detail keeps a long rationale whole', () => {
 })
 
 test('a malformed response is an error instead of a partial candidate', () => {
-  const { rationale: _rationale, ...malformed } = candidate
+  const malformed: Record<string, unknown> = { ...candidate }
+  delete malformed.rationale
 
   assert.throws(() => candidateList([malformed]), CandidateResponseError)
 })
