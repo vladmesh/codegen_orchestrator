@@ -19,7 +19,7 @@ const candidate = {
   package_distribution: 'notes_digest',
   package_version: '0.1.0',
   commit: '1234567890abcdef1234567890abcdef12345678',
-  core_version: '0.12.0',
+  core_version: '0.9.4',
   python_version: '3.13',
   tooling_commit: 'abcdef1234567890abcdef1234567890abcdef12',
   capability: 'Summarise product notes',
