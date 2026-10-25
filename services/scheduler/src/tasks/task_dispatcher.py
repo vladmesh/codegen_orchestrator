@@ -29,7 +29,6 @@ from shared.contracts.dto.engineering_execution import (
     infrastructure_refusal_for_dispatch,
 )
 from shared.contracts.dto.install_operation import InstallCommand
-from shared.contracts.dto.local_install import LocalPackageInstall
 from shared.contracts.dto.pr_conflict_repair import PRConflictRepairAttemptDisposition
 from shared.contracts.dto.run import RunDTO, RunStatus
 from shared.contracts.dto.story import StoryStatus
@@ -489,13 +488,9 @@ async def dispatch_todo_tasks(
 async def _dispatch_install(api_client, redis_client, task, log) -> bool:
     from .scaffold_trigger import _github_repo_name, _template_config
 
-    if isinstance(task.install, LocalPackageInstall):
-        # No executor runs a product-local source yet, so none is admitted or queued for one.
-        log.info("local_install_dispatch_disabled")
-        return False
     decision = await api_client.catalog_install_command(task.id, InstallCommand(action="admit"))
     if decision.outcome != "admitted":
-        log.info("catalog_install_dispatch_refused", reason=decision.reason)
+        log.info("install_dispatch_refused", reason=decision.reason)
         return False
     operation = decision.operation
     if operation is None or decision.install is None:

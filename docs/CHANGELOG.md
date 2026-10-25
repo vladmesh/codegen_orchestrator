@@ -17,6 +17,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   with provenance-then-readback proof; scheduler dispatch, executor and operator recovery stay off.
 - The scaffolder executor installs a committed `LocalPackageInstall` at its exact story head through
   an internal `InstallContext`; no production route delivers one yet, and source residue is refused.
+- The scheduler queues an admitted `LocalPackageInstall` in `ScaffoldMessage` mode=install and the
+  scaffolder claims and runs it like a catalog one; no planner writes one and local recovery stays off.
 
 ## 2026-10-24
 

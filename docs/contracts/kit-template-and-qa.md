@@ -53,10 +53,12 @@ acknowledges, and the typed `kit check-install` preflight, on top of generic pla
 environment sources and finite bilingual binding v2 (v1 unchanged).
 Its tooling adds `kit add <name> --package-source <dir> --product-root <root>`, which builds and
 installs a protocol-v1 package from source inside the product, so a new product carries that
-local-source installer. The orchestrator does not use it: an INSTALL closure names only an
-activated catalog release; typed local-source provenance and its INSTALL execution, candidate
-handling and generating a product whose package exists only as local source are outside this
-boundary. Existing products receive the tooling only through a Copier update.
+local-source installer. A catalog INSTALL closure names only an activated catalog release; an
+admitted `LocalPackageInstall` (below) is delivered through the scheduler and scaffold queue to
+the executor that runs this installer. No planner writes a local target: generating the source and
+sequencing its INSTALL, operator recovery of a local operation, candidate handling and buyer
+acceptance of a local install are outside this boundary. Existing products receive the tooling
+only through a Copier update.
 Its generated CI runs `quality`, `dev-smoke` and `integration` as parallel jobs on pull requests
 and manual dispatch, behind the stable required `lint-and-test` aggregate, which fails unless every
 result is `success`. Its deploy step uses the runner's native `ssh` and
@@ -254,9 +256,8 @@ commit (`base_mismatch`); its `head_sha` is the later installation commit, while
 parks the task and story for a person: it is never a product glue repair, which would move the
 pinned commit. Publication requires the readback (`readback_unverified`), the checkpointed base
 equal to the saved commit (`base_unverified`), a mechanical preflight (`preflight_unverified`) and
-the checkpointed installation head (`head_unverified`). The scaffolder's executor runs a local
-target (below), but no production route delivers one to it: the scheduler dispatches no local
-target (no admission, no `ScaffoldMessage`, which carries only `CatalogInstall`), operator recovery
+the checkpointed installation head (`head_unverified`). The scheduler admits and queues a local
+target exactly as a catalog one (below) and the scaffolder's executor runs it; operator recovery
 answers 409 `local_install_unsupported` before any mutation, and engineering admission still
 refuses every INSTALL.
 
@@ -331,8 +332,12 @@ Admission locks Task rows in order, then Story, Project, Repository and engineer
 Runs. Coverage, predecessor, active prepared owned project, current story cycle,
 stop/publication disposition and live branch writer fences precede a queued durable
 operation. ScaffoldMessage mode=install carries its project/task/story/repository/cycle,
-operation ID and validated payload. Redis NX/TTL throttles publication only; lost
-responses republish the same operation. Concurrent claim tokens admit one writer;
+operation ID and the admitted target of either route (`InstallTarget`), unchanged; a local
+target naming another project or repository, a malformed target or incomplete ownership refuses
+at decoding. Redis NX/TTL throttles publication only; lost responses republish the same
+operation. The scaffolder claims before any work and refuses `message_ownership_mismatch` unless
+the claimed operation's ID, project, task, story, repository and cycle, the admitted target and
+the owned Git URL are the delivery's. Concurrent claim tokens admit one writer;
 response-loss replay uses its identical token. Paid admission and manual spawn refuse
 `catalog_install_not_engineering` before executor selection, Run/attempt ledger,
 budget reservation or worker publication. Ordinary branch writers also refuse while

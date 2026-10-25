@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import ConfigDict, model_validator
 
 from shared.contracts.base import BaseMessage
-from shared.contracts.dto.catalog_install import CatalogInstall
+from shared.contracts.dto.local_install import InstallTarget, LocalPackageInstall
 from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
 
 
@@ -17,7 +17,7 @@ class ScaffoldMessage(BaseMessage):
     Modes:
         full: Full scaffold — copier + make setup + git push (new projects).
         ensure: Verify workspace exists; if missing, clone + setup (existing projects).
-        install: Execute the exclusively claimed typed catalog operation (existing products).
+        install: Execute the exclusively claimed typed INSTALL operation, either target route.
     """
 
     project_id: str
@@ -36,7 +36,7 @@ class ScaffoldMessage(BaseMessage):
     story_id: str | None = None
     operation_id: str | None = None
     cycle_started_at: datetime | None = None
-    install: CatalogInstall | None = None
+    install: InstallTarget | None = None
 
     @model_validator(mode="after")
     def install_ownership(self):
@@ -58,6 +58,11 @@ class ScaffoldMessage(BaseMessage):
                 )
             ):
                 raise ValueError("install requires task/story/repository/cycle/operation/payload")
+            if isinstance(self.install, LocalPackageInstall) and (
+                str(self.install.project_id),
+                self.install.repository_id,
+            ) != (self.project_id, self.repository_id):
+                raise ValueError("a local target names the message's project and repository")
         elif any(value is not None for value in values):
             raise ValueError("install ownership is only valid for install mode")
         return self
