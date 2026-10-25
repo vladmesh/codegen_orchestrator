@@ -608,7 +608,7 @@ jobs:
       - name: Prove released mechanical catalog install executor
         if: matrix.candidate == false
         run: >-
-          bash scripts/ci-infra.sh bound --step mechanical-install --timeout 12m --
+          bash scripts/ci-infra.sh bound --step mechanical-install --timeout 11m --
           uv run python tests/integration/template/mechanical_install_smoke.py
           --output-dir "$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
 
